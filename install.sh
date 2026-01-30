@@ -29,6 +29,96 @@ echo -e "${GREEN}Forge v1.1.0 - Universal AI Agent Workflow${NC}"
 echo ""
 
 # ============================================
+# PREREQUISITE VALIDATION
+# ============================================
+echo -e "${YELLOW}Checking prerequisites...${NC}"
+
+PREREQ_WARNINGS=()
+PREREQ_ERRORS=()
+PKG_MANAGER="npm"
+
+# Required: Git
+if ! command -v git &> /dev/null; then
+    PREREQ_ERRORS+=("git - Install from https://git-scm.com")
+else
+    echo -e "  ${GREEN}✓${NC} git $(git --version | cut -d' ' -f3)"
+fi
+
+# Required: GitHub CLI
+if ! command -v gh &> /dev/null; then
+    PREREQ_ERRORS+=("gh (GitHub CLI) - Install from https://cli.github.com")
+else
+    echo -e "  ${GREEN}✓${NC} gh $(gh --version | head -1 | cut -d' ' -f3)"
+    # Check if authenticated
+    if ! gh auth status &> /dev/null 2>&1; then
+        PREREQ_WARNINGS+=("GitHub CLI not authenticated. Run: gh auth login")
+    fi
+fi
+
+# Required: Node.js 20+
+if command -v node &> /dev/null; then
+    node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ "$node_version" -lt 20 ]; then
+        PREREQ_ERRORS+=("Node.js 20+ required (current: $(node -v))")
+    else
+        echo -e "  ${GREEN}✓${NC} node $(node -v)"
+    fi
+else
+    PREREQ_ERRORS+=("Node.js 20+ - Install from https://nodejs.org")
+fi
+
+# Detect package manager
+if command -v bun &> /dev/null; then
+    PKG_MANAGER="bun"
+    echo -e "  ${GREEN}✓${NC} bun $(bun --version) (detected as package manager)"
+elif command -v pnpm &> /dev/null; then
+    PKG_MANAGER="pnpm"
+    echo -e "  ${GREEN}✓${NC} pnpm $(pnpm --version) (detected as package manager)"
+elif command -v yarn &> /dev/null; then
+    PKG_MANAGER="yarn"
+    echo -e "  ${GREEN}✓${NC} yarn $(yarn --version) (detected as package manager)"
+elif command -v npm &> /dev/null; then
+    PKG_MANAGER="npm"
+    echo -e "  ${GREEN}✓${NC} npm $(npm --version) (detected as package manager)"
+else
+    PREREQ_ERRORS+=("npm, yarn, pnpm, or bun - Install a package manager")
+fi
+
+# Also detect from lock files if present
+if [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
+    PKG_MANAGER="bun"
+elif [ -f "pnpm-lock.yaml" ]; then
+    PKG_MANAGER="pnpm"
+elif [ -f "yarn.lock" ]; then
+    PKG_MANAGER="yarn"
+fi
+
+# Show errors
+if [ ${#PREREQ_ERRORS[@]} -gt 0 ]; then
+    echo ""
+    echo -e "${RED}❌ Missing required tools:${NC}"
+    for err in "${PREREQ_ERRORS[@]}"; do
+        echo -e "   ${RED}-${NC} $err"
+    done
+    echo ""
+    echo "Please install missing tools and try again."
+    exit 1
+fi
+
+# Show warnings
+if [ ${#PREREQ_WARNINGS[@]} -gt 0 ]; then
+    echo ""
+    echo -e "${YELLOW}⚠️  Warnings:${NC}"
+    for warn in "${PREREQ_WARNINGS[@]}"; do
+        echo -e "   ${YELLOW}-${NC} $warn"
+    done
+fi
+
+echo ""
+echo -e "  ${GREEN}Package manager: $PKG_MANAGER${NC}"
+echo ""
+
+# ============================================
 # AGENT SELECTION
 # ============================================
 echo -e "${YELLOW}Which AI coding agents do you use?${NC}"
@@ -513,87 +603,209 @@ echo -e "${YELLOW}=============================================="
 echo -e "  EXTERNAL SERVICES (Optional)"
 echo -e "==============================================${NC}"
 echo ""
-echo "Forge uses external services for enhanced features:"
-echo ""
-echo "  1) Parallel AI     - Deep research & web search"
-echo "     Get key: https://platform.parallel.ai"
-echo "     Used in: /research"
-echo ""
-echo "  2) Greptile        - AI code review on PRs"
-echo "     Get key: https://app.greptile.com/api"
-echo "     Used in: /review"
-echo ""
-echo "  3) SonarCloud      - Code quality & security"
-echo "     Get key: https://sonarcloud.io/account/security"
-echo "     Used in: /check, /review"
-echo ""
-echo "  4) OpenRouter      - Multi-model AI access"
-echo "     Get key: https://openrouter.ai/keys"
-echo "     Used in: AI features"
-echo ""
-echo "Would you like to configure API tokens now?"
+echo "Would you like to configure external services?"
 echo "(You can also add them later to .env.local)"
 echo ""
 
-read -p "Configure tokens? (y/n): " configure_tokens
+read -p "Configure external services? (y/n): " configure_services
 
-if [[ "$configure_tokens" == "y" || "$configure_tokens" == "Y" || "$configure_tokens" == "yes" ]]; then
-    echo ""
-    echo "Enter your API tokens (press Enter to skip any):"
-    echo ""
+if [[ "$configure_services" == "y" || "$configure_services" == "Y" || "$configure_services" == "yes" ]]; then
 
-    TOKENS_ADDED=false
-
-    read -p "  Parallel AI (PARALLEL_API_KEY): " PARALLEL_KEY
-    read -p "  Greptile (GREPTILE_API_KEY): " GREPTILE_KEY
-    read -p "  SonarCloud (SONAR_TOKEN): " SONAR_KEY
-    read -p "  OpenRouter (OPENROUTER_API_KEY): " OPENROUTER_KEY
-
-    # Create or update .env.local
-    if [[ -n "$PARALLEL_KEY" || -n "$GREPTILE_KEY" || -n "$SONAR_KEY" || -n "$OPENROUTER_KEY" ]]; then
-        # Add header if new file
-        if [ ! -f ".env.local" ]; then
-            cat > .env.local << 'ENV_HEADER'
-# External Service API Keys for Forge Workflow
-# Get your keys from:
-#   Parallel AI: https://platform.parallel.ai
-#   Greptile: https://app.greptile.com/api
-#   SonarCloud: https://sonarcloud.io/account/security
-#   OpenRouter: https://openrouter.ai/keys
+    # Initialize .env.local with header if new
+    if [ ! -f ".env.local" ]; then
+        cat > .env.local << 'ENV_HEADER'
+# Forge Workflow Configuration
+# Generated by install.sh
 
 ENV_HEADER
-        fi
+    fi
 
-        # Add tokens
-        [ -n "$PARALLEL_KEY" ] && echo "PARALLEL_API_KEY=$PARALLEL_KEY" >> .env.local && TOKENS_ADDED=true
-        [ -n "$GREPTILE_KEY" ] && echo "GREPTILE_API_KEY=$GREPTILE_KEY" >> .env.local && TOKENS_ADDED=true
-        [ -n "$SONAR_KEY" ] && echo "SONAR_TOKEN=$SONAR_KEY" >> .env.local && TOKENS_ADDED=true
-        [ -n "$OPENROUTER_KEY" ] && echo "OPENROUTER_API_KEY=$OPENROUTER_KEY" >> .env.local && TOKENS_ADDED=true
+    # ============================================
+    # CODE REVIEW TOOL SELECTION
+    # ============================================
+    echo ""
+    echo -e "${CYAN}Code Review Tool${NC}"
+    echo "Select your code review integration:"
+    echo ""
+    echo -e "  ${GREEN}1)${NC} GitHub Code Quality (FREE, built-in) ${GREEN}[RECOMMENDED]${NC}"
+    echo "     Zero setup - uses GitHub's built-in code quality features"
+    echo ""
+    echo -e "  ${GREEN}2)${NC} CodeRabbit (FREE for open source)"
+    echo "     AI-powered reviews - install GitHub App at https://coderabbit.ai"
+    echo ""
+    echo "  3) Greptile (Paid - \$99+/mo)"
+    echo "     Enterprise code review - https://greptile.com"
+    echo ""
+    echo "  4) Skip code review integration"
+    echo ""
+    read -p "Select [1]: " code_review_choice
+    code_review_choice=${code_review_choice:-1}
 
-        # Add .env.local to .gitignore if not present
-        if [ -f ".gitignore" ]; then
-            if ! grep -q "\.env\.local" .gitignore; then
-                echo "" >> .gitignore
-                echo "# Local environment variables" >> .gitignore
-                echo ".env.local" >> .gitignore
+    case $code_review_choice in
+        1)
+            echo "CODE_REVIEW_TOOL=github-code-quality" >> .env.local
+            echo -e "  ${GREEN}✓${NC} Using GitHub Code Quality (FREE)"
+            ;;
+        2)
+            echo "CODE_REVIEW_TOOL=coderabbit" >> .env.local
+            echo "# CodeRabbit: Install GitHub App at https://coderabbit.ai" >> .env.local
+            echo -e "  ${GREEN}✓${NC} Using CodeRabbit - Install the GitHub App to activate"
+            echo -e "     ${BLUE}https://coderabbit.ai${NC}"
+            ;;
+        3)
+            echo ""
+            read -p "  Enter Greptile API key: " greptile_key
+            if [ -n "$greptile_key" ]; then
+                echo "CODE_REVIEW_TOOL=greptile" >> .env.local
+                echo "GREPTILE_API_KEY=$greptile_key" >> .env.local
+                echo -e "  ${GREEN}✓${NC} Greptile configured"
+            else
+                echo "CODE_REVIEW_TOOL=none" >> .env.local
+                echo -e "  ${YELLOW}Skipped${NC} - No API key provided"
             fi
-        else
-            echo "# Local environment variables" > .gitignore
+            ;;
+        4|*)
+            echo "CODE_REVIEW_TOOL=none" >> .env.local
+            echo -e "  ${YELLOW}Skipped${NC} code review integration"
+            ;;
+    esac
+
+    # ============================================
+    # CODE QUALITY TOOL SELECTION
+    # ============================================
+    echo ""
+    echo -e "${CYAN}Code Quality Tool${NC}"
+    echo "Select your code quality/security scanner:"
+    echo ""
+    echo -e "  ${GREEN}1)${NC} ESLint only (FREE, built-in) ${GREEN}[RECOMMENDED]${NC}"
+    echo "     No external server required - uses project's linting"
+    echo ""
+    echo "  2) SonarCloud (50k LoC free, cloud-hosted)"
+    echo "     Get token: https://sonarcloud.io/account/security"
+    echo ""
+    echo "  3) SonarQube Community (FREE, self-hosted, unlimited LoC)"
+    echo "     Run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community"
+    echo ""
+    echo "  4) Skip code quality integration"
+    echo ""
+    read -p "Select [1]: " code_quality_choice
+    code_quality_choice=${code_quality_choice:-1}
+
+    case $code_quality_choice in
+        1)
+            echo "CODE_QUALITY_TOOL=eslint" >> .env.local
+            echo -e "  ${GREEN}✓${NC} Using ESLint (built-in)"
+            ;;
+        2)
+            echo ""
+            read -p "  Enter SonarCloud token: " sonar_token
+            read -p "  Enter SonarCloud organization: " sonar_org
+            read -p "  Enter SonarCloud project key: " sonar_project
+            if [ -n "$sonar_token" ]; then
+                echo "CODE_QUALITY_TOOL=sonarcloud" >> .env.local
+                echo "SONAR_TOKEN=$sonar_token" >> .env.local
+                [ -n "$sonar_org" ] && echo "SONAR_ORGANIZATION=$sonar_org" >> .env.local
+                [ -n "$sonar_project" ] && echo "SONAR_PROJECT_KEY=$sonar_project" >> .env.local
+                echo -e "  ${GREEN}✓${NC} SonarCloud configured"
+            else
+                echo "CODE_QUALITY_TOOL=eslint" >> .env.local
+                echo -e "  ${YELLOW}Falling back to ESLint${NC}"
+            fi
+            ;;
+        3)
+            echo ""
+            echo -e "  ${BLUE}SonarQube Self-Hosted Setup:${NC}"
+            echo "  docker run -d --name sonarqube -p 9000:9000 sonarqube:community"
+            echo "  Access: http://localhost:9000 (admin/admin)"
+            echo ""
+            read -p "  Enter SonarQube URL [http://localhost:9000]: " sonarqube_url
+            sonarqube_url=${sonarqube_url:-http://localhost:9000}
+            read -p "  Enter SonarQube token (optional): " sonarqube_token
+
+            echo "CODE_QUALITY_TOOL=sonarqube" >> .env.local
+            echo "SONARQUBE_URL=$sonarqube_url" >> .env.local
+            [ -n "$sonarqube_token" ] && echo "SONARQUBE_TOKEN=$sonarqube_token" >> .env.local
+            echo "# SonarQube: docker run -d --name sonarqube -p 9000:9000 sonarqube:community" >> .env.local
+            echo -e "  ${GREEN}✓${NC} SonarQube self-hosted configured"
+            ;;
+        4|*)
+            echo "CODE_QUALITY_TOOL=none" >> .env.local
+            echo -e "  ${YELLOW}Skipped${NC} code quality integration"
+            ;;
+    esac
+
+    # ============================================
+    # RESEARCH TOOL SELECTION
+    # ============================================
+    echo ""
+    echo -e "${CYAN}Research Tool${NC}"
+    echo "Select your research tool for /research stage:"
+    echo ""
+    echo -e "  ${GREEN}1)${NC} Manual research only ${GREEN}[DEFAULT]${NC}"
+    echo "     Use web browser and codebase exploration"
+    echo ""
+    echo "  2) Parallel AI (comprehensive web research)"
+    echo "     Get key: https://platform.parallel.ai"
+    echo ""
+    read -p "Select [1]: " research_choice
+    research_choice=${research_choice:-1}
+
+    case $research_choice in
+        2)
+            echo ""
+            read -p "  Enter Parallel AI API key: " parallel_key
+            if [ -n "$parallel_key" ]; then
+                echo "PARALLEL_API_KEY=$parallel_key" >> .env.local
+                echo -e "  ${GREEN}✓${NC} Parallel AI configured"
+            else
+                echo -e "  ${YELLOW}Skipped${NC} - No API key provided"
+            fi
+            ;;
+        1|*)
+            echo -e "  ${GREEN}✓${NC} Using manual research"
+            ;;
+    esac
+
+    # ============================================
+    # OPTIONAL: OpenRouter for Multi-Model AI
+    # ============================================
+    echo ""
+    echo -e "${CYAN}AI Model Access (Optional)${NC}"
+    echo "OpenRouter provides access to multiple AI models."
+    echo "Get key: https://openrouter.ai/keys"
+    echo ""
+    read -p "Enter OpenRouter API key (or press Enter to skip): " openrouter_key
+    if [ -n "$openrouter_key" ]; then
+        echo "OPENROUTER_API_KEY=$openrouter_key" >> .env.local
+        echo -e "  ${GREEN}✓${NC} OpenRouter configured"
+    fi
+
+    # ============================================
+    # Save package manager preference
+    # ============================================
+    echo "" >> .env.local
+    echo "# Package Manager (auto-detected)" >> .env.local
+    echo "PKG_MANAGER=$PKG_MANAGER" >> .env.local
+
+    # Add .env.local to .gitignore if not present
+    if [ -f ".gitignore" ]; then
+        if ! grep -q "\.env\.local" .gitignore; then
+            echo "" >> .gitignore
+            echo "# Local environment variables" >> .gitignore
             echo ".env.local" >> .gitignore
         fi
-
-        echo ""
-        if [ "$TOKENS_ADDED" = true ]; then
-            echo -e "  ${GREEN}Saved tokens to .env.local${NC}"
-            echo -e "  ${GREEN}Added .env.local to .gitignore${NC}"
-        fi
     else
-        echo ""
-        echo "No tokens provided. You can add them later to .env.local"
+        echo "# Local environment variables" > .gitignore
+        echo ".env.local" >> .gitignore
     fi
+
+    echo ""
+    echo -e "  ${GREEN}Configuration saved to .env.local${NC}"
+    echo -e "  ${GREEN}Added .env.local to .gitignore${NC}"
+
 else
     echo ""
-    echo "Skipping token configuration. You can add tokens later to .env.local"
+    echo "Skipping external services. You can configure them later by editing .env.local"
 fi
 
 # ============================================
@@ -637,6 +849,8 @@ echo ""
 echo "  Full guide: docs/WORKFLOW.md"
 echo ""
 echo "Optional tools:"
-echo "  - Beads: npm i -g beads-cli && bd init"
-echo "  - OpenSpec: npm i -g openspec-cli"
+echo "  - Beads: $PKG_MANAGER install -g @beads/bd && bd init"
+echo "  - OpenSpec: $PKG_MANAGER install -g @fission-ai/openspec"
+echo ""
+echo -e "${CYAN}Package manager detected: $PKG_MANAGER${NC}"
 echo ""

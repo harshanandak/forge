@@ -430,24 +430,56 @@ your-project/
 
 ## External Services & API Tokens
 
-Forge integrates with external services for enhanced capabilities. Store tokens in `.env.local`:
+Forge integrates with external services for enhanced capabilities. **Most tools have FREE alternatives!**
+
+### Code Review Options (Choose One)
+
+| Tool | Pricing | Best For | Setup |
+|------|---------|----------|-------|
+| **GitHub Code Quality** | FREE | All GitHub repos | Built-in, zero setup ✓ |
+| **CodeRabbit** | FREE (OSS) | Open source | GitHub App |
+| **Greptile** | $99+/mo | Enterprise | API key |
+
+**Recommended**: Start with GitHub Code Quality (free, already enabled).
+
+### Code Quality Options (Choose One)
+
+| Tool | Pricing | Best For | Setup |
+|------|---------|----------|-------|
+| **ESLint** | FREE | All projects | Built-in ✓ |
+| **SonarCloud** | 50k LoC free | Cloud-first | API key |
+| **SonarQube Community** | FREE | Self-hosted | Docker |
+
+**Recommended**: Start with ESLint (free, already in your project).
+
+Store API tokens in `.env.local`:
 
 ```bash
 # .env.local (add to .gitignore!)
 
+# Code Review Tool Selection
+CODE_REVIEW_TOOL=github-code-quality  # or: coderabbit, greptile, none
+
+# Code Quality Tool Selection
+CODE_QUALITY_TOOL=eslint  # or: sonarcloud, sonarqube, none
+
 # Required for PR workflow
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
-# Parallel AI - Deep web research (/research stage)
+# Parallel AI - Deep web research (/research stage, optional)
 PARALLEL_API_KEY=your-parallel-ai-key
 
-# Greptile - AI code review (/review stage)
+# Greptile - AI code review (only if CODE_REVIEW_TOOL=greptile)
 GREPTILE_API_KEY=your-greptile-key
 
-# SonarCloud - Code quality (/check stage)
+# SonarCloud (only if CODE_QUALITY_TOOL=sonarcloud)
 SONAR_TOKEN=your-sonarcloud-token
 SONAR_ORGANIZATION=your-org
 SONAR_PROJECT_KEY=your-project-key
+
+# SonarQube Self-Hosted (only if CODE_QUALITY_TOOL=sonarqube)
+SONARQUBE_URL=http://localhost:9000
+SONARQUBE_TOKEN=your-token
 
 # OpenRouter - Multi-model AI (optional)
 OPENROUTER_API_KEY=your-openrouter-key
@@ -455,31 +487,34 @@ OPENROUTER_API_KEY=your-openrouter-key
 
 ### Service Setup
 
-| Service | Purpose | Get Token | Used In |
-|---------|---------|-----------|---------|
-| **GitHub CLI** | PR workflow | `gh auth login` | `/ship`, `/review`, `/merge` |
-| **Parallel AI** | Web research | [platform.parallel.ai](https://platform.parallel.ai) | `/research` |
-| **Greptile** | AI code review | [app.greptile.com](https://app.greptile.com) | `/review` |
-| **SonarCloud** | Code quality | [sonarcloud.io](https://sonarcloud.io) | `/check` |
-| **OpenRouter** | Multi-model AI | [openrouter.ai](https://openrouter.ai) | AI features |
+| Service | Pricing | Purpose | Get Token | Used In |
+|---------|---------|---------|-----------|---------|
+| **GitHub CLI** | FREE | PR workflow | `gh auth login` | `/ship`, `/review`, `/merge` |
+| **GitHub Code Quality** | FREE | Code review | Built-in | `/review` |
+| **CodeRabbit** | FREE (OSS) | AI code review | [coderabbit.ai](https://coderabbit.ai) | `/review` |
+| **Greptile** | $99+/mo | Enterprise review | [greptile.com](https://greptile.com) | `/review` |
+| **ESLint** | FREE | Linting | Built-in | `/check` |
+| **SonarCloud** | 50k LoC free | Cloud quality | [sonarcloud.io](https://sonarcloud.io) | `/check` |
+| **SonarQube** | FREE | Self-hosted quality | Docker | `/check` |
+| **Parallel AI** | Paid | Web research | [platform.parallel.ai](https://platform.parallel.ai) | `/research` |
+| **OpenRouter** | Paid | Multi-model AI | [openrouter.ai](https://openrouter.ai) | AI features |
 
-### Parallel AI Setup
+### Code Review Setup
+
+**Option 1: GitHub Code Quality (FREE, Recommended)**
+
+Zero setup required - GitHub's built-in code quality features are already enabled.
+
+**Option 2: CodeRabbit (FREE for Open Source)**
 
 ```bash
-# 1. Get API key from https://platform.parallel.ai
-# 2. Add to .env.local
-PARALLEL_API_KEY=your-key
-
-# 3. Test with curl
-API_KEY=$(grep "^PARALLEL_API_KEY=" .env.local | cut -d= -f2)
-curl -s -X POST "https://api.parallel.ai/v1beta/search" \
-  -H "x-api-key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "parallel-beta: search-extract-2025-10-10" \
-  -d '{"objective": "test query"}'
+# 1. Go to https://coderabbit.ai
+# 2. Install the GitHub App
+# 3. Enable for your repositories
+# That's it! CodeRabbit will review PRs automatically.
 ```
 
-### Greptile Setup
+**Option 3: Greptile (Paid - Enterprise)**
 
 ```bash
 # 1. Get API key from https://app.greptile.com
@@ -493,7 +528,17 @@ curl -X POST "https://api.greptile.com/v2/repositories" \
   -d '{"remote": "github", "repository": "owner/repo"}'
 ```
 
-### SonarCloud Setup
+### Code Quality Setup
+
+**Option 1: ESLint Only (FREE, Recommended)**
+
+Already configured in your project - no additional setup needed.
+
+```bash
+npm run lint  # or bun run lint
+```
+
+**Option 2: SonarCloud (Cloud-Hosted)**
 
 ```bash
 # 1. Create project at https://sonarcloud.io
@@ -510,6 +555,46 @@ sonar.sources=src" > sonar-project.properties
 
 # 5. Run analysis (in CI or locally)
 npx sonarqube-scanner
+```
+
+**Option 3: SonarQube Community (FREE, Self-Hosted)**
+
+```bash
+# 1. Start SonarQube with Docker
+docker run -d --name sonarqube -p 9000:9000 sonarqube:community
+
+# 2. Access at http://localhost:9000 (admin/admin)
+# 3. Generate token in SonarQube UI
+# 4. Add to .env.local
+SONARQUBE_URL=http://localhost:9000
+SONARQUBE_TOKEN=your-token
+
+# 5. Add sonar-project.properties
+echo "sonar.host.url=http://localhost:9000
+sonar.login=your-token
+sonar.projectKey=your-project
+sonar.sources=src" > sonar-project.properties
+
+# 6. Run analysis
+npx sonarqube-scanner
+```
+
+### Research Tool Setup
+
+**Parallel AI (Optional - Paid)**
+
+```bash
+# 1. Get API key from https://platform.parallel.ai
+# 2. Add to .env.local
+PARALLEL_API_KEY=your-key
+
+# 3. Test with curl
+API_KEY=$(grep "^PARALLEL_API_KEY=" .env.local | cut -d= -f2)
+curl -s -X POST "https://api.parallel.ai/v1beta/search" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "parallel-beta: search-extract-2025-10-10" \
+  -d '{"objective": "test query"}'
 ```
 
 ### Loading Tokens

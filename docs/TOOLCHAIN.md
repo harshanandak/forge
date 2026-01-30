@@ -411,12 +411,54 @@ curl -s -X POST "https://api.parallel.ai/v1beta/search" \
   -d '{"objective": "Next.js authentication best practices 2026"}'
 ```
 
-### Greptile - AI Code Review
+---
 
-**Website**: [app.greptile.com](https://app.greptile.com)
+## Code Review Tools
+
+Choose ONE code review tool based on your needs:
+
+| Tool | Pricing | Best For | Setup |
+|------|---------|----------|-------|
+| **GitHub Code Quality** | FREE | All GitHub repos | Built-in, zero setup |
+| **CodeRabbit** | FREE (OSS) | Open source projects | GitHub App |
+| **Greptile** | $99+/mo | Enterprise | API key |
+
+### Option 1: GitHub Code Quality (FREE, Recommended)
+
+**Status**: Built-in to GitHub
 **Used in**: `/review` stage
 
-AI-powered code review that understands your codebase.
+Zero setup required - GitHub's code quality features are enabled by default.
+
+Features:
+- Automatic code scanning
+- Dependency vulnerability alerts
+- Secret scanning
+- Code navigation
+
+### Option 2: CodeRabbit (FREE for Open Source)
+
+**Website**: [coderabbit.ai](https://coderabbit.ai)
+**Used in**: `/review` stage
+
+AI-powered code review with deep context understanding.
+
+```bash
+# Setup
+# 1. Go to https://coderabbit.ai
+# 2. Install the GitHub App
+# 3. Enable for your repositories
+
+# Configuration (optional)
+# Create .coderabbit.yaml in repo root
+```
+
+### Option 3: Greptile (Paid - Enterprise)
+
+**Website**: [greptile.com](https://greptile.com)
+**Used in**: `/review` stage
+
+Enterprise-grade AI code review that understands your codebase.
 
 ```bash
 # Setup
@@ -431,10 +473,35 @@ curl -X POST "https://api.greptile.com/v2/repositories" \
   -d '{"remote": "github", "repository": "owner/repo"}'
 ```
 
-### SonarCloud - Code Quality
+---
+
+## Code Quality Tools
+
+Choose ONE code quality scanner based on your needs:
+
+| Tool | Pricing | Best For | Requirement |
+|------|---------|----------|-------------|
+| **ESLint** | FREE | All projects | Built-in |
+| **SonarCloud** | 50k LoC free | Cloud-first teams | API key |
+| **SonarQube Community** | FREE | Self-hosted, unlimited | Docker |
+
+### Option 1: ESLint Only (FREE, Recommended)
+
+**Status**: Built-in
+**Used in**: `/check` stage
+
+No external server required - uses your project's linting configuration.
+
+```bash
+# Already configured via package.json or eslint.config.js
+npm run lint  # or bun run lint
+```
+
+### Option 2: SonarCloud (Cloud-Hosted)
 
 **Website**: [sonarcloud.io](https://sonarcloud.io)
 **Used in**: `/check` stage
+**Free Tier**: 50,000 lines of code
 
 Static analysis for bugs, vulnerabilities, code smells.
 
@@ -455,6 +522,59 @@ sonar.sources=src" > sonar-project.properties
 # 5. Run analysis
 npx sonarqube-scanner
 ```
+
+### Option 3: SonarQube Community (Self-Hosted, FREE)
+
+**Website**: [sonarqube.org](https://www.sonarsource.com/products/sonarqube/)
+**Used in**: `/check` stage
+**Pricing**: FREE, unlimited lines of code
+
+Self-hosted code quality analysis - no cloud dependency.
+
+```bash
+# Setup with Docker
+docker run -d --name sonarqube \
+  -p 9000:9000 \
+  sonarqube:community
+
+# Access at http://localhost:9000
+# Default credentials: admin/admin
+
+# Add to .env.local
+SONARQUBE_URL=http://localhost:9000
+SONARQUBE_TOKEN=your-token  # Generate in SonarQube UI
+
+# Create sonar-project.properties
+echo "sonar.host.url=$SONARQUBE_URL
+sonar.login=$SONARQUBE_TOKEN
+sonar.projectKey=your-project
+sonar.sources=src" > sonar-project.properties
+
+# Run analysis
+npx sonarqube-scanner
+```
+
+**Docker Compose (Production)**:
+```yaml
+# docker-compose.yml
+version: '3'
+services:
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+
+volumes:
+  sonarqube_data:
+  sonarqube_logs:
+```
+
+---
 
 ### GitHub CLI - PR Workflow
 

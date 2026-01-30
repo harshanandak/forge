@@ -18,11 +18,15 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const { execSync } = require('child_process');
 
 // Get the project root and package directory
 const projectRoot = process.env.INIT_CWD || process.cwd();
 const packageDir = path.dirname(__dirname);
 const args = process.argv.slice(2);
+
+// Detected package manager
+let PKG_MANAGER = 'npm';
 
 // Agent definitions
 const AGENTS = {
@@ -112,41 +116,158 @@ const AGENTS = {
 
 const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify'];
 
-// External services that can be configured
-const EXTERNAL_SERVICES = {
-  parallel: {
-    name: 'Parallel AI',
-    description: 'Deep research & web search',
-    envVar: 'PARALLEL_API_KEY',
-    getKeyUrl: 'https://platform.parallel.ai',
-    required: false,
-    usedIn: ['/research']
+// Code review tool options
+const CODE_REVIEW_TOOLS = {
+  'github-code-quality': {
+    name: 'GitHub Code Quality',
+    description: 'FREE, built-in - Zero setup required',
+    recommended: true
   },
-  greptile: {
+  'coderabbit': {
+    name: 'CodeRabbit',
+    description: 'FREE for open source - Install GitHub App at https://coderabbit.ai'
+  },
+  'greptile': {
     name: 'Greptile',
-    description: 'AI code review on PRs',
+    description: 'Paid ($99+/mo) - Enterprise code review',
+    requiresApiKey: true,
     envVar: 'GREPTILE_API_KEY',
-    getKeyUrl: 'https://app.greptile.com/api',
-    required: false,
-    usedIn: ['/review']
-  },
-  sonarcloud: {
-    name: 'SonarCloud',
-    description: 'Code quality & security',
-    envVar: 'SONAR_TOKEN',
-    getKeyUrl: 'https://sonarcloud.io/account/security',
-    required: false,
-    usedIn: ['/check', '/review']
-  },
-  openrouter: {
-    name: 'OpenRouter',
-    description: 'Multi-model AI access',
-    envVar: 'OPENROUTER_API_KEY',
-    getKeyUrl: 'https://openrouter.ai/keys',
-    required: false,
-    usedIn: ['AI features']
+    getKeyUrl: 'https://greptile.com'
   }
 };
+
+// Code quality tool options
+const CODE_QUALITY_TOOLS = {
+  'eslint': {
+    name: 'ESLint only',
+    description: 'FREE, built-in - No external server required',
+    recommended: true
+  },
+  'sonarcloud': {
+    name: 'SonarCloud',
+    description: '50k LoC free, cloud-hosted',
+    requiresApiKey: true,
+    envVars: ['SONAR_TOKEN', 'SONAR_ORGANIZATION', 'SONAR_PROJECT_KEY'],
+    getKeyUrl: 'https://sonarcloud.io/account/security'
+  },
+  'sonarqube': {
+    name: 'SonarQube Community',
+    description: 'FREE, self-hosted, unlimited LoC',
+    envVars: ['SONARQUBE_URL', 'SONARQUBE_TOKEN'],
+    dockerCommand: 'docker run -d --name sonarqube -p 9000:9000 sonarqube:community'
+  }
+};
+
+// Helper function to safely execute commands (no user input)
+function safeExec(cmd) {
+  try {
+    return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  } catch (e) {
+    return null;
+  }
+}
+
+// Prerequisite check function
+function checkPrerequisites() {
+  const errors = [];
+  const warnings = [];
+
+  console.log('');
+  console.log('Checking prerequisites...');
+  console.log('');
+
+  // Check git
+  const gitVersion = safeExec('git --version');
+  if (gitVersion) {
+    console.log(`  ✓ ${gitVersion}`);
+  } else {
+    errors.push('git - Install from https://git-scm.com');
+  }
+
+  // Check GitHub CLI
+  const ghVersion = safeExec('gh --version');
+  if (ghVersion) {
+    console.log(`  ✓ ${ghVersion.split('\\n')[0]}`);
+    // Check if authenticated
+    const authStatus = safeExec('gh auth status');
+    if (!authStatus) {
+      warnings.push('GitHub CLI not authenticated. Run: gh auth login');
+    }
+  } else {
+    errors.push('gh (GitHub CLI) - Install from https://cli.github.com');
+  }
+
+  // Check Node.js version
+  const nodeVersion = parseInt(process.version.slice(1).split('.')[0]);
+  if (nodeVersion >= 20) {
+    console.log(`  ✓ node ${process.version}`);
+  } else {
+    errors.push(`Node.js 20+ required (current: ${process.version})`);
+  }
+
+  // Detect package manager
+  const bunVersion = safeExec('bun --version');
+  if (bunVersion) {
+    PKG_MANAGER = 'bun';
+    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
+  } else {
+    const pnpmVersion = safeExec('pnpm --version');
+    if (pnpmVersion) {
+      PKG_MANAGER = 'pnpm';
+      console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
+    } else {
+      const yarnVersion = safeExec('yarn --version');
+      if (yarnVersion) {
+        PKG_MANAGER = 'yarn';
+        console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
+      } else {
+        const npmVersion = safeExec('npm --version');
+        if (npmVersion) {
+          PKG_MANAGER = 'npm';
+          console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
+        } else {
+          errors.push('npm, yarn, pnpm, or bun - Install a package manager');
+        }
+      }
+    }
+  }
+
+  // Also detect from lock files if present
+  const bunLock = path.join(projectRoot, 'bun.lockb');
+  const bunLock2 = path.join(projectRoot, 'bun.lock');
+  const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
+  const yarnLock = path.join(projectRoot, 'yarn.lock');
+
+  if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
+    PKG_MANAGER = 'bun';
+  } else if (fs.existsSync(pnpmLock)) {
+    PKG_MANAGER = 'pnpm';
+  } else if (fs.existsSync(yarnLock)) {
+    PKG_MANAGER = 'yarn';
+  }
+
+  // Show errors
+  if (errors.length > 0) {
+    console.log('');
+    console.log('❌ Missing required tools:');
+    errors.forEach(err => console.log(`   - ${err}`));
+    console.log('');
+    console.log('Please install missing tools and try again.');
+    process.exit(1);
+  }
+
+  // Show warnings
+  if (warnings.length > 0) {
+    console.log('');
+    console.log('⚠️  Warnings:');
+    warnings.forEach(warn => console.log(`   - ${warn}`));
+  }
+
+  console.log('');
+  console.log(`  Package manager: ${PKG_MANAGER}`);
+
+  return { errors, warnings };
+}
 
 // Universal SKILL.md content
 const SKILL_CONTENT = `---
@@ -387,60 +508,183 @@ async function configureExternalServices(rl, question) {
   console.log('  External Services Configuration');
   console.log('==============================================');
   console.log('');
-  console.log('Forge uses external services for enhanced features:');
-  console.log('');
-
-  const serviceKeys = Object.keys(EXTERNAL_SERVICES);
-  serviceKeys.forEach((key, index) => {
-    const svc = EXTERNAL_SERVICES[key];
-    console.log(`  ${(index + 1).toString().padStart(2)}) ${svc.name.padEnd(15)} - ${svc.description}`);
-    console.log(`      Used in: ${svc.usedIn.join(', ')}`);
-    console.log(`      Get key: ${svc.getKeyUrl}`);
-    console.log('');
-  });
-
-  console.log('Would you like to configure API tokens now?');
+  console.log('Would you like to configure external services?');
   console.log('(You can also add them later to .env.local)');
   console.log('');
 
-  const configure = await question('Configure tokens? (y/n): ');
+  const configure = await question('Configure external services? (y/n): ');
 
   if (configure.toLowerCase() !== 'y' && configure.toLowerCase() !== 'yes') {
     console.log('');
-    console.log('Skipping token configuration. You can add tokens later to .env.local');
+    console.log('Skipping external services. You can configure them later by editing .env.local');
     return;
   }
-
-  console.log('');
-  console.log('Enter your API tokens (press Enter to skip any):');
-  console.log('');
 
   const tokens = {};
 
-  for (const [key, svc] of Object.entries(EXTERNAL_SERVICES)) {
-    const token = await question(`  ${svc.name} (${svc.envVar}): `);
-    if (token && token.trim()) {
-      tokens[svc.envVar] = token.trim();
+  // ============================================
+  // CODE REVIEW TOOL SELECTION
+  // ============================================
+  console.log('');
+  console.log('Code Review Tool');
+  console.log('----------------');
+  console.log('Select your code review integration:');
+  console.log('');
+  console.log('  1) GitHub Code Quality (FREE, built-in) [RECOMMENDED]');
+  console.log('     Zero setup - uses GitHub\'s built-in code quality features');
+  console.log('');
+  console.log('  2) CodeRabbit (FREE for open source)');
+  console.log('     AI-powered reviews - install GitHub App at https://coderabbit.ai');
+  console.log('');
+  console.log('  3) Greptile (Paid - $99+/mo)');
+  console.log('     Enterprise code review - https://greptile.com');
+  console.log('');
+  console.log('  4) Skip code review integration');
+  console.log('');
+
+  const codeReviewChoice = await question('Select [1]: ') || '1';
+
+  switch (codeReviewChoice) {
+    case '1':
+      tokens['CODE_REVIEW_TOOL'] = 'github-code-quality';
+      console.log('  ✓ Using GitHub Code Quality (FREE)');
+      break;
+    case '2':
+      tokens['CODE_REVIEW_TOOL'] = 'coderabbit';
+      console.log('  ✓ Using CodeRabbit - Install the GitHub App to activate');
+      console.log('     https://coderabbit.ai');
+      break;
+    case '3':
+      const greptileKey = await question('  Enter Greptile API key: ');
+      if (greptileKey && greptileKey.trim()) {
+        tokens['CODE_REVIEW_TOOL'] = 'greptile';
+        tokens['GREPTILE_API_KEY'] = greptileKey.trim();
+        console.log('  ✓ Greptile configured');
+      } else {
+        tokens['CODE_REVIEW_TOOL'] = 'none';
+        console.log('  Skipped - No API key provided');
+      }
+      break;
+    default:
+      tokens['CODE_REVIEW_TOOL'] = 'none';
+      console.log('  Skipped code review integration');
+  }
+
+  // ============================================
+  // CODE QUALITY TOOL SELECTION
+  // ============================================
+  console.log('');
+  console.log('Code Quality Tool');
+  console.log('-----------------');
+  console.log('Select your code quality/security scanner:');
+  console.log('');
+  console.log('  1) ESLint only (FREE, built-in) [RECOMMENDED]');
+  console.log('     No external server required - uses project\'s linting');
+  console.log('');
+  console.log('  2) SonarCloud (50k LoC free, cloud-hosted)');
+  console.log('     Get token: https://sonarcloud.io/account/security');
+  console.log('');
+  console.log('  3) SonarQube Community (FREE, self-hosted, unlimited LoC)');
+  console.log('     Run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
+  console.log('');
+  console.log('  4) Skip code quality integration');
+  console.log('');
+
+  const codeQualityChoice = await question('Select [1]: ') || '1';
+
+  switch (codeQualityChoice) {
+    case '1':
+      tokens['CODE_QUALITY_TOOL'] = 'eslint';
+      console.log('  ✓ Using ESLint (built-in)');
+      break;
+    case '2':
+      const sonarToken = await question('  Enter SonarCloud token: ');
+      const sonarOrg = await question('  Enter SonarCloud organization: ');
+      const sonarProject = await question('  Enter SonarCloud project key: ');
+      if (sonarToken && sonarToken.trim()) {
+        tokens['CODE_QUALITY_TOOL'] = 'sonarcloud';
+        tokens['SONAR_TOKEN'] = sonarToken.trim();
+        if (sonarOrg) tokens['SONAR_ORGANIZATION'] = sonarOrg.trim();
+        if (sonarProject) tokens['SONAR_PROJECT_KEY'] = sonarProject.trim();
+        console.log('  ✓ SonarCloud configured');
+      } else {
+        tokens['CODE_QUALITY_TOOL'] = 'eslint';
+        console.log('  Falling back to ESLint');
+      }
+      break;
+    case '3':
+      console.log('');
+      console.log('  SonarQube Self-Hosted Setup:');
+      console.log('  docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
+      console.log('  Access: http://localhost:9000 (admin/admin)');
+      console.log('');
+      const sqUrl = await question('  Enter SonarQube URL [http://localhost:9000]: ') || 'http://localhost:9000';
+      const sqToken = await question('  Enter SonarQube token (optional): ');
+      tokens['CODE_QUALITY_TOOL'] = 'sonarqube';
+      tokens['SONARQUBE_URL'] = sqUrl;
+      if (sqToken && sqToken.trim()) {
+        tokens['SONARQUBE_TOKEN'] = sqToken.trim();
+      }
+      console.log('  ✓ SonarQube self-hosted configured');
+      break;
+    default:
+      tokens['CODE_QUALITY_TOOL'] = 'none';
+      console.log('  Skipped code quality integration');
+  }
+
+  // ============================================
+  // RESEARCH TOOL SELECTION
+  // ============================================
+  console.log('');
+  console.log('Research Tool');
+  console.log('-------------');
+  console.log('Select your research tool for /research stage:');
+  console.log('');
+  console.log('  1) Manual research only [DEFAULT]');
+  console.log('     Use web browser and codebase exploration');
+  console.log('');
+  console.log('  2) Parallel AI (comprehensive web research)');
+  console.log('     Get key: https://platform.parallel.ai');
+  console.log('');
+
+  const researchChoice = await question('Select [1]: ') || '1';
+
+  if (researchChoice === '2') {
+    const parallelKey = await question('  Enter Parallel AI API key: ');
+    if (parallelKey && parallelKey.trim()) {
+      tokens['PARALLEL_API_KEY'] = parallelKey.trim();
+      console.log('  ✓ Parallel AI configured');
+    } else {
+      console.log('  Skipped - No API key provided');
     }
+  } else {
+    console.log('  ✓ Using manual research');
   }
 
-  // Check if any tokens provided
-  const providedTokens = Object.keys(tokens).length;
-  if (providedTokens === 0) {
-    console.log('');
-    console.log('No tokens provided. You can add them later to .env.local');
-    return;
+  // ============================================
+  // OPTIONAL: OpenRouter
+  // ============================================
+  console.log('');
+  console.log('AI Model Access (Optional)');
+  console.log('--------------------------');
+  console.log('OpenRouter provides access to multiple AI models.');
+  console.log('Get key: https://openrouter.ai/keys');
+  console.log('');
+
+  const openrouterKey = await question('Enter OpenRouter API key (or press Enter to skip): ');
+  if (openrouterKey && openrouterKey.trim()) {
+    tokens['OPENROUTER_API_KEY'] = openrouterKey.trim();
+    console.log('  ✓ OpenRouter configured');
   }
 
-  // Write to .env.local
+  // Save package manager preference
+  tokens['PKG_MANAGER'] = PKG_MANAGER;
+
+  // Write all tokens to .env.local
   const added = writeEnvTokens(tokens);
 
   console.log('');
-  console.log(`Saved ${added.length} token(s) to .env.local:`);
-  added.forEach(key => {
-    console.log(`  - ${key}`);
-  });
-  console.log('');
+  console.log('Configuration saved to .env.local');
   console.log('Note: .env.local has been added to .gitignore');
 }
 
@@ -637,6 +881,9 @@ async function interactiveSetup() {
   console.log('                 |___|   ');
   console.log('');
   console.log('Forge v1.1.0 - Agent Configuration');
+
+  // Check prerequisites first
+  checkPrerequisites();
   console.log('');
 
   // =============================================
@@ -753,9 +1000,13 @@ async function interactiveSetup() {
   });
   console.log('');
   console.log('Next steps:');
-  console.log('  1. Install optional tools: beads-cli, openspec-cli');
+  console.log(`  1. Install optional tools:`);
+  console.log(`     ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  console.log(`     ${PKG_MANAGER} install -g @fission-ai/openspec`);
   console.log('  2. Start with: /status');
   console.log('  3. Read the guide: docs/WORKFLOW.md');
+  console.log('');
+  console.log(`Package manager detected: ${PKG_MANAGER}`);
   console.log('');
   console.log('Happy shipping!');
   console.log('');
