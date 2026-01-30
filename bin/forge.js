@@ -856,16 +856,25 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('Note: .env.local has been added to .gitignore');
 }
 
+// Display the Forge banner
+function showBanner(subtitle = 'Universal AI Agent Workflow') {
+  console.log('');
+  console.log('  ███████╗ ██████╗ ██████╗  ██████╗ ███████╗');
+  console.log('  ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝');
+  console.log('  █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ');
+  console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
+  console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
+  console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
+  console.log('  v1.1.0');
+  console.log('');
+  if (subtitle) {
+    console.log(`  ${subtitle}`);
+  }
+}
+
 // Minimal installation (postinstall)
 function minimalInstall() {
-  console.log('');
-  console.log('  ___                   ');
-  console.log(' |  _|___  _ _  ___  ___ ');
-  console.log(' |  _| . || \'_|| . || -_|');
-  console.log(' |_| |___||_|  |_  ||___|');
-  console.log('                 |___|   ');
-  console.log('');
-  console.log('Forge v1.1.0 - Universal AI Agent Workflow');
+  showBanner();
   console.log('');
 
   // Create core directories
@@ -1108,14 +1117,7 @@ async function interactiveSetup() {
 
   const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
 
-  console.log('');
-  console.log('  ___                   ');
-  console.log(' |  _|___  _ _  ___  ___ ');
-  console.log(' |  _| . || \'_|| . || -_|');
-  console.log(' |_| |___||_|  |_  ||___|');
-  console.log('                 |___|   ');
-  console.log('');
-  console.log('Forge v1.1.0 - Agent Configuration');
+  showBanner('Agent Configuration');
 
   // Check prerequisites first
   checkPrerequisites();
@@ -1389,14 +1391,7 @@ function validateAgents(agentList) {
 
 // Show help text
 function showHelp() {
-  console.log('');
-  console.log('  ___                   ');
-  console.log(' |  _|___  _ _  ___  ___ ');
-  console.log(' |  _| . || \'_|| . || -_|');
-  console.log(' |_| |___||_|  |_  ||___|');
-  console.log('                 |___|   ');
-  console.log('');
-  console.log('Forge v1.1.0 - Universal AI Agent Workflow');
+  showBanner();
   console.log('');
   console.log('Usage:');
   console.log('  npx forge setup [options]     Interactive agent configuration');
@@ -1434,14 +1429,7 @@ function showHelp() {
 
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
-  console.log('');
-  console.log('  ___                   ');
-  console.log(' |  _|___  _ _  ___  ___ ');
-  console.log(' |  _| . || \'_|| . || -_|');
-  console.log(' |_| |___||_|  |_  ||___|');
-  console.log('                 |___|   ');
-  console.log('');
-  console.log('Forge v1.1.0 - Quick Setup');
+  showBanner('Quick Setup');
   console.log('');
   console.log('Quick mode: Using defaults...');
   console.log('');
@@ -1549,14 +1537,7 @@ async function interactiveSetupWithFlags(flags) {
 
   const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
 
-  console.log('');
-  console.log('  ___                   ');
-  console.log(' |  _|___  _ _  ___  ___ ');
-  console.log(' |  _| . || \'_|| . || -_|');
-  console.log(' |_| |___||_|  |_  ||___|');
-  console.log('                 |___|   ');
-  console.log('');
-  console.log('Forge v1.1.0 - Agent Configuration');
+  showBanner('Agent Configuration');
 
   // Check prerequisites first
   checkPrerequisites();
@@ -1817,14 +1798,7 @@ async function main() {
 
     // Agents specified via flag (non-quick mode)
     if (selectedAgents.length > 0) {
-      console.log('');
-      console.log('  ___                   ');
-      console.log(' |  _|___  _ _  ___  ___ ');
-      console.log(' |  _| . || \'_|| . || -_|');
-      console.log(' |_| |___||_|  |_  ||___|');
-      console.log('                 |___|   ');
-      console.log('');
-      console.log('Forge v1.1.0 - Installing for specified agents...');
+      showBanner('Installing for specified agents...');
       console.log('');
 
       // Check prerequisites

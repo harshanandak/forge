@@ -54,13 +54,15 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 echo ""
-echo -e "${CYAN}  ___                   ${NC}"
-echo -e "${CYAN} |  _|___  _ _  ___  ___ ${NC}"
-echo -e "${CYAN} |  _| . || '_|| . || -_|${NC}"
-echo -e "${CYAN} |_| |___||_|  |_  ||___|${NC}"
-echo -e "${CYAN}                 |___|   ${NC}"
+echo -e "${CYAN}  ███████╗ ██████╗ ██████╗  ██████╗ ███████╗${NC}"
+echo -e "${CYAN}  ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝${NC}"
+echo -e "${CYAN}  █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ${NC}"
+echo -e "${CYAN}  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ${NC}"
+echo -e "${CYAN}  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗${NC}"
+echo -e "${CYAN}  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝${NC}"
+echo -e "${GREEN}  v1.1.0${NC}"
 echo ""
-echo -e "${GREEN}Forge v1.1.0 - Universal AI Agent Workflow${NC}"
+echo -e "${GREEN}  Universal AI Agent Workflow${NC}"
 echo ""
 
 # ============================================
