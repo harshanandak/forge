@@ -1,7 +1,7 @@
 {
   "name": "forge-workflow",
-  "version": "1.0.0",
-  "description": "9-stage TDD-first workflow for Claude Code",
+  "version": "1.1.0",
+  "description": "9-stage TDD workflow for ALL AI coding agents (Claude, Cursor, Windsurf, Kilo, OpenCode, Copilot, Cline, Roo, Aider, Continue, Antigravity)",
   "bin": {
     "forge": "./bin/forge.js"
   },
@@ -9,13 +9,23 @@
     "postinstall": "node ./bin/forge.js"
   },
   "keywords": [
-    "claude",
-    "claude-code",
-    "tdd",
+    "ai",
     "workflow",
+    "tdd",
+    "agents-md",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "kilo-code",
+    "opencode",
+    "copilot",
+    "cline",
+    "roo-code",
+    "aider",
+    "continue",
+    "antigravity",
     "development",
-    "testing",
-    "ai"
+    "testing"
   ],
   "author": "Harsha Nandak",
   "license": "MIT",
@@ -31,6 +41,12 @@
     "bin/",
     ".claude/",
     "docs/",
-    "install.sh"
+    "install.sh",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules"
   ]
 }
