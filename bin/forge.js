@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.1.3 - Universal AI Agent Workflow
+ * Forge v1.2.0 - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
  *
  * Usage:
@@ -591,6 +591,27 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 }
 
 // Detect existing project installation status
+// Helper function for yes/no prompts with validation
+async function askYesNo(question, prompt, defaultNo = true) {
+  const defaultText = defaultNo ? '[n]' : '[y]';
+  while (true) {
+    const answer = await question(`${prompt} (y/n) ${defaultText}: `);
+    const normalized = answer.trim().toLowerCase();
+
+    // Handle empty input (use default)
+    if (normalized === '') return defaultNo ? false : true;
+
+    // Accept yes variations
+    if (normalized === 'y' || normalized === 'yes') return true;
+
+    // Accept no variations
+    if (normalized === 'n' || normalized === 'no') return false;
+
+    // Invalid input - re-prompt
+    console.log('  Please enter y or n');
+  }
+}
+
 function detectProjectStatus() {
   const status = {
     type: 'fresh', // 'fresh', 'upgrade', or 'partial'
@@ -604,10 +625,10 @@ function detectProjectStatus() {
   // Determine installation type
   if (status.hasAgentsMd && status.hasClaudeCommands && status.hasDocsWorkflow) {
     status.type = 'upgrade'; // Full forge installation exists
-  } else if (status.hasAgentsMd || status.hasClaudeCommands || status.hasEnvLocal) {
-    status.type = 'partial'; // Some files exist
+  } else if (status.hasClaudeCommands || status.hasEnvLocal) {
+    status.type = 'partial'; // Agent-specific files exist (not just base files from postinstall)
   }
-  // else: 'fresh' - new installation
+  // else: 'fresh' - new installation (or just postinstall baseline with AGENTS.md)
 
   // Parse existing env vars if .env.local exists
   if (status.hasEnvLocal) {
@@ -641,8 +662,8 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
     }
     console.log('');
 
-    const reconfigure = await question('Reconfigure external services? (y/n) [n]: ');
-    if (reconfigure.toLowerCase() !== 'y' && reconfigure.toLowerCase() !== 'yes') {
+    const reconfigure = await askYesNo(question, 'Reconfigure external services?', true);
+    if (!reconfigure) {
       console.log('');
       console.log('Keeping existing configuration.');
       return;
@@ -654,9 +675,9 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('(You can also add them later to .env.local)');
   console.log('');
 
-  const configure = await question('Configure external services? (y/n): ');
+  const configure = await askYesNo(question, 'Configure external services?', false);
 
-  if (configure.toLowerCase() !== 'y' && configure.toLowerCase() !== 'yes') {
+  if (!configure) {
     console.log('');
     console.log('Skipping external services. You can configure them later by editing .env.local');
     return;
@@ -867,7 +888,7 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
   console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
   console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
-  console.log('  v1.1.3');
+  console.log('  v1.2.0');
   console.log('');
   if (subtitle) {
     console.log(`  ${subtitle}`);
@@ -876,6 +897,23 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
 
 // Minimal installation (postinstall)
 function minimalInstall() {
+  // Check if this looks like a project (has package.json)
+  const hasPackageJson = fs.existsSync(path.join(projectRoot, 'package.json'));
+
+  if (!hasPackageJson) {
+    console.log('');
+    console.log('  ✅ Forge installed successfully!');
+    console.log('');
+    console.log('  To set up in a project:');
+    console.log('    cd your-project');
+    console.log('    npx forge setup');
+    console.log('');
+    console.log('  Or specify a project directory:');
+    console.log('    npx forge setup --path ./my-project');
+    console.log('');
+    return;
+  }
+
   showBanner();
   console.log('');
 
@@ -1125,6 +1163,11 @@ async function interactiveSetup() {
 
   showBanner('Agent Configuration');
 
+  // Show target directory
+  console.log(`  Target directory: ${process.cwd()}`);
+  console.log('  (Use --path <dir> to change target directory)');
+  console.log('');
+
   // Check prerequisites first
   checkPrerequisites();
   console.log('');
@@ -1161,8 +1204,8 @@ async function interactiveSetup() {
 
   // Ask about overwriting AGENTS.md if it exists
   if (projectStatus.hasAgentsMd) {
-    const overwriteAgents = await question('Found existing AGENTS.md. Overwrite? (y/n) [n]: ');
-    if (overwriteAgents.toLowerCase() !== 'y' && overwriteAgents.toLowerCase() !== 'yes') {
+    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
+    if (!overwriteAgents) {
       skipFiles.agentsMd = true;
       console.log('  Keeping existing AGENTS.md');
     } else {
@@ -1172,8 +1215,8 @@ async function interactiveSetup() {
 
   // Ask about overwriting .claude/commands/ if it exists
   if (projectStatus.hasClaudeCommands) {
-    const overwriteCommands = await question('Found existing .claude/commands/. Overwrite? (y/n) [n]: ');
-    if (overwriteCommands.toLowerCase() !== 'y' && overwriteCommands.toLowerCase() !== 'yes') {
+    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
+    if (!overwriteCommands) {
       skipFiles.claudeCommands = true;
       console.log('  Keeping existing .claude/commands/');
     } else {
@@ -1305,7 +1348,7 @@ async function interactiveSetup() {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.3 Setup Complete!');
+  console.log('  Forge v1.2.0 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1526,7 +1569,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Final summary
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.3 Quick Setup Complete!');
+  console.log('  Forge v1.2.0 Quick Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('Next steps:');
@@ -1564,6 +1607,11 @@ async function interactiveSetupWithFlags(flags) {
 
   showBanner('Agent Configuration');
 
+  // Show target directory
+  console.log(`  Target directory: ${process.cwd()}`);
+  console.log('  (Use --path <dir> to change target directory)');
+  console.log('');
+
   // Check prerequisites first
   checkPrerequisites();
   console.log('');
@@ -1600,8 +1648,8 @@ async function interactiveSetupWithFlags(flags) {
 
   // Ask about overwriting AGENTS.md if it exists
   if (projectStatus.hasAgentsMd) {
-    const overwriteAgents = await question('Found existing AGENTS.md. Overwrite? (y/n) [n]: ');
-    if (overwriteAgents.toLowerCase() !== 'y' && overwriteAgents.toLowerCase() !== 'yes') {
+    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
+    if (!overwriteAgents) {
       skipFiles.agentsMd = true;
       console.log('  Keeping existing AGENTS.md');
     } else {
@@ -1611,8 +1659,8 @@ async function interactiveSetupWithFlags(flags) {
 
   // Ask about overwriting .claude/commands/ if it exists
   if (projectStatus.hasClaudeCommands) {
-    const overwriteCommands = await question('Found existing .claude/commands/. Overwrite? (y/n) [n]: ');
-    if (overwriteCommands.toLowerCase() !== 'y' && overwriteCommands.toLowerCase() !== 'yes') {
+    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
+    if (!overwriteCommands) {
       skipFiles.claudeCommands = true;
       console.log('  Keeping existing .claude/commands/');
     } else {
@@ -1749,7 +1797,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.3 Setup Complete!');
+  console.log('  Forge v1.2.0 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
