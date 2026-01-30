@@ -383,6 +383,59 @@ The system SHALL support optional 2FA
 
 ---
 
+## MCP Servers
+
+### Context7 - Library Documentation
+
+**Package**: `@anthropic/context7-mcp`
+**Purpose**: Up-to-date documentation and code examples for any programming library
+**Used in**: `/research` stage, any library lookup
+
+Context7 provides current documentation that may be more recent than the AI's training data.
+
+**Installation (Claude Code)**:
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/context7-mcp"]
+    }
+  }
+}
+```
+
+**Or with bunx**:
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "bunx",
+      "args": ["--bun", "@anthropic/context7-mcp"]
+    }
+  }
+}
+```
+
+**Usage**:
+```
+# The AI will automatically use Context7 when you ask about libraries
+"How do I use React Query's useMutation hook?"
+"What's the latest Next.js App Router API?"
+"Show me Supabase RLS policy examples"
+```
+
+**When to use Context7**:
+- Before implementing a library feature
+- When official docs may have changed since AI training
+- To verify API signatures and patterns
+- For current best practices
+
+---
+
 ## External Services
 
 ### Parallel AI - Web Research
