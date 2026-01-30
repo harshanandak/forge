@@ -3,8 +3,36 @@
 # https://github.com/harshanandak/forge
 #
 # Interactive installer - select only the agents you use
+#
+# Usage:
+#   ./install.sh              # Interactive mode
+#   ./install.sh --quick      # Auto-select all agents, use defaults
+#   ./install.sh --skip-external  # Skip external services configuration
 
 set -e
+
+# ============================================
+# PARSE CLI FLAGS
+# ============================================
+QUICK_MODE=false
+SKIP_EXTERNAL=false
+for arg in "$@"; do
+    case $arg in
+        --quick) QUICK_MODE=true ;;
+        --skip-external) SKIP_EXTERNAL=true ;;
+        --help|-h)
+            echo "Forge Installer"
+            echo ""
+            echo "Usage: ./install.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --quick          Auto-select all agents, use defaults for services"
+            echo "  --skip-external  Skip external services configuration"
+            echo "  --help, -h       Show this help message"
+            exit 0
+            ;;
+    esac
+done
 
 # Cleanup on error
 cleanup_on_error() {
@@ -133,27 +161,19 @@ echo -e "  ${GREEN}Package manager: $PKG_MANAGER${NC}"
 echo ""
 
 # ============================================
+# DETECT EXISTING INSTALLATION
+# ============================================
+EXISTING_INSTALL=false
+AGENTS_BACKUP_CREATED=false
+if [ -f "AGENTS.md" ] && [ -d ".claude/commands" ]; then
+    EXISTING_INSTALL=true
+    echo -e "${YELLOW}Found existing Forge installation.${NC}"
+    echo ""
+fi
+
+# ============================================
 # AGENT SELECTION
 # ============================================
-echo -e "${YELLOW}Which AI coding agents do you use?${NC}"
-echo -e "${BLUE}(Enter numbers separated by spaces, or 'all' for everything)${NC}"
-echo ""
-echo "  1) Claude Code          - Anthropic's CLI agent"
-echo "  2) Cursor               - AI-first code editor"
-echo "  3) Windsurf             - Codeium's agentic IDE"
-echo "  4) Kilo Code            - VS Code extension"
-echo "  5) Google Antigravity   - Google's agent IDE"
-echo "  6) GitHub Copilot       - GitHub's AI assistant"
-echo "  7) Continue             - Open-source AI assistant"
-echo "  8) OpenCode             - Open-source agent"
-echo "  9) Cline                - VS Code agent extension"
-echo " 10) Roo Code             - Cline fork with modes"
-echo " 11) Aider                - Terminal-based agent"
-echo ""
-echo -e "  ${GREEN}all) Install for all agents${NC}"
-echo ""
-
-read -p "Your selection (e.g., '1 2 3' or 'all'): " selection
 
 # Parse selection
 INSTALL_CLAUDE=false
@@ -172,7 +192,9 @@ INSTALL_AIDER=false
 CONTEXT7_INSTALLED_CLAUDE=false
 CONTEXT7_INSTALLED_CONTINUE=false
 
-if [[ "$selection" == "all" ]]; then
+if [ "$QUICK_MODE" = true ]; then
+    # Quick mode: auto-select all agents
+    echo -e "${YELLOW}Quick mode: Installing for all agents...${NC}"
     INSTALL_CLAUDE=true
     INSTALL_CURSOR=true
     INSTALL_WINDSURF=true
@@ -185,21 +207,56 @@ if [[ "$selection" == "all" ]]; then
     INSTALL_ROO=true
     INSTALL_AIDER=true
 else
-    for num in $selection; do
-        case $num in
-            1) INSTALL_CLAUDE=true ;;
-            2) INSTALL_CURSOR=true ;;
-            3) INSTALL_WINDSURF=true ;;
-            4) INSTALL_KILOCODE=true ;;
-            5) INSTALL_ANTIGRAVITY=true ;;
-            6) INSTALL_COPILOT=true ;;
-            7) INSTALL_CONTINUE=true ;;
-            8) INSTALL_OPENCODE=true ;;
-            9) INSTALL_CLINE=true ;;
-            10) INSTALL_ROO=true ;;
-            11) INSTALL_AIDER=true ;;
-        esac
-    done
+    # Interactive mode: prompt user for selection
+    echo -e "${YELLOW}Which AI coding agents do you use?${NC}"
+    echo -e "${BLUE}(Enter numbers separated by spaces, or 'all' for everything)${NC}"
+    echo ""
+    echo "  1) Claude Code          - Anthropic's CLI agent"
+    echo "  2) Cursor               - AI-first code editor"
+    echo "  3) Windsurf             - Codeium's agentic IDE"
+    echo "  4) Kilo Code            - VS Code extension"
+    echo "  5) Google Antigravity   - Google's agent IDE"
+    echo "  6) GitHub Copilot       - GitHub's AI assistant"
+    echo "  7) Continue             - Open-source AI assistant"
+    echo "  8) OpenCode             - Open-source agent"
+    echo "  9) Cline                - VS Code agent extension"
+    echo " 10) Roo Code             - Cline fork with modes"
+    echo " 11) Aider                - Terminal-based agent"
+    echo ""
+    echo -e "  ${GREEN}all) Install for all agents${NC}"
+    echo ""
+
+    read -p "Your selection (e.g., '1 2 3' or 'all'): " selection
+
+    if [[ "$selection" == "all" ]]; then
+        INSTALL_CLAUDE=true
+        INSTALL_CURSOR=true
+        INSTALL_WINDSURF=true
+        INSTALL_KILOCODE=true
+        INSTALL_ANTIGRAVITY=true
+        INSTALL_COPILOT=true
+        INSTALL_CONTINUE=true
+        INSTALL_OPENCODE=true
+        INSTALL_CLINE=true
+        INSTALL_ROO=true
+        INSTALL_AIDER=true
+    else
+        for num in $selection; do
+            case $num in
+                1) INSTALL_CLAUDE=true ;;
+                2) INSTALL_CURSOR=true ;;
+                3) INSTALL_WINDSURF=true ;;
+                4) INSTALL_KILOCODE=true ;;
+                5) INSTALL_ANTIGRAVITY=true ;;
+                6) INSTALL_COPILOT=true ;;
+                7) INSTALL_CONTINUE=true ;;
+                8) INSTALL_OPENCODE=true ;;
+                9) INSTALL_CLINE=true ;;
+                10) INSTALL_ROO=true ;;
+                11) INSTALL_AIDER=true ;;
+            esac
+        done
+    fi
 fi
 
 echo ""
@@ -211,6 +268,13 @@ echo ""
 # ============================================
 echo "Creating core directories..."
 mkdir -p docs/planning docs/research
+
+# Backup existing AGENTS.md before overwriting
+if [ -f "AGENTS.md" ]; then
+    cp AGENTS.md AGENTS.md.backup
+    AGENTS_BACKUP_CREATED=true
+    echo -e "  ${YELLOW}Backed up: AGENTS.md -> AGENTS.md.backup${NC}"
+fi
 
 # Download universal AGENTS.md
 echo "Downloading AGENTS.md (universal standard)..."
@@ -671,16 +735,29 @@ fi
 # ============================================
 # EXTERNAL SERVICES CONFIGURATION
 # ============================================
-echo ""
-echo -e "${YELLOW}=============================================="
-echo -e "  EXTERNAL SERVICES (Optional)"
-echo -e "==============================================${NC}"
-echo ""
-echo "Would you like to configure external services?"
-echo "(You can also add them later to .env.local)"
-echo ""
 
-read -p "Configure external services? (y/n): " configure_services
+# Skip external services if flag is set
+if [ "$SKIP_EXTERNAL" = true ]; then
+    echo ""
+    echo -e "${YELLOW}Skipping external services configuration (--skip-external)${NC}"
+    echo "You can configure them later by editing .env.local"
+    configure_services="n"
+elif [ "$QUICK_MODE" = true ]; then
+    # Quick mode: use defaults without prompting
+    echo ""
+    echo -e "${YELLOW}Quick mode: Using default service configuration...${NC}"
+    configure_services="y"
+else
+    echo ""
+    echo -e "${YELLOW}=============================================="
+    echo -e "  EXTERNAL SERVICES (Optional)"
+    echo -e "==============================================${NC}"
+    echo ""
+    echo "Would you like to configure external services?"
+    echo "(You can also add them later to .env.local)"
+    echo ""
+    read -p "Configure external services? (y/n): " configure_services
+fi
 
 if [[ "$configure_services" == "y" || "$configure_services" == "Y" || "$configure_services" == "yes" ]]; then
 
@@ -696,23 +773,28 @@ ENV_HEADER
     # ============================================
     # CODE REVIEW TOOL SELECTION
     # ============================================
-    echo ""
-    echo -e "${CYAN}Code Review Tool${NC}"
-    echo "Select your code review integration:"
-    echo ""
-    echo -e "  ${GREEN}1)${NC} GitHub Code Quality (FREE, built-in) ${GREEN}[RECOMMENDED]${NC}"
-    echo "     Zero setup - uses GitHub's built-in code quality features"
-    echo ""
-    echo -e "  ${GREEN}2)${NC} CodeRabbit (FREE for open source)"
-    echo "     AI-powered reviews - install GitHub App at https://coderabbit.ai"
-    echo ""
-    echo "  3) Greptile (Paid - \$99+/mo)"
-    echo "     Enterprise code review - https://greptile.com"
-    echo ""
-    echo "  4) Skip code review integration"
-    echo ""
-    read -p "Select [1]: " code_review_choice
-    code_review_choice=${code_review_choice:-1}
+    if [ "$QUICK_MODE" = true ]; then
+        # Quick mode: use default (option 1)
+        code_review_choice=1
+    else
+        echo ""
+        echo -e "${CYAN}Code Review Tool${NC}"
+        echo "Select your code review integration:"
+        echo ""
+        echo -e "  ${GREEN}1)${NC} GitHub Code Quality (FREE, built-in) ${GREEN}[RECOMMENDED]${NC}"
+        echo "     Zero setup - uses GitHub's built-in code quality features"
+        echo ""
+        echo -e "  ${GREEN}2)${NC} CodeRabbit (FREE for open source)"
+        echo "     AI-powered reviews - install GitHub App at https://coderabbit.ai"
+        echo ""
+        echo "  3) Greptile (Paid - \$99+/mo)"
+        echo "     Enterprise code review - https://greptile.com"
+        echo ""
+        echo "  4) Skip code review integration"
+        echo ""
+        read -p "Select [1]: " code_review_choice
+        code_review_choice=${code_review_choice:-1}
+    fi
 
     case $code_review_choice in
         1)
@@ -747,23 +829,28 @@ ENV_HEADER
     # ============================================
     # CODE QUALITY TOOL SELECTION
     # ============================================
-    echo ""
-    echo -e "${CYAN}Code Quality Tool${NC}"
-    echo "Select your code quality/security scanner:"
-    echo ""
-    echo -e "  ${GREEN}1)${NC} ESLint only (FREE, built-in) ${GREEN}[RECOMMENDED]${NC}"
-    echo "     No external server required - uses project's linting"
-    echo ""
-    echo "  2) SonarCloud (50k LoC free, cloud-hosted)"
-    echo "     Get token: https://sonarcloud.io/account/security"
-    echo ""
-    echo "  3) SonarQube Community (FREE, self-hosted, unlimited LoC)"
-    echo "     Run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community"
-    echo ""
-    echo "  4) Skip code quality integration"
-    echo ""
-    read -p "Select [1]: " code_quality_choice
-    code_quality_choice=${code_quality_choice:-1}
+    if [ "$QUICK_MODE" = true ]; then
+        # Quick mode: use default (option 1)
+        code_quality_choice=1
+    else
+        echo ""
+        echo -e "${CYAN}Code Quality Tool${NC}"
+        echo "Select your code quality/security scanner:"
+        echo ""
+        echo -e "  ${GREEN}1)${NC} ESLint only (FREE, built-in) ${GREEN}[RECOMMENDED]${NC}"
+        echo "     No external server required - uses project's linting"
+        echo ""
+        echo "  2) SonarCloud (50k LoC free, cloud-hosted)"
+        echo "     Get token: https://sonarcloud.io/account/security"
+        echo ""
+        echo "  3) SonarQube Community (FREE, self-hosted, unlimited LoC)"
+        echo "     Run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community"
+        echo ""
+        echo "  4) Skip code quality integration"
+        echo ""
+        read -p "Select [1]: " code_quality_choice
+        code_quality_choice=${code_quality_choice:-1}
+    fi
 
     case $code_quality_choice in
         1)
@@ -813,18 +900,23 @@ ENV_HEADER
     # ============================================
     # RESEARCH TOOL SELECTION
     # ============================================
-    echo ""
-    echo -e "${CYAN}Research Tool${NC}"
-    echo "Select your research tool for /research stage:"
-    echo ""
-    echo -e "  ${GREEN}1)${NC} Manual research only ${GREEN}[DEFAULT]${NC}"
-    echo "     Use web browser and codebase exploration"
-    echo ""
-    echo "  2) Parallel AI (comprehensive web research)"
-    echo "     Get key: https://platform.parallel.ai"
-    echo ""
-    read -p "Select [1]: " research_choice
-    research_choice=${research_choice:-1}
+    if [ "$QUICK_MODE" = true ]; then
+        # Quick mode: use default (option 1)
+        research_choice=1
+    else
+        echo ""
+        echo -e "${CYAN}Research Tool${NC}"
+        echo "Select your research tool for /research stage:"
+        echo ""
+        echo -e "  ${GREEN}1)${NC} Manual research only ${GREEN}[DEFAULT]${NC}"
+        echo "     Use web browser and codebase exploration"
+        echo ""
+        echo "  2) Parallel AI (comprehensive web research)"
+        echo "     Get key: https://platform.parallel.ai"
+        echo ""
+        read -p "Select [1]: " research_choice
+        research_choice=${research_choice:-1}
+    fi
 
     case $research_choice in
         2)
@@ -916,6 +1008,18 @@ echo -e "${GREEN}=============================================="
 echo -e "  Forge v1.1.0 Setup Complete!"
 echo -e "==============================================${NC}"
 echo ""
+
+# Show backup notification if created
+if [ "$AGENTS_BACKUP_CREATED" = true ]; then
+    echo -e "${YELLOW}Note: Previous AGENTS.md backed up to AGENTS.md.backup${NC}"
+    echo ""
+fi
+
+# Show existing installation upgrade notice
+if [ "$EXISTING_INSTALL" = true ]; then
+    echo -e "${GREEN}Existing installation upgraded successfully.${NC}"
+    echo ""
+fi
 
 # Show what was installed
 echo "Installed for:"

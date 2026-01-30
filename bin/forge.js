@@ -10,9 +10,22 @@
  *   npx forge setup --all       -> Install for all agents
  *   npx forge setup --agents claude,cursor,windsurf
  *
+ * CLI Flags:
+ *   --quick, -q          Use all defaults, minimal prompts
+ *   --skip-external      Skip external services configuration
+ *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
+ *   --all                Install for all available agents
+ *   --help, -h           Show help message
+ *
+ * Examples:
+ *   npx forge setup --quick                    # All defaults, no prompts
+ *   npx forge setup --agents claude cursor     # Just these agents
+ *   npx forge setup --skip-external            # No service prompts
+ *   npx forge setup --agents claude --quick    # Quick + specific agent
+ *
  * Also works with bun:
  *   bun add forge-workflow
- *   bunx forge setup
+ *   bunx forge setup --quick
  */
 
 const fs = require('fs');
@@ -477,27 +490,52 @@ function readEnvFile() {
   return '';
 }
 
-// Write or update .env.local
-function writeEnvTokens(tokens) {
+// Parse .env.local and return key-value pairs
+function parseEnvFile() {
+  const content = readEnvFile();
+  const lines = content.split(/\r?\n/);
+  const vars = {};
+  lines.forEach(line => {
+    const match = line.match(/^([A-Z_]+)=(.*)$/);
+    if (match) {
+      vars[match[1]] = match[2];
+    }
+  });
+  return vars;
+}
+
+// Write or update .env.local - PRESERVES existing values
+function writeEnvTokens(tokens, preserveExisting = true) {
   const envPath = path.join(projectRoot, '.env.local');
   let content = readEnvFile();
 
   // Parse existing content (handle both CRLF and LF line endings)
   const lines = content.split(/\r?\n/);
   const existingVars = {};
+  const existingKeys = new Set();
   lines.forEach(line => {
     const match = line.match(/^([A-Z_]+)=/);
     if (match) {
       existingVars[match[1]] = line;
+      existingKeys.add(match[1]);
     }
   });
 
-  // Add/update tokens
+  // Track what was added vs preserved
   let added = [];
+  let preserved = [];
+
+  // Add/update tokens - PRESERVE existing values if preserveExisting is true
   Object.entries(tokens).forEach(([key, value]) => {
     if (value && value.trim()) {
-      existingVars[key] = `${key}=${value.trim()}`;
-      added.push(key);
+      if (preserveExisting && existingKeys.has(key)) {
+        // Keep existing value, don't overwrite
+        preserved.push(key);
+      } else {
+        // Add new token
+        existingVars[key] = `${key}=${value.trim()}`;
+        added.push(key);
+      }
     }
   });
 
@@ -547,16 +585,69 @@ function writeEnvTokens(tokens) {
     }
   } catch (err) {}
 
-  return added;
+  return { added, preserved };
+}
+
+// Detect existing project installation status
+function detectProjectStatus() {
+  const status = {
+    type: 'fresh', // 'fresh', 'upgrade', or 'partial'
+    hasAgentsMd: fs.existsSync(path.join(projectRoot, 'AGENTS.md')),
+    hasClaudeCommands: fs.existsSync(path.join(projectRoot, '.claude/commands')),
+    hasEnvLocal: fs.existsSync(path.join(projectRoot, '.env.local')),
+    hasDocsWorkflow: fs.existsSync(path.join(projectRoot, 'docs/WORKFLOW.md')),
+    existingEnvVars: {}
+  };
+
+  // Determine installation type
+  if (status.hasAgentsMd && status.hasClaudeCommands && status.hasDocsWorkflow) {
+    status.type = 'upgrade'; // Full forge installation exists
+  } else if (status.hasAgentsMd || status.hasClaudeCommands || status.hasEnvLocal) {
+    status.type = 'partial'; // Some files exist
+  }
+  // else: 'fresh' - new installation
+
+  // Parse existing env vars if .env.local exists
+  if (status.hasEnvLocal) {
+    status.existingEnvVars = parseEnvFile();
+  }
+
+  return status;
 }
 
 // Configure external services interactively
-async function configureExternalServices(rl, question, selectedAgents = []) {
+async function configureExternalServices(rl, question, selectedAgents = [], projectStatus = null) {
   console.log('');
   console.log('==============================================');
   console.log('  External Services Configuration');
   console.log('==============================================');
   console.log('');
+
+  // Check if external services are already configured
+  const existingEnvVars = projectStatus?.existingEnvVars || parseEnvFile();
+  const hasCodeReviewTool = existingEnvVars.CODE_REVIEW_TOOL;
+  const hasCodeQualityTool = existingEnvVars.CODE_QUALITY_TOOL;
+  const hasExistingConfig = hasCodeReviewTool || hasCodeQualityTool;
+
+  if (hasExistingConfig) {
+    console.log('External services already configured:');
+    if (hasCodeReviewTool) {
+      console.log(`  - CODE_REVIEW_TOOL: ${hasCodeReviewTool}`);
+    }
+    if (hasCodeQualityTool) {
+      console.log(`  - CODE_QUALITY_TOOL: ${hasCodeQualityTool}`);
+    }
+    console.log('');
+
+    const reconfigure = await question('Reconfigure external services? (y/n) [n]: ');
+    if (reconfigure.toLowerCase() !== 'y' && reconfigure.toLowerCase() !== 'yes') {
+      console.log('');
+      console.log('Keeping existing configuration.');
+      return;
+    }
+    console.log('');
+  }
+
   console.log('Would you like to configure external services?');
   console.log('(You can also add them later to .env.local)');
   console.log('');
@@ -743,10 +834,24 @@ async function configureExternalServices(rl, question, selectedAgents = []) {
   // Save package manager preference
   tokens['PKG_MANAGER'] = PKG_MANAGER;
 
-  // Write all tokens to .env.local
-  const added = writeEnvTokens(tokens);
+  // Write all tokens to .env.local (preserving existing values)
+  const { added, preserved } = writeEnvTokens(tokens, true);
 
   console.log('');
+  if (preserved.length > 0) {
+    console.log('Preserved existing values:');
+    preserved.forEach(key => {
+      console.log(`  - ${key} already configured - keeping existing value`);
+    });
+    console.log('');
+  }
+  if (added.length > 0) {
+    console.log('Added new configuration:');
+    added.forEach(key => {
+      console.log(`  - ${key}`);
+    });
+    console.log('');
+  }
   console.log('Configuration saved to .env.local');
   console.log('Note: .env.local has been added to .gitignore');
 }
@@ -767,10 +872,15 @@ function minimalInstall() {
   ensureDir('docs/planning');
   ensureDir('docs/research');
 
-  // Copy AGENTS.md
-  const agentsSrc = path.join(packageDir, 'AGENTS.md');
-  if (copyFile(agentsSrc, 'AGENTS.md')) {
-    console.log('  Created: AGENTS.md (universal standard)');
+  // Copy AGENTS.md (only if not exists - preserve user customizations in minimal install)
+  const agentsPath = path.join(projectRoot, 'AGENTS.md');
+  if (fs.existsSync(agentsPath)) {
+    console.log('  Skipped: AGENTS.md (already exists)');
+  } else {
+    const agentsSrc = path.join(packageDir, 'AGENTS.md');
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Created: AGENTS.md (universal standard)');
+    }
   }
 
   // Copy documentation
@@ -816,7 +926,7 @@ function minimalInstall() {
 }
 
 // Setup specific agent
-function setupAgent(agentKey, claudeCommands) {
+function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
   const agent = AGENTS[agentKey];
   if (!agent) return;
 
@@ -827,12 +937,16 @@ function setupAgent(agentKey, claudeCommands) {
 
   // Handle Claude Code specifically (downloads commands)
   if (agentKey === 'claude') {
-    // Copy commands from package
-    COMMANDS.forEach(cmd => {
-      const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
-      copyFile(src, `.claude/commands/${cmd}.md`);
-    });
-    console.log('  Copied: 9 workflow commands');
+    // Copy commands from package (unless skipped)
+    if (skipFiles.claudeCommands) {
+      console.log('  Skipped: .claude/commands/ (keeping existing)');
+    } else {
+      COMMANDS.forEach(cmd => {
+        const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
+        copyFile(src, `.claude/commands/${cmd}.md`);
+      });
+      console.log('  Copied: 9 workflow commands');
+    }
 
     // Copy rules
     const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
@@ -1008,6 +1122,62 @@ async function interactiveSetup() {
   console.log('');
 
   // =============================================
+  // PROJECT DETECTION
+  // =============================================
+  const projectStatus = detectProjectStatus();
+
+  if (projectStatus.type !== 'fresh') {
+    console.log('==============================================');
+    console.log('  Existing Installation Detected');
+    console.log('==============================================');
+    console.log('');
+
+    if (projectStatus.type === 'upgrade') {
+      console.log('Found existing Forge installation:');
+    } else {
+      console.log('Found partial installation:');
+    }
+
+    if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
+    if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
+    if (projectStatus.hasEnvLocal) console.log('  - .env.local');
+    if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
+    console.log('');
+  }
+
+  // Track which files to skip based on user choices
+  const skipFiles = {
+    agentsMd: false,
+    claudeCommands: false
+  };
+
+  // Ask about overwriting AGENTS.md if it exists
+  if (projectStatus.hasAgentsMd) {
+    const overwriteAgents = await question('Found existing AGENTS.md. Overwrite? (y/n) [n]: ');
+    if (overwriteAgents.toLowerCase() !== 'y' && overwriteAgents.toLowerCase() !== 'yes') {
+      skipFiles.agentsMd = true;
+      console.log('  Keeping existing AGENTS.md');
+    } else {
+      console.log('  Will overwrite AGENTS.md');
+    }
+  }
+
+  // Ask about overwriting .claude/commands/ if it exists
+  if (projectStatus.hasClaudeCommands) {
+    const overwriteCommands = await question('Found existing .claude/commands/. Overwrite? (y/n) [n]: ');
+    if (overwriteCommands.toLowerCase() !== 'y' && overwriteCommands.toLowerCase() !== 'yes') {
+      skipFiles.claudeCommands = true;
+      console.log('  Keeping existing .claude/commands/');
+    } else {
+      console.log('  Will overwrite .claude/commands/');
+    }
+  }
+
+  if (projectStatus.type !== 'fresh') {
+    console.log('');
+  }
+
+  // =============================================
   // STEP 1: Agent Selection
   // =============================================
   console.log('STEP 1: Select AI Coding Agents');
@@ -1063,14 +1233,24 @@ async function interactiveSetup() {
   console.log('');
   console.log('Installing Forge workflow...');
 
+  // Copy AGENTS.md unless skipped
+  if (skipFiles.agentsMd) {
+    console.log('  Skipped: AGENTS.md (keeping existing)');
+  } else {
+    const agentsSrc = path.join(packageDir, 'AGENTS.md');
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Created: AGENTS.md (universal standard)');
+    }
+  }
+
   // Load Claude commands if needed
   let claudeCommands = {};
   if (selectedAgents.includes('claude') || selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
     // First ensure Claude is set up
     if (selectedAgents.includes('claude')) {
-      setupAgent('claude', null);
+      setupAgent('claude', null, skipFiles);
     }
-    // Then load the commands
+    // Then load the commands (from existing or newly created)
     COMMANDS.forEach(cmd => {
       const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
       const content = readFile(cmdPath);
@@ -1086,7 +1266,7 @@ async function interactiveSetup() {
     const agent = AGENTS[agentKey];
     console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
     if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands);
+      setupAgent(agentKey, claudeCommands, skipFiles);
     }
   });
 
@@ -1107,7 +1287,7 @@ async function interactiveSetup() {
   console.log('STEP 2: External Services (Optional)');
   console.log('=====================================');
 
-  await configureExternalServices(rl, question, selectedAgents);
+  await configureExternalServices(rl, question, selectedAgents, projectStatus);
 
   rl.close();
 
@@ -1153,18 +1333,127 @@ async function interactiveSetup() {
   console.log('');
 }
 
-// CLI setup with args
-function setupWithArgs(agentList) {
+// Parse CLI flags
+function parseFlags() {
+  const flags = {
+    quick: false,
+    skipExternal: false,
+    agents: null,
+    all: false,
+    help: false
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--quick' || arg === '-q') {
+      flags.quick = true;
+    } else if (arg === '--skip-external' || arg === '--skip-services') {
+      flags.skipExternal = true;
+    } else if (arg === '--all') {
+      flags.all = true;
+    } else if (arg === '--help' || arg === '-h') {
+      flags.help = true;
+    } else if (arg === '--agents') {
+      // --agents claude cursor format
+      const agentList = [];
+      for (let j = i + 1; j < args.length; j++) {
+        if (args[j].startsWith('-')) break;
+        agentList.push(args[j]);
+      }
+      if (agentList.length > 0) {
+        flags.agents = agentList.join(',');
+      }
+    } else if (arg.startsWith('--agents=')) {
+      // --agents=claude,cursor format
+      flags.agents = arg.replace('--agents=', '');
+    }
+  }
+
+  return flags;
+}
+
+// Validate agent names
+function validateAgents(agentList) {
+  const requested = agentList.split(',').map(a => a.trim().toLowerCase()).filter(Boolean);
+  const valid = requested.filter(a => AGENTS[a]);
+  const invalid = requested.filter(a => !AGENTS[a]);
+
+  if (invalid.length > 0) {
+    console.log(`  Warning: Unknown agents ignored: ${invalid.join(', ')}`);
+    console.log(`  Available agents: ${Object.keys(AGENTS).join(', ')}`);
+  }
+
+  return valid;
+}
+
+// Show help text
+function showHelp() {
   console.log('');
-  console.log('Forge v1.1.0 - Installing for specified agents...');
+  console.log('  ___                   ');
+  console.log(' |  _|___  _ _  ___  ___ ');
+  console.log(' |  _| . || \'_|| . || -_|');
+  console.log(' |_| |___||_|  |_  ||___|');
+  console.log('                 |___|   ');
+  console.log('');
+  console.log('Forge v1.1.0 - Universal AI Agent Workflow');
+  console.log('');
+  console.log('Usage:');
+  console.log('  npx forge setup [options]     Interactive agent configuration');
+  console.log('  npx forge                     Minimal install (AGENTS.md + docs)');
+  console.log('');
+  console.log('Options:');
+  console.log('  --quick, -q          Use all defaults, minimal prompts');
+  console.log('                       Auto-selects: all agents, GitHub Code Quality, ESLint');
+  console.log('  --skip-external      Skip external services configuration');
+  console.log('  --agents <list>      Specify agents directly (skip selection prompt)');
+  console.log('                       Accepts: --agents claude cursor');
+  console.log('                                --agents=claude,cursor');
+  console.log('  --all                Install for all available agents');
+  console.log('  --help, -h           Show this help message');
+  console.log('');
+  console.log('Available agents:');
+  Object.keys(AGENTS).forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  ${key.padEnd(14)} ${agent.name.padEnd(20)} ${agent.description}`);
+  });
+  console.log('');
+  console.log('Examples:');
+  console.log('  npx forge setup                          # Interactive setup');
+  console.log('  npx forge setup --quick                  # All defaults, no prompts');
+  console.log('  npx forge setup --agents claude cursor   # Just these agents');
+  console.log('  npx forge setup --agents=claude,cursor   # Same, different syntax');
+  console.log('  npx forge setup --skip-external          # No service configuration');
+  console.log('  npx forge setup --agents claude --quick  # Quick + specific agent');
+  console.log('  npx forge setup --all --skip-external    # All agents, no services');
+  console.log('');
+  console.log('Also works with bun:');
+  console.log('  bunx forge setup --quick');
+  console.log('');
+}
+
+// Quick setup with defaults
+async function quickSetup(selectedAgents, skipExternal) {
+  console.log('');
+  console.log('  ___                   ');
+  console.log(' |  _|___  _ _  ___  ___ ');
+  console.log(' |  _| . || \'_|| . || -_|');
+  console.log(' |_| |___||_|  |_  ||___|');
+  console.log('                 |___|   ');
+  console.log('');
+  console.log('Forge v1.1.0 - Quick Setup');
+  console.log('');
+  console.log('Quick mode: Using defaults...');
   console.log('');
 
-  const selectedAgents = agentList.split(',').map(a => a.trim().toLowerCase()).filter(a => AGENTS[a]);
+  // Check prerequisites
+  checkPrerequisites();
+  console.log('');
 
-  if (selectedAgents.length === 0) {
-    console.log('No valid agents specified.');
-    console.log('Available agents:', Object.keys(AGENTS).join(', '));
-    return;
+  // Copy AGENTS.md
+  const agentsSrc = path.join(packageDir, 'AGENTS.md');
+  if (copyFile(agentsSrc, 'AGENTS.md')) {
+    console.log('  Created: AGENTS.md (universal standard)');
   }
 
   // Load Claude commands if needed
@@ -1183,36 +1472,422 @@ function setupWithArgs(agentList) {
     });
   }
 
-  selectedAgents.forEach(agentKey => {
+  // Setup each selected agent
+  const totalAgents = selectedAgents.length;
+  selectedAgents.forEach((agentKey, index) => {
+    const agent = AGENTS[agentKey];
+    console.log(`[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
     if (agentKey !== 'claude') {
       setupAgent(agentKey, claudeCommands);
     }
   });
 
   console.log('');
-  console.log('Done! Get started with: /status');
+  console.log('Agent configuration complete!');
+  console.log('');
+  console.log('Installed for:');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  * ${agent.name}`);
+  });
+
+  // Configure external services with defaults (unless skipped)
+  if (!skipExternal) {
+    console.log('');
+    console.log('Configuring default services...');
+    console.log('');
+
+    const tokens = {
+      CODE_REVIEW_TOOL: 'github-code-quality',
+      CODE_QUALITY_TOOL: 'eslint',
+      PKG_MANAGER: PKG_MANAGER
+    };
+
+    writeEnvTokens(tokens);
+
+    console.log('  * Code Review: GitHub Code Quality (FREE)');
+    console.log('  * Code Quality: ESLint (built-in)');
+    console.log('');
+    console.log('Configuration saved to .env.local');
+  } else {
+    console.log('');
+    console.log('Skipping external services configuration...');
+  }
+
+  // Final summary
+  console.log('');
+  console.log('==============================================');
+  console.log('  Forge v1.1.0 Quick Setup Complete!');
+  console.log('==============================================');
+  console.log('');
+  console.log('Next steps:');
+  console.log('  1. Start with: /status');
+  console.log('  2. Read the guide: docs/WORKFLOW.md');
+  console.log('');
+  console.log('Happy shipping!');
+  console.log('');
+}
+
+// Interactive setup with flag support
+async function interactiveSetupWithFlags(flags) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  // Handle Ctrl+C gracefully
+  rl.on('close', () => {
+    console.log('\n\nSetup cancelled.');
+    process.exit(0);
+  });
+
+  // Handle input errors
+  rl.on('error', (err) => {
+    console.error('Input error:', err.message);
+    process.exit(1);
+  });
+
+  const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
+
+  console.log('');
+  console.log('  ___                   ');
+  console.log(' |  _|___  _ _  ___  ___ ');
+  console.log(' |  _| . || \'_|| . || -_|');
+  console.log(' |_| |___||_|  |_  ||___|');
+  console.log('                 |___|   ');
+  console.log('');
+  console.log('Forge v1.1.0 - Agent Configuration');
+
+  // Check prerequisites first
+  checkPrerequisites();
+  console.log('');
+
+  // =============================================
+  // PROJECT DETECTION
+  // =============================================
+  const projectStatus = detectProjectStatus();
+
+  if (projectStatus.type !== 'fresh') {
+    console.log('==============================================');
+    console.log('  Existing Installation Detected');
+    console.log('==============================================');
+    console.log('');
+
+    if (projectStatus.type === 'upgrade') {
+      console.log('Found existing Forge installation:');
+    } else {
+      console.log('Found partial installation:');
+    }
+
+    if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
+    if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
+    if (projectStatus.hasEnvLocal) console.log('  - .env.local');
+    if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
+    console.log('');
+  }
+
+  // Track which files to skip based on user choices
+  const skipFiles = {
+    agentsMd: false,
+    claudeCommands: false
+  };
+
+  // Ask about overwriting AGENTS.md if it exists
+  if (projectStatus.hasAgentsMd) {
+    const overwriteAgents = await question('Found existing AGENTS.md. Overwrite? (y/n) [n]: ');
+    if (overwriteAgents.toLowerCase() !== 'y' && overwriteAgents.toLowerCase() !== 'yes') {
+      skipFiles.agentsMd = true;
+      console.log('  Keeping existing AGENTS.md');
+    } else {
+      console.log('  Will overwrite AGENTS.md');
+    }
+  }
+
+  // Ask about overwriting .claude/commands/ if it exists
+  if (projectStatus.hasClaudeCommands) {
+    const overwriteCommands = await question('Found existing .claude/commands/. Overwrite? (y/n) [n]: ');
+    if (overwriteCommands.toLowerCase() !== 'y' && overwriteCommands.toLowerCase() !== 'yes') {
+      skipFiles.claudeCommands = true;
+      console.log('  Keeping existing .claude/commands/');
+    } else {
+      console.log('  Will overwrite .claude/commands/');
+    }
+  }
+
+  if (projectStatus.type !== 'fresh') {
+    console.log('');
+  }
+
+  // =============================================
+  // STEP 1: Agent Selection
+  // =============================================
+  console.log('STEP 1: Select AI Coding Agents');
+  console.log('================================');
+  console.log('');
+  console.log('Which AI coding agents do you use?');
+  console.log('(Enter numbers separated by spaces, or "all")');
+  console.log('');
+
+  const agentKeys = Object.keys(AGENTS);
+  agentKeys.forEach((key, index) => {
+    const agent = AGENTS[key];
+    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
+  });
+  console.log('');
+  console.log('  all) Install for all agents');
+  console.log('');
+
+  let selectedAgents = [];
+
+  // Loop until valid input is provided
+  while (selectedAgents.length === 0) {
+    const answer = await question('Your selection: ');
+
+    // Handle empty input - reprompt
+    if (!answer || !answer.trim()) {
+      console.log('  Please enter at least one agent number or "all".');
+      continue;
+    }
+
+    if (answer.toLowerCase() === 'all') {
+      selectedAgents = agentKeys;
+    } else {
+      const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+
+      // Validate numbers are in range
+      const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
+      const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
+
+      if (invalidNums.length > 0) {
+        console.log(`  Warning: Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
+      }
+
+      // Deduplicate selected agents using Set
+      selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
+    }
+
+    if (selectedAgents.length === 0) {
+      console.log('  No valid agents selected. Please try again.');
+    }
+  }
+
+  console.log('');
+  console.log('Installing Forge workflow...');
+
+  // Copy AGENTS.md unless skipped
+  if (skipFiles.agentsMd) {
+    console.log('  Skipped: AGENTS.md (keeping existing)');
+  } else {
+    const agentsSrc = path.join(packageDir, 'AGENTS.md');
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Created: AGENTS.md (universal standard)');
+    }
+  }
+
+  // Load Claude commands if needed
+  let claudeCommands = {};
+  if (selectedAgents.includes('claude') || selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
+    // First ensure Claude is set up
+    if (selectedAgents.includes('claude')) {
+      setupAgent('claude', null, skipFiles);
+    }
+    // Then load the commands (from existing or newly created)
+    COMMANDS.forEach(cmd => {
+      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+      const content = readFile(cmdPath);
+      if (content) {
+        claudeCommands[`${cmd}.md`] = content;
+      }
+    });
+  }
+
+  // Setup each selected agent with progress indication
+  const totalAgents = selectedAgents.length;
+  selectedAgents.forEach((agentKey, index) => {
+    const agent = AGENTS[agentKey];
+    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
+    if (agentKey !== 'claude') { // Claude already done above
+      setupAgent(agentKey, claudeCommands, skipFiles);
+    }
+  });
+
+  // Agent installation success
+  console.log('');
+  console.log('Agent configuration complete!');
+  console.log('');
+  console.log('Installed for:');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  * ${agent.name}`);
+  });
+
+  // =============================================
+  // STEP 2: External Services Configuration
+  // =============================================
+  if (!flags.skipExternal) {
+    console.log('');
+    console.log('STEP 2: External Services (Optional)');
+    console.log('=====================================');
+
+    await configureExternalServices(rl, question, selectedAgents, projectStatus);
+  } else {
+    console.log('');
+    console.log('Skipping external services configuration...');
+  }
+
+  rl.close();
+
+  // =============================================
+  // Final Summary
+  // =============================================
+  console.log('');
+  console.log('==============================================');
+  console.log('  Forge v1.1.0 Setup Complete!');
+  console.log('==============================================');
+  console.log('');
+  console.log('What\'s installed:');
+  console.log('  - AGENTS.md (universal instructions)');
+  console.log('  - docs/WORKFLOW.md (full workflow guide)');
+  console.log('  - docs/research/TEMPLATE.md (research template)');
+  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    if (agent.linkFile) {
+      console.log(`  - ${agent.linkFile} (${agent.name})`);
+    }
+    if (agent.hasCommands) {
+      console.log(`  - .claude/commands/ (9 workflow commands)`);
+    }
+    if (agent.hasSkill) {
+      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+      if (skillDir) {
+        console.log(`  - ${skillDir}/SKILL.md`);
+      }
+    }
+  });
+  console.log('');
+  console.log('Next steps:');
+  console.log(`  1. Install optional tools:`);
+  console.log(`     ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  console.log(`     ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('  2. Start with: /status');
+  console.log('  3. Read the guide: docs/WORKFLOW.md');
+  console.log('');
+  console.log(`Package manager detected: ${PKG_MANAGER}`);
+  console.log('');
+  console.log('Happy shipping!');
+  console.log('');
 }
 
 // Main
 async function main() {
   const command = args[0];
+  const flags = parseFlags();
+
+  // Show help
+  if (flags.help) {
+    showHelp();
+    return;
+  }
 
   if (command === 'setup') {
-    // Check for --all flag
-    if (args.includes('--all')) {
-      setupWithArgs(Object.keys(AGENTS).join(','));
+    // Determine agents to install
+    let selectedAgents = [];
+
+    if (flags.all) {
+      selectedAgents = Object.keys(AGENTS);
+    } else if (flags.agents) {
+      selectedAgents = validateAgents(flags.agents);
+      if (selectedAgents.length === 0) {
+        console.log('No valid agents specified.');
+        console.log('Available agents:', Object.keys(AGENTS).join(', '));
+        process.exit(1);
+      }
+    }
+
+    // Quick mode
+    if (flags.quick) {
+      // If no agents specified in quick mode, use all
+      if (selectedAgents.length === 0) {
+        selectedAgents = Object.keys(AGENTS);
+      }
+      await quickSetup(selectedAgents, flags.skipExternal);
       return;
     }
 
-    // Check for --agents flag
-    const agentsIndex = args.indexOf('--agents');
-    if (agentsIndex !== -1 && args[agentsIndex + 1]) {
-      setupWithArgs(args[agentsIndex + 1]);
+    // Agents specified via flag (non-quick mode)
+    if (selectedAgents.length > 0) {
+      console.log('');
+      console.log('  ___                   ');
+      console.log(' |  _|___  _ _  ___  ___ ');
+      console.log(' |  _| . || \'_|| . || -_|');
+      console.log(' |_| |___||_|  |_  ||___|');
+      console.log('                 |___|   ');
+      console.log('');
+      console.log('Forge v1.1.0 - Installing for specified agents...');
+      console.log('');
+
+      // Check prerequisites
+      checkPrerequisites();
+      console.log('');
+
+      // Copy AGENTS.md
+      const agentsSrc = path.join(packageDir, 'AGENTS.md');
+      if (copyFile(agentsSrc, 'AGENTS.md')) {
+        console.log('  Created: AGENTS.md (universal standard)');
+      }
+
+      // Load Claude commands if needed
+      let claudeCommands = {};
+      if (selectedAgents.includes('claude')) {
+        setupAgent('claude', null);
+      }
+
+      if (selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
+        COMMANDS.forEach(cmd => {
+          const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+          const content = readFile(cmdPath);
+          if (content) {
+            claudeCommands[`${cmd}.md`] = content;
+          }
+        });
+      }
+
+      // Setup agents
+      selectedAgents.forEach(agentKey => {
+        if (agentKey !== 'claude') {
+          setupAgent(agentKey, claudeCommands);
+        }
+      });
+
+      console.log('');
+      console.log('Agent configuration complete!');
+
+      // External services (unless skipped)
+      if (!flags.skipExternal) {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout
+        });
+        rl.on('close', () => {
+          console.log('\n\nSetup cancelled.');
+          process.exit(0);
+        });
+        const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
+        await configureExternalServices(rl, question, selectedAgents);
+        rl.close();
+      } else {
+        console.log('');
+        console.log('Skipping external services configuration...');
+      }
+
+      console.log('');
+      console.log('Done! Get started with: /status');
       return;
     }
 
-    // Interactive setup
-    await interactiveSetup();
+    // Interactive setup (skip-external still applies)
+    await interactiveSetupWithFlags(flags);
   } else {
     // Default: minimal install (postinstall behavior)
     minimalInstall();
