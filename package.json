@@ -1,0 +1,36 @@
+{
+  "name": "forge-workflow",
+  "version": "1.0.0",
+  "description": "9-stage TDD-first workflow for Claude Code",
+  "bin": {
+    "forge": "./bin/forge.js"
+  },
+  "scripts": {
+    "postinstall": "node ./bin/forge.js"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "tdd",
+    "workflow",
+    "development",
+    "testing",
+    "ai"
+  ],
+  "author": "Harsha Nandak",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harshanandak/forge.git"
+  },
+  "homepage": "https://github.com/harshanandak/forge#readme",
+  "bugs": {
+    "url": "https://github.com/harshanandak/forge/issues"
+  },
+  "files": [
+    "bin/",
+    ".claude/",
+    "docs/",
+    "install.sh"
+  ]
+}

@@ -8,13 +8,25 @@ A 9-stage TDD-first workflow for Claude Code. Ship features with confidence usin
 
 ## Installation
 
-### For Existing Projects
+### Option 1: npm (Recommended)
+
+```bash
+npm install forge-workflow
+```
+
+### Option 2: bun
+
+```bash
+bun add forge-workflow
+```
+
+### Option 3: curl (No package manager)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh | bash
 ```
 
-### For New Projects
+### Option 4: GitHub Template (New projects)
 
 1. Click "Use this template" on GitHub
 2. Clone your new repo
