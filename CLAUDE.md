@@ -1,26 +1,41 @@
-# Forge - 9-Stage TDD Workflow
+# Claude Code - Project Instructions
 
-A TDD-first workflow for AI coding agents. Ship features with confidence.
+This is a [describe what this project does in one sentence].
 
-## Commands (9 Stages)
+**Package manager**: npm (or specify: pnpm/yarn/bun)
 
-| Stage | Command | Description |
-|-------|---------|-------------|
-| 1 | `/status` | Check current context, active work, recent completions |
-| 2 | `/research` | Deep research with web search, document to docs/research/ |
-| 3 | `/plan` | Create implementation plan, branch, OpenSpec if strategic |
-| 4 | `/dev` | TDD development (RED-GREEN-REFACTOR cycles) |
-| 5 | `/check` | Validation (type/lint/security/tests) |
-| 6 | `/ship` | Create PR with full documentation |
-| 7 | `/review` | Address ALL PR feedback |
-| 8 | `/merge` | Update docs, merge PR, cleanup |
-| 9 | `/verify` | Final documentation verification |
+**Build commands**:
 
-## Workflow Flow
-
+```bash
+npm install      # Install dependencies
+npm run dev      # Start development
+npm run build    # Production build
+npm test         # Run tests
 ```
-/status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
-```
+
+---
+
+## Forge Workflow
+
+This project uses the **Forge 9-stage TDD workflow**:
+
+| Stage | Command     | Purpose                                      |
+|-------|-------------|----------------------------------------------|
+| 1     | `/status`   | Check current context, active work           |
+| 2     | `/research` | Research with web search, document findings  |
+| 3     | `/plan`     | Create implementation plan, branch, OpenSpec |
+| 4     | `/dev`      | TDD development (RED-GREEN-REFACTOR)         |
+| 5     | `/check`    | Validation (type/lint/security/tests)        |
+| 6     | `/ship`     | Create PR with documentation                 |
+| 7     | `/review`   | Address ALL PR feedback                      |
+| 8     | `/merge`    | Update docs, merge PR, cleanup               |
+| 9     | `/verify`   | Final documentation verification             |
+
+**Flow**: `/status` → `/research` → `/plan` → `/dev` → `/check` → `/ship` → `/review` → `/merge` → `/verify`
+
+See [docs/WORKFLOW.md](docs/WORKFLOW.md) for complete workflow guide.
+
+---
 
 ## Core Principles
 
@@ -29,11 +44,35 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 - **Security Built-In**: OWASP Top 10 analysis for every feature
 - **Documentation Progressive**: Update at each stage, verify at end
 
-## Prerequisites
+---
 
-- Git, GitHub CLI (`gh`)
-- Beads (recommended): `npm i -g @beads/bd && bd init`
-- OpenSpec (optional): `npm i -g @fission-ai/openspec && openspec init`
+## MCP Servers
+
+This project uses MCP servers for enhanced capabilities. Copy [.mcp.json.example](.mcp.json.example) to `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+    "grep-app": {
+      "command": "npx",
+      "args": ["-y", "@ai-tools-all/grep_app_mcp"]
+    }
+  }
+}
+```
+
+**Available MCP servers**:
+
+- **Context7**: Up-to-date library documentation and API reference
+- **grep.app**: Search 1M+ GitHub repos for real-world code examples
+
+See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for complete setup instructions.
+
+---
 
 ## Quick Start
 
@@ -44,145 +83,26 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 5. `/check` - Validate everything
 6. `/ship` - Create PR
 
-## Stage Details
+---
 
-### 1. Status (`/status`)
+## Toolchain
 
-Check current context before starting work:
-- Active issues (via Beads if installed)
-- Recent completions
-- Current branch state
-- OpenSpec proposals in progress
+- **Beads** (recommended): `npm i -g @beads/bd && bd init` - Git-backed issue tracking
+- **OpenSpec** (optional): `npm i -g @fission-ai/openspec && openspec init` - Spec-driven development
+- **GitHub CLI**: `gh auth login` - PR workflow
 
-### 2. Research (`/research <feature-name>`)
-
-Research before building:
-- Web search for best practices
-- Security analysis (OWASP Top 10)
-- Existing patterns in codebase
-- Document to `docs/research/<feature>.md`
-
-### 3. Plan (`/plan <feature-slug>`)
-
-Create implementation plan:
-- Create feature branch
-- Define scope and approach
-- Create tracking issue (Beads)
-- OpenSpec proposal if strategic
-
-### 4. Development (`/dev`)
-
-TDD implementation:
-- RED: Write failing test
-- GREEN: Make it pass
-- REFACTOR: Clean up
-- Commit after each GREEN cycle
-
-### 5. Check (`/check`)
-
-Validate everything:
-- Type checking
-- Linting
-- Unit tests
-- Integration tests
-- Security scan
-
-### 6. Ship (`/ship`)
-
-Create pull request:
-- Push branch
-- Create PR with documentation
-- Link to research doc
-- List test coverage
-
-### 7. Review (`/review`)
-
-Address ALL feedback:
-- GitHub Actions failures
-- Code review comments
-- Security scan issues
-- Automated tool feedback
-
-### 8. Merge (`/merge`)
-
-Complete the work:
-- Update documentation
-- Squash merge PR
-- Archive OpenSpec (if used)
-- Close tracking issues
-
-### 9. Verify (`/verify`)
-
-Final documentation check:
-- All docs updated
-- Cross-references valid
-- Examples work
-- README current
-
-## Directory Structure
-
-```
-your-project/
-├── AGENTS.md                    # This file (universal)
-├── CLAUDE.md                    # Claude Code
-├── GEMINI.md                    # Google Antigravity
-├── .cursorrules                 # Cursor
-├── .windsurfrules               # Windsurf
-├── .clinerules                  # Cline/Roo Code
-├── .github/
-│   └── copilot-instructions.md  # GitHub Copilot
-│
-├── .claude/commands/            # Claude Code commands
-├── .agent/workflows/            # Antigravity workflows
-├── .cursor/rules/               # Cursor rules
-├── .windsurf/workflows/         # Windsurf workflows
-├── .kilocode/workflows/         # Kilo Code workflows
-├── .opencode/commands/          # OpenCode commands
-├── .continue/prompts/           # Continue prompts
-├── .roo/commands/               # Roo Code commands
-│
-└── docs/
-    ├── planning/
-    │   └── PROGRESS.md
-    ├── research/
-    │   └── TEMPLATE.md
-    └── WORKFLOW.md
-```
-
-## Skills (Universal SKILL.md Format)
-
-The `forge-workflow` skill is installed to all supporting agents:
-- `.claude/skills/forge-workflow/SKILL.md`
-- `.agent/skills/forge-workflow/SKILL.md` (Antigravity)
-- `.cursor/skills/forge-workflow/SKILL.md`
-- `.windsurf/skills/forge-workflow/SKILL.md`
-- `.kilocode/skills/forge-workflow/SKILL.md`
-- `.cline/skills/forge-workflow/SKILL.md`
-- `.continue/skills/forge-workflow/SKILL.md`
-- `.opencode/skills/forge-workflow/SKILL.md`
-
-## Supported Agents
-
-This workflow works with ALL major AI coding agents:
-
-| Agent | Instructions | Commands | Skills |
-|-------|-------------|----------|--------|
-| Claude Code | CLAUDE.md | .claude/commands/ | .claude/skills/ |
-| Google Antigravity | GEMINI.md | .agent/workflows/ | .agent/skills/ |
-| Cursor | .cursorrules | .cursor/rules/ | .cursor/skills/ |
-| Windsurf | .windsurfrules | .windsurf/workflows/ | .windsurf/skills/ |
-| Kilo Code | AGENTS.md | .kilocode/workflows/ | .kilocode/skills/ |
-| OpenCode | AGENTS.md | .opencode/commands/ | .opencode/skills/ |
-| Cline | .clinerules | AGENTS.md | .cline/skills/ |
-| Roo Code | .clinerules | .roo/commands/ | - |
-| Continue | .continuerules | .continue/prompts/ | .continue/skills/ |
-| GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ | - |
-| Aider | AGENTS.md (via config) | In-chat | - |
-
-## License
-
-MIT
+See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for comprehensive tool reference.
 
 ---
 
-See `docs/WORKFLOW.md` for the complete workflow guide.
+<!-- USER:START - Add project-specific learnings here as you work -->
+
+💡 **Keep this section focused** - Add patterns you discover while working.
+
+As you work, when you give the same instruction twice, add it here:
+
+- Coding style preferences
+- Architecture decisions
+- Domain concepts unique to this project
+
+<!-- USER:END -->

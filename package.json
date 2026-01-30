@@ -45,6 +45,7 @@
     "docs/",
     "install.sh",
     "AGENTS.md",
+    "CLAUDE.md",
     ".mcp.json.example"
   ]
 }
