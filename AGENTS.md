@@ -32,8 +32,36 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 ## Prerequisites
 
 - Git, GitHub CLI (`gh`)
-- Beads (recommended): `npm i -g beads-cli && bd init`
-- OpenSpec (optional): `npm i -g openspec-cli`
+- Beads (recommended): `npm i -g @beads/bd && bd init`
+- OpenSpec (optional): `npm i -g @fission-ai/openspec && openspec init`
+
+## Toolchain Quick Reference
+
+### Beads (Issue Tracking)
+```bash
+bd ready                    # Find unblocked work (start here!)
+bd create "Title" -p 2      # Create issue with priority
+bd update <id> --status in_progress
+bd comments <id> "note"     # Add comment
+bd close <id>               # Complete
+bd sync                     # Git sync (always at session end!)
+```
+
+### OpenSpec (Specs - AI Commands)
+```bash
+/opsx:new                   # Start change
+/opsx:ff                    # Generate all planning docs
+/opsx:apply                 # Implement tasks
+/opsx:verify                # Validate
+/opsx:archive               # Complete
+```
+
+### GitHub CLI
+```bash
+gh pr create --title "..." --body "..."
+gh pr view <n>
+gh pr merge <n> --squash --delete-branch
+```
 
 ## Quick Start
 
@@ -186,3 +214,4 @@ MIT
 ---
 
 See `docs/WORKFLOW.md` for the complete workflow guide.
+See `docs/TOOLCHAIN.md` for comprehensive tool reference.

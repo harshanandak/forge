@@ -101,60 +101,73 @@ Forge integrates with three powerful tools for complete workflow management:
 
 ### Beads - Issue Tracking Across Sessions
 
-[Beads](https://github.com/beads-ai/beads-cli) provides git-backed issue tracking that persists across AI conversation sessions.
+[Beads](https://github.com/steveyegge/beads) provides git-backed, distributed issue tracking designed for AI coding agents.
 
 ```bash
 # Install
-npm install -g beads-cli
+npm install -g @beads/bd
 
 # Initialize in your project
 bd init
 
-# Create an issue
-bd create "Add user authentication"
-
-# Find work ready to start (no blockers)
+# Find work ready to start (no blockers!)
 bd ready
+
+# Create an issue
+bd create "Add user authentication" --type feature --priority 2
+
+# View issue details
+bd show <id>
 
 # Update status
 bd update <id> --status in_progress
 
-# Add dependencies
-bd dep add <issue> <depends-on>
+# Add dependencies (child depends on parent)
+bd dep add <child> <parent>
+
+# Add comments during work
+bd comments <id> "Progress: login working, starting signup"
 
 # Complete work
-bd close <id>
+bd close <id> --reason "Implemented with JWT"
 
-# Sync with git
+# Sync with git (ALWAYS at session end!)
 bd sync
 ```
 
 **Why Beads?**
-- Issues persist even when Claude's context is cleared
-- Dependencies track what blocks what
-- Git-backed = version controlled = team-shareable
-- `bd ready` shows what you can work on NOW
+- **Persists across sessions** - Issues survive context clearing, compaction, new chats
+- **Git-backed** - Version controlled like code, mergeable, team-shareable
+- **Dependency tracking** - Know what blocks what with `bd blocked`
+- **Ready detection** - `bd ready` finds unblocked work automatically
+- **AI-optimized** - JSON output, semantic compaction, audit trails
 
-### OpenSpec - Architectural Proposals
+See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for complete Beads command reference.
 
-[OpenSpec](https://github.com/openspec-ai/openspec-cli) provides a formal proposal system for strategic changes.
+### OpenSpec - Spec-Driven Development
+
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) provides spec-driven development for AI-assisted workflows.
 
 ```bash
-# Install
-npm install -g openspec-cli
+# Install (requires Node.js 20.19+)
+npm install -g @fission-ai/openspec
 
 # Initialize
 openspec init
 
-# Create a proposal for a major feature
-openspec proposal create stripe-billing
+# In AI assistant (Claude Code, Cursor, Windsurf):
+/opsx:new          # Start a new change
+/opsx:ff           # Fast-forward: generate all planning docs
+/opsx:apply        # Implement tasks
+/opsx:verify       # Validate implementation
+/opsx:archive      # Complete and archive
 
-# This creates:
-# openspec/changes/stripe-billing/
-#   ├── proposal.md      # Problem, solution, alternatives, impact
-#   ├── tasks.md         # TDD-ordered implementation checklist
-#   ├── design.md        # Technical decisions
-#   └── specs/           # Delta changes to existing specs
+# Creates:
+# openspec/changes/[name]/
+#   ├── proposal.md      # Intent, scope, rationale
+#   ├── design.md        # Technical approach
+#   ├── tasks.md         # Implementation checklist
+#   └── specs/           # Delta specifications (ADDED/MODIFIED/REMOVED)
 ```
 
 **When to use OpenSpec:**
@@ -166,22 +179,27 @@ openspec proposal create stripe-billing
 | **Breaking changes** | Yes | API changes, schema migrations |
 | **Multi-session work** | Yes | Large features |
 
-**Proposal Workflow:**
+**Workflow:**
 ```bash
-# 1. Create proposal
-openspec proposal create feature-name
+# 1. Start change (in AI assistant)
+/opsx:new
+# Describe: "Add payment processing with Stripe"
 
-# 2. Write proposal documents
-# (problem, solution, alternatives, impact)
+# 2. Generate all planning docs
+/opsx:ff
+# Creates proposal.md, design.md, tasks.md, specs/
 
-# 3. Validate
-openspec validate feature-name --strict
+# 3. Implement
+/opsx:apply
+# AI writes code following tasks.md
 
-# 4. Get approval (PR review)
-# 5. Implement following tasks.md
-# 6. Archive when complete
-openspec archive feature-name
+# 4. Validate and finalize
+/opsx:verify          # Confirm implementation matches specs
+openspec sync         # Merge deltas into main specs
+openspec archive name # Move to archive
 ```
+
+See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for complete OpenSpec reference.
 
 ### Claude Tasks - Save and Resume Work
 
@@ -534,15 +552,15 @@ export $(grep -v '^#' .env.local | xargs)
 
 - **Beads** - Issue tracking across sessions
   ```bash
-  npm install -g beads-cli
+  npm install -g @beads/bd
   bd init
   ```
 
 ### Optional
 
-- **OpenSpec** - Architectural proposals
+- **OpenSpec** - Spec-driven development (requires Node.js 20.19+)
   ```bash
-  npm install -g openspec-cli
+  npm install -g @fission-ai/openspec
   openspec init
   ```
 
@@ -551,21 +569,37 @@ export $(grep -v '^#' .env.local | xargs)
 ### Beads Commands
 
 ```bash
-bd ready                         # Show work with no blockers
-bd create "title"                # Create issue
-bd show <id>                     # View issue details
+bd init                          # Initialize in project
+bd ready                         # Show work with no blockers (start here!)
+bd create "title" -p 2           # Create issue with priority
+bd show <id>                     # View issue details + audit trail
+bd list --status open            # List open issues
 bd update <id> --status X        # Update status
-bd dep add <issue> <blocks>      # Add dependency
+bd dep add <child> <parent>      # child depends on parent
+bd comments <id> "note"          # Add comment
 bd close <id>                    # Complete issue
-bd sync                          # Sync with git
+bd blocked                       # Show blocked issues
+bd sync                          # Sync with git (always at session end!)
 ```
 
-### OpenSpec Commands
+### OpenSpec Commands (AI Slash Commands)
 
 ```bash
-openspec proposal create <name>  # Create proposal
-openspec validate <name>         # Validate proposal
-openspec list --active           # List active proposals
+/opsx:new                        # Start new change
+/opsx:ff                         # Fast-forward: generate all docs
+/opsx:apply                      # Implement tasks
+/opsx:verify                     # Validate implementation
+/opsx:sync                       # Merge delta specs
+/opsx:archive                    # Complete and archive
+```
+
+### OpenSpec Commands (CLI)
+
+```bash
+openspec init                    # Initialize
+openspec list                    # List changes/specs
+openspec validate <name>         # Validate change
+openspec status                  # Show progress
 openspec archive <name>          # Archive completed
 ```
 
