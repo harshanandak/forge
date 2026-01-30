@@ -659,11 +659,33 @@ function detectProjectStatus() {
   const status = {
     type: 'fresh', // 'fresh', 'upgrade', or 'partial'
     hasAgentsMd: fs.existsSync(path.join(projectRoot, 'AGENTS.md')),
+    hasClaudeMd: fs.existsSync(path.join(projectRoot, 'CLAUDE.md')),
     hasClaudeCommands: fs.existsSync(path.join(projectRoot, '.claude/commands')),
     hasEnvLocal: fs.existsSync(path.join(projectRoot, '.env.local')),
     hasDocsWorkflow: fs.existsSync(path.join(projectRoot, 'docs/WORKFLOW.md')),
-    existingEnvVars: {}
+    existingEnvVars: {},
+    agentsMdSize: 0,
+    claudeMdSize: 0,
+    agentsMdLines: 0,
+    claudeMdLines: 0
   };
+
+  // Get file sizes and line counts for context warnings
+  if (status.hasAgentsMd) {
+    const agentsPath = path.join(projectRoot, 'AGENTS.md');
+    const stats = fs.statSync(agentsPath);
+    const content = fs.readFileSync(agentsPath, 'utf8');
+    status.agentsMdSize = stats.size;
+    status.agentsMdLines = content.split('\n').length;
+  }
+
+  if (status.hasClaudeMd) {
+    const claudePath = path.join(projectRoot, 'CLAUDE.md');
+    const stats = fs.statSync(claudePath);
+    const content = fs.readFileSync(claudePath, 'utf8');
+    status.claudeMdSize = stats.size;
+    status.claudeMdLines = content.split('\n').length;
+  }
 
   // Determine installation type
   if (status.hasAgentsMd && status.hasClaudeCommands && status.hasDocsWorkflow) {
@@ -679,6 +701,164 @@ function detectProjectStatus() {
   }
 
   return status;
+}
+
+// Smart file selection with context warnings
+async function handleInstructionFiles(rl, question, selectedAgents, projectStatus) {
+  const hasClaude = selectedAgents.some(a => a.key === 'claude');
+  const hasOtherAgents = selectedAgents.some(a => a.key !== 'claude');
+
+  // Calculate estimated tokens (rough: ~4 chars per token)
+  const estimateTokens = (bytes) => Math.ceil(bytes / 4);
+
+  const result = {
+    createAgentsMd: false,
+    createClaudeMd: false,
+    skipAgentsMd: false,
+    skipClaudeMd: false
+  };
+
+  // Scenario 1: Both files exist (potential context bloat)
+  if (projectStatus.hasAgentsMd && projectStatus.hasClaudeMd) {
+    const totalLines = projectStatus.agentsMdLines + projectStatus.claudeMdLines;
+    const totalTokens = estimateTokens(projectStatus.agentsMdSize + projectStatus.claudeMdSize);
+
+    console.log('');
+    console.log('⚠️  WARNING: Multiple Instruction Files Detected');
+    console.log('='.repeat(60));
+    console.log(`  AGENTS.md:  ${projectStatus.agentsMdLines} lines (~${estimateTokens(projectStatus.agentsMdSize)} tokens)`);
+    console.log(`  CLAUDE.md:  ${projectStatus.claudeMdLines} lines (~${estimateTokens(projectStatus.claudeMdSize)} tokens)`);
+    console.log(`  Total:      ${totalLines} lines (~${totalTokens} tokens)`);
+    console.log('');
+    console.log('  ⚠️  Claude Code reads BOTH files on every request');
+    console.log('  ⚠️  This increases context usage and costs');
+    console.log('');
+    console.log('  Options:');
+    console.log('  1) Keep CLAUDE.md only (recommended for Claude Code only)');
+    console.log('  2) Keep AGENTS.md only (recommended for multi-agent users)');
+    console.log('  3) Keep both (higher context usage)');
+    console.log('');
+
+    while (true) {
+      const choice = await question('Your choice (1/2/3) [2]: ');
+      const normalized = choice.trim() || '2';
+
+      if (normalized === '1') {
+        result.skipAgentsMd = true;
+        result.createClaudeMd = false; // Keep existing
+        console.log('  ✓ Will keep CLAUDE.md, remove AGENTS.md');
+        break;
+      } else if (normalized === '2') {
+        result.skipClaudeMd = true;
+        result.createAgentsMd = false; // Keep existing
+        console.log('  ✓ Will keep AGENTS.md, remove CLAUDE.md');
+        break;
+      } else if (normalized === '3') {
+        result.createAgentsMd = false; // Keep existing
+        result.createClaudeMd = false; // Keep existing
+        console.log('  ✓ Will keep both files (context: ~' + totalTokens + ' tokens)');
+        break;
+      } else {
+        console.log('  Please enter 1, 2, or 3');
+      }
+    }
+
+    return result;
+  }
+
+  // Scenario 2: Only CLAUDE.md exists
+  if (projectStatus.hasClaudeMd && !projectStatus.hasAgentsMd) {
+    if (hasOtherAgents) {
+      console.log('');
+      console.log('📋 Found existing CLAUDE.md (' + projectStatus.claudeMdLines + ' lines)');
+      console.log('   You selected multiple agents. Recommendation:');
+      console.log('   → Migrate to AGENTS.md (works with all agents)');
+      console.log('');
+
+      const migrate = await askYesNo(question, 'Migrate CLAUDE.md to AGENTS.md?', false);
+      if (migrate) {
+        result.createAgentsMd = true;
+        result.skipClaudeMd = true;
+        console.log('  ✓ Will migrate content to AGENTS.md');
+      } else {
+        result.createAgentsMd = true;
+        result.createClaudeMd = false; // Keep existing
+        console.log('  ✓ Will keep CLAUDE.md and create AGENTS.md');
+      }
+    } else {
+      // Claude Code only - keep CLAUDE.md
+      result.createClaudeMd = false; // Keep existing
+      console.log('  ✓ Keeping existing CLAUDE.md');
+    }
+
+    return result;
+  }
+
+  // Scenario 3: Only AGENTS.md exists
+  if (projectStatus.hasAgentsMd && !projectStatus.hasClaudeMd) {
+    if (hasClaude && !hasOtherAgents) {
+      console.log('');
+      console.log('📋 Found existing AGENTS.md (' + projectStatus.agentsMdLines + ' lines)');
+      console.log('   You selected Claude Code only. Options:');
+      console.log('   1) Keep AGENTS.md (works fine)');
+      console.log('   2) Rename to CLAUDE.md (Claude-specific naming)');
+      console.log('');
+
+      const rename = await askYesNo(question, 'Rename to CLAUDE.md?', true);
+      if (rename) {
+        result.createClaudeMd = true;
+        result.skipAgentsMd = true;
+        console.log('  ✓ Will rename to CLAUDE.md');
+      } else {
+        result.createAgentsMd = false; // Keep existing
+        console.log('  ✓ Keeping AGENTS.md');
+      }
+    } else {
+      // Multi-agent or other agents - keep AGENTS.md
+      result.createAgentsMd = false; // Keep existing
+      console.log('  ✓ Keeping existing AGENTS.md');
+    }
+
+    return result;
+  }
+
+  // Scenario 4: Neither file exists (fresh install)
+  if (hasClaude && !hasOtherAgents) {
+    // Claude Code only → create CLAUDE.md
+    result.createClaudeMd = true;
+    console.log('  ✓ Will create CLAUDE.md (Claude Code specific)');
+  } else if (!hasClaude && hasOtherAgents) {
+    // Other agents only → create AGENTS.md
+    result.createAgentsMd = true;
+    console.log('  ✓ Will create AGENTS.md (universal)');
+  } else {
+    // Multiple agents including Claude → create AGENTS.md + reference CLAUDE.md
+    result.createAgentsMd = true;
+    result.createClaudeMd = true; // Will be minimal reference
+    console.log('  ✓ Will create AGENTS.md (main) + CLAUDE.md (reference)');
+  }
+
+  return result;
+}
+
+// Create minimal CLAUDE.md that references AGENTS.md
+function createClaudeReference(destPath) {
+  const content = `# Claude Code Instructions
+
+See [AGENTS.md](AGENTS.md) for all project instructions.
+
+This file exists to avoid Claude Code reading both CLAUDE.md and AGENTS.md (which doubles context usage). Keep project-level instructions in AGENTS.md.
+
+---
+
+<!-- Add Claude Code-specific instructions below (if needed) -->
+<!-- Examples: MCP server setup, custom commands, Claude-only workflows -->
+
+💡 **Keep this minimal** - Main instructions are in AGENTS.md
+`;
+
+  fs.writeFileSync(destPath, content, 'utf8');
+  return true;
 }
 
 // Configure external services interactively
