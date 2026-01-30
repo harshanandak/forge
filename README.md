@@ -17,7 +17,7 @@ A 9-stage TDD-first workflow for **ALL AI coding agents**. Ship features with co
 
 ## Supported AI Coding Agents
 
-Forge works with **all major AI coding agents** using the universal [AGENTS.md](https://agents.md/) standard:
+Forge works with **all major AI coding agents** using the universal AGENTS.md standard:
 
 | Agent | Status | Primary Config | Commands Location |
 |-------|--------|----------------|-------------------|

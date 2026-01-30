@@ -6,6 +6,13 @@
 
 set -e
 
+# Cleanup on error
+cleanup_on_error() {
+    echo -e "\n${RED}Installation failed. Partial files may remain.${NC}"
+    echo "Run 'rm -rf .claude .cursor .windsurf .kilocode .opencode .continue .github .agent .roo .env.local' to clean up."
+}
+trap cleanup_on_error ERR
+
 REPO="harshanandak/forge"
 BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
@@ -260,7 +267,7 @@ create_link() {
     if ln -s "$source" "$target" 2>/dev/null; then
         echo -e "  ${GREEN}Linked: $target -> $source${NC}"
     elif cp "$source" "$target" 2>/dev/null; then
-        echo -e "  ${GREEN}Copied: $target${NC}"
+        echo -e "  ${YELLOW}⚠ Copied (symlinks not supported): $target${NC}"
     else
         echo -e "  ${RED}Failed: Could not link or copy $target${NC}"
     fi
@@ -720,7 +727,8 @@ ENV_HEADER
             ;;
         3)
             echo ""
-            read -p "  Enter Greptile API key: " greptile_key
+            read -s -p "  Enter Greptile API key: " greptile_key
+            echo ""
             if [ -n "$greptile_key" ]; then
                 echo "CODE_REVIEW_TOOL=greptile" >> .env.local
                 echo "GREPTILE_API_KEY=$greptile_key" >> .env.local
@@ -764,7 +772,8 @@ ENV_HEADER
             ;;
         2)
             echo ""
-            read -p "  Enter SonarCloud token: " sonar_token
+            read -s -p "  Enter SonarCloud token: " sonar_token
+            echo ""
             read -p "  Enter SonarCloud organization: " sonar_org
             read -p "  Enter SonarCloud project key: " sonar_project
             if [ -n "$sonar_token" ]; then
@@ -786,7 +795,8 @@ ENV_HEADER
             echo ""
             read -p "  Enter SonarQube URL [http://localhost:9000]: " sonarqube_url
             sonarqube_url=${sonarqube_url:-http://localhost:9000}
-            read -p "  Enter SonarQube token (optional): " sonarqube_token
+            read -s -p "  Enter SonarQube token (optional): " sonarqube_token
+            echo ""
 
             echo "CODE_QUALITY_TOOL=sonarqube" >> .env.local
             echo "SONARQUBE_URL=$sonarqube_url" >> .env.local
@@ -819,7 +829,8 @@ ENV_HEADER
     case $research_choice in
         2)
             echo ""
-            read -p "  Enter Parallel AI API key: " parallel_key
+            read -s -p "  Enter Parallel AI API key: " parallel_key
+            echo ""
             if [ -n "$parallel_key" ]; then
                 echo "PARALLEL_API_KEY=$parallel_key" >> .env.local
                 echo -e "  ${GREEN}✓${NC} Parallel AI configured"

@@ -6,7 +6,9 @@
     "forge": "./bin/forge.js"
   },
   "scripts": {
-    "postinstall": "node ./bin/forge.js"
+    "postinstall": "node ./bin/forge.js",
+    "setup": "node ./bin/forge.js setup",
+    "help": "node ./bin/forge.js --help"
   },
   "keywords": [
     "ai",
@@ -42,11 +44,6 @@
     ".claude/",
     "docs/",
     "install.sh",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "GEMINI.md",
-    ".cursorrules",
-    ".windsurfrules",
-    ".clinerules"
+    "AGENTS.md"
   ]
 }

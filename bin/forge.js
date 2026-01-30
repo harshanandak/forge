@@ -114,6 +114,10 @@ const AGENTS = {
   }
 };
 
+// SECURITY: Freeze AGENTS to prevent runtime manipulation
+Object.freeze(AGENTS);
+Object.values(AGENTS).forEach(agent => Object.freeze(agent));
+
 const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify'];
 
 // Code review tool options
@@ -342,16 +346,33 @@ See AGENTS.md for full workflow details.
 `;
 
 // Helper functions
+const resolvedProjectRoot = path.resolve(projectRoot);
+
 function ensureDir(dir) {
-  const fullPath = path.join(projectRoot, dir);
+  const fullPath = path.resolve(projectRoot, dir);
+
+  // SECURITY: Prevent path traversal
+  if (!fullPath.startsWith(resolvedProjectRoot)) {
+    console.error(`  ✗ Security: Directory path escape blocked: ${dir}`);
+    return false;
+  }
+
   if (!fs.existsSync(fullPath)) {
     fs.mkdirSync(fullPath, { recursive: true });
   }
+  return true;
 }
 
 function writeFile(filePath, content) {
   try {
-    const fullPath = path.join(projectRoot, filePath);
+    const fullPath = path.resolve(projectRoot, filePath);
+
+    // SECURITY: Prevent path traversal
+    if (!fullPath.startsWith(resolvedProjectRoot)) {
+      console.error(`  ✗ Security: Write path escape blocked: ${filePath}`);
+      return false;
+    }
+
     const dir = path.dirname(fullPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -368,22 +389,38 @@ function readFile(filePath) {
   try {
     return fs.readFileSync(filePath, 'utf8');
   } catch (err) {
+    if (process.env.DEBUG) {
+      console.warn(`  ⚠ Could not read ${filePath}: ${err.message}`);
+    }
     return null;
   }
 }
 
 function copyFile(src, dest) {
   try {
+    const destPath = path.resolve(projectRoot, dest);
+
+    // SECURITY: Prevent path traversal
+    if (!destPath.startsWith(resolvedProjectRoot)) {
+      console.error(`  ✗ Security: Copy destination escape blocked: ${dest}`);
+      return false;
+    }
+
     if (fs.existsSync(src)) {
-      const destPath = path.join(projectRoot, dest);
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
         fs.mkdirSync(destDir, { recursive: true });
       }
       fs.copyFileSync(src, destPath);
       return true;
+    } else {
+      if (process.env.DEBUG) {
+        console.warn(`  ⚠ Source file not found: ${src}`);
+      }
     }
-  } catch (err) {}
+  } catch (err) {
+    console.error(`  ✗ Failed to copy ${src} -> ${dest}: ${err.message}`);
+  }
   return false;
 }
 
@@ -445,8 +482,8 @@ function writeEnvTokens(tokens) {
   const envPath = path.join(projectRoot, '.env.local');
   let content = readEnvFile();
 
-  // Parse existing content
-  const lines = content.split('\n');
+  // Parse existing content (handle both CRLF and LF line endings)
+  const lines = content.split(/\r?\n/);
   const existingVars = {};
   lines.forEach(line => {
     const match = line.match(/^([A-Z_]+)=/);
@@ -949,6 +986,12 @@ async function interactiveSetup() {
     process.exit(0);
   });
 
+  // Handle input errors
+  rl.on('error', (err) => {
+    console.error('Input error:', err.message);
+    process.exit(1);
+  });
+
   const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
 
   console.log('');
@@ -983,30 +1026,38 @@ async function interactiveSetup() {
   console.log('  all) Install for all agents');
   console.log('');
 
-  const answer = await question('Your selection: ');
-
   let selectedAgents = [];
 
-  if (answer.toLowerCase() === 'all') {
-    selectedAgents = agentKeys;
-  } else {
-    const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+  // Loop until valid input is provided
+  while (selectedAgents.length === 0) {
+    const answer = await question('Your selection: ');
 
-    // Validate numbers are in range
-    const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
-    const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
-
-    if (invalidNums.length > 0) {
-      console.log(`  ⚠ Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
+    // Handle empty input - reprompt
+    if (!answer || !answer.trim()) {
+      console.log('  Please enter at least one agent number or "all".');
+      continue;
     }
 
-    selectedAgents = validNums.map(n => agentKeys[n - 1]).filter(Boolean);
-  }
+    if (answer.toLowerCase() === 'all') {
+      selectedAgents = agentKeys;
+    } else {
+      const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
 
-  if (selectedAgents.length === 0) {
-    console.log('No valid agents selected. Run "npx forge setup" to try again.');
-    rl.close();
-    return;
+      // Validate numbers are in range
+      const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
+      const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
+
+      if (invalidNums.length > 0) {
+        console.log(`  ⚠ Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
+      }
+
+      // Deduplicate selected agents using Set
+      selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
+    }
+
+    if (selectedAgents.length === 0) {
+      console.log('  No valid agents selected. Please try again.');
+    }
   }
 
   console.log('');
@@ -1029,8 +1080,11 @@ async function interactiveSetup() {
     });
   }
 
-  // Setup each selected agent
-  selectedAgents.forEach(agentKey => {
+  // Setup each selected agent with progress indication
+  const totalAgents = selectedAgents.length;
+  selectedAgents.forEach((agentKey, index) => {
+    const agent = AGENTS[agentKey];
+    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
     if (agentKey !== 'claude') { // Claude already done above
       setupAgent(agentKey, claudeCommands);
     }

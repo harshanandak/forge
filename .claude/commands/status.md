@@ -39,7 +39,7 @@ openspec list --active
 git log --oneline -10
 
 # Recently completed Beads
-bd list --status done --limit 5
+bd list --status completed --limit 5
 
 # Archived OpenSpec proposals
 openspec list --archived --limit 3
