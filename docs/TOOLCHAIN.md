@@ -651,18 +651,6 @@ gh pr merge <number> --squash --delete-branch
 gh issue create --title "..." --body "..."
 ```
 
-### OpenRouter - Multi-Model AI
-
-**Website**: [openrouter.ai](https://openrouter.ai)
-**Used in**: AI features (optional)
-
-Access multiple AI models through one API.
-
-```bash
-# Add to .env.local
-OPENROUTER_API_KEY=your-key
-```
-
 ---
 
 ## Integration with Forge Stages

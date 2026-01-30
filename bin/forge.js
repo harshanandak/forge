@@ -461,7 +461,6 @@ function writeEnvTokens(tokens) {
     outputLines.push('#   Parallel AI: https://platform.parallel.ai');
     outputLines.push('#   Greptile: https://app.greptile.com/api');
     outputLines.push('#   SonarCloud: https://sonarcloud.io/account/security');
-    outputLines.push('#   OpenRouter: https://openrouter.ai/keys');
     outputLines.push('');
   }
 
@@ -502,7 +501,7 @@ function writeEnvTokens(tokens) {
 }
 
 // Configure external services interactively
-async function configureExternalServices(rl, question) {
+async function configureExternalServices(rl, question, selectedAgents = []) {
   console.log('');
   console.log('==============================================');
   console.log('  External Services Configuration');
@@ -662,19 +661,33 @@ async function configureExternalServices(rl, question) {
   }
 
   // ============================================
-  // OPTIONAL: OpenRouter
+  // CONTEXT7 MCP - Library Documentation
   // ============================================
   console.log('');
-  console.log('AI Model Access (Optional)');
-  console.log('--------------------------');
-  console.log('OpenRouter provides access to multiple AI models.');
-  console.log('Get key: https://openrouter.ai/keys');
+  console.log('Context7 MCP - Library Documentation');
+  console.log('-------------------------------------');
+  console.log('Provides up-to-date library docs for AI coding agents.');
   console.log('');
 
-  const openrouterKey = await question('Enter OpenRouter API key (or press Enter to skip): ');
-  if (openrouterKey && openrouterKey.trim()) {
-    tokens['OPENROUTER_API_KEY'] = openrouterKey.trim();
-    console.log('  ✓ OpenRouter configured');
+  // Show what was/will be auto-installed
+  if (selectedAgents.includes('claude')) {
+    console.log('  ✓ Auto-installed for Claude Code (.mcp.json)');
+  }
+  if (selectedAgents.includes('continue')) {
+    console.log('  ✓ Auto-installed for Continue (.continue/config.yaml)');
+  }
+
+  // Show manual setup instructions for GUI-based agents
+  const needsManualMcp = [];
+  if (selectedAgents.includes('cursor')) needsManualMcp.push('Cursor: Configure via Cursor Settings > MCP');
+  if (selectedAgents.includes('windsurf')) needsManualMcp.push('Windsurf: Install via Plugin Store');
+  if (selectedAgents.includes('cline')) needsManualMcp.push('Cline: Install via MCP Marketplace');
+
+  if (needsManualMcp.length > 0) {
+    needsManualMcp.forEach(msg => console.log(`  ! ${msg}`));
+    console.log('');
+    console.log('  Package: @upstash/context7-mcp@latest');
+    console.log('  Docs: https://github.com/upstash/context7-mcp');
   }
 
   // Save package manager preference
@@ -1012,7 +1025,7 @@ async function interactiveSetup() {
   console.log('STEP 2: External Services (Optional)');
   console.log('=====================================');
 
-  await configureExternalServices(rl, question);
+  await configureExternalServices(rl, question, selectedAgents);
 
   rl.close();
 

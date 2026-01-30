@@ -154,6 +154,10 @@ INSTALL_CLINE=false
 INSTALL_ROO=false
 INSTALL_AIDER=false
 
+# Track Context7 MCP auto-installation
+CONTEXT7_INSTALLED_CLAUDE=false
+CONTEXT7_INSTALLED_CONTINUE=false
+
 if [[ "$selection" == "all" ]]; then
     INSTALL_CLAUDE=true
     INSTALL_CURSOR=true
@@ -319,7 +323,7 @@ if [ "$INSTALL_CLAUDE" = true ]; then
     echo "$SKILL_CONTENT" > .claude/skills/forge-workflow/SKILL.md
     echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
 
-    # Create .mcp.json with Context7 MCP (if not exists)
+    # Create .mcp.json with Context7 MCP (auto-install for Claude Code)
     if [ ! -f ".mcp.json" ]; then
         cat > .mcp.json << 'MCP_EOF'
 {
@@ -332,6 +336,7 @@ if [ "$INSTALL_CLAUDE" = true ]; then
 }
 MCP_EOF
         echo -e "  ${GREEN}Created: .mcp.json with Context7 MCP${NC}"
+        CONTEXT7_INSTALLED_CLAUDE=true
     else
         echo -e "  ${YELLOW}Skipped: .mcp.json already exists${NC}"
     fi
@@ -525,7 +530,7 @@ if [ "$INSTALL_CONTINUE" = true ]; then
     echo "$SKILL_CONTENT" > .continue/skills/forge-workflow/SKILL.md
     echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
 
-    # Create config.yaml with Context7 MCP (if not exists)
+    # Create config.yaml with Context7 MCP (auto-install for Continue)
     if [ ! -f ".continue/config.yaml" ]; then
         cat > .continue/config.yaml << 'CONTINUE_EOF'
 # Continue Configuration
@@ -545,6 +550,7 @@ mcpServers:
 # Rules loaded from .continuerules
 CONTINUE_EOF
         echo -e "  ${GREEN}Created: config.yaml with Context7 MCP${NC}"
+        CONTEXT7_INSTALLED_CONTINUE=true
     else
         echo -e "  ${YELLOW}Skipped: config.yaml already exists${NC}"
     fi
@@ -808,17 +814,40 @@ ENV_HEADER
     esac
 
     # ============================================
-    # OPTIONAL: OpenRouter for Multi-Model AI
+    # CONTEXT7 MCP - Library Documentation
     # ============================================
     echo ""
-    echo -e "${CYAN}AI Model Access (Optional)${NC}"
-    echo "OpenRouter provides access to multiple AI models."
-    echo "Get key: https://openrouter.ai/keys"
+    echo -e "${CYAN}Context7 MCP - Library Documentation${NC}"
+    echo "Provides up-to-date library docs for AI coding agents."
     echo ""
-    read -p "Enter OpenRouter API key (or press Enter to skip): " openrouter_key
-    if [ -n "$openrouter_key" ]; then
-        echo "OPENROUTER_API_KEY=$openrouter_key" >> .env.local
-        echo -e "  ${GREEN}✓${NC} OpenRouter configured"
+
+    # Show what was auto-installed
+    if [ "$CONTEXT7_INSTALLED_CLAUDE" = true ]; then
+        echo -e "  ${GREEN}✓${NC} Auto-installed for Claude Code (.mcp.json)"
+    fi
+    if [ "$CONTEXT7_INSTALLED_CONTINUE" = true ]; then
+        echo -e "  ${GREEN}✓${NC} Auto-installed for Continue (.continue/config.yaml)"
+    fi
+
+    # Check for agents that need manual setup
+    NEEDS_MANUAL_MCP=false
+    if [ "$INSTALL_CURSOR" = true ]; then
+        echo -e "  ${YELLOW}!${NC} Cursor: Configure via Cursor Settings > MCP"
+        NEEDS_MANUAL_MCP=true
+    fi
+    if [ "$INSTALL_WINDSURF" = true ]; then
+        echo -e "  ${YELLOW}!${NC} Windsurf: Install via Plugin Store"
+        NEEDS_MANUAL_MCP=true
+    fi
+    if [ "$INSTALL_CLINE" = true ]; then
+        echo -e "  ${YELLOW}!${NC} Cline: Install via MCP Marketplace"
+        NEEDS_MANUAL_MCP=true
+    fi
+
+    if [ "$NEEDS_MANUAL_MCP" = true ]; then
+        echo ""
+        echo "  Package: @upstash/context7-mcp@latest"
+        echo "  Docs: https://github.com/upstash/context7-mcp"
     fi
 
     # ============================================

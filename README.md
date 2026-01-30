@@ -481,8 +481,6 @@ SONAR_PROJECT_KEY=your-project-key
 SONARQUBE_URL=http://localhost:9000
 SONARQUBE_TOKEN=your-token
 
-# OpenRouter - Multi-model AI (optional)
-OPENROUTER_API_KEY=your-openrouter-key
 ```
 
 ### Service Setup
@@ -497,7 +495,6 @@ OPENROUTER_API_KEY=your-openrouter-key
 | **SonarCloud** | 50k LoC free | Cloud quality | [sonarcloud.io](https://sonarcloud.io) | `/check` |
 | **SonarQube** | FREE | Self-hosted quality | Docker | `/check` |
 | **Parallel AI** | Paid | Web research | [platform.parallel.ai](https://platform.parallel.ai) | `/research` |
-| **OpenRouter** | Paid | Multi-model AI | [openrouter.ai](https://openrouter.ai) | AI features |
 
 ### Code Review Setup
 
