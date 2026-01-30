@@ -393,9 +393,10 @@ The system SHALL support optional 2FA
 
 Context7 provides current documentation that may be more recent than the AI's training data.
 
-**Installation (Claude Code)**:
+**Installation**:
 
-Add to `.mcp.json` in your project root:
+**Claude Code**: Add to `.mcp.json` in your project root:
+
 
 ```json
 {
@@ -419,6 +420,28 @@ Add to `.mcp.json` in your project root:
   }
 }
 ```
+
+**Cline (VSCode)**:
+1. Open VSCode Settings
+2. Search for "Cline MCP"
+3. Add Context7 server configuration
+
+**Continue**: Add to `.continue/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+```
+
+**Cursor**: Check Cursor Settings → MCP Servers for configuration options
+
+**Other agents**: If your agent supports MCP, configure using the JSON format above
 
 **Usage**:
 ```
