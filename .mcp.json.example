@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+    "grep-app": {
+      "command": "npx",
+      "args": ["-y", "@ai-tools-all/grep_app_mcp"]
+    }
+  }
+}

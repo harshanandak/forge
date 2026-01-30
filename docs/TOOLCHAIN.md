@@ -434,6 +434,72 @@ Add to `.mcp.json` in your project root:
 - To verify API signatures and patterns
 - For current best practices
 
+### grep.app - Code Search
+
+**Package**: `@ai-tools-all/grep_app_mcp` (recommended) or `@galprz/grep-mcp`
+**Website**: [grep.app](https://grep.app)
+**Purpose**: Search across 1M+ public GitHub repositories for real-world code examples
+**Used in**: `/research` stage, finding implementation patterns
+
+grep.app provides code search across public GitHub repositories to find real-world examples and patterns.
+
+**Installation (Claude Code)**:
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+    "grep-app": {
+      "command": "npx",
+      "args": ["-y", "@ai-tools-all/grep_app_mcp"]
+    }
+  }
+}
+```
+
+**Or with bunx**:
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "bunx",
+      "args": ["--bun", "@upstash/context7-mcp@latest"]
+    },
+    "grep-app": {
+      "command": "bunx",
+      "args": ["--bun", "@ai-tools-all/grep_app_mcp"]
+    }
+  }
+}
+```
+
+**Usage**:
+```
+# The AI will use grep.app when you need real-world examples
+"Find examples of React useEffect cleanup patterns"
+"Show me how others implement JWT authentication in Express"
+"Search for rate limiting implementations in Node.js"
+```
+
+**When to use grep.app**:
+
+- Finding real-world implementation examples
+- Discovering coding patterns in production code
+- Validating implementation approaches
+- Learning from open source projects
+
+**Context7 vs grep.app**:
+
+| Tool           | Purpose                        | Use When                                  |
+|----------------|--------------------------------|-------------------------------------------|
+| **Context7**   | Official library documentation | You need API reference, official patterns |
+| **grep.app**   | Real code in the wild          | You want to see how others solve problems |
+
 ---
 
 ## External Services
@@ -658,7 +724,7 @@ gh issue create --title "..." --body "..."
 | Stage | Tools Used |
 |-------|------------|
 | `/status` | `bd ready`, `bd list`, `git status`, `openspec list` |
-| `/research` | Parallel AI, codebase exploration |
+| `/research` | Parallel AI, Context7, grep.app, codebase exploration |
 | `/plan` | `bd create`, `openspec` (if strategic), `git checkout -b` |
 | `/dev` | Tests, code, `bd update`, `/tasks save` |
 | `/check` | Type check, lint, tests, SonarCloud |
