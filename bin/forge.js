@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.1.2 - Universal AI Agent Workflow
+ * Forge v1.1.3 - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
  *
  * Usage:
@@ -11,6 +11,7 @@
  *   npx forge setup --agents claude,cursor,windsurf
  *
  * CLI Flags:
+ *   --path, -p <dir>     Target project directory (creates if needed)
  *   --quick, -q          Use all defaults, minimal prompts
  *   --skip-external      Skip external services configuration
  *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
@@ -19,6 +20,7 @@
  *
  * Examples:
  *   npx forge setup --quick                    # All defaults, no prompts
+ *   npx forge setup -p ./my-project            # Setup in specific directory
  *   npx forge setup --agents claude cursor     # Just these agents
  *   npx forge setup --skip-external            # No service prompts
  *   npx forge setup --agents claude --quick    # Quick + specific agent
@@ -865,7 +867,7 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
   console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
   console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
-  console.log('  v1.1.2');
+  console.log('  v1.1.3');
   console.log('');
   if (subtitle) {
     console.log(`  ${subtitle}`);
@@ -1303,7 +1305,7 @@ async function interactiveSetup() {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.2 Setup Complete!');
+  console.log('  Forge v1.1.3 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1347,7 +1349,8 @@ function parseFlags() {
     skipExternal: false,
     agents: null,
     all: false,
-    help: false
+    help: false,
+    path: null
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -1361,6 +1364,15 @@ function parseFlags() {
       flags.all = true;
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true;
+    } else if (arg === '--path' || arg === '-p') {
+      // --path <directory> or -p <directory>
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        flags.path = args[i + 1];
+        i++; // Skip next arg
+      }
+    } else if (arg.startsWith('--path=')) {
+      // --path=/some/dir format
+      flags.path = arg.replace('--path=', '');
     } else if (arg === '--agents') {
       // --agents claude cursor format
       const agentList = [];
@@ -1403,6 +1415,8 @@ function showHelp() {
   console.log('  npx forge                     Minimal install (AGENTS.md + docs)');
   console.log('');
   console.log('Options:');
+  console.log('  --path, -p <dir>     Target project directory (default: current directory)');
+  console.log('                       Creates the directory if it doesn\'t exist');
   console.log('  --quick, -q          Use all defaults, minimal prompts');
   console.log('                       Auto-selects: all agents, GitHub Code Quality, ESLint');
   console.log('  --skip-external      Skip external services configuration');
@@ -1421,6 +1435,8 @@ function showHelp() {
   console.log('Examples:');
   console.log('  npx forge setup                          # Interactive setup');
   console.log('  npx forge setup --quick                  # All defaults, no prompts');
+  console.log('  npx forge setup -p ./my-project          # Setup in specific directory');
+  console.log('  npx forge setup --path=/home/user/app    # Same, different syntax');
   console.log('  npx forge setup --agents claude cursor   # Just these agents');
   console.log('  npx forge setup --agents=claude,cursor   # Same, different syntax');
   console.log('  npx forge setup --skip-external          # No service configuration');
@@ -1510,7 +1526,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Final summary
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.2 Quick Setup Complete!');
+  console.log('  Forge v1.1.3 Quick Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('Next steps:');
@@ -1733,7 +1749,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.2 Setup Complete!');
+  console.log('  Forge v1.1.3 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1779,6 +1795,38 @@ async function main() {
   if (flags.help) {
     showHelp();
     return;
+  }
+
+  // Handle --path option: change to target directory
+  if (flags.path) {
+    const targetPath = path.resolve(flags.path);
+
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(targetPath)) {
+      try {
+        fs.mkdirSync(targetPath, { recursive: true });
+        console.log(`Created directory: ${targetPath}`);
+      } catch (err) {
+        console.error(`Error creating directory: ${err.message}`);
+        process.exit(1);
+      }
+    }
+
+    // Verify it's a directory
+    if (!fs.statSync(targetPath).isDirectory()) {
+      console.error(`Error: ${targetPath} is not a directory`);
+      process.exit(1);
+    }
+
+    // Change to target directory
+    try {
+      process.chdir(targetPath);
+      console.log(`Working directory: ${targetPath}`);
+      console.log('');
+    } catch (err) {
+      console.error(`Error changing to directory: ${err.message}`);
+      process.exit(1);
+    }
   }
 
   if (command === 'setup') {
