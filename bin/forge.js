@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.1.0 - Universal AI Agent Workflow
+ * Forge v1.1.2 - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
  *
  * Usage:
@@ -865,7 +865,7 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
   console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
   console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
-  console.log('  v1.1.0');
+  console.log('  v1.1.2');
   console.log('');
   if (subtitle) {
     console.log(`  ${subtitle}`);
@@ -1103,10 +1103,14 @@ async function interactiveSetup() {
     output: process.stdout
   });
 
+  let setupCompleted = false;
+
   // Handle Ctrl+C gracefully
   rl.on('close', () => {
-    console.log('\n\nSetup cancelled.');
-    process.exit(0);
+    if (!setupCompleted) {
+      console.log('\n\nSetup cancelled.');
+      process.exit(0);
+    }
   });
 
   // Handle input errors
@@ -1291,6 +1295,7 @@ async function interactiveSetup() {
 
   await configureExternalServices(rl, question, selectedAgents, projectStatus);
 
+  setupCompleted = true;
   rl.close();
 
   // =============================================
@@ -1298,7 +1303,7 @@ async function interactiveSetup() {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.0 Setup Complete!');
+  console.log('  Forge v1.1.2 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1505,7 +1510,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Final summary
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.0 Quick Setup Complete!');
+  console.log('  Forge v1.1.2 Quick Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('Next steps:');
@@ -1523,10 +1528,14 @@ async function interactiveSetupWithFlags(flags) {
     output: process.stdout
   });
 
+  let setupCompleted = false;
+
   // Handle Ctrl+C gracefully
   rl.on('close', () => {
-    console.log('\n\nSetup cancelled.');
-    process.exit(0);
+    if (!setupCompleted) {
+      console.log('\n\nSetup cancelled.');
+      process.exit(0);
+    }
   });
 
   // Handle input errors
@@ -1716,6 +1725,7 @@ async function interactiveSetupWithFlags(flags) {
     console.log('Skipping external services configuration...');
   }
 
+  setupCompleted = true;
   rl.close();
 
   // =============================================
@@ -1723,7 +1733,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.1.0 Setup Complete!');
+  console.log('  Forge v1.1.2 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1843,12 +1853,16 @@ async function main() {
           input: process.stdin,
           output: process.stdout
         });
+        let setupCompleted = false;
         rl.on('close', () => {
-          console.log('\n\nSetup cancelled.');
-          process.exit(0);
+          if (!setupCompleted) {
+            console.log('\n\nSetup cancelled.');
+            process.exit(0);
+          }
         });
         const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
         await configureExternalServices(rl, question, selectedAgents);
+        setupCompleted = true;
         rl.close();
       } else {
         console.log('');
