@@ -506,11 +506,102 @@ EOF
 fi
 
 # ============================================
+# EXTERNAL SERVICES CONFIGURATION
+# ============================================
+echo ""
+echo -e "${YELLOW}=============================================="
+echo -e "  EXTERNAL SERVICES (Optional)"
+echo -e "==============================================${NC}"
+echo ""
+echo "Forge uses external services for enhanced features:"
+echo ""
+echo "  1) Parallel AI     - Deep research & web search"
+echo "     Get key: https://platform.parallel.ai"
+echo "     Used in: /research"
+echo ""
+echo "  2) Greptile        - AI code review on PRs"
+echo "     Get key: https://app.greptile.com/api"
+echo "     Used in: /review"
+echo ""
+echo "  3) SonarCloud      - Code quality & security"
+echo "     Get key: https://sonarcloud.io/account/security"
+echo "     Used in: /check, /review"
+echo ""
+echo "  4) OpenRouter      - Multi-model AI access"
+echo "     Get key: https://openrouter.ai/keys"
+echo "     Used in: AI features"
+echo ""
+echo "Would you like to configure API tokens now?"
+echo "(You can also add them later to .env.local)"
+echo ""
+
+read -p "Configure tokens? (y/n): " configure_tokens
+
+if [[ "$configure_tokens" == "y" || "$configure_tokens" == "Y" || "$configure_tokens" == "yes" ]]; then
+    echo ""
+    echo "Enter your API tokens (press Enter to skip any):"
+    echo ""
+
+    TOKENS_ADDED=false
+
+    read -p "  Parallel AI (PARALLEL_API_KEY): " PARALLEL_KEY
+    read -p "  Greptile (GREPTILE_API_KEY): " GREPTILE_KEY
+    read -p "  SonarCloud (SONAR_TOKEN): " SONAR_KEY
+    read -p "  OpenRouter (OPENROUTER_API_KEY): " OPENROUTER_KEY
+
+    # Create or update .env.local
+    if [[ -n "$PARALLEL_KEY" || -n "$GREPTILE_KEY" || -n "$SONAR_KEY" || -n "$OPENROUTER_KEY" ]]; then
+        # Add header if new file
+        if [ ! -f ".env.local" ]; then
+            cat > .env.local << 'ENV_HEADER'
+# External Service API Keys for Forge Workflow
+# Get your keys from:
+#   Parallel AI: https://platform.parallel.ai
+#   Greptile: https://app.greptile.com/api
+#   SonarCloud: https://sonarcloud.io/account/security
+#   OpenRouter: https://openrouter.ai/keys
+
+ENV_HEADER
+        fi
+
+        # Add tokens
+        [ -n "$PARALLEL_KEY" ] && echo "PARALLEL_API_KEY=$PARALLEL_KEY" >> .env.local && TOKENS_ADDED=true
+        [ -n "$GREPTILE_KEY" ] && echo "GREPTILE_API_KEY=$GREPTILE_KEY" >> .env.local && TOKENS_ADDED=true
+        [ -n "$SONAR_KEY" ] && echo "SONAR_TOKEN=$SONAR_KEY" >> .env.local && TOKENS_ADDED=true
+        [ -n "$OPENROUTER_KEY" ] && echo "OPENROUTER_API_KEY=$OPENROUTER_KEY" >> .env.local && TOKENS_ADDED=true
+
+        # Add .env.local to .gitignore if not present
+        if [ -f ".gitignore" ]; then
+            if ! grep -q "\.env\.local" .gitignore; then
+                echo "" >> .gitignore
+                echo "# Local environment variables" >> .gitignore
+                echo ".env.local" >> .gitignore
+            fi
+        else
+            echo "# Local environment variables" > .gitignore
+            echo ".env.local" >> .gitignore
+        fi
+
+        echo ""
+        if [ "$TOKENS_ADDED" = true ]; then
+            echo -e "  ${GREEN}Saved tokens to .env.local${NC}"
+            echo -e "  ${GREEN}Added .env.local to .gitignore${NC}"
+        fi
+    else
+        echo ""
+        echo "No tokens provided. You can add them later to .env.local"
+    fi
+else
+    echo ""
+    echo "Skipping token configuration. You can add tokens later to .env.local"
+fi
+
+# ============================================
 # SUCCESS MESSAGE
 # ============================================
 echo ""
 echo -e "${GREEN}=============================================="
-echo -e "  Forge v1.1.0 installed successfully!"
+echo -e "  Forge v1.1.0 Setup Complete!"
 echo -e "==============================================${NC}"
 echo ""
 

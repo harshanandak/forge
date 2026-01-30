@@ -410,6 +410,109 @@ your-project/
     └── WORKFLOW.md              # Complete guide
 ```
 
+## External Services & API Tokens
+
+Forge integrates with external services for enhanced capabilities. Store tokens in `.env.local`:
+
+```bash
+# .env.local (add to .gitignore!)
+
+# Required for PR workflow
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+
+# Parallel AI - Deep web research (/research stage)
+PARALLEL_API_KEY=your-parallel-ai-key
+
+# Greptile - AI code review (/review stage)
+GREPTILE_API_KEY=your-greptile-key
+
+# SonarCloud - Code quality (/check stage)
+SONAR_TOKEN=your-sonarcloud-token
+SONAR_ORGANIZATION=your-org
+SONAR_PROJECT_KEY=your-project-key
+
+# OpenRouter - Multi-model AI (optional)
+OPENROUTER_API_KEY=your-openrouter-key
+```
+
+### Service Setup
+
+| Service | Purpose | Get Token | Used In |
+|---------|---------|-----------|---------|
+| **GitHub CLI** | PR workflow | `gh auth login` | `/ship`, `/review`, `/merge` |
+| **Parallel AI** | Web research | [platform.parallel.ai](https://platform.parallel.ai) | `/research` |
+| **Greptile** | AI code review | [app.greptile.com](https://app.greptile.com) | `/review` |
+| **SonarCloud** | Code quality | [sonarcloud.io](https://sonarcloud.io) | `/check` |
+| **OpenRouter** | Multi-model AI | [openrouter.ai](https://openrouter.ai) | AI features |
+
+### Parallel AI Setup
+
+```bash
+# 1. Get API key from https://platform.parallel.ai
+# 2. Add to .env.local
+PARALLEL_API_KEY=your-key
+
+# 3. Test with curl
+API_KEY=$(grep "^PARALLEL_API_KEY=" .env.local | cut -d= -f2)
+curl -s -X POST "https://api.parallel.ai/v1beta/search" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "parallel-beta: search-extract-2025-10-10" \
+  -d '{"objective": "test query"}'
+```
+
+### Greptile Setup
+
+```bash
+# 1. Get API key from https://app.greptile.com
+# 2. Add to .env.local
+GREPTILE_API_KEY=your-key
+
+# 3. Index your repository (one-time)
+curl -X POST "https://api.greptile.com/v2/repositories" \
+  -H "Authorization: Bearer $GREPTILE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"remote": "github", "repository": "owner/repo"}'
+```
+
+### SonarCloud Setup
+
+```bash
+# 1. Create project at https://sonarcloud.io
+# 2. Get token from Security settings
+# 3. Add to .env.local
+SONAR_TOKEN=your-token
+SONAR_ORGANIZATION=your-org
+SONAR_PROJECT_KEY=your-project
+
+# 4. Add sonar-project.properties
+echo "sonar.organization=$SONAR_ORGANIZATION
+sonar.projectKey=$SONAR_PROJECT_KEY
+sonar.sources=src" > sonar-project.properties
+
+# 5. Run analysis (in CI or locally)
+npx sonarqube-scanner
+```
+
+### Loading Tokens
+
+Forge includes a helper script:
+
+```bash
+# .claude/scripts/load-env.sh
+source .claude/scripts/load-env.sh
+
+# Or manually
+export $(grep -v '^#' .env.local | xargs)
+```
+
+### Security Notes
+
+- **NEVER commit `.env.local`** - add to `.gitignore`
+- Use GitHub Secrets for CI/CD
+- Rotate tokens periodically
+- Use least-privilege tokens where possible
+
 ## Prerequisites
 
 ### Required

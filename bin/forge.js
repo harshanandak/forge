@@ -9,6 +9,10 @@
  *   npx forge setup             -> Interactive agent configuration
  *   npx forge setup --all       -> Install for all agents
  *   npx forge setup --agents claude,cursor,windsurf
+ *
+ * Also works with bun:
+ *   bun add forge-workflow
+ *   bunx forge setup
  */
 
 const fs = require('fs');
@@ -107,6 +111,42 @@ const AGENTS = {
 };
 
 const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify'];
+
+// External services that can be configured
+const EXTERNAL_SERVICES = {
+  parallel: {
+    name: 'Parallel AI',
+    description: 'Deep research & web search',
+    envVar: 'PARALLEL_API_KEY',
+    getKeyUrl: 'https://platform.parallel.ai',
+    required: false,
+    usedIn: ['/research']
+  },
+  greptile: {
+    name: 'Greptile',
+    description: 'AI code review on PRs',
+    envVar: 'GREPTILE_API_KEY',
+    getKeyUrl: 'https://app.greptile.com/api',
+    required: false,
+    usedIn: ['/review']
+  },
+  sonarcloud: {
+    name: 'SonarCloud',
+    description: 'Code quality & security',
+    envVar: 'SONAR_TOKEN',
+    getKeyUrl: 'https://sonarcloud.io/account/security',
+    required: false,
+    usedIn: ['/check', '/review']
+  },
+  openrouter: {
+    name: 'OpenRouter',
+    description: 'Multi-model AI access',
+    envVar: 'OPENROUTER_API_KEY',
+    getKeyUrl: 'https://openrouter.ai/keys',
+    required: false,
+    usedIn: ['AI features']
+  }
+};
 
 // Universal SKILL.md content
 const SKILL_CONTENT = `---
@@ -255,6 +295,155 @@ function stripFrontmatter(content) {
   return match ? match[1] : content;
 }
 
+// Read existing .env.local
+function readEnvFile() {
+  const envPath = path.join(projectRoot, '.env.local');
+  try {
+    if (fs.existsSync(envPath)) {
+      return fs.readFileSync(envPath, 'utf8');
+    }
+  } catch (err) {}
+  return '';
+}
+
+// Write or update .env.local
+function writeEnvTokens(tokens) {
+  const envPath = path.join(projectRoot, '.env.local');
+  let content = readEnvFile();
+
+  // Parse existing content
+  const lines = content.split('\n');
+  const existingVars = {};
+  lines.forEach(line => {
+    const match = line.match(/^([A-Z_]+)=/);
+    if (match) {
+      existingVars[match[1]] = line;
+    }
+  });
+
+  // Add/update tokens
+  let added = [];
+  Object.entries(tokens).forEach(([key, value]) => {
+    if (value && value.trim()) {
+      existingVars[key] = `${key}=${value.trim()}`;
+      added.push(key);
+    }
+  });
+
+  // Rebuild file with comments
+  const outputLines = [];
+
+  // Add header if new file
+  if (!content.includes('# External Service API Keys')) {
+    outputLines.push('# External Service API Keys for Forge Workflow');
+    outputLines.push('# Get your keys from:');
+    outputLines.push('#   Parallel AI: https://platform.parallel.ai');
+    outputLines.push('#   Greptile: https://app.greptile.com/api');
+    outputLines.push('#   SonarCloud: https://sonarcloud.io/account/security');
+    outputLines.push('#   OpenRouter: https://openrouter.ai/keys');
+    outputLines.push('');
+  }
+
+  // Add existing content (preserve order and comments)
+  lines.forEach(line => {
+    const match = line.match(/^([A-Z_]+)=/);
+    if (match && existingVars[match[1]]) {
+      outputLines.push(existingVars[match[1]]);
+      delete existingVars[match[1]]; // Mark as added
+    } else if (line.trim()) {
+      outputLines.push(line);
+    }
+  });
+
+  // Add any new tokens not in original file
+  Object.values(existingVars).forEach(line => {
+    outputLines.push(line);
+  });
+
+  // Ensure ends with newline
+  let finalContent = outputLines.join('\n').trim() + '\n';
+
+  fs.writeFileSync(envPath, finalContent);
+
+  // Add .env.local to .gitignore if not present
+  const gitignorePath = path.join(projectRoot, '.gitignore');
+  try {
+    let gitignore = '';
+    if (fs.existsSync(gitignorePath)) {
+      gitignore = fs.readFileSync(gitignorePath, 'utf8');
+    }
+    if (!gitignore.includes('.env.local')) {
+      fs.appendFileSync(gitignorePath, '\n# Local environment variables\n.env.local\n');
+    }
+  } catch (err) {}
+
+  return added;
+}
+
+// Configure external services interactively
+async function configureExternalServices(rl, question) {
+  console.log('');
+  console.log('==============================================');
+  console.log('  External Services Configuration');
+  console.log('==============================================');
+  console.log('');
+  console.log('Forge uses external services for enhanced features:');
+  console.log('');
+
+  const serviceKeys = Object.keys(EXTERNAL_SERVICES);
+  serviceKeys.forEach((key, index) => {
+    const svc = EXTERNAL_SERVICES[key];
+    console.log(`  ${(index + 1).toString().padStart(2)}) ${svc.name.padEnd(15)} - ${svc.description}`);
+    console.log(`      Used in: ${svc.usedIn.join(', ')}`);
+    console.log(`      Get key: ${svc.getKeyUrl}`);
+    console.log('');
+  });
+
+  console.log('Would you like to configure API tokens now?');
+  console.log('(You can also add them later to .env.local)');
+  console.log('');
+
+  const configure = await question('Configure tokens? (y/n): ');
+
+  if (configure.toLowerCase() !== 'y' && configure.toLowerCase() !== 'yes') {
+    console.log('');
+    console.log('Skipping token configuration. You can add tokens later to .env.local');
+    return;
+  }
+
+  console.log('');
+  console.log('Enter your API tokens (press Enter to skip any):');
+  console.log('');
+
+  const tokens = {};
+
+  for (const [key, svc] of Object.entries(EXTERNAL_SERVICES)) {
+    const token = await question(`  ${svc.name} (${svc.envVar}): `);
+    if (token && token.trim()) {
+      tokens[svc.envVar] = token.trim();
+    }
+  }
+
+  // Check if any tokens provided
+  const providedTokens = Object.keys(tokens).length;
+  if (providedTokens === 0) {
+    console.log('');
+    console.log('No tokens provided. You can add them later to .env.local');
+    return;
+  }
+
+  // Write to .env.local
+  const added = writeEnvTokens(tokens);
+
+  console.log('');
+  console.log(`Saved ${added.length} token(s) to .env.local:`);
+  added.forEach(key => {
+    console.log(`  - ${key}`);
+  });
+  console.log('');
+  console.log('Note: .env.local has been added to .gitignore');
+}
+
 // Minimal installation (postinstall)
 function minimalInstall() {
   console.log('');
@@ -310,7 +499,8 @@ function minimalInstall() {
   console.log('');
   console.log('To configure for your AI coding agents, run:');
   console.log('');
-  console.log('  npx forge setup');
+  console.log('  npx forge setup      # Interactive setup (agents + API tokens)');
+  console.log('  bunx forge setup     # Same with bun');
   console.log('');
   console.log('Or specify agents directly:');
   console.log('  npx forge setup --agents claude,cursor,windsurf');
@@ -448,6 +638,13 @@ async function interactiveSetup() {
   console.log('');
   console.log('Forge v1.1.0 - Agent Configuration');
   console.log('');
+
+  // =============================================
+  // STEP 1: Agent Selection
+  // =============================================
+  console.log('STEP 1: Select AI Coding Agents');
+  console.log('================================');
+  console.log('');
   console.log('Which AI coding agents do you use?');
   console.log('(Enter numbers separated by spaces, or "all")');
   console.log('');
@@ -462,7 +659,6 @@ async function interactiveSetup() {
   console.log('');
 
   const answer = await question('Your selection: ');
-  rl.close();
 
   let selectedAgents = [];
 
@@ -475,6 +671,7 @@ async function interactiveSetup() {
 
   if (selectedAgents.length === 0) {
     console.log('No agents selected. Run "npx forge setup" to try again.');
+    rl.close();
     return;
   }
 
@@ -505,20 +702,62 @@ async function interactiveSetup() {
     }
   });
 
-  // Success message
+  // Agent installation success
   console.log('');
-  console.log('==============================================');
-  console.log('  Forge v1.1.0 installed successfully!');
-  console.log('==============================================');
+  console.log('Agent configuration complete!');
   console.log('');
   console.log('Installed for:');
   selectedAgents.forEach(key => {
     const agent = AGENTS[key];
     console.log(`  * ${agent.name}`);
   });
+
+  // =============================================
+  // STEP 2: External Services Configuration
+  // =============================================
   console.log('');
-  console.log('Get started with: /status');
-  console.log('Full guide: docs/WORKFLOW.md');
+  console.log('STEP 2: External Services (Optional)');
+  console.log('=====================================');
+
+  await configureExternalServices(rl, question);
+
+  rl.close();
+
+  // =============================================
+  // Final Summary
+  // =============================================
+  console.log('');
+  console.log('==============================================');
+  console.log('  Forge v1.1.0 Setup Complete!');
+  console.log('==============================================');
+  console.log('');
+  console.log('What\'s installed:');
+  console.log('  - AGENTS.md (universal instructions)');
+  console.log('  - docs/WORKFLOW.md (full workflow guide)');
+  console.log('  - docs/research/TEMPLATE.md (research template)');
+  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    if (agent.linkFile) {
+      console.log(`  - ${agent.linkFile} (${agent.name})`);
+    }
+    if (agent.hasCommands) {
+      console.log(`  - .claude/commands/ (9 workflow commands)`);
+    }
+    if (agent.hasSkill) {
+      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+      if (skillDir) {
+        console.log(`  - ${skillDir}/SKILL.md`);
+      }
+    }
+  });
+  console.log('');
+  console.log('Next steps:');
+  console.log('  1. Install optional tools: beads-cli, openspec-cli');
+  console.log('  2. Start with: /status');
+  console.log('  3. Read the guide: docs/WORKFLOW.md');
+  console.log('');
+  console.log('Happy shipping!');
   console.log('');
 }
 
