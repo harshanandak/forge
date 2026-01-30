@@ -356,9 +356,10 @@ function writeFile(filePath, content) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(fullPath, content);
+    fs.writeFileSync(fullPath, content, { mode: 0o644 });
     return true;
   } catch (err) {
+    console.error(`  ✗ Failed to write ${filePath}: ${err.message}`);
     return false;
   }
 }
@@ -387,8 +388,19 @@ function copyFile(src, dest) {
 }
 
 function createSymlinkOrCopy(source, target) {
-  const fullSource = path.join(projectRoot, source);
-  const fullTarget = path.join(projectRoot, target);
+  const fullSource = path.resolve(projectRoot, source);
+  const fullTarget = path.resolve(projectRoot, target);
+  const resolvedProjectRoot = path.resolve(projectRoot);
+
+  // SECURITY: Prevent path traversal attacks
+  if (!fullSource.startsWith(resolvedProjectRoot)) {
+    console.error(`  ✗ Security: Source path escape blocked: ${source}`);
+    return false;
+  }
+  if (!fullTarget.startsWith(resolvedProjectRoot)) {
+    console.error(`  ✗ Security: Target path escape blocked: ${target}`);
+    return false;
+  }
 
   try {
     if (fs.existsSync(fullTarget)) {
@@ -407,6 +419,7 @@ function createSymlinkOrCopy(source, target) {
       return 'copied';
     }
   } catch (err) {
+    console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
     return false;
   }
 }
@@ -930,6 +943,12 @@ async function interactiveSetup() {
     output: process.stdout
   });
 
+  // Handle Ctrl+C gracefully
+  rl.on('close', () => {
+    console.log('\n\nSetup cancelled.');
+    process.exit(0);
+  });
+
   const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
 
   console.log('');
@@ -972,11 +991,20 @@ async function interactiveSetup() {
     selectedAgents = agentKeys;
   } else {
     const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
-    selectedAgents = nums.map(n => agentKeys[n - 1]).filter(Boolean);
+
+    // Validate numbers are in range
+    const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
+    const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
+
+    if (invalidNums.length > 0) {
+      console.log(`  ⚠ Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
+    }
+
+    selectedAgents = validNums.map(n => agentKeys[n - 1]).filter(Boolean);
   }
 
   if (selectedAgents.length === 0) {
-    console.log('No agents selected. Run "npx forge setup" to try again.');
+    console.log('No valid agents selected. Run "npx forge setup" to try again.');
     rl.close();
     return;
   }

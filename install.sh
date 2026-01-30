@@ -67,6 +67,13 @@ else
     PREREQ_ERRORS+=("Node.js 20+ - Install from https://nodejs.org")
 fi
 
+# Required: curl (for downloading files)
+if ! command -v curl &> /dev/null; then
+    PREREQ_ERRORS+=("curl - Install from your package manager (apt install curl, brew install curl)")
+else
+    echo -e "  ${GREEN}✓${NC} curl $(curl --version | head -1 | cut -d' ' -f2)"
+fi
+
 # Detect package manager
 if command -v bun &> /dev/null; then
     PKG_MANAGER="bun"
@@ -234,16 +241,28 @@ strip_frontmatter() {
     sed '1{/^---$/!q};1,/^---$/d;1,/^---$/d' "$1"
 }
 
-# Function to create symlink or copy
+# Function to create symlink or copy (with proper error handling)
 create_link() {
     local source="$1"
     local target="$2"
+    local target_dir
+    target_dir=$(dirname "$target")
+
+    # Create target directory if needed
+    if [ ! -d "$target_dir" ]; then
+        mkdir -p "$target_dir" 2>/dev/null || true
+    fi
+
+    # Remove existing file/link
     rm -f "$target" 2>/dev/null || true
+
+    # Try symlink first, fallback to copy
     if ln -s "$source" "$target" 2>/dev/null; then
         echo -e "  ${GREEN}Linked: $target -> $source${NC}"
-    else
-        cp "$source" "$target" 2>/dev/null || true
+    elif cp "$source" "$target" 2>/dev/null; then
         echo -e "  ${GREEN}Copied: $target${NC}"
+    else
+        echo -e "  ${RED}Failed: Could not link or copy $target${NC}"
     fi
 }
 
