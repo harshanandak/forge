@@ -319,6 +319,23 @@ if [ "$INSTALL_CLAUDE" = true ]; then
     echo "$SKILL_CONTENT" > .claude/skills/forge-workflow/SKILL.md
     echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
 
+    # Create .mcp.json with Context7 MCP (if not exists)
+    if [ ! -f ".mcp.json" ]; then
+        cat > .mcp.json << 'MCP_EOF'
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+MCP_EOF
+        echo -e "  ${GREEN}Created: .mcp.json with Context7 MCP${NC}"
+    else
+        echo -e "  ${YELLOW}Skipped: .mcp.json already exists${NC}"
+    fi
+
     # Link CLAUDE.md -> AGENTS.md
     create_link "AGENTS.md" "CLAUDE.md"
 fi
@@ -507,6 +524,30 @@ if [ "$INSTALL_CONTINUE" = true ]; then
     # Create SKILL.md
     echo "$SKILL_CONTENT" > .continue/skills/forge-workflow/SKILL.md
     echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+
+    # Create config.yaml with Context7 MCP (if not exists)
+    if [ ! -f ".continue/config.yaml" ]; then
+        cat > .continue/config.yaml << 'CONTINUE_EOF'
+# Continue Configuration
+# https://docs.continue.dev/customize/deep-dives/configuration
+
+name: Forge Workflow
+version: "1.0"
+
+# MCP Servers for enhanced capabilities
+mcpServers:
+  - name: context7
+    command: npx
+    args:
+      - "-y"
+      - "@upstash/context7-mcp@latest"
+
+# Rules loaded from .continuerules
+CONTINUE_EOF
+        echo -e "  ${GREEN}Created: config.yaml with Context7 MCP${NC}"
+    else
+        echo -e "  ${YELLOW}Skipped: config.yaml already exists${NC}"
+    fi
 fi
 
 # ============================================

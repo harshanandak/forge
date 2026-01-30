@@ -855,6 +855,52 @@ ${stripFrontmatter(content)}`;
     }
   }
 
+  // Create .mcp.json with Context7 MCP (Claude Code only)
+  if (agentKey === 'claude') {
+    const mcpPath = path.join(projectRoot, '.mcp.json');
+    if (!fs.existsSync(mcpPath)) {
+      const mcpConfig = {
+        mcpServers: {
+          context7: {
+            command: 'npx',
+            args: ['-y', '@upstash/context7-mcp@latest']
+          }
+        }
+      };
+      writeFile('.mcp.json', JSON.stringify(mcpConfig, null, 2));
+      console.log('  Created: .mcp.json with Context7 MCP');
+    } else {
+      console.log('  Skipped: .mcp.json already exists');
+    }
+  }
+
+  // Create config.yaml with Context7 MCP (Continue only)
+  if (agentKey === 'continue') {
+    const configPath = path.join(projectRoot, '.continue/config.yaml');
+    if (!fs.existsSync(configPath)) {
+      const continueConfig = `# Continue Configuration
+# https://docs.continue.dev/customize/deep-dives/configuration
+
+name: Forge Workflow
+version: "1.0"
+
+# MCP Servers for enhanced capabilities
+mcpServers:
+  - name: context7
+    command: npx
+    args:
+      - "-y"
+      - "@upstash/context7-mcp@latest"
+
+# Rules loaded from .continuerules
+`;
+      writeFile('.continue/config.yaml', continueConfig);
+      console.log('  Created: config.yaml with Context7 MCP');
+    } else {
+      console.log('  Skipped: config.yaml already exists');
+    }
+  }
+
   // Create link file
   if (agent.linkFile) {
     const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile);

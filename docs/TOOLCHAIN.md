@@ -387,7 +387,7 @@ The system SHALL support optional 2FA
 
 ### Context7 - Library Documentation
 
-**Package**: `@anthropic/context7-mcp`
+**Package**: `@upstash/context7-mcp@latest`
 **Purpose**: Up-to-date documentation and code examples for any programming library
 **Used in**: `/research` stage, any library lookup
 
@@ -402,7 +402,7 @@ Add to `.mcp.json` in your project root:
   "mcpServers": {
     "context7": {
       "command": "npx",
-      "args": ["-y", "@anthropic/context7-mcp"]
+      "args": ["-y", "@upstash/context7-mcp@latest"]
     }
   }
 }
@@ -414,7 +414,7 @@ Add to `.mcp.json` in your project root:
   "mcpServers": {
     "context7": {
       "command": "bunx",
-      "args": ["--bun", "@anthropic/context7-mcp"]
+      "args": ["--bun", "@upstash/context7-mcp@latest"]
     }
   }
 }
