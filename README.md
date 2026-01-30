@@ -6,6 +6,15 @@ A 9-stage TDD-first workflow for **ALL AI coding agents**. Ship features with co
 /status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
 ```
 
+## Why Forge?
+
+- **TDD-First**: Write tests before code (RED-GREEN-REFACTOR)
+- **Research-First**: Understand before building, document decisions
+- **Security Built-In**: OWASP Top 10 analysis for every feature
+- **Multi-Session**: Track work across sessions with Beads
+- **Strategic Planning**: Use OpenSpec for architecture changes
+- **Universal**: Works with 11+ AI coding agents
+
 ## Supported AI Coding Agents
 
 Forge works with **all major AI coding agents** using the universal [AGENTS.md](https://agents.md/) standard:
@@ -46,69 +55,359 @@ npx forge setup --agents claude,cursor,windsurf
 npx forge setup --all
 ```
 
-### Option 2: bun
+### Option 2: curl (Interactive)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh | bash
+```
+
+### Option 3: bun
 
 ```bash
 bun add forge-workflow
 bunx forge setup
 ```
 
-### Option 3: curl (Interactive)
+## The Toolchain
+
+Forge integrates with three powerful tools for complete workflow management:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        FORGE TOOLCHAIN                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────┐   │
+│  │   BEADS     │   │  OPENSPEC   │   │    CLAUDE TASKS     │   │
+│  │             │   │             │   │                     │   │
+│  │ Issue       │   │ Proposal    │   │ Save/Resume         │   │
+│  │ Tracking    │   │ System      │   │ Task State          │   │
+│  │             │   │             │   │                     │   │
+│  │ bd create   │   │ openspec    │   │ /tasks save         │   │
+│  │ bd ready    │   │ proposal    │   │ /tasks resume       │   │
+│  │ bd close    │   │ create      │   │ /tasks list         │   │
+│  └─────────────┘   └─────────────┘   └─────────────────────┘   │
+│        │                 │                     │                │
+│        └─────────────────┴─────────────────────┘                │
+│                          │                                      │
+│                    ┌─────▼─────┐                                │
+│                    │   FORGE   │                                │
+│                    │  9-Stage  │                                │
+│                    │  Workflow │                                │
+│                    └───────────┘                                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Beads - Issue Tracking Across Sessions
+
+[Beads](https://github.com/beads-ai/beads-cli) provides git-backed issue tracking that persists across AI conversation sessions.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh | bash
+# Install
+npm install -g beads-cli
+
+# Initialize in your project
+bd init
+
+# Create an issue
+bd create "Add user authentication"
+
+# Find work ready to start (no blockers)
+bd ready
+
+# Update status
+bd update <id> --status in_progress
+
+# Add dependencies
+bd dep add <issue> <depends-on>
+
+# Complete work
+bd close <id>
+
+# Sync with git
+bd sync
 ```
 
-The curl installer is interactive - it will ask which agents you use.
+**Why Beads?**
+- Issues persist even when Claude's context is cleared
+- Dependencies track what blocks what
+- Git-backed = version controlled = team-shareable
+- `bd ready` shows what you can work on NOW
 
-### Option 4: GitHub Template (New projects)
+### OpenSpec - Architectural Proposals
 
-1. Click "Use this template" on GitHub
-2. Clone your new repo
-3. Run `npx forge setup` to configure
+[OpenSpec](https://github.com/openspec-ai/openspec-cli) provides a formal proposal system for strategic changes.
 
-## What Gets Installed
+```bash
+# Install
+npm install -g openspec-cli
 
-### Minimal Install (npm install)
+# Initialize
+openspec init
+
+# Create a proposal for a major feature
+openspec proposal create stripe-billing
+
+# This creates:
+# openspec/changes/stripe-billing/
+#   ├── proposal.md      # Problem, solution, alternatives, impact
+#   ├── tasks.md         # TDD-ordered implementation checklist
+#   ├── design.md        # Technical decisions
+#   └── specs/           # Delta changes to existing specs
+```
+
+**When to use OpenSpec:**
+
+| Scope | Use OpenSpec? | Example |
+|-------|---------------|---------|
+| **Tactical** (< 1 day) | No | Bug fix, small feature |
+| **Strategic** (architecture) | Yes | New service, major refactor |
+| **Breaking changes** | Yes | API changes, schema migrations |
+| **Multi-session work** | Yes | Large features |
+
+**Proposal Workflow:**
+```bash
+# 1. Create proposal
+openspec proposal create feature-name
+
+# 2. Write proposal documents
+# (problem, solution, alternatives, impact)
+
+# 3. Validate
+openspec validate feature-name --strict
+
+# 4. Get approval (PR review)
+# 5. Implement following tasks.md
+# 6. Archive when complete
+openspec archive feature-name
+```
+
+### Claude Tasks - Save and Resume Work
+
+Claude Code's built-in task system lets you save work state and resume later.
+
+```bash
+# Save current task state
+/tasks save "implementing auth flow"
+
+# List saved tasks
+/tasks list
+
+# Resume a saved task
+/tasks resume <task-id>
+
+# Delete a task
+/tasks delete <task-id>
+```
+
+**When to use Claude Tasks:**
+- Taking a break mid-implementation
+- Switching between features
+- Preserving context before `/clear`
+- Handoff to another session
+
+## The 9 Stages
+
+| Stage | Command | What It Does | Tools Used |
+|-------|---------|--------------|------------|
+| 1 | `/status` | Check current context | Beads, Git |
+| 2 | `/research` | Deep research, document findings | Web search, Codebase |
+| 3 | `/plan` | Create plan, branch, tracking | Beads, OpenSpec |
+| 4 | `/dev` | TDD development (RED-GREEN-REFACTOR) | Tests, Code |
+| 5 | `/check` | Validation (type/lint/security/tests) | CI tools |
+| 6 | `/ship` | Create PR with documentation | GitHub CLI |
+| 7 | `/review` | Address ALL PR feedback | GitHub, Greptile |
+| 8 | `/merge` | Update docs, merge, cleanup | Git |
+| 9 | `/verify` | Final documentation check | Docs |
+
+## Complete Workflow Example
+
+```bash
+# ═══════════════════════════════════════════════════════════
+# STAGE 1: STATUS - Where are we?
+# ═══════════════════════════════════════════════════════════
+/status
+
+# Checks:
+# - bd ready (Beads issues ready to work)
+# - bd list --status in_progress (active work)
+# - git status (branch state)
+# - openspec list --active (pending proposals)
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 2: RESEARCH - Understand before building
+# ═══════════════════════════════════════════════════════════
+/research user-authentication
+
+# Creates: docs/research/user-authentication.md
+# Contains:
+# - Codebase analysis (existing patterns)
+# - Web research (best practices, security)
+# - OWASP Top 10 analysis
+# - Key decisions with reasoning
+# - TDD test scenarios (identified UPFRONT)
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 3: PLAN - Create formal plan
+# ═══════════════════════════════════════════════════════════
+/plan user-authentication
+
+# If TACTICAL (< 1 day):
+bd create "Add user authentication"
+git checkout -b feat/user-authentication
+
+# If STRATEGIC (architecture change):
+openspec proposal create user-authentication
+# Write proposal.md, tasks.md, design.md
+openspec validate user-authentication --strict
+bd create "User auth (see openspec/changes/user-authentication)"
+git checkout -b feat/user-authentication
+# Create PR for proposal approval first!
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 4: DEV - TDD Implementation
+# ═══════════════════════════════════════════════════════════
+/dev
+
+# TDD Cycle (repeat for each feature):
+# RED:    Write failing test
+# GREEN:  Make it pass (minimal code)
+# REFACTOR: Clean up
+# COMMIT: git commit after each GREEN
+
+bd update <id> --status in_progress
+
+# If taking a break:
+/tasks save "auth flow - completed login, starting signup"
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 5: CHECK - Validate everything
+# ═══════════════════════════════════════════════════════════
+/check
+
+# Runs:
+# - Type checking (tsc/typecheck)
+# - Linting (eslint)
+# - Unit tests
+# - Integration tests
+# - E2E tests
+# - Security scan
+
+# If fails:
+bd update <id> --status blocked --comment "Type errors in auth.ts"
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 6: SHIP - Create PR
+# ═══════════════════════════════════════════════════════════
+/ship
+
+bd update <id> --status done
+git push -u origin feat/user-authentication
+
+gh pr create --title "feat: user authentication" --body "
+## Summary
+- JWT-based auth with refresh tokens
+- Login/signup/logout flows
+- Password reset via email
+
+## Research
+See: docs/research/user-authentication.md
+
+## Beads Issue
+Closes: beads-abc123
+
+## Test Coverage
+- 45 unit tests
+- 12 integration tests
+- 8 E2E tests
+"
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 7: REVIEW - Address ALL feedback
+# ═══════════════════════════════════════════════════════════
+/review 123
+
+# Address:
+# - GitHub Actions failures
+# - Greptile comments
+# - SonarCloud issues
+# - Human reviewer comments
+
+# Fix, commit, push
+git commit -m "fix: address PR review feedback"
+git push
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 8: MERGE - Complete the work
+# ═══════════════════════════════════════════════════════════
+/merge 123
+
+# Update docs BEFORE merge:
+# - docs/planning/PROGRESS.md
+# - API documentation
+# - README if user-facing
+
+gh pr merge 123 --squash --delete-branch
+
+# If OpenSpec was used:
+openspec archive user-authentication
+
+bd sync
+git checkout main && git pull
+
+# ═══════════════════════════════════════════════════════════
+# STAGE 9: VERIFY - Final documentation check
+# ═══════════════════════════════════════════════════════════
+/verify
+
+# Verify:
+# - PROGRESS.md updated
+# - API docs current
+# - README examples work
+# - Cross-references valid
+
+# Done! Back to /status for next task
+```
+
+## Directory Structure
+
+After running `npx forge setup`, only selected agents are configured:
 
 ```
 your-project/
-├── AGENTS.md                # Universal standard
-└── docs/
-    ├── WORKFLOW.md          # Complete guide
-    ├── planning/PROGRESS.md # Progress tracking
-    └── research/TEMPLATE.md # Research template
-```
-
-### After Setup (npx forge setup)
-
-Only the agents you select get configured:
-
-```
-# If you selected Claude Code + Cursor + Windsurf:
-
-your-project/
-├── AGENTS.md                    # Universal standard
-├── CLAUDE.md                    # -> linked to AGENTS.md
-├── .cursorrules                 # -> linked to AGENTS.md
-├── .windsurfrules               # -> linked to AGENTS.md
+├── AGENTS.md                    # Universal standard (always created)
+├── CLAUDE.md                    # -> linked to AGENTS.md (if Claude selected)
+├── GEMINI.md                    # -> linked (if Antigravity selected)
+├── .cursorrules                 # -> linked (if Cursor selected)
+├── .windsurfrules               # -> linked (if Windsurf selected)
+├── .clinerules                  # -> linked (if Cline/Roo selected)
 │
-├── .claude/
+├── .beads/                      # Beads issue tracking (if bd init)
+│   └── issues/
+│
+├── openspec/                    # OpenSpec proposals (if openspec init)
+│   ├── specs/
+│   └── changes/
+│
+├── .claude/                     # Claude Code (if selected)
 │   ├── commands/                # 9 workflow commands
-│   ├── rules/workflow.md
-│   └── skills/forge-workflow/
-│
-├── .cursor/
-│   ├── rules/forge-workflow.mdc
-│   └── skills/forge-workflow/
-│
-├── .windsurf/
-│   ├── workflows/               # Converted commands
 │   ├── rules/
 │   └── skills/forge-workflow/
 │
+├── .cursor/                     # Cursor (if selected)
+│   ├── rules/forge-workflow.mdc
+│   └── skills/forge-workflow/
+│
+├── .windsurf/                   # Windsurf (if selected)
+│   ├── workflows/
+│   └── skills/forge-workflow/
+│
 └── docs/
-    └── ...
+    ├── planning/PROGRESS.md     # Project progress
+    ├── research/                # Research documents
+    │   └── TEMPLATE.md
+    └── WORKFLOW.md              # Complete guide
 ```
 
 ## Prerequisites
@@ -132,149 +431,200 @@ your-project/
 
 - **Beads** - Issue tracking across sessions
   ```bash
-  npm install -g beads-cli && bd init
+  npm install -g beads-cli
+  bd init
   ```
 
 ### Optional
 
-- **OpenSpec** - Architectural proposals for strategic changes
+- **OpenSpec** - Architectural proposals
   ```bash
-  npm install -g openspec-cli && openspec init
+  npm install -g openspec-cli
+  openspec init
   ```
 
-## The 9 Stages
+## Quick Reference
 
-| Stage | Command | What It Does |
-|-------|---------|--------------|
-| 1 | `/status` | Check current context, active work, recent completions |
-| 2 | `/research` | Deep research with web search, document findings |
-| 3 | `/plan` | Create implementation plan, branch, tracking |
-| 4 | `/dev` | TDD development (RED-GREEN-REFACTOR cycles) |
-| 5 | `/check` | Validation (type/lint/security/tests) |
-| 6 | `/ship` | Create PR with full documentation |
-| 7 | `/review` | Address ALL PR feedback |
-| 8 | `/merge` | Update docs, merge, cleanup |
-| 9 | `/verify` | Final documentation verification |
-
-## Quick Start
+### Beads Commands
 
 ```bash
-# 1. Check what's happening
-/status
+bd ready                         # Show work with no blockers
+bd create "title"                # Create issue
+bd show <id>                     # View issue details
+bd update <id> --status X        # Update status
+bd dep add <issue> <blocks>      # Add dependency
+bd close <id>                    # Complete issue
+bd sync                          # Sync with git
+```
 
-# 2. Research your feature
-/research user-authentication
+### OpenSpec Commands
 
-# 3. Plan the implementation
-/plan user-authentication
+```bash
+openspec proposal create <name>  # Create proposal
+openspec validate <name>         # Validate proposal
+openspec list --active           # List active proposals
+openspec archive <name>          # Archive completed
+```
 
-# 4. Develop with TDD
-/dev
+### Claude Tasks Commands
 
-# 5. Validate everything
-/check
+```bash
+/tasks save "description"        # Save current state
+/tasks list                      # List saved tasks
+/tasks resume <id>               # Resume a task
+/tasks delete <id>               # Delete a task
+```
 
-# 6. Ship it
-/ship
+### Forge Commands
+
+```bash
+/status                          # Check current state
+/research <feature>              # Research a feature
+/plan <feature>                  # Create implementation plan
+/dev                             # TDD development
+/check                           # Run all validations
+/ship                            # Create PR
+/review <pr>                     # Address PR feedback
+/merge <pr>                      # Merge PR
+/verify                          # Final doc check
 ```
 
 ## Core Principles
 
 ### TDD-First
-- Write tests BEFORE implementation
-- RED: Write failing test
-- GREEN: Make it pass
-- REFACTOR: Clean up
-- Commit after each GREEN cycle
+
+Every feature starts with tests:
+
+```
+RED    -> Write a failing test
+GREEN  -> Write minimal code to pass
+REFACTOR -> Clean up, commit
+REPEAT -> Next test case
+```
 
 ### Research-First
-- Understand before building
-- Document decisions with evidence
-- Use web research for best practices
-- Create `docs/research/<feature>.md`
+
+Before building, understand:
+
+1. **Codebase** - Existing patterns, affected modules
+2. **Best practices** - Web research, official docs
+3. **Security** - OWASP Top 10 analysis
+4. **Decisions** - Document WHY, not just WHAT
 
 ### Security Built-In
-- OWASP Top 10 analysis for every feature
-- Security tests as part of TDD
-- Automated scans + manual review
+
+Every feature includes:
+
+- OWASP Top 10 analysis in research
+- Security test scenarios in TDD
+- Automated scans in `/check`
+- Security review in PR
 
 ### Documentation Progressive
-- Update docs at each relevant stage
-- Verify completeness with `/verify`
-- Never accumulate doc debt
 
-## Configuration
+Update docs at each stage:
 
-Customize commands for your tech stack in your project's `CLAUDE.md` (or `AGENTS.md`):
+- `/research` -> Research document
+- `/plan` -> Beads issue, OpenSpec (if strategic)
+- `/ship` -> PR description
+- `/merge` -> PROGRESS.md, API docs
+- `/verify` -> Cross-check everything
 
-```markdown
-## Build Commands
-- Type check: `npm run typecheck`
-- Lint: `npm run lint`
-- Test: `npm run test`
-- Security: `npm audit`
-```
+## Agent Compatibility
 
-## Optional: Beads Issue Tracking
+Forge is designed for Claude Code's extensive features but adapts to all agents:
 
-Forge integrates with [Beads](https://github.com/beads-ai/beads-cli) for persistent issue tracking across sessions:
+### Feature Availability by Agent
 
+| Feature | Claude Code | Cursor | Windsurf | Kilo | Others |
+|---------|-------------|--------|----------|------|--------|
+| **Slash Commands** | `/status` etc. | Via rules | `/status` etc. | `/status.md` | AGENTS.md |
+| **Skills (SKILL.md)** | Full | Full | Full | Full | Partial |
+| **Rules** | `.claude/rules/` | `.mdc` | `.windsurf/rules/` | `.kilocode/rules/` | AGENTS.md |
+| **Tasks Save/Resume** | `/tasks` | Memory | Memories | Memory Bank | Manual |
+| **Issue Tracking** | Beads | Beads | Beads | Memory Bank | Beads |
+| **Proposals** | OpenSpec | OpenSpec | OpenSpec | OpenSpec | OpenSpec |
+
+### How Forge Adapts
+
+**Claude Code** (Full Support):
 ```bash
-# Install Beads (optional)
-npm install -g beads-cli
-
-# Initialize in your project
-bd init
-
-# Create issues
-bd create "Add user authentication"
-
-# Track progress
-bd update <id> --status in_progress
-bd close <id>
+/status           # Native slash command
+/tasks save       # Built-in task persistence
+bd ready          # Beads integration
 ```
 
-## Workflow Visualization
+**Cursor/Windsurf** (Near-Full Support):
+```bash
+# Read AGENTS.md instructions
+# Use Memories/Memory for persistence
+# Same Beads/OpenSpec workflow
+```
+
+**Other Agents** (AGENTS.md Fallback):
+```
+The agent reads AGENTS.md and follows the 9-stage workflow.
+Users describe what stage they're at: "I'm at the /dev stage"
+Agent follows the documented process.
+```
+
+### The Universal Principle
+
+Even without slash commands, the **workflow principles** work everywhere:
+
+1. **Check status before starting** - Review active work, git state
+2. **Research before building** - Document decisions
+3. **Plan formally** - Create tracking issue, branch
+4. **TDD development** - RED-GREEN-REFACTOR
+5. **Validate thoroughly** - Type/lint/test/security
+6. **Document in PR** - Link research, list tests
+7. **Address ALL feedback** - CI failures, reviews
+8. **Update docs before merge** - PROGRESS.md, API docs
+9. **Verify completeness** - Cross-check everything
+
+### Persistence Across Agents
+
+| Agent | How to Persist Context |
+|-------|------------------------|
+| **Claude Code** | `/tasks save`, Beads issues |
+| **Cursor** | Composer memory, Beads |
+| **Windsurf** | Cascade Memories, Beads |
+| **Kilo Code** | Memory Bank, Beads |
+| **Cline** | Memory Bank, Beads |
+| **Others** | Beads (git-backed, universal) |
+
+**Beads is the universal solution** - it works with ANY agent because it's git-backed.
+
+### Why This Architecture?
 
 ```
-┌─────────┐
-│ /status │ -> Check current stage & context
-└────┬────┘
-     │
-┌────▼──────┐
-│ /research │ -> Deep research, save to docs/research/
-└────┬──────┘
-     │
-┌────▼────┐
-│  /plan  │ -> Create plan, branch, tracking
-└────┬────┘
-     │
-┌────▼───┐
-│  /dev  │ -> TDD implementation (RED-GREEN-REFACTOR)
-└────┬───┘
-     │
-┌────▼────┐
-│ /check  │ -> Validation (type/lint/tests/security)
-└────┬────┘
-     │
-┌────▼────┐
-│  /ship  │ -> Create PR with full documentation
-└────┬────┘
-     │
-┌────▼─────┐
-│ /review  │ -> Address ALL PR issues
-└────┬─────┘
-     │
-┌────▼─────┐
-│  /merge  │ -> Update docs, merge PR, cleanup
-└────┬─────┘
-     │
-┌────▼──────┐
-│  /verify  │ -> Final documentation check
-└───────────┘
-     │
-     v Complete
+┌─────────────────────────────────────────────────────────────┐
+│                    FORGE ARCHITECTURE                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│   AGENTS.md (Universal)                                      │
+│   ├── Works with EVERY agent                                 │
+│   ├── Plain markdown, no special features needed             │
+│   └── Contains full workflow documentation                   │
+│                                                              │
+│   Agent-Specific Enhancements (Optional)                     │
+│   ├── .claude/commands/  -> Native slash commands            │
+│   ├── .cursor/rules/     -> Cursor MDC rules                 │
+│   ├── .windsurf/workflows/ -> Windsurf workflows             │
+│   └── etc.                                                   │
+│                                                              │
+│   External Tools (Universal)                                 │
+│   ├── Beads   -> Issue tracking (git-backed)                 │
+│   ├── OpenSpec -> Architectural proposals                    │
+│   └── GitHub CLI -> PR workflow                              │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+The workflow **degrades gracefully**:
+- Full features in Claude Code
+- Most features in Cursor/Windsurf/Kilo
+- Core workflow in ANY agent via AGENTS.md
 
 ## License
 
@@ -282,4 +632,10 @@ MIT
 
 ## Contributing
 
-Contributions welcome! Please read the workflow guide at `docs/WORKFLOW.md` before submitting PRs.
+Contributions welcome! Please read `docs/WORKFLOW.md` before submitting PRs.
+
+---
+
+**Start with:** `npm install forge-workflow && npx forge setup`
+
+**Then:** `/status` to see where to begin!
