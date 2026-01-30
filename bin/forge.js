@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.2.0 - Universal AI Agent Workflow
+ * Forge v1.3.0 - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
  *
  * Usage:
@@ -591,6 +591,49 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 }
 
 // Detect existing project installation status
+// Smart merge for AGENTS.md - preserves USER sections, updates FORGE sections
+function smartMergeAgentsMd(existingContent, newContent) {
+  // Check if existing content has markers
+  const hasUserMarkers = existingContent.includes('<!-- USER:START') && existingContent.includes('<!-- USER:END');
+  const hasForgeMarkers = existingContent.includes('<!-- FORGE:START') && existingContent.includes('<!-- FORGE:END');
+
+  if (!hasUserMarkers || !hasForgeMarkers) {
+    // Old format without markers - return new content (let user decide via overwrite prompt)
+    return null;
+  }
+
+  // Extract USER section from existing content
+  const userStartMatch = existingContent.match(/<!-- USER:START.*?-->([\s\S]*?)<!-- USER:END -->/);
+  const userSection = userStartMatch ? userStartMatch[0] : '';
+
+  // Extract FORGE section from new content
+  const forgeStartMatch = newContent.match(/(<!-- FORGE:START.*?-->[\s\S]*?<!-- FORGE:END -->)/);
+  const forgeSection = forgeStartMatch ? forgeStartMatch[0] : '';
+
+  // Build merged content
+  const setupInstructions = newContent.includes('<!-- FORGE:SETUP-INSTRUCTIONS')
+    ? newContent.match(/(<!-- FORGE:SETUP-INSTRUCTIONS[\s\S]*?-->)/)?.[0] || ''
+    : '';
+
+  let merged = '# AGENTS.md\n\n';
+
+  // Add setup instructions if this is first-time setup
+  if (setupInstructions && !existingContent.includes('FORGE:SETUP-INSTRUCTIONS')) {
+    merged += setupInstructions + '\n\n';
+  }
+
+  // Add preserved USER section
+  merged += userSection + '\n\n';
+
+  // Add updated FORGE section
+  merged += forgeSection + '\n\n';
+
+  // Add footer
+  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`docs/WORKFLOW.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
+
+  return merged;
+}
+
 // Helper function for yes/no prompts with validation
 async function askYesNo(question, prompt, defaultNo = true) {
   const defaultText = defaultNo ? '[n]' : '[y]';
@@ -888,7 +931,7 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
   console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
   console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
-  console.log('  v1.2.0');
+  console.log('  v1.3.0');
   console.log('');
   if (subtitle) {
     console.log(`  ${subtitle}`);
@@ -1289,8 +1332,28 @@ async function interactiveSetup() {
     console.log('  Skipped: AGENTS.md (keeping existing)');
   } else {
     const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    if (copyFile(agentsSrc, 'AGENTS.md')) {
-      console.log('  Created: AGENTS.md (universal standard)');
+    const agentsDest = path.join(projectRoot, 'AGENTS.md');
+
+    // Try smart merge if file exists
+    if (fs.existsSync(agentsDest)) {
+      const existingContent = fs.readFileSync(agentsDest, 'utf8');
+      const newContent = fs.readFileSync(agentsSrc, 'utf8');
+      const merged = smartMergeAgentsMd(existingContent, newContent);
+
+      if (merged) {
+        fs.writeFileSync(agentsDest, merged, 'utf8');
+        console.log('  Updated: AGENTS.md (preserved USER sections)');
+      } else {
+        // No markers, do normal copy (user already approved overwrite)
+        if (copyFile(agentsSrc, 'AGENTS.md')) {
+          console.log('  Updated: AGENTS.md (universal standard)');
+        }
+      }
+    } else {
+      // New file
+      if (copyFile(agentsSrc, 'AGENTS.md')) {
+        console.log('  Created: AGENTS.md (universal standard)');
+      }
     }
   }
 
@@ -1348,7 +1411,7 @@ async function interactiveSetup() {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.2.0 Setup Complete!');
+  console.log('  Forge v1.3.0 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1372,16 +1435,33 @@ async function interactiveSetup() {
     }
   });
   console.log('');
-  console.log('Next steps:');
-  console.log(`  1. Install optional tools:`);
-  console.log(`     ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`     ${PKG_MANAGER} install -g @fission-ai/openspec`);
-  console.log('  2. Start with: /status');
-  console.log('  3. Read the guide: docs/WORKFLOW.md');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📋  NEXT STEP - Complete AGENTS.md');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
-  console.log(`Package manager detected: ${PKG_MANAGER}`);
+  console.log('Ask your AI agent:');
+  console.log('  "Fill in the project description in AGENTS.md"');
   console.log('');
-  console.log('Happy shipping!');
+  console.log('The agent will:');
+  console.log('  ✓ Add one-sentence project description');
+  console.log('  ✓ Confirm package manager');
+  console.log('  ✓ Verify build commands');
+  console.log('');
+  console.log('Takes ~30 seconds. Done!');
+  console.log('');
+  console.log('💡 As you work: Add project patterns to AGENTS.md');
+  console.log('   USER:START section. Keep it minimal - budget is');
+  console.log('   ~150-200 instructions max.');
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log('Optional tools:');
+  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('');
+  console.log('Start with: /status');
+  console.log('');
+  console.log(`Package manager: ${PKG_MANAGER}`);
   console.log('');
 }
 
@@ -1569,7 +1649,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Final summary
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.2.0 Quick Setup Complete!');
+  console.log('  Forge v1.3.0 Quick Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('Next steps:');
@@ -1733,8 +1813,28 @@ async function interactiveSetupWithFlags(flags) {
     console.log('  Skipped: AGENTS.md (keeping existing)');
   } else {
     const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    if (copyFile(agentsSrc, 'AGENTS.md')) {
-      console.log('  Created: AGENTS.md (universal standard)');
+    const agentsDest = path.join(projectRoot, 'AGENTS.md');
+
+    // Try smart merge if file exists
+    if (fs.existsSync(agentsDest)) {
+      const existingContent = fs.readFileSync(agentsDest, 'utf8');
+      const newContent = fs.readFileSync(agentsSrc, 'utf8');
+      const merged = smartMergeAgentsMd(existingContent, newContent);
+
+      if (merged) {
+        fs.writeFileSync(agentsDest, merged, 'utf8');
+        console.log('  Updated: AGENTS.md (preserved USER sections)');
+      } else {
+        // No markers, do normal copy (user already approved overwrite)
+        if (copyFile(agentsSrc, 'AGENTS.md')) {
+          console.log('  Updated: AGENTS.md (universal standard)');
+        }
+      }
+    } else {
+      // New file
+      if (copyFile(agentsSrc, 'AGENTS.md')) {
+        console.log('  Created: AGENTS.md (universal standard)');
+      }
     }
   }
 
@@ -1797,7 +1897,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.2.0 Setup Complete!');
+  console.log('  Forge v1.3.0 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -1821,16 +1921,33 @@ async function interactiveSetupWithFlags(flags) {
     }
   });
   console.log('');
-  console.log('Next steps:');
-  console.log(`  1. Install optional tools:`);
-  console.log(`     ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`     ${PKG_MANAGER} install -g @fission-ai/openspec`);
-  console.log('  2. Start with: /status');
-  console.log('  3. Read the guide: docs/WORKFLOW.md');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📋  NEXT STEP - Complete AGENTS.md');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
-  console.log(`Package manager detected: ${PKG_MANAGER}`);
+  console.log('Ask your AI agent:');
+  console.log('  "Fill in the project description in AGENTS.md"');
   console.log('');
-  console.log('Happy shipping!');
+  console.log('The agent will:');
+  console.log('  ✓ Add one-sentence project description');
+  console.log('  ✓ Confirm package manager');
+  console.log('  ✓ Verify build commands');
+  console.log('');
+  console.log('Takes ~30 seconds. Done!');
+  console.log('');
+  console.log('💡 As you work: Add project patterns to AGENTS.md');
+  console.log('   USER:START section. Keep it minimal - budget is');
+  console.log('   ~150-200 instructions max.');
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log('Optional tools:');
+  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('');
+  console.log('Start with: /status');
+  console.log('');
+  console.log(`Package manager: ${PKG_MANAGER}`);
   console.log('');
 }
 
