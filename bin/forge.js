@@ -1,342 +1,115 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.1.0 - Universal AI Agent Workflow Installer
+ * Forge v1.1.0 - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
  *
- * Supports: Claude Code, Cursor, Windsurf, Kilo Code, OpenCode,
- *           Aider, Continue, GitHub Copilot, Cline, Roo Code, Google Antigravity
+ * Usage:
+ *   npm install forge-workflow  -> Minimal install (AGENTS.md + docs)
+ *   npx forge setup             -> Interactive agent configuration
+ *   npx forge setup --all       -> Install for all agents
+ *   npx forge setup --agents claude,cursor,windsurf
  */
 
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 
-const COMMANDS = [
-  'status.md', 'research.md', 'plan.md', 'dev.md', 'check.md',
-  'ship.md', 'review.md', 'merge.md', 'verify.md'
-];
-
-const SKILLS_PARALLEL_AI = [
-  'SKILL.md', 'README.md', 'api-reference.md', 'quick-reference.md', 'research-workflows.md'
-];
-
-const SKILLS_SONARCLOUD = ['SKILL.md', 'reference.md'];
-
-// All agent directories to create
-const AGENT_DIRS = [
-  // Claude Code
-  '.claude/commands',
-  '.claude/rules',
-  '.claude/skills/parallel-ai',
-  '.claude/skills/sonarcloud',
-  '.claude/skills/forge-workflow',
-  '.claude/scripts',
-  // Google Antigravity
-  '.agent/rules',
-  '.agent/workflows',
-  '.agent/skills/forge-workflow',
-  // Cursor
-  '.cursor/rules',
-  '.cursor/skills/forge-workflow',
-  // Windsurf
-  '.windsurf/workflows',
-  '.windsurf/rules',
-  '.windsurf/skills/forge-workflow',
-  // Kilo Code
-  '.kilocode/workflows',
-  '.kilocode/rules',
-  '.kilocode/skills/forge-workflow',
-  // Cline
-  '.cline/skills/forge-workflow',
-  // Continue
-  '.continue/prompts',
-  '.continue/skills/forge-workflow',
-  // OpenCode
-  '.opencode/commands',
-  '.opencode/skills/forge-workflow',
-  // Roo Code
-  '.roo/commands',
-  // GitHub Copilot
-  '.github/prompts',
-  '.github/instructions',
-  // Documentation
-  'docs/planning',
-  'docs/research'
-];
-
-console.log('');
-console.log('  ___                   ');
-console.log(' |  _|___  _ _  ___  ___ ');
-console.log(' |  _| . || \'_|| . || -_|');
-console.log(' |_| |___||_|  |_  ||___|');
-console.log('                 |___|   ');
-console.log('');
-console.log('Installing Forge v1.1.0 - Universal AI Agent Workflow');
-console.log('Supporting ALL major AI coding agents...');
-console.log('');
-
-// Get the project root (where npm install was run)
+// Get the project root and package directory
 const projectRoot = process.env.INIT_CWD || process.cwd();
-
-// Get the package directory (where forge is installed)
 const packageDir = path.dirname(__dirname);
+const args = process.argv.slice(2);
 
-// Helper functions
-function ensureDir(dir) {
-  const fullPath = path.join(projectRoot, dir);
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, { recursive: true });
+// Agent definitions
+const AGENTS = {
+  claude: {
+    name: 'Claude Code',
+    description: "Anthropic's CLI agent",
+    dirs: ['.claude/commands', '.claude/rules', '.claude/skills/forge-workflow', '.claude/scripts'],
+    hasCommands: true,
+    hasSkill: true,
+    linkFile: 'CLAUDE.md'
+  },
+  cursor: {
+    name: 'Cursor',
+    description: 'AI-first code editor',
+    dirs: ['.cursor/rules', '.cursor/skills/forge-workflow'],
+    hasSkill: true,
+    linkFile: '.cursorrules',
+    customSetup: 'cursor'
+  },
+  windsurf: {
+    name: 'Windsurf',
+    description: "Codeium's agentic IDE",
+    dirs: ['.windsurf/workflows', '.windsurf/rules', '.windsurf/skills/forge-workflow'],
+    hasSkill: true,
+    linkFile: '.windsurfrules',
+    needsConversion: true
+  },
+  kilocode: {
+    name: 'Kilo Code',
+    description: 'VS Code extension',
+    dirs: ['.kilocode/workflows', '.kilocode/rules', '.kilocode/skills/forge-workflow'],
+    hasSkill: true,
+    needsConversion: true
+  },
+  antigravity: {
+    name: 'Google Antigravity',
+    description: "Google's agent IDE",
+    dirs: ['.agent/workflows', '.agent/rules', '.agent/skills/forge-workflow'],
+    hasSkill: true,
+    linkFile: 'GEMINI.md',
+    needsConversion: true
+  },
+  copilot: {
+    name: 'GitHub Copilot',
+    description: "GitHub's AI assistant",
+    dirs: ['.github/prompts', '.github/instructions'],
+    linkFile: '.github/copilot-instructions.md',
+    needsConversion: true,
+    promptFormat: true
+  },
+  continue: {
+    name: 'Continue',
+    description: 'Open-source AI assistant',
+    dirs: ['.continue/prompts', '.continue/skills/forge-workflow'],
+    hasSkill: true,
+    needsConversion: true,
+    continueFormat: true
+  },
+  opencode: {
+    name: 'OpenCode',
+    description: 'Open-source agent',
+    dirs: ['.opencode/commands', '.opencode/skills/forge-workflow'],
+    hasSkill: true,
+    copyCommands: true
+  },
+  cline: {
+    name: 'Cline',
+    description: 'VS Code agent extension',
+    dirs: ['.cline/skills/forge-workflow'],
+    hasSkill: true,
+    linkFile: '.clinerules'
+  },
+  roo: {
+    name: 'Roo Code',
+    description: 'Cline fork with modes',
+    dirs: ['.roo/commands'],
+    linkFile: '.clinerules',
+    needsConversion: true
+  },
+  aider: {
+    name: 'Aider',
+    description: 'Terminal-based agent',
+    dirs: [],
+    customSetup: 'aider'
   }
-}
+};
 
-function copyFile(src, dest) {
-  try {
-    if (fs.existsSync(src)) {
-      fs.copyFileSync(src, dest);
-      return true;
-    }
-  } catch (err) {
-    // Silently continue if file doesn't exist
-  }
-  return false;
-}
+const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify'];
 
-function createSymlinkOrCopy(source, target) {
-  const fullSource = path.join(projectRoot, source);
-  const fullTarget = path.join(projectRoot, target);
-
-  try {
-    // Remove existing target
-    if (fs.existsSync(fullTarget)) {
-      fs.unlinkSync(fullTarget);
-    }
-
-    // Ensure target directory exists
-    const targetDir = path.dirname(fullTarget);
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-
-    // Try symlink first (relative path for portability)
-    try {
-      const relPath = path.relative(targetDir, fullSource);
-      fs.symlinkSync(relPath, fullTarget);
-      console.log(`  Linked: ${target} -> ${source}`);
-      return true;
-    } catch (symlinkErr) {
-      // Fall back to copy (Windows without admin)
-      fs.copyFileSync(fullSource, fullTarget);
-      console.log(`  Copied: ${target} (from ${source})`);
-      return true;
-    }
-  } catch (err) {
-    console.log(`  Warning: Could not create ${target}`);
-    return false;
-  }
-}
-
-function stripFrontmatter(content) {
-  // Remove YAML frontmatter (---...---)
-  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
-  return match ? match[1] : content;
-}
-
-function readFile(filePath) {
-  try {
-    return fs.readFileSync(filePath, 'utf8');
-  } catch (err) {
-    return null;
-  }
-}
-
-function writeFile(filePath, content) {
-  try {
-    fs.writeFileSync(filePath, content);
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-// ============================================
-// CREATE DIRECTORIES FOR ALL AGENTS
-// ============================================
-console.log('Creating agent directories...');
-AGENT_DIRS.forEach(dir => ensureDir(dir));
-console.log('  Created directories for 11 AI agents');
-
-// ============================================
-// COPY CLAUDE CODE COMMANDS (MASTER FORMAT)
-// ============================================
-console.log('');
-console.log('Copying workflow commands...');
-COMMANDS.forEach(cmd => {
-  const src = path.join(packageDir, '.claude/commands', cmd);
-  const dest = path.join(projectRoot, '.claude/commands', cmd);
-  if (copyFile(src, dest)) {
-    console.log(`  Copied: ${cmd}`);
-  }
-});
-
-// Copy rules
-console.log('Copying workflow rules...');
-const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
-const rulesDest = path.join(projectRoot, '.claude/rules/workflow.md');
-if (copyFile(rulesSrc, rulesDest)) {
-  console.log('  Copied: workflow.md');
-}
-
-// Copy scripts
-console.log('Copying scripts...');
-const scriptSrc = path.join(packageDir, '.claude/scripts/load-env.sh');
-const scriptDest = path.join(projectRoot, '.claude/scripts/load-env.sh');
-if (copyFile(scriptSrc, scriptDest)) {
-  console.log('  Copied: load-env.sh');
-}
-
-// ============================================
-// COPY AGENTS.MD
-// ============================================
-console.log('');
-console.log('Creating universal instruction files...');
-const agentsSrc = path.join(packageDir, 'AGENTS.md');
-const agentsDest = path.join(projectRoot, 'AGENTS.md');
-if (copyFile(agentsSrc, agentsDest)) {
-  console.log('  Copied: AGENTS.md (universal standard)');
-}
-
-// ============================================
-// CREATE SYMLINKS (Single Source of Truth)
-// ============================================
-console.log('');
-console.log('Creating instruction file links (single source of truth)...');
-
-createSymlinkOrCopy('AGENTS.md', 'CLAUDE.md');
-createSymlinkOrCopy('AGENTS.md', 'GEMINI.md');
-createSymlinkOrCopy('AGENTS.md', '.cursorrules');
-createSymlinkOrCopy('AGENTS.md', '.windsurfrules');
-createSymlinkOrCopy('AGENTS.md', '.clinerules');
-createSymlinkOrCopy('AGENTS.md', '.github/copilot-instructions.md');
-
-// ============================================
-// CONVERT COMMANDS TO AGENT-SPECIFIC FORMATS
-// ============================================
-console.log('');
-console.log('Converting commands for each agent...');
-
-// Read all Claude commands
-const commandContents = {};
-COMMANDS.forEach(cmd => {
-  const src = path.join(projectRoot, '.claude/commands', cmd);
-  const content = readFile(src);
-  if (content) {
-    commandContents[cmd] = content;
-  }
-});
-
-// Google Antigravity: Remove YAML frontmatter
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const dest = path.join(projectRoot, '.agent/workflows', cmd);
-  writeFile(dest, stripFrontmatter(content));
-});
-console.log('  Converted: .agent/workflows/ (Google Antigravity)');
-
-// Kilo Code: Remove YAML frontmatter
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const dest = path.join(projectRoot, '.kilocode/workflows', cmd);
-  writeFile(dest, stripFrontmatter(content));
-});
-console.log('  Converted: .kilocode/workflows/ (Kilo Code)');
-
-// Windsurf: Remove YAML frontmatter
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const dest = path.join(projectRoot, '.windsurf/workflows', cmd);
-  writeFile(dest, stripFrontmatter(content));
-});
-console.log('  Converted: .windsurf/workflows/ (Windsurf)');
-
-// OpenCode: Keep as-is (same YAML format)
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const dest = path.join(projectRoot, '.opencode/commands', cmd);
-  writeFile(dest, content);
-});
-console.log('  Copied: .opencode/commands/ (OpenCode)');
-
-// Roo Code: Remove YAML frontmatter
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const dest = path.join(projectRoot, '.roo/commands', cmd);
-  writeFile(dest, stripFrontmatter(content));
-});
-console.log('  Converted: .roo/commands/ (Roo Code)');
-
-// Continue: Convert to .prompt with invokable: true
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const baseName = cmd.replace('.md', '');
-  const dest = path.join(projectRoot, '.continue/prompts', `${baseName}.prompt`);
-  const promptContent = `---
-name: ${baseName}
-description: Forge workflow command - ${baseName}
-invokable: true
----
-
-${stripFrontmatter(content)}`;
-  writeFile(dest, promptContent);
-});
-console.log('  Converted: .continue/prompts/ (Continue)');
-
-// GitHub Copilot: Convert to .prompt.md
-Object.entries(commandContents).forEach(([cmd, content]) => {
-  const baseName = cmd.replace('.md', '');
-  const dest = path.join(projectRoot, '.github/prompts', `${baseName}.prompt.md`);
-  writeFile(dest, stripFrontmatter(content));
-});
-console.log('  Converted: .github/prompts/ (GitHub Copilot)');
-
-// Cursor: Create workflow.mdc rule
-const cursorRule = `---
-description: Forge 9-Stage TDD Workflow
-alwaysApply: true
----
-
-# Forge Workflow Commands
-
-Use these commands via \`/command-name\`:
-
-1. \`/status\` - Check current context, active work, recent completions
-2. \`/research\` - Deep research with web search, document to docs/research/
-3. \`/plan\` - Create implementation plan, branch, tracking
-4. \`/dev\` - TDD development (RED-GREEN-REFACTOR cycles)
-5. \`/check\` - Validation (type/lint/security/tests)
-6. \`/ship\` - Create PR with full documentation
-7. \`/review\` - Address ALL PR feedback
-8. \`/merge\` - Update docs, merge PR, cleanup
-9. \`/verify\` - Final documentation verification
-
-## Workflow Flow
-
-\`\`\`
-/status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
-\`\`\`
-
-## Core Principles
-
-- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-- **Research-First**: Understand before building, document decisions
-- **Security Built-In**: OWASP Top 10 analysis for every feature
-- **Documentation Progressive**: Update at each stage, verify at end
-
-See AGENTS.md for full workflow details.
-`;
-writeFile(path.join(projectRoot, '.cursor/rules/forge-workflow.mdc'), cursorRule);
-console.log('  Created: .cursor/rules/forge-workflow.mdc (Cursor)');
-
-// ============================================
-// CREATE UNIVERSAL SKILL (SKILL.md)
-// ============================================
-console.log('');
-console.log('Installing universal SKILL.md for all supporting agents...');
-
-const forgeSkill = `---
+// Universal SKILL.md content
+const SKILL_CONTENT = `---
 name: forge-workflow
 description: 9-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
 category: Development Workflow
@@ -366,7 +139,7 @@ Automatically invoke this skill when the user wants to:
 | 4 | \`/dev\` | TDD development (RED-GREEN-REFACTOR cycles) |
 | 5 | \`/check\` | Validation (type/lint/security/tests) |
 | 6 | \`/ship\` | Create PR with full documentation |
-| 7 | \`/review\` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
+| 7 | \`/review\` | Address ALL PR feedback |
 | 8 | \`/merge\` | Update docs, merge PR, cleanup |
 | 9 | \`/verify\` | Final documentation verification |
 
@@ -382,96 +155,143 @@ Automatically invoke this skill when the user wants to:
 - **Research-First**: Understand before building, document decisions
 - **Security Built-In**: OWASP Top 10 analysis for every feature
 - **Documentation Progressive**: Update at each stage, verify at end
-
-## Prerequisites
-
-- Git and GitHub CLI (\`gh\`)
-- Beads (recommended): \`npm i -g beads-cli && bd init\`
-- OpenSpec (optional): \`npm i -g openspec-cli\`
-
-## Quick Start
-
-1. \`/status\` - Check where you are
-2. \`/research <feature-name>\` - Research the feature
-3. \`/plan <feature-slug>\` - Create formal plan
-4. \`/dev\` - Implement with TDD
-5. \`/check\` - Validate everything
-6. \`/ship\` - Create PR
-
-See docs/WORKFLOW.md for detailed workflow guide.
 `;
 
-// Install SKILL.md to all supporting agents
-const skillDirs = [
-  '.claude/skills/forge-workflow',
-  '.agent/skills/forge-workflow',
-  '.cursor/skills/forge-workflow',
-  '.windsurf/skills/forge-workflow',
-  '.kilocode/skills/forge-workflow',
-  '.cline/skills/forge-workflow',
-  '.continue/skills/forge-workflow',
-  '.opencode/skills/forge-workflow'
-];
+// Cursor MDC rule content
+const CURSOR_RULE = `---
+description: Forge 9-Stage TDD Workflow
+alwaysApply: true
+---
 
-skillDirs.forEach(dir => {
-  writeFile(path.join(projectRoot, dir, 'SKILL.md'), forgeSkill);
-});
-console.log('  Installed SKILL.md to 8 agents (universal format)');
+# Forge Workflow Commands
 
-// ============================================
-// COPY RULES TO OTHER AGENTS
-// ============================================
-console.log('');
-console.log('Copying rules to supporting agents...');
+Use these commands via \`/command-name\`:
 
-const workflowRule = readFile(path.join(projectRoot, '.claude/rules/workflow.md'));
-if (workflowRule) {
-  writeFile(path.join(projectRoot, '.agent/rules/workflow.md'), workflowRule);
-  writeFile(path.join(projectRoot, '.windsurf/rules/workflow.md'), workflowRule);
-  writeFile(path.join(projectRoot, '.kilocode/rules/workflow.md'), workflowRule);
-  console.log('  Copied rules to: .agent/, .windsurf/, .kilocode/');
+1. \`/status\` - Check current context, active work, recent completions
+2. \`/research\` - Deep research with web search, document to docs/research/
+3. \`/plan\` - Create implementation plan, branch, tracking
+4. \`/dev\` - TDD development (RED-GREEN-REFACTOR cycles)
+5. \`/check\` - Validation (type/lint/security/tests)
+6. \`/ship\` - Create PR with full documentation
+7. \`/review\` - Address ALL PR feedback
+8. \`/merge\` - Update docs, merge PR, cleanup
+9. \`/verify\` - Final documentation verification
+
+See AGENTS.md for full workflow details.
+`;
+
+// Helper functions
+function ensureDir(dir) {
+  const fullPath = path.join(projectRoot, dir);
+  if (!fs.existsSync(fullPath)) {
+    fs.mkdirSync(fullPath, { recursive: true });
+  }
 }
 
-// ============================================
-// COPY SKILLS (parallel-ai, sonarcloud)
-// ============================================
-console.log('');
-console.log('Copying skills...');
-SKILLS_PARALLEL_AI.forEach(file => {
-  const src = path.join(packageDir, '.claude/skills/parallel-ai', file);
-  const dest = path.join(projectRoot, '.claude/skills/parallel-ai', file);
-  copyFile(src, dest);
-});
-console.log('  Copied: parallel-ai');
-
-SKILLS_SONARCLOUD.forEach(file => {
-  const src = path.join(packageDir, '.claude/skills/sonarcloud', file);
-  const dest = path.join(projectRoot, '.claude/skills/sonarcloud', file);
-  copyFile(src, dest);
-});
-console.log('  Copied: sonarcloud');
-
-// ============================================
-// COPY DOCUMENTATION
-// ============================================
-console.log('');
-console.log('Copying documentation...');
-const workflowSrc = path.join(packageDir, 'docs/WORKFLOW.md');
-const workflowDest = path.join(projectRoot, 'docs/WORKFLOW.md');
-if (copyFile(workflowSrc, workflowDest)) {
-  console.log('  Copied: WORKFLOW.md');
+function writeFile(filePath, content) {
+  try {
+    const fullPath = path.join(projectRoot, filePath);
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(fullPath, content);
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
-const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
-const templateDest = path.join(projectRoot, 'docs/research/TEMPLATE.md');
-if (copyFile(templateSrc, templateDest)) {
-  console.log('  Copied: research/TEMPLATE.md');
+function readFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    return null;
+  }
 }
 
-// Create PROGRESS.md if it doesn't exist
-const progressPath = path.join(projectRoot, 'docs/planning/PROGRESS.md');
-if (!fs.existsSync(progressPath)) {
-  const progressContent = `# Project Progress
+function copyFile(src, dest) {
+  try {
+    if (fs.existsSync(src)) {
+      const destPath = path.join(projectRoot, dest);
+      const destDir = path.dirname(destPath);
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+      }
+      fs.copyFileSync(src, destPath);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function createSymlinkOrCopy(source, target) {
+  const fullSource = path.join(projectRoot, source);
+  const fullTarget = path.join(projectRoot, target);
+
+  try {
+    if (fs.existsSync(fullTarget)) {
+      fs.unlinkSync(fullTarget);
+    }
+    const targetDir = path.dirname(fullTarget);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    try {
+      const relPath = path.relative(targetDir, fullSource);
+      fs.symlinkSync(relPath, fullTarget);
+      return 'linked';
+    } catch (symlinkErr) {
+      fs.copyFileSync(fullSource, fullTarget);
+      return 'copied';
+    }
+  } catch (err) {
+    return false;
+  }
+}
+
+function stripFrontmatter(content) {
+  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
+  return match ? match[1] : content;
+}
+
+// Minimal installation (postinstall)
+function minimalInstall() {
+  console.log('');
+  console.log('  ___                   ');
+  console.log(' |  _|___  _ _  ___  ___ ');
+  console.log(' |  _| . || \'_|| . || -_|');
+  console.log(' |_| |___||_|  |_  ||___|');
+  console.log('                 |___|   ');
+  console.log('');
+  console.log('Forge v1.1.0 - Universal AI Agent Workflow');
+  console.log('');
+
+  // Create core directories
+  ensureDir('docs/planning');
+  ensureDir('docs/research');
+
+  // Copy AGENTS.md
+  const agentsSrc = path.join(packageDir, 'AGENTS.md');
+  if (copyFile(agentsSrc, 'AGENTS.md')) {
+    console.log('  Created: AGENTS.md (universal standard)');
+  }
+
+  // Copy documentation
+  const workflowSrc = path.join(packageDir, 'docs/WORKFLOW.md');
+  if (copyFile(workflowSrc, 'docs/WORKFLOW.md')) {
+    console.log('  Created: docs/WORKFLOW.md');
+  }
+
+  const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
+  if (copyFile(templateSrc, 'docs/research/TEMPLATE.md')) {
+    console.log('  Created: docs/research/TEMPLATE.md');
+  }
+
+  // Create PROGRESS.md if not exists
+  const progressPath = path.join(projectRoot, 'docs/planning/PROGRESS.md');
+  if (!fs.existsSync(progressPath)) {
+    writeFile('docs/planning/PROGRESS.md', `# Project Progress
 
 ## Current Focus
 <!-- What you're working on -->
@@ -481,62 +301,291 @@ if (!fs.existsSync(progressPath)) {
 
 ## Upcoming
 <!-- Next priorities -->
-`;
-  writeFile(progressPath, progressContent);
-  console.log('  Created: docs/planning/PROGRESS.md');
+`);
+    console.log('  Created: docs/planning/PROGRESS.md');
+  }
+
+  console.log('');
+  console.log('Minimal installation complete!');
+  console.log('');
+  console.log('To configure for your AI coding agents, run:');
+  console.log('');
+  console.log('  npx forge setup');
+  console.log('');
+  console.log('Or specify agents directly:');
+  console.log('  npx forge setup --agents claude,cursor,windsurf');
+  console.log('  npx forge setup --all');
+  console.log('');
 }
 
-// ============================================
-// SUCCESS MESSAGE
-// ============================================
-console.log('');
-console.log('==============================================');
-console.log('  Forge v1.1.0 installed successfully!');
-console.log('==============================================');
-console.log('');
-console.log('Commands installed for:');
-console.log('  - Claude Code         (.claude/commands/)      Full support');
-console.log('  - Google Antigravity  (.agent/workflows/)      Full support');
-console.log('  - OpenCode            (.opencode/commands/)    Full support');
-console.log('  - Kilo Code           (.kilocode/workflows/)   Full support');
-console.log('  - Windsurf            (.windsurf/workflows/)   Full support');
-console.log('  - Roo Code            (.roo/commands/)         Full support');
-console.log('  - Continue            (.continue/prompts/)     Full support');
-console.log('  - GitHub Copilot      (.github/prompts/)       VS Code only');
-console.log('  - Cursor              (.cursor/rules/)         Via rules');
-console.log('  - Cline               (AGENTS.md)              Via instructions');
-console.log('  - Aider               (AGENTS.md)              Via instructions');
-console.log('');
-console.log('Skills installed for:');
-console.log('  - Claude Code, Antigravity, Cursor, Windsurf, Kilo Code,');
-console.log('    Cline, Continue, OpenCode (same SKILL.md works everywhere!)');
-console.log('');
-console.log('Instruction files (linked to AGENTS.md):');
-console.log('  - CLAUDE.md           Claude Code');
-console.log('  - GEMINI.md           Google Antigravity');
-console.log('  - .cursorrules        Cursor');
-console.log('  - .windsurfrules      Windsurf');
-console.log('  - .clinerules         Cline/Roo Code');
-console.log('  - .github/copilot-instructions.md  GitHub Copilot');
-console.log('');
-console.log('==============================================');
-console.log('  GET STARTED');
-console.log('==============================================');
-console.log('');
-console.log('  /status    - Check current context');
-console.log('  /research  - Start researching a feature');
-console.log('  /plan      - Create implementation plan');
-console.log('  /dev       - Start TDD development');
-console.log('  /check     - Run validation');
-console.log('  /ship      - Create pull request');
-console.log('  /review    - Address PR feedback');
-console.log('  /merge     - Merge and cleanup');
-console.log('  /verify    - Final documentation check');
-console.log('');
-console.log('  Full guide: docs/WORKFLOW.md');
-console.log('  Research template: docs/research/TEMPLATE.md');
-console.log('');
-console.log('Optional tools:');
-console.log('  - Beads: npm i -g beads-cli && bd init');
-console.log('  - OpenSpec: npm i -g openspec-cli');
-console.log('');
+// Setup specific agent
+function setupAgent(agentKey, claudeCommands) {
+  const agent = AGENTS[agentKey];
+  if (!agent) return;
+
+  console.log(`\nSetting up ${agent.name}...`);
+
+  // Create directories
+  agent.dirs.forEach(dir => ensureDir(dir));
+
+  // Handle Claude Code specifically (downloads commands)
+  if (agentKey === 'claude') {
+    // Copy commands from package
+    COMMANDS.forEach(cmd => {
+      const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
+      copyFile(src, `.claude/commands/${cmd}.md`);
+    });
+    console.log('  Copied: 9 workflow commands');
+
+    // Copy rules
+    const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
+    copyFile(rulesSrc, '.claude/rules/workflow.md');
+
+    // Copy scripts
+    const scriptSrc = path.join(packageDir, '.claude/scripts/load-env.sh');
+    copyFile(scriptSrc, '.claude/scripts/load-env.sh');
+  }
+
+  // Custom setups
+  if (agent.customSetup === 'cursor') {
+    writeFile('.cursor/rules/forge-workflow.mdc', CURSOR_RULE);
+    console.log('  Created: .cursor/rules/forge-workflow.mdc');
+  }
+
+  if (agent.customSetup === 'aider') {
+    const aiderPath = path.join(projectRoot, '.aider.conf.yml');
+    if (!fs.existsSync(aiderPath)) {
+      writeFile('.aider.conf.yml', `# Aider configuration
+# Read AGENTS.md for workflow instructions
+read:
+  - AGENTS.md
+  - docs/WORKFLOW.md
+`);
+      console.log('  Created: .aider.conf.yml');
+    } else {
+      console.log('  Skipped: .aider.conf.yml already exists');
+    }
+    return;
+  }
+
+  // Convert/copy commands
+  if (claudeCommands && (agent.needsConversion || agent.copyCommands || agent.promptFormat || agent.continueFormat)) {
+    Object.entries(claudeCommands).forEach(([cmd, content]) => {
+      let targetContent = content;
+      let targetFile = cmd;
+
+      if (agent.needsConversion) {
+        targetContent = stripFrontmatter(content);
+      }
+
+      if (agent.promptFormat) {
+        targetFile = cmd.replace('.md', '.prompt.md');
+        targetContent = stripFrontmatter(content);
+      }
+
+      if (agent.continueFormat) {
+        const baseName = cmd.replace('.md', '');
+        targetFile = `${baseName}.prompt`;
+        targetContent = `---
+name: ${baseName}
+description: Forge workflow command - ${baseName}
+invokable: true
+---
+
+${stripFrontmatter(content)}`;
+      }
+
+      const targetDir = agent.dirs[0]; // First dir is commands/workflows
+      writeFile(`${targetDir}/${targetFile}`, targetContent);
+    });
+    console.log('  Converted: 9 workflow commands');
+  }
+
+  // Copy rules if needed
+  if (agent.needsConversion && fs.existsSync(path.join(projectRoot, '.claude/rules/workflow.md'))) {
+    const rulesDir = agent.dirs.find(d => d.includes('/rules'));
+    if (rulesDir) {
+      const ruleContent = readFile(path.join(projectRoot, '.claude/rules/workflow.md'));
+      if (ruleContent) {
+        writeFile(`${rulesDir}/workflow.md`, ruleContent);
+      }
+    }
+  }
+
+  // Create SKILL.md
+  if (agent.hasSkill) {
+    const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+    if (skillDir) {
+      writeFile(`${skillDir}/SKILL.md`, SKILL_CONTENT);
+      console.log('  Created: forge-workflow skill');
+    }
+  }
+
+  // Create link file
+  if (agent.linkFile) {
+    const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile);
+    if (result) {
+      console.log(`  ${result === 'linked' ? 'Linked' : 'Copied'}: ${agent.linkFile}`);
+    }
+  }
+}
+
+// Interactive setup
+async function interactiveSetup() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
+
+  console.log('');
+  console.log('  ___                   ');
+  console.log(' |  _|___  _ _  ___  ___ ');
+  console.log(' |  _| . || \'_|| . || -_|');
+  console.log(' |_| |___||_|  |_  ||___|');
+  console.log('                 |___|   ');
+  console.log('');
+  console.log('Forge v1.1.0 - Agent Configuration');
+  console.log('');
+  console.log('Which AI coding agents do you use?');
+  console.log('(Enter numbers separated by spaces, or "all")');
+  console.log('');
+
+  const agentKeys = Object.keys(AGENTS);
+  agentKeys.forEach((key, index) => {
+    const agent = AGENTS[key];
+    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
+  });
+  console.log('');
+  console.log('  all) Install for all agents');
+  console.log('');
+
+  const answer = await question('Your selection: ');
+  rl.close();
+
+  let selectedAgents = [];
+
+  if (answer.toLowerCase() === 'all') {
+    selectedAgents = agentKeys;
+  } else {
+    const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+    selectedAgents = nums.map(n => agentKeys[n - 1]).filter(Boolean);
+  }
+
+  if (selectedAgents.length === 0) {
+    console.log('No agents selected. Run "npx forge setup" to try again.');
+    return;
+  }
+
+  console.log('');
+  console.log('Installing Forge workflow...');
+
+  // Load Claude commands if needed
+  let claudeCommands = {};
+  if (selectedAgents.includes('claude') || selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
+    // First ensure Claude is set up
+    if (selectedAgents.includes('claude')) {
+      setupAgent('claude', null);
+    }
+    // Then load the commands
+    COMMANDS.forEach(cmd => {
+      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+      const content = readFile(cmdPath);
+      if (content) {
+        claudeCommands[`${cmd}.md`] = content;
+      }
+    });
+  }
+
+  // Setup each selected agent
+  selectedAgents.forEach(agentKey => {
+    if (agentKey !== 'claude') { // Claude already done above
+      setupAgent(agentKey, claudeCommands);
+    }
+  });
+
+  // Success message
+  console.log('');
+  console.log('==============================================');
+  console.log('  Forge v1.1.0 installed successfully!');
+  console.log('==============================================');
+  console.log('');
+  console.log('Installed for:');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  * ${agent.name}`);
+  });
+  console.log('');
+  console.log('Get started with: /status');
+  console.log('Full guide: docs/WORKFLOW.md');
+  console.log('');
+}
+
+// CLI setup with args
+function setupWithArgs(agentList) {
+  console.log('');
+  console.log('Forge v1.1.0 - Installing for specified agents...');
+  console.log('');
+
+  const selectedAgents = agentList.split(',').map(a => a.trim().toLowerCase()).filter(a => AGENTS[a]);
+
+  if (selectedAgents.length === 0) {
+    console.log('No valid agents specified.');
+    console.log('Available agents:', Object.keys(AGENTS).join(', '));
+    return;
+  }
+
+  // Load Claude commands if needed
+  let claudeCommands = {};
+  if (selectedAgents.includes('claude')) {
+    setupAgent('claude', null);
+  }
+
+  if (selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
+    COMMANDS.forEach(cmd => {
+      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+      const content = readFile(cmdPath);
+      if (content) {
+        claudeCommands[`${cmd}.md`] = content;
+      }
+    });
+  }
+
+  selectedAgents.forEach(agentKey => {
+    if (agentKey !== 'claude') {
+      setupAgent(agentKey, claudeCommands);
+    }
+  });
+
+  console.log('');
+  console.log('Done! Get started with: /status');
+}
+
+// Main
+async function main() {
+  const command = args[0];
+
+  if (command === 'setup') {
+    // Check for --all flag
+    if (args.includes('--all')) {
+      setupWithArgs(Object.keys(AGENTS).join(','));
+      return;
+    }
+
+    // Check for --agents flag
+    const agentsIndex = args.indexOf('--agents');
+    if (agentsIndex !== -1 && args[agentsIndex + 1]) {
+      setupWithArgs(args[agentsIndex + 1]);
+      return;
+    }
+
+    // Interactive setup
+    await interactiveSetup();
+  } else {
+    // Default: minimal install (postinstall behavior)
+    minimalInstall();
+  }
+}
+
+main().catch(console.error);

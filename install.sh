@@ -2,8 +2,7 @@
 # Forge v1.1.0 - Universal AI Agent Workflow Installer
 # https://github.com/harshanandak/forge
 #
-# Supports: Claude Code, Cursor, Windsurf, Kilo Code, OpenCode,
-#           Aider, Continue, GitHub Copilot, Cline, Roo Code, Google Antigravity
+# Interactive installer - select only the agents you use
 
 set -e
 
@@ -11,235 +10,151 @@ REPO="harshanandak/forge"
 BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
 
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
 echo ""
-echo "  ___                   "
-echo " |  _|___  _ _  ___  ___ "
-echo " |  _| . || '_|| . || -_|"
-echo " |_| |___||_|  |_  ||___|"
-echo "                 |___|   "
+echo -e "${CYAN}  ___                   ${NC}"
+echo -e "${CYAN} |  _|___  _ _  ___  ___ ${NC}"
+echo -e "${CYAN} |  _| . || '_|| . || -_|${NC}"
+echo -e "${CYAN} |_| |___||_|  |_  ||___|${NC}"
+echo -e "${CYAN}                 |___|   ${NC}"
 echo ""
-echo "Installing Forge v1.1.0 - Universal AI Agent Workflow"
-echo "Supporting ALL major AI coding agents..."
+echo -e "${GREEN}Forge v1.1.0 - Universal AI Agent Workflow${NC}"
 echo ""
 
 # ============================================
-# CREATE DIRECTORIES FOR ALL AGENTS
+# AGENT SELECTION
 # ============================================
-echo "Creating agent directories..."
+echo -e "${YELLOW}Which AI coding agents do you use?${NC}"
+echo -e "${BLUE}(Enter numbers separated by spaces, or 'all' for everything)${NC}"
+echo ""
+echo "  1) Claude Code          - Anthropic's CLI agent"
+echo "  2) Cursor               - AI-first code editor"
+echo "  3) Windsurf             - Codeium's agentic IDE"
+echo "  4) Kilo Code            - VS Code extension"
+echo "  5) Google Antigravity   - Google's agent IDE"
+echo "  6) GitHub Copilot       - GitHub's AI assistant"
+echo "  7) Continue             - Open-source AI assistant"
+echo "  8) OpenCode             - Open-source agent"
+echo "  9) Cline                - VS Code agent extension"
+echo " 10) Roo Code             - Cline fork with modes"
+echo " 11) Aider                - Terminal-based agent"
+echo ""
+echo -e "  ${GREEN}all) Install for all agents${NC}"
+echo ""
 
-# Claude Code
-mkdir -p .claude/commands .claude/rules .claude/skills/forge-workflow .claude/scripts
+read -p "Your selection (e.g., '1 2 3' or 'all'): " selection
 
-# Google Antigravity
-mkdir -p .agent/rules .agent/workflows .agent/skills/forge-workflow
+# Parse selection
+INSTALL_CLAUDE=false
+INSTALL_CURSOR=false
+INSTALL_WINDSURF=false
+INSTALL_KILOCODE=false
+INSTALL_ANTIGRAVITY=false
+INSTALL_COPILOT=false
+INSTALL_CONTINUE=false
+INSTALL_OPENCODE=false
+INSTALL_CLINE=false
+INSTALL_ROO=false
+INSTALL_AIDER=false
 
-# Cursor
-mkdir -p .cursor/rules .cursor/skills/forge-workflow
+if [[ "$selection" == "all" ]]; then
+    INSTALL_CLAUDE=true
+    INSTALL_CURSOR=true
+    INSTALL_WINDSURF=true
+    INSTALL_KILOCODE=true
+    INSTALL_ANTIGRAVITY=true
+    INSTALL_COPILOT=true
+    INSTALL_CONTINUE=true
+    INSTALL_OPENCODE=true
+    INSTALL_CLINE=true
+    INSTALL_ROO=true
+    INSTALL_AIDER=true
+else
+    for num in $selection; do
+        case $num in
+            1) INSTALL_CLAUDE=true ;;
+            2) INSTALL_CURSOR=true ;;
+            3) INSTALL_WINDSURF=true ;;
+            4) INSTALL_KILOCODE=true ;;
+            5) INSTALL_ANTIGRAVITY=true ;;
+            6) INSTALL_COPILOT=true ;;
+            7) INSTALL_CONTINUE=true ;;
+            8) INSTALL_OPENCODE=true ;;
+            9) INSTALL_CLINE=true ;;
+            10) INSTALL_ROO=true ;;
+            11) INSTALL_AIDER=true ;;
+        esac
+    done
+fi
 
-# Windsurf
-mkdir -p .windsurf/workflows .windsurf/rules .windsurf/skills/forge-workflow
+echo ""
+echo -e "${BLUE}Installing Forge workflow...${NC}"
+echo ""
 
-# Kilo Code
-mkdir -p .kilocode/workflows .kilocode/rules .kilocode/skills/forge-workflow
-
-# Cline
-mkdir -p .cline/skills/forge-workflow
-
-# Continue
-mkdir -p .continue/prompts .continue/skills/forge-workflow
-
-# OpenCode
-mkdir -p .opencode/commands .opencode/skills/forge-workflow
-
-# Roo Code
-mkdir -p .roo/commands
-
-# GitHub Copilot
-mkdir -p .github/prompts .github/instructions
-
-# Documentation
+# ============================================
+# ALWAYS CREATE: Core directories and AGENTS.md
+# ============================================
+echo "Creating core directories..."
 mkdir -p docs/planning docs/research
 
-echo "  Created directories for 11 AI agents"
-
-# ============================================
-# DOWNLOAD CLAUDE CODE COMMANDS (MASTER FORMAT)
-# ============================================
-echo ""
-echo "Downloading workflow commands..."
-for cmd in status research plan dev check ship review merge verify; do
-    curl -fsSL "$BASE_URL/.claude/commands/$cmd.md" -o ".claude/commands/$cmd.md" 2>/dev/null || true
-    echo "  Downloaded: $cmd.md"
-done
-
-# Download rules
-curl -fsSL "$BASE_URL/.claude/rules/workflow.md" -o ".claude/rules/workflow.md" 2>/dev/null || true
-echo "  Downloaded: workflow.md (rules)"
-
-# Download scripts
-curl -fsSL "$BASE_URL/.claude/scripts/load-env.sh" -o ".claude/scripts/load-env.sh" 2>/dev/null || true
-chmod +x .claude/scripts/load-env.sh 2>/dev/null || true
-echo "  Downloaded: load-env.sh (script)"
-
-# ============================================
-# DOWNLOAD UNIVERSAL AGENTS.md
-# ============================================
-echo ""
-echo "Creating universal instruction files..."
+# Download universal AGENTS.md
+echo "Downloading AGENTS.md (universal standard)..."
 curl -fsSL "$BASE_URL/AGENTS.md" -o "AGENTS.md"
-echo "  Downloaded: AGENTS.md (universal standard)"
+echo -e "  ${GREEN}Created: AGENTS.md${NC}"
+
+# Download documentation
+echo "Downloading documentation..."
+curl -fsSL "$BASE_URL/docs/WORKFLOW.md" -o "docs/WORKFLOW.md" 2>/dev/null || true
+curl -fsSL "$BASE_URL/docs/research/TEMPLATE.md" -o "docs/research/TEMPLATE.md" 2>/dev/null || true
+
+# Create PROGRESS.md if not exists
+if [ ! -f "docs/planning/PROGRESS.md" ]; then
+    cat > docs/planning/PROGRESS.md << 'EOF'
+# Project Progress
+
+## Current Focus
+<!-- What you're working on -->
+
+## Completed
+<!-- Completed features -->
+
+## Upcoming
+<!-- Next priorities -->
+EOF
+    echo -e "  ${GREEN}Created: docs/planning/PROGRESS.md${NC}"
+fi
 
 # ============================================
-# CREATE SYMLINKS (Single Source of Truth)
+# HELPER FUNCTIONS
 # ============================================
-echo ""
-echo "Creating instruction file links (single source of truth)..."
-
-# Function to create symlink or copy (fallback for Windows)
-create_link() {
-    local source="$1"
-    local target="$2"
-
-    # Remove existing target
-    rm -f "$target" 2>/dev/null || true
-
-    # Try symlink first, fall back to copy
-    if ln -s "$source" "$target" 2>/dev/null; then
-        echo "  Linked: $target -> $source"
-    else
-        cp "$source" "$target" 2>/dev/null || true
-        echo "  Copied: $target (from $source)"
-    fi
-}
-
-# Root-level instruction files (all link to AGENTS.md)
-create_link "AGENTS.md" "CLAUDE.md"
-create_link "AGENTS.md" "GEMINI.md"
-create_link "AGENTS.md" ".cursorrules"
-create_link "AGENTS.md" ".windsurfrules"
-create_link "AGENTS.md" ".clinerules"
-create_link "AGENTS.md" ".github/copilot-instructions.md"
-
-# ============================================
-# CONVERT COMMANDS TO AGENT-SPECIFIC FORMATS
-# ============================================
-echo ""
-echo "Converting commands for each agent..."
 
 # Function to strip YAML frontmatter
 strip_frontmatter() {
     sed '1{/^---$/!q};1,/^---$/d;1,/^---$/d' "$1"
 }
 
-# Google Antigravity: Remove YAML frontmatter (uses .agent/workflows/)
-for cmd in .claude/commands/*.md; do
-    [ -f "$cmd" ] || continue
-    filename=$(basename "$cmd")
-    strip_frontmatter "$cmd" > ".agent/workflows/$filename" 2>/dev/null || cp "$cmd" ".agent/workflows/$filename"
-done
-echo "  Converted: .agent/workflows/ (Google Antigravity)"
+# Function to create symlink or copy
+create_link() {
+    local source="$1"
+    local target="$2"
+    rm -f "$target" 2>/dev/null || true
+    if ln -s "$source" "$target" 2>/dev/null; then
+        echo -e "  ${GREEN}Linked: $target -> $source${NC}"
+    else
+        cp "$source" "$target" 2>/dev/null || true
+        echo -e "  ${GREEN}Copied: $target${NC}"
+    fi
+}
 
-# Kilo Code: Remove YAML frontmatter
-for cmd in .claude/commands/*.md; do
-    [ -f "$cmd" ] || continue
-    filename=$(basename "$cmd")
-    strip_frontmatter "$cmd" > ".kilocode/workflows/$filename" 2>/dev/null || cp "$cmd" ".kilocode/workflows/$filename"
-done
-echo "  Converted: .kilocode/workflows/ (Kilo Code)"
-
-# Windsurf: Remove YAML frontmatter
-for cmd in .claude/commands/*.md; do
-    [ -f "$cmd" ] || continue
-    filename=$(basename "$cmd")
-    strip_frontmatter "$cmd" > ".windsurf/workflows/$filename" 2>/dev/null || cp "$cmd" ".windsurf/workflows/$filename"
-done
-echo "  Converted: .windsurf/workflows/ (Windsurf)"
-
-# OpenCode: Keep as-is (same YAML format)
-cp .claude/commands/*.md .opencode/commands/ 2>/dev/null || true
-echo "  Copied: .opencode/commands/ (OpenCode)"
-
-# Roo Code: Remove YAML frontmatter
-for cmd in .claude/commands/*.md; do
-    [ -f "$cmd" ] || continue
-    filename=$(basename "$cmd")
-    strip_frontmatter "$cmd" > ".roo/commands/$filename" 2>/dev/null || cp "$cmd" ".roo/commands/$filename"
-done
-echo "  Converted: .roo/commands/ (Roo Code)"
-
-# Continue: Convert to .prompt with invokable: true
-for cmd in .claude/commands/*.md; do
-    [ -f "$cmd" ] || continue
-    basename_noext=$(basename "$cmd" .md)
-    filename="${basename_noext}.prompt"
-    {
-        echo "---"
-        echo "name: $basename_noext"
-        echo "description: Forge workflow command - $basename_noext"
-        echo "invokable: true"
-        echo "---"
-        echo ""
-        strip_frontmatter "$cmd" 2>/dev/null || cat "$cmd"
-    } > ".continue/prompts/$filename"
-done
-echo "  Converted: .continue/prompts/ (Continue)"
-
-# GitHub Copilot: Convert to .prompt.md
-for cmd in .claude/commands/*.md; do
-    [ -f "$cmd" ] || continue
-    basename_noext=$(basename "$cmd" .md)
-    filename="${basename_noext}.prompt.md"
-    strip_frontmatter "$cmd" > ".github/prompts/$filename" 2>/dev/null || cp "$cmd" ".github/prompts/$filename"
-done
-echo "  Converted: .github/prompts/ (GitHub Copilot)"
-
-# Cursor: Create workflow.mdc rule (Cursor uses rules, not slash commands)
-cat > .cursor/rules/forge-workflow.mdc << 'MDC_EOF'
----
-description: Forge 9-Stage TDD Workflow
-alwaysApply: true
----
-
-# Forge Workflow Commands
-
-Use these commands via `/command-name`:
-
-1. `/status` - Check current context, active work, recent completions
-2. `/research` - Deep research with web search, document to docs/research/
-3. `/plan` - Create implementation plan, branch, tracking
-4. `/dev` - TDD development (RED-GREEN-REFACTOR cycles)
-5. `/check` - Validation (type/lint/security/tests)
-6. `/ship` - Create PR with full documentation
-7. `/review` - Address ALL PR feedback
-8. `/merge` - Update docs, merge PR, cleanup
-9. `/verify` - Final documentation verification
-
-## Workflow Flow
-
-```
-/status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
-```
-
-## Core Principles
-
-- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-- **Research-First**: Understand before building, document decisions
-- **Security Built-In**: OWASP Top 10 analysis for every feature
-- **Documentation Progressive**: Update at each stage, verify at end
-
-See AGENTS.md for full workflow details.
-MDC_EOF
-echo "  Created: .cursor/rules/forge-workflow.mdc (Cursor)"
-
-# ============================================
-# CREATE UNIVERSAL SKILL (SKILL.md)
-# ============================================
-echo ""
-echo "Installing universal SKILL.md for all supporting agents..."
-
-# Create the universal SKILL.md content
-cat > /tmp/forge-skill.md << 'SKILL_EOF'
----
+# Universal SKILL.md content
+SKILL_CONTENT='---
 name: forge-workflow
 description: 9-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
 category: Development Workflow
@@ -269,7 +184,7 @@ Automatically invoke this skill when the user wants to:
 | 4 | `/dev` | TDD development (RED-GREEN-REFACTOR cycles) |
 | 5 | `/check` | Validation (type/lint/security/tests) |
 | 6 | `/ship` | Create PR with full documentation |
-| 7 | `/review` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
+| 7 | `/review` | Address ALL PR feedback |
 | 8 | `/merge` | Update docs, merge PR, cleanup |
 | 9 | `/verify` | Final documentation verification |
 
@@ -285,116 +200,338 @@ Automatically invoke this skill when the user wants to:
 - **Research-First**: Understand before building, document decisions
 - **Security Built-In**: OWASP Top 10 analysis for every feature
 - **Documentation Progressive**: Update at each stage, verify at end
-
-## Prerequisites
-
-- Git and GitHub CLI (`gh`)
-- Beads (recommended): `npm i -g beads-cli && bd init`
-- OpenSpec (optional): `npm i -g openspec-cli`
-
-## Quick Start
-
-1. `/status` - Check where you are
-2. `/research <feature-name>` - Research the feature
-3. `/plan <feature-slug>` - Create formal plan
-4. `/dev` - Implement with TDD
-5. `/check` - Validate everything
-6. `/ship` - Create PR
-
-See docs/WORKFLOW.md for detailed workflow guide.
-SKILL_EOF
-
-# Install SKILL.md to ALL supporting agents (same format works everywhere!)
-cp /tmp/forge-skill.md .claude/skills/forge-workflow/SKILL.md
-cp /tmp/forge-skill.md .agent/skills/forge-workflow/SKILL.md      # Antigravity
-cp /tmp/forge-skill.md .cursor/skills/forge-workflow/SKILL.md     # Cursor
-cp /tmp/forge-skill.md .windsurf/skills/forge-workflow/SKILL.md   # Windsurf
-cp /tmp/forge-skill.md .kilocode/skills/forge-workflow/SKILL.md   # Kilo Code
-cp /tmp/forge-skill.md .cline/skills/forge-workflow/SKILL.md      # Cline
-cp /tmp/forge-skill.md .continue/skills/forge-workflow/SKILL.md   # Continue
-cp /tmp/forge-skill.md .opencode/skills/forge-workflow/SKILL.md   # OpenCode
-
-rm /tmp/forge-skill.md 2>/dev/null || true
-
-echo "  Installed SKILL.md to 8 agents (universal format)"
+'
 
 # ============================================
-# COPY RULES TO OTHER AGENTS
+# CLAUDE CODE
 # ============================================
-echo ""
-echo "Copying rules to supporting agents..."
+if [ "$INSTALL_CLAUDE" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Claude Code...${NC}"
 
-# Copy workflow rules (plain markdown works everywhere)
-cp .claude/rules/workflow.md .agent/rules/workflow.md 2>/dev/null || true
-cp .claude/rules/workflow.md .windsurf/rules/workflow.md 2>/dev/null || true
-cp .claude/rules/workflow.md .kilocode/rules/workflow.md 2>/dev/null || true
+    mkdir -p .claude/commands .claude/rules .claude/skills/forge-workflow .claude/scripts
 
-echo "  Copied rules to: .agent/, .windsurf/, .kilocode/"
+    # Download commands
+    for cmd in status research plan dev check ship review merge verify; do
+        curl -fsSL "$BASE_URL/.claude/commands/$cmd.md" -o ".claude/commands/$cmd.md" 2>/dev/null || true
+    done
+    echo -e "  ${GREEN}Downloaded: 9 workflow commands${NC}"
+
+    # Download rules
+    curl -fsSL "$BASE_URL/.claude/rules/workflow.md" -o ".claude/rules/workflow.md" 2>/dev/null || true
+    echo -e "  ${GREEN}Downloaded: workflow rules${NC}"
+
+    # Download scripts
+    curl -fsSL "$BASE_URL/.claude/scripts/load-env.sh" -o ".claude/scripts/load-env.sh" 2>/dev/null || true
+    chmod +x .claude/scripts/load-env.sh 2>/dev/null || true
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .claude/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+
+    # Link CLAUDE.md -> AGENTS.md
+    create_link "AGENTS.md" "CLAUDE.md"
+fi
 
 # ============================================
-# DOWNLOAD DOCUMENTATION
+# CURSOR
 # ============================================
-echo ""
-echo "Downloading documentation..."
-curl -fsSL "$BASE_URL/docs/WORKFLOW.md" -o "docs/WORKFLOW.md" 2>/dev/null || true
-echo "  Downloaded: docs/WORKFLOW.md"
+if [ "$INSTALL_CURSOR" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Cursor...${NC}"
 
-curl -fsSL "$BASE_URL/docs/research/TEMPLATE.md" -o "docs/research/TEMPLATE.md" 2>/dev/null || true
-echo "  Downloaded: docs/research/TEMPLATE.md"
+    mkdir -p .cursor/rules .cursor/skills/forge-workflow
 
-# Create PROGRESS.md template if it doesn't exist
-if [ ! -f "docs/planning/PROGRESS.md" ]; then
-cat > docs/planning/PROGRESS.md << 'PROGRESS_EOF'
-# Project Progress
+    # Create workflow.mdc rule
+    cat > .cursor/rules/forge-workflow.mdc << 'MDC_EOF'
+---
+description: Forge 9-Stage TDD Workflow
+alwaysApply: true
+---
 
-## Current Focus
-<!-- What you're working on -->
+# Forge Workflow Commands
 
-## Completed
-<!-- Completed features -->
+Use these commands via `/command-name`:
 
-## Upcoming
-<!-- Next priorities -->
-PROGRESS_EOF
-echo "  Created: docs/planning/PROGRESS.md"
+1. `/status` - Check current context, active work, recent completions
+2. `/research` - Deep research with web search, document to docs/research/
+3. `/plan` - Create implementation plan, branch, tracking
+4. `/dev` - TDD development (RED-GREEN-REFACTOR cycles)
+5. `/check` - Validation (type/lint/security/tests)
+6. `/ship` - Create PR with full documentation
+7. `/review` - Address ALL PR feedback
+8. `/merge` - Update docs, merge PR, cleanup
+9. `/verify` - Final documentation verification
+
+See AGENTS.md for full workflow details.
+MDC_EOF
+    echo -e "  ${GREEN}Created: .cursor/rules/forge-workflow.mdc${NC}"
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .cursor/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+
+    # Link .cursorrules -> AGENTS.md
+    create_link "AGENTS.md" ".cursorrules"
+fi
+
+# ============================================
+# WINDSURF
+# ============================================
+if [ "$INSTALL_WINDSURF" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Windsurf...${NC}"
+
+    mkdir -p .windsurf/workflows .windsurf/rules .windsurf/skills/forge-workflow
+
+    # Convert commands (strip YAML frontmatter)
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        for cmd in .claude/commands/*.md; do
+            [ -f "$cmd" ] || continue
+            filename=$(basename "$cmd")
+            strip_frontmatter "$cmd" > ".windsurf/workflows/$filename" 2>/dev/null || cp "$cmd" ".windsurf/workflows/$filename"
+        done
+        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+
+        # Copy rules
+        cp .claude/rules/workflow.md .windsurf/rules/workflow.md 2>/dev/null || true
+    fi
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .windsurf/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+
+    # Link .windsurfrules -> AGENTS.md
+    create_link "AGENTS.md" ".windsurfrules"
+fi
+
+# ============================================
+# KILO CODE
+# ============================================
+if [ "$INSTALL_KILOCODE" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Kilo Code...${NC}"
+
+    mkdir -p .kilocode/workflows .kilocode/rules .kilocode/skills/forge-workflow
+
+    # Convert commands (strip YAML frontmatter)
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        for cmd in .claude/commands/*.md; do
+            [ -f "$cmd" ] || continue
+            filename=$(basename "$cmd")
+            strip_frontmatter "$cmd" > ".kilocode/workflows/$filename" 2>/dev/null || cp "$cmd" ".kilocode/workflows/$filename"
+        done
+        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+
+        # Copy rules
+        cp .claude/rules/workflow.md .kilocode/rules/workflow.md 2>/dev/null || true
+    fi
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .kilocode/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+fi
+
+# ============================================
+# GOOGLE ANTIGRAVITY
+# ============================================
+if [ "$INSTALL_ANTIGRAVITY" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Google Antigravity...${NC}"
+
+    mkdir -p .agent/workflows .agent/rules .agent/skills/forge-workflow
+
+    # Convert commands (strip YAML frontmatter)
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        for cmd in .claude/commands/*.md; do
+            [ -f "$cmd" ] || continue
+            filename=$(basename "$cmd")
+            strip_frontmatter "$cmd" > ".agent/workflows/$filename" 2>/dev/null || cp "$cmd" ".agent/workflows/$filename"
+        done
+        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+
+        # Copy rules
+        cp .claude/rules/workflow.md .agent/rules/workflow.md 2>/dev/null || true
+    fi
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .agent/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+
+    # Link GEMINI.md -> AGENTS.md
+    create_link "AGENTS.md" "GEMINI.md"
+fi
+
+# ============================================
+# GITHUB COPILOT
+# ============================================
+if [ "$INSTALL_COPILOT" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up GitHub Copilot...${NC}"
+
+    mkdir -p .github/prompts .github/instructions
+
+    # Convert commands to .prompt.md
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        for cmd in .claude/commands/*.md; do
+            [ -f "$cmd" ] || continue
+            basename_noext=$(basename "$cmd" .md)
+            filename="${basename_noext}.prompt.md"
+            strip_frontmatter "$cmd" > ".github/prompts/$filename" 2>/dev/null || cp "$cmd" ".github/prompts/$filename"
+        done
+        echo -e "  ${GREEN}Converted: 9 workflow prompts${NC}"
+    fi
+
+    # Link copilot-instructions.md -> AGENTS.md
+    create_link "AGENTS.md" ".github/copilot-instructions.md"
+fi
+
+# ============================================
+# CONTINUE
+# ============================================
+if [ "$INSTALL_CONTINUE" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Continue...${NC}"
+
+    mkdir -p .continue/prompts .continue/skills/forge-workflow
+
+    # Convert commands to .prompt with invokable: true
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        for cmd in .claude/commands/*.md; do
+            [ -f "$cmd" ] || continue
+            basename_noext=$(basename "$cmd" .md)
+            filename="${basename_noext}.prompt"
+            {
+                echo "---"
+                echo "name: $basename_noext"
+                echo "description: Forge workflow command - $basename_noext"
+                echo "invokable: true"
+                echo "---"
+                echo ""
+                strip_frontmatter "$cmd" 2>/dev/null || cat "$cmd"
+            } > ".continue/prompts/$filename"
+        done
+        echo -e "  ${GREEN}Converted: 9 workflow prompts${NC}"
+    fi
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .continue/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+fi
+
+# ============================================
+# OPENCODE
+# ============================================
+if [ "$INSTALL_OPENCODE" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up OpenCode...${NC}"
+
+    mkdir -p .opencode/commands .opencode/skills/forge-workflow
+
+    # Copy commands as-is (same YAML format)
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        cp .claude/commands/*.md .opencode/commands/ 2>/dev/null || true
+        echo -e "  ${GREEN}Copied: 9 workflow commands${NC}"
+    fi
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .opencode/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+fi
+
+# ============================================
+# CLINE
+# ============================================
+if [ "$INSTALL_CLINE" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Cline...${NC}"
+
+    mkdir -p .cline/skills/forge-workflow
+
+    # Create SKILL.md
+    echo "$SKILL_CONTENT" > .cline/skills/forge-workflow/SKILL.md
+    echo -e "  ${GREEN}Created: forge-workflow skill${NC}"
+
+    # Link .clinerules -> AGENTS.md
+    create_link "AGENTS.md" ".clinerules"
+fi
+
+# ============================================
+# ROO CODE
+# ============================================
+if [ "$INSTALL_ROO" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Roo Code...${NC}"
+
+    mkdir -p .roo/commands
+
+    # Convert commands (strip YAML frontmatter)
+    if [ "$INSTALL_CLAUDE" = true ]; then
+        for cmd in .claude/commands/*.md; do
+            [ -f "$cmd" ] || continue
+            filename=$(basename "$cmd")
+            strip_frontmatter "$cmd" > ".roo/commands/$filename" 2>/dev/null || cp "$cmd" ".roo/commands/$filename"
+        done
+        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+    fi
+
+    # Link .clinerules -> AGENTS.md (Roo uses same as Cline)
+    if [ ! -f ".clinerules" ]; then
+        create_link "AGENTS.md" ".clinerules"
+    fi
+fi
+
+# ============================================
+# AIDER
+# ============================================
+if [ "$INSTALL_AIDER" = true ]; then
+    echo ""
+    echo -e "${CYAN}Setting up Aider...${NC}"
+
+    # Aider uses AGENTS.md via config
+    # Create .aider.conf.yml if not exists
+    if [ ! -f ".aider.conf.yml" ]; then
+        cat > .aider.conf.yml << 'EOF'
+# Aider configuration
+# Read AGENTS.md for workflow instructions
+read:
+  - AGENTS.md
+  - docs/WORKFLOW.md
+EOF
+        echo -e "  ${GREEN}Created: .aider.conf.yml${NC}"
+    else
+        echo -e "  ${YELLOW}Skipped: .aider.conf.yml already exists${NC}"
+        echo -e "  ${YELLOW}Add 'read: [AGENTS.md]' to your config manually${NC}"
+    fi
 fi
 
 # ============================================
 # SUCCESS MESSAGE
 # ============================================
 echo ""
-echo "=============================================="
-echo "  Forge v1.1.0 installed successfully!"
-echo "=============================================="
+echo -e "${GREEN}=============================================="
+echo -e "  Forge v1.1.0 installed successfully!"
+echo -e "==============================================${NC}"
 echo ""
-echo "Commands installed for:"
-echo "  - Claude Code         (.claude/commands/)      Full support"
-echo "  - Google Antigravity  (.agent/workflows/)      Full support"
-echo "  - OpenCode            (.opencode/commands/)    Full support"
-echo "  - Kilo Code           (.kilocode/workflows/)   Full support"
-echo "  - Windsurf            (.windsurf/workflows/)   Full support"
-echo "  - Roo Code            (.roo/commands/)         Full support"
-echo "  - Continue            (.continue/prompts/)     Full support"
-echo "  - GitHub Copilot      (.github/prompts/)       VS Code only"
-echo "  - Cursor              (.cursor/rules/)         Via rules"
-echo "  - Cline               (AGENTS.md)              Via instructions"
-echo "  - Aider               (AGENTS.md)              Via instructions"
+
+# Show what was installed
+echo "Installed for:"
+[ "$INSTALL_CLAUDE" = true ] && echo -e "  ${GREEN}*${NC} Claude Code         (.claude/commands/)"
+[ "$INSTALL_CURSOR" = true ] && echo -e "  ${GREEN}*${NC} Cursor              (.cursor/rules/)"
+[ "$INSTALL_WINDSURF" = true ] && echo -e "  ${GREEN}*${NC} Windsurf            (.windsurf/workflows/)"
+[ "$INSTALL_KILOCODE" = true ] && echo -e "  ${GREEN}*${NC} Kilo Code           (.kilocode/workflows/)"
+[ "$INSTALL_ANTIGRAVITY" = true ] && echo -e "  ${GREEN}*${NC} Google Antigravity  (.agent/workflows/)"
+[ "$INSTALL_COPILOT" = true ] && echo -e "  ${GREEN}*${NC} GitHub Copilot      (.github/prompts/)"
+[ "$INSTALL_CONTINUE" = true ] && echo -e "  ${GREEN}*${NC} Continue            (.continue/prompts/)"
+[ "$INSTALL_OPENCODE" = true ] && echo -e "  ${GREEN}*${NC} OpenCode            (.opencode/commands/)"
+[ "$INSTALL_CLINE" = true ] && echo -e "  ${GREEN}*${NC} Cline               (.clinerules)"
+[ "$INSTALL_ROO" = true ] && echo -e "  ${GREEN}*${NC} Roo Code            (.roo/commands/)"
+[ "$INSTALL_AIDER" = true ] && echo -e "  ${GREEN}*${NC} Aider               (.aider.conf.yml)"
+
 echo ""
-echo "Skills installed for:"
-echo "  - Claude Code, Antigravity, Cursor, Windsurf, Kilo Code,"
-echo "    Cline, Continue, OpenCode (same SKILL.md works everywhere!)"
-echo ""
-echo "Instruction files (linked to AGENTS.md):"
-echo "  - CLAUDE.md           Claude Code"
-echo "  - GEMINI.md           Google Antigravity"
-echo "  - .cursorrules        Cursor"
-echo "  - .windsurfrules      Windsurf"
-echo "  - .clinerules         Cline/Roo Code"
-echo "  - .github/copilot-instructions.md  GitHub Copilot"
-echo ""
-echo "=============================================="
-echo "  GET STARTED"
-echo "=============================================="
+echo -e "${CYAN}=============================================="
+echo -e "  GET STARTED"
+echo -e "==============================================${NC}"
 echo ""
 echo "  /status    - Check current context"
 echo "  /research  - Start researching a feature"
@@ -407,7 +544,6 @@ echo "  /merge     - Merge and cleanup"
 echo "  /verify    - Final documentation check"
 echo ""
 echo "  Full guide: docs/WORKFLOW.md"
-echo "  Research template: docs/research/TEMPLATE.md"
 echo ""
 echo "Optional tools:"
 echo "  - Beads: npm i -g beads-cli && bd init"

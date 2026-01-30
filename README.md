@@ -8,7 +8,7 @@ A 9-stage TDD-first workflow for **ALL AI coding agents**. Ship features with co
 
 ## Supported AI Coding Agents
 
-Forge works with **all major AI coding agents** using the universal [AGENTS.md](https://agents.md/) standard (60,000+ projects):
+Forge works with **all major AI coding agents** using the universal [AGENTS.md](https://agents.md/) standard:
 
 | Agent | Status | Primary Config | Commands Location |
 |-------|--------|----------------|-------------------|
@@ -24,40 +24,92 @@ Forge works with **all major AI coding agents** using the universal [AGENTS.md](
 | **Roo Code** | Full | `.clinerules` | `.roo/commands/` |
 | **Aider** | Full | `AGENTS.md` | Via instructions |
 
-### Universal Standard: AGENTS.md
-
-Forge uses **AGENTS.md** as the universal standard, with agent-specific files linked as single source of truth. Your instructions work across ALL supported agents.
-
-### Skills Support
-
-**Agent Skills** (SKILL.md) is now a universal standard across most agents. Same skill file works everywhere:
-- Claude Code, Google Antigravity, Cursor, Windsurf, Kilo Code, Cline, Continue, OpenCode
-
 ## Installation
 
 ### Option 1: npm (Recommended)
 
 ```bash
+# Step 1: Install the package (minimal: AGENTS.md + docs)
 npm install forge-workflow
+
+# Step 2: Configure for your agents (interactive)
+npx forge setup
+```
+
+Or specify agents directly:
+
+```bash
+# Install for specific agents
+npx forge setup --agents claude,cursor,windsurf
+
+# Install for all agents
+npx forge setup --all
 ```
 
 ### Option 2: bun
 
 ```bash
 bun add forge-workflow
+bunx forge setup
 ```
 
-### Option 3: curl (No package manager)
+### Option 3: curl (Interactive)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh | bash
 ```
 
+The curl installer is interactive - it will ask which agents you use.
+
 ### Option 4: GitHub Template (New projects)
 
 1. Click "Use this template" on GitHub
 2. Clone your new repo
-3. Start with `/status`
+3. Run `npx forge setup` to configure
+
+## What Gets Installed
+
+### Minimal Install (npm install)
+
+```
+your-project/
+├── AGENTS.md                # Universal standard
+└── docs/
+    ├── WORKFLOW.md          # Complete guide
+    ├── planning/PROGRESS.md # Progress tracking
+    └── research/TEMPLATE.md # Research template
+```
+
+### After Setup (npx forge setup)
+
+Only the agents you select get configured:
+
+```
+# If you selected Claude Code + Cursor + Windsurf:
+
+your-project/
+├── AGENTS.md                    # Universal standard
+├── CLAUDE.md                    # -> linked to AGENTS.md
+├── .cursorrules                 # -> linked to AGENTS.md
+├── .windsurfrules               # -> linked to AGENTS.md
+│
+├── .claude/
+│   ├── commands/                # 9 workflow commands
+│   ├── rules/workflow.md
+│   └── skills/forge-workflow/
+│
+├── .cursor/
+│   ├── rules/forge-workflow.mdc
+│   └── skills/forge-workflow/
+│
+├── .windsurf/
+│   ├── workflows/               # Converted commands
+│   ├── rules/
+│   └── skills/forge-workflow/
+│
+└── docs/
+    └── ...
+```
 
 ## Prerequisites
 
@@ -150,79 +202,6 @@ curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh 
 - Update docs at each relevant stage
 - Verify completeness with `/verify`
 - Never accumulate doc debt
-
-## Directory Structure
-
-After installation, Forge creates directories for ALL supported agents:
-
-```
-your-project/
-├── AGENTS.md                          # Universal standard (primary)
-├── CLAUDE.md                          # Claude Code (linked)
-├── GEMINI.md                          # Google Antigravity (linked)
-├── .cursorrules                       # Cursor (linked)
-├── .windsurfrules                     # Windsurf (linked)
-├── .clinerules                        # Cline/Roo Code (linked)
-│
-├── .github/
-│   ├── copilot-instructions.md        # GitHub Copilot (linked)
-│   └── prompts/                       # Copilot prompts
-│
-├── .claude/
-│   ├── commands/                      # 9 workflow commands
-│   │   ├── status.md
-│   │   ├── research.md
-│   │   ├── plan.md
-│   │   ├── dev.md
-│   │   ├── check.md
-│   │   ├── ship.md
-│   │   ├── review.md
-│   │   ├── merge.md
-│   │   └── verify.md
-│   ├── rules/
-│   │   └── workflow.md
-│   ├── skills/
-│   │   ├── forge-workflow/SKILL.md    # Universal skill
-│   │   ├── parallel-ai/               # Web research
-│   │   └── sonarcloud/                # Code quality
-│   └── scripts/
-│       └── load-env.sh
-│
-├── .agent/                            # Google Antigravity
-│   ├── workflows/                     # Workflow commands
-│   ├── rules/
-│   └── skills/forge-workflow/
-│
-├── .cursor/                           # Cursor
-│   ├── rules/forge-workflow.mdc
-│   └── skills/forge-workflow/
-│
-├── .windsurf/                         # Windsurf
-│   ├── workflows/
-│   ├── rules/
-│   └── skills/forge-workflow/
-│
-├── .kilocode/                         # Kilo Code
-│   ├── workflows/
-│   ├── rules/
-│   └── skills/forge-workflow/
-│
-├── .cline/skills/forge-workflow/      # Cline
-├── .continue/                         # Continue
-│   ├── prompts/
-│   └── skills/forge-workflow/
-├── .opencode/                         # OpenCode
-│   ├── commands/
-│   └── skills/forge-workflow/
-├── .roo/commands/                     # Roo Code
-│
-└── docs/
-    ├── planning/
-    │   └── PROGRESS.md
-    ├── research/
-    │   └── TEMPLATE.md
-    └── WORKFLOW.md
-```
 
 ## Configuration
 
