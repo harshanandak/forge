@@ -237,6 +237,29 @@ bd sync && git push
 
 ---
 
+## Recovery: Rollback
+
+If something goes wrong, use rollback to safely revert changes:
+
+```bash
+npx forge rollback
+```
+
+**Rollback methods**:
+
+- **Last commit**: Quick undo of most recent change
+- **Specific commit**: Target any commit by hash
+- **Merged PR**: Revert an entire PR merge
+- **Specific files**: Restore only certain files
+- **Branch range**: Revert multiple commits
+- **Dry run**: Preview changes without executing
+
+All USER sections and custom commands are preserved during rollback.
+
+See [.claude/commands/rollback.md](../.claude/commands/rollback.md) for complete documentation.
+
+---
+
 ## Tips & Best Practices
 
 1. **Always TDD**: Write tests BEFORE implementation

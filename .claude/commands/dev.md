@@ -39,6 +39,14 @@ CO-DEPENDENT (Must Sequence):
 Decision: Parallel tracks possible after types created
 ```
 
+> **💭 Plan-Act-Reflect Checkpoint**
+> Before choosing your execution strategy:
+> - Is the parallelization complexity worth the time savings?
+> - Do you have clear boundaries between tracks, or will they collide?
+> - Have you identified the true "shared foundation" that must come first?
+>
+> **If unsure**: Start sequential. Refer to your OpenSpec `tasks.md` for dependency guidance.
+
 ### Step 2: Create TodoWrite (TDD Pattern)
 
 **TESTS WRITTEN UPFRONT** - Before implementation
