@@ -76,6 +76,14 @@ npm run test    # or: bun run test, jest, vitest, etc.
 - Includes security test scenarios
 - TDD tests from /dev phase
 
+> **💭 Plan-Act-Reflect Checkpoint**
+> Before declaring validation complete:
+> - Are all security test scenarios from your research doc actually implemented and passing?
+> - Did you verify OWASP Top 10 mitigations, not just check a box?
+> - Are there edge cases or integration scenarios you haven't tested?
+>
+> **If unsure**: Re-read the "Security Analysis" and "TDD Test Scenarios" sections in research doc
+
 ### Step 6: Handle Failures
 
 If any check fails:

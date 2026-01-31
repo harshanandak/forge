@@ -35,6 +35,14 @@ cat docs/research/<feature-slug>.md
 - Then create Beads issue
 - Multi-session or parallel work
 
+> **💭 Plan-Act-Reflect Checkpoint**
+> Before proceeding, reflect on this scope decision:
+> - Does this change affect system architecture, APIs, or data models?
+> - Will future features depend on getting this design right now?
+> - Would a team discussion reveal concerns or better alternatives?
+>
+> **If unsure**: Review your research doc (`docs/research/<feature-slug>.md`) for complexity signals
+
 ### Step 3A: If Tactical
 
 ```bash
