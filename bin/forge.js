@@ -133,7 +133,7 @@ const AGENTS = {
 Object.freeze(AGENTS);
 Object.values(AGENTS).forEach(agent => Object.freeze(agent));
 
-const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify'];
+const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify', 'rollback'];
 
 // Code review tool options
 const CODE_REVIEW_TOOLS = {
@@ -703,6 +703,353 @@ function detectProjectStatus() {
   return status;
 }
 
+// Detect project type from package.json
+function detectProjectType() {
+  const detection = {
+    hasPackageJson: false,
+    framework: null,
+    frameworkConfidence: 0,
+    language: 'javascript',
+    languageConfidence: 100,
+    projectType: null,
+    buildTool: null,
+    testFramework: null,
+    features: {
+      typescript: false,
+      monorepo: false,
+      docker: false,
+      cicd: false
+    }
+  };
+
+  const pkg = readPackageJson();
+  if (!pkg) return detection;
+
+  detection.hasPackageJson = true;
+
+  // Detect TypeScript
+  if (pkg.devDependencies?.typescript || pkg.dependencies?.typescript) {
+    detection.features.typescript = true;
+    detection.language = 'typescript';
+  }
+
+  // Detect monorepo
+  if (pkg.workspaces || fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
+    detection.features.monorepo = true;
+  }
+
+  // Detect Docker
+  if (fs.existsSync(path.join(projectRoot, 'Dockerfile')) || fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
+    detection.features.docker = true;
+  }
+
+  // Detect CI/CD
+  if (fs.existsSync(path.join(projectRoot, '.github/workflows')) ||
+      fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
+      fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
+      fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
+    detection.features.cicd = true;
+  }
+
+  // Framework detection with confidence scoring
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+  // Helper function for test framework detection
+  const detectTestFramework = (deps) => {
+    if (deps.jest) return 'jest';
+    if (deps.vitest) return 'vitest';
+    if (deps.mocha) return 'mocha';
+    if (deps['@playwright/test']) return 'playwright';
+    if (deps.cypress) return 'cypress';
+    if (deps.karma) return 'karma';
+    return null;
+  };
+
+  // Next.js (highest priority for React projects)
+  if (deps.next) {
+    detection.framework = 'Next.js';
+    detection.frameworkConfidence = 100;
+    detection.projectType = 'fullstack';
+    detection.buildTool = 'next';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // NestJS (backend framework)
+  if (deps['@nestjs/core'] || deps['@nestjs/common']) {
+    detection.framework = 'NestJS';
+    detection.frameworkConfidence = 100;
+    detection.projectType = 'backend';
+    detection.buildTool = 'nest';
+    detection.testFramework = 'jest';
+    return detection;
+  }
+
+  // Angular
+  if (deps['@angular/core'] || deps['@angular/cli']) {
+    detection.framework = 'Angular';
+    detection.frameworkConfidence = 100;
+    detection.projectType = 'frontend';
+    detection.buildTool = 'ng';
+    detection.testFramework = 'karma';
+    return detection;
+  }
+
+  // Vue.js
+  if (deps.vue) {
+    if (deps.nuxt) {
+      detection.framework = 'Nuxt';
+      detection.frameworkConfidence = 100;
+      detection.projectType = 'fullstack';
+      detection.buildTool = 'nuxt';
+    } else {
+      detection.framework = 'Vue.js';
+      detection.frameworkConfidence = deps['@vue/cli'] ? 100 : 90;
+      detection.projectType = 'frontend';
+      detection.buildTool = deps.vite ? 'vite' : deps.webpack ? 'webpack' : 'vue-cli';
+    }
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // React (without Next.js)
+  if (deps.react) {
+    detection.framework = 'React';
+    detection.frameworkConfidence = 95;
+    detection.projectType = 'frontend';
+    detection.buildTool = deps.vite ? 'vite' : deps['react-scripts'] ? 'create-react-app' : 'webpack';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Express (backend)
+  if (deps.express) {
+    detection.framework = 'Express';
+    detection.frameworkConfidence = 90;
+    detection.projectType = 'backend';
+    detection.buildTool = detection.features.typescript ? 'tsc' : 'node';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Fastify (backend)
+  if (deps.fastify) {
+    detection.framework = 'Fastify';
+    detection.frameworkConfidence = 95;
+    detection.projectType = 'backend';
+    detection.buildTool = detection.features.typescript ? 'tsc' : 'node';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Svelte
+  if (deps.svelte) {
+    if (deps['@sveltejs/kit']) {
+      detection.framework = 'SvelteKit';
+      detection.frameworkConfidence = 100;
+      detection.projectType = 'fullstack';
+      detection.buildTool = 'vite';
+    } else {
+      detection.framework = 'Svelte';
+      detection.frameworkConfidence = 95;
+      detection.projectType = 'frontend';
+      detection.buildTool = 'vite';
+    }
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Remix
+  if (deps['@remix-run/react']) {
+    detection.framework = 'Remix';
+    detection.frameworkConfidence = 100;
+    detection.projectType = 'fullstack';
+    detection.buildTool = 'remix';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Astro
+  if (deps.astro) {
+    detection.framework = 'Astro';
+    detection.frameworkConfidence = 100;
+    detection.projectType = 'frontend';
+    detection.buildTool = 'astro';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Generic Node.js project
+  if (pkg.main || pkg.scripts?.start) {
+    detection.framework = 'Node.js';
+    detection.frameworkConfidence = 70;
+    detection.projectType = 'backend';
+    detection.buildTool = detection.features.typescript ? 'tsc' : 'node';
+    detection.testFramework = detectTestFramework(deps);
+    return detection;
+  }
+
+  // Fallback: generic JavaScript/TypeScript project
+  detection.framework = detection.features.typescript ? 'TypeScript' : 'JavaScript';
+  detection.frameworkConfidence = 60;
+  detection.projectType = 'library';
+  detection.buildTool = deps.vite ? 'vite' : deps.webpack ? 'webpack' : 'npm';
+  detection.testFramework = detectTestFramework(deps);
+
+  return detection;
+}
+
+// Display project detection results
+function displayProjectType(detection) {
+  if (!detection.hasPackageJson) return;
+
+  console.log('');
+  console.log(chalk.cyan('  📦 Project Detection:'));
+
+  if (detection.framework) {
+    const confidence = detection.frameworkConfidence >= 90 ? '✓' : '~';
+    console.log(`     Framework: ${chalk.bold(detection.framework)} ${confidence}`);
+  }
+
+  if (detection.projectType) {
+    console.log(`     Type: ${detection.projectType}`);
+  }
+
+  if (detection.buildTool) {
+    console.log(`     Build: ${detection.buildTool}`);
+  }
+
+  if (detection.testFramework) {
+    console.log(`     Tests: ${detection.testFramework}`);
+  }
+
+  const features = [];
+  if (detection.features.typescript) features.push('TypeScript');
+  if (detection.features.monorepo) features.push('Monorepo');
+  if (detection.features.docker) features.push('Docker');
+  if (detection.features.cicd) features.push('CI/CD');
+
+  if (features.length > 0) {
+    console.log(`     Features: ${features.join(', ')}`);
+  }
+}
+
+// Generate framework-specific tips
+function generateFrameworkTips(detection) {
+  const tips = {
+    'Next.js': [
+      '- Use `npm run dev` for development with hot reload',
+      '- Server components are default in App Router',
+      '- API routes live in `app/api/` or `pages/api/`'
+    ],
+    'React': [
+      '- Prefer functional components with hooks',
+      '- Use `React.memo()` for expensive components',
+      '- State management: Context API or external library'
+    ],
+    'Vue.js': [
+      '- Use Composition API for better TypeScript support',
+      '- `<script setup>` is the recommended syntax',
+      '- Pinia is the official state management'
+    ],
+    'Angular': [
+      '- Use standalone components (Angular 14+)',
+      '- Signals for reactive state (Angular 16+)',
+      '- RxJS for async operations'
+    ],
+    'NestJS': [
+      '- Dependency injection via decorators',
+      '- Use `@nestjs/config` for environment variables',
+      '- Guards for authentication, Interceptors for logging'
+    ],
+    'Express': [
+      '- Use middleware for cross-cutting concerns',
+      '- Error handling with next(err)',
+      '- Consider Helmet.js for security headers'
+    ],
+    'Fastify': [
+      '- Schema-based validation with JSON Schema',
+      '- Plugins for reusable functionality',
+      '- Async/await by default'
+    ],
+    'SvelteKit': [
+      '- File-based routing in `src/routes/`',
+      '- Server-side rendering by default',
+      '- Form actions for mutations'
+    ],
+    'Nuxt': [
+      '- Auto-imports for components and composables',
+      '- `useAsyncData()` for data fetching',
+      '- Nitro server engine for deployment'
+    ],
+    'Remix': [
+      '- Loaders for data fetching',
+      '- Actions for mutations',
+      '- Progressive enhancement by default'
+    ],
+    'Astro': [
+      '- Zero JS by default',
+      '- Use client:* directives for interactivity',
+      '- Content collections for type-safe content'
+    ]
+  };
+
+  return tips[detection.framework] || [];
+}
+
+// Update AGENTS.md with project type metadata
+function updateAgentsMdWithProjectType(detection) {
+  const agentsPath = path.join(projectRoot, 'AGENTS.md');
+  if (!fs.existsSync(agentsPath)) return;
+
+  let content = fs.readFileSync(agentsPath, 'utf-8');
+
+  // Find the project description line (line 3)
+  const lines = content.split('\n');
+  let insertIndex = -1;
+
+  for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    if (lines[i].startsWith('This is a ')) {
+      insertIndex = i + 1;
+      break;
+    }
+  }
+
+  if (insertIndex === -1) return;
+
+  // Build metadata section
+  const metadata = [];
+  metadata.push('');
+  if (detection.framework) {
+    metadata.push(`**Framework**: ${detection.framework}`);
+  }
+  if (detection.language && detection.language !== 'javascript') {
+    metadata.push(`**Language**: ${detection.language}`);
+  }
+  if (detection.projectType) {
+    metadata.push(`**Type**: ${detection.projectType}`);
+  }
+  if (detection.buildTool) {
+    metadata.push(`**Build**: \`${detection.buildTool}\``);
+  }
+  if (detection.testFramework) {
+    metadata.push(`**Tests**: ${detection.testFramework}`);
+  }
+
+  // Add framework-specific tips
+  const tips = generateFrameworkTips(detection);
+  if (tips.length > 0) {
+    metadata.push('');
+    metadata.push('**Framework conventions**:');
+    metadata.push(...tips);
+  }
+
+  // Insert metadata
+  lines.splice(insertIndex, 0, ...metadata);
+
+  fs.writeFileSync(agentsPath, lines.join('\n'), 'utf-8');
+}
+
 // Smart file selection with context warnings
 async function handleInstructionFiles(rl, question, selectedAgents, projectStatus) {
   const hasClaude = selectedAgents.some(a => a.key === 'claude');
@@ -1152,6 +1499,13 @@ function minimalInstall() {
     const agentsSrc = path.join(packageDir, 'AGENTS.md');
     if (copyFile(agentsSrc, 'AGENTS.md')) {
       console.log('  Created: AGENTS.md (universal standard)');
+
+      // Detect project type and update AGENTS.md
+      const detection = detectProjectType();
+      if (detection.hasPackageJson) {
+        updateAgentsMdWithProjectType(detection);
+        displayProjectType(detection);
+      }
     }
   }
 
@@ -1533,6 +1887,13 @@ async function interactiveSetup() {
       // New file
       if (copyFile(agentsSrc, 'AGENTS.md')) {
         console.log('  Created: AGENTS.md (universal standard)');
+
+        // Detect project type and update AGENTS.md
+        const detection = detectProjectType();
+        if (detection.hasPackageJson) {
+          updateAgentsMdWithProjectType(detection);
+          displayProjectType(detection);
+        }
       }
     }
   }
@@ -2014,6 +2375,13 @@ async function interactiveSetupWithFlags(flags) {
       // New file
       if (copyFile(agentsSrc, 'AGENTS.md')) {
         console.log('  Created: AGENTS.md (universal standard)');
+
+        // Detect project type and update AGENTS.md
+        const detection = detectProjectType();
+        if (detection.hasPackageJson) {
+          updateAgentsMdWithProjectType(detection);
+          displayProjectType(detection);
+        }
       }
     }
   }
@@ -2269,10 +2637,345 @@ async function main() {
 
     // Interactive setup (skip-external still applies)
     await interactiveSetupWithFlags(flags);
+  } else if (command === 'rollback') {
+    // Execute rollback menu
+    await showRollbackMenu();
   } else {
     // Default: minimal install (postinstall behavior)
     minimalInstall();
   }
+}
+
+// ============================================================================
+// ROLLBACK SYSTEM - TDD Validated
+// ============================================================================
+// Security: All inputs validated before use in git commands
+// See test/rollback-validation.test.js for validation test coverage
+
+// Validate rollback inputs (security-critical)
+function validateRollbackInput(method, target) {
+  const validMethods = ['commit', 'pr', 'partial', 'branch'];
+  if (!validMethods.includes(method)) {
+    return { valid: false, error: 'Invalid method' };
+  }
+
+  // Validate commit hash (git allows 4-40 char abbreviations)
+  if (method === 'commit' || method === 'pr') {
+    if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
+      return { valid: false, error: 'Invalid commit hash format' };
+    }
+  }
+
+  // Validate file paths
+  if (method === 'partial') {
+    const files = target.split(',').map(f => f.trim());
+    for (const file of files) {
+      // Reject shell metacharacters
+      if (/[;|&$`()<>\r\n]/.test(file)) {
+        return { valid: false, error: `Invalid characters in path: ${file}` };
+      }
+      // Reject URL-encoded path traversal attempts
+      if (/%2[eE]|%2[fF]|%5[cC]/.test(file)) {
+        return { valid: false, error: `URL-encoded characters not allowed: ${file}` };
+      }
+      // Reject non-ASCII/unicode characters
+      if (!/^[\x20-\x7E]+$/.test(file)) {
+        return { valid: false, error: `Only ASCII characters allowed in path: ${file}` };
+      }
+      // Prevent path traversal
+      const resolved = path.resolve(projectRoot, file);
+      if (!resolved.startsWith(projectRoot)) {
+        return { valid: false, error: `Path outside project: ${file}` };
+      }
+    }
+  }
+
+  // Validate branch range
+  if (method === 'branch') {
+    if (!target.includes('..')) {
+      return { valid: false, error: 'Branch range must use format: start..end' };
+    }
+    const [start, end] = target.split('..');
+    if (!/^[0-9a-f]{4,40}$/i.test(start) || !/^[0-9a-f]{4,40}$/i.test(end)) {
+      return { valid: false, error: 'Invalid commit hashes in range' };
+    }
+  }
+
+  return { valid: true };
+}
+
+// Extract USER sections before rollback
+function extractUserSections(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const sections = {};
+
+  // Extract USER sections
+  const userRegex = /<!-- USER:START -->([\s\S]*?)<!-- USER:END -->/g;
+  let match;
+  let index = 0;
+
+  while ((match = userRegex.exec(content)) !== null) {
+    sections[`user_${index}`] = match[1];
+    index++;
+  }
+
+  // Extract custom commands
+  const customCommandsDir = path.join(path.dirname(filePath), '.claude', 'commands', 'custom');
+  if (fs.existsSync(customCommandsDir)) {
+    sections.customCommands = fs.readdirSync(customCommandsDir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => ({
+        name: f,
+        content: fs.readFileSync(path.join(customCommandsDir, f), 'utf-8')
+      }));
+  }
+
+  return sections;
+}
+
+// Restore USER sections after rollback
+function preserveUserSections(filePath, savedSections) {
+  if (!fs.existsSync(filePath) || Object.keys(savedSections).length === 0) {
+    return;
+  }
+
+  let content = fs.readFileSync(filePath, 'utf-8');
+
+  // Restore USER sections
+  let index = 0;
+  content = content.replace(
+    /<!-- USER:START -->[\s\S]*?<!-- USER:END -->/g,
+    () => {
+      const section = savedSections[`user_${index}`];
+      index++;
+      return section ? `<!-- USER:START -->${section}<!-- USER:END -->` : '';
+    }
+  );
+
+  fs.writeFileSync(filePath, content, 'utf-8');
+
+  // Restore custom commands
+  if (savedSections.customCommands) {
+    const customCommandsDir = path.join(path.dirname(filePath), '.claude', 'commands', 'custom');
+    if (!fs.existsSync(customCommandsDir)) {
+      fs.mkdirSync(customCommandsDir, { recursive: true });
+    }
+
+    savedSections.customCommands.forEach(cmd => {
+      fs.writeFileSync(
+        path.join(customCommandsDir, cmd.name),
+        cmd.content,
+        'utf-8'
+      );
+    });
+  }
+}
+
+// Perform rollback operation
+async function performRollback(method, target, dryRun = false) {
+  console.log('');
+  console.log(chalk.cyan(`  🔄 Rollback: ${method}`));
+  console.log(`     Target: ${target}`);
+  if (dryRun) {
+    console.log(chalk.yellow('     Mode: DRY RUN (preview only)'));
+  }
+  console.log('');
+
+  // Validate inputs BEFORE any git operations
+  const validation = validateRollbackInput(method, target);
+  if (!validation.valid) {
+    console.log(chalk.red(`  ❌ ${validation.error}`));
+    return false;
+  }
+
+  // Check for clean working directory
+  try {
+    const { execSync } = require('child_process');
+    const status = execSync('git status --porcelain', { encoding: 'utf-8' });
+    if (status.trim() !== '') {
+      console.log(chalk.red('  ❌ Working directory has uncommitted changes'));
+      console.log('     Commit or stash changes before rollback');
+      return false;
+    }
+  } catch (err) {
+    console.log(chalk.red('  ❌ Git error:'), err.message);
+    return false;
+  }
+
+  // Extract USER sections before rollback
+  const agentsPath = path.join(projectRoot, 'AGENTS.md');
+  const savedSections = extractUserSections(agentsPath);
+
+  if (!dryRun) {
+    console.log('  📦 Backing up user content...');
+  }
+
+  try {
+    const { execSync } = require('child_process');
+
+    if (method === 'commit') {
+      if (dryRun) {
+        console.log(`     Would revert: ${target}`);
+        const files = execSync(`git diff-tree --no-commit-id --name-only -r ${target}`, { encoding: 'utf-8' });
+        console.log('     Affected files:');
+        files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
+      } else {
+        execSync(`git revert --no-edit ${target}`, { stdio: 'inherit' });
+      }
+    } else if (method === 'pr') {
+      if (dryRun) {
+        console.log(`     Would revert merge: ${target}`);
+        const files = execSync(`git diff-tree --no-commit-id --name-only -r ${target}`, { encoding: 'utf-8' });
+        console.log('     Affected files:');
+        files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
+      } else {
+        execSync(`git revert -m 1 --no-edit ${target}`, { stdio: 'inherit' });
+
+        // Update Beads issue if linked
+        const commitMsg = execSync(`git log -1 --format=%B ${target}`, { encoding: 'utf-8' });
+        const issueMatch = commitMsg.match(/#(\d+)/);
+        if (issueMatch) {
+          try {
+            execSync(`bd update ${issueMatch[1]} --status reverted --comment "PR reverted"`, { stdio: 'inherit' });
+            console.log(`     Updated Beads issue #${issueMatch[1]} to 'reverted'`);
+          } catch {
+            // Beads not installed - silently continue
+          }
+        }
+      }
+    } else if (method === 'partial') {
+      const files = target.split(',').map(f => f.trim());
+      if (dryRun) {
+        console.log('     Would restore files:');
+        files.forEach(f => console.log(`       - ${f}`));
+      } else {
+        files.forEach(f => {
+          execSync(`git checkout HEAD~1 -- "${f}"`, { stdio: 'inherit' });
+        });
+        execSync(`git commit -m "chore: rollback ${files.join(', ')}"`, { stdio: 'inherit' });
+      }
+    } else if (method === 'branch') {
+      const [startCommit, endCommit] = target.split('..');
+      if (dryRun) {
+        console.log(`     Would revert range: ${startCommit}..${endCommit}`);
+        const commits = execSync(`git log --oneline ${startCommit}..${endCommit}`, { encoding: 'utf-8' });
+        console.log('     Commits to revert:');
+        commits.trim().split('\n').forEach(c => console.log(`       ${c}`));
+      } else {
+        execSync(`git revert --no-edit ${startCommit}..${endCommit}`, { stdio: 'inherit' });
+      }
+    }
+
+    if (!dryRun) {
+      console.log('  📦 Restoring user content...');
+      preserveUserSections(agentsPath, savedSections);
+
+      // Amend commit to include restored USER sections
+      if (fs.existsSync(agentsPath)) {
+        execSync('git add AGENTS.md', { stdio: 'inherit' });
+        execSync('git commit --amend --no-edit', { stdio: 'inherit' });
+      }
+
+      console.log('');
+      console.log(chalk.green('  ✅ Rollback complete'));
+      console.log('     User content preserved');
+    }
+
+    return true;
+  } catch (err) {
+    console.log('');
+    console.log(chalk.red('  ❌ Rollback failed:'), err.message);
+    console.log('     Try manual rollback with: git revert <commit>');
+    return false;
+  }
+}
+
+// Interactive rollback menu
+async function showRollbackMenu() {
+  console.log('');
+  console.log(chalk.cyan.bold('  🔄 Forge Rollback'));
+  console.log('');
+  console.log('  Choose rollback method:');
+  console.log('');
+  console.log('  1. Rollback last commit');
+  console.log('  2. Rollback specific commit');
+  console.log('  3. Rollback merged PR');
+  console.log('  4. Rollback specific files only');
+  console.log('  5. Rollback entire branch');
+  console.log('  6. Preview rollback (dry run)');
+  console.log('');
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const choice = await new Promise(resolve => {
+    rl.question('  Enter choice (1-6): ', resolve);
+  });
+
+  let method, target, dryRun = false;
+
+  switch (choice.trim()) {
+    case '1':
+      method = 'commit';
+      target = 'HEAD';
+      break;
+
+    case '2':
+      target = await new Promise(resolve => {
+        rl.question('  Enter commit hash: ', resolve);
+      });
+      method = 'commit';
+      break;
+
+    case '3':
+      target = await new Promise(resolve => {
+        rl.question('  Enter merge commit hash: ', resolve);
+      });
+      method = 'pr';
+      break;
+
+    case '4':
+      target = await new Promise(resolve => {
+        rl.question('  Enter file paths (comma-separated): ', resolve);
+      });
+      method = 'partial';
+      break;
+
+    case '5':
+      const start = await new Promise(resolve => {
+        rl.question('  Enter start commit: ', resolve);
+      });
+      const end = await new Promise(resolve => {
+        rl.question('  Enter end commit: ', resolve);
+      });
+      target = `${start.trim()}..${end.trim()}`;
+      method = 'branch';
+      break;
+
+    case '6':
+      dryRun = true;
+      const dryMethod = await new Promise(resolve => {
+        rl.question('  Preview method (commit/pr/partial/branch): ', resolve);
+      });
+      method = dryMethod.trim();
+      target = await new Promise(resolve => {
+        rl.question('  Enter target (commit/files/range): ', resolve);
+      });
+      break;
+
+    default:
+      console.log(chalk.red('  Invalid choice'));
+      rl.close();
+      return;
+  }
+
+  rl.close();
+
+  await performRollback(method, target, dryRun);
 }
 
 main().catch(console.error);
