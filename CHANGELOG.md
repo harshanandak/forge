@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2025-01-31
+
+### Changed
+
+- **README simplified**: Reduced from 860 to 316 lines (63% reduction)
+  - Focused on value proposition and quick start
+  - Removed detailed setup instructions (moved to docs/SETUP.md)
+  - Removed lengthy examples (moved to docs/EXAMPLES.md)
+  - Added clear "Next Steps" section with links to guides
+  - Before/after comparison showing Forge value
+  - Scannable in under 2 minutes
+
+### Added
+
+- **QUICKSTART.md**: Complete beginner guide (5-minute walkthrough)
+  - Step-by-step first feature implementation
+  - Actual commands with expected outputs
+  - Health check endpoint example
+  - All 9 stages demonstrated
+- **docs/SETUP.md**: Comprehensive setup guide
+  - All agent-specific setup instructions (11+ agents)
+  - External services configuration (GitHub, SonarCloud, Greptile, etc.)
+  - Beads and OpenSpec detailed setup
+  - Troubleshooting section
+  - Environment variables reference
+- **docs/EXAMPLES.md**: Real-world workflow examples
+  - Simple feature (15 minutes)
+  - Bug fix with security (30 minutes)
+  - Multi-file refactor (2-3 hours)
+  - Architecture change with OpenSpec (2-3 days)
+  - Team collaboration with Beads
+- **docs/README-v1.3.md**: Archive of previous README for reference
+
+### Improved
+
+- Documentation now follows progressive disclosure:
+  - Beginners → README + QUICKSTART.md
+  - Intermediate → docs/EXAMPLES.md
+  - Advanced → docs/SETUP.md + docs/TOOLCHAIN.md
+- All technical content preserved, just better organized
+- Easier to find specific information
+- Better onboarding for new users
+
 ## [1.4.0] - 2025-01-31
 
 ### Added
