@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2025-01-31
+
+### Fixed
+
+- **npm package cleanup**: Exclude local user settings from published package
+  - Added .npmignore to prevent .claude/settings.json and .claude/settings.local.json from being published
+  - These files contain user-specific permission settings and should never be distributed
+  - Users who installed v1.4.0 or v1.4.1 should verify their settings were not exposed
+
+### Security
+
+- Package no longer includes user-specific Claude Code permission settings
+
 ## [1.4.1] - 2025-01-31
 
 ### Changed

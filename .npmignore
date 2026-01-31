@@ -1,0 +1,28 @@
+# Local user settings (should not be published)
+.claude/settings.json
+.claude/settings.local.json
+
+# Test files
+test/
+*.test.js
+
+# Git files
+.git/
+.gitignore
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
