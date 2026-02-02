@@ -1,0 +1,20 @@
+# Lefthook Git Hooks Configuration
+# TDD Enforcement for Forge Workflow
+#
+# To skip hooks in emergencies:
+#   git commit --no-verify  (skip pre-commit)
+#   LEFTHOOK=0 git push     (skip pre-push)
+
+pre-commit:
+  commands:
+    tdd-check:
+      run: node .forge/hooks/check-tdd.js
+      stage_fixed: false
+      tags: tdd
+      glob: "*.{js,ts,jsx,tsx,py,go,java,rb}"
+
+pre-push:
+  commands:
+    tests:
+      run: npm test
+      tags: tests
