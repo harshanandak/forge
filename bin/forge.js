@@ -32,10 +32,10 @@
  *   bunx forge setup --quick
  */
 
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
-const { execSync } = require('child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const readline = require('node:readline');
+const { execSync } = require('node:child_process');
 
 // Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
