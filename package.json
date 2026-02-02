@@ -1,6 +1,6 @@
 {
   "name": "forge-workflow",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "description": "9-stage TDD workflow for ALL AI coding agents (Claude, Cursor, Windsurf, Kilo, OpenCode, Copilot, Cline, Roo, Aider, Continue, Antigravity)",
   "bin": {
     "forge": "bin/forge.js"
