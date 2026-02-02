@@ -1,4 +1,4 @@
-# Claude Code - Project Instructions
+# Project Instructions
 
 This is a [describe what this project does in one sentence].
 
@@ -46,31 +46,35 @@ See [docs/WORKFLOW.md](docs/WORKFLOW.md) for complete workflow guide.
 
 ---
 
-## MCP Servers
+## MCP Servers (Enhanced Capabilities)
 
-This project uses MCP servers for enhanced capabilities. Copy [.mcp.json.example](.mcp.json.example) to `.mcp.json`:
+This project uses MCP (Model Context Protocol) servers for enhanced capabilities. If your AI agent supports MCP, set up these servers:
 
-```json
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    },
-    "grep-app": {
-      "command": "npx",
-      "args": ["-y", "@ai-tools-all/grep_app_mcp"]
-    }
-  }
-}
-```
-
-**Available MCP servers**:
+**Available MCP servers:**
 
 - **Context7**: Up-to-date library documentation and API reference
 - **grep.app**: Search 1M+ GitHub repos for real-world code examples
 
-See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for complete setup instructions.
+**Setup for your agent:**
+
+See [.mcp.json.example](.mcp.json.example) for configuration. Setup varies by agent:
+
+- **Claude Code**: Copy `.mcp.json.example` to `.mcp.json` in project root
+- **Cline**: Add MCP servers in VSCode settings (Extensions > Cline > MCP Servers)
+- **Continue**: Add to `.continue/config.json` under `mcpServers`
+- **Cursor**: Check Cursor Settings > MCP for setup
+- **Your agent**: If MCP-capable, configure using the example file
+
+**Agent instructions:**
+
+```text
+If you support MCP and don't have these servers configured:
+1. Read .mcp.json.example to see the configuration
+2. Set up Context7 and grep.app based on your MCP implementation
+3. Verify by testing: "Search grep.app for React hooks examples"
+```
+
+See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for detailed MCP setup instructions.
 
 ---
 
