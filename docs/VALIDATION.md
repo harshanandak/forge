@@ -291,13 +291,19 @@ function validateCustomStage() {
 Hooks are automatically installed when you run:
 
 ```bash
+# Install lefthook (one-time)
+npm install -D lefthook
+
+# Set up Forge
 npx forge setup
 ```
 
-Manual installation:
+The hooks will be automatically installed in your project's `.git/hooks/` directory.
+
+**Manual installation** (if needed):
 
 ```bash
-# Install lefthook globally
+# If you prefer global installation
 npm install -g lefthook
 
 # Install hooks

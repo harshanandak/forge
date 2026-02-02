@@ -9,8 +9,20 @@
   "scripts": {
     "test": "node --test test/**/*.test.js",
     "postinstall": "node ./bin/forge.js",
+    "prepare": "lefthook install || true",
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help"
+  },
+  "peerDependencies": {
+    "lefthook": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "lefthook": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "lefthook": "^1.10.1"
   },
   "keywords": [
     "ai",

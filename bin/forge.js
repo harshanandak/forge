@@ -35,7 +35,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
-const { execSync } = require('node:child_process');
+const { execSync, execFileSync } = require('node:child_process');
 
 // Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
@@ -1618,8 +1618,9 @@ function minimalInstall() {
   console.log('');
   console.log('To configure for your AI coding agents, run:');
   console.log('');
-  console.log('  npx forge setup      # Interactive setup (agents + API tokens)');
-  console.log('  bunx forge setup     # Same with bun');
+  console.log('  npm install -D lefthook  # Install git hooks (one-time)');
+  console.log('  npx forge setup          # Interactive setup (agents + API tokens)');
+  console.log('  bunx forge setup         # Same with bun');
   console.log('');
   console.log('Or specify agents directly:');
   console.log('  npx forge setup --agents claude,cursor,windsurf');
@@ -2388,15 +2389,23 @@ function installGitHooks() {
     }
 
     // Try to install lefthook hooks
+    // SECURITY: Using execFileSync with hardcoded commands (no user input)
     try {
-      // Check if lefthook is installed
-      execSync('lefthook version', { stdio: 'ignore' });
-      execSync('lefthook install', { stdio: 'inherit', cwd: projectRoot });
-      console.log('  ✓ Lefthook hooks installed');
+      // Try npx first (local install), fallback to global
+      try {
+        execFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
+        console.log('  ✓ Lefthook hooks installed (local)');
+      } catch (npxErr) {
+        // Fallback to global lefthook
+        execFileSync('lefthook', ['version'], { stdio: 'ignore' });
+        execFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
+        console.log('  ✓ Lefthook hooks installed (global)');
+      }
     } catch (err) {
-      console.log('  ℹ Lefthook not found. Install globally:');
-      console.log('    npm install -g lefthook');
-      console.log('    Then run: lefthook install');
+      console.log('  ℹ Lefthook not found. Install it:');
+      console.log('    npm install -D lefthook  (recommended)');
+      console.log('    OR: npm install -g lefthook  (global)');
+      console.log('    Then run: npx lefthook install');
     }
 
     console.log('');
@@ -2405,6 +2414,19 @@ function installGitHooks() {
     console.log('  ⚠ Failed to install hooks:', error.message);
     console.log('  You can install manually later with: lefthook install');
     console.log('');
+  }
+}
+
+// Check if lefthook is already installed in project
+function checkForLefthook() {
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return !!(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
+  } catch (err) {
+    return false;
   }
 }
 
@@ -2429,6 +2451,21 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Setup core documentation
   setupCoreDocs();
   console.log('');
+
+  // Check if lefthook is installed, auto-install if not
+  const hasLefthook = checkForLefthook();
+  if (!hasLefthook) {
+    console.log('📦 Installing lefthook for git hooks...');
+    try {
+      // SECURITY: execFileSync with hardcoded command
+      execFileSync('npm', ['install', '-D', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Lefthook installed');
+    } catch (err) {
+      console.log('  ⚠ Could not install lefthook automatically');
+      console.log('  Run manually: npm install -D lefthook');
+    }
+    console.log('');
+  }
 
   // Load Claude commands if needed
   let claudeCommands = {};
