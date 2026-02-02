@@ -48,9 +48,11 @@
     ".claude/rules/",
     ".claude/scripts/",
     ".claude/skills/",
+    ".forge/hooks/",
     ".github/PLUGIN_TEMPLATE.json",
     "docs/",
     "install.sh",
+    "lefthook.yml",
     "AGENTS.md",
     "CLAUDE.md",
     ".mcp.json.example"

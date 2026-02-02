@@ -2348,6 +2348,66 @@ function showHelp() {
   console.log('');
 }
 
+// Install git hooks via lefthook
+// SECURITY: Uses execSync with HARDCODED strings only (no user input)
+function installGitHooks() {
+  console.log('Installing git hooks (TDD enforcement)...');
+
+  // Check if lefthook.yml exists (it should, as it's in the package)
+  const lefthookConfig = path.join(packageDir, 'lefthook.yml');
+  const targetHooks = path.join(projectRoot, '.forge/hooks');
+
+  try {
+    // Copy lefthook.yml to project root
+    const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
+    if (!fs.existsSync(lefthookTarget)) {
+      if (copyFile(lefthookConfig, 'lefthook.yml')) {
+        console.log('  ✓ Created lefthook.yml');
+      }
+    }
+
+    // Copy check-tdd.js hook script
+    const hookSource = path.join(packageDir, '.forge/hooks/check-tdd.js');
+    if (fs.existsSync(hookSource)) {
+      // Ensure .forge/hooks directory exists
+      if (!fs.existsSync(targetHooks)) {
+        fs.mkdirSync(targetHooks, { recursive: true });
+      }
+
+      const hookTarget = path.join(targetHooks, 'check-tdd.js');
+      if (copyFile(hookSource, hookTarget)) {
+        console.log('  ✓ Created .forge/hooks/check-tdd.js');
+
+        // Make hook executable (Unix systems)
+        try {
+          fs.chmodSync(hookTarget, 0o755);
+        } catch (err) {
+          // Windows doesn't need chmod
+        }
+      }
+    }
+
+    // Try to install lefthook hooks
+    try {
+      // Check if lefthook is installed
+      execSync('lefthook version', { stdio: 'ignore' });
+      execSync('lefthook install', { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Lefthook hooks installed');
+    } catch (err) {
+      console.log('  ℹ Lefthook not found. Install globally:');
+      console.log('    npm install -g lefthook');
+      console.log('    Then run: lefthook install');
+    }
+
+    console.log('');
+
+  } catch (error) {
+    console.log('  ⚠ Failed to install hooks:', error.message);
+    console.log('  You can install manually later with: lefthook install');
+    console.log('');
+  }
+}
+
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
   showBanner('Quick Setup');
@@ -2404,6 +2464,10 @@ async function quickSetup(selectedAgents, skipExternal) {
     const agent = AGENTS[key];
     console.log(`  * ${agent.name}`);
   });
+
+  // Install git hooks for TDD enforcement
+  console.log('');
+  installGitHooks();
 
   // Configure external services with defaults (unless skipped)
   if (skipExternal) {
@@ -2825,6 +2889,10 @@ async function handleSetupCommand(selectedAgents, flags) {
 
   console.log('');
   console.log('Agent configuration complete!');
+
+  // Install git hooks for TDD enforcement
+  console.log('');
+  installGitHooks();
 
   // External services (unless skipped)
   await handleExternalServices(flags.skipExternal, selectedAgents);
