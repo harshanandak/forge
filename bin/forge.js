@@ -188,6 +188,8 @@ function safeExec(cmd) {
   try {
     return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
   } catch (e) {
+    // Command execution failure is expected when tool is not installed or fails
+    // Returning null allows caller to handle missing tools gracefully
     return null;
   }
 }
@@ -212,7 +214,7 @@ function checkPrerequisites() {
   // Check GitHub CLI
   const ghVersion = safeExec('gh --version');
   if (ghVersion) {
-    console.log(`  ✓ ${ghVersion.split('\\n')[0]}`);
+    console.log(`  ✓ ${ghVersion.split(String.raw`\n`)[0]}`);
     // Check if authenticated
     const authStatus = safeExec('gh auth status');
     if (!authStatus) {
@@ -434,10 +436,8 @@ function copyFile(src, dest) {
       }
       fs.copyFileSync(src, destPath);
       return true;
-    } else {
-      if (process.env.DEBUG) {
-        console.warn(`  ⚠ Source file not found: ${src}`);
-      }
+    } else if (process.env.DEBUG) {
+      console.warn(`  ⚠ Source file not found: ${src}`);
     }
   } catch (err) {
     console.error(`  ✗ Failed to copy ${src} -> ${dest}: ${err.message}`);
@@ -472,7 +472,9 @@ function createSymlinkOrCopy(source, target) {
       const relPath = path.relative(targetDir, fullSource);
       fs.symlinkSync(relPath, fullTarget);
       return 'linked';
-    } catch (symlinkErr) {
+    } catch (error_) {
+      // Symlink creation may fail due to permissions or OS limitations (e.g., Windows without admin)
+      // Fall back to copying the file instead to ensure operation succeeds
       fs.copyFileSync(fullSource, fullTarget);
       return 'copied';
     }
@@ -494,7 +496,10 @@ function readEnvFile() {
     if (fs.existsSync(envPath)) {
       return fs.readFileSync(envPath, 'utf8');
     }
-  } catch (err) {}
+  } catch (err) {
+    // File read failure is acceptable - file may not exist or have permission issues
+    // Return empty string to allow caller to proceed with defaults
+  }
   return '';
 }
 
@@ -552,12 +557,14 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 
   // Add header if new file
   if (!content.includes('# External Service API Keys')) {
-    outputLines.push('# External Service API Keys for Forge Workflow');
-    outputLines.push('# Get your keys from:');
-    outputLines.push('#   Parallel AI: https://platform.parallel.ai');
-    outputLines.push('#   Greptile: https://app.greptile.com/api');
-    outputLines.push('#   SonarCloud: https://sonarcloud.io/account/security');
-    outputLines.push('');
+    outputLines.push(
+      '# External Service API Keys for Forge Workflow',
+      '# Get your keys from:',
+      '#   Parallel AI: https://platform.parallel.ai',
+      '#   Greptile: https://app.greptile.com/api',
+      '#   SonarCloud: https://sonarcloud.io/account/security',
+      ''
+    );
   }
 
   // Add existing content (preserve order and comments)
@@ -591,7 +598,10 @@ function writeEnvTokens(tokens, preserveExisting = true) {
     if (!gitignore.includes('.env.local')) {
       fs.appendFileSync(gitignorePath, '\n# Local environment variables\n.env.local\n');
     }
-  } catch (err) {}
+  } catch (err) {
+    // Gitignore update is optional - failure doesn't prevent .env.local creation
+    // User can manually add .env.local to .gitignore if needed
+  }
 
   return { added, preserved };
 }
@@ -812,7 +822,10 @@ function detectProjectType() {
       detection.framework = 'Vue.js';
       detection.frameworkConfidence = deps['@vue/cli'] ? 100 : 90;
       detection.projectType = 'frontend';
-      detection.buildTool = deps.vite ? 'vite' : deps.webpack ? 'webpack' : 'vue-cli';
+      // Extract nested ternary to intermediate variable
+      const hasVite = deps.vite;
+      const hasWebpack = deps.webpack;
+      detection.buildTool = hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'vue-cli');
     }
     detection.testFramework = detectTestFramework(deps);
     return detection;
@@ -823,7 +836,10 @@ function detectProjectType() {
     detection.framework = 'React';
     detection.frameworkConfidence = 95;
     detection.projectType = 'frontend';
-    detection.buildTool = deps.vite ? 'vite' : deps['react-scripts'] ? 'create-react-app' : 'webpack';
+    // Extract nested ternary to intermediate variable
+    const hasVite = deps.vite;
+    const hasReactScripts = deps['react-scripts'];
+    detection.buildTool = hasVite ? 'vite' : (hasReactScripts ? 'create-react-app' : 'webpack');
     detection.testFramework = detectTestFramework(deps);
     return detection;
   }
@@ -899,7 +915,10 @@ function detectProjectType() {
   detection.framework = detection.features.typescript ? 'TypeScript' : 'JavaScript';
   detection.frameworkConfidence = 60;
   detection.projectType = 'library';
-  detection.buildTool = deps.vite ? 'vite' : deps.webpack ? 'webpack' : 'npm';
+  // Extract nested ternary to intermediate variable
+  const hasVite = deps.vite;
+  const hasWebpack = deps.webpack;
+  detection.buildTool = hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'npm');
   detection.testFramework = detectTestFramework(deps);
 
   return detection;
@@ -1045,9 +1064,7 @@ function updateAgentsMdWithProjectType(detection) {
   // Add framework-specific tips
   const tips = generateFrameworkTips(detection);
   if (tips.length > 0) {
-    metadata.push('');
-    metadata.push('**Framework conventions**:');
-    metadata.push(...tips);
+    metadata.push('', '**Framework conventions**:', ...tips);
   }
 
   // Insert metadata
@@ -1284,16 +1301,18 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   const codeReviewChoice = await question('Select [1]: ') || '1';
 
   switch (codeReviewChoice) {
-    case '1':
+    case '1': {
       tokens['CODE_REVIEW_TOOL'] = 'github-code-quality';
       console.log('  ✓ Using GitHub Code Quality (FREE)');
       break;
-    case '2':
+    }
+    case '2': {
       tokens['CODE_REVIEW_TOOL'] = 'coderabbit';
       console.log('  ✓ Using CodeRabbit - Install the GitHub App to activate');
       console.log('     https://coderabbit.ai');
       break;
-    case '3':
+    }
+    case '3': {
       const greptileKey = await question('  Enter Greptile API key: ');
       if (greptileKey?.trim()) {
         tokens['CODE_REVIEW_TOOL'] = 'greptile';
@@ -1304,9 +1323,11 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
         console.log('  Skipped - No API key provided');
       }
       break;
-    default:
+    }
+    default: {
       tokens['CODE_REVIEW_TOOL'] = 'none';
       console.log('  Skipped code review integration');
+    }
   }
 
   // ============================================
@@ -1332,11 +1353,12 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   const codeQualityChoice = await question('Select [1]: ') || '1';
 
   switch (codeQualityChoice) {
-    case '1':
+    case '1': {
       tokens['CODE_QUALITY_TOOL'] = 'eslint';
       console.log('  ✓ Using ESLint (built-in)');
       break;
-    case '2':
+    }
+    case '2': {
       const sonarToken = await question('  Enter SonarCloud token: ');
       const sonarOrg = await question('  Enter SonarCloud organization: ');
       const sonarProject = await question('  Enter SonarCloud project key: ');
@@ -1351,7 +1373,8 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
         console.log('  Falling back to ESLint');
       }
       break;
-    case '3':
+    }
+    case '3': {
       console.log('');
       console.log('  SonarQube Self-Hosted Setup:');
       console.log('  docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
@@ -1366,9 +1389,11 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       }
       console.log('  ✓ SonarQube self-hosted configured');
       break;
-    default:
+    }
+    default: {
       tokens['CODE_QUALITY_TOOL'] = 'none';
       console.log('  Skipped code quality integration');
+    }
   }
 
   // ============================================
@@ -1604,7 +1629,9 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
 
   if (agent.customSetup === 'aider') {
     const aiderPath = path.join(projectRoot, '.aider.conf.yml');
-    if (!fs.existsSync(aiderPath)) {
+    if (fs.existsSync(aiderPath)) {
+      console.log('  Skipped: .aider.conf.yml already exists');
+    } else {
       writeFile('.aider.conf.yml', `# Aider configuration
 # Read AGENTS.md for workflow instructions
 read:
@@ -1612,8 +1639,6 @@ read:
   - docs/WORKFLOW.md
 `);
       console.log('  Created: .aider.conf.yml');
-    } else {
-      console.log('  Skipped: .aider.conf.yml already exists');
     }
     return;
   }
@@ -1674,7 +1699,9 @@ ${stripFrontmatter(content)}`;
   // Create .mcp.json with Context7 MCP (Claude Code only)
   if (agentKey === 'claude') {
     const mcpPath = path.join(projectRoot, '.mcp.json');
-    if (!fs.existsSync(mcpPath)) {
+    if (fs.existsSync(mcpPath)) {
+      console.log('  Skipped: .mcp.json already exists');
+    } else {
       const mcpConfig = {
         mcpServers: {
           context7: {
@@ -1685,15 +1712,15 @@ ${stripFrontmatter(content)}`;
       };
       writeFile('.mcp.json', JSON.stringify(mcpConfig, null, 2));
       console.log('  Created: .mcp.json with Context7 MCP');
-    } else {
-      console.log('  Skipped: .mcp.json already exists');
     }
   }
 
   // Create config.yaml with Context7 MCP (Continue only)
   if (agentKey === 'continue') {
     const configPath = path.join(projectRoot, '.continue/config.yaml');
-    if (!fs.existsSync(configPath)) {
+    if (fs.existsSync(configPath)) {
+      console.log('  Skipped: config.yaml already exists');
+    } else {
       const continueConfig = `# Continue Configuration
 # https://docs.continue.dev/customize/deep-dives/configuration
 
@@ -1712,8 +1739,6 @@ mcpServers:
 `;
       writeFile('.continue/config.yaml', continueConfig);
       console.log('  Created: config.yaml with Context7 MCP');
-    } else {
-      console.log('  Skipped: config.yaml already exists');
     }
   }
 
@@ -1795,22 +1820,22 @@ async function interactiveSetup() {
   // Ask about overwriting AGENTS.md if it exists
   if (projectStatus.hasAgentsMd) {
     const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
-    if (!overwriteAgents) {
+    if (overwriteAgents) {
+      console.log('  Will overwrite AGENTS.md');
+    } else {
       skipFiles.agentsMd = true;
       console.log('  Keeping existing AGENTS.md');
-    } else {
-      console.log('  Will overwrite AGENTS.md');
     }
   }
 
   // Ask about overwriting .claude/commands/ if it exists
   if (projectStatus.hasClaudeCommands) {
     const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
-    if (!overwriteCommands) {
+    if (overwriteCommands) {
+      console.log('  Will overwrite .claude/commands/');
+    } else {
       skipFiles.claudeCommands = true;
       console.log('  Keeping existing .claude/commands/');
-    } else {
-      console.log('  Will overwrite .claude/commands/');
     }
   }
 
@@ -1890,23 +1915,19 @@ async function interactiveSetup() {
       if (merged) {
         fs.writeFileSync(agentsDest, merged, 'utf8');
         console.log('  Updated: AGENTS.md (preserved USER sections)');
-      } else {
+      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
         // No markers, do normal copy (user already approved overwrite)
-        if (copyFile(agentsSrc, 'AGENTS.md')) {
-          console.log('  Updated: AGENTS.md (universal standard)');
-        }
+        console.log('  Updated: AGENTS.md (universal standard)');
       }
-    } else {
+    } else if (copyFile(agentsSrc, 'AGENTS.md')) {
       // New file
-      if (copyFile(agentsSrc, 'AGENTS.md')) {
-        console.log('  Created: AGENTS.md (universal standard)');
+      console.log('  Created: AGENTS.md (universal standard)');
 
-        // Detect project type and update AGENTS.md
-        const detection = detectProjectType();
-        if (detection.hasPackageJson) {
-          updateAgentsMdWithProjectType(detection);
-          displayProjectType(detection);
-        }
+      // Detect project type and update AGENTS.md
+      const detection = detectProjectType();
+      if (detection.hasPackageJson) {
+        updateAgentsMdWithProjectType(detection);
+        displayProjectType(detection);
       }
     }
   }
@@ -2035,39 +2056,51 @@ function parseFlags() {
     path: null
   };
 
-  for (let i = 0; i < args.length; i++) {
+  for (let i = 0; i < args.length; ) {
     const arg = args[i];
 
     if (arg === '--quick' || arg === '-q') {
       flags.quick = true;
+      i++;
     } else if (arg === '--skip-external' || arg === '--skip-services') {
       flags.skipExternal = true;
+      i++;
     } else if (arg === '--all') {
       flags.all = true;
+      i++;
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true;
+      i++;
     } else if (arg === '--path' || arg === '-p') {
       // --path <directory> or -p <directory>
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         flags.path = args[i + 1];
-        i++; // Skip next arg
+        i += 2; // Skip current and next arg
+      } else {
+        i++;
       }
     } else if (arg.startsWith('--path=')) {
       // --path=/some/dir format
       flags.path = arg.replace('--path=', '');
+      i++;
     } else if (arg === '--agents') {
       // --agents claude cursor format
       const agentList = [];
-      for (let j = i + 1; j < args.length; j++) {
-        if (args[j].startsWith('-')) break;
+      let j = i + 1;
+      while (j < args.length && !args[j].startsWith('-')) {
         agentList.push(args[j]);
+        j++;
       }
       if (agentList.length > 0) {
         flags.agents = agentList.join(',');
       }
+      i = j; // Skip all consumed arguments
     } else if (arg.startsWith('--agents=')) {
       // --agents=claude,cursor format
       flags.agents = arg.replace('--agents=', '');
+      i++;
+    } else {
+      i++;
     }
   }
 
@@ -2188,7 +2221,10 @@ async function quickSetup(selectedAgents, skipExternal) {
   });
 
   // Configure external services with defaults (unless skipped)
-  if (!skipExternal) {
+  if (skipExternal) {
+    console.log('');
+    console.log('Skipping external services configuration...');
+  } else {
     console.log('');
     console.log('Configuring default services...');
     console.log('');
@@ -2205,9 +2241,6 @@ async function quickSetup(selectedAgents, skipExternal) {
     console.log('  * Code Quality: ESLint (built-in)');
     console.log('');
     console.log('Configuration saved to .env.local');
-  } else {
-    console.log('');
-    console.log('Skipping external services configuration...');
   }
 
   // Final summary
@@ -2293,22 +2326,22 @@ async function interactiveSetupWithFlags(flags) {
   // Ask about overwriting AGENTS.md if it exists
   if (projectStatus.hasAgentsMd) {
     const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
-    if (!overwriteAgents) {
+    if (overwriteAgents) {
+      console.log('  Will overwrite AGENTS.md');
+    } else {
       skipFiles.agentsMd = true;
       console.log('  Keeping existing AGENTS.md');
-    } else {
-      console.log('  Will overwrite AGENTS.md');
     }
   }
 
   // Ask about overwriting .claude/commands/ if it exists
   if (projectStatus.hasClaudeCommands) {
     const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
-    if (!overwriteCommands) {
+    if (overwriteCommands) {
+      console.log('  Will overwrite .claude/commands/');
+    } else {
       skipFiles.claudeCommands = true;
       console.log('  Keeping existing .claude/commands/');
-    } else {
-      console.log('  Will overwrite .claude/commands/');
     }
   }
 
@@ -2388,23 +2421,19 @@ async function interactiveSetupWithFlags(flags) {
       if (merged) {
         fs.writeFileSync(agentsDest, merged, 'utf8');
         console.log('  Updated: AGENTS.md (preserved USER sections)');
-      } else {
+      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
         // No markers, do normal copy (user already approved overwrite)
-        if (copyFile(agentsSrc, 'AGENTS.md')) {
-          console.log('  Updated: AGENTS.md (universal standard)');
-        }
+        console.log('  Updated: AGENTS.md (universal standard)');
       }
-    } else {
+    } else if (copyFile(agentsSrc, 'AGENTS.md')) {
       // New file
-      if (copyFile(agentsSrc, 'AGENTS.md')) {
-        console.log('  Created: AGENTS.md (universal standard)');
+      console.log('  Created: AGENTS.md (universal standard)');
 
-        // Detect project type and update AGENTS.md
-        const detection = detectProjectType();
-        if (detection.hasPackageJson) {
-          updateAgentsMdWithProjectType(detection);
-          displayProjectType(detection);
-        }
+      // Detect project type and update AGENTS.md
+      const detection = detectProjectType();
+      if (detection.hasPackageJson) {
+        updateAgentsMdWithProjectType(detection);
+        displayProjectType(detection);
       }
     }
   }
@@ -2454,15 +2483,15 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   // STEP 2: External Services Configuration
   // =============================================
-  if (!flags.skipExternal) {
+  if (flags.skipExternal) {
+    console.log('');
+    console.log('Skipping external services configuration...');
+  } else {
     console.log('');
     console.log('STEP 2: External Services (Optional)');
     console.log('=====================================');
 
     await configureExternalServices(rl, question, selectedAgents, projectStatus);
-  } else {
-    console.log('');
-    console.log('Skipping external services configuration...');
   }
 
   setupCompleted = true;
@@ -2642,7 +2671,10 @@ async function main() {
       console.log('Agent configuration complete!');
 
       // External services (unless skipped)
-      if (!flags.skipExternal) {
+      if (flags.skipExternal) {
+        console.log('');
+        console.log('Skipping external services configuration...');
+      } else {
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout
@@ -2658,9 +2690,6 @@ async function main() {
         await configureExternalServices(rl, question, selectedAgents);
         setupCompleted = true;
         rl.close();
-      } else {
-        console.log('');
-        console.log('Skipping external services configuration...');
       }
 
       console.log('');
@@ -2952,33 +2981,33 @@ async function showRollbackMenu() {
   let method, target, dryRun = false;
 
   switch (choice.trim()) {
-    case '1':
+    case '1': {
       method = 'commit';
       target = 'HEAD';
       break;
-
-    case '2':
+    }
+    case '2': {
       target = await new Promise(resolve => {
         rl.question('  Enter commit hash: ', resolve);
       });
       method = 'commit';
       break;
-
-    case '3':
+    }
+    case '3': {
       target = await new Promise(resolve => {
         rl.question('  Enter merge commit hash: ', resolve);
       });
       method = 'pr';
       break;
-
-    case '4':
+    }
+    case '4': {
       target = await new Promise(resolve => {
         rl.question('  Enter file paths (comma-separated): ', resolve);
       });
       method = 'partial';
       break;
-
-    case '5':
+    }
+    case '5': {
       const start = await new Promise(resolve => {
         rl.question('  Enter start commit: ', resolve);
       });
@@ -2988,8 +3017,8 @@ async function showRollbackMenu() {
       target = `${start.trim()}..${end.trim()}`;
       method = 'branch';
       break;
-
-    case '6':
+    }
+    case '6': {
       dryRun = true;
       const dryMethod = await new Promise(resolve => {
         rl.question('  Preview method (commit/pr/partial/branch): ', resolve);
@@ -2999,11 +3028,12 @@ async function showRollbackMenu() {
         rl.question('  Enter target (commit/files/range): ', resolve);
       });
       break;
-
-    default:
+    }
+    default: {
       console.log(chalk.red('  Invalid choice'));
       rl.close();
       return;
+    }
   }
 
   rl.close();
