@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.9] - 2025-02-02
+
+### Fixed
+
+- **Code Quality Overhaul**: Resolved 101 SonarLint and linting warnings
+  - Fixed 42 structural warnings (exception handling, control flow, code patterns)
+  - Fixed 35 cognitive complexity warnings by extracting 47 helper functions
+  - Modernized JavaScript patterns (Number.parseInt, Number.isNaN, optional chaining)
+  - Applied node: protocol for all built-in module imports
+  - Improved exception handling with meaningful comments
+  - Converted negated conditions to positive logic
+  - Fixed nested ternary operations and if-in-else blocks
+
+### Refactored
+
+- **8 Core Functions** - Reduced cognitive complexity from 24-57 to 5-10:
+  - `detectProjectType()` - 27→8 (14 helpers: framework detection, feature detection)
+  - `handleInstructionFiles()` - 37→5 (6 helpers: scenario handlers)
+  - `setupAgent()` - 40→8 (10 helpers: agent-specific setup, file operations)
+  - `interactiveSetup()` - 36→8 (9 helpers: UI, validation, workflow)
+  - `main()` - 24→10 (5 helpers: CLI parsing, setup orchestration)
+  - `extractUserSections()` - 25→8 (2 helpers: marker/command extraction)
+  - `performRollback()` - 32→10 (7 helpers: method-specific handlers)
+  - Plus 1 additional function refactored
+
+### Improved
+
+- **Maintainability**: Single responsibility principle applied throughout
+- **Testability**: 47 new focused helper functions can be tested independently
+- **Readability**: Clear function names, reduced nesting, improved code organization
+- **Code Quality**: Zero SonarLint warnings (except optional S7785 - CommonJS limitation)
+- **Documentation**: Comprehensive inline comments for exception handling
+
+### Changed
+
+- Internal code structure significantly reorganized (no API changes)
+- +1,056 lines (helper functions), -749 lines (refactored complexity)
+- Net: +307 lines with better separation of concerns
+
 ## [1.4.8] - 2025-02-02
 
 ### Fixed
