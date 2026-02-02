@@ -719,6 +719,238 @@ function detectProjectStatus() {
   return status;
 }
 
+// Helper: Detect test framework from dependencies
+function detectTestFramework(deps) {
+  if (deps.jest) return 'jest';
+  if (deps.vitest) return 'vitest';
+  if (deps.mocha) return 'mocha';
+  if (deps['@playwright/test']) return 'playwright';
+  if (deps.cypress) return 'cypress';
+  if (deps.karma) return 'karma';
+  return null;
+}
+
+// Helper: Detect language features (TypeScript, monorepo, Docker, CI/CD)
+function detectLanguageFeatures(pkg) {
+  const features = {
+    typescript: false,
+    monorepo: false,
+    docker: false,
+    cicd: false
+  };
+
+  // Detect TypeScript
+  if (pkg.devDependencies?.typescript || pkg.dependencies?.typescript) {
+    features.typescript = true;
+  }
+
+  // Detect monorepo
+  if (pkg.workspaces ||
+      fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) ||
+      fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
+    features.monorepo = true;
+  }
+
+  // Detect Docker
+  if (fs.existsSync(path.join(projectRoot, 'Dockerfile')) ||
+      fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
+    features.docker = true;
+  }
+
+  // Detect CI/CD
+  if (fs.existsSync(path.join(projectRoot, '.github/workflows')) ||
+      fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
+      fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
+      fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
+    features.cicd = true;
+  }
+
+  return features;
+}
+
+// Helper: Detect Next.js framework
+function detectNextJs(deps) {
+  if (!deps.next) return null;
+
+  return {
+    framework: 'Next.js',
+    frameworkConfidence: 100,
+    projectType: 'fullstack',
+    buildTool: 'next',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect NestJS framework
+function detectNestJs(deps) {
+  if (!deps['@nestjs/core'] && !deps['@nestjs/common']) return null;
+
+  return {
+    framework: 'NestJS',
+    frameworkConfidence: 100,
+    projectType: 'backend',
+    buildTool: 'nest',
+    testFramework: 'jest'
+  };
+}
+
+// Helper: Detect Angular framework
+function detectAngular(deps) {
+  if (!deps['@angular/core'] && !deps['@angular/cli']) return null;
+
+  return {
+    framework: 'Angular',
+    frameworkConfidence: 100,
+    projectType: 'frontend',
+    buildTool: 'ng',
+    testFramework: 'karma'
+  };
+}
+
+// Helper: Detect Vue.js framework
+function detectVue(deps) {
+  if (!deps.vue) return null;
+
+  if (deps.nuxt) {
+    return {
+      framework: 'Nuxt',
+      frameworkConfidence: 100,
+      projectType: 'fullstack',
+      buildTool: 'nuxt',
+      testFramework: detectTestFramework(deps)
+    };
+  }
+
+  const hasVite = deps.vite;
+  const hasWebpack = deps.webpack;
+
+  return {
+    framework: 'Vue.js',
+    frameworkConfidence: deps['@vue/cli'] ? 100 : 90,
+    projectType: 'frontend',
+    buildTool: hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'vue-cli'),
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect React framework
+function detectReact(deps) {
+  if (!deps.react) return null;
+
+  const hasVite = deps.vite;
+  const hasReactScripts = deps['react-scripts'];
+
+  return {
+    framework: 'React',
+    frameworkConfidence: 95,
+    projectType: 'frontend',
+    buildTool: hasVite ? 'vite' : (hasReactScripts ? 'create-react-app' : 'webpack'),
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect Express framework
+function detectExpress(deps, features) {
+  if (!deps.express) return null;
+
+  return {
+    framework: 'Express',
+    frameworkConfidence: 90,
+    projectType: 'backend',
+    buildTool: features.typescript ? 'tsc' : 'node',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect Fastify framework
+function detectFastify(deps, features) {
+  if (!deps.fastify) return null;
+
+  return {
+    framework: 'Fastify',
+    frameworkConfidence: 95,
+    projectType: 'backend',
+    buildTool: features.typescript ? 'tsc' : 'node',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect Svelte framework
+function detectSvelte(deps) {
+  if (!deps.svelte) return null;
+
+  if (deps['@sveltejs/kit']) {
+    return {
+      framework: 'SvelteKit',
+      frameworkConfidence: 100,
+      projectType: 'fullstack',
+      buildTool: 'vite',
+      testFramework: detectTestFramework(deps)
+    };
+  }
+
+  return {
+    framework: 'Svelte',
+    frameworkConfidence: 95,
+    projectType: 'frontend',
+    buildTool: 'vite',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect Remix framework
+function detectRemix(deps) {
+  if (!deps['@remix-run/react']) return null;
+
+  return {
+    framework: 'Remix',
+    frameworkConfidence: 100,
+    projectType: 'fullstack',
+    buildTool: 'remix',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect Astro framework
+function detectAstro(deps) {
+  if (!deps.astro) return null;
+
+  return {
+    framework: 'Astro',
+    frameworkConfidence: 100,
+    projectType: 'frontend',
+    buildTool: 'astro',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect generic Node.js project
+function detectGenericNodeJs(pkg, deps, features) {
+  if (!pkg.main && !pkg.scripts?.start) return null;
+
+  return {
+    framework: 'Node.js',
+    frameworkConfidence: 70,
+    projectType: 'backend',
+    buildTool: features.typescript ? 'tsc' : 'node',
+    testFramework: detectTestFramework(deps)
+  };
+}
+
+// Helper: Detect generic JavaScript/TypeScript project (fallback)
+function detectGenericProject(deps, features) {
+  const hasVite = deps.vite;
+  const hasWebpack = deps.webpack;
+
+  return {
+    framework: features.typescript ? 'TypeScript' : 'JavaScript',
+    frameworkConfidence: 60,
+    projectType: 'library',
+    buildTool: hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'npm'),
+    testFramework: detectTestFramework(deps)
+  };
+}
+
 // Detect project type from package.json
 function detectProjectType() {
   const detection = {
@@ -743,183 +975,34 @@ function detectProjectType() {
 
   detection.hasPackageJson = true;
 
-  // Detect TypeScript
-  if (pkg.devDependencies?.typescript || pkg.dependencies?.typescript) {
-    detection.features.typescript = true;
+  // Detect language features
+  detection.features = detectLanguageFeatures(pkg);
+  if (detection.features.typescript) {
     detection.language = 'typescript';
-  }
-
-  // Detect monorepo
-  if (pkg.workspaces || fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
-    detection.features.monorepo = true;
-  }
-
-  // Detect Docker
-  if (fs.existsSync(path.join(projectRoot, 'Dockerfile')) || fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
-    detection.features.docker = true;
-  }
-
-  // Detect CI/CD
-  if (fs.existsSync(path.join(projectRoot, '.github/workflows')) ||
-      fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
-      fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
-      fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
-    detection.features.cicd = true;
   }
 
   // Framework detection with confidence scoring
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-  // Helper function for test framework detection
-  const detectTestFramework = (deps) => {
-    if (deps.jest) return 'jest';
-    if (deps.vitest) return 'vitest';
-    if (deps.mocha) return 'mocha';
-    if (deps['@playwright/test']) return 'playwright';
-    if (deps.cypress) return 'cypress';
-    if (deps.karma) return 'karma';
-    return null;
-  };
+  // Try framework detectors in priority order
+  const frameworkResult =
+    detectNextJs(deps) ||
+    detectNestJs(deps) ||
+    detectAngular(deps) ||
+    detectVue(deps) ||
+    detectReact(deps) ||
+    detectExpress(deps, detection.features) ||
+    detectFastify(deps, detection.features) ||
+    detectSvelte(deps) ||
+    detectRemix(deps) ||
+    detectAstro(deps) ||
+    detectGenericNodeJs(pkg, deps, detection.features) ||
+    detectGenericProject(deps, detection.features);
 
-  // Next.js (highest priority for React projects)
-  if (deps.next) {
-    detection.framework = 'Next.js';
-    detection.frameworkConfidence = 100;
-    detection.projectType = 'fullstack';
-    detection.buildTool = 'next';
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
+  // Merge framework detection results
+  if (frameworkResult) {
+    Object.assign(detection, frameworkResult);
   }
-
-  // NestJS (backend framework)
-  if (deps['@nestjs/core'] || deps['@nestjs/common']) {
-    detection.framework = 'NestJS';
-    detection.frameworkConfidence = 100;
-    detection.projectType = 'backend';
-    detection.buildTool = 'nest';
-    detection.testFramework = 'jest';
-    return detection;
-  }
-
-  // Angular
-  if (deps['@angular/core'] || deps['@angular/cli']) {
-    detection.framework = 'Angular';
-    detection.frameworkConfidence = 100;
-    detection.projectType = 'frontend';
-    detection.buildTool = 'ng';
-    detection.testFramework = 'karma';
-    return detection;
-  }
-
-  // Vue.js
-  if (deps.vue) {
-    if (deps.nuxt) {
-      detection.framework = 'Nuxt';
-      detection.frameworkConfidence = 100;
-      detection.projectType = 'fullstack';
-      detection.buildTool = 'nuxt';
-    } else {
-      detection.framework = 'Vue.js';
-      detection.frameworkConfidence = deps['@vue/cli'] ? 100 : 90;
-      detection.projectType = 'frontend';
-      // Extract nested ternary to intermediate variable
-      const hasVite = deps.vite;
-      const hasWebpack = deps.webpack;
-      detection.buildTool = hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'vue-cli');
-    }
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // React (without Next.js)
-  if (deps.react) {
-    detection.framework = 'React';
-    detection.frameworkConfidence = 95;
-    detection.projectType = 'frontend';
-    // Extract nested ternary to intermediate variable
-    const hasVite = deps.vite;
-    const hasReactScripts = deps['react-scripts'];
-    detection.buildTool = hasVite ? 'vite' : (hasReactScripts ? 'create-react-app' : 'webpack');
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Express (backend)
-  if (deps.express) {
-    detection.framework = 'Express';
-    detection.frameworkConfidence = 90;
-    detection.projectType = 'backend';
-    detection.buildTool = detection.features.typescript ? 'tsc' : 'node';
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Fastify (backend)
-  if (deps.fastify) {
-    detection.framework = 'Fastify';
-    detection.frameworkConfidence = 95;
-    detection.projectType = 'backend';
-    detection.buildTool = detection.features.typescript ? 'tsc' : 'node';
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Svelte
-  if (deps.svelte) {
-    if (deps['@sveltejs/kit']) {
-      detection.framework = 'SvelteKit';
-      detection.frameworkConfidence = 100;
-      detection.projectType = 'fullstack';
-      detection.buildTool = 'vite';
-    } else {
-      detection.framework = 'Svelte';
-      detection.frameworkConfidence = 95;
-      detection.projectType = 'frontend';
-      detection.buildTool = 'vite';
-    }
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Remix
-  if (deps['@remix-run/react']) {
-    detection.framework = 'Remix';
-    detection.frameworkConfidence = 100;
-    detection.projectType = 'fullstack';
-    detection.buildTool = 'remix';
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Astro
-  if (deps.astro) {
-    detection.framework = 'Astro';
-    detection.frameworkConfidence = 100;
-    detection.projectType = 'frontend';
-    detection.buildTool = 'astro';
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Generic Node.js project
-  if (pkg.main || pkg.scripts?.start) {
-    detection.framework = 'Node.js';
-    detection.frameworkConfidence = 70;
-    detection.projectType = 'backend';
-    detection.buildTool = detection.features.typescript ? 'tsc' : 'node';
-    detection.testFramework = detectTestFramework(deps);
-    return detection;
-  }
-
-  // Fallback: generic JavaScript/TypeScript project
-  detection.framework = detection.features.typescript ? 'TypeScript' : 'JavaScript';
-  detection.frameworkConfidence = 60;
-  detection.projectType = 'library';
-  // Extract nested ternary to intermediate variable
-  const hasVite = deps.vite;
-  const hasWebpack = deps.webpack;
-  detection.buildTool = hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'npm');
-  detection.testFramework = detectTestFramework(deps);
 
   return detection;
 }
@@ -1073,142 +1156,149 @@ function updateAgentsMdWithProjectType(detection) {
   fs.writeFileSync(agentsPath, lines.join('\n'), 'utf-8');
 }
 
+// Helper: Calculate estimated tokens (rough: ~4 chars per token)
+function estimateTokens(bytes) {
+  return Math.ceil(bytes / 4);
+}
+
+// Helper: Create instruction files result object
+function createInstructionFilesResult(createAgentsMd = false, createClaudeMd = false, skipAgentsMd = false, skipClaudeMd = false) {
+  return {
+    createAgentsMd,
+    createClaudeMd,
+    skipAgentsMd,
+    skipClaudeMd
+  };
+}
+
+// Helper: Handle scenario where both AGENTS.md and CLAUDE.md exist
+async function handleBothFilesExist(question, projectStatus) {
+  const totalLines = projectStatus.agentsMdLines + projectStatus.claudeMdLines;
+  const totalTokens = estimateTokens(projectStatus.agentsMdSize + projectStatus.claudeMdSize);
+
+  console.log('');
+  console.log('⚠️  WARNING: Multiple Instruction Files Detected');
+  console.log('='.repeat(60));
+  console.log(`  AGENTS.md:  ${projectStatus.agentsMdLines} lines (~${estimateTokens(projectStatus.agentsMdSize)} tokens)`);
+  console.log(`  CLAUDE.md:  ${projectStatus.claudeMdLines} lines (~${estimateTokens(projectStatus.claudeMdSize)} tokens)`);
+  console.log(`  Total:      ${totalLines} lines (~${totalTokens} tokens)`);
+  console.log('');
+  console.log('  ⚠️  Claude Code reads BOTH files on every request');
+  console.log('  ⚠️  This increases context usage and costs');
+  console.log('');
+  console.log('  Options:');
+  console.log('  1) Keep CLAUDE.md only (recommended for Claude Code only)');
+  console.log('  2) Keep AGENTS.md only (recommended for multi-agent users)');
+  console.log('  3) Keep both (higher context usage)');
+  console.log('');
+
+  while (true) {
+    const choice = await question('Your choice (1/2/3) [2]: ');
+    const normalized = choice.trim() || '2';
+
+    if (normalized === '1') {
+      console.log('  ✓ Will keep CLAUDE.md, remove AGENTS.md');
+      return createInstructionFilesResult(false, false, true, false);
+    } else if (normalized === '2') {
+      console.log('  ✓ Will keep AGENTS.md, remove CLAUDE.md');
+      return createInstructionFilesResult(false, false, false, true);
+    } else if (normalized === '3') {
+      console.log('  ✓ Will keep both files (context: ~' + totalTokens + ' tokens)');
+      return createInstructionFilesResult(false, false, false, false);
+    } else {
+      console.log('  Please enter 1, 2, or 3');
+    }
+  }
+}
+
+// Helper: Handle scenario where only CLAUDE.md exists
+async function handleOnlyClaudeMdExists(question, projectStatus, hasOtherAgents) {
+  if (hasOtherAgents) {
+    console.log('');
+    console.log('📋 Found existing CLAUDE.md (' + projectStatus.claudeMdLines + ' lines)');
+    console.log('   You selected multiple agents. Recommendation:');
+    console.log('   → Migrate to AGENTS.md (works with all agents)');
+    console.log('');
+
+    const migrate = await askYesNo(question, 'Migrate CLAUDE.md to AGENTS.md?', false);
+    if (migrate) {
+      console.log('  ✓ Will migrate content to AGENTS.md');
+      return createInstructionFilesResult(true, false, false, true);
+    } else {
+      console.log('  ✓ Will keep CLAUDE.md and create AGENTS.md');
+      return createInstructionFilesResult(true, false, false, false);
+    }
+  } else {
+    // Claude Code only - keep CLAUDE.md
+    console.log('  ✓ Keeping existing CLAUDE.md');
+    return createInstructionFilesResult(false, false, false, false);
+  }
+}
+
+// Helper: Handle scenario where only AGENTS.md exists
+async function handleOnlyAgentsMdExists(question, projectStatus, hasClaude, hasOtherAgents) {
+  if (hasClaude && !hasOtherAgents) {
+    console.log('');
+    console.log('📋 Found existing AGENTS.md (' + projectStatus.agentsMdLines + ' lines)');
+    console.log('   You selected Claude Code only. Options:');
+    console.log('   1) Keep AGENTS.md (works fine)');
+    console.log('   2) Rename to CLAUDE.md (Claude-specific naming)');
+    console.log('');
+
+    const rename = await askYesNo(question, 'Rename to CLAUDE.md?', true);
+    if (rename) {
+      console.log('  ✓ Will rename to CLAUDE.md');
+      return createInstructionFilesResult(false, true, true, false);
+    } else {
+      console.log('  ✓ Keeping AGENTS.md');
+      return createInstructionFilesResult(false, false, false, false);
+    }
+  } else {
+    // Multi-agent or other agents - keep AGENTS.md
+    console.log('  ✓ Keeping existing AGENTS.md');
+    return createInstructionFilesResult(false, false, false, false);
+  }
+}
+
+// Helper: Handle scenario where no instruction files exist (fresh install)
+function handleNoFilesExist(hasClaude, hasOtherAgents) {
+  if (hasClaude && !hasOtherAgents) {
+    // Claude Code only → create CLAUDE.md
+    console.log('  ✓ Will create CLAUDE.md (Claude Code specific)');
+    return createInstructionFilesResult(false, true, false, false);
+  } else if (!hasClaude && hasOtherAgents) {
+    // Other agents only → create AGENTS.md
+    console.log('  ✓ Will create AGENTS.md (universal)');
+    return createInstructionFilesResult(true, false, false, false);
+  } else {
+    // Multiple agents including Claude → create AGENTS.md + reference CLAUDE.md
+    console.log('  ✓ Will create AGENTS.md (main) + CLAUDE.md (reference)');
+    return createInstructionFilesResult(true, true, false, false);
+  }
+}
+
 // Smart file selection with context warnings
 async function handleInstructionFiles(rl, question, selectedAgents, projectStatus) {
   const hasClaude = selectedAgents.some(a => a.key === 'claude');
   const hasOtherAgents = selectedAgents.some(a => a.key !== 'claude');
 
-  // Calculate estimated tokens (rough: ~4 chars per token)
-  const estimateTokens = (bytes) => Math.ceil(bytes / 4);
-
-  const result = {
-    createAgentsMd: false,
-    createClaudeMd: false,
-    skipAgentsMd: false,
-    skipClaudeMd: false
-  };
-
   // Scenario 1: Both files exist (potential context bloat)
   if (projectStatus.hasAgentsMd && projectStatus.hasClaudeMd) {
-    const totalLines = projectStatus.agentsMdLines + projectStatus.claudeMdLines;
-    const totalTokens = estimateTokens(projectStatus.agentsMdSize + projectStatus.claudeMdSize);
-
-    console.log('');
-    console.log('⚠️  WARNING: Multiple Instruction Files Detected');
-    console.log('='.repeat(60));
-    console.log(`  AGENTS.md:  ${projectStatus.agentsMdLines} lines (~${estimateTokens(projectStatus.agentsMdSize)} tokens)`);
-    console.log(`  CLAUDE.md:  ${projectStatus.claudeMdLines} lines (~${estimateTokens(projectStatus.claudeMdSize)} tokens)`);
-    console.log(`  Total:      ${totalLines} lines (~${totalTokens} tokens)`);
-    console.log('');
-    console.log('  ⚠️  Claude Code reads BOTH files on every request');
-    console.log('  ⚠️  This increases context usage and costs');
-    console.log('');
-    console.log('  Options:');
-    console.log('  1) Keep CLAUDE.md only (recommended for Claude Code only)');
-    console.log('  2) Keep AGENTS.md only (recommended for multi-agent users)');
-    console.log('  3) Keep both (higher context usage)');
-    console.log('');
-
-    while (true) {
-      const choice = await question('Your choice (1/2/3) [2]: ');
-      const normalized = choice.trim() || '2';
-
-      if (normalized === '1') {
-        result.skipAgentsMd = true;
-        result.createClaudeMd = false; // Keep existing
-        console.log('  ✓ Will keep CLAUDE.md, remove AGENTS.md');
-        break;
-      } else if (normalized === '2') {
-        result.skipClaudeMd = true;
-        result.createAgentsMd = false; // Keep existing
-        console.log('  ✓ Will keep AGENTS.md, remove CLAUDE.md');
-        break;
-      } else if (normalized === '3') {
-        result.createAgentsMd = false; // Keep existing
-        result.createClaudeMd = false; // Keep existing
-        console.log('  ✓ Will keep both files (context: ~' + totalTokens + ' tokens)');
-        break;
-      } else {
-        console.log('  Please enter 1, 2, or 3');
-      }
-    }
-
-    return result;
+    return await handleBothFilesExist(question, projectStatus);
   }
 
   // Scenario 2: Only CLAUDE.md exists
   if (projectStatus.hasClaudeMd && !projectStatus.hasAgentsMd) {
-    if (hasOtherAgents) {
-      console.log('');
-      console.log('📋 Found existing CLAUDE.md (' + projectStatus.claudeMdLines + ' lines)');
-      console.log('   You selected multiple agents. Recommendation:');
-      console.log('   → Migrate to AGENTS.md (works with all agents)');
-      console.log('');
-
-      const migrate = await askYesNo(question, 'Migrate CLAUDE.md to AGENTS.md?', false);
-      if (migrate) {
-        result.createAgentsMd = true;
-        result.skipClaudeMd = true;
-        console.log('  ✓ Will migrate content to AGENTS.md');
-      } else {
-        result.createAgentsMd = true;
-        result.createClaudeMd = false; // Keep existing
-        console.log('  ✓ Will keep CLAUDE.md and create AGENTS.md');
-      }
-    } else {
-      // Claude Code only - keep CLAUDE.md
-      result.createClaudeMd = false; // Keep existing
-      console.log('  ✓ Keeping existing CLAUDE.md');
-    }
-
-    return result;
+    return await handleOnlyClaudeMdExists(question, projectStatus, hasOtherAgents);
   }
 
   // Scenario 3: Only AGENTS.md exists
   if (projectStatus.hasAgentsMd && !projectStatus.hasClaudeMd) {
-    if (hasClaude && !hasOtherAgents) {
-      console.log('');
-      console.log('📋 Found existing AGENTS.md (' + projectStatus.agentsMdLines + ' lines)');
-      console.log('   You selected Claude Code only. Options:');
-      console.log('   1) Keep AGENTS.md (works fine)');
-      console.log('   2) Rename to CLAUDE.md (Claude-specific naming)');
-      console.log('');
-
-      const rename = await askYesNo(question, 'Rename to CLAUDE.md?', true);
-      if (rename) {
-        result.createClaudeMd = true;
-        result.skipAgentsMd = true;
-        console.log('  ✓ Will rename to CLAUDE.md');
-      } else {
-        result.createAgentsMd = false; // Keep existing
-        console.log('  ✓ Keeping AGENTS.md');
-      }
-    } else {
-      // Multi-agent or other agents - keep AGENTS.md
-      result.createAgentsMd = false; // Keep existing
-      console.log('  ✓ Keeping existing AGENTS.md');
-    }
-
-    return result;
+    return await handleOnlyAgentsMdExists(question, projectStatus, hasClaude, hasOtherAgents);
   }
 
   // Scenario 4: Neither file exists (fresh install)
-  if (hasClaude && !hasOtherAgents) {
-    // Claude Code only → create CLAUDE.md
-    result.createClaudeMd = true;
-    console.log('  ✓ Will create CLAUDE.md (Claude Code specific)');
-  } else if (!hasClaude && hasOtherAgents) {
-    // Other agents only → create AGENTS.md
-    result.createAgentsMd = true;
-    console.log('  ✓ Will create AGENTS.md (universal)');
-  } else {
-    // Multiple agents including Claude → create AGENTS.md + reference CLAUDE.md
-    result.createAgentsMd = true;
-    result.createClaudeMd = true; // Will be minimal reference
-    console.log('  ✓ Will create AGENTS.md (main) + CLAUDE.md (reference)');
-  }
-
-  return result;
+  return handleNoFilesExist(hasClaude, hasOtherAgents);
 }
 
 // Create minimal CLAUDE.md that references AGENTS.md
@@ -1589,139 +1679,150 @@ function minimalInstall() {
   console.log('');
 }
 
-// Setup specific agent
-function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
-  const agent = AGENTS[agentKey];
-  if (!agent) return;
-
-  console.log(`\nSetting up ${agent.name}...`);
-
-  // Create directories
-  agent.dirs.forEach(dir => ensureDir(dir));
-
-  // Handle Claude Code specifically (downloads commands)
-  if (agentKey === 'claude') {
-    // Copy commands from package (unless skipped)
-    if (skipFiles.claudeCommands) {
-      console.log('  Skipped: .claude/commands/ (keeping existing)');
-    } else {
-      COMMANDS.forEach(cmd => {
-        const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
-        copyFile(src, `.claude/commands/${cmd}.md`);
-      });
-      console.log('  Copied: 9 workflow commands');
-    }
-
-    // Copy rules
-    const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
-    copyFile(rulesSrc, '.claude/rules/workflow.md');
-
-    // Copy scripts
-    const scriptSrc = path.join(packageDir, '.claude/scripts/load-env.sh');
-    copyFile(scriptSrc, '.claude/scripts/load-env.sh');
+// Helper: Setup Claude agent
+function setupClaudeAgent(skipFiles = {}) {
+  // Copy commands from package (unless skipped)
+  if (skipFiles.claudeCommands) {
+    console.log('  Skipped: .claude/commands/ (keeping existing)');
+  } else {
+    COMMANDS.forEach(cmd => {
+      const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
+      copyFile(src, `.claude/commands/${cmd}.md`);
+    });
+    console.log('  Copied: 9 workflow commands');
   }
 
-  // Custom setups
-  if (agent.customSetup === 'cursor') {
-    writeFile('.cursor/rules/forge-workflow.mdc', CURSOR_RULE);
-    console.log('  Created: .cursor/rules/forge-workflow.mdc');
+  // Copy rules
+  const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
+  copyFile(rulesSrc, '.claude/rules/workflow.md');
+
+  // Copy scripts
+  const scriptSrc = path.join(packageDir, '.claude/scripts/load-env.sh');
+  copyFile(scriptSrc, '.claude/scripts/load-env.sh');
+}
+
+// Helper: Setup Cursor agent
+function setupCursorAgent() {
+  writeFile('.cursor/rules/forge-workflow.mdc', CURSOR_RULE);
+  console.log('  Created: .cursor/rules/forge-workflow.mdc');
+}
+
+// Helper: Setup Aider agent
+function setupAiderAgent() {
+  const aiderPath = path.join(projectRoot, '.aider.conf.yml');
+  if (fs.existsSync(aiderPath)) {
+    console.log('  Skipped: .aider.conf.yml already exists');
+    return true; // Signal early return
   }
 
-  if (agent.customSetup === 'aider') {
-    const aiderPath = path.join(projectRoot, '.aider.conf.yml');
-    if (fs.existsSync(aiderPath)) {
-      console.log('  Skipped: .aider.conf.yml already exists');
-    } else {
-      writeFile('.aider.conf.yml', `# Aider configuration
+  writeFile('.aider.conf.yml', `# Aider configuration
 # Read AGENTS.md for workflow instructions
 read:
   - AGENTS.md
   - docs/WORKFLOW.md
 `);
-      console.log('  Created: .aider.conf.yml');
-    }
-    return;
+  console.log('  Created: .aider.conf.yml');
+  return true; // Signal early return
+}
+
+// Helper: Convert command to agent-specific format
+function convertCommandToAgentFormat(cmd, content, agent) {
+  let targetContent = content;
+  let targetFile = cmd;
+
+  if (agent.needsConversion) {
+    targetContent = stripFrontmatter(content);
   }
 
-  // Convert/copy commands
-  if (claudeCommands && (agent.needsConversion || agent.copyCommands || agent.promptFormat || agent.continueFormat)) {
-    Object.entries(claudeCommands).forEach(([cmd, content]) => {
-      let targetContent = content;
-      let targetFile = cmd;
+  if (agent.promptFormat) {
+    targetFile = cmd.replace('.md', '.prompt.md');
+    targetContent = stripFrontmatter(content);
+  }
 
-      if (agent.needsConversion) {
-        targetContent = stripFrontmatter(content);
-      }
-
-      if (agent.promptFormat) {
-        targetFile = cmd.replace('.md', '.prompt.md');
-        targetContent = stripFrontmatter(content);
-      }
-
-      if (agent.continueFormat) {
-        const baseName = cmd.replace('.md', '');
-        targetFile = `${baseName}.prompt`;
-        targetContent = `---
+  if (agent.continueFormat) {
+    const baseName = cmd.replace('.md', '');
+    targetFile = `${baseName}.prompt`;
+    targetContent = `---
 name: ${baseName}
 description: Forge workflow command - ${baseName}
 invokable: true
 ---
 
 ${stripFrontmatter(content)}`;
+  }
+
+  return { targetFile, targetContent };
+}
+
+// Helper: Copy commands for agent
+function copyAgentCommands(agent, claudeCommands) {
+  if (!claudeCommands) return;
+  if (!agent.needsConversion && !agent.copyCommands && !agent.promptFormat && !agent.continueFormat) return;
+
+  Object.entries(claudeCommands).forEach(([cmd, content]) => {
+    const { targetFile, targetContent } = convertCommandToAgentFormat(cmd, content, agent);
+    const targetDir = agent.dirs[0]; // First dir is commands/workflows
+    writeFile(`${targetDir}/${targetFile}`, targetContent);
+  });
+  console.log('  Converted: 9 workflow commands');
+}
+
+// Helper: Copy rules for agent
+function copyAgentRules(agent) {
+  if (!agent.needsConversion) return;
+
+  const workflowMdPath = path.join(projectRoot, '.claude/rules/workflow.md');
+  if (!fs.existsSync(workflowMdPath)) return;
+
+  const rulesDir = agent.dirs.find(d => d.includes('/rules'));
+  if (!rulesDir) return;
+
+  const ruleContent = readFile(workflowMdPath);
+  if (ruleContent) {
+    writeFile(`${rulesDir}/workflow.md`, ruleContent);
+  }
+}
+
+// Helper: Create skill file for agent
+function createAgentSkill(agent) {
+  if (!agent.hasSkill) return;
+
+  const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+  if (skillDir) {
+    writeFile(`${skillDir}/SKILL.md`, SKILL_CONTENT);
+    console.log('  Created: forge-workflow skill');
+  }
+}
+
+// Helper: Setup MCP config for Claude
+function setupClaudeMcpConfig() {
+  const mcpPath = path.join(projectRoot, '.mcp.json');
+  if (fs.existsSync(mcpPath)) {
+    console.log('  Skipped: .mcp.json already exists');
+    return;
+  }
+
+  const mcpConfig = {
+    mcpServers: {
+      context7: {
+        command: 'npx',
+        args: ['-y', '@upstash/context7-mcp@latest']
       }
-
-      const targetDir = agent.dirs[0]; // First dir is commands/workflows
-      writeFile(`${targetDir}/${targetFile}`, targetContent);
-    });
-    console.log('  Converted: 9 workflow commands');
-  }
-
-  // Copy rules if needed
-  if (agent.needsConversion && fs.existsSync(path.join(projectRoot, '.claude/rules/workflow.md'))) {
-    const rulesDir = agent.dirs.find(d => d.includes('/rules'));
-    if (rulesDir) {
-      const ruleContent = readFile(path.join(projectRoot, '.claude/rules/workflow.md'));
-      if (ruleContent) {
-        writeFile(`${rulesDir}/workflow.md`, ruleContent);
-      }
     }
+  };
+  writeFile('.mcp.json', JSON.stringify(mcpConfig, null, 2));
+  console.log('  Created: .mcp.json with Context7 MCP');
+}
+
+// Helper: Setup MCP config for Continue
+function setupContinueMcpConfig() {
+  const configPath = path.join(projectRoot, '.continue/config.yaml');
+  if (fs.existsSync(configPath)) {
+    console.log('  Skipped: config.yaml already exists');
+    return;
   }
 
-  // Create SKILL.md
-  if (agent.hasSkill) {
-    const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-    if (skillDir) {
-      writeFile(`${skillDir}/SKILL.md`, SKILL_CONTENT);
-      console.log('  Created: forge-workflow skill');
-    }
-  }
-
-  // Create .mcp.json with Context7 MCP (Claude Code only)
-  if (agentKey === 'claude') {
-    const mcpPath = path.join(projectRoot, '.mcp.json');
-    if (fs.existsSync(mcpPath)) {
-      console.log('  Skipped: .mcp.json already exists');
-    } else {
-      const mcpConfig = {
-        mcpServers: {
-          context7: {
-            command: 'npx',
-            args: ['-y', '@upstash/context7-mcp@latest']
-          }
-        }
-      };
-      writeFile('.mcp.json', JSON.stringify(mcpConfig, null, 2));
-      console.log('  Created: .mcp.json with Context7 MCP');
-    }
-  }
-
-  // Create config.yaml with Context7 MCP (Continue only)
-  if (agentKey === 'continue') {
-    const configPath = path.join(projectRoot, '.continue/config.yaml');
-    if (fs.existsSync(configPath)) {
-      console.log('  Skipped: config.yaml already exists');
-    } else {
-      const continueConfig = `# Continue Configuration
+  const continueConfig = `# Continue Configuration
 # https://docs.continue.dev/customize/deep-dives/configuration
 
 name: Forge Workflow
@@ -1737,19 +1838,344 @@ mcpServers:
 
 # Rules loaded from .continuerules
 `;
-      writeFile('.continue/config.yaml', continueConfig);
-      console.log('  Created: config.yaml with Context7 MCP');
-    }
+  writeFile('.continue/config.yaml', continueConfig);
+  console.log('  Created: config.yaml with Context7 MCP');
+}
+
+// Helper: Create agent link file
+function createAgentLinkFile(agent) {
+  if (!agent.linkFile) return;
+
+  const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile);
+  if (result) {
+    console.log(`  ${result === 'linked' ? 'Linked' : 'Copied'}: ${agent.linkFile}`);
+  }
+}
+
+// Setup specific agent
+function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
+  const agent = AGENTS[agentKey];
+  if (!agent) return;
+
+  console.log(`\nSetting up ${agent.name}...`);
+
+  // Create directories
+  agent.dirs.forEach(dir => ensureDir(dir));
+
+  // Handle agent-specific setup
+  if (agentKey === 'claude') {
+    setupClaudeAgent(skipFiles);
+  }
+
+  if (agent.customSetup === 'cursor') {
+    setupCursorAgent();
+  }
+
+  if (agent.customSetup === 'aider') {
+    const shouldReturn = setupAiderAgent();
+    if (shouldReturn) return;
+  }
+
+  // Convert/copy commands
+  copyAgentCommands(agent, claudeCommands);
+
+  // Copy rules if needed
+  copyAgentRules(agent);
+
+  // Create SKILL.md
+  createAgentSkill(agent);
+
+  // Setup MCP configs
+  if (agentKey === 'claude') {
+    setupClaudeMcpConfig();
+  }
+
+  if (agentKey === 'continue') {
+    setupContinueMcpConfig();
   }
 
   // Create link file
-  if (agent.linkFile) {
-    const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile);
-    if (result) {
-      console.log(`  ${result === 'linked' ? 'Linked' : 'Copied'}: ${agent.linkFile}`);
+  createAgentLinkFile(agent);
+}
+
+
+// =============================================
+// Helper Functions for Interactive Setup
+// =============================================
+
+/**
+ * Display existing installation status
+ */
+function displayInstallationStatus(projectStatus) {
+  if (projectStatus.type === 'fresh') return;
+
+  console.log('==============================================');
+  console.log('  Existing Installation Detected');
+  console.log('==============================================');
+  console.log('');
+
+  if (projectStatus.type === 'upgrade') {
+    console.log('Found existing Forge installation:');
+  } else {
+    console.log('Found partial installation:');
+  }
+
+  if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
+  if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
+  if (projectStatus.hasEnvLocal) console.log('  - .env.local');
+  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
+  console.log('');
+}
+
+/**
+ * Prompt for file overwrite and update skipFiles
+ */
+async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
+  if (!exists) return;
+
+  const fileLabels = {
+    agentsMd: { prompt: 'Found existing AGENTS.md. Overwrite?', message: 'AGENTS.md', key: 'agentsMd' },
+    claudeCommands: { prompt: 'Found existing .claude/commands/. Overwrite?', message: '.claude/commands/', key: 'claudeCommands' }
+  };
+
+  const config = fileLabels[fileType];
+  if (!config) return;
+
+  const overwrite = await askYesNo(question, config.prompt, true);
+  if (overwrite) {
+    console.log(`  Will overwrite ${config.message}`);
+  } else {
+    skipFiles[config.key] = true;
+    console.log(`  Keeping existing ${config.message}`);
+  }
+}
+
+/**
+ * Display agent selection options
+ */
+function displayAgentOptions(agentKeys) {
+  console.log('STEP 1: Select AI Coding Agents');
+  console.log('================================');
+  console.log('');
+  console.log('Which AI coding agents do you use?');
+  console.log('(Enter numbers separated by spaces, or "all")');
+  console.log('');
+
+  agentKeys.forEach((key, index) => {
+    const agent = AGENTS[key];
+    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
+  });
+  console.log('');
+  console.log('  all) Install for all agents');
+  console.log('');
+}
+
+/**
+ * Validate and parse agent selection input
+ */
+function validateAgentSelection(input, agentKeys) {
+  // Handle empty input
+  if (!input || !input.trim()) {
+    return { valid: false, agents: [], message: 'Please enter at least one agent number or "all".' };
+  }
+
+  // Handle "all" selection
+  if (input.toLowerCase() === 'all') {
+    return { valid: true, agents: agentKeys, message: null };
+  }
+
+  // Parse numbers
+  const nums = input.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
+
+  // Validate numbers are in range
+  const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
+  const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
+
+  if (invalidNums.length > 0) {
+    console.log(`  ⚠ Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
+  }
+
+  // Deduplicate selected agents using Set
+  const selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
+
+  if (selectedAgents.length === 0) {
+    return { valid: false, agents: [], message: 'No valid agents selected. Please try again.' };
+  }
+
+  return { valid: true, agents: selectedAgents, message: null };
+}
+
+/**
+ * Prompt for agent selection with validation loop
+ */
+async function promptForAgentSelection(question, agentKeys) {
+  displayAgentOptions(agentKeys);
+
+  let selectedAgents = [];
+
+  // Loop until valid input is provided
+  while (selectedAgents.length === 0) {
+    const answer = await question('Your selection: ');
+    const result = validateAgentSelection(answer, agentKeys);
+
+    if (result.valid) {
+      selectedAgents = result.agents;
+    } else if (result.message) {
+      console.log(`  ${result.message}`);
+    }
+  }
+
+  return selectedAgents;
+}
+
+/**
+ * Handle AGENTS.md installation
+ */
+async function installAgentsMd(skipFiles) {
+  if (skipFiles.agentsMd) {
+    console.log('  Skipped: AGENTS.md (keeping existing)');
+    return;
+  }
+
+  const agentsSrc = path.join(packageDir, 'AGENTS.md');
+  const agentsDest = path.join(projectRoot, 'AGENTS.md');
+
+  // Try smart merge if file exists
+  if (fs.existsSync(agentsDest)) {
+    const existingContent = fs.readFileSync(agentsDest, 'utf8');
+    const newContent = fs.readFileSync(agentsSrc, 'utf8');
+    const merged = smartMergeAgentsMd(existingContent, newContent);
+
+    if (merged) {
+      fs.writeFileSync(agentsDest, merged, 'utf8');
+      console.log('  Updated: AGENTS.md (preserved USER sections)');
+    } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+      // No markers, do normal copy (user already approved overwrite)
+      console.log('  Updated: AGENTS.md (universal standard)');
+    }
+  } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+    // New file
+    console.log('  Created: AGENTS.md (universal standard)');
+
+    // Detect project type and update AGENTS.md
+    const detection = detectProjectType();
+    if (detection.hasPackageJson) {
+      updateAgentsMdWithProjectType(detection);
+      displayProjectType(detection);
     }
   }
 }
+
+/**
+ * Load Claude commands for conversion
+ */
+function loadClaudeCommands(selectedAgents) {
+  const claudeCommands = {};
+  const needsClaudeCommands = selectedAgents.includes('claude') ||
+    selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands);
+
+  if (!needsClaudeCommands) {
+    return claudeCommands;
+  }
+
+  COMMANDS.forEach(cmd => {
+    const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+    const content = readFile(cmdPath);
+    if (content) {
+      claudeCommands[`${cmd}.md`] = content;
+    }
+  });
+
+  return claudeCommands;
+}
+
+/**
+ * Setup agents with progress indication
+ */
+function setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles) {
+  const totalAgents = selectedAgents.length;
+
+  selectedAgents.forEach((agentKey, index) => {
+    const agent = AGENTS[agentKey];
+    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
+    if (agentKey !== 'claude') { // Claude already done above
+      setupAgent(agentKey, claudeCommands, skipFiles);
+    }
+  });
+
+  // Agent installation success
+  console.log('');
+  console.log('Agent configuration complete!');
+  console.log('');
+  console.log('Installed for:');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  * ${agent.name}`);
+  });
+}
+
+/**
+ * Display final setup summary
+ */
+function displaySetupSummary(selectedAgents) {
+  console.log('');
+  console.log('==============================================');
+  console.log(`  Forge v${VERSION} Setup Complete!`);
+  console.log('==============================================');
+  console.log('');
+  console.log('What\'s installed:');
+  console.log('  - AGENTS.md (universal instructions)');
+  console.log('  - docs/WORKFLOW.md (full workflow guide)');
+  console.log('  - docs/research/TEMPLATE.md (research template)');
+  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
+
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    if (agent.linkFile) {
+      console.log(`  - ${agent.linkFile} (${agent.name})`);
+    }
+    if (agent.hasCommands) {
+      console.log(`  - .claude/commands/ (9 workflow commands)`);
+    }
+    if (agent.hasSkill) {
+      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+      if (skillDir) {
+        console.log(`  - ${skillDir}/SKILL.md`);
+      }
+    }
+  });
+
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📋  NEXT STEP - Complete AGENTS.md');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log('Ask your AI agent:');
+  console.log('  "Fill in the project description in AGENTS.md"');
+  console.log('');
+  console.log('The agent will:');
+  console.log('  ✓ Add one-sentence project description');
+  console.log('  ✓ Confirm package manager');
+  console.log('  ✓ Verify build commands');
+  console.log('');
+  console.log('Takes ~30 seconds. Done!');
+  console.log('');
+  console.log('💡 As you work: Add project patterns to AGENTS.md');
+  console.log('   USER:START section. Keep it minimal - budget is');
+  console.log('   ~150-200 instructions max.');
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log('Optional tools:');
+  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('');
+  console.log('Start with: /status');
+  console.log('');
+  console.log(`Package manager: ${PKG_MANAGER}`);
+  console.log('');
+}
+
 
 // Interactive setup
 async function interactiveSetup() {
@@ -1791,25 +2217,7 @@ async function interactiveSetup() {
   // PROJECT DETECTION
   // =============================================
   const projectStatus = detectProjectStatus();
-
-  if (projectStatus.type !== 'fresh') {
-    console.log('==============================================');
-    console.log('  Existing Installation Detected');
-    console.log('==============================================');
-    console.log('');
-
-    if (projectStatus.type === 'upgrade') {
-      console.log('Found existing Forge installation:');
-    } else {
-      console.log('Found partial installation:');
-    }
-
-    if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
-    if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
-    if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-    if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
-    console.log('');
-  }
+  displayInstallationStatus(projectStatus);
 
   // Track which files to skip based on user choices
   const skipFiles = {
@@ -1817,27 +2225,9 @@ async function interactiveSetup() {
     claudeCommands: false
   };
 
-  // Ask about overwriting AGENTS.md if it exists
-  if (projectStatus.hasAgentsMd) {
-    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
-    if (overwriteAgents) {
-      console.log('  Will overwrite AGENTS.md');
-    } else {
-      skipFiles.agentsMd = true;
-      console.log('  Keeping existing AGENTS.md');
-    }
-  }
-
-  // Ask about overwriting .claude/commands/ if it exists
-  if (projectStatus.hasClaudeCommands) {
-    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
-    if (overwriteCommands) {
-      console.log('  Will overwrite .claude/commands/');
-    } else {
-      skipFiles.claudeCommands = true;
-      console.log('  Keeping existing .claude/commands/');
-    }
-  }
+  // Ask about overwriting existing files
+  await promptForFileOverwrite(question, 'agentsMd', projectStatus.hasAgentsMd, skipFiles);
+  await promptForFileOverwrite(question, 'claudeCommands', projectStatus.hasClaudeCommands, skipFiles);
 
   if (projectStatus.type !== 'fresh') {
     console.log('');
@@ -1846,91 +2236,14 @@ async function interactiveSetup() {
   // =============================================
   // STEP 1: Agent Selection
   // =============================================
-  console.log('STEP 1: Select AI Coding Agents');
-  console.log('================================');
-  console.log('');
-  console.log('Which AI coding agents do you use?');
-  console.log('(Enter numbers separated by spaces, or "all")');
-  console.log('');
-
   const agentKeys = Object.keys(AGENTS);
-  agentKeys.forEach((key, index) => {
-    const agent = AGENTS[key];
-    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
-  });
-  console.log('');
-  console.log('  all) Install for all agents');
-  console.log('');
-
-  let selectedAgents = [];
-
-  // Loop until valid input is provided
-  while (selectedAgents.length === 0) {
-    const answer = await question('Your selection: ');
-
-    // Handle empty input - reprompt
-    if (!answer || !answer.trim()) {
-      console.log('  Please enter at least one agent number or "all".');
-      continue;
-    }
-
-    if (answer.toLowerCase() === 'all') {
-      selectedAgents = agentKeys;
-    } else {
-      const nums = answer.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
-
-      // Validate numbers are in range
-      const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
-      const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
-
-      if (invalidNums.length > 0) {
-        console.log(`  ⚠ Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
-      }
-
-      // Deduplicate selected agents using Set
-      selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
-    }
-
-    if (selectedAgents.length === 0) {
-      console.log('  No valid agents selected. Please try again.');
-    }
-  }
+  const selectedAgents = await promptForAgentSelection(question, agentKeys);
 
   console.log('');
   console.log('Installing Forge workflow...');
 
-  // Copy AGENTS.md unless skipped
-  if (skipFiles.agentsMd) {
-    console.log('  Skipped: AGENTS.md (keeping existing)');
-  } else {
-    const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    const agentsDest = path.join(projectRoot, 'AGENTS.md');
-
-    // Try smart merge if file exists
-    if (fs.existsSync(agentsDest)) {
-      const existingContent = fs.readFileSync(agentsDest, 'utf8');
-      const newContent = fs.readFileSync(agentsSrc, 'utf8');
-      const merged = smartMergeAgentsMd(existingContent, newContent);
-
-      if (merged) {
-        fs.writeFileSync(agentsDest, merged, 'utf8');
-        console.log('  Updated: AGENTS.md (preserved USER sections)');
-      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-        // No markers, do normal copy (user already approved overwrite)
-        console.log('  Updated: AGENTS.md (universal standard)');
-      }
-    } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-      // New file
-      console.log('  Created: AGENTS.md (universal standard)');
-
-      // Detect project type and update AGENTS.md
-      const detection = detectProjectType();
-      if (detection.hasPackageJson) {
-        updateAgentsMdWithProjectType(detection);
-        displayProjectType(detection);
-      }
-    }
-  }
+  // Install AGENTS.md
+  await installAgentsMd(skipFiles);
   console.log('');
 
   // Setup core documentation
@@ -1944,35 +2257,12 @@ async function interactiveSetup() {
     if (selectedAgents.includes('claude')) {
       setupAgent('claude', null, skipFiles);
     }
-    // Then load the commands (from existing or newly created)
-    COMMANDS.forEach(cmd => {
-      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-      const content = readFile(cmdPath);
-      if (content) {
-        claudeCommands[`${cmd}.md`] = content;
-      }
-    });
+    // Then load the commands
+    claudeCommands = loadClaudeCommands(selectedAgents);
   }
 
   // Setup each selected agent with progress indication
-  const totalAgents = selectedAgents.length;
-  selectedAgents.forEach((agentKey, index) => {
-    const agent = AGENTS[agentKey];
-    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
-    if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands, skipFiles);
-    }
-  });
-
-  // Agent installation success
-  console.log('');
-  console.log('Agent configuration complete!');
-  console.log('');
-  console.log('Installed for:');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    console.log(`  * ${agent.name}`);
-  });
+  setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles);
 
   // =============================================
   // STEP 2: External Services Configuration
@@ -1989,60 +2279,7 @@ async function interactiveSetup() {
   // =============================================
   // Final Summary
   // =============================================
-  console.log('');
-  console.log('==============================================');
-  console.log(`  Forge v${VERSION} Setup Complete!`);
-  console.log('==============================================');
-  console.log('');
-  console.log('What\'s installed:');
-  console.log('  - AGENTS.md (universal instructions)');
-  console.log('  - docs/WORKFLOW.md (full workflow guide)');
-  console.log('  - docs/research/TEMPLATE.md (research template)');
-  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    if (agent.linkFile) {
-      console.log(`  - ${agent.linkFile} (${agent.name})`);
-    }
-    if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (9 workflow commands)`);
-    }
-    if (agent.hasSkill) {
-      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-      if (skillDir) {
-        console.log(`  - ${skillDir}/SKILL.md`);
-      }
-    }
-  });
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('📋  NEXT STEP - Complete AGENTS.md');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-  console.log('Ask your AI agent:');
-  console.log('  "Fill in the project description in AGENTS.md"');
-  console.log('');
-  console.log('The agent will:');
-  console.log('  ✓ Add one-sentence project description');
-  console.log('  ✓ Confirm package manager');
-  console.log('  ✓ Verify build commands');
-  console.log('');
-  console.log('Takes ~30 seconds. Done!');
-  console.log('');
-  console.log('💡 As you work: Add project patterns to AGENTS.md');
-  console.log('   USER:START section. Keep it minimal - budget is');
-  console.log('   ~150-200 instructions max.');
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-  console.log('Optional tools:');
-  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
-  console.log('');
-  console.log('Start with: /status');
-  console.log('');
-  console.log(`Package manager: ${PKG_MANAGER}`);
-  console.log('');
+  displaySetupSummary(selectedAgents);
 }
 
 // Parse CLI flags
@@ -2557,6 +2794,124 @@ async function interactiveSetupWithFlags(flags) {
 }
 
 // Main
+// Helper: Handle --path setup
+function handlePathSetup(targetPath) {
+  const resolvedPath = path.resolve(targetPath);
+
+  // Create directory if it doesn't exist
+  if (!fs.existsSync(resolvedPath)) {
+    try {
+      fs.mkdirSync(resolvedPath, { recursive: true });
+      console.log(`Created directory: ${resolvedPath}`);
+    } catch (err) {
+      console.error(`Error creating directory: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  // Verify it's a directory
+  if (!fs.statSync(resolvedPath).isDirectory()) {
+    console.error(`Error: ${resolvedPath} is not a directory`);
+    process.exit(1);
+  }
+
+  // Change to target directory
+  try {
+    process.chdir(resolvedPath);
+    console.log(`Working directory: ${resolvedPath}`);
+    console.log('');
+  } catch (err) {
+    console.error(`Error changing to directory: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// Helper: Determine selected agents from flags
+function determineSelectedAgents(flags) {
+  if (flags.all) {
+    return Object.keys(AGENTS);
+  }
+
+  if (flags.agents) {
+    const selectedAgents = validateAgents(flags.agents);
+    if (selectedAgents.length === 0) {
+      console.log('No valid agents specified.');
+      console.log('Available agents:', Object.keys(AGENTS).join(', '));
+      process.exit(1);
+    }
+    return selectedAgents;
+  }
+
+  return [];
+}
+
+// Helper: Handle setup command in non-quick mode
+async function handleSetupCommand(selectedAgents, flags) {
+  showBanner('Installing for specified agents...');
+  console.log('');
+
+  // Check prerequisites
+  checkPrerequisites();
+  console.log('');
+
+  // Copy AGENTS.md
+  const agentsSrc = path.join(packageDir, 'AGENTS.md');
+  if (copyFile(agentsSrc, 'AGENTS.md')) {
+    console.log('  Created: AGENTS.md (universal standard)');
+  }
+  console.log('');
+
+  // Setup core documentation
+  setupCoreDocs();
+  console.log('');
+
+  // Load Claude commands if needed
+  const claudeCommands = loadClaudeCommands(selectedAgents);
+
+  // Setup agents
+  selectedAgents.forEach(agentKey => {
+    if (agentKey !== 'claude') {
+      setupAgent(agentKey, claudeCommands);
+    }
+  });
+
+  console.log('');
+  console.log('Agent configuration complete!');
+
+  // External services (unless skipped)
+  await handleExternalServices(flags.skipExternal, selectedAgents);
+
+  console.log('');
+  console.log('Done! Get started with: /status');
+}
+
+// Helper: Handle external services configuration
+async function handleExternalServices(skipExternal, selectedAgents) {
+  if (skipExternal) {
+    console.log('');
+    console.log('Skipping external services configuration...');
+    return;
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  let setupCompleted = false;
+  rl.on('close', () => {
+    if (!setupCompleted) {
+      console.log('\n\nSetup cancelled.');
+      process.exit(0);
+    }
+  });
+
+  const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
+  await configureExternalServices(rl, question, selectedAgents);
+  setupCompleted = true;
+  rl.close();
+}
+
 async function main() {
   const command = args[0];
   const flags = parseFlags();
@@ -2569,50 +2924,12 @@ async function main() {
 
   // Handle --path option: change to target directory
   if (flags.path) {
-    const targetPath = path.resolve(flags.path);
-
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(targetPath)) {
-      try {
-        fs.mkdirSync(targetPath, { recursive: true });
-        console.log(`Created directory: ${targetPath}`);
-      } catch (err) {
-        console.error(`Error creating directory: ${err.message}`);
-        process.exit(1);
-      }
-    }
-
-    // Verify it's a directory
-    if (!fs.statSync(targetPath).isDirectory()) {
-      console.error(`Error: ${targetPath} is not a directory`);
-      process.exit(1);
-    }
-
-    // Change to target directory
-    try {
-      process.chdir(targetPath);
-      console.log(`Working directory: ${targetPath}`);
-      console.log('');
-    } catch (err) {
-      console.error(`Error changing to directory: ${err.message}`);
-      process.exit(1);
-    }
+    handlePathSetup(flags.path);
   }
 
   if (command === 'setup') {
     // Determine agents to install
-    let selectedAgents = [];
-
-    if (flags.all) {
-      selectedAgents = Object.keys(AGENTS);
-    } else if (flags.agents) {
-      selectedAgents = validateAgents(flags.agents);
-      if (selectedAgents.length === 0) {
-        console.log('No valid agents specified.');
-        console.log('Available agents:', Object.keys(AGENTS).join(', '));
-        process.exit(1);
-      }
-    }
+    let selectedAgents = determineSelectedAgents(flags);
 
     // Quick mode
     if (flags.quick) {
@@ -2626,74 +2943,7 @@ async function main() {
 
     // Agents specified via flag (non-quick mode)
     if (selectedAgents.length > 0) {
-      showBanner('Installing for specified agents...');
-      console.log('');
-
-      // Check prerequisites
-      checkPrerequisites();
-      console.log('');
-
-      // Copy AGENTS.md
-      const agentsSrc = path.join(packageDir, 'AGENTS.md');
-      if (copyFile(agentsSrc, 'AGENTS.md')) {
-        console.log('  Created: AGENTS.md (universal standard)');
-      }
-      console.log('');
-
-      // Setup core documentation
-      setupCoreDocs();
-      console.log('');
-
-      // Load Claude commands if needed
-      let claudeCommands = {};
-      if (selectedAgents.includes('claude')) {
-        setupAgent('claude', null);
-      }
-
-      if (selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
-        COMMANDS.forEach(cmd => {
-          const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-          const content = readFile(cmdPath);
-          if (content) {
-            claudeCommands[`${cmd}.md`] = content;
-          }
-        });
-      }
-
-      // Setup agents
-      selectedAgents.forEach(agentKey => {
-        if (agentKey !== 'claude') {
-          setupAgent(agentKey, claudeCommands);
-        }
-      });
-
-      console.log('');
-      console.log('Agent configuration complete!');
-
-      // External services (unless skipped)
-      if (flags.skipExternal) {
-        console.log('');
-        console.log('Skipping external services configuration...');
-      } else {
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout
-        });
-        let setupCompleted = false;
-        rl.on('close', () => {
-          if (!setupCompleted) {
-            console.log('\n\nSetup cancelled.');
-            process.exit(0);
-          }
-        });
-        const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
-        await configureExternalServices(rl, question, selectedAgents);
-        setupCompleted = true;
-        rl.close();
-      }
-
-      console.log('');
-      console.log('Done! Get started with: /status');
+      await handleSetupCommand(selectedAgents, flags);
       return;
     }
 
@@ -2767,13 +3017,9 @@ function validateRollbackInput(method, target) {
 }
 
 // Extract USER sections before rollback
-function extractUserSections(filePath) {
-  if (!fs.existsSync(filePath)) return {};
-
-  const content = fs.readFileSync(filePath, 'utf-8');
+// Helper: Extract USER:START/END marker sections from content
+function extractUserMarkerSections(content) {
   const sections = {};
-
-  // Extract USER sections
   const userRegex = /<!-- USER:START -->([\s\S]*?)<!-- USER:END -->/g;
   let match;
   let index = 0;
@@ -2783,15 +3029,35 @@ function extractUserSections(filePath) {
     index++;
   }
 
-  // Extract custom commands
+  return sections;
+}
+
+// Helper: Extract custom commands from directory
+function extractCustomCommands(filePath) {
   const customCommandsDir = path.join(path.dirname(filePath), '.claude', 'commands', 'custom');
-  if (fs.existsSync(customCommandsDir)) {
-    sections.customCommands = fs.readdirSync(customCommandsDir)
-      .filter(f => f.endsWith('.md'))
-      .map(f => ({
-        name: f,
-        content: fs.readFileSync(path.join(customCommandsDir, f), 'utf-8')
-      }));
+
+  if (!fs.existsSync(customCommandsDir)) {
+    return null;
+  }
+
+  return fs.readdirSync(customCommandsDir)
+    .filter(f => f.endsWith('.md'))
+    .map(f => ({
+      name: f,
+      content: fs.readFileSync(path.join(customCommandsDir, f), 'utf-8')
+    }));
+}
+
+function extractUserSections(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const sections = extractUserMarkerSections(content);
+
+  // Extract custom commands
+  const customCommands = extractCustomCommands(filePath);
+  if (customCommands) {
+    sections.customCommands = customCommands;
   }
 
   return sections;
@@ -2836,6 +3102,110 @@ function preserveUserSections(filePath, savedSections) {
 }
 
 // Perform rollback operation
+// Helper: Check git working directory is clean
+function checkGitWorkingDirectory() {
+  try {
+    const { execSync } = require('node:child_process');
+    const status = execSync('git status --porcelain', { encoding: 'utf-8' });
+    if (status.trim() !== '') {
+      console.log(chalk.red('  ❌ Working directory has uncommitted changes'));
+      console.log('     Commit or stash changes before rollback');
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.log(chalk.red('  ❌ Git error:'), err.message);
+    return false;
+  }
+}
+
+// Helper: Update Beads issue after PR rollback
+function updateBeadsIssue(commitMessage) {
+  const issueMatch = commitMessage.match(/#(\d+)/);
+  if (!issueMatch) return;
+
+  try {
+    const { execSync } = require('node:child_process');
+    execSync(`bd update ${issueMatch[1]} --status reverted --comment "PR reverted"`, { stdio: 'inherit' });
+    console.log(`     Updated Beads issue #${issueMatch[1]} to 'reverted'`);
+  } catch {
+    // Beads not installed - silently continue
+  }
+}
+
+// Helper: Handle commit rollback
+function handleCommitRollback(target, dryRun, execSync) {
+  if (dryRun) {
+    console.log(`     Would revert: ${target}`);
+    const files = execSync(`git diff-tree --no-commit-id --name-only -r ${target}`, { encoding: 'utf-8' });
+    console.log('     Affected files:');
+    files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
+  } else {
+    execSync(`git revert --no-edit ${target}`, { stdio: 'inherit' });
+  }
+}
+
+// Helper: Handle PR rollback
+function handlePrRollback(target, dryRun, execSync) {
+  if (dryRun) {
+    console.log(`     Would revert merge: ${target}`);
+    const files = execSync(`git diff-tree --no-commit-id --name-only -r ${target}`, { encoding: 'utf-8' });
+    console.log('     Affected files:');
+    files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
+  } else {
+    execSync(`git revert -m 1 --no-edit ${target}`, { stdio: 'inherit' });
+
+    // Update Beads issue if linked
+    const commitMsg = execSync(`git log -1 --format=%B ${target}`, { encoding: 'utf-8' });
+    updateBeadsIssue(commitMsg);
+  }
+}
+
+// Helper: Handle partial file rollback
+function handlePartialRollback(target, dryRun, execSync) {
+  const files = target.split(',').map(f => f.trim());
+  if (dryRun) {
+    console.log('     Would restore files:');
+    files.forEach(f => console.log(`       - ${f}`));
+  } else {
+    files.forEach(f => {
+      execSync(`git checkout HEAD~1 -- "${f}"`, { stdio: 'inherit' });
+    });
+    execSync(`git commit -m "chore: rollback ${files.join(', ')}"`, { stdio: 'inherit' });
+  }
+}
+
+// Helper: Handle branch range rollback
+function handleBranchRollback(target, dryRun, execSync) {
+  const [startCommit, endCommit] = target.split('..');
+  if (dryRun) {
+    console.log(`     Would revert range: ${startCommit}..${endCommit}`);
+    const commits = execSync(`git log --oneline ${startCommit}..${endCommit}`, { encoding: 'utf-8' });
+    console.log('     Commits to revert:');
+    commits.trim().split('\n').forEach(c => console.log(`       ${c}`));
+  } else {
+    execSync(`git revert --no-edit ${startCommit}..${endCommit}`, { stdio: 'inherit' });
+  }
+}
+
+// Helper: Finalize rollback by restoring user sections
+function finalizeRollback(agentsPath, savedSections) {
+  const { execSync } = require('node:child_process');
+
+  console.log('  📦 Restoring user content...');
+  preserveUserSections(agentsPath, savedSections);
+
+  // Amend commit to include restored USER sections
+  if (fs.existsSync(agentsPath)) {
+    execSync('git add AGENTS.md', { stdio: 'inherit' });
+    execSync('git commit --amend --no-edit', { stdio: 'inherit' });
+  }
+
+  console.log('');
+  console.log(chalk.green('  ✅ Rollback complete'));
+  console.log('     User content preserved');
+}
+
 async function performRollback(method, target, dryRun = false) {
   console.log('');
   console.log(chalk.cyan(`  🔄 Rollback: ${method}`));
@@ -2853,16 +3223,7 @@ async function performRollback(method, target, dryRun = false) {
   }
 
   // Check for clean working directory
-  try {
-    const { execSync } = require('node:child_process');
-    const status = execSync('git status --porcelain', { encoding: 'utf-8' });
-    if (status.trim() !== '') {
-      console.log(chalk.red('  ❌ Working directory has uncommitted changes'));
-      console.log('     Commit or stash changes before rollback');
-      return false;
-    }
-  } catch (err) {
-    console.log(chalk.red('  ❌ Git error:'), err.message);
+  if (!checkGitWorkingDirectory()) {
     return false;
   }
 
@@ -2878,71 +3239,17 @@ async function performRollback(method, target, dryRun = false) {
     const { execSync } = require('node:child_process');
 
     if (method === 'commit') {
-      if (dryRun) {
-        console.log(`     Would revert: ${target}`);
-        const files = execSync(`git diff-tree --no-commit-id --name-only -r ${target}`, { encoding: 'utf-8' });
-        console.log('     Affected files:');
-        files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
-      } else {
-        execSync(`git revert --no-edit ${target}`, { stdio: 'inherit' });
-      }
+      handleCommitRollback(target, dryRun, execSync);
     } else if (method === 'pr') {
-      if (dryRun) {
-        console.log(`     Would revert merge: ${target}`);
-        const files = execSync(`git diff-tree --no-commit-id --name-only -r ${target}`, { encoding: 'utf-8' });
-        console.log('     Affected files:');
-        files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
-      } else {
-        execSync(`git revert -m 1 --no-edit ${target}`, { stdio: 'inherit' });
-
-        // Update Beads issue if linked
-        const commitMsg = execSync(`git log -1 --format=%B ${target}`, { encoding: 'utf-8' });
-        const issueMatch = commitMsg.match(/#(\d+)/);
-        if (issueMatch) {
-          try {
-            execSync(`bd update ${issueMatch[1]} --status reverted --comment "PR reverted"`, { stdio: 'inherit' });
-            console.log(`     Updated Beads issue #${issueMatch[1]} to 'reverted'`);
-          } catch {
-            // Beads not installed - silently continue
-          }
-        }
-      }
+      handlePrRollback(target, dryRun, execSync);
     } else if (method === 'partial') {
-      const files = target.split(',').map(f => f.trim());
-      if (dryRun) {
-        console.log('     Would restore files:');
-        files.forEach(f => console.log(`       - ${f}`));
-      } else {
-        files.forEach(f => {
-          execSync(`git checkout HEAD~1 -- "${f}"`, { stdio: 'inherit' });
-        });
-        execSync(`git commit -m "chore: rollback ${files.join(', ')}"`, { stdio: 'inherit' });
-      }
+      handlePartialRollback(target, dryRun, execSync);
     } else if (method === 'branch') {
-      const [startCommit, endCommit] = target.split('..');
-      if (dryRun) {
-        console.log(`     Would revert range: ${startCommit}..${endCommit}`);
-        const commits = execSync(`git log --oneline ${startCommit}..${endCommit}`, { encoding: 'utf-8' });
-        console.log('     Commits to revert:');
-        commits.trim().split('\n').forEach(c => console.log(`       ${c}`));
-      } else {
-        execSync(`git revert --no-edit ${startCommit}..${endCommit}`, { stdio: 'inherit' });
-      }
+      handleBranchRollback(target, dryRun, execSync);
     }
 
     if (!dryRun) {
-      console.log('  📦 Restoring user content...');
-      preserveUserSections(agentsPath, savedSections);
-
-      // Amend commit to include restored USER sections
-      if (fs.existsSync(agentsPath)) {
-        execSync('git add AGENTS.md', { stdio: 'inherit' });
-        execSync('git commit --amend --no-edit', { stdio: 'inherit' });
-      }
-
-      console.log('');
-      console.log(chalk.green('  ✅ Rollback complete'));
-      console.log('     User content preserved');
+      finalizeRollback(agentsPath, savedSections);
     }
 
     return true;
