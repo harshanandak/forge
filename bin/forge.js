@@ -223,7 +223,7 @@ function checkPrerequisites() {
   }
 
   // Check Node.js version
-  const nodeVersion = parseInt(process.version.slice(1).split('.')[0]);
+  const nodeVersion = Number.parseInt(process.version.slice(1).split('.')[0]);
   if (nodeVersion >= 20) {
     console.log(`  ✓ node ${process.version}`);
   } else {
@@ -1852,7 +1852,7 @@ async function interactiveSetup() {
     if (answer.toLowerCase() === 'all') {
       selectedAgents = agentKeys;
     } else {
-      const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+      const nums = answer.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
 
       // Validate numbers are in range
       const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
@@ -2350,7 +2350,7 @@ async function interactiveSetupWithFlags(flags) {
     if (answer.toLowerCase() === 'all') {
       selectedAgents = agentKeys;
     } else {
-      const nums = answer.split(/[\s,]+/).map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+      const nums = answer.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
 
       // Validate numbers are in range
       const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
@@ -2778,7 +2778,7 @@ function preserveUserSections(filePath, savedSections) {
 
   // Restore USER sections
   let index = 0;
-  content = content.replace(
+  content = content.replaceAll(
     /<!-- USER:START -->[\s\S]*?<!-- USER:END -->/g,
     () => {
       const section = savedSections[`user_${index}`];
@@ -2825,7 +2825,7 @@ async function performRollback(method, target, dryRun = false) {
 
   // Check for clean working directory
   try {
-    const { execSync } = require('child_process');
+    const { execSync } = require('node:child_process');
     const status = execSync('git status --porcelain', { encoding: 'utf-8' });
     if (status.trim() !== '') {
       console.log(chalk.red('  ❌ Working directory has uncommitted changes'));
@@ -2846,7 +2846,7 @@ async function performRollback(method, target, dryRun = false) {
   }
 
   try {
-    const { execSync } = require('child_process');
+    const { execSync } = require('node:child_process');
 
     if (method === 'commit') {
       if (dryRun) {
