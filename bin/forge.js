@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.4.3 - Universal AI Agent Workflow
+ * Forge - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
+ *
+ * Version is automatically read from package.json
  *
  * Usage:
  *   npm install forge-workflow  -> Minimal install (AGENTS.md + docs)
@@ -35,9 +37,13 @@ const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
 
-// Get the project root and package directory
-const projectRoot = process.env.INIT_CWD || process.cwd();
+// Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
+const packageJson = require(path.join(packageDir, 'package.json'));
+const VERSION = packageJson.version;
+
+// Get the project root
+const projectRoot = process.env.INIT_CWD || process.cwd();
 const args = process.argv.slice(2);
 
 // Detected package manager
@@ -1458,7 +1464,7 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
   console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
   console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
-  console.log('  v1.4.4');
+  console.log(`  v${VERSION}`);
   console.log('');
   if (subtitle) {
     console.log(`  ${subtitle}`);
@@ -1964,7 +1970,7 @@ async function interactiveSetup() {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.4.3 Setup Complete!');
+  console.log(`  Forge v${VERSION} Setup Complete!`);
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -2207,7 +2213,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Final summary
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.4.3 Quick Setup Complete!');
+  console.log(`  Forge v${VERSION} Quick Setup Complete!`);
   console.log('==============================================');
   console.log('');
   console.log('Next steps:');
@@ -2467,7 +2473,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.4.3 Setup Complete!');
+  console.log(`  Forge v${VERSION} Setup Complete!`);
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');

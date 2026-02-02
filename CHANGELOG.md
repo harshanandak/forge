@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] - 2025-02-02
+
+### Changed
+
+- **Automatic versioning**: Version now read from package.json (single source of truth)
+  - Added VERSION constant from package.json
+  - Replaced all hardcoded version strings with VERSION variable
+  - No more manual version updates needed in bin/forge.js
+  - Simply run `npm version patch/minor/major` to bump version everywhere
+
+### Improved
+
+- Version management simplified - update package.json only
+- Eliminates risk of version mismatch between package.json and displayed version
+
 ## [1.4.4] - 2025-02-02
 
 ### Fixed
