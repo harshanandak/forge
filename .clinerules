@@ -5,7 +5,7 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 ## Commands (9 Stages)
 
 | Stage | Command | Description |
-|-------|---------|-------------|
+| ----- | ------- | ----------- |
 | 1 | `/status` | Check current context, active work, recent completions |
 | 2 | `/research` | Deep research with web search, document to docs/research/ |
 | 3 | `/plan` | Create implementation plan, branch, OpenSpec if strategic |
@@ -18,7 +18,7 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 
 ## Workflow Flow
 
-```
+```text
 /status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
 ```
 
@@ -49,6 +49,7 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 ### 1. Status (`/status`)
 
 Check current context before starting work:
+
 - Active issues (via Beads if installed)
 - Recent completions
 - Current branch state
@@ -57,6 +58,7 @@ Check current context before starting work:
 ### 2. Research (`/research <feature-name>`)
 
 Research before building:
+
 - Web search for best practices
 - Security analysis (OWASP Top 10)
 - Existing patterns in codebase
@@ -65,6 +67,7 @@ Research before building:
 ### 3. Plan (`/plan <feature-slug>`)
 
 Create implementation plan:
+
 - Create feature branch
 - Define scope and approach
 - Create tracking issue (Beads)
@@ -73,6 +76,7 @@ Create implementation plan:
 ### 4. Development (`/dev`)
 
 TDD implementation:
+
 - RED: Write failing test
 - GREEN: Make it pass
 - REFACTOR: Clean up
@@ -81,6 +85,7 @@ TDD implementation:
 ### 5. Check (`/check`)
 
 Validate everything:
+
 - Type checking
 - Linting
 - Unit tests
@@ -90,6 +95,7 @@ Validate everything:
 ### 6. Ship (`/ship`)
 
 Create pull request:
+
 - Push branch
 - Create PR with documentation
 - Link to research doc
@@ -98,6 +104,7 @@ Create pull request:
 ### 7. Review (`/review`)
 
 Address ALL feedback:
+
 - GitHub Actions failures
 - Code review comments
 - Security scan issues
@@ -106,6 +113,7 @@ Address ALL feedback:
 ### 8. Merge (`/merge`)
 
 Complete the work:
+
 - Update documentation
 - Squash merge PR
 - Archive OpenSpec (if used)
@@ -114,6 +122,7 @@ Complete the work:
 ### 9. Verify (`/verify`)
 
 Final documentation check:
+
 - All docs updated
 - Cross-references valid
 - Examples work
@@ -121,7 +130,7 @@ Final documentation check:
 
 ## Directory Structure
 
-```
+```text
 your-project/
 ├── AGENTS.md                    # This file (universal)
 ├── CLAUDE.md                    # Claude Code
@@ -152,6 +161,7 @@ your-project/
 ## Skills (Universal SKILL.md Format)
 
 The `forge-workflow` skill is installed to all supporting agents:
+
 - `.claude/skills/forge-workflow/SKILL.md`
 - `.agent/skills/forge-workflow/SKILL.md` (Antigravity)
 - `.cursor/skills/forge-workflow/SKILL.md`
@@ -166,7 +176,7 @@ The `forge-workflow` skill is installed to all supporting agents:
 This workflow works with ALL major AI coding agents:
 
 | Agent | Instructions | Commands | Skills |
-|-------|-------------|----------|--------|
+| ----- | ------------ | -------- | ------ |
 | Claude Code | CLAUDE.md | .claude/commands/ | .claude/skills/ |
 | Google Antigravity | GEMINI.md | .agent/workflows/ | .agent/skills/ |
 | Cursor | .cursorrules | .cursor/rules/ | .cursor/skills/ |

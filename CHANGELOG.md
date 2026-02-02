@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.6] - 2025-02-02
+
+### Fixed
+
+- **IDE linting issues**: Fixed all 100+ markdownlint warnings
+  - Fixed table formatting in .clinerules (MD060 - proper spacing around pipes)
+  - Added language specification to code blocks (MD040)
+  - Added blank lines around lists (MD032)
+  - Created .markdownlint.json config to suppress false positives in CHANGELOG.md
+
+### Improved
+
+- Clean IDE experience with zero linting warnings
+- Proper markdown formatting across all documentation files
+
 ## [1.4.5] - 2025-02-02
 
 ### Changed
