@@ -535,7 +535,7 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 
   // Add/update tokens - PRESERVE existing values if preserveExisting is true
   Object.entries(tokens).forEach(([key, value]) => {
-    if (value && value.trim()) {
+    if (value?.trim()) {
       if (preserveExisting && existingKeys.has(key)) {
         // Keep existing value, don't overwrite
         preserved.push(key);
@@ -648,7 +648,7 @@ async function askYesNo(question, prompt, defaultNo = true) {
     const normalized = answer.trim().toLowerCase();
 
     // Handle empty input (use default)
-    if (normalized === '') return defaultNo ? false : true;
+    if (normalized === '') return !defaultNo;
 
     // Accept yes variations
     if (normalized === 'y' || normalized === 'yes') return true;
@@ -1295,7 +1295,7 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       break;
     case '3':
       const greptileKey = await question('  Enter Greptile API key: ');
-      if (greptileKey && greptileKey.trim()) {
+      if (greptileKey?.trim()) {
         tokens['CODE_REVIEW_TOOL'] = 'greptile';
         tokens['GREPTILE_API_KEY'] = greptileKey.trim();
         console.log('  ✓ Greptile configured');
@@ -1340,7 +1340,7 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       const sonarToken = await question('  Enter SonarCloud token: ');
       const sonarOrg = await question('  Enter SonarCloud organization: ');
       const sonarProject = await question('  Enter SonarCloud project key: ');
-      if (sonarToken && sonarToken.trim()) {
+      if (sonarToken?.trim()) {
         tokens['CODE_QUALITY_TOOL'] = 'sonarcloud';
         tokens['SONAR_TOKEN'] = sonarToken.trim();
         if (sonarOrg) tokens['SONAR_ORGANIZATION'] = sonarOrg.trim();
@@ -1361,7 +1361,7 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       const sqToken = await question('  Enter SonarQube token (optional): ');
       tokens['CODE_QUALITY_TOOL'] = 'sonarqube';
       tokens['SONARQUBE_URL'] = sqUrl;
-      if (sqToken && sqToken.trim()) {
+      if (sqToken?.trim()) {
         tokens['SONARQUBE_TOKEN'] = sqToken.trim();
       }
       console.log('  ✓ SonarQube self-hosted configured');
@@ -1390,7 +1390,7 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
 
   if (researchChoice === '2') {
     const parallelKey = await question('  Enter Parallel AI API key: ');
-    if (parallelKey && parallelKey.trim()) {
+    if (parallelKey?.trim()) {
       tokens['PARALLEL_API_KEY'] = parallelKey.trim();
       console.log('  ✓ Parallel AI configured');
     } else {
