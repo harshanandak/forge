@@ -42,6 +42,9 @@ const packageDir = path.dirname(__dirname);
 const packageJson = require(path.join(packageDir, 'package.json'));
 const VERSION = packageJson.version;
 
+// Load PluginManager for discoverable agent architecture
+const PluginManager = require('../lib/plugin-manager');
+
 // Get the project root
 const projectRoot = process.env.INIT_CWD || process.cwd();
 const args = process.argv.slice(2);
@@ -49,91 +52,36 @@ const args = process.argv.slice(2);
 // Detected package manager
 let PKG_MANAGER = 'npm';
 
-// Agent definitions
-const AGENTS = {
-  claude: {
-    name: 'Claude Code',
-    description: "Anthropic's CLI agent",
-    dirs: ['.claude/commands', '.claude/rules', '.claude/skills/forge-workflow', '.claude/scripts'],
-    hasCommands: true,
-    hasSkill: true,
-    linkFile: 'CLAUDE.md'
-  },
-  cursor: {
-    name: 'Cursor',
-    description: 'AI-first code editor',
-    dirs: ['.cursor/rules', '.cursor/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: '.cursorrules',
-    customSetup: 'cursor'
-  },
-  windsurf: {
-    name: 'Windsurf',
-    description: "Codeium's agentic IDE",
-    dirs: ['.windsurf/workflows', '.windsurf/rules', '.windsurf/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: '.windsurfrules',
-    needsConversion: true
-  },
-  kilocode: {
-    name: 'Kilo Code',
-    description: 'VS Code extension',
-    dirs: ['.kilocode/workflows', '.kilocode/rules', '.kilocode/skills/forge-workflow'],
-    hasSkill: true,
-    needsConversion: true
-  },
-  antigravity: {
-    name: 'Google Antigravity',
-    description: "Google's agent IDE",
-    dirs: ['.agent/workflows', '.agent/rules', '.agent/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: 'GEMINI.md',
-    needsConversion: true
-  },
-  copilot: {
-    name: 'GitHub Copilot',
-    description: "GitHub's AI assistant",
-    dirs: ['.github/prompts', '.github/instructions'],
-    linkFile: '.github/copilot-instructions.md',
-    needsConversion: true,
-    promptFormat: true
-  },
-  continue: {
-    name: 'Continue',
-    description: 'Open-source AI assistant',
-    dirs: ['.continue/prompts', '.continue/skills/forge-workflow'],
-    hasSkill: true,
-    needsConversion: true,
-    continueFormat: true
-  },
-  opencode: {
-    name: 'OpenCode',
-    description: 'Open-source agent',
-    dirs: ['.opencode/commands', '.opencode/skills/forge-workflow'],
-    hasSkill: true,
-    copyCommands: true
-  },
-  cline: {
-    name: 'Cline',
-    description: 'VS Code agent extension',
-    dirs: ['.cline/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: '.clinerules'
-  },
-  roo: {
-    name: 'Roo Code',
-    description: 'Cline fork with modes',
-    dirs: ['.roo/commands'],
-    linkFile: '.clinerules',
-    needsConversion: true
-  },
-  aider: {
-    name: 'Aider',
-    description: 'Terminal-based agent',
-    dirs: [],
-    customSetup: 'aider'
-  }
-};
+/**
+ * Load agent definitions from plugin architecture
+ * Maintains backwards compatibility with original AGENTS object structure
+ */
+function loadAgentsFromPlugins() {
+  const pluginManager = new PluginManager();
+  const agents = {};
+
+  pluginManager.getAllPlugins().forEach((plugin, id) => {
+    // Convert plugin structure to AGENTS structure for backwards compatibility
+    agents[id] = {
+      name: plugin.name,
+      description: plugin.description || '',
+      dirs: Object.values(plugin.directories || {}),
+      hasCommands: plugin.capabilities?.commands || plugin.setup?.copyCommands || false,
+      hasSkill: plugin.capabilities?.skills || plugin.setup?.createSkill || false,
+      linkFile: plugin.files?.rootConfig || '',
+      customSetup: plugin.setup?.customSetup || '',
+      needsConversion: plugin.setup?.needsConversion || false,
+      copyCommands: plugin.setup?.copyCommands || false,
+      promptFormat: plugin.setup?.promptFormat || false,
+      continueFormat: plugin.setup?.continueFormat || false
+    };
+  });
+
+  return agents;
+}
+
+// Agent definitions - loaded from plugin system
+const AGENTS = loadAgentsFromPlugins();
 
 // SECURITY: Freeze AGENTS to prevent runtime manipulation
 Object.freeze(AGENTS);

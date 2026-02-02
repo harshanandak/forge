@@ -1,0 +1,20 @@
+{
+  "id": "opencode",
+  "name": "OpenCode",
+  "version": "1.0.0",
+  "description": "Open-source agent",
+  "homepage": "https://github.com/opencode",
+  "capabilities": {
+    "commands": true,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "commands": ".opencode/commands",
+    "skills": ".opencode/skills/forge-workflow"
+  },
+  "setup": {
+    "copyCommands": true,
+    "createSkill": true
+  }
+}

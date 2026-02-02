@@ -18,6 +18,16 @@ describe('PluginManager', () => {
   let pluginManager;
 
   before(() => {
+    // Clean up any leftover test files first
+    const pluginDir = path.join(__dirname, '../../lib/agents');
+    const testFiles = ['invalid-test.plugin.json', 'duplicate-test.plugin.json'];
+    testFiles.forEach(file => {
+      const filePath = path.join(pluginDir, file);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    });
+
     pluginManager = new PluginManager();
   });
 
@@ -142,42 +152,47 @@ describe('PluginManager', () => {
       const pluginDir = path.join(__dirname, '../../lib/agents');
       const testFile = path.join(pluginDir, 'invalid-test.plugin.json');
 
+      // Cleanup any leftover file first
+      if (fs.existsSync(testFile)) {
+        fs.unlinkSync(testFile);
+      }
+
       // Create invalid JSON file
       fs.mkdirSync(pluginDir, { recursive: true });
       fs.writeFileSync(testFile, '{ invalid json }');
 
       assert.throws(() => {
         new PluginManager();
-      }, /Unexpected token/);
+      }, /Expected property name|Unexpected token/i);
 
       // Cleanup
       fs.unlinkSync(testFile);
     });
 
     it('should throw error for duplicate plugin IDs', () => {
-      const plugin1 = {
-        id: 'duplicate',
-        name: 'Plugin 1',
-        version: '1.0.0',
-        directories: {}
-      };
-      const plugin2 = {
-        id: 'duplicate',
-        name: 'Plugin 2',
-        version: '1.0.0',
-        directories: {}
-      };
+      const pluginDir = path.join(__dirname, '../../lib/agents');
+      const testFile = path.join(pluginDir, 'duplicate-test.plugin.json');
 
-      const testManager = new PluginManager();
-      testManager.validatePlugin(plugin1);
-      testManager.plugins.set(plugin1.id, plugin1);
+      // Cleanup any leftover file first
+      if (fs.existsSync(testFile)) {
+        fs.unlinkSync(testFile);
+      }
+
+      // Create a plugin file with an ID that already exists (claude)
+      fs.mkdirSync(pluginDir, { recursive: true });
+      fs.writeFileSync(testFile, JSON.stringify({
+        id: 'claude', // Duplicate ID
+        name: 'Duplicate Test',
+        version: '1.0.0',
+        directories: {}
+      }));
 
       assert.throws(() => {
-        testManager.validatePlugin(plugin2);
-        if (testManager.plugins.has(plugin2.id)) {
-          throw new Error(`Plugin with ID "${plugin2.id}" already exists`);
-        }
+        new PluginManager();
       }, /already exists/i);
+
+      // Cleanup
+      fs.unlinkSync(testFile);
     });
   });
 

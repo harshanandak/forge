@@ -1,0 +1,22 @@
+{
+  "id": "roo",
+  "name": "Roo Code",
+  "version": "1.0.0",
+  "description": "Cline fork with modes",
+  "homepage": "https://github.com/roocode/roo",
+  "capabilities": {
+    "commands": true,
+    "skills": false,
+    "hooks": false
+  },
+  "directories": {
+    "commands": ".roo/commands"
+  },
+  "files": {
+    "rootConfig": ".clinerules"
+  },
+  "setup": {
+    "copyCommands": true,
+    "needsConversion": true
+  }
+}

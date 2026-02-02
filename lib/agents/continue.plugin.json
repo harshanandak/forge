@@ -1,0 +1,21 @@
+{
+  "id": "continue",
+  "name": "Continue",
+  "version": "1.0.0",
+  "description": "Open-source AI assistant",
+  "homepage": "https://continue.dev",
+  "capabilities": {
+    "commands": false,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "prompts": ".continue/prompts",
+    "skills": ".continue/skills/forge-workflow"
+  },
+  "setup": {
+    "createSkill": true,
+    "needsConversion": true,
+    "continueFormat": true
+  }
+}

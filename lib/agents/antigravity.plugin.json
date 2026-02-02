@@ -1,0 +1,25 @@
+{
+  "id": "antigravity",
+  "name": "Google Antigravity",
+  "version": "1.0.0",
+  "description": "Google's agent IDE",
+  "homepage": "https://developers.google.com/ai",
+  "capabilities": {
+    "commands": false,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "workflows": ".agent/workflows",
+    "rules": ".agent/rules",
+    "skills": ".agent/skills/forge-workflow"
+  },
+  "files": {
+    "rootConfig": "GEMINI.md"
+  },
+  "setup": {
+    "copyRules": true,
+    "createSkill": true,
+    "needsConversion": true
+  }
+}
