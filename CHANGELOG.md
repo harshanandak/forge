@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.8] - 2025-02-02
+
+### Fixed
+
+- **Additional markdown linting**: Expanded markdownlint configuration
+  - Disabled MD031 (blanks around fenced code blocks)
+  - Disabled MD032 (blanks around lists)
+  - Disabled MD040 (fenced code language)
+  - Disabled MD041 (first line heading level)
+  - Disabled MD022 (blanks around headings)
+  - Disabled MD060 (table column count)
+  - Fixed .claude/skills/forge-workflow/SKILL.md formatting
+  - Updated .markdownlint.json with comprehensive rule suppressions
+
+### Improved
+
+- Zero markdown linting warnings across all documentation
+- Cleaner IDE experience with focused, actionable linting rules
+
 ## [1.4.7] - 2025-02-02
 
 ### Fixed
