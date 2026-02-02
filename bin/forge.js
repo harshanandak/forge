@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Forge v1.3.0 - Universal AI Agent Workflow
+ * Forge v1.4.3 - Universal AI Agent Workflow
  * https://github.com/harshanandak/forge
  *
  * Usage:
@@ -1458,10 +1458,46 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   console.log('  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ');
   console.log('  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗');
   console.log('  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝');
-  console.log('  v1.3.0');
+  console.log('  v1.4.4');
   console.log('');
   if (subtitle) {
     console.log(`  ${subtitle}`);
+  }
+}
+
+// Setup core documentation and directories
+function setupCoreDocs() {
+  // Create core directories
+  ensureDir('docs/planning');
+  ensureDir('docs/research');
+
+  // Copy WORKFLOW.md
+  const workflowSrc = path.join(packageDir, 'docs/WORKFLOW.md');
+  if (copyFile(workflowSrc, 'docs/WORKFLOW.md')) {
+    console.log('  Created: docs/WORKFLOW.md');
+  }
+
+  // Copy research TEMPLATE.md
+  const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
+  if (copyFile(templateSrc, 'docs/research/TEMPLATE.md')) {
+    console.log('  Created: docs/research/TEMPLATE.md');
+  }
+
+  // Create PROGRESS.md if not exists
+  const progressPath = path.join(projectRoot, 'docs/planning/PROGRESS.md');
+  if (!fs.existsSync(progressPath)) {
+    writeFile('docs/planning/PROGRESS.md', `# Project Progress
+
+## Current Focus
+<!-- What you're working on -->
+
+## Completed
+<!-- Completed features -->
+
+## Upcoming
+<!-- Next priorities -->
+`);
+    console.log('  Created: docs/planning/PROGRESS.md');
   }
 }
 
@@ -1487,9 +1523,8 @@ function minimalInstall() {
   showBanner();
   console.log('');
 
-  // Create core directories
-  ensureDir('docs/planning');
-  ensureDir('docs/research');
+  // Setup core documentation
+  setupCoreDocs();
 
   // Copy AGENTS.md (only if not exists - preserve user customizations in minimal install)
   const agentsPath = path.join(projectRoot, 'AGENTS.md');
@@ -1507,34 +1542,6 @@ function minimalInstall() {
         displayProjectType(detection);
       }
     }
-  }
-
-  // Copy documentation
-  const workflowSrc = path.join(packageDir, 'docs/WORKFLOW.md');
-  if (copyFile(workflowSrc, 'docs/WORKFLOW.md')) {
-    console.log('  Created: docs/WORKFLOW.md');
-  }
-
-  const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
-  if (copyFile(templateSrc, 'docs/research/TEMPLATE.md')) {
-    console.log('  Created: docs/research/TEMPLATE.md');
-  }
-
-  // Create PROGRESS.md if not exists
-  const progressPath = path.join(projectRoot, 'docs/planning/PROGRESS.md');
-  if (!fs.existsSync(progressPath)) {
-    writeFile('docs/planning/PROGRESS.md', `# Project Progress
-
-## Current Focus
-<!-- What you're working on -->
-
-## Completed
-<!-- Completed features -->
-
-## Upcoming
-<!-- Next priorities -->
-`);
-    console.log('  Created: docs/planning/PROGRESS.md');
   }
 
   console.log('');
@@ -1897,6 +1904,11 @@ async function interactiveSetup() {
       }
     }
   }
+  console.log('');
+
+  // Setup core documentation
+  setupCoreDocs();
+  console.log('');
 
   // Load Claude commands if needed
   let claudeCommands = {};
@@ -1952,7 +1964,7 @@ async function interactiveSetup() {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.3.0 Setup Complete!');
+  console.log('  Forge v1.4.3 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -2128,6 +2140,11 @@ async function quickSetup(selectedAgents, skipExternal) {
   if (copyFile(agentsSrc, 'AGENTS.md')) {
     console.log('  Created: AGENTS.md (universal standard)');
   }
+  console.log('');
+
+  // Setup core documentation
+  setupCoreDocs();
+  console.log('');
 
   // Load Claude commands if needed
   let claudeCommands = {};
@@ -2190,7 +2207,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Final summary
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.3.0 Quick Setup Complete!');
+  console.log('  Forge v1.4.3 Quick Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('Next steps:');
@@ -2385,6 +2402,11 @@ async function interactiveSetupWithFlags(flags) {
       }
     }
   }
+  console.log('');
+
+  // Setup core documentation
+  setupCoreDocs();
+  console.log('');
 
   // Load Claude commands if needed
   let claudeCommands = {};
@@ -2445,7 +2467,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   console.log('');
   console.log('==============================================');
-  console.log('  Forge v1.3.0 Setup Complete!');
+  console.log('  Forge v1.4.3 Setup Complete!');
   console.log('==============================================');
   console.log('');
   console.log('What\'s installed:');
@@ -2581,6 +2603,11 @@ async function main() {
       if (copyFile(agentsSrc, 'AGENTS.md')) {
         console.log('  Created: AGENTS.md (universal standard)');
       }
+      console.log('');
+
+      // Setup core documentation
+      setupCoreDocs();
+      console.log('');
 
       // Load Claude commands if needed
       let claudeCommands = {};

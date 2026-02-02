@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.4] - 2025-02-02
+
+### Fixed
+
+- **Version banner**: Updated all version strings from v1.3.0 to v1.4.4
+  - Fixed version display in CLI banner
+  - Updated all setup completion messages
+  - Ensures correct version is shown to users
+
+- **Documentation setup**: Fixed missing documentation files during `npx forge setup`
+  - Created `setupCoreDocs()` helper function
+  - Now copies docs/WORKFLOW.md to project during setup
+  - Now copies docs/research/TEMPLATE.md to project during setup
+  - Creates docs/planning/PROGRESS.md during setup
+  - Applies to all setup modes: interactive, quick, and agent-specific
+
+### Changed
+
+- Extracted documentation setup logic into reusable `setupCoreDocs()` function
+- All setup commands now provide complete documentation structure
+- Users no longer need to reference node_modules for workflow templates
+
 ## [1.4.3] - 2025-01-31
 
 ### Fixed
