@@ -1,0 +1,32 @@
+{
+  "id": "your-agent",
+  "name": "Your Agent Name",
+  "version": "1.0.0",
+  "description": "Brief description of your AI coding agent",
+  "homepage": "https://your-agent.example.com",
+  "capabilities": {
+    "commands": true,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "commands": ".your-agent/commands",
+    "rules": ".your-agent/rules",
+    "skills": ".your-agent/skills/forge-workflow",
+    "scripts": ".your-agent/scripts"
+  },
+  "files": {
+    "rootConfig": ".your-agent-rules",
+    "skillDefinition": ".your-agent/skills/forge-workflow/SKILL.md"
+  },
+  "setup": {
+    "copyCommands": true,
+    "copyRules": true,
+    "copyScripts": false,
+    "createSkill": true,
+    "customSetup": "",
+    "needsConversion": false,
+    "promptFormat": false,
+    "continueFormat": false
+  }
+}

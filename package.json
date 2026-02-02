@@ -43,10 +43,12 @@
   },
   "files": [
     "bin/",
+    "lib/",
     ".claude/commands/",
     ".claude/rules/",
     ".claude/scripts/",
     ".claude/skills/",
+    ".github/PLUGIN_TEMPLATE.json",
     "docs/",
     "install.sh",
     "AGENTS.md",
