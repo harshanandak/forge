@@ -139,3 +139,79 @@ describe('Project Tools - Quick Setup Integration', () => {
     assert.ok(openspecInstallLines.length === 0, 'Should NOT unconditionally install OpenSpec in quick mode');
   });
 });
+
+describe('Project Tools - Interactive Setup', () => {
+  const forgePath = path.join(__dirname, '../../bin/forge.js');
+  const forgeContent = fs.readFileSync(forgePath, 'utf8');
+
+  test('setupProjectTools() function exists', () => {
+    assert.ok(forgeContent.includes('async function setupProjectTools('), 'Should have setupProjectTools function');
+  });
+
+  test('setupProjectTools() is an async function', () => {
+    const hasAsync = forgeContent.includes('async function setupProjectTools(');
+    assert.ok(hasAsync, 'Should be an async function');
+  });
+
+  test('setupProjectTools() takes rl and question parameters', () => {
+    const hasBothParams = forgeContent.includes('async function setupProjectTools(rl, question)');
+    assert.ok(hasBothParams, 'Should take rl and question as parameters');
+  });
+
+  test('setupProjectTools() checks Beads initialization status', () => {
+    const setupStart = forgeContent.indexOf('async function setupProjectTools(');
+    if (setupStart === -1) return; // Function not implemented yet
+
+    const nextFunctionStart = forgeContent.indexOf('\nasync function', setupStart + 10);
+    const setupCode = forgeContent.substring(setupStart, nextFunctionStart !== -1 ? nextFunctionStart : forgeContent.length);
+
+    assert.ok(setupCode.includes('isBeadsInitialized()'), 'Should check if Beads is initialized');
+  });
+
+  test('setupProjectTools() checks OpenSpec initialization status', () => {
+    const setupStart = forgeContent.indexOf('async function setupProjectTools(');
+    if (setupStart === -1) return; // Function not implemented yet
+
+    const nextFunctionStart = forgeContent.indexOf('\nasync function', setupStart + 10);
+    const setupCode = forgeContent.substring(setupStart, nextFunctionStart !== -1 ? nextFunctionStart : forgeContent.length);
+
+    assert.ok(setupCode.includes('isOpenSpecInitialized()'), 'Should check if OpenSpec is initialized');
+  });
+
+  test('setupProjectTools() provides descriptive prompts', () => {
+    const setupStart = forgeContent.indexOf('async function setupProjectTools(');
+    if (setupStart === -1) return; // Function not implemented yet
+
+    const nextFunctionStart = forgeContent.indexOf('\nasync function', setupStart + 10);
+    const setupCode = forgeContent.substring(setupStart, nextFunctionStart !== -1 ? nextFunctionStart : forgeContent.length);
+
+    // Should have descriptive text about what Beads and OpenSpec do
+    const hasDescription = setupCode.includes('Beads') || setupCode.includes('issue') || setupCode.includes('tracking');
+    assert.ok(hasDescription, 'Should provide descriptive prompts for tools');
+  });
+
+  test('setupProjectTools() offers installation method choices', () => {
+    const setupStart = forgeContent.indexOf('async function setupProjectTools(');
+    if (setupStart === -1) return; // Function not implemented yet
+
+    const nextFunctionStart = forgeContent.indexOf('\nasync function', setupStart + 10);
+    const setupCode = forgeContent.substring(setupStart, nextFunctionStart !== -1 ? nextFunctionStart : forgeContent.length);
+
+    // Should offer global, local, or bunx installation methods
+    const hasMethodChoice = setupCode.includes('global') || setupCode.includes('local') || setupCode.includes('bunx');
+    assert.ok(hasMethodChoice, 'Should offer installation method choices');
+  });
+
+  test('setupProjectTools() uses execFileSync for installation (security)', () => {
+    const setupStart = forgeContent.indexOf('async function setupProjectTools(');
+    if (setupStart === -1) return; // Function not implemented yet
+
+    const nextFunctionStart = forgeContent.indexOf('\nasync function', setupStart + 10);
+    const setupCode = forgeContent.substring(setupStart, nextFunctionStart !== -1 ? nextFunctionStart : forgeContent.length);
+
+    // Should use execFileSync (not execSync) for security
+    if (setupCode.includes('child_process') || setupCode.includes('exec')) {
+      assert.ok(setupCode.includes('execFileSync'), 'Should use execFileSync for security');
+    }
+  });
+});

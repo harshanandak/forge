@@ -2544,6 +2544,179 @@ function initializeOpenSpec(installType) {
   }
 }
 
+// Interactive setup for Beads and OpenSpec
+async function setupProjectTools(rl, question) {
+  console.log('');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('  STEP 2: Project Tools (Recommended)');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('');
+  console.log('Forge recommends two tools for enhanced workflows:');
+  console.log('');
+  console.log('• Beads - Git-backed issue tracking');
+  console.log('  Persists tasks across sessions, tracks dependencies.');
+  console.log('  Command: bd ready, bd create, bd close');
+  console.log('');
+  console.log('• OpenSpec - Spec-driven development');
+  console.log('  Structured specifications for complex features.');
+  console.log('  Command: openspec init, openspec status');
+  console.log('');
+
+  // ========================================
+  // BEADS SETUP
+  // ========================================
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('Beads Setup (Recommended)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const beadsInitialized = isBeadsInitialized();
+  const beadsStatus = checkForBeads();
+
+  if (beadsInitialized) {
+    console.log('✓ Beads is already initialized in this project');
+    console.log('');
+  } else if (beadsStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ Beads is installed (${beadsStatus}), but not initialized`);
+    const initBeads = await question('Initialize Beads in this project? (y/n): ');
+
+    if (initBeads.toLowerCase() === 'y') {
+      initializeBeads(beadsStatus);
+    } else {
+      console.log('Skipped Beads initialization. Run manually: bd init');
+    }
+    console.log('');
+  } else {
+    // Not installed
+    console.log('ℹ Beads is not installed');
+    const installBeads = await question('Install Beads? (y/n): ');
+
+    if (installBeads.toLowerCase() === 'y') {
+      console.log('');
+      console.log('Choose installation method:');
+      console.log('  1. Global (recommended) - Available system-wide');
+      console.log('  2. Local - Project-specific devDependency');
+      console.log('  3. Bunx - Use via bunx (requires bun)');
+      console.log('');
+      const method = await question('Choose method (1-3): ');
+
+      console.log('');
+      try {
+        // SECURITY: execFileSync with hardcoded commands
+        if (method === '1') {
+          console.log('Installing Beads globally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+          console.log('  ✓ Beads installed globally');
+          initializeBeads('global');
+        } else if (method === '2') {
+          console.log('Installing Beads locally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
+          console.log('  ✓ Beads installed locally');
+          initializeBeads('local');
+        } else if (method === '3') {
+          console.log('Testing bunx capability...');
+          try {
+            execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+            console.log('  ✓ Bunx is available');
+            initializeBeads('bunx');
+          } catch (err) {
+            console.log('  ⚠ Bunx not available. Install bun first: npm install -g bun');
+          }
+        } else {
+          console.log('Invalid choice. Skipping Beads installation.');
+        }
+      } catch (err) {
+        console.log('  ⚠ Failed to install Beads:', err.message);
+        console.log('  Run manually: npm install -g @beads/bd && bd init');
+      }
+      console.log('');
+    } else {
+      console.log('Skipped Beads installation');
+      console.log('');
+    }
+  }
+
+  // ========================================
+  // OPENSPEC SETUP
+  // ========================================
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('OpenSpec Setup (Optional)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const openspecInitialized = isOpenSpecInitialized();
+  const openspecStatus = checkForOpenSpec();
+
+  if (openspecInitialized) {
+    console.log('✓ OpenSpec is already initialized in this project');
+    console.log('');
+  } else if (openspecStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ OpenSpec is installed (${openspecStatus}), but not initialized`);
+    const initOpenSpec = await question('Initialize OpenSpec in this project? (y/n): ');
+
+    if (initOpenSpec.toLowerCase() === 'y') {
+      initializeOpenSpec(openspecStatus);
+    } else {
+      console.log('Skipped OpenSpec initialization. Run manually: openspec init');
+    }
+    console.log('');
+  } else {
+    // Not installed
+    console.log('ℹ OpenSpec is not installed');
+    const installOpenSpec = await question('Install OpenSpec? (y/n): ');
+
+    if (installOpenSpec.toLowerCase() === 'y') {
+      console.log('');
+      console.log('Choose installation method:');
+      console.log('  1. Global (recommended) - Available system-wide');
+      console.log('  2. Local - Project-specific devDependency');
+      console.log('  3. Bunx - Use via bunx (requires bun)');
+      console.log('');
+      const method = await question('Choose method (1-3): ');
+
+      console.log('');
+      try {
+        // SECURITY: execFileSync with hardcoded commands
+        if (method === '1') {
+          console.log('Installing OpenSpec globally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
+          console.log('  ✓ OpenSpec installed globally');
+          initializeOpenSpec('global');
+        } else if (method === '2') {
+          console.log('Installing OpenSpec locally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
+          console.log('  ✓ OpenSpec installed locally');
+          initializeOpenSpec('local');
+        } else if (method === '3') {
+          console.log('Testing bunx capability...');
+          try {
+            execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+            console.log('  ✓ Bunx is available');
+            initializeOpenSpec('bunx');
+          } catch (err) {
+            console.log('  ⚠ Bunx not available. Install bun first: npm install -g bun');
+          }
+        } else {
+          console.log('Invalid choice. Skipping OpenSpec installation.');
+        }
+      } catch (err) {
+        console.log('  ⚠ Failed to install OpenSpec:', err.message);
+        console.log('  Run manually: npm install -g @fission-ai/openspec && openspec init');
+      }
+      console.log('');
+    } else {
+      console.log('Skipped OpenSpec installation');
+      console.log('');
+    }
+  }
+}
+
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
   showBanner('Quick Setup');
