@@ -2430,6 +2430,120 @@ function checkForLefthook() {
   }
 }
 
+// Check if Beads is installed (global, local, or bunx-capable)
+function checkForBeads() {
+  // Try global install first
+  try {
+    execFileSync('bd', ['version'], { stdio: 'ignore' });
+    return 'global';
+  } catch (err) {
+    // Not global
+  }
+
+  // Check if bunx can run it
+  try {
+    execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+    return 'bunx';
+  } catch (err) {
+    // Not bunx-capable
+  }
+
+  // Check local project installation
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return !!(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Check if OpenSpec is installed
+function checkForOpenSpec() {
+  // Try global install first
+  try {
+    execFileSync('openspec', ['version'], { stdio: 'ignore' });
+    return 'global';
+  } catch (err) {
+    // Not global
+  }
+
+  // Check if bunx can run it
+  try {
+    execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+    return 'bunx';
+  } catch (err) {
+    // Not bunx-capable
+  }
+
+  // Check local project installation
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return !!(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Check if Beads is initialized in project
+function isBeadsInitialized() {
+  return fs.existsSync(path.join(projectRoot, '.beads'));
+}
+
+// Check if OpenSpec is initialized in project
+function isOpenSpecInitialized() {
+  return fs.existsSync(path.join(projectRoot, 'openspec'));
+}
+
+// Initialize Beads in the project
+function initializeBeads(installType) {
+  console.log('Initializing Beads in project...');
+
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (installType === 'global') {
+      execFileSync('bd', ['init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'bunx') {
+      execFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'local') {
+      execFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    }
+    console.log('  ✓ Beads initialized');
+    return true;
+  } catch (err) {
+    console.log('  ⚠ Failed to initialize Beads:', err.message);
+    console.log('  Run manually: bd init');
+    return false;
+  }
+}
+
+// Initialize OpenSpec in the project
+function initializeOpenSpec(installType) {
+  console.log('Initializing OpenSpec in project...');
+
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (installType === 'global') {
+      execFileSync('openspec', ['init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'bunx') {
+      execFileSync('bunx', ['@fission-ai/openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'local') {
+      execFileSync('npx', ['openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    }
+    console.log('  ✓ OpenSpec initialized');
+    return true;
+  } catch (err) {
+    console.log('  ⚠ Failed to initialize OpenSpec:', err.message);
+    console.log('  Run manually: openspec init');
+    return false;
+  }
+}
+
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
   showBanner('Quick Setup');
