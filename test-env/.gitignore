@@ -1,0 +1,27 @@
+# Test Environment .gitignore
+# Ignore generated files, keep structure
+
+# Generated test reports
+reports/*.html
+reports/*.json
+reports/*.xml
+
+# Temporary test files
+*.tmp
+*.temp
+*.log
+
+# Node modules (if test files installed locally)
+node_modules/
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Test output
+test-results/
+
+# Keep directory structure
+!.gitkeep
+!*/
+!*/.gitkeep
