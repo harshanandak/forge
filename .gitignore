@@ -36,3 +36,9 @@ coverage/
 # Claude Code local settings
 .claude/settings.json
 .claude/settings.local.json
+
+# MCP local configuration (use .mcp.json.example as template)
+.mcp.json
+
+# Local planning notes
+docs/planning/
