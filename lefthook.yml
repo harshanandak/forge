@@ -16,5 +16,15 @@ pre-commit:
 pre-push:
   commands:
     tests:
-      run: npm test
+      # Detect package manager: bun > pnpm > yarn > npm
+      run: |
+        if command -v bun >/dev/null 2>&1 && [ -f "bun.lockb" ]; then
+          bun test
+        elif command -v pnpm >/dev/null 2>&1 && [ -f "pnpm-lock.yaml" ]; then
+          pnpm test
+        elif command -v yarn >/dev/null 2>&1 && [ -f "yarn.lock" ]; then
+          yarn test
+        else
+          npm test
+        fi
       tags: tests

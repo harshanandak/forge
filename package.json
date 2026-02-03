@@ -9,7 +9,7 @@
   "scripts": {
     "test": "node --test test/**/*.test.js",
     "postinstall": "node ./bin/forge.js",
-    "prepare": "lefthook install || true",
+    "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: npm install -D lefthook'",
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help"
   },

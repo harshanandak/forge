@@ -111,9 +111,18 @@ function hasTestFile(sourceFile, stagedFiles) {
   return false;
 }
 
-// Prompt user for action
+// Prompt user for action (handles non-TTY environments like CI/CD)
 function promptUser(question, options) {
   return new Promise((resolve) => {
+    // In non-interactive environments (CI/CD), auto-abort to enforce TDD
+    if (!process.stdin.isTTY) {
+      console.log("\n⚠️  Non-interactive environment detected (CI/CD).");
+      console.log("Aborting commit - source files must have tests.");
+      console.log("💡 Tip: Use --no-verify to skip this check if needed.");
+      resolve("abort");
+      return;
+    }
+
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
