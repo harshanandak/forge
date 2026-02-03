@@ -143,6 +143,28 @@ One workflow, works with ALL major AI agents:
 
 Switch agents anytime without changing your workflow.
 
+### 4. Built-in TDD Enforcement (v1.5.0)
+Git hooks automatically enforce TDD practices:
+- **Pre-commit**: Blocks source commits without tests
+- **Pre-push**: Runs full test suite before push
+- **Interactive**: Guided recovery when violations occur
+- **CI/CD aware**: Auto-aborts in non-interactive environments
+
+```bash
+# Validation CLI
+forge-validate status    # Check project prerequisites
+forge-validate dev       # Validate before /dev stage
+forge-validate ship      # Validate before /ship stage
+```
+
+### 5. Plugin Architecture (v1.5.0)
+11 agent plugins with specialized capabilities:
+- Each agent defined by JSON configuration
+- Community contributions welcome
+- Backwards compatible
+
+→ [Validation docs](docs/VALIDATION.md) | [Plugin docs](lib/agents/README.md)
+
 ---
 
 ## The Toolchain
