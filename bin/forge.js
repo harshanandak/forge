@@ -631,7 +631,12 @@ function detectProjectStatus() {
     agentsMdSize: 0,
     claudeMdSize: 0,
     agentsMdLines: 0,
-    claudeMdLines: 0
+    claudeMdLines: 0,
+    // Project tools status
+    hasBeads: isBeadsInitialized(),
+    hasOpenSpec: isOpenSpecInitialized(),
+    beadsInstallType: checkForBeads(),
+    openspecInstallType: checkForOpenSpec()
   };
 
   // Get file sizes and line counts for context warnings
@@ -2115,9 +2120,27 @@ function displaySetupSummary(selectedAgents) {
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
-  console.log('Optional tools:');
-  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('Project Tools Status:');
+  console.log('');
+
+  // Beads status
+  if (isBeadsInitialized()) {
+    console.log('  ✓ Beads initialized - Track work: bd ready');
+  } else if (checkForBeads()) {
+    console.log('  ! Beads available - Run: bd init');
+  } else {
+    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  }
+
+  // OpenSpec status
+  if (isOpenSpecInitialized()) {
+    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
+  } else if (checkForOpenSpec()) {
+    console.log('  ! OpenSpec available - Run: openspec init');
+  } else {
+    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  }
+
   console.log('');
   console.log('Start with: /status');
   console.log('');
@@ -3158,9 +3181,27 @@ async function interactiveSetupWithFlags(flags) {
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
-  console.log('Optional tools:');
-  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('Project Tools Status:');
+  console.log('');
+
+  // Beads status
+  if (isBeadsInitialized()) {
+    console.log('  ✓ Beads initialized - Track work: bd ready');
+  } else if (checkForBeads()) {
+    console.log('  ! Beads available - Run: bd init');
+  } else {
+    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  }
+
+  // OpenSpec status
+  if (isOpenSpecInitialized()) {
+    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
+  } else if (checkForOpenSpec()) {
+    console.log('  ! OpenSpec available - Run: openspec init');
+  } else {
+    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  }
+
   console.log('');
   console.log('Start with: /status');
   console.log('');
