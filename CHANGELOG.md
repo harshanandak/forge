@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-02-03
+
+### Added
+
+- **Plugin Architecture**: 11 specialized agent plugins for enhanced capabilities
+  - `javascript-typescript`: JavaScript/TypeScript expertise (4 skills)
+  - `backend-development`: API design, microservices, Temporal workflows (9 skills)
+  - `database-design`: PostgreSQL, SQL optimization (2 skills)
+  - `security-scanning`: SAST, threat modeling, STRIDE analysis (6 skills)
+  - `full-stack-orchestration`: Deployment, performance, testing (4 skills)
+  - `tdd-workflows`: TDD orchestration, code review (2 skills)
+  - `llm-application-dev`: RAG, embeddings, prompt engineering (7 skills)
+  - `frontend-design`: Production-grade UI development (1 skill)
+
+- **TDD Enforcement**: Git hooks via Lefthook
+  - Pre-commit hook checks for test files before allowing source commits
+  - Pre-push hook runs full test suite
+  - Interactive prompts for violations with recovery options
+  - CI/CD-aware: auto-aborts in non-interactive environments
+  - Package manager auto-detection (bun/pnpm/yarn/npm)
+
+- **Validation CLI**: `forge-validate` command
+  - `forge-validate status` - Check project prerequisites
+  - `forge-validate dev` - Validate before /dev stage
+  - `forge-validate ship` - Validate before /ship stage
+
+- **Auto-Installation**: Beads and OpenSpec setup
+  - Quick setup mode auto-installs Beads
+  - Interactive setup prompts for both tools
+  - Dynamic tool status in project summary
+
+- **AGENTS.md Enhancements**: Optimized universal instructions
+  - Plugin loading instructions
+  - Workflow stage documentation
+  - Security and TDD guidelines
+
+### Improved
+
+- **Test Patterns**: Comprehensive test file detection
+  - Nested directories: `test/unit/`, `test/integration/`
+  - Colocated tests: `__tests__/` directories
+  - Both `.test` and `.spec` variants
+
+- **Error Handling**: Safer recursive file operations
+  - Try/catch for directory reads
+  - Graceful failures in validation
+
+### Fixed
+
+- Non-TTY environment handling in TDD hook (CI/CD compatibility)
+- Silent failure in lefthook prepare script (now shows informative message)
+
 ## [1.4.9] - 2025-02-02
 
 ### Fixed
