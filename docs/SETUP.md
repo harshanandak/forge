@@ -27,6 +27,12 @@ npm install forge-workflow
 npx forge setup
 ```
 
+**Interactive prompts**:
+1. Which agents do you use?
+2. Install Beads? (y/n) - Git-backed issue tracking
+3. Install OpenSpec? (y/n) - Spec-driven development
+4. Configure external services? (optional)
+
 **What gets created**:
 - `AGENTS.md` - Universal instructions (always)
 - Agent-specific files based on your selection
