@@ -26,3 +26,8 @@ Thumbs.db
 # IDE files
 .idea/
 .vscode/
+
+# Contributor-only files (not for npm distribution)
+DEVELOPMENT.md
+.github/CONTRIBUTING.md
+.clinerules

@@ -1,3 +1,22 @@
+# Forge Development Context
+
+> **IMPORTANT:** This project IS the Forge workflow. You are developing Forge itself.
+
+## Meta-Mode Detection
+
+Check branch name for context:
+- `meta/*` or `workflow/*` → Developing the workflow
+- `plugin/*` → Adding agent support
+- `feat/*`, `fix/*` → Standard Forge development
+
+## Key References
+
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Contributor quick start
+- [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) - Detailed guidelines (GitHub standard)
+- [lib/agents/README.md](lib/agents/README.md) - Plugin development
+
+---
+
 # Forge - 9-Stage TDD Workflow
 
 A TDD-first workflow for AI coding agents. Ship features with confidence.
