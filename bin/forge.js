@@ -2214,10 +2214,15 @@ async function interactiveSetup() {
   setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles);
 
   // =============================================
-  // STEP 2: External Services Configuration
+  // STEP 2: Project Tools Setup
+  // =============================================
+  await setupProjectTools(rl, question);
+
+  // =============================================
+  // STEP 3: External Services Configuration
   // =============================================
   console.log('');
-  console.log('STEP 2: External Services (Optional)');
+  console.log('STEP 3: External Services (Optional)');
   console.log('=====================================');
 
   await configureExternalServices(rl, question, selectedAgents, projectStatus);
