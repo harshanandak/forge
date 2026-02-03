@@ -73,3 +73,69 @@ describe('Project Tools - Security', () => {
     assert.ok(hasHardcodedOpenSpec, 'Should have hardcoded @fission-ai/openspec package name');
   });
 });
+
+describe('Project Tools - Quick Setup Integration', () => {
+  const forgePath = path.join(__dirname, '../../bin/forge.js');
+  const forgeContent = fs.readFileSync(forgePath, 'utf8');
+
+  test('quickSetup() checks for Beads installation', () => {
+    const quickSetupStart = forgeContent.indexOf('async function quickSetup(');
+    const quickSetupEnd = forgeContent.indexOf('\nasync function', quickSetupStart + 10);
+    const quickSetupCode = forgeContent.substring(quickSetupStart, quickSetupEnd);
+
+    assert.ok(quickSetupCode.includes('checkForBeads()'), 'Should check for Beads installation');
+  });
+
+  test('quickSetup() checks if Beads is initialized', () => {
+    const quickSetupStart = forgeContent.indexOf('async function quickSetup(');
+    const quickSetupEnd = forgeContent.indexOf('\nasync function', quickSetupStart + 10);
+    const quickSetupCode = forgeContent.substring(quickSetupStart, quickSetupEnd);
+
+    assert.ok(quickSetupCode.includes('isBeadsInitialized()'), 'Should check if Beads is initialized');
+  });
+
+  test('quickSetup() initializes Beads if installed but not initialized', () => {
+    const quickSetupStart = forgeContent.indexOf('async function quickSetup(');
+    const quickSetupEnd = forgeContent.indexOf('\nasync function', quickSetupStart + 10);
+    const quickSetupCode = forgeContent.substring(quickSetupStart, quickSetupEnd);
+
+    assert.ok(quickSetupCode.includes('initializeBeads'), 'Should initialize Beads if installed');
+  });
+
+  test('quickSetup() auto-installs Beads globally if not installed', () => {
+    const quickSetupStart = forgeContent.indexOf('async function quickSetup(');
+    const quickSetupEnd = forgeContent.indexOf('\nasync function', quickSetupStart + 10);
+    const quickSetupCode = forgeContent.substring(quickSetupStart, quickSetupEnd);
+
+    // Should install @beads/bd globally
+    assert.ok(quickSetupCode.includes('@beads/bd'), 'Should install @beads/bd package');
+    assert.ok(quickSetupCode.includes('-g'), 'Should install globally');
+  });
+
+  test('quickSetup() handles OpenSpec if already installed', () => {
+    const quickSetupStart = forgeContent.indexOf('async function quickSetup(');
+    const quickSetupEnd = forgeContent.indexOf('\nasync function', quickSetupStart + 10);
+    const quickSetupCode = forgeContent.substring(quickSetupStart, quickSetupEnd);
+
+    assert.ok(quickSetupCode.includes('checkForOpenSpec()'), 'Should check for OpenSpec');
+    assert.ok(quickSetupCode.includes('isOpenSpecInitialized()'), 'Should check if initialized');
+  });
+
+  test('quickSetup() does NOT auto-install OpenSpec (optional tool)', () => {
+    const quickSetupStart = forgeContent.indexOf('async function quickSetup(');
+    const quickSetupEnd = forgeContent.indexOf('\nasync function', quickSetupStart + 10);
+    const quickSetupCode = forgeContent.substring(quickSetupStart, quickSetupEnd);
+
+    // OpenSpec auto-install should be in a conditional that checks if it already exists
+    // Should NOT have unconditional install of @fission-ai/openspec
+    const lines = quickSetupCode.split('\n');
+    const openspecInstallLines = lines.filter(line =>
+      line.includes('@fission-ai/openspec') &&
+      line.includes('install') &&
+      !line.includes('if')
+    );
+
+    // Should not have unconditional OpenSpec install in quick mode
+    assert.ok(openspecInstallLines.length === 0, 'Should NOT unconditionally install OpenSpec in quick mode');
+  });
+});

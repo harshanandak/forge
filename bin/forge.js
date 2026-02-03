@@ -2581,6 +2581,40 @@ async function quickSetup(selectedAgents, skipExternal) {
     console.log('');
   }
 
+  // Auto-setup Beads in quick mode (non-interactive)
+  const beadsStatus = checkForBeads();
+  const beadsInitialized = isBeadsInitialized();
+
+  if (!beadsInitialized && beadsStatus) {
+    console.log('📦 Initializing Beads...');
+    initializeBeads(beadsStatus);
+    console.log('');
+  } else if (!beadsInitialized && !beadsStatus) {
+    console.log('📦 Installing Beads globally...');
+    try {
+      // SECURITY: execFileSync with hardcoded command
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      console.log('  ✓ Beads installed globally');
+      initializeBeads('global');
+    } catch (err) {
+      console.log('  ⚠ Could not install Beads automatically');
+      console.log('  Run manually: npm install -g @beads/bd && bd init');
+    }
+    console.log('');
+  }
+
+  // OpenSpec: skip in quick mode (optional tool)
+  // Only initialize if already installed
+  const openspecStatus = checkForOpenSpec();
+  const openspecInitialized = isOpenSpecInitialized();
+
+  if (openspecStatus && !openspecInitialized) {
+    console.log('📦 Initializing OpenSpec...');
+    initializeOpenSpec(openspecStatus);
+    console.log('');
+  }
+
   // Load Claude commands if needed
   let claudeCommands = {};
   if (selectedAgents.includes('claude')) {
