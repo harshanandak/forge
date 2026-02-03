@@ -1,0 +1,21 @@
+{
+  "id": "cline",
+  "name": "Cline",
+  "version": "1.0.0",
+  "description": "VS Code agent extension",
+  "homepage": "https://github.com/cline/cline",
+  "capabilities": {
+    "commands": false,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "skills": ".cline/skills/forge-workflow"
+  },
+  "files": {
+    "rootConfig": ".clinerules"
+  },
+  "setup": {
+    "createSkill": true
+  }
+}

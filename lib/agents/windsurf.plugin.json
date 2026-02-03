@@ -1,0 +1,25 @@
+{
+  "id": "windsurf",
+  "name": "Windsurf",
+  "version": "1.0.0",
+  "description": "Codeium's agentic IDE",
+  "homepage": "https://codeium.com/windsurf",
+  "capabilities": {
+    "commands": false,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "workflows": ".windsurf/workflows",
+    "rules": ".windsurf/rules",
+    "skills": ".windsurf/skills/forge-workflow"
+  },
+  "files": {
+    "rootConfig": ".windsurfrules"
+  },
+  "setup": {
+    "copyRules": true,
+    "createSkill": true,
+    "needsConversion": true
+  }
+}

@@ -1,112 +1,173 @@
-# Project Instructions
+# Project Workflow Instructions
 
-This is a [describe what this project does in one sentence].
+## 9-Stage TDD-First Workflow
 
-**Package manager**: npm (or specify: pnpm/yarn/bun)
+This project enforces a **strict TDD-first development workflow** with 9 stages:
 
-**Build commands**:
+| Stage | Command     | Purpose                                      | Required For |
+|-------|-------------|----------------------------------------------|--------------|
+| 1     | `/status`   | Check current context, active work           | All types    |
+| 2     | `/research` | Research with web search, document findings  | Critical     |
+| 3     | `/plan`     | Create implementation plan, branch, OpenSpec | Critical, Standard, Refactor |
+| 4     | `/dev`      | TDD development (RED-GREEN-REFACTOR)         | All types    |
+| 5     | `/check`    | Validation (type/lint/security/tests)        | All types    |
+| 6     | `/ship`     | Create PR with documentation                 | All types    |
+| 7     | `/review`   | Address ALL PR feedback                      | Critical, Standard |
+| 8     | `/merge`    | Update docs, merge PR, cleanup               | All types    |
+| 9     | `/verify`   | Final documentation verification             | All types    |
 
-```bash
-npm install      # Install dependencies
-npm run dev      # Start development
-npm run build    # Production build
-npm test         # Run tests
+## Automatic Change Classification
+
+When the user requests work, **you MUST automatically classify** the change type:
+
+### Critical (Full 9-stage workflow)
+**Triggers:** Security, authentication, payments, breaking changes, new architecture, data migrations
+**Example:** "Add OAuth login", "Migrate database schema", "Implement payment gateway"
+**Workflow:** status → research → plan → dev → check → ship → review → merge → verify
+
+### Standard (6-stage workflow, research optional)
+**Triggers:** Normal features, enhancements, new components
+**Example:** "Add user profile page", "Create notification system"
+**Workflow:** status → plan → dev → check → ship → merge
+
+### Simple (4-stage workflow, skip research/plan)
+**Triggers:** Bug fixes, UI tweaks, small changes, minor refactors
+**Example:** "Fix button color", "Update validation message", "Adjust padding"
+**Workflow:** dev → check → ship → merge
+
+### Hotfix (Emergency 3-stage workflow)
+**Triggers:** Production emergencies, critical bugs affecting users
+**Example:** "Production payment processing down", "Security vulnerability fix"
+**Workflow:** dev → check → ship (immediate merge allowed)
+
+### Docs (Documentation-only workflow)
+**Triggers:** Documentation updates, README changes, comment improvements
+**Example:** "Update README", "Add API documentation"
+**Workflow:** verify → ship → merge
+
+### Refactor (5-stage workflow for safe cleanup)
+**Triggers:** Code cleanup, performance optimization, technical debt reduction
+**Example:** "Refactor auth service", "Extract utility functions"
+**Workflow:** plan → dev → check → ship → merge
+
+## Enforcement Philosophy
+
+**Conversational, not blocking** - Offer solutions when prerequisites are missing:
+
+❌ **Don't:** "ERROR: Research required for critical features"
+✅ **Do:** "Before implementation, I should research OAuth best practices. I can:
+   1. Auto-research now with parallel-ai (~5 min)
+   2. Use your research if you have it
+   3. Skip (not recommended for security features)
+
+   What would you prefer?"
+
+**Create accountability for skips:**
+
+"Skipping tests creates technical debt. I'll:
+ ✓ Allow this commit
+ ✓ Create follow-up Beads issue for tests
+ ✓ Document in commit message as [tech-debt]
+
+ Proceed?"
+
+## TDD Development (Stage 4: /dev)
+
+**Automatic orchestration with parallel Task agents:**
+
+1. **Analyze plan** → Identify parallel vs sequential tasks from Beads/OpenSpec
+2. **Launch Task agents** → Spawn specialized agents for independent work
+3. **Enforce RED-GREEN-REFACTOR** → Each agent follows strict TDD cycle:
+   - RED: Write failing test first
+   - GREEN: Implement minimal code to pass
+   - REFACTOR: Clean up while keeping tests green
+4. **Show progress** → Real-time updates on parallel tracks
+5. **Integrate** → Final E2E tests validate everything works together
+
+**Example execution:**
+```
+User: "Build Stripe payment integration"
+
+You analyze plan:
+  ✓ Identified 3 independent tracks:
+    - API endpoints (server-side)
+    - Webhook handlers (server-side)
+    - Checkout UI (client-side)
+
+You launch parallel agents:
+  ✓ Task(backend-architect, "API endpoints with TDD")
+  ✓ Task(backend-architect, "Webhook handlers with TDD")
+  ✓ Task(typescript-pro, "Checkout UI with TDD")
+
+You show live progress:
+  Track 1 (backend-architect): API endpoints
+    ✓ RED: Payment validation tests written
+    ⏳ GREEN: Implementing Stripe API calls
+
+  Track 2 (backend-architect): Webhook handlers
+    ✓ RED: Webhook signature tests written
+    ✓ GREEN: Signature verification implemented
+    ⏳ REFACTOR: Extracting helper functions
+
+  Track 3 (typescript-pro): UI components
+    ✓ RED: Component tests written
+    ⏳ GREEN: Building CheckoutForm component
 ```
 
----
+## State Management (Single Source of Truth)
 
-## Forge Workflow
+**All workflow state stored in Beads metadata** (survives compaction):
 
-This project uses the **Forge 9-stage TDD workflow**:
-
-| Stage | Command     | Purpose                                      |
-|-------|-------------|----------------------------------------------|
-| 1     | `/status`   | Check current context, active work           |
-| 2     | `/research` | Research with web search, document findings  |
-| 3     | `/plan`     | Create implementation plan, branch, OpenSpec |
-| 4     | `/dev`      | TDD development (RED-GREEN-REFACTOR)         |
-| 5     | `/check`    | Validation (type/lint/security/tests)        |
-| 6     | `/ship`     | Create PR with documentation                 |
-| 7     | `/review`   | Address ALL PR feedback                      |
-| 8     | `/merge`    | Update docs, merge PR, cleanup               |
-| 9     | `/verify`   | Final documentation verification             |
-
-**Flow**: `/status` → `/research` → `/plan` → `/dev` → `/check` → `/ship` → `/review` → `/merge` → `/verify`
-
-See [docs/WORKFLOW.md](docs/WORKFLOW.md) for complete workflow guide.
-
----
-
-## Core Principles
-
-- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-- **Research-First**: Understand before building, document decisions
-- **Security Built-In**: OWASP Top 10 analysis for every feature
-- **Documentation Progressive**: Update at each stage, verify at end
-
----
-
-## MCP Servers (Enhanced Capabilities)
-
-This project uses MCP (Model Context Protocol) servers for enhanced capabilities. If your AI agent supports MCP, set up these servers:
-
-**Available MCP servers:**
-
-- **Context7**: Up-to-date library documentation and API reference
-- **grep.app**: Search 1M+ GitHub repos for real-world code examples
-
-**Setup for your agent:**
-
-See [.mcp.json.example](.mcp.json.example) for configuration. Setup varies by agent:
-
-- **Claude Code**: Copy `.mcp.json.example` to `.mcp.json` in project root
-- **Cline**: Add MCP servers in VSCode settings (Extensions > Cline > MCP Servers)
-- **Continue**: Add to `.continue/config.json` under `mcpServers`
-- **Cursor**: Check Cursor Settings > MCP for setup
-- **Your agent**: If MCP-capable, configure using the example file
-
-**Agent instructions:**
-
-```text
-If you support MCP and don't have these servers configured:
-1. Read .mcp.json.example to see the configuration
-2. Set up Context7 and grep.app based on your MCP implementation
-3. Verify by testing: "Search grep.app for React hooks examples"
+```json
+{
+  "id": "bd-x7y2",
+  "type": "critical",
+  "currentStage": "dev",
+  "completedStages": ["status", "research", "plan"],
+  "skippedStages": [],
+  "workflowDecisions": {
+    "classification": "critical",
+    "reason": "Payment processing, PCI compliance required",
+    "userOverride": false
+  },
+  "parallelTracks": [
+    {
+      "name": "API endpoints",
+      "agent": "backend-architect",
+      "status": "in_progress",
+      "tddPhase": "GREEN"
+    }
+  ]
+}
 ```
 
-See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for detailed MCP setup instructions.
+## Git Hooks (Automatic Enforcement)
 
----
+**Pre-commit hook enforces TDD:**
+- Blocks commits if source code modified without test files
+- Offers guided recovery (add tests now, skip with tech debt tracking, emergency override)
+- No AI decision required - automatic validation
 
-## Quick Start
+**Pre-push hook validates tests:**
+- All tests must pass before push
+- Can skip for hotfixes with documentation
 
-1. `/status` - Check where you are
-2. `/research <feature-name>` - Research the feature
-3. `/plan <feature-slug>` - Create formal plan
-4. `/dev` - Implement with TDD
-5. `/check` - Validate everything
-6. `/ship` - Create PR
+## Documentation Index (Context Pointers)
 
----
+**Detailed command instructions** are located in:
+- [.claude/commands/status.md](.claude/commands/status.md) - How to check current context
+- [.claude/commands/research.md](.claude/commands/research.md) - How to conduct research with parallel-ai
+- [.claude/commands/plan.md](.claude/commands/plan.md) - How to create implementation plans
+- [.claude/commands/dev.md](.claude/commands/dev.md) - How to execute TDD development
+- [.claude/commands/check.md](.claude/commands/check.md) - How to run validation
+- [.claude/commands/ship.md](.claude/commands/ship.md) - How to create PRs
+- [.claude/commands/review.md](.claude/commands/review.md) - How to address PR feedback
+- [.claude/commands/merge.md](.claude/commands/merge.md) - How to merge and cleanup
+- [.claude/commands/verify.md](.claude/commands/verify.md) - How to verify documentation
 
-## Toolchain
+**Comprehensive workflow guide:**
+- [docs/WORKFLOW.md](docs/WORKFLOW.md) - Complete workflow documentation (150 lines)
+- [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Tool setup and configuration
+- [docs/VALIDATION.md](docs/VALIDATION.md) - Enforcement and validation details
 
-- **Beads** (recommended): `npm i -g @beads/bd && bd init` - Git-backed issue tracking
-- **OpenSpec** (optional): `npm i -g @fission-ai/openspec && openspec init` - Spec-driven development
-- **GitHub CLI**: `gh auth login` - PR workflow
-
-See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for comprehensive tool reference.
-
----
-
-<!-- USER:START - Add project-specific learnings here as you work -->
-
-💡 **Keep this section focused** - Add patterns you discover while working.
-
-As you work, when you give the same instruction twice, add it here:
-
-- Coding style preferences
-- Architecture decisions
-- Domain concepts unique to this project
-
-<!-- USER:END -->
+**Load these files when you need detailed instructions for a specific stage.**

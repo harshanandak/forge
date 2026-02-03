@@ -1,0 +1,16 @@
+{
+  "id": "aider",
+  "name": "Aider",
+  "version": "1.0.0",
+  "description": "Terminal-based agent",
+  "homepage": "https://aider.chat",
+  "capabilities": {
+    "commands": false,
+    "skills": false,
+    "hooks": false
+  },
+  "directories": {},
+  "setup": {
+    "customSetup": "aider"
+  }
+}

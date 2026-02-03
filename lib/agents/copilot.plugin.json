@@ -1,0 +1,23 @@
+{
+  "id": "copilot",
+  "name": "GitHub Copilot",
+  "version": "1.0.0",
+  "description": "GitHub's AI assistant",
+  "homepage": "https://github.com/features/copilot",
+  "capabilities": {
+    "commands": false,
+    "skills": false,
+    "hooks": false
+  },
+  "directories": {
+    "prompts": ".github/prompts",
+    "instructions": ".github/instructions"
+  },
+  "files": {
+    "rootConfig": ".github/copilot-instructions.md"
+  },
+  "setup": {
+    "needsConversion": true,
+    "promptFormat": true
+  }
+}

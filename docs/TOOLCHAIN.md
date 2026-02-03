@@ -47,11 +47,24 @@ Complete reference for all tools integrated with the Forge workflow.
 
 ### Installation
 
+**Auto-installation** (Recommended):
 ```bash
-# npm (recommended)
-npm install -g @beads/bd
+npx forge setup
+# Prompts: "Install Beads? (y/n)"
+# Automatically installs and initializes
+```
 
-# Or with bunx (no global install)
+**Manual installation**:
+```bash
+# npm (global)
+npm install -g @beads/bd
+bd init
+
+# npm (local)
+npm install -D @beads/bd
+npx bd init
+
+# Or with bunx (no install needed)
 bunx @beads/bd init
 ```
 
@@ -216,11 +229,24 @@ bd sync                     # Always sync at end!
 
 ### Installation
 
+**Auto-installation** (Recommended):
 ```bash
-# npm (requires Node.js 20.19+)
-npm install -g @fission-ai/openspec
+npx forge setup
+# Prompts: "Install OpenSpec? (y/n)"
+# Automatically installs and initializes (if selected)
+```
 
-# Or with bunx
+**Manual installation**:
+```bash
+# npm (global - requires Node.js 20.19+)
+npm install -g @fission-ai/openspec
+openspec init
+
+# npm (local)
+npm install -D @fission-ai/openspec
+npx openspec init
+
+# Or with bunx (no install needed)
 bunx @fission-ai/openspec init
 ```
 

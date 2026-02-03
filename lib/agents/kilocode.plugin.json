@@ -1,0 +1,22 @@
+{
+  "id": "kilocode",
+  "name": "Kilo Code",
+  "version": "1.0.0",
+  "description": "VS Code extension",
+  "homepage": "https://marketplace.visualstudio.com/items?itemName=kilo-code",
+  "capabilities": {
+    "commands": false,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "workflows": ".kilocode/workflows",
+    "rules": ".kilocode/rules",
+    "skills": ".kilocode/skills/forge-workflow"
+  },
+  "setup": {
+    "copyRules": true,
+    "createSkill": true,
+    "needsConversion": true
+  }
+}

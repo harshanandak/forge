@@ -35,12 +35,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
-const { execSync } = require('node:child_process');
+const { execSync, execFileSync } = require('node:child_process');
 
 // Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
 const packageJson = require(path.join(packageDir, 'package.json'));
 const VERSION = packageJson.version;
+
+// Load PluginManager for discoverable agent architecture
+const PluginManager = require('../lib/plugin-manager');
 
 // Get the project root
 const projectRoot = process.env.INIT_CWD || process.cwd();
@@ -49,91 +52,36 @@ const args = process.argv.slice(2);
 // Detected package manager
 let PKG_MANAGER = 'npm';
 
-// Agent definitions
-const AGENTS = {
-  claude: {
-    name: 'Claude Code',
-    description: "Anthropic's CLI agent",
-    dirs: ['.claude/commands', '.claude/rules', '.claude/skills/forge-workflow', '.claude/scripts'],
-    hasCommands: true,
-    hasSkill: true,
-    linkFile: 'CLAUDE.md'
-  },
-  cursor: {
-    name: 'Cursor',
-    description: 'AI-first code editor',
-    dirs: ['.cursor/rules', '.cursor/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: '.cursorrules',
-    customSetup: 'cursor'
-  },
-  windsurf: {
-    name: 'Windsurf',
-    description: "Codeium's agentic IDE",
-    dirs: ['.windsurf/workflows', '.windsurf/rules', '.windsurf/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: '.windsurfrules',
-    needsConversion: true
-  },
-  kilocode: {
-    name: 'Kilo Code',
-    description: 'VS Code extension',
-    dirs: ['.kilocode/workflows', '.kilocode/rules', '.kilocode/skills/forge-workflow'],
-    hasSkill: true,
-    needsConversion: true
-  },
-  antigravity: {
-    name: 'Google Antigravity',
-    description: "Google's agent IDE",
-    dirs: ['.agent/workflows', '.agent/rules', '.agent/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: 'GEMINI.md',
-    needsConversion: true
-  },
-  copilot: {
-    name: 'GitHub Copilot',
-    description: "GitHub's AI assistant",
-    dirs: ['.github/prompts', '.github/instructions'],
-    linkFile: '.github/copilot-instructions.md',
-    needsConversion: true,
-    promptFormat: true
-  },
-  continue: {
-    name: 'Continue',
-    description: 'Open-source AI assistant',
-    dirs: ['.continue/prompts', '.continue/skills/forge-workflow'],
-    hasSkill: true,
-    needsConversion: true,
-    continueFormat: true
-  },
-  opencode: {
-    name: 'OpenCode',
-    description: 'Open-source agent',
-    dirs: ['.opencode/commands', '.opencode/skills/forge-workflow'],
-    hasSkill: true,
-    copyCommands: true
-  },
-  cline: {
-    name: 'Cline',
-    description: 'VS Code agent extension',
-    dirs: ['.cline/skills/forge-workflow'],
-    hasSkill: true,
-    linkFile: '.clinerules'
-  },
-  roo: {
-    name: 'Roo Code',
-    description: 'Cline fork with modes',
-    dirs: ['.roo/commands'],
-    linkFile: '.clinerules',
-    needsConversion: true
-  },
-  aider: {
-    name: 'Aider',
-    description: 'Terminal-based agent',
-    dirs: [],
-    customSetup: 'aider'
-  }
-};
+/**
+ * Load agent definitions from plugin architecture
+ * Maintains backwards compatibility with original AGENTS object structure
+ */
+function loadAgentsFromPlugins() {
+  const pluginManager = new PluginManager();
+  const agents = {};
+
+  pluginManager.getAllPlugins().forEach((plugin, id) => {
+    // Convert plugin structure to AGENTS structure for backwards compatibility
+    agents[id] = {
+      name: plugin.name,
+      description: plugin.description || '',
+      dirs: Object.values(plugin.directories || {}),
+      hasCommands: plugin.capabilities?.commands || plugin.setup?.copyCommands || false,
+      hasSkill: plugin.capabilities?.skills || plugin.setup?.createSkill || false,
+      linkFile: plugin.files?.rootConfig || '',
+      customSetup: plugin.setup?.customSetup || '',
+      needsConversion: plugin.setup?.needsConversion || false,
+      copyCommands: plugin.setup?.copyCommands || false,
+      promptFormat: plugin.setup?.promptFormat || false,
+      continueFormat: plugin.setup?.continueFormat || false
+    };
+  });
+
+  return agents;
+}
+
+// Agent definitions - loaded from plugin system
+const AGENTS = loadAgentsFromPlugins();
 
 // SECURITY: Freeze AGENTS to prevent runtime manipulation
 Object.freeze(AGENTS);
@@ -683,7 +631,12 @@ function detectProjectStatus() {
     agentsMdSize: 0,
     claudeMdSize: 0,
     agentsMdLines: 0,
-    claudeMdLines: 0
+    claudeMdLines: 0,
+    // Project tools status
+    hasBeads: isBeadsInitialized(),
+    hasOpenSpec: isOpenSpecInitialized(),
+    beadsInstallType: checkForBeads(),
+    openspecInstallType: checkForOpenSpec()
   };
 
   // Get file sizes and line counts for context warnings
@@ -1670,8 +1623,9 @@ function minimalInstall() {
   console.log('');
   console.log('To configure for your AI coding agents, run:');
   console.log('');
-  console.log('  npx forge setup      # Interactive setup (agents + API tokens)');
-  console.log('  bunx forge setup     # Same with bun');
+  console.log('  npm install -D lefthook  # Install git hooks (one-time)');
+  console.log('  npx forge setup          # Interactive setup (agents + API tokens)');
+  console.log('  bunx forge setup         # Same with bun');
   console.log('');
   console.log('Or specify agents directly:');
   console.log('  npx forge setup --agents claude,cursor,windsurf');
@@ -2166,9 +2120,27 @@ function displaySetupSummary(selectedAgents) {
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
-  console.log('Optional tools:');
-  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('Project Tools Status:');
+  console.log('');
+
+  // Beads status
+  if (isBeadsInitialized()) {
+    console.log('  ✓ Beads initialized - Track work: bd ready');
+  } else if (checkForBeads()) {
+    console.log('  ! Beads available - Run: bd init');
+  } else {
+    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  }
+
+  // OpenSpec status
+  if (isOpenSpecInitialized()) {
+    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
+  } else if (checkForOpenSpec()) {
+    console.log('  ! OpenSpec available - Run: openspec init');
+  } else {
+    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  }
+
   console.log('');
   console.log('Start with: /status');
   console.log('');
@@ -2265,10 +2237,15 @@ async function interactiveSetup() {
   setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles);
 
   // =============================================
-  // STEP 2: External Services Configuration
+  // STEP 2: Project Tools Setup
+  // =============================================
+  await setupProjectTools(rl, question);
+
+  // =============================================
+  // STEP 3: External Services Configuration
   // =============================================
   console.log('');
-  console.log('STEP 2: External Services (Optional)');
+  console.log('STEP 3: External Services (Optional)');
   console.log('=====================================');
 
   await configureExternalServices(rl, question, selectedAgents, projectStatus);
@@ -2400,6 +2377,374 @@ function showHelp() {
   console.log('');
 }
 
+// Install git hooks via lefthook
+// SECURITY: Uses execSync with HARDCODED strings only (no user input)
+function installGitHooks() {
+  console.log('Installing git hooks (TDD enforcement)...');
+
+  // Check if lefthook.yml exists (it should, as it's in the package)
+  const lefthookConfig = path.join(packageDir, 'lefthook.yml');
+  const targetHooks = path.join(projectRoot, '.forge/hooks');
+
+  try {
+    // Copy lefthook.yml to project root
+    const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
+    if (!fs.existsSync(lefthookTarget)) {
+      if (copyFile(lefthookConfig, 'lefthook.yml')) {
+        console.log('  ✓ Created lefthook.yml');
+      }
+    }
+
+    // Copy check-tdd.js hook script
+    const hookSource = path.join(packageDir, '.forge/hooks/check-tdd.js');
+    if (fs.existsSync(hookSource)) {
+      // Ensure .forge/hooks directory exists
+      if (!fs.existsSync(targetHooks)) {
+        fs.mkdirSync(targetHooks, { recursive: true });
+      }
+
+      const hookTarget = path.join(targetHooks, 'check-tdd.js');
+      if (copyFile(hookSource, hookTarget)) {
+        console.log('  ✓ Created .forge/hooks/check-tdd.js');
+
+        // Make hook executable (Unix systems)
+        try {
+          fs.chmodSync(hookTarget, 0o755);
+        } catch (err) {
+          // Windows doesn't need chmod
+        }
+      }
+    }
+
+    // Try to install lefthook hooks
+    // SECURITY: Using execFileSync with hardcoded commands (no user input)
+    try {
+      // Try npx first (local install), fallback to global
+      try {
+        execFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
+        console.log('  ✓ Lefthook hooks installed (local)');
+      } catch (npxErr) {
+        // Fallback to global lefthook
+        execFileSync('lefthook', ['version'], { stdio: 'ignore' });
+        execFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
+        console.log('  ✓ Lefthook hooks installed (global)');
+      }
+    } catch (err) {
+      console.log('  ℹ Lefthook not found. Install it:');
+      console.log('    npm install -D lefthook  (recommended)');
+      console.log('    OR: npm install -g lefthook  (global)');
+      console.log('    Then run: npx lefthook install');
+    }
+
+    console.log('');
+
+  } catch (error) {
+    console.log('  ⚠ Failed to install hooks:', error.message);
+    console.log('  You can install manually later with: lefthook install');
+    console.log('');
+  }
+}
+
+// Check if lefthook is already installed in project
+function checkForLefthook() {
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return !!(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
+  } catch (err) {
+    return false;
+  }
+}
+
+// Check if Beads is installed (global, local, or bunx-capable)
+function checkForBeads() {
+  // Try global install first
+  try {
+    execFileSync('bd', ['version'], { stdio: 'ignore' });
+    return 'global';
+  } catch (err) {
+    // Not global
+  }
+
+  // Check if bunx can run it
+  try {
+    execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+    return 'bunx';
+  } catch (err) {
+    // Not bunx-capable
+  }
+
+  // Check local project installation
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return !!(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Check if OpenSpec is installed
+function checkForOpenSpec() {
+  // Try global install first
+  try {
+    execFileSync('openspec', ['version'], { stdio: 'ignore' });
+    return 'global';
+  } catch (err) {
+    // Not global
+  }
+
+  // Check if bunx can run it
+  try {
+    execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+    return 'bunx';
+  } catch (err) {
+    // Not bunx-capable
+  }
+
+  // Check local project installation
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return !!(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Check if Beads is initialized in project
+function isBeadsInitialized() {
+  return fs.existsSync(path.join(projectRoot, '.beads'));
+}
+
+// Check if OpenSpec is initialized in project
+function isOpenSpecInitialized() {
+  return fs.existsSync(path.join(projectRoot, 'openspec'));
+}
+
+// Initialize Beads in the project
+function initializeBeads(installType) {
+  console.log('Initializing Beads in project...');
+
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (installType === 'global') {
+      execFileSync('bd', ['init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'bunx') {
+      execFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'local') {
+      execFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    }
+    console.log('  ✓ Beads initialized');
+    return true;
+  } catch (err) {
+    console.log('  ⚠ Failed to initialize Beads:', err.message);
+    console.log('  Run manually: bd init');
+    return false;
+  }
+}
+
+// Initialize OpenSpec in the project
+function initializeOpenSpec(installType) {
+  console.log('Initializing OpenSpec in project...');
+
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (installType === 'global') {
+      execFileSync('openspec', ['init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'bunx') {
+      execFileSync('bunx', ['@fission-ai/openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'local') {
+      execFileSync('npx', ['openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    }
+    console.log('  ✓ OpenSpec initialized');
+    return true;
+  } catch (err) {
+    console.log('  ⚠ Failed to initialize OpenSpec:', err.message);
+    console.log('  Run manually: openspec init');
+    return false;
+  }
+}
+
+// Interactive setup for Beads and OpenSpec
+async function setupProjectTools(rl, question) {
+  console.log('');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('  STEP 2: Project Tools (Recommended)');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('');
+  console.log('Forge recommends two tools for enhanced workflows:');
+  console.log('');
+  console.log('• Beads - Git-backed issue tracking');
+  console.log('  Persists tasks across sessions, tracks dependencies.');
+  console.log('  Command: bd ready, bd create, bd close');
+  console.log('');
+  console.log('• OpenSpec - Spec-driven development');
+  console.log('  Structured specifications for complex features.');
+  console.log('  Command: openspec init, openspec status');
+  console.log('');
+
+  // ========================================
+  // BEADS SETUP
+  // ========================================
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('Beads Setup (Recommended)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const beadsInitialized = isBeadsInitialized();
+  const beadsStatus = checkForBeads();
+
+  if (beadsInitialized) {
+    console.log('✓ Beads is already initialized in this project');
+    console.log('');
+  } else if (beadsStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ Beads is installed (${beadsStatus}), but not initialized`);
+    const initBeads = await question('Initialize Beads in this project? (y/n): ');
+
+    if (initBeads.toLowerCase() === 'y') {
+      initializeBeads(beadsStatus);
+    } else {
+      console.log('Skipped Beads initialization. Run manually: bd init');
+    }
+    console.log('');
+  } else {
+    // Not installed
+    console.log('ℹ Beads is not installed');
+    const installBeads = await question('Install Beads? (y/n): ');
+
+    if (installBeads.toLowerCase() === 'y') {
+      console.log('');
+      console.log('Choose installation method:');
+      console.log('  1. Global (recommended) - Available system-wide');
+      console.log('  2. Local - Project-specific devDependency');
+      console.log('  3. Bunx - Use via bunx (requires bun)');
+      console.log('');
+      const method = await question('Choose method (1-3): ');
+
+      console.log('');
+      try {
+        // SECURITY: execFileSync with hardcoded commands
+        if (method === '1') {
+          console.log('Installing Beads globally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+          console.log('  ✓ Beads installed globally');
+          initializeBeads('global');
+        } else if (method === '2') {
+          console.log('Installing Beads locally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
+          console.log('  ✓ Beads installed locally');
+          initializeBeads('local');
+        } else if (method === '3') {
+          console.log('Testing bunx capability...');
+          try {
+            execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+            console.log('  ✓ Bunx is available');
+            initializeBeads('bunx');
+          } catch (err) {
+            console.log('  ⚠ Bunx not available. Install bun first: npm install -g bun');
+          }
+        } else {
+          console.log('Invalid choice. Skipping Beads installation.');
+        }
+      } catch (err) {
+        console.log('  ⚠ Failed to install Beads:', err.message);
+        console.log('  Run manually: npm install -g @beads/bd && bd init');
+      }
+      console.log('');
+    } else {
+      console.log('Skipped Beads installation');
+      console.log('');
+    }
+  }
+
+  // ========================================
+  // OPENSPEC SETUP
+  // ========================================
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('OpenSpec Setup (Optional)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const openspecInitialized = isOpenSpecInitialized();
+  const openspecStatus = checkForOpenSpec();
+
+  if (openspecInitialized) {
+    console.log('✓ OpenSpec is already initialized in this project');
+    console.log('');
+  } else if (openspecStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ OpenSpec is installed (${openspecStatus}), but not initialized`);
+    const initOpenSpec = await question('Initialize OpenSpec in this project? (y/n): ');
+
+    if (initOpenSpec.toLowerCase() === 'y') {
+      initializeOpenSpec(openspecStatus);
+    } else {
+      console.log('Skipped OpenSpec initialization. Run manually: openspec init');
+    }
+    console.log('');
+  } else {
+    // Not installed
+    console.log('ℹ OpenSpec is not installed');
+    const installOpenSpec = await question('Install OpenSpec? (y/n): ');
+
+    if (installOpenSpec.toLowerCase() === 'y') {
+      console.log('');
+      console.log('Choose installation method:');
+      console.log('  1. Global (recommended) - Available system-wide');
+      console.log('  2. Local - Project-specific devDependency');
+      console.log('  3. Bunx - Use via bunx (requires bun)');
+      console.log('');
+      const method = await question('Choose method (1-3): ');
+
+      console.log('');
+      try {
+        // SECURITY: execFileSync with hardcoded commands
+        if (method === '1') {
+          console.log('Installing OpenSpec globally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
+          console.log('  ✓ OpenSpec installed globally');
+          initializeOpenSpec('global');
+        } else if (method === '2') {
+          console.log('Installing OpenSpec locally...');
+          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+          execFileSync(pkgManager, ['install', '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
+          console.log('  ✓ OpenSpec installed locally');
+          initializeOpenSpec('local');
+        } else if (method === '3') {
+          console.log('Testing bunx capability...');
+          try {
+            execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+            console.log('  ✓ Bunx is available');
+            initializeOpenSpec('bunx');
+          } catch (err) {
+            console.log('  ⚠ Bunx not available. Install bun first: npm install -g bun');
+          }
+        } else {
+          console.log('Invalid choice. Skipping OpenSpec installation.');
+        }
+      } catch (err) {
+        console.log('  ⚠ Failed to install OpenSpec:', err.message);
+        console.log('  Run manually: npm install -g @fission-ai/openspec && openspec init');
+      }
+      console.log('');
+    } else {
+      console.log('Skipped OpenSpec installation');
+      console.log('');
+    }
+  }
+}
+
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
   showBanner('Quick Setup');
@@ -2421,6 +2766,55 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Setup core documentation
   setupCoreDocs();
   console.log('');
+
+  // Check if lefthook is installed, auto-install if not
+  const hasLefthook = checkForLefthook();
+  if (!hasLefthook) {
+    console.log('📦 Installing lefthook for git hooks...');
+    try {
+      // SECURITY: execFileSync with hardcoded command
+      execFileSync('npm', ['install', '-D', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Lefthook installed');
+    } catch (err) {
+      console.log('  ⚠ Could not install lefthook automatically');
+      console.log('  Run manually: npm install -D lefthook');
+    }
+    console.log('');
+  }
+
+  // Auto-setup Beads in quick mode (non-interactive)
+  const beadsStatus = checkForBeads();
+  const beadsInitialized = isBeadsInitialized();
+
+  if (!beadsInitialized && beadsStatus) {
+    console.log('📦 Initializing Beads...');
+    initializeBeads(beadsStatus);
+    console.log('');
+  } else if (!beadsInitialized && !beadsStatus) {
+    console.log('📦 Installing Beads globally...');
+    try {
+      // SECURITY: execFileSync with hardcoded command
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      console.log('  ✓ Beads installed globally');
+      initializeBeads('global');
+    } catch (err) {
+      console.log('  ⚠ Could not install Beads automatically');
+      console.log('  Run manually: npm install -g @beads/bd && bd init');
+    }
+    console.log('');
+  }
+
+  // OpenSpec: skip in quick mode (optional tool)
+  // Only initialize if already installed
+  const openspecStatus = checkForOpenSpec();
+  const openspecInitialized = isOpenSpecInitialized();
+
+  if (openspecStatus && !openspecInitialized) {
+    console.log('📦 Initializing OpenSpec...');
+    initializeOpenSpec(openspecStatus);
+    console.log('');
+  }
 
   // Load Claude commands if needed
   let claudeCommands = {};
@@ -2456,6 +2850,10 @@ async function quickSetup(selectedAgents, skipExternal) {
     const agent = AGENTS[key];
     console.log(`  * ${agent.name}`);
   });
+
+  // Install git hooks for TDD enforcement
+  console.log('');
+  installGitHooks();
 
   // Configure external services with defaults (unless skipped)
   if (skipExternal) {
@@ -2783,9 +3181,27 @@ async function interactiveSetupWithFlags(flags) {
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
-  console.log('Optional tools:');
-  console.log(`  ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  console.log(`  ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  console.log('Project Tools Status:');
+  console.log('');
+
+  // Beads status
+  if (isBeadsInitialized()) {
+    console.log('  ✓ Beads initialized - Track work: bd ready');
+  } else if (checkForBeads()) {
+    console.log('  ! Beads available - Run: bd init');
+  } else {
+    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  }
+
+  // OpenSpec status
+  if (isOpenSpecInitialized()) {
+    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
+  } else if (checkForOpenSpec()) {
+    console.log('  ! OpenSpec available - Run: openspec init');
+  } else {
+    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  }
+
   console.log('');
   console.log('Start with: /status');
   console.log('');
@@ -2877,6 +3293,10 @@ async function handleSetupCommand(selectedAgents, flags) {
 
   console.log('');
   console.log('Agent configuration complete!');
+
+  // Install git hooks for TDD enforcement
+  console.log('');
+  installGitHooks();
 
   // External services (unless skipped)
   await handleExternalServices(flags.skipExternal, selectedAgents);

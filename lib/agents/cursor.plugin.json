@@ -1,0 +1,24 @@
+{
+  "id": "cursor",
+  "name": "Cursor",
+  "version": "1.0.0",
+  "description": "AI-first code editor",
+  "homepage": "https://cursor.sh",
+  "capabilities": {
+    "commands": false,
+    "skills": true,
+    "hooks": false
+  },
+  "directories": {
+    "rules": ".cursor/rules",
+    "skills": ".cursor/skills/forge-workflow"
+  },
+  "files": {
+    "rootConfig": ".cursorrules"
+  },
+  "setup": {
+    "copyRules": true,
+    "createSkill": true,
+    "customSetup": "cursor"
+  }
+}

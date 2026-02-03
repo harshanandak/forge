@@ -1,14 +1,28 @@
 {
   "name": "forge-workflow",
-  "version": "1.4.9",
+  "version": "1.5.0",
   "description": "9-stage TDD workflow for ALL AI coding agents (Claude, Cursor, Windsurf, Kilo, OpenCode, Copilot, Cline, Roo, Aider, Continue, Antigravity)",
   "bin": {
-    "forge": "bin/forge.js"
+    "forge": "bin/forge.js",
+    "forge-validate": "bin/forge-validate.js"
   },
   "scripts": {
+    "test": "node --test test/**/*.test.js",
     "postinstall": "node ./bin/forge.js",
+    "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: npm install -D lefthook'",
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help"
+  },
+  "peerDependencies": {
+    "lefthook": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "lefthook": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "lefthook": "^1.10.1"
   },
   "keywords": [
     "ai",
@@ -41,12 +55,16 @@
   },
   "files": [
     "bin/",
+    "lib/",
     ".claude/commands/",
     ".claude/rules/",
     ".claude/scripts/",
     ".claude/skills/",
+    ".forge/hooks/",
+    ".github/PLUGIN_TEMPLATE.json",
     "docs/",
     "install.sh",
+    "lefthook.yml",
     "AGENTS.md",
     "CLAUDE.md",
     ".mcp.json.example"
