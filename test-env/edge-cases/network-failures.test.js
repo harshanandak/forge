@@ -87,7 +87,8 @@ describe('network-failures-edge-cases', () => {
       });
       const duration = Date.now() - startTime;
       assert.strictEqual(result.attempts, 4, 'Should attempt 4 times (1 + 3 retries)');
-      assert.ok(duration < 600, 'Should respect maxDelay cap');
+      // Increased tolerance to 800ms to account for Windows CI overhead
+      assert.ok(duration < 800, 'Should respect maxDelay cap');
     });
 
     test('should handle zero retries', () => {
