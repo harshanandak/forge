@@ -37,8 +37,13 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
       - name: Install dependencies
-        run: npm install
+        run: bun install
 
       - name: Setup test fixtures (Unix)
         if: runner.os != 'Windows'
@@ -49,14 +54,8 @@ jobs:
         shell: bash
         run: bash test-env/automation/setup-fixtures.sh
 
-      - name: Run validation helper tests
-        run: node --test test-env/validation/**/*.test.js
-
-      - name: Run edge case tests
-        run: node --test test-env/edge-cases/**/*.test.js
-
-      - name: Run automation tests
-        run: node --test test-env/automation/**/*.test.js
+      - name: Run all tests
+        run: bun test
 
       - name: Test summary
         if: always()

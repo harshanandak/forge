@@ -7,9 +7,9 @@
     "forge-validate": "bin/forge-validate.js"
   },
   "scripts": {
-    "test": "node --test test-env/**/*.test.js",
+    "test": "bun test test-env/**/*.test.js",
     "test:setup": "bash test-env/automation/setup-fixtures.sh",
-    "test:all": "npm run test:setup && npm test",
+    "test:all": "bun run test:setup && bun test",
     "postinstall": "node ./bin/forge.js",
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: npm install -D lefthook'",
     "setup": "node ./bin/forge.js setup",
