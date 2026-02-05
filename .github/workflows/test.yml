@@ -47,12 +47,12 @@ jobs:
 
       - name: Setup test fixtures (Unix)
         if: runner.os != 'Windows'
-        run: bash test-env/automation/setup-fixtures.sh
+        run: bash test-env/automation/setup-fixtures.sh --force
 
       - name: Setup test fixtures (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: bash test-env/automation/setup-fixtures.sh
+        run: bash test-env/automation/setup-fixtures.sh --force
 
       - name: Run all tests
         run: bun test
