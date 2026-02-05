@@ -227,12 +227,10 @@ All tests follow TDD RED-GREEN-REFACTOR cycles:
 ## References
 
 - **Research**: `docs/research/test-environment.md`
-- **Proposal**: `openspec/changes/test-environment/proposal.md`
-- **Design**: `openspec/changes/test-environment/design.md`
-- **Tasks**: `openspec/changes/test-environment/tasks.md`
-- **Spec**: `openspec/changes/test-environment/specs/testing/spec.md`
-- **Beads Epic**: `forge-hql`
-- **PR**: #8
+- **OpenSpec Proposal** (archived): `openspec/changes/archive/2026-02-05-test-environment/`
+- **Spec**: `openspec/specs/testing/spec.md` (active)
+- **Beads Epic**: `forge-hql` (closed)
+- **PR**: [#8](https://github.com/harshanandak/forge/pull/8) (merged)
 
 ## Support
 
