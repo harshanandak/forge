@@ -87,6 +87,73 @@ const AGENTS = loadAgentsFromPlugins();
 Object.freeze(AGENTS);
 Object.values(AGENTS).forEach(agent => Object.freeze(agent));
 
+/**
+ * Validate user input against security patterns
+ * Prevents shell injection, path traversal, and unicode attacks
+ * @param {string} input - User input to validate
+ * @param {string} type - Input type: 'path', 'agent', 'hash'
+ * @returns {{valid: boolean, error?: string}}
+ */
+function validateUserInput(input, type) {
+  // Shell injection check - common shell metacharacters
+  if (/[;|&$`()<>\r\n]/.test(input)) {
+    return { valid: false, error: 'Invalid characters detected (shell metacharacters)' };
+  }
+
+  // URL encoding check - prevent encoded path traversal
+  if (/%2[eE]|%2[fF]|%5[cC]/.test(input)) {
+    return { valid: false, error: 'URL-encoded characters not allowed' };
+  }
+
+  // ASCII-only check - prevent unicode attacks
+  if (!/^[\x20-\x7E]+$/.test(input)) {
+    return { valid: false, error: 'Only ASCII printable characters allowed' };
+  }
+
+  // Type-specific validation
+  if (type === 'path') {
+    const resolved = path.resolve(projectRoot, input);
+    if (!resolved.startsWith(resolvedProjectRoot)) {
+      return { valid: false, error: 'Path outside project root' };
+    }
+  } else if (type === 'agent') {
+    // Agent names: lowercase alphanumeric with hyphens only
+    if (!/^[a-z0-9-]+$/.test(input)) {
+      return { valid: false, error: 'Agent name must be lowercase alphanumeric with hyphens' };
+    }
+  } else if (type === 'hash') {
+    // Git commit hash: 4-40 hexadecimal characters
+    if (!/^[0-9a-f]{4,40}$/i.test(input)) {
+      return { valid: false, error: 'Invalid commit hash format (must be 4-40 hex chars)' };
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Check write permission to a directory or file
+ * @param {string} filePath - Path to check
+ * @returns {{writable: boolean, error?: string}}
+ */
+function checkWritePermission(filePath) {
+  try {
+    const dir = fs.statSync(filePath).isDirectory() ? filePath : path.dirname(filePath);
+    const testFile = path.join(dir, `.forge-write-test-${Date.now()}`);
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    return { writable: true };
+  } catch (err) {
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      const fix = process.platform === 'win32'
+        ? 'Run Command Prompt as Administrator'
+        : 'Try: sudo npx forge setup';
+      return { writable: false, error: `No write permission to ${filePath}. ${fix}` };
+    }
+    return { writable: false, error: err.message };
+  }
+}
+
 const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify', 'rollback'];
 
 // Code review tool options
