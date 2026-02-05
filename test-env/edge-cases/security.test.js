@@ -25,6 +25,22 @@ function validateUserInput(input, type) {
 
   // Type-specific validation
   if (type === 'path') {
+    // Cross-platform Windows path checks (work on Unix too)
+    // Reject Windows drive letters (C:\, D:\, etc.)
+    if (/^[a-zA-Z]:[\\\/]/.test(input)) {
+      return { valid: false, error: 'Absolute Windows paths not allowed' };
+    }
+
+    // Reject UNC paths (\\server\share or //server/share)
+    if (/^[\\\/]{2}/.test(input)) {
+      return { valid: false, error: 'UNC paths not allowed' };
+    }
+
+    // Reject backslash path separators (Windows-style on Unix)
+    if (input.includes('\\')) {
+      return { valid: false, error: 'Backslash path separators not allowed' };
+    }
+
     // For testing, use current directory as project root
     const projectRoot = process.cwd();
     const resolved = path.resolve(projectRoot, input);
@@ -161,7 +177,7 @@ describe('security-validation', () => {
     test('should reject Windows path traversal', () => {
       const result = validateUserInput('..\\..\\windows\\system32', 'path');
       assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('ASCII') || result.error.includes('outside'));
+      assert.ok(result.error.includes('Backslash') || result.error.includes('ASCII') || result.error.includes('outside'));
     });
 
     test('should reject Windows drive letters', () => {

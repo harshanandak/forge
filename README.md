@@ -46,10 +46,10 @@ Ship features with confidence using a 9-stage TDD-first workflow for AI coding a
 
 ```bash
 # Step 1: Install the package
-npm install forge-workflow
+bun install forge-workflow
 
 # Step 2: Setup for your AI agent
-npx forge setup
+bunx forge setup
 ```
 
 **That's it!** Forge will:
@@ -102,12 +102,12 @@ Works with **11+ AI coding agents**:
 
 **Setup for specific agents**:
 ```bash
-npx forge setup --agents claude,cursor,windsurf
+bunx forge setup --agents claude,cursor,windsurf
 ```
 
 **Setup for all agents**:
 ```bash
-npx forge setup --all
+bunx forge setup --all
 ```
 
 → [Agent-specific setup instructions](docs/SETUP.md)
@@ -197,12 +197,12 @@ Forge integrates with powerful tools:
 
 **Beads** (optional): Git-backed issue tracking that survives context clearing
 ```bash
-npm install -g @beads/bd && bd init
+bun add -g @beads/bd && bd init
 ```
 
 **OpenSpec** (optional): Spec-driven development for architecture changes
 ```bash
-npm install -g @fission-ai/openspec && openspec init
+bun add -g @fission-ai/openspec && openspec init
 ```
 
 **GitHub CLI** (recommended): Required for PR workflow
@@ -330,8 +330,8 @@ MIT © Harsha Nandak
 **Ready to start?**
 
 ```bash
-npm install forge-workflow
-npx forge setup
+bun install forge-workflow
+bunx forge setup
 /status
 ```
 

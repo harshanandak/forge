@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Forge!
 ## Development Setup
 
 1. Clone: `git clone https://github.com/harshanandak/forge`
-2. Install: `npm install`
+2. Install: `bun install`
 3. Read: [DEVELOPMENT.md](../DEVELOPMENT.md) for quick start
 
 ## Branch Naming
@@ -42,7 +42,7 @@ See [lib/agents/README.md](../lib/agents/README.md) for the complete guide.
 Quick steps:
 1. Create `lib/agents/your-agent.plugin.json`
 2. Follow the schema in README
-3. Test: `npx forge setup --agents your-agent`
+3. Test: `bunx forge setup --agents your-agent`
 4. Submit PR
 
 ## TDD Requirements

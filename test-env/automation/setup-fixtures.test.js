@@ -26,6 +26,9 @@ const EXPECTED_FIXTURES = [
 before(() => {
   try { fs.chmodSync(SETUP_SCRIPT, 0o755); } catch (error) { }
   try {
+    // SECURITY: Hardcoded command (no user input)
+    // Note: Don't use --force to avoid race conditions with other tests
+    // The workflow runs setup-fixtures.sh before tests
     execSync('bash setup-fixtures.sh', { cwd: __dirname, stdio: 'pipe' });
   } catch (error) { console.error('Failed to run setup-fixtures.sh:', error.message); }
 });

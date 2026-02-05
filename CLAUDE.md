@@ -2,15 +2,15 @@
 
 This is a [describe what this project does in one sentence].
 
-**Package manager**: npm (or specify: pnpm/yarn/bun)
+**Package manager**: Bun (preferred for performance)
 
 **Build commands**:
 
 ```bash
-npm install      # Install dependencies
-npm run dev      # Start development
-npm run build    # Production build
-npm test         # Run tests
+bun install      # Install dependencies
+bun run dev      # Start development
+bun run build    # Production build
+bun test         # Run tests
 ```
 
 ---

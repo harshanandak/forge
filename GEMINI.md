@@ -32,8 +32,8 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 ## Prerequisites
 
 - Git, GitHub CLI (`gh`)
-- Beads (recommended): `npm i -g @beads/bd && bd init`
-- OpenSpec (optional): `npm i -g @fission-ai/openspec && openspec init`
+- Beads (recommended): `bun add -g @beads/bd && bd init`
+- OpenSpec (optional): `bun add -g @fission-ai/openspec && openspec init`
 
 ## Quick Start
 

@@ -32,7 +32,7 @@ Before you begin, ensure you have:
 ### Step 1: Install Forge
 
 ```bash
-npm install forge-workflow
+bun install forge-workflow
 ```
 
 This installs the package and creates `AGENTS.md` in your project.
@@ -40,7 +40,7 @@ This installs the package and creates `AGENTS.md` in your project.
 ### Step 2: Configure for Your AI Agent
 
 ```bash
-npx forge setup
+bunx forge setup
 ```
 
 **Interactive setup** will ask:
@@ -55,7 +55,7 @@ npx forge setup
 
 **Or specify directly**:
 ```bash
-npx forge setup --agents claude,cursor,windsurf
+bunx forge setup --agents claude,cursor,windsurf
 ```
 
 **What this creates**:
@@ -73,7 +73,7 @@ Let's add a health check endpoint to demonstrate the full workflow.
 ### Stage 1: Check Status
 
 ```bash
-$ npx forge /status
+$ bunx forge /status
 ```
 
 **Output:**
@@ -96,7 +96,7 @@ Ready to start!
 ### Stage 2: Research
 
 ```bash
-$ npx forge /research health-check-endpoint
+$ bunx forge /research health-check-endpoint
 ```
 
 **What happens**:
@@ -118,7 +118,7 @@ $ npx forge /research health-check-endpoint
 ### Stage 3: Plan
 
 ```bash
-$ npx forge /plan health-check-endpoint
+$ bunx forge /plan health-check-endpoint
 ```
 
 **What happens**:
@@ -142,7 +142,7 @@ Next: /dev to start TDD implementation
 ### Stage 4: Development (TDD)
 
 ```bash
-$ npx forge /dev
+$ bunx forge /dev
 ```
 
 **The AI guides you through RED-GREEN-REFACTOR**:
@@ -191,7 +191,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 ### Stage 5: Check
 
 ```bash
-$ npx forge /check
+$ bunx forge /check
 ```
 
 **What runs**:
@@ -211,7 +211,7 @@ Running security scan... ✓ (no vulnerabilities)
 ### Stage 6: Ship
 
 ```bash
-$ npx forge /ship
+$ bunx forge /ship
 ```
 
 **What happens**:
@@ -252,7 +252,7 @@ Next: /review to address feedback
 ### Stage 7: Review (if needed)
 
 ```bash
-$ npx forge /review 42
+$ bunx forge /review 42
 ```
 
 **Addresses**:
@@ -268,7 +268,7 @@ Fix issues, commit, push - PR updates automatically.
 ### Stage 8: Merge
 
 ```bash
-$ npx forge /merge 42
+$ bunx forge /merge 42
 ```
 
 **Before merging**, updates:
@@ -295,7 +295,7 @@ Back on main branch. Ready for next feature!
 ### Stage 9: Verify
 
 ```bash
-$ npx forge /verify
+$ bunx forge /verify
 ```
 
 **Final checks**:
@@ -358,14 +358,14 @@ In **5 minutes**, you:
 
 **Beads** - Issue tracking that persists across sessions:
 ```bash
-npm install -g @beads/bd
+bun add -g @beads/bd
 bd init
 bd ready  # Find work to do
 ```
 
 **OpenSpec** - Spec-driven development for architecture:
 ```bash
-npm install -g @fission-ai/openspec
+bun add -g @fission-ai/openspec
 openspec init
 ```
 

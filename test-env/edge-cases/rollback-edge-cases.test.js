@@ -34,6 +34,16 @@ function validateRollbackInput(method, target) {
       if (!/^[\x20-\x7E]+$/.test(file)) {
         return { valid: false, error: `Only ASCII characters allowed in path: ${file}` };
       }
+      // Cross-platform Windows path checks
+      if (/^[a-zA-Z]:[\\\/]/.test(file)) {
+        return { valid: false, error: `Absolute Windows paths not allowed: ${file}` };
+      }
+      if (/^[\\\/]{2}/.test(file)) {
+        return { valid: false, error: `UNC paths not allowed: ${file}` };
+      }
+      if (file.includes('\\')) {
+        return { valid: false, error: `Backslash path separators not allowed: ${file}` };
+      }
       const resolved = path.resolve(projectRoot, file);
       if (!resolved.startsWith(projectRoot)) {
         return { valid: false, error: `Path outside project: ${file}` };
