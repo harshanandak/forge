@@ -22,9 +22,5 @@ coverage/
 test-results/
 
 # Generated test fixtures (created by setup-fixtures.sh)
-fixtures/
-
-# Keep directory structure
-!.gitkeep
-!*/
-!*/.gitkeep
+fixtures/**/*
+!fixtures/**/.gitkeep

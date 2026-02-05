@@ -113,7 +113,7 @@ function validateUserInput(input, type) {
   // Type-specific validation
   if (type === 'path') {
     const resolved = path.resolve(projectRoot, input);
-    if (!resolved.startsWith(resolvedProjectRoot)) {
+    if (!resolved.startsWith(path.resolve(projectRoot))) {
       return { valid: false, error: 'Path outside project root' };
     }
   } else if (type === 'agent') {
