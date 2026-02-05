@@ -93,16 +93,45 @@ init_git_repo() {
     return 0
   fi
 
+  # Configure git globally if not set (CI environments)
+  if ! git config --global user.email > /dev/null 2>&1; then
+    git config --global user.email "test@example.com" > /dev/null 2>&1 || true
+  fi
+  if ! git config --global user.name > /dev/null 2>&1; then
+    git config --global user.name "Test User" > /dev/null 2>&1 || true
+  fi
+  # Set default branch name to avoid warnings
+  git config --global init.defaultBranch main > /dev/null 2>&1 || true
+
   # SECURITY: All git commands are hardcoded (no user input)
-  cd "$dir" || return 1
-  git init > /dev/null 2>&1 || return 1
-  git config user.email "test@example.com" > /dev/null 2>&1
-  git config user.name "Test User" > /dev/null 2>&1
+  cd "$dir" || {
+    log_error "Failed to cd into $dir"
+    return 1
+  }
+
+  if ! git init > /dev/null 2>&1; then
+    log_error "git init failed in $dir"
+    cd - > /dev/null 2>&1
+    return 1
+  fi
+
+  # Set local config
+  git config user.email "test@example.com" || true
+  git config user.name "Test User" || true
 
   # Create initial commit
   echo "# Test Repository" > README.md
-  git add README.md > /dev/null 2>&1
-  git commit -m "Initial commit" > /dev/null 2>&1
+  if ! git add README.md > /dev/null 2>&1; then
+    log_error "git add failed in $dir"
+    cd - > /dev/null 2>&1
+    return 1
+  fi
+
+  if ! git commit -m "Initial commit" > /dev/null 2>&1; then
+    log_error "git commit failed in $dir"
+    cd - > /dev/null 2>&1
+    return 1
+  fi
 
   cd - > /dev/null 2>&1
   return 0
