@@ -26,7 +26,8 @@ const EXPECTED_FIXTURES = [
 before(() => {
   try { fs.chmodSync(SETUP_SCRIPT, 0o755); } catch (error) { }
   try {
-    execSync('bash setup-fixtures.sh', { cwd: __dirname, stdio: 'pipe' });
+    // SECURITY: Hardcoded command with --force flag (no user input)
+    execSync('bash setup-fixtures.sh --force', { cwd: __dirname, stdio: 'pipe' });
   } catch (error) { console.error('Failed to run setup-fixtures.sh:', error.message); }
 });
 
