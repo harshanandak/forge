@@ -93,29 +93,20 @@ init_git_repo() {
     return 0
   fi
 
-  # Configure git globally if not set (CI environments)
-  if ! git config --global user.email > /dev/null 2>&1; then
-    git config --global user.email "test@example.com" > /dev/null 2>&1 || true
-  fi
-  if ! git config --global user.name > /dev/null 2>&1; then
-    git config --global user.name "Test User" > /dev/null 2>&1 || true
-  fi
-  # Set default branch name to avoid warnings
-  git config --global init.defaultBranch main > /dev/null 2>&1 || true
-
   # SECURITY: All git commands are hardcoded (no user input)
   cd "$dir" || {
     log_error "Failed to cd into $dir"
     return 1
   }
 
-  if ! git init > /dev/null 2>&1; then
+  # Initialize repo with main branch (local config only, no global pollution)
+  if ! git init -b main > /dev/null 2>&1; then
     log_error "git init failed in $dir"
     cd - > /dev/null 2>&1
     return 1
   fi
 
-  # Set local config
+  # Set local config only (avoids polluting global git config)
   git config user.email "test@example.com" || true
   git config user.name "Test User" || true
 
