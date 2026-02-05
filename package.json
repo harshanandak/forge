@@ -11,7 +11,7 @@
     "test:setup": "bash test-env/automation/setup-fixtures.sh",
     "test:all": "bun run test:setup && bun test",
     "postinstall": "node ./bin/forge.js",
-    "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: npm install -D lefthook'",
+    "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help"
   },

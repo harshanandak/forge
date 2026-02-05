@@ -49,20 +49,20 @@ Complete reference for all tools integrated with the Forge workflow.
 
 **Auto-installation** (Recommended):
 ```bash
-npx forge setup
+bunx forge setup
 # Prompts: "Install Beads? (y/n)"
 # Automatically installs and initializes
 ```
 
 **Manual installation**:
 ```bash
-# npm (global)
-npm install -g @beads/bd
+# bun (global)
+bun add -g @beads/bd
 bd init
 
-# npm (local)
-npm install -D @beads/bd
-npx bd init
+# bun (local)
+bun add -d @beads/bd
+bunx bd init
 
 # Or with bunx (no install needed)
 bunx @beads/bd init
@@ -231,20 +231,20 @@ bd sync                     # Always sync at end!
 
 **Auto-installation** (Recommended):
 ```bash
-npx forge setup
+bunx forge setup
 # Prompts: "Install OpenSpec? (y/n)"
 # Automatically installs and initializes (if selected)
 ```
 
 **Manual installation**:
 ```bash
-# npm (global - requires Node.js 20.19+)
-npm install -g @fission-ai/openspec
+# bun (global - requires Node.js 20.19+)
+bun add -g @fission-ai/openspec
 openspec init
 
-# npm (local)
-npm install -D @fission-ai/openspec
-npx openspec init
+# bun (local)
+bun add -d @fission-ai/openspec
+bunx openspec init
 
 # Or with bunx (no install needed)
 bunx @fission-ai/openspec init
@@ -428,18 +428,6 @@ Context7 provides current documentation that may be more recent than the AI's tr
 {
   "mcpServers": {
     "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    }
-  }
-}
-```
-
-**Or with bunx**:
-```json
-{
-  "mcpServers": {
-    "context7": {
       "command": "bunx",
       "args": ["--bun", "@upstash/context7-mcp@latest"]
     }
@@ -458,8 +446,8 @@ Context7 provides current documentation that may be more recent than the AI's tr
 {
   "mcpServers": {
     "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
+      "command": "bunx",
+      "args": ["--bun", "@upstash/context7-mcp@latest"]
     }
   }
 }
@@ -496,22 +484,6 @@ grep.app provides code search across public GitHub repositories to find real-wor
 
 Add to `.mcp.json` in your project root:
 
-```json
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    },
-    "grep-app": {
-      "command": "npx",
-      "args": ["-y", "@ai-tools-all/grep_app_mcp"]
-    }
-  }
-}
-```
-
-**Or with bunx**:
 ```json
 {
   "mcpServers": {
@@ -662,7 +634,7 @@ No external server required - uses your project's linting configuration.
 
 ```bash
 # Already configured via package.json or eslint.config.js
-npm run lint  # or bun run lint
+bun run lint
 ```
 
 ### Option 2: SonarCloud (Cloud-Hosted)
@@ -688,7 +660,7 @@ sonar.projectKey=$SONAR_PROJECT_KEY
 sonar.sources=src" > sonar-project.properties
 
 # 5. Run analysis
-npx sonarqube-scanner
+bunx sonarqube-scanner
 ```
 
 ### Option 3: SonarQube Community (Self-Hosted, FREE)
@@ -719,7 +691,7 @@ sonar.projectKey=your-project
 sonar.sources=src" > sonar-project.properties
 
 # Run analysis
-npx sonarqube-scanner
+bunx sonarqube-scanner
 ```
 
 **Docker Compose (Production)**:
@@ -828,7 +800,7 @@ gh pr merge <n> --squash    # Merge
 
 **"bd: command not found"**
 ```bash
-npm install -g @beads/bd
+bun add -g @beads/bd
 # Or use bunx @beads/bd <command>
 ```
 
@@ -846,7 +818,7 @@ bd sync  # Re-imports from JSONL
 
 **"openspec: command not found"**
 ```bash
-npm install -g @fission-ai/openspec
+bun add -g @fission-ai/openspec
 # Or use bunx @fission-ai/openspec <command>
 ```
 

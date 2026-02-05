@@ -7,10 +7,10 @@
  * Version is automatically read from package.json
  *
  * Usage:
- *   npm install forge-workflow  -> Minimal install (AGENTS.md + docs)
- *   npx forge setup             -> Interactive agent configuration
- *   npx forge setup --all       -> Install for all agents
- *   npx forge setup --agents claude,cursor,windsurf
+ *   bun install forge-workflow  -> Minimal install (AGENTS.md + docs)
+ *   bunx forge setup            -> Interactive agent configuration
+ *   bunx forge setup --all      -> Install for all agents
+ *   bunx forge setup --agents claude,cursor,windsurf
  *
  * CLI Flags:
  *   --path, -p <dir>     Target project directory (creates if needed)
@@ -1690,13 +1690,12 @@ function minimalInstall() {
   console.log('');
   console.log('To configure for your AI coding agents, run:');
   console.log('');
-  console.log('  npm install -D lefthook  # Install git hooks (one-time)');
-  console.log('  npx forge setup          # Interactive setup (agents + API tokens)');
-  console.log('  bunx forge setup         # Same with bun');
+  console.log('  bun add -d lefthook      # Install git hooks (one-time)');
+  console.log('  bunx forge setup         # Interactive setup (agents + API tokens)');
   console.log('');
   console.log('Or specify agents directly:');
-  console.log('  npx forge setup --agents claude,cursor,windsurf');
-  console.log('  npx forge setup --all');
+  console.log('  bunx forge setup --agents claude,cursor,windsurf');
+  console.log('  bunx forge setup --all');
   console.log('');
 }
 
@@ -2498,9 +2497,9 @@ function installGitHooks() {
       }
     } catch (err) {
       console.log('  ℹ Lefthook not found. Install it:');
-      console.log('    npm install -D lefthook  (recommended)');
-      console.log('    OR: npm install -g lefthook  (global)');
-      console.log('    Then run: npx lefthook install');
+      console.log('    bun add -d lefthook  (recommended)');
+      console.log('    OR: bun add -g lefthook  (global)');
+      console.log('    Then run: bunx lefthook install');
     }
 
     console.log('');
@@ -2718,14 +2717,14 @@ async function setupProjectTools(rl, question) {
             console.log('  ✓ Bunx is available');
             initializeBeads('bunx');
           } catch (err) {
-            console.log('  ⚠ Bunx not available. Install bun first: npm install -g bun');
+            console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
           }
         } else {
           console.log('Invalid choice. Skipping Beads installation.');
         }
       } catch (err) {
         console.log('  ⚠ Failed to install Beads:', err.message);
-        console.log('  Run manually: npm install -g @beads/bd && bd init');
+        console.log('  Run manually: bun add -g @beads/bd && bd init');
       }
       console.log('');
     } else {
@@ -2795,14 +2794,14 @@ async function setupProjectTools(rl, question) {
             console.log('  ✓ Bunx is available');
             initializeOpenSpec('bunx');
           } catch (err) {
-            console.log('  ⚠ Bunx not available. Install bun first: npm install -g bun');
+            console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
           }
         } else {
           console.log('Invalid choice. Skipping OpenSpec installation.');
         }
       } catch (err) {
         console.log('  ⚠ Failed to install OpenSpec:', err.message);
-        console.log('  Run manually: npm install -g @fission-ai/openspec && openspec init');
+        console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
       }
       console.log('');
     } else {
@@ -2840,11 +2839,11 @@ async function quickSetup(selectedAgents, skipExternal) {
     console.log('📦 Installing lefthook for git hooks...');
     try {
       // SECURITY: execFileSync with hardcoded command
-      execFileSync('npm', ['install', '-D', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
+      execFileSync('bun', ['add', '-d', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Lefthook installed');
     } catch (err) {
       console.log('  ⚠ Could not install lefthook automatically');
-      console.log('  Run manually: npm install -D lefthook');
+      console.log('  Run manually: bun add -d lefthook');
     }
     console.log('');
   }
