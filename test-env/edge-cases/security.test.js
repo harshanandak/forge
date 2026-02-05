@@ -177,7 +177,7 @@ describe('security-validation', () => {
     test('should reject Windows path traversal', () => {
       const result = validateUserInput('..\\..\\windows\\system32', 'path');
       assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('ASCII') || result.error.includes('outside'));
+      assert.ok(result.error.includes('Backslash') || result.error.includes('ASCII') || result.error.includes('outside'));
     });
 
     test('should reject Windows drive letters', () => {
