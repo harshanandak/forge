@@ -53,8 +53,8 @@ const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
 const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
 const workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
-// Get the project root
-const projectRoot = process.env.INIT_CWD || process.cwd();
+// Get the project root (let allows reassignment after --path flag handling)
+let projectRoot = process.env.INIT_CWD || process.cwd();
 const args = process.argv.slice(2);
 
 // Detected package manager
@@ -123,6 +123,34 @@ function validateUserInput(input, type) {
     const resolved = path.resolve(projectRoot, input);
     if (!resolved.startsWith(path.resolve(projectRoot))) {
       return { valid: false, error: 'Path outside project root' };
+    }
+  } else if (type === 'directory_path') {
+    // For --path flag: validate absolute or relative directory paths
+    // Allow path traversal ONLY through normal path segments (no tricks)
+
+    // Block null bytes
+    if (input.includes('\0')) {
+      return { valid: false, error: 'Null bytes not allowed in path' };
+    }
+
+    // Block absolute paths to sensitive system directories
+    const resolved = path.resolve(input);
+    const normalizedResolved = path.normalize(resolved).toLowerCase();
+
+    // Windows: Block system directories
+    if (process.platform === 'win32') {
+      const blockedPaths = ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)'];
+      if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+        return { valid: false, error: 'Cannot target Windows system directories' };
+      }
+    }
+
+    // Unix: Block system directories
+    if (process.platform !== 'win32') {
+      const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
+      if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+        return { valid: false, error: 'Cannot target system directories' };
+      }
     }
   } else if (type === 'agent') {
     // Agent names: lowercase alphanumeric with hyphens only
@@ -2452,14 +2480,26 @@ function parseFlags() {
     } else if (arg === '--path' || arg === '-p') {
       // --path <directory> or -p <directory>
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-        flags.path = args[i + 1];
+        const inputPath = args[i + 1];
+        const validation = validateUserInput(inputPath, 'directory_path');
+        if (!validation.valid) {
+          console.error(`Error: Invalid --path value: ${validation.error}`);
+          process.exit(1);
+        }
+        flags.path = inputPath;
         i += 2; // Skip current and next arg
       } else {
         i++;
       }
     } else if (arg.startsWith('--path=')) {
       // --path=/some/dir format
-      flags.path = arg.replace('--path=', '');
+      const inputPath = arg.replace('--path=', '');
+      const validation = validateUserInput(inputPath, 'directory_path');
+      if (!validation.valid) {
+        console.error(`Error: Invalid --path value: ${validation.error}`);
+        process.exit(1);
+      }
+      flags.path = inputPath;
       i++;
     } else if (arg === '--agents') {
       // --agents claude cursor format
@@ -3473,6 +3513,9 @@ function handlePathSetup(targetPath) {
     console.error(`Error changing to directory: ${err.message}`);
     process.exit(1);
   }
+
+  // Return the resolved path so caller can update projectRoot
+  return resolvedPath;
 }
 
 // Helper: Determine selected agents from flags
@@ -3577,7 +3620,8 @@ async function main() {
 
   // Handle --path option: change to target directory
   if (flags.path) {
-    handlePathSetup(flags.path);
+    // Update projectRoot after changing directory to maintain state consistency
+    projectRoot = handlePathSetup(flags.path);
   }
 
   if (command === 'setup') {
