@@ -18,6 +18,9 @@
  *   --skip-external      Skip external services configuration
  *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
  *   --all                Install for all available agents
+ *   --merge <mode>       Merge strategy for existing files (smart|preserve|replace)
+ *   --type <type>        Workflow profile (critical|standard|simple|hotfix|docs|refactor)
+ *   --interview          Force context interview (gather project info)
  *   --help, -h           Show help message
  *
  * Examples:
@@ -44,6 +47,11 @@ const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
+
+// Load enhanced onboarding modules
+const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
+const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
+const workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
 // Get the project root
 const projectRoot = process.env.INIT_CWD || process.cwd();
@@ -686,7 +694,7 @@ async function askYesNo(question, prompt, defaultNo = true) {
   }
 }
 
-function detectProjectStatus() {
+async function detectProjectStatus() {
   const status = {
     type: 'fresh', // 'fresh', 'upgrade', or 'partial'
     hasAgentsMd: fs.existsSync(path.join(projectRoot, 'AGENTS.md')),
@@ -703,7 +711,9 @@ function detectProjectStatus() {
     hasBeads: isBeadsInitialized(),
     hasOpenSpec: isOpenSpecInitialized(),
     beadsInstallType: checkForBeads(),
-    openspecInstallType: checkForOpenSpec()
+    openspecInstallType: checkForOpenSpec(),
+    // Enhanced: Auto-detected project context
+    autoDetected: null
   };
 
   // Get file sizes and line counts for context warnings
@@ -734,6 +744,17 @@ function detectProjectStatus() {
   // Parse existing env vars if .env.local exists
   if (status.hasEnvLocal) {
     status.existingEnvVars = parseEnvFile();
+  }
+
+  // Enhanced: Auto-detect project context (framework, language, stage, CI/CD)
+  try {
+    status.autoDetected = await projectDiscovery.autoDetect(projectRoot);
+    // Save context to .forge/context.json
+    await projectDiscovery.saveContext(status.autoDetected, projectRoot);
+  } catch (error) {
+    // Auto-detection is optional - don't fail setup if it errors
+    console.log('  Note: Auto-detection skipped (error:', error.message, ')');
+    status.autoDetected = null;
   }
 
   return status;
@@ -2254,7 +2275,7 @@ async function interactiveSetup() {
   // =============================================
   // PROJECT DETECTION
   // =============================================
-  const projectStatus = detectProjectStatus();
+  const projectStatus = await detectProjectStatus();
   displayInstallationStatus(projectStatus);
 
   // Track which files to skip based on user choices
@@ -2333,7 +2354,10 @@ function parseFlags() {
     agents: null,
     all: false,
     help: false,
-    path: null
+    path: null,
+    merge: null,     // 'smart'|'preserve'|'replace'
+    type: null,      // 'critical'|'standard'|'simple'|'hotfix'|'docs'|'refactor'
+    interview: false // Force context interview
   };
 
   for (let i = 0; i < args.length; ) {
@@ -2379,6 +2403,66 @@ function parseFlags() {
       // --agents=claude,cursor format
       flags.agents = arg.replace('--agents=', '');
       i++;
+    } else if (arg === '--merge') {
+      // --merge smart|preserve|replace
+      if (i + 1 < args.length) {
+        const mergeMode = args[i + 1];
+        if (['smart', 'preserve', 'replace'].includes(mergeMode)) {
+          flags.merge = mergeMode;
+          i += 2;
+        } else {
+          console.error(`Invalid --merge value: ${mergeMode}`);
+          console.error('Valid options: smart, preserve, replace');
+          process.exit(1);
+        }
+      } else {
+        console.error('--merge requires a value: smart, preserve, or replace');
+        process.exit(1);
+      }
+    } else if (arg.startsWith('--merge=')) {
+      // --merge=smart format
+      const mergeMode = arg.replace('--merge=', '');
+      if (['smart', 'preserve', 'replace'].includes(mergeMode)) {
+        flags.merge = mergeMode;
+        i++;
+      } else {
+        console.error(`Invalid --merge value: ${mergeMode}`);
+        console.error('Valid options: smart, preserve, replace');
+        process.exit(1);
+      }
+    } else if (arg === '--type') {
+      // --type critical|standard|simple|hotfix|docs|refactor
+      if (i + 1 < args.length) {
+        const workType = args[i + 1];
+        const validTypes = ['critical', 'standard', 'simple', 'hotfix', 'docs', 'refactor'];
+        if (validTypes.includes(workType)) {
+          flags.type = workType;
+          i += 2;
+        } else {
+          console.error(`Invalid --type value: ${workType}`);
+          console.error(`Valid options: ${validTypes.join(', ')}`);
+          process.exit(1);
+        }
+      } else {
+        console.error('--type requires a value');
+        console.error('Valid options: critical, standard, simple, hotfix, docs, refactor');
+        process.exit(1);
+      }
+    } else if (arg.startsWith('--type=')) {
+      // --type=critical format
+      const workType = arg.replace('--type=', '');
+      const validTypes = ['critical', 'standard', 'simple', 'hotfix', 'docs', 'refactor'];
+      if (validTypes.includes(workType)) {
+        flags.type = workType;
+        i++;
+      } else {
+        console.error(`Invalid --type value: ${workType}`);
+        console.error(`Valid options: ${validTypes.join(', ')}`);
+        process.exit(1);
+      }
+    } else if (arg === '--interview') {
+      flags.interview = true;
+      i++;
     } else {
       i++;
     }
@@ -2419,6 +2503,12 @@ function showHelp() {
   console.log('                       Accepts: --agents claude cursor');
   console.log('                                --agents=claude,cursor');
   console.log('  --all                Install for all available agents');
+  console.log('  --merge <mode>       Merge strategy for existing AGENTS.md files');
+  console.log('                       Options: smart (intelligent merge), preserve (keep existing),');
+  console.log('                                replace (overwrite with new)');
+  console.log('  --type <type>        Set workflow profile type manually');
+  console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
+  console.log('  --interview          Force context interview (gather project information)');
   console.log('  --help, -h           Show this help message');
   console.log('');
   console.log('Available agents:');
@@ -2437,6 +2527,9 @@ function showHelp() {
   console.log('  npx forge setup --skip-external          # No service configuration');
   console.log('  npx forge setup --agents claude --quick  # Quick + specific agent');
   console.log('  npx forge setup --all --skip-external    # All agents, no services');
+  console.log('  npx forge setup --merge=smart            # Use intelligent merge for existing files');
+  console.log('  npx forge setup --type=critical          # Set workflow profile manually');
+  console.log('  npx forge setup --interview              # Force context interview');
   console.log('');
   console.log('Also works with bun:');
   console.log('  bunx forge setup --quick');
@@ -2997,7 +3090,7 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   // PROJECT DETECTION
   // =============================================
-  const projectStatus = detectProjectStatus();
+  const projectStatus = await detectProjectStatus();
 
   if (projectStatus.type !== 'fresh') {
     console.log('==============================================');
