@@ -2151,9 +2151,13 @@ async function installAgentsMd(skipFiles) {
     } else if (skipFiles.useSemanticMerge) {
       // Enhanced: No markers but user chose intelligent merge
       try {
-        const semanticMerged = contextMerge.semanticMerge(existingContent, newContent);
+        // Add markers to enable future marker-based updates
+        const semanticMerged = contextMerge.semanticMerge(existingContent, newContent, {
+          addMarkers: true
+        });
         fs.writeFileSync(agentsDest, semanticMerged, 'utf8');
         console.log('  Updated: AGENTS.md (intelligent merge - preserved your content)');
+        console.log('  Note: Added USER/FORGE markers for future updates');
       } catch (error) {
         console.log(`  Warning: Semantic merge failed (${error.message}), using replace strategy`);
         if (copyFile(agentsSrc, 'AGENTS.md')) {
