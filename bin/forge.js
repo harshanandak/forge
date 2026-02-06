@@ -1970,6 +1970,7 @@ function displayInstallationStatus(projectStatus) {
 
 /**
  * Prompt for file overwrite and update skipFiles
+ * Enhanced: For AGENTS.md without markers, offers intelligent merge option
  */
 async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
   if (!exists) return;
@@ -1982,6 +1983,62 @@ async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
   const config = fileLabels[fileType];
   if (!config) return;
 
+  // Enhanced: For AGENTS.md, check if it has Forge markers
+  if (fileType === 'agentsMd') {
+    const agentsPath = path.join(projectRoot, 'AGENTS.md');
+    const existingContent = fs.readFileSync(agentsPath, 'utf8');
+    const hasUserMarkers = existingContent.includes('<!-- USER:START');
+    const hasForgeMarkers = existingContent.includes('<!-- FORGE:START');
+
+    if (!hasUserMarkers && !hasForgeMarkers) {
+      // No markers - offer 3 options
+      console.log('');
+      console.log('Found existing AGENTS.md without Forge markers.');
+      console.log('This file may contain your custom agent instructions.');
+      console.log('');
+      console.log('How would you like to proceed?');
+      console.log('  1. Intelligent merge (preserve your content + add Forge workflow)');
+      console.log('  2. Keep existing (skip Forge installation for this file)');
+      console.log('  3. Replace (backup created at AGENTS.md.backup)');
+      console.log('');
+
+      let validChoice = false;
+      while (!validChoice) {
+        const answer = await question('Your choice (1-3) [1]: ');
+        const choice = answer.trim() || '1';
+
+        if (choice === '1') {
+          // Intelligent merge
+          skipFiles.useSemanticMerge = true;
+          skipFiles.agentsMd = false;
+          console.log('  Will use intelligent merge (preserving your content)');
+          validChoice = true;
+        } else if (choice === '2') {
+          // Keep existing
+          skipFiles.agentsMd = true;
+          console.log('  Keeping existing AGENTS.md');
+          validChoice = true;
+        } else if (choice === '3') {
+          // Replace (backup first)
+          try {
+            fs.copyFileSync(agentsPath, agentsPath + '.backup');
+            console.log('  Backup created: AGENTS.md.backup');
+          } catch (err) {
+            console.log('  Warning: Could not create backup');
+          }
+          skipFiles.agentsMd = false;
+          skipFiles.useSemanticMerge = false;
+          console.log('  Will replace AGENTS.md');
+          validChoice = true;
+        } else {
+          console.log('  Please enter 1, 2, or 3');
+        }
+      }
+      return;
+    }
+  }
+
+  // Default behavior: Binary y/n for files with markers or .claude/commands
   const overwrite = await askYesNo(question, config.prompt, true);
   if (overwrite) {
     console.log(`  Will overwrite ${config.message}`);
@@ -2088,8 +2145,21 @@ async function installAgentsMd(skipFiles) {
     const merged = smartMergeAgentsMd(existingContent, newContent);
 
     if (merged) {
+      // Has markers - use existing smart merge
       fs.writeFileSync(agentsDest, merged, 'utf8');
       console.log('  Updated: AGENTS.md (preserved USER sections)');
+    } else if (skipFiles.useSemanticMerge) {
+      // Enhanced: No markers but user chose intelligent merge
+      try {
+        const semanticMerged = contextMerge.semanticMerge(existingContent, newContent);
+        fs.writeFileSync(agentsDest, semanticMerged, 'utf8');
+        console.log('  Updated: AGENTS.md (intelligent merge - preserved your content)');
+      } catch (error) {
+        console.log(`  Warning: Semantic merge failed (${error.message}), using replace strategy`);
+        if (copyFile(agentsSrc, 'AGENTS.md')) {
+          console.log('  Updated: AGENTS.md (universal standard)');
+        }
+      }
     } else if (copyFile(agentsSrc, 'AGENTS.md')) {
       // No markers, do normal copy (user already approved overwrite)
       console.log('  Updated: AGENTS.md (universal standard)');
