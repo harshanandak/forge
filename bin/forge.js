@@ -904,11 +904,19 @@ function detectVue(deps) {
   const hasVite = deps.vite;
   const hasWebpack = deps.webpack;
 
+  // Determine build tool without nested ternary
+  let buildTool = 'vue-cli';
+  if (hasVite) {
+    buildTool = 'vite';
+  } else if (hasWebpack) {
+    buildTool = 'webpack';
+  }
+
   return {
     framework: 'Vue.js',
     frameworkConfidence: deps['@vue/cli'] ? 100 : 90,
     projectType: 'frontend',
-    buildTool: hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'vue-cli'),
+    buildTool,
     testFramework: detectTestFramework(deps)
   };
 }
@@ -920,11 +928,19 @@ function detectReact(deps) {
   const hasVite = deps.vite;
   const hasReactScripts = deps['react-scripts'];
 
+  // Determine build tool without nested ternary
+  let buildTool = 'webpack';
+  if (hasVite) {
+    buildTool = 'vite';
+  } else if (hasReactScripts) {
+    buildTool = 'create-react-app';
+  }
+
   return {
     framework: 'React',
     frameworkConfidence: 95,
     projectType: 'frontend',
-    buildTool: hasVite ? 'vite' : (hasReactScripts ? 'create-react-app' : 'webpack'),
+    buildTool,
     testFramework: detectTestFramework(deps)
   };
 }
@@ -1022,11 +1038,19 @@ function detectGenericProject(deps, features) {
   const hasVite = deps.vite;
   const hasWebpack = deps.webpack;
 
+  // Determine build tool without nested ternary
+  let buildTool = 'npm';
+  if (hasVite) {
+    buildTool = 'vite';
+  } else if (hasWebpack) {
+    buildTool = 'webpack';
+  }
+
   return {
     framework: features.typescript ? 'TypeScript' : 'JavaScript',
     frameworkConfidence: 60,
     projectType: 'library',
-    buildTool: hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'npm'),
+    buildTool,
     testFramework: detectTestFramework(deps)
   };
 }
