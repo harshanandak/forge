@@ -311,7 +311,8 @@ function checkPrerequisites() {
   // Check GitHub CLI
   const ghVersion = safeExec('gh --version');
   if (ghVersion) {
-    console.log(`  ✓ ${ghVersion.split(String.raw`\n`)[0]}`);
+    const firstLine = ghVersion.split('\n')[0];
+    console.log(`  ✓ ${firstLine}`);
     // Check if authenticated
     const authStatus = safeExec('gh auth status');
     if (!authStatus) {
@@ -2789,9 +2790,9 @@ function installGitHooks() {
       try {
         execFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (local)');
-      } catch (npxErr) {
+      } catch (error_) {
         // Fallback to global lefthook
-        console.warn('npx lefthook failed, trying global:', npxErr.message);
+        console.warn('npx lefthook failed, trying global:', error_.message);
         execFileSync('lefthook', ['version'], { stdio: 'ignore' });
         execFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (global)');
@@ -2853,7 +2854,7 @@ function checkForBeads() {
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return !!(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
+    return Boolean(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
   } catch (err) {
     console.warn('Failed to check Beads in package.json:', err.message);
     return false;
@@ -2886,7 +2887,7 @@ function checkForOpenSpec() {
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return !!(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
+    return Boolean(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
   } catch (err) {
     console.warn('Failed to check OpenSpec in package.json:', err.message);
     return false;
