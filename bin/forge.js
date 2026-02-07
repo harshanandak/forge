@@ -241,6 +241,7 @@ function safeExec(cmd) {
   } catch (e) {
     // Command execution failure is expected when tool is not installed or fails
     // Returning null allows caller to handle missing tools gracefully
+    console.warn('Command execution failed:', e.message);
     return null;
   }
 }
@@ -526,6 +527,7 @@ function createSymlinkOrCopy(source, target) {
     } catch (error_) {
       // Symlink creation may fail due to permissions or OS limitations (e.g., Windows without admin)
       // Fall back to copying the file instead to ensure operation succeeds
+      console.warn('Symlink creation failed, falling back to copy:', error_.message);
       fs.copyFileSync(fullSource, fullTarget);
       return 'copied';
     }
@@ -550,6 +552,7 @@ function readEnvFile() {
   } catch (err) {
     // File read failure is acceptable - file may not exist or have permission issues
     // Return empty string to allow caller to proceed with defaults
+    console.warn('Failed to read .env.local:', err.message);
   }
   return '';
 }
@@ -652,6 +655,7 @@ function writeEnvTokens(tokens, preserveExisting = true) {
   } catch (err) {
     // Gitignore update is optional - failure doesn't prevent .env.local creation
     // User can manually add .env.local to .gitignore if needed
+    console.warn('Failed to update .gitignore:', err.message);
   }
 
   return { added, preserved };
@@ -2053,6 +2057,7 @@ async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
             console.log('  Backup created: AGENTS.md.backup');
           } catch (err) {
             console.log('  Warning: Could not create backup');
+            console.warn('Backup creation failed:', err.message);
           }
           skipFiles.agentsMd = false;
           skipFiles.useSemanticMerge = false;
@@ -2697,6 +2702,7 @@ function installGitHooks() {
           fs.chmodSync(hookTarget, 0o755);
         } catch (err) {
           // Windows doesn't need chmod
+          console.warn('chmod not available (Windows):', err.message);
         }
       }
     }
@@ -2710,11 +2716,13 @@ function installGitHooks() {
         console.log('  ✓ Lefthook hooks installed (local)');
       } catch (npxErr) {
         // Fallback to global lefthook
+        console.warn('npx lefthook failed, trying global:', npxErr.message);
         execFileSync('lefthook', ['version'], { stdio: 'ignore' });
         execFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (global)');
       }
     } catch (err) {
+      console.warn('Lefthook installation failed:', err.message);
       console.log('  ℹ Lefthook not found. Install it:');
       console.log('    bun add -d lefthook  (recommended)');
       console.log('    OR: bun add -g lefthook  (global)');
@@ -2739,6 +2747,7 @@ function checkForLefthook() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     return !!(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
   } catch (err) {
+    console.warn('Failed to check lefthook in package.json:', err.message);
     return false;
   }
 }
@@ -2751,6 +2760,7 @@ function checkForBeads() {
     return 'global';
   } catch (err) {
     // Not global
+    console.warn('Beads not found globally:', err.message);
   }
 
   // Check if bunx can run it
@@ -2759,6 +2769,7 @@ function checkForBeads() {
     return 'bunx';
   } catch (err) {
     // Not bunx-capable
+    console.warn('Beads not available via bunx:', err.message);
   }
 
   // Check local project installation
@@ -2769,6 +2780,7 @@ function checkForBeads() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     return !!(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
   } catch (err) {
+    console.warn('Failed to check Beads in package.json:', err.message);
     return false;
   }
 }
@@ -2781,6 +2793,7 @@ function checkForOpenSpec() {
     return 'global';
   } catch (err) {
     // Not global
+    console.warn('OpenSpec not found globally:', err.message);
   }
 
   // Check if bunx can run it
@@ -2789,6 +2802,7 @@ function checkForOpenSpec() {
     return 'bunx';
   } catch (err) {
     // Not bunx-capable
+    console.warn('OpenSpec not available via bunx:', err.message);
   }
 
   // Check local project installation
@@ -2799,6 +2813,7 @@ function checkForOpenSpec() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     return !!(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
   } catch (err) {
+    console.warn('Failed to check OpenSpec in package.json:', err.message);
     return false;
   }
 }
@@ -2936,12 +2951,14 @@ async function setupProjectTools(rl, question) {
             console.log('  ✓ Bunx is available');
             initializeBeads('bunx');
           } catch (err) {
+            console.warn('Beads bunx test failed:', err.message);
             console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
           }
         } else {
           console.log('Invalid choice. Skipping Beads installation.');
         }
       } catch (err) {
+        console.warn('Beads installation failed:', err.message);
         console.log('  ⚠ Failed to install Beads:', err.message);
         console.log('  Run manually: bun add -g @beads/bd && bd init');
       }
@@ -3013,12 +3030,14 @@ async function setupProjectTools(rl, question) {
             console.log('  ✓ Bunx is available');
             initializeOpenSpec('bunx');
           } catch (err) {
+            console.warn('OpenSpec bunx test failed:', err.message);
             console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
           }
         } else {
           console.log('Invalid choice. Skipping OpenSpec installation.');
         }
       } catch (err) {
+        console.warn('OpenSpec installation failed:', err.message);
         console.log('  ⚠ Failed to install OpenSpec:', err.message);
         console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
       }
@@ -3061,6 +3080,7 @@ async function quickSetup(selectedAgents, skipExternal) {
       execFileSync('bun', ['add', '-d', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Lefthook installed');
     } catch (err) {
+      console.warn('Lefthook auto-install failed:', err.message);
       console.log('  ⚠ Could not install lefthook automatically');
       console.log('  Run manually: bun add -d lefthook');
     }
