@@ -3057,6 +3057,33 @@ async function setupProjectTools(rl, question) {
   }
 }
 
+// Auto-setup Beads in quick mode - extracted to reduce cognitive complexity
+function autoSetupBeadsInQuickMode() {
+  const beadsStatus = checkForBeads();
+  const beadsInitialized = isBeadsInitialized();
+
+  if (!beadsInitialized && beadsStatus) {
+    console.log('📦 Initializing Beads...');
+    initializeBeads(beadsStatus);
+    console.log('');
+  } else if (!beadsInitialized && !beadsStatus) {
+    console.log('📦 Installing Beads globally...');
+    try {
+      // SECURITY: execFileSync with hardcoded command
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      console.log('  ✓ Beads installed globally');
+      initializeBeads('global');
+    } catch (err) {
+      // Installation failed - provide manual instructions
+      console.log('  ⚠ Could not install Beads automatically');
+      console.log(`    Error: ${err.message}`);
+      console.log('  Run manually: npm install -g @beads/bd && bd init');
+    }
+    console.log('');
+  }
+}
+
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
   showBanner('Quick Setup');
@@ -3096,29 +3123,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   }
 
   // Auto-setup Beads in quick mode (non-interactive)
-  const beadsStatus = checkForBeads();
-  const beadsInitialized = isBeadsInitialized();
-
-  if (!beadsInitialized && beadsStatus) {
-    console.log('📦 Initializing Beads...');
-    initializeBeads(beadsStatus);
-    console.log('');
-  } else if (!beadsInitialized && !beadsStatus) {
-    console.log('📦 Installing Beads globally...');
-    try {
-      // SECURITY: execFileSync with hardcoded command
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
-      console.log('  ✓ Beads installed globally');
-      initializeBeads('global');
-    } catch (err) {
-      // Installation failed - provide manual instructions
-      console.log('  ⚠ Could not install Beads automatically');
-      console.log(`    Error: ${err.message}`);
-      console.log('  Run manually: npm install -g @beads/bd && bd init');
-    }
-    console.log('');
-  }
+  autoSetupBeadsInQuickMode();
 
   // OpenSpec: skip in quick mode (optional tool)
   // Only initialize if already installed
