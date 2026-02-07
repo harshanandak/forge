@@ -2001,6 +2001,56 @@ function displayInstallationStatus(projectStatus) {
 }
 
 /**
+ * Handle AGENTS.md file without markers - offers 3 options
+ * Extracted to reduce cognitive complexity
+ */
+async function promptForAgentsMdWithoutMarkers(question, skipFiles, agentsPath) {
+  console.log('');
+  console.log('Found existing AGENTS.md without Forge markers.');
+  console.log('This file may contain your custom agent instructions.');
+  console.log('');
+  console.log('How would you like to proceed?');
+  console.log('  1. Intelligent merge (preserve your content + add Forge workflow)');
+  console.log('  2. Keep existing (skip Forge installation for this file)');
+  console.log('  3. Replace (backup created at AGENTS.md.backup)');
+  console.log('');
+
+  let validChoice = false;
+  while (!validChoice) {
+    const answer = await question('Your choice (1-3) [1]: ');
+    const choice = answer.trim() || '1';
+
+    if (choice === '1') {
+      // Intelligent merge
+      skipFiles.useSemanticMerge = true;
+      skipFiles.agentsMd = false;
+      console.log('  Will use intelligent merge (preserving your content)');
+      validChoice = true;
+    } else if (choice === '2') {
+      // Keep existing
+      skipFiles.agentsMd = true;
+      console.log('  Keeping existing AGENTS.md');
+      validChoice = true;
+    } else if (choice === '3') {
+      // Replace (backup first)
+      try {
+        fs.copyFileSync(agentsPath, agentsPath + '.backup');
+        console.log('  Backup created: AGENTS.md.backup');
+      } catch (err) {
+        console.log('  Warning: Could not create backup');
+        console.warn('Backup creation failed:', err.message);
+      }
+      skipFiles.agentsMd = false;
+      skipFiles.useSemanticMerge = false;
+      console.log('  Will replace AGENTS.md');
+      validChoice = true;
+    } else {
+      console.log('  Please enter 1, 2, or 3');
+    }
+  }
+}
+
+/**
  * Prompt for file overwrite and update skipFiles
  * Enhanced: For AGENTS.md without markers, offers intelligent merge option
  */
@@ -2023,50 +2073,8 @@ async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
     const hasForgeMarkers = existingContent.includes('<!-- FORGE:START');
 
     if (!hasUserMarkers && !hasForgeMarkers) {
-      // No markers - offer 3 options
-      console.log('');
-      console.log('Found existing AGENTS.md without Forge markers.');
-      console.log('This file may contain your custom agent instructions.');
-      console.log('');
-      console.log('How would you like to proceed?');
-      console.log('  1. Intelligent merge (preserve your content + add Forge workflow)');
-      console.log('  2. Keep existing (skip Forge installation for this file)');
-      console.log('  3. Replace (backup created at AGENTS.md.backup)');
-      console.log('');
-
-      let validChoice = false;
-      while (!validChoice) {
-        const answer = await question('Your choice (1-3) [1]: ');
-        const choice = answer.trim() || '1';
-
-        if (choice === '1') {
-          // Intelligent merge
-          skipFiles.useSemanticMerge = true;
-          skipFiles.agentsMd = false;
-          console.log('  Will use intelligent merge (preserving your content)');
-          validChoice = true;
-        } else if (choice === '2') {
-          // Keep existing
-          skipFiles.agentsMd = true;
-          console.log('  Keeping existing AGENTS.md');
-          validChoice = true;
-        } else if (choice === '3') {
-          // Replace (backup first)
-          try {
-            fs.copyFileSync(agentsPath, agentsPath + '.backup');
-            console.log('  Backup created: AGENTS.md.backup');
-          } catch (err) {
-            console.log('  Warning: Could not create backup');
-            console.warn('Backup creation failed:', err.message);
-          }
-          skipFiles.agentsMd = false;
-          skipFiles.useSemanticMerge = false;
-          console.log('  Will replace AGENTS.md');
-          validChoice = true;
-        } else {
-          console.log('  Please enter 1, 2, or 3');
-        }
-      }
+      // No markers - offer 3 options via helper function
+      await promptForAgentsMdWithoutMarkers(question, skipFiles, agentsPath);
       return;
     }
   }
