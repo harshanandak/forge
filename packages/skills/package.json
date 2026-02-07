@@ -1,0 +1,42 @@
+{
+  "name": "@forge/skills",
+  "version": "1.0.0",
+  "description": "Universal CLI tool for managing SKILL.md files across all AI agents",
+  "main": "src/index.js",
+  "bin": {
+    "skills": "bin/skills.js"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch"
+  },
+  "keywords": [
+    "skills",
+    "ai",
+    "agent",
+    "cli",
+    "claude",
+    "cursor",
+    "skill-management"
+  ],
+  "author": "Forge Team",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.7.0",
+    "chalk": "^5.4.0",
+    "inquirer": "^10.2.2",
+    "js-yaml": "^4.1.0",
+    "markdown-it": "^14.1.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/harshanandak/forge.git",
+    "directory": "packages/skills"
+  }
+}
