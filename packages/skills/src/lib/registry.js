@@ -35,6 +35,65 @@ function getApiKey() {
 }
 
 /**
+ * Validate skill package structure
+ *
+ * @param {Object} pkg - Skill package to validate
+ * @throws {Error} If package is invalid
+ */
+function validateSkillPackage(pkg) {
+  if (!pkg || typeof pkg !== 'object') {
+    throw new Error('Invalid skill package: must be an object');
+  }
+
+  if (!pkg.content || typeof pkg.content !== 'string') {
+    throw new Error('Invalid skill package: content must be a string');
+  }
+
+  if (!pkg.metadata || typeof pkg.metadata !== 'object') {
+    throw new Error('Invalid skill package: metadata must be an object');
+  }
+
+  // Validate required metadata fields
+  const required = ['title', 'description', 'category'];
+  for (const field of required) {
+    if (!pkg.metadata[field]) {
+      throw new Error(`Invalid skill package: metadata.${field} is required`);
+    }
+  }
+
+  // Validate SKILL.md has YAML frontmatter
+  if (!pkg.content.startsWith('---\n')) {
+    throw new Error('Invalid skill package: content must start with YAML frontmatter');
+  }
+
+  return true;
+}
+
+/**
+ * Validate search results
+ *
+ * @param {Array} results - Search results to validate
+ * @throws {Error} If results are invalid
+ */
+function validateSearchResults(results) {
+  if (!Array.isArray(results)) {
+    throw new Error('Invalid search results: must be an array');
+  }
+
+  for (const skill of results) {
+    if (!skill.name || typeof skill.name !== 'string') {
+      throw new Error('Invalid search result: name is required');
+    }
+
+    if (!skill.description || typeof skill.description !== 'string') {
+      throw new Error('Invalid search result: description is required');
+    }
+  }
+
+  return true;
+}
+
+/**
  * Make authenticated API request
  *
  * @param {string} endpoint - API endpoint path
@@ -54,17 +113,40 @@ async function apiRequest(endpoint, options = {}) {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers
-  });
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      timeout: 30000 // 30 second timeout
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Registry API error (${response.status}): ${error}`);
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Registry API error (${response.status}): ${error}`);
+    }
+
+    const data = await response.json();
+
+    // Validate response is valid JSON
+    if (data === null || data === undefined) {
+      throw new Error('Registry API returned empty response');
+    }
+
+    return data;
+  } catch (error) {
+    // Network errors
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      throw new Error('Network error: Unable to connect to registry. Check your internet connection.');
+    }
+
+    // Timeout errors
+    if (error.name === 'AbortError' || error.message.includes('timeout')) {
+      throw new Error('Request timeout: Registry API took too long to respond');
+    }
+
+    // Re-throw other errors
+    throw error;
   }
-
-  return response.json();
 }
 
 /**
@@ -80,7 +162,12 @@ export async function searchSkills(query, filters = {}) {
     ...filters
   });
 
-  return apiRequest(`/skills?${params}`);
+  const results = await apiRequest(`/skills?${params}`);
+
+  // Validate results structure
+  validateSearchResults(results);
+
+  return results;
 }
 
 /**
@@ -100,7 +187,12 @@ export async function getSkill(name) {
  * @returns {Promise<Object>} Skill package { content, metadata }
  */
 export async function downloadSkill(name) {
-  return apiRequest(`/skills/${encodeURIComponent(name)}/download`);
+  const pkg = await apiRequest(`/skills/${encodeURIComponent(name)}/download`);
+
+  // Validate package structure before returning
+  validateSkillPackage(pkg);
+
+  return pkg;
 }
 
 /**
