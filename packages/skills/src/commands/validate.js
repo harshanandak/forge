@@ -2,8 +2,8 @@
  * skills validate - Validate SKILL.md format and content
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import yaml from 'js-yaml';
 import chalk from 'chalk';
 import { validateSkillName, ensurePathWithin } from '../lib/validation.js';
@@ -50,7 +50,8 @@ export async function validateCommand(name) {
     const content = readFileSync(skillMdPath, 'utf8');
 
     // Extract YAML frontmatter
-    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
+    const frontmatterMatch = frontmatterRegex.exec(content);
 
     if (!frontmatterMatch) {
       errors.push('YAML frontmatter not found (must start with --- and end with ---)');

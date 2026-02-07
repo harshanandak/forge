@@ -5,8 +5,8 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { validateCommand } from '../src/commands/validate.js';
 
 describe('Validate Command', () => {
@@ -260,7 +260,7 @@ category: coding
   });
 
   test('validateCommand prevents Windows path traversal', async () => {
-    const result = await validateCommand('..\\..\\Windows');
+    const result = await validateCommand(String.raw`..\..\ Windows`);
     expect(result.valid).toBe(false);
     expect(result.errors.some(e => e.includes('Invalid skill name'))).toBe(true);
   });
