@@ -3778,6 +3778,51 @@ async function main() {
 // Security: All inputs validated before use in git commands
 // See test/rollback-validation.test.js for validation test coverage
 
+// Helper: Validate commit hash for rollback - extracted to reduce cognitive complexity
+function validateCommitHash(target) {
+  if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
+    return { valid: false, error: 'Invalid commit hash format' };
+  }
+  return { valid: true };
+}
+
+// Helper: Validate file paths for partial rollback - extracted to reduce cognitive complexity
+function validatePartialRollbackPaths(target) {
+  const files = target.split(',').map(f => f.trim());
+  for (const file of files) {
+    // Reject shell metacharacters
+    if (/[;|&$`()<>\r\n]/.test(file)) {
+      return { valid: false, error: `Invalid characters in path: ${file}` };
+    }
+    // Reject URL-encoded path traversal attempts
+    if (/%2[eE]|%2[fF]|%5[cC]/.test(file)) {
+      return { valid: false, error: `URL-encoded characters not allowed: ${file}` };
+    }
+    // Reject non-ASCII/unicode characters
+    if (!/^[\x20-\x7E]+$/.test(file)) {
+      return { valid: false, error: `Only ASCII characters allowed in path: ${file}` };
+    }
+    // Prevent path traversal
+    const resolved = path.resolve(projectRoot, file);
+    if (!resolved.startsWith(projectRoot)) {
+      return { valid: false, error: `Path outside project: ${file}` };
+    }
+  }
+  return { valid: true };
+}
+
+// Helper: Validate branch range for rollback - extracted to reduce cognitive complexity
+function validateBranchRange(target) {
+  if (!target.includes('..')) {
+    return { valid: false, error: 'Branch range must use format: start..end' };
+  }
+  const [start, end] = target.split('..');
+  if (!/^[0-9a-f]{4,40}$/i.test(start) || !/^[0-9a-f]{4,40}$/i.test(end)) {
+    return { valid: false, error: 'Invalid commit hashes in range' };
+  }
+  return { valid: true };
+}
+
 // Validate rollback inputs (security-critical)
 function validateRollbackInput(method, target) {
   const validMethods = ['commit', 'pr', 'partial', 'branch'];
@@ -3785,46 +3830,17 @@ function validateRollbackInput(method, target) {
     return { valid: false, error: 'Invalid method' };
   }
 
-  // Validate commit hash (git allows 4-40 char abbreviations)
+  // Delegate to method-specific validators
   if (method === 'commit' || method === 'pr') {
-    if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
-      return { valid: false, error: 'Invalid commit hash format' };
-    }
+    return validateCommitHash(target);
   }
 
-  // Validate file paths
   if (method === 'partial') {
-    const files = target.split(',').map(f => f.trim());
-    for (const file of files) {
-      // Reject shell metacharacters
-      if (/[;|&$`()<>\r\n]/.test(file)) {
-        return { valid: false, error: `Invalid characters in path: ${file}` };
-      }
-      // Reject URL-encoded path traversal attempts
-      if (/%2[eE]|%2[fF]|%5[cC]/.test(file)) {
-        return { valid: false, error: `URL-encoded characters not allowed: ${file}` };
-      }
-      // Reject non-ASCII/unicode characters
-      if (!/^[\x20-\x7E]+$/.test(file)) {
-        return { valid: false, error: `Only ASCII characters allowed in path: ${file}` };
-      }
-      // Prevent path traversal
-      const resolved = path.resolve(projectRoot, file);
-      if (!resolved.startsWith(projectRoot)) {
-        return { valid: false, error: `Path outside project: ${file}` };
-      }
-    }
+    return validatePartialRollbackPaths(target);
   }
 
-  // Validate branch range
   if (method === 'branch') {
-    if (!target.includes('..')) {
-      return { valid: false, error: 'Branch range must use format: start..end' };
-    }
-    const [start, end] = target.split('..');
-    if (!/^[0-9a-f]{4,40}$/i.test(start) || !/^[0-9a-f]{4,40}$/i.test(end)) {
-      return { valid: false, error: 'Invalid commit hashes in range' };
-    }
+    return validateBranchRange(target);
   }
 
   return { valid: true };
