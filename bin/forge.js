@@ -139,7 +139,7 @@ function validateUserInput(input, type) {
 
     // Windows: Block system directories
     if (process.platform === 'win32') {
-      const blockedPaths = ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)'];
+      const blockedPaths = [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`];
       if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
         return { valid: false, error: 'Cannot target Windows system directories' };
       }
@@ -3072,7 +3072,9 @@ async function quickSetup(selectedAgents, skipExternal) {
       console.log('  ✓ Beads installed globally');
       initializeBeads('global');
     } catch (err) {
+      // Installation failed - provide manual instructions
       console.log('  ⚠ Could not install Beads automatically');
+      console.log(`    Error: ${err.message}`);
       console.log('  Run manually: npm install -g @beads/bd && bd init');
     }
     console.log('');
