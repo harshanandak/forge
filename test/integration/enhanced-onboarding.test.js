@@ -379,9 +379,9 @@ This is a SaaS platform.
   });
 
   describe('Security Validation', () => {
-    // Import validateUserInput from bin/forge.js
-    // Note: In production, this would be in a separate module for testability
-    const forgeModule = require('../../bin/forge.js');
+    // Note: validateUserInput is in bin/forge.js but not exported
+    // In production, this would be in a separate module for testability
+    // Testing validation logic directly here
 
     test('should block null bytes in directory_path validation', () => {
       // Manually test the validation logic

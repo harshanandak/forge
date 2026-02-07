@@ -55,7 +55,7 @@ Content for section 2.`;
 
       assert.ok(Array.isArray(sections));
       // Should return at least the root content
-      assert.ok(sections.length >= 0);
+      assert.ok(sections.length > 0);
     });
 
     test('should extract nested sections correctly', () => {
