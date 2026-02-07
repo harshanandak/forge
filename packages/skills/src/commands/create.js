@@ -7,6 +7,7 @@ import { join } from 'path';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { loadTemplate, renderTemplate, getCurrentDate, getCurrentTimestamp } from '../lib/template.js';
+import { syncCommand } from './sync.js';
 
 /**
  * Validate skill name (alphanumeric, hyphens, underscores only)
@@ -152,10 +153,16 @@ export async function createCommand(name, options) {
     console.log(chalk.green('✓ Created skill:'), chalk.bold(name));
     console.log(chalk.gray(`  Location: ${skillDir}`));
     console.log(chalk.gray(`  Template: ${templateName}`));
+
+    // Auto-sync to agents (unless --no-sync flag is set)
+    if (!options.noSync) {
+      console.log();
+      await syncCommand({});
+    }
+
     console.log();
     console.log('Next steps:');
     console.log(chalk.cyan('  - Edit:'), `${skillMdPath}`);
-    console.log(chalk.cyan('  - Sync:'), 'skills sync');
     console.log(chalk.cyan('  - List:'), 'skills list');
 
   } catch (error) {
