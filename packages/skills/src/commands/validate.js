@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import yaml from 'js-yaml';
 import chalk from 'chalk';
+import { validateSkillName, ensurePathWithin } from '../lib/validation.js';
 
 /**
  * Valid skill categories
@@ -27,9 +28,16 @@ export async function validateCommand(name) {
   const errors = [];
 
   try {
+    // Validate skill name (prevents path traversal attacks)
+    validateSkillName(name);
+
     const skillsDir = join(process.cwd(), '.skills');
     const skillDir = join(skillsDir, name);
     const skillMdPath = join(skillDir, 'SKILL.md');
+
+    // Ensure paths are within .skills/ directory (defense in depth)
+    ensurePathWithin(skillsDir, skillDir);
+    ensurePathWithin(skillDir, skillMdPath);
 
     // Check if SKILL.md exists
     if (!existsSync(skillMdPath)) {
@@ -51,10 +59,10 @@ export async function validateCommand(name) {
       return { valid: false, errors };
     }
 
-    // Parse YAML
+    // Parse YAML with safe schema (prevents YAML injection attacks)
     let metadata;
     try {
-      metadata = yaml.load(frontmatterMatch[1]);
+      metadata = yaml.load(frontmatterMatch[1], { schema: yaml.JSON_SCHEMA });
     } catch (yamlError) {
       errors.push(`YAML parse error: ${yamlError.message}`);
       console.error(chalk.red('✗ Invalid YAML'));

@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, readdirSync
 import { join } from 'path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
+import { validateSkillName } from '../lib/validation.js';
 
 /**
  * Sync skills to agent directories
@@ -30,12 +31,25 @@ export async function syncCommand(options) {
     if (existsSync(skillsDir)) {
       const entries = readdirSync(skillsDir);
       for (const entry of entries) {
+        // Validate entry name before processing (prevents path traversal)
+        try {
+          validateSkillName(entry);
+        } catch (error) {
+          // Skip invalid entries (e.g., .registry.json, malicious paths)
+          continue;
+        }
+
         const skillPath = join(skillsDir, entry);
         const skillMdPath = join(skillPath, 'SKILL.md');
 
         // Skip non-directories and directories without SKILL.md
-        if (statSync(skillPath).isDirectory() && existsSync(skillMdPath)) {
-          skills.push(entry);
+        try {
+          if (statSync(skillPath).isDirectory() && existsSync(skillMdPath)) {
+            skills.push(entry);
+          }
+        } catch (error) {
+          // Skip entries that cause errors (e.g., permission issues)
+          continue;
         }
       }
     }

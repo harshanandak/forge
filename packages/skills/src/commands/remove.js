@@ -6,20 +6,22 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
+import { validateSkillName, ensurePathWithin } from '../lib/validation.js';
 
 /**
  * Remove a skill
  */
 export async function removeCommand(name, options) {
   try {
-    // Validate skill name
-    if (!name || name.trim() === '') {
-      throw new Error('Skill name is required');
-    }
+    // Validate skill name (prevents path traversal attacks)
+    validateSkillName(name);
 
     const skillsDir = join(process.cwd(), '.skills');
     const registryPath = join(skillsDir, '.registry.json');
     const skillDir = join(skillsDir, name);
+
+    // Ensure skill directory is within .skills/ (defense in depth)
+    ensurePathWithin(skillsDir, skillDir);
 
     // Check if registry exists
     if (!existsSync(registryPath)) {
@@ -50,7 +52,16 @@ export async function removeCommand(name, options) {
     const cleanedAgents = [];
 
     for (const agent of agents) {
-      const agentSkillPath = join(process.cwd(), agent.path, name);
+      const agentSkillsDir = join(process.cwd(), agent.path);
+      const agentSkillPath = join(agentSkillsDir, name);
+
+      // Ensure agent skill path is within agent directory (defense in depth)
+      try {
+        ensurePathWithin(agentSkillsDir, agentSkillPath);
+      } catch (error) {
+        console.error(chalk.yellow(`⚠ Skipping agent ${agent.name}: ${error.message}`));
+        continue;
+      }
 
       if (existsSync(agentSkillPath)) {
         rmSync(agentSkillPath, { recursive: true, force: true });
