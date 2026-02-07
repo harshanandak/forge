@@ -249,34 +249,7 @@ function safeExec(cmd) {
 // Detect package manager from command availability and lock files
 // Extracted to reduce cognitive complexity
 function detectPackageManager(errors) {
-  // Try detecting from installed commands
-  const bunVersion = safeExec('bun --version');
-  if (bunVersion) {
-    PKG_MANAGER = 'bun';
-    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
-  } else {
-    const pnpmVersion = safeExec('pnpm --version');
-    if (pnpmVersion) {
-      PKG_MANAGER = 'pnpm';
-      console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
-    } else {
-      const yarnVersion = safeExec('yarn --version');
-      if (yarnVersion) {
-        PKG_MANAGER = 'yarn';
-        console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
-      } else {
-        const npmVersion = safeExec('npm --version');
-        if (npmVersion) {
-          PKG_MANAGER = 'npm';
-          console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
-        } else {
-          errors.push('npm, yarn, pnpm, or bun - Install a package manager');
-        }
-      }
-    }
-  }
-
-  // Override from lock files if present (more authoritative)
+  // Check lock files first (most authoritative)
   const bunLock = path.join(projectRoot, 'bun.lockb');
   const bunLock2 = path.join(projectRoot, 'bun.lock');
   const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
@@ -284,11 +257,56 @@ function detectPackageManager(errors) {
 
   if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
     PKG_MANAGER = 'bun';
-  } else if (fs.existsSync(pnpmLock)) {
-    PKG_MANAGER = 'pnpm';
-  } else if (fs.existsSync(yarnLock)) {
-    PKG_MANAGER = 'yarn';
+    const version = safeExec('bun --version');
+    if (version) console.log(`  ✓ bun v${version} (detected from lock file)`);
+    return;
   }
+
+  if (fs.existsSync(pnpmLock)) {
+    PKG_MANAGER = 'pnpm';
+    const version = safeExec('pnpm --version');
+    if (version) console.log(`  ✓ pnpm ${version} (detected from lock file)`);
+    return;
+  }
+
+  if (fs.existsSync(yarnLock)) {
+    PKG_MANAGER = 'yarn';
+    const version = safeExec('yarn --version');
+    if (version) console.log(`  ✓ yarn ${version} (detected from lock file)`);
+    return;
+  }
+
+  // Fallback: detect from installed commands
+  const bunVersion = safeExec('bun --version');
+  if (bunVersion) {
+    PKG_MANAGER = 'bun';
+    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
+    return;
+  }
+
+  const pnpmVersion = safeExec('pnpm --version');
+  if (pnpmVersion) {
+    PKG_MANAGER = 'pnpm';
+    console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
+    return;
+  }
+
+  const yarnVersion = safeExec('yarn --version');
+  if (yarnVersion) {
+    PKG_MANAGER = 'yarn';
+    console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
+    return;
+  }
+
+  const npmVersion = safeExec('npm --version');
+  if (npmVersion) {
+    PKG_MANAGER = 'npm';
+    console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
+    return;
+  }
+
+  // No package manager found
+  errors.push('npm, yarn, pnpm, or bun - Install a package manager');
 }
 
 // Prerequisite check function
@@ -2999,6 +3017,12 @@ async function promptBeadsSetup(question) {
   const method = await question('Choose method (1-3): ');
 
   console.log('');
+  installBeadsWithMethod(method);
+  console.log('');
+}
+
+// Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
+function installBeadsWithMethod(method) {
   try {
     // SECURITY: execFileSync with hardcoded commands
     if (method === '1') {
@@ -3031,7 +3055,6 @@ async function promptBeadsSetup(question) {
     console.log('  ⚠ Failed to install Beads:', err.message);
     console.log('  Run manually: bun add -g @beads/bd && bd init');
   }
-  console.log('');
 }
 
 // Prompt for OpenSpec setup - extracted to reduce cognitive complexity
@@ -3083,6 +3106,12 @@ async function promptOpenSpecSetup(question) {
   const method = await question('Choose method (1-3): ');
 
   console.log('');
+  installOpenSpecWithMethod(method);
+  console.log('');
+}
+
+// Helper: Install OpenSpec with chosen method - extracted to reduce cognitive complexity
+function installOpenSpecWithMethod(method) {
   try {
     // SECURITY: execFileSync with hardcoded commands
     if (method === '1') {
@@ -3115,7 +3144,6 @@ async function promptOpenSpecSetup(question) {
     console.log('  ⚠ Failed to install OpenSpec:', err.message);
     console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
   }
-  console.log('');
 }
 
 // Interactive setup for Beads and OpenSpec
