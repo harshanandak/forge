@@ -3293,6 +3293,186 @@ async function quickSetup(selectedAgents, skipExternal) {
   console.log('');
 }
 
+// Prompt for agent selection - extracted to reduce cognitive complexity
+async function promptForAgentSelection(question, agentKeys) {
+  console.log('');
+  console.log('STEP 1: Select AI Coding Agents');
+  console.log('================================');
+  console.log('');
+  console.log('Which AI coding agents do you use?');
+  console.log('(Enter numbers separated by spaces, or "all")');
+  console.log('');
+
+  agentKeys.forEach((key, index) => {
+    const agent = AGENTS[key];
+    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
+  });
+  console.log('');
+  console.log('  all) Install for all agents');
+  console.log('');
+
+  let selectedAgents = [];
+
+  // Loop until valid input is provided
+  while (selectedAgents.length === 0) {
+    const answer = await question('Your selection: ');
+
+    // Handle empty input - reprompt
+    if (!answer || !answer.trim()) {
+      console.log('  Please enter at least one agent number or "all".');
+      continue;
+    }
+
+    if (answer.toLowerCase() === 'all') {
+      selectedAgents = agentKeys;
+    } else {
+      const nums = answer.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
+
+      // Validate numbers are in range
+      const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
+      const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
+
+      if (invalidNums.length > 0) {
+        console.log(`  Warning: Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
+      }
+
+      // Deduplicate selected agents using Set
+      selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
+    }
+
+    if (selectedAgents.length === 0) {
+      console.log('  No valid agents selected. Please try again.');
+    }
+  }
+
+  return selectedAgents;
+}
+
+// Setup AGENTS.md file with merge strategy - extracted to reduce cognitive complexity
+function setupAgentsMdFile(flags, skipFiles) {
+  if (skipFiles.agentsMd) {
+    console.log('  Skipped: AGENTS.md (keeping existing)');
+    return;
+  }
+
+  const agentsSrc = path.join(packageDir, 'AGENTS.md');
+  const agentsDest = path.join(projectRoot, 'AGENTS.md');
+
+  // Respect --merge flag for file handling strategy
+  const mergeStrategy = flags.merge || 'smart'; // Default to 'smart' if not specified
+
+  if (fs.existsSync(agentsDest)) {
+    const existingContent = fs.readFileSync(agentsDest, 'utf8');
+    const newContent = fs.readFileSync(agentsSrc, 'utf8');
+
+    if (mergeStrategy === 'preserve') {
+      // Keep existing file, don't modify
+      console.log('  Preserved: AGENTS.md (--merge=preserve)');
+    } else if (mergeStrategy === 'replace') {
+      // Replace with new content
+      if (copyFile(agentsSrc, 'AGENTS.md')) {
+        console.log('  Replaced: AGENTS.md (--merge=replace)');
+      }
+    } else {
+      // Default: smart merge
+      const merged = smartMergeAgentsMd(existingContent, newContent);
+      if (merged) {
+        fs.writeFileSync(agentsDest, merged, 'utf8');
+        console.log('  Updated: AGENTS.md (smart merge, preserved USER sections)');
+      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+        // No markers, do normal copy (user already approved overwrite)
+        console.log('  Updated: AGENTS.md (universal standard)');
+      }
+    }
+  } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+    // New file
+    console.log('  Created: AGENTS.md (universal standard)');
+
+    // Detect project type and update AGENTS.md
+    const detection = detectProjectType();
+    if (detection.hasPackageJson) {
+      updateAgentsMdWithProjectType(detection);
+      displayProjectType(detection);
+    }
+  }
+}
+
+// Display final setup summary - extracted to reduce cognitive complexity
+function displaySetupSummary(selectedAgents) {
+  console.log('');
+  console.log('==============================================');
+  console.log(`  Forge v${VERSION} Setup Complete!`);
+  console.log('==============================================');
+  console.log('');
+  console.log('What\'s installed:');
+  console.log('  - AGENTS.md (universal instructions)');
+  console.log('  - docs/WORKFLOW.md (full workflow guide)');
+  console.log('  - docs/research/TEMPLATE.md (research template)');
+  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    if (agent.linkFile) {
+      console.log(`  - ${agent.linkFile} (${agent.name})`);
+    }
+    if (agent.hasCommands) {
+      console.log(`  - .claude/commands/ (9 workflow commands)`);
+    }
+    if (agent.hasSkill) {
+      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+      if (skillDir) {
+        console.log(`  - ${skillDir}/SKILL.md`);
+      }
+    }
+  });
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📋  NEXT STEP - Complete AGENTS.md');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log('Ask your AI agent:');
+  console.log('  "Fill in the project description in AGENTS.md"');
+  console.log('');
+  console.log('The agent will:');
+  console.log('  ✓ Add one-sentence project description');
+  console.log('  ✓ Confirm package manager');
+  console.log('  ✓ Verify build commands');
+  console.log('');
+  console.log('Takes ~30 seconds. Done!');
+  console.log('');
+  console.log('💡 As you work: Add project patterns to AGENTS.md');
+  console.log('   USER:START section. Keep it minimal - budget is');
+  console.log('   ~150-200 instructions max.');
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log('Project Tools Status:');
+  console.log('');
+
+  // Beads status
+  if (isBeadsInitialized()) {
+    console.log('  ✓ Beads initialized - Track work: bd ready');
+  } else if (checkForBeads()) {
+    console.log('  ! Beads available - Run: bd init');
+  } else {
+    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
+  }
+
+  // OpenSpec status
+  if (isOpenSpecInitialized()) {
+    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
+  } else if (checkForOpenSpec()) {
+    console.log('  ! OpenSpec available - Run: openspec init');
+  } else {
+    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
+  }
+
+  console.log('');
+  console.log('Start with: /status');
+  console.log('');
+  console.log(`Package manager: ${PKG_MANAGER}`);
+  console.log('');
+}
+
 // Interactive setup with flag support
 async function interactiveSetupWithFlags(flags) {
   const rl = readline.createInterface({
@@ -3413,107 +3593,15 @@ async function interactiveSetupWithFlags(flags) {
     console.log('');
   }
 
-  // =============================================
-  // STEP 1: Agent Selection
-  // =============================================
-  console.log('STEP 1: Select AI Coding Agents');
-  console.log('================================');
-  console.log('');
-  console.log('Which AI coding agents do you use?');
-  console.log('(Enter numbers separated by spaces, or "all")');
-  console.log('');
-
+  // STEP 1: Agent Selection (delegated to helper)
   const agentKeys = Object.keys(AGENTS);
-  agentKeys.forEach((key, index) => {
-    const agent = AGENTS[key];
-    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
-  });
-  console.log('');
-  console.log('  all) Install for all agents');
-  console.log('');
-
-  let selectedAgents = [];
-
-  // Loop until valid input is provided
-  while (selectedAgents.length === 0) {
-    const answer = await question('Your selection: ');
-
-    // Handle empty input - reprompt
-    if (!answer || !answer.trim()) {
-      console.log('  Please enter at least one agent number or "all".');
-      continue;
-    }
-
-    if (answer.toLowerCase() === 'all') {
-      selectedAgents = agentKeys;
-    } else {
-      const nums = answer.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
-
-      // Validate numbers are in range
-      const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
-      const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
-
-      if (invalidNums.length > 0) {
-        console.log(`  Warning: Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
-      }
-
-      // Deduplicate selected agents using Set
-      selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
-    }
-
-    if (selectedAgents.length === 0) {
-      console.log('  No valid agents selected. Please try again.');
-    }
-  }
+  const selectedAgents = await promptForAgentSelection(question, agentKeys);
 
   console.log('');
   console.log('Installing Forge workflow...');
 
-  // Copy AGENTS.md unless skipped
-  if (skipFiles.agentsMd) {
-    console.log('  Skipped: AGENTS.md (keeping existing)');
-  } else {
-    const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    const agentsDest = path.join(projectRoot, 'AGENTS.md');
-
-    // Respect --merge flag for file handling strategy
-    const mergeStrategy = flags.merge || 'smart'; // Default to 'smart' if not specified
-
-    if (fs.existsSync(agentsDest)) {
-      const existingContent = fs.readFileSync(agentsDest, 'utf8');
-      const newContent = fs.readFileSync(agentsSrc, 'utf8');
-
-      if (mergeStrategy === 'preserve') {
-        // Keep existing file, don't modify
-        console.log('  Preserved: AGENTS.md (--merge=preserve)');
-      } else if (mergeStrategy === 'replace') {
-        // Replace with new content
-        if (copyFile(agentsSrc, 'AGENTS.md')) {
-          console.log('  Replaced: AGENTS.md (--merge=replace)');
-        }
-      } else {
-        // Default: smart merge
-        const merged = smartMergeAgentsMd(existingContent, newContent);
-        if (merged) {
-          fs.writeFileSync(agentsDest, merged, 'utf8');
-          console.log('  Updated: AGENTS.md (smart merge, preserved USER sections)');
-        } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-          // No markers, do normal copy (user already approved overwrite)
-          console.log('  Updated: AGENTS.md (universal standard)');
-        }
-      }
-    } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-      // New file
-      console.log('  Created: AGENTS.md (universal standard)');
-
-      // Detect project type and update AGENTS.md
-      const detection = detectProjectType();
-      if (detection.hasPackageJson) {
-        updateAgentsMdWithProjectType(detection);
-        displayProjectType(detection);
-      }
-    }
-  }
+  // Setup AGENTS.md (delegated to helper)
+  setupAgentsMdFile(flags, skipFiles);
   console.log('');
 
   // Setup core documentation
@@ -3574,81 +3662,8 @@ async function interactiveSetupWithFlags(flags) {
   setupCompleted = true;
   rl.close();
 
-  // =============================================
-  // Final Summary
-  // =============================================
-  console.log('');
-  console.log('==============================================');
-  console.log(`  Forge v${VERSION} Setup Complete!`);
-  console.log('==============================================');
-  console.log('');
-  console.log('What\'s installed:');
-  console.log('  - AGENTS.md (universal instructions)');
-  console.log('  - docs/WORKFLOW.md (full workflow guide)');
-  console.log('  - docs/research/TEMPLATE.md (research template)');
-  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    if (agent.linkFile) {
-      console.log(`  - ${agent.linkFile} (${agent.name})`);
-    }
-    if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (9 workflow commands)`);
-    }
-    if (agent.hasSkill) {
-      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-      if (skillDir) {
-        console.log(`  - ${skillDir}/SKILL.md`);
-      }
-    }
-  });
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('📋  NEXT STEP - Complete AGENTS.md');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-  console.log('Ask your AI agent:');
-  console.log('  "Fill in the project description in AGENTS.md"');
-  console.log('');
-  console.log('The agent will:');
-  console.log('  ✓ Add one-sentence project description');
-  console.log('  ✓ Confirm package manager');
-  console.log('  ✓ Verify build commands');
-  console.log('');
-  console.log('Takes ~30 seconds. Done!');
-  console.log('');
-  console.log('💡 As you work: Add project patterns to AGENTS.md');
-  console.log('   USER:START section. Keep it minimal - budget is');
-  console.log('   ~150-200 instructions max.');
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-  console.log('Project Tools Status:');
-  console.log('');
-
-  // Beads status
-  if (isBeadsInitialized()) {
-    console.log('  ✓ Beads initialized - Track work: bd ready');
-  } else if (checkForBeads()) {
-    console.log('  ! Beads available - Run: bd init');
-  } else {
-    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  }
-
-  // OpenSpec status
-  if (isOpenSpecInitialized()) {
-    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
-  } else if (checkForOpenSpec()) {
-    console.log('  ! OpenSpec available - Run: openspec init');
-  } else {
-    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
-  }
-
-  console.log('');
-  console.log('Start with: /status');
-  console.log('');
-  console.log(`Package manager: ${PKG_MANAGER}`);
-  console.log('');
+  // Display final summary (delegated to helper)
+  displaySetupSummary(selectedAgents);
 }
 
 // Main
