@@ -118,52 +118,75 @@ function validateUserInput(input, type) {
     return { valid: false, error: 'Only ASCII printable characters allowed' };
   }
 
-  // Type-specific validation
-  if (type === 'path') {
-    const resolved = path.resolve(projectRoot, input);
-    if (!resolved.startsWith(path.resolve(projectRoot))) {
-      return { valid: false, error: 'Path outside project root' };
-    }
-  } else if (type === 'directory_path') {
-    // For --path flag: validate absolute or relative directory paths
-    // Allow path traversal ONLY through normal path segments (no tricks)
+  // Type-specific validation - delegated to helpers
+  switch (type) {
+    case 'path':
+      return validatePathInput(input);
+    case 'directory_path':
+      return validateDirectoryPathInput(input);
+    case 'agent':
+      return validateAgentInput(input);
+    case 'hash':
+      return validateHashInput(input);
+    default:
+      return { valid: true };
+  }
+}
 
-    // Block null bytes
-    if (input.includes('\0')) {
-      return { valid: false, error: 'Null bytes not allowed in path' };
-    }
+// Helper: Validate 'path' type input - extracted to reduce cognitive complexity
+function validatePathInput(input) {
+  const resolved = path.resolve(projectRoot, input);
+  if (!resolved.startsWith(path.resolve(projectRoot))) {
+    return { valid: false, error: 'Path outside project root' };
+  }
+  return { valid: true };
+}
 
-    // Block absolute paths to sensitive system directories
-    const resolved = path.resolve(input);
-    const normalizedResolved = path.normalize(resolved).toLowerCase();
+// Helper: Validate 'directory_path' type input - extracted to reduce cognitive complexity
+function validateDirectoryPathInput(input) {
+  // Block null bytes
+  if (input.includes('\0')) {
+    return { valid: false, error: 'Null bytes not allowed in path' };
+  }
 
-    // Windows: Block system directories
-    if (process.platform === 'win32') {
-      const blockedPaths = [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`];
-      if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
-        return { valid: false, error: 'Cannot target Windows system directories' };
-      }
-    }
+  // Block absolute paths to sensitive system directories
+  const resolved = path.resolve(input);
+  const normalizedResolved = path.normalize(resolved).toLowerCase();
 
-    // Unix: Block system directories
-    if (process.platform !== 'win32') {
-      const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
-      if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
-        return { valid: false, error: 'Cannot target system directories' };
-      }
-    }
-  } else if (type === 'agent') {
-    // Agent names: lowercase alphanumeric with hyphens only
-    if (!/^[a-z0-9-]+$/.test(input)) {
-      return { valid: false, error: 'Agent name must be lowercase alphanumeric with hyphens' };
-    }
-  } else if (type === 'hash') {
-    // Git commit hash: 4-40 hexadecimal characters
-    if (!/^[0-9a-f]{4,40}$/i.test(input)) {
-      return { valid: false, error: 'Invalid commit hash format (must be 4-40 hex chars)' };
+  // Windows: Block system directories
+  if (process.platform === 'win32') {
+    const blockedPaths = [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`];
+    if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+      return { valid: false, error: 'Cannot target Windows system directories' };
     }
   }
 
+  // Unix: Block system directories
+  if (process.platform !== 'win32') {
+    const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
+    if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+      return { valid: false, error: 'Cannot target system directories' };
+    }
+  }
+
+  return { valid: true };
+}
+
+// Helper: Validate 'agent' type input - extracted to reduce cognitive complexity
+function validateAgentInput(input) {
+  // Agent names: lowercase alphanumeric with hyphens only
+  if (!/^[a-z0-9-]+$/.test(input)) {
+    return { valid: false, error: 'Agent name must be lowercase alphanumeric with hyphens' };
+  }
+  return { valid: true };
+}
+
+// Helper: Validate 'hash' type input - extracted to reduce cognitive complexity
+function validateHashInput(input) {
+  // Git commit hash: 4-40 hexadecimal characters
+  if (!/^[0-9a-f]{4,40}$/i.test(input)) {
+    return { valid: false, error: 'Invalid commit hash format (must be 4-40 hex chars)' };
+  }
   return { valid: true };
 }
 
@@ -1600,6 +1623,36 @@ async function promptForResearchTool(question) {
   return tokens;
 }
 
+// Helper: Check existing service configuration - extracted to reduce cognitive complexity
+async function checkExistingServiceConfig(question, projectStatus) {
+  const existingEnvVars = projectStatus?.existingEnvVars || parseEnvFile();
+  const hasCodeReviewTool = existingEnvVars.CODE_REVIEW_TOOL;
+  const hasCodeQualityTool = existingEnvVars.CODE_QUALITY_TOOL;
+  const hasExistingConfig = hasCodeReviewTool || hasCodeQualityTool;
+
+  if (!hasExistingConfig) {
+    return true; // No existing config, proceed with configuration
+  }
+
+  console.log('External services already configured:');
+  if (hasCodeReviewTool) {
+    console.log(`  - CODE_REVIEW_TOOL: ${hasCodeReviewTool}`);
+  }
+  if (hasCodeQualityTool) {
+    console.log(`  - CODE_QUALITY_TOOL: ${hasCodeQualityTool}`);
+  }
+  console.log('');
+
+  const reconfigure = await askYesNo(question, 'Reconfigure external services?', true);
+  if (!reconfigure) {
+    console.log('');
+    console.log('Keeping existing configuration.');
+    return false; // Skip configuration
+  }
+  console.log('');
+  return true; // Proceed with configuration
+}
+
 // Configure external services interactively
 async function configureExternalServices(rl, question, selectedAgents = [], projectStatus = null) {
   console.log('');
@@ -1608,29 +1661,10 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('==============================================');
   console.log('');
 
-  // Check if external services are already configured
-  const existingEnvVars = projectStatus?.existingEnvVars || parseEnvFile();
-  const hasCodeReviewTool = existingEnvVars.CODE_REVIEW_TOOL;
-  const hasCodeQualityTool = existingEnvVars.CODE_QUALITY_TOOL;
-  const hasExistingConfig = hasCodeReviewTool || hasCodeQualityTool;
-
-  if (hasExistingConfig) {
-    console.log('External services already configured:');
-    if (hasCodeReviewTool) {
-      console.log(`  - CODE_REVIEW_TOOL: ${hasCodeReviewTool}`);
-    }
-    if (hasCodeQualityTool) {
-      console.log(`  - CODE_QUALITY_TOOL: ${hasCodeQualityTool}`);
-    }
-    console.log('');
-
-    const reconfigure = await askYesNo(question, 'Reconfigure external services?', true);
-    if (!reconfigure) {
-      console.log('');
-      console.log('Keeping existing configuration.');
-      return;
-    }
-    console.log('');
+  // Check existing configuration
+  const shouldContinue = await checkExistingServiceConfig(question, projectStatus);
+  if (!shouldContinue) {
+    return;
   }
 
   console.log('Would you like to configure external services?');
