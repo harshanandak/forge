@@ -110,6 +110,13 @@ bunx forge setup --agents claude,cursor,windsurf
 bunx forge setup --all
 ```
 
+**Enhanced setup options** (v1.6.0):
+```bash
+bunx forge setup --merge=smart       # Intelligent merge for existing files
+bunx forge setup --type=critical     # Set workflow profile
+bunx forge setup --interview         # Gather project context
+```
+
 → [Agent-specific setup instructions](docs/SETUP.md)
 
 ---
@@ -164,6 +171,41 @@ forge-validate ship      # Validate before /ship stage
 - Backwards compatible
 
 → [Validation docs](docs/VALIDATION.md) | [Plugin docs](lib/agents/README.md)
+
+### 6. Enhanced Onboarding (v1.6.0) 🆕
+Smart setup that adapts to your project:
+
+**Intelligent File Merging**
+- Preserves your existing AGENTS.md content
+- Adds Forge workflow without overwriting
+- Three options: smart merge, keep, or replace
+```bash
+bunx forge setup --merge=smart    # Intelligent merge
+```
+
+**Auto-Detection**
+- Detects framework (Next.js, React, Vue, Express)
+- Detects language (TypeScript, JavaScript)
+- Analyzes git stats and CI/CD setup
+- Infers project stage (new, active, stable)
+- Saves to `.forge/context.json`
+
+**Workflow Profiles**
+- Adapts workflow based on work type:
+  - `feature`: Full 9-stage workflow (auto-escalates to critical for auth/payment)
+  - `fix`: Streamlined 5-stage workflow (auto-escalates to hotfix for production)
+  - `refactor`: Behavior-preserving 5-stage workflow
+  - `chore`: Minimal 3-stage workflow (docs/deps/config)
+```bash
+bunx forge setup --type=critical    # Set workflow manually
+```
+
+**Context Interview** (optional)
+```bash
+bunx forge setup --interview    # Gather project context
+```
+
+→ [Enhanced onboarding guide](docs/ENHANCED_ONBOARDING.md)
 
 ---
 

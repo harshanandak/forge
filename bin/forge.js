@@ -18,6 +18,9 @@
  *   --skip-external      Skip external services configuration
  *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
  *   --all                Install for all available agents
+ *   --merge <mode>       Merge strategy for existing files (smart|preserve|replace)
+ *   --type <type>        Workflow profile (critical|standard|simple|hotfix|docs|refactor)
+ *   --interview          Force context interview (gather project info)
  *   --help, -h           Show help message
  *
  * Examples:
@@ -45,8 +48,13 @@ const VERSION = packageJson.version;
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
 
-// Get the project root
-const projectRoot = process.env.INIT_CWD || process.cwd();
+// Load enhanced onboarding modules
+const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
+const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
+const workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
+
+// Get the project root (let allows reassignment after --path flag handling)
+let projectRoot = process.env.INIT_CWD || process.cwd();
 const args = process.argv.slice(2);
 
 // Detected package manager
@@ -110,24 +118,75 @@ function validateUserInput(input, type) {
     return { valid: false, error: 'Only ASCII printable characters allowed' };
   }
 
-  // Type-specific validation
-  if (type === 'path') {
-    const resolved = path.resolve(projectRoot, input);
-    if (!resolved.startsWith(path.resolve(projectRoot))) {
-      return { valid: false, error: 'Path outside project root' };
-    }
-  } else if (type === 'agent') {
-    // Agent names: lowercase alphanumeric with hyphens only
-    if (!/^[a-z0-9-]+$/.test(input)) {
-      return { valid: false, error: 'Agent name must be lowercase alphanumeric with hyphens' };
-    }
-  } else if (type === 'hash') {
-    // Git commit hash: 4-40 hexadecimal characters
-    if (!/^[0-9a-f]{4,40}$/i.test(input)) {
-      return { valid: false, error: 'Invalid commit hash format (must be 4-40 hex chars)' };
+  // Type-specific validation - delegated to helpers
+  switch (type) {
+    case 'path':
+      return validatePathInput(input);
+    case 'directory_path':
+      return validateDirectoryPathInput(input);
+    case 'agent':
+      return validateAgentInput(input);
+    case 'hash':
+      return validateHashInput(input);
+    default:
+      return { valid: true };
+  }
+}
+
+// Helper: Validate 'path' type input - extracted to reduce cognitive complexity
+function validatePathInput(input) {
+  const resolved = path.resolve(projectRoot, input);
+  if (!resolved.startsWith(path.resolve(projectRoot))) {
+    return { valid: false, error: 'Path outside project root' };
+  }
+  return { valid: true };
+}
+
+// Helper: Validate 'directory_path' type input - extracted to reduce cognitive complexity
+function validateDirectoryPathInput(input) {
+  // Block null bytes
+  if (input.includes('\0')) {
+    return { valid: false, error: 'Null bytes not allowed in path' };
+  }
+
+  // Block absolute paths to sensitive system directories
+  const resolved = path.resolve(input);
+  const normalizedResolved = path.normalize(resolved).toLowerCase();
+
+  // Windows: Block system directories
+  if (process.platform === 'win32') {
+    const blockedPaths = [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`];
+    if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+      return { valid: false, error: 'Cannot target Windows system directories' };
     }
   }
 
+  // Unix: Block system directories
+  if (process.platform !== 'win32') {
+    const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
+    if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+      return { valid: false, error: 'Cannot target system directories' };
+    }
+  }
+
+  return { valid: true };
+}
+
+// Helper: Validate 'agent' type input - extracted to reduce cognitive complexity
+function validateAgentInput(input) {
+  // Agent names: lowercase alphanumeric with hyphens only
+  if (!/^[a-z0-9-]+$/.test(input)) {
+    return { valid: false, error: 'Agent name must be lowercase alphanumeric with hyphens' };
+  }
+  return { valid: true };
+}
+
+// Helper: Validate 'hash' type input - extracted to reduce cognitive complexity
+function validateHashInput(input) {
+  // Git commit hash: 4-40 hexadecimal characters
+  if (!/^[0-9a-f]{4,40}$/i.test(input)) {
+    return { valid: false, error: 'Invalid commit hash format (must be 4-40 hex chars)' };
+  }
   return { valid: true };
 }
 
@@ -205,8 +264,72 @@ function safeExec(cmd) {
   } catch (e) {
     // Command execution failure is expected when tool is not installed or fails
     // Returning null allows caller to handle missing tools gracefully
+    console.warn('Command execution failed:', e.message);
     return null;
   }
+}
+
+// Detect package manager from command availability and lock files
+// Extracted to reduce cognitive complexity
+function detectPackageManager(errors) {
+  // Check lock files first (most authoritative)
+  const bunLock = path.join(projectRoot, 'bun.lockb');
+  const bunLock2 = path.join(projectRoot, 'bun.lock');
+  const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
+  const yarnLock = path.join(projectRoot, 'yarn.lock');
+
+  if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
+    PKG_MANAGER = 'bun';
+    const version = safeExec('bun --version');
+    if (version) console.log(`  ✓ bun v${version} (detected from lock file)`);
+    return;
+  }
+
+  if (fs.existsSync(pnpmLock)) {
+    PKG_MANAGER = 'pnpm';
+    const version = safeExec('pnpm --version');
+    if (version) console.log(`  ✓ pnpm ${version} (detected from lock file)`);
+    return;
+  }
+
+  if (fs.existsSync(yarnLock)) {
+    PKG_MANAGER = 'yarn';
+    const version = safeExec('yarn --version');
+    if (version) console.log(`  ✓ yarn ${version} (detected from lock file)`);
+    return;
+  }
+
+  // Fallback: detect from installed commands
+  const bunVersion = safeExec('bun --version');
+  if (bunVersion) {
+    PKG_MANAGER = 'bun';
+    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
+    return;
+  }
+
+  const pnpmVersion = safeExec('pnpm --version');
+  if (pnpmVersion) {
+    PKG_MANAGER = 'pnpm';
+    console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
+    return;
+  }
+
+  const yarnVersion = safeExec('yarn --version');
+  if (yarnVersion) {
+    PKG_MANAGER = 'yarn';
+    console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
+    return;
+  }
+
+  const npmVersion = safeExec('npm --version');
+  if (npmVersion) {
+    PKG_MANAGER = 'npm';
+    console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
+    return;
+  }
+
+  // No package manager found
+  errors.push('npm, yarn, pnpm, or bun - Install a package manager');
 }
 
 // Prerequisite check function
@@ -229,7 +352,8 @@ function checkPrerequisites() {
   // Check GitHub CLI
   const ghVersion = safeExec('gh --version');
   if (ghVersion) {
-    console.log(`  ✓ ${ghVersion.split(String.raw`\n`)[0]}`);
+    const firstLine = ghVersion.split('\n')[0];
+    console.log(`  ✓ ${firstLine}`);
     // Check if authenticated
     const authStatus = safeExec('gh auth status');
     if (!authStatus) {
@@ -248,45 +372,7 @@ function checkPrerequisites() {
   }
 
   // Detect package manager
-  const bunVersion = safeExec('bun --version');
-  if (bunVersion) {
-    PKG_MANAGER = 'bun';
-    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
-  } else {
-    const pnpmVersion = safeExec('pnpm --version');
-    if (pnpmVersion) {
-      PKG_MANAGER = 'pnpm';
-      console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
-    } else {
-      const yarnVersion = safeExec('yarn --version');
-      if (yarnVersion) {
-        PKG_MANAGER = 'yarn';
-        console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
-      } else {
-        const npmVersion = safeExec('npm --version');
-        if (npmVersion) {
-          PKG_MANAGER = 'npm';
-          console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
-        } else {
-          errors.push('npm, yarn, pnpm, or bun - Install a package manager');
-        }
-      }
-    }
-  }
-
-  // Also detect from lock files if present
-  const bunLock = path.join(projectRoot, 'bun.lockb');
-  const bunLock2 = path.join(projectRoot, 'bun.lock');
-  const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
-  const yarnLock = path.join(projectRoot, 'yarn.lock');
-
-  if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
-    PKG_MANAGER = 'bun';
-  } else if (fs.existsSync(pnpmLock)) {
-    PKG_MANAGER = 'pnpm';
-  } else if (fs.existsSync(yarnLock)) {
-    PKG_MANAGER = 'yarn';
-  }
+  detectPackageManager(errors);
 
   // Show errors
   if (errors.length > 0) {
@@ -468,11 +554,11 @@ function createSymlinkOrCopy(source, target) {
   // SECURITY: Prevent path traversal attacks
   if (!fullSource.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Source path escape blocked: ${source}`);
-    return false;
+    return null;
   }
   if (!fullTarget.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Target path escape blocked: ${target}`);
-    return false;
+    return null;
   }
 
   try {
@@ -490,12 +576,13 @@ function createSymlinkOrCopy(source, target) {
     } catch (error_) {
       // Symlink creation may fail due to permissions or OS limitations (e.g., Windows without admin)
       // Fall back to copying the file instead to ensure operation succeeds
+      console.warn('Symlink creation failed, falling back to copy:', error_.message);
       fs.copyFileSync(fullSource, fullTarget);
       return 'copied';
     }
   } catch (err) {
     console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
-    return false;
+    return null;
   }
 }
 
@@ -514,6 +601,7 @@ function readEnvFile() {
   } catch (err) {
     // File read failure is acceptable - file may not exist or have permission issues
     // Return empty string to allow caller to proceed with defaults
+    console.warn('Failed to read .env.local:', err.message);
   }
   return '';
 }
@@ -616,6 +704,7 @@ function writeEnvTokens(tokens, preserveExisting = true) {
   } catch (err) {
     // Gitignore update is optional - failure doesn't prevent .env.local creation
     // User can manually add .env.local to .gitignore if needed
+    console.warn('Failed to update .gitignore:', err.message);
   }
 
   return { added, preserved };
@@ -686,7 +775,7 @@ async function askYesNo(question, prompt, defaultNo = true) {
   }
 }
 
-function detectProjectStatus() {
+async function detectProjectStatus() {
   const status = {
     type: 'fresh', // 'fresh', 'upgrade', or 'partial'
     hasAgentsMd: fs.existsSync(path.join(projectRoot, 'AGENTS.md')),
@@ -703,7 +792,9 @@ function detectProjectStatus() {
     hasBeads: isBeadsInitialized(),
     hasOpenSpec: isOpenSpecInitialized(),
     beadsInstallType: checkForBeads(),
-    openspecInstallType: checkForOpenSpec()
+    openspecInstallType: checkForOpenSpec(),
+    // Enhanced: Auto-detected project context
+    autoDetected: null
   };
 
   // Get file sizes and line counts for context warnings
@@ -734,6 +825,17 @@ function detectProjectStatus() {
   // Parse existing env vars if .env.local exists
   if (status.hasEnvLocal) {
     status.existingEnvVars = parseEnvFile();
+  }
+
+  // Enhanced: Auto-detect project context (framework, language, stage, CI/CD)
+  try {
+    status.autoDetected = await projectDiscovery.autoDetect(projectRoot);
+    // Save context to .forge/context.json
+    await projectDiscovery.saveContext(status.autoDetected, projectRoot);
+  } catch (error) {
+    // Auto-detection is optional - don't fail setup if it errors
+    console.log('  Note: Auto-detection skipped (error:', error.message, ')');
+    status.autoDetected = null;
   }
 
   return status;
@@ -844,11 +946,19 @@ function detectVue(deps) {
   const hasVite = deps.vite;
   const hasWebpack = deps.webpack;
 
+  // Determine build tool without nested ternary
+  let buildTool = 'vue-cli';
+  if (hasVite) {
+    buildTool = 'vite';
+  } else if (hasWebpack) {
+    buildTool = 'webpack';
+  }
+
   return {
     framework: 'Vue.js',
     frameworkConfidence: deps['@vue/cli'] ? 100 : 90,
     projectType: 'frontend',
-    buildTool: hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'vue-cli'),
+    buildTool,
     testFramework: detectTestFramework(deps)
   };
 }
@@ -860,11 +970,19 @@ function detectReact(deps) {
   const hasVite = deps.vite;
   const hasReactScripts = deps['react-scripts'];
 
+  // Determine build tool without nested ternary
+  let buildTool = 'webpack';
+  if (hasVite) {
+    buildTool = 'vite';
+  } else if (hasReactScripts) {
+    buildTool = 'create-react-app';
+  }
+
   return {
     framework: 'React',
     frameworkConfidence: 95,
     projectType: 'frontend',
-    buildTool: hasVite ? 'vite' : (hasReactScripts ? 'create-react-app' : 'webpack'),
+    buildTool,
     testFramework: detectTestFramework(deps)
   };
 }
@@ -962,11 +1080,19 @@ function detectGenericProject(deps, features) {
   const hasVite = deps.vite;
   const hasWebpack = deps.webpack;
 
+  // Determine build tool without nested ternary
+  let buildTool = 'npm';
+  if (hasVite) {
+    buildTool = 'vite';
+  } else if (hasWebpack) {
+    buildTool = 'webpack';
+  }
+
   return {
     framework: features.typescript ? 'TypeScript' : 'JavaScript',
     frameworkConfidence: 60,
     projectType: 'library',
-    buildTool: hasVite ? 'vite' : (hasWebpack ? 'webpack' : 'npm'),
+    buildTool,
     testFramework: detectTestFramework(deps)
   };
 }
@@ -1341,56 +1467,8 @@ This file exists to avoid Claude Code reading both CLAUDE.md and AGENTS.md (whic
   return true;
 }
 
-// Configure external services interactively
-async function configureExternalServices(rl, question, selectedAgents = [], projectStatus = null) {
-  console.log('');
-  console.log('==============================================');
-  console.log('  External Services Configuration');
-  console.log('==============================================');
-  console.log('');
-
-  // Check if external services are already configured
-  const existingEnvVars = projectStatus?.existingEnvVars || parseEnvFile();
-  const hasCodeReviewTool = existingEnvVars.CODE_REVIEW_TOOL;
-  const hasCodeQualityTool = existingEnvVars.CODE_QUALITY_TOOL;
-  const hasExistingConfig = hasCodeReviewTool || hasCodeQualityTool;
-
-  if (hasExistingConfig) {
-    console.log('External services already configured:');
-    if (hasCodeReviewTool) {
-      console.log(`  - CODE_REVIEW_TOOL: ${hasCodeReviewTool}`);
-    }
-    if (hasCodeQualityTool) {
-      console.log(`  - CODE_QUALITY_TOOL: ${hasCodeQualityTool}`);
-    }
-    console.log('');
-
-    const reconfigure = await askYesNo(question, 'Reconfigure external services?', true);
-    if (!reconfigure) {
-      console.log('');
-      console.log('Keeping existing configuration.');
-      return;
-    }
-    console.log('');
-  }
-
-  console.log('Would you like to configure external services?');
-  console.log('(You can also add them later to .env.local)');
-  console.log('');
-
-  const configure = await askYesNo(question, 'Configure external services?', false);
-
-  if (!configure) {
-    console.log('');
-    console.log('Skipping external services. You can configure them later by editing .env.local');
-    return;
-  }
-
-  const tokens = {};
-
-  // ============================================
-  // CODE REVIEW TOOL SELECTION
-  // ============================================
+// Prompt for code review tool selection - extracted to reduce cognitive complexity
+async function promptForCodeReviewTool(question) {
   console.log('');
   console.log('Code Review Tool');
   console.log('----------------');
@@ -1408,9 +1486,10 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('  4) Skip code review integration');
   console.log('');
 
-  const codeReviewChoice = await question('Select [1]: ') || '1';
+  const choice = await question('Select [1]: ') || '1';
+  const tokens = {};
 
-  switch (codeReviewChoice) {
+  switch (choice) {
     case '1': {
       tokens['CODE_REVIEW_TOOL'] = 'github-code-quality';
       console.log('  ✓ Using GitHub Code Quality (FREE)');
@@ -1440,9 +1519,11 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
     }
   }
 
-  // ============================================
-  // CODE QUALITY TOOL SELECTION
-  // ============================================
+  return tokens;
+}
+
+// Prompt for code quality tool selection - extracted to reduce cognitive complexity
+async function promptForCodeQualityTool(question) {
   console.log('');
   console.log('Code Quality Tool');
   console.log('-----------------');
@@ -1460,9 +1541,10 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('  4) Skip code quality integration');
   console.log('');
 
-  const codeQualityChoice = await question('Select [1]: ') || '1';
+  const choice = await question('Select [1]: ') || '1';
+  const tokens = {};
 
-  switch (codeQualityChoice) {
+  switch (choice) {
     case '1': {
       tokens['CODE_QUALITY_TOOL'] = 'eslint';
       console.log('  ✓ Using ESLint (built-in)');
@@ -1506,9 +1588,11 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
     }
   }
 
-  // ============================================
-  // RESEARCH TOOL SELECTION
-  // ============================================
+  return tokens;
+}
+
+// Prompt for research tool selection - extracted to reduce cognitive complexity
+async function promptForResearchTool(question) {
   console.log('');
   console.log('Research Tool');
   console.log('-------------');
@@ -1521,9 +1605,10 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('     Get key: https://platform.parallel.ai');
   console.log('');
 
-  const researchChoice = await question('Select [1]: ') || '1';
+  const choice = await question('Select [1]: ') || '1';
+  const tokens = {};
 
-  if (researchChoice === '2') {
+  if (choice === '2') {
     const parallelKey = await question('  Enter Parallel AI API key: ');
     if (parallelKey?.trim()) {
       tokens['PARALLEL_API_KEY'] = parallelKey.trim();
@@ -1534,6 +1619,77 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   } else {
     console.log('  ✓ Using manual research');
   }
+
+  return tokens;
+}
+
+// Helper: Check existing service configuration - extracted to reduce cognitive complexity
+async function checkExistingServiceConfig(question, projectStatus) {
+  const existingEnvVars = projectStatus?.existingEnvVars || parseEnvFile();
+  const hasCodeReviewTool = existingEnvVars.CODE_REVIEW_TOOL;
+  const hasCodeQualityTool = existingEnvVars.CODE_QUALITY_TOOL;
+  const hasExistingConfig = hasCodeReviewTool || hasCodeQualityTool;
+
+  if (!hasExistingConfig) {
+    return true; // No existing config, proceed with configuration
+  }
+
+  console.log('External services already configured:');
+  if (hasCodeReviewTool) {
+    console.log(`  - CODE_REVIEW_TOOL: ${hasCodeReviewTool}`);
+  }
+  if (hasCodeQualityTool) {
+    console.log(`  - CODE_QUALITY_TOOL: ${hasCodeQualityTool}`);
+  }
+  console.log('');
+
+  const reconfigure = await askYesNo(question, 'Reconfigure external services?', true);
+  if (!reconfigure) {
+    console.log('');
+    console.log('Keeping existing configuration.');
+    return false; // Skip configuration
+  }
+  console.log('');
+  return true; // Proceed with configuration
+}
+
+// Configure external services interactively
+async function configureExternalServices(rl, question, selectedAgents = [], projectStatus = null) {
+  console.log('');
+  console.log('==============================================');
+  console.log('  External Services Configuration');
+  console.log('==============================================');
+  console.log('');
+
+  // Check existing configuration
+  const shouldContinue = await checkExistingServiceConfig(question, projectStatus);
+  if (!shouldContinue) {
+    return;
+  }
+
+  console.log('Would you like to configure external services?');
+  console.log('(You can also add them later to .env.local)');
+  console.log('');
+
+  const configure = await askYesNo(question, 'Configure external services?', false);
+
+  if (!configure) {
+    console.log('');
+    console.log('Skipping external services. You can configure them later by editing .env.local');
+    return;
+  }
+
+  // Prompt for each service and collect tokens
+  const tokens = {};
+
+  // CODE REVIEW TOOL
+  Object.assign(tokens, await promptForCodeReviewTool(question));
+
+  // CODE QUALITY TOOL
+  Object.assign(tokens, await promptForCodeQualityTool(question));
+
+  // RESEARCH TOOL
+  Object.assign(tokens, await promptForResearchTool(question));
 
   // ============================================
   // CONTEXT7 MCP - Library Documentation
@@ -1732,7 +1888,7 @@ function setupAiderAgent() {
   const aiderPath = path.join(projectRoot, '.aider.conf.yml');
   if (fs.existsSync(aiderPath)) {
     console.log('  Skipped: .aider.conf.yml already exists');
-    return true; // Signal early return
+    return;
   }
 
   writeFile('.aider.conf.yml', `# Aider configuration
@@ -1742,7 +1898,6 @@ read:
   - docs/WORKFLOW.md
 `);
   console.log('  Created: .aider.conf.yml');
-  return true; // Signal early return
 }
 
 // Helper: Convert command to agent-specific format
@@ -1892,8 +2047,8 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
   }
 
   if (agent.customSetup === 'aider') {
-    const shouldReturn = setupAiderAgent();
-    if (shouldReturn) return;
+    setupAiderAgent();
+    return;
   }
 
   // Convert/copy commands
@@ -1948,7 +2103,58 @@ function displayInstallationStatus(projectStatus) {
 }
 
 /**
+ * Handle AGENTS.md file without markers - offers 3 options
+ * Extracted to reduce cognitive complexity
+ */
+async function promptForAgentsMdWithoutMarkers(question, skipFiles, agentsPath) {
+  console.log('');
+  console.log('Found existing AGENTS.md without Forge markers.');
+  console.log('This file may contain your custom agent instructions.');
+  console.log('');
+  console.log('How would you like to proceed?');
+  console.log('  1. Intelligent merge (preserve your content + add Forge workflow)');
+  console.log('  2. Keep existing (skip Forge installation for this file)');
+  console.log('  3. Replace (backup created at AGENTS.md.backup)');
+  console.log('');
+
+  let validChoice = false;
+  while (!validChoice) {
+    const answer = await question('Your choice (1-3) [1]: ');
+    const choice = answer.trim() || '1';
+
+    if (choice === '1') {
+      // Intelligent merge
+      skipFiles.useSemanticMerge = true;
+      skipFiles.agentsMd = false;
+      console.log('  Will use intelligent merge (preserving your content)');
+      validChoice = true;
+    } else if (choice === '2') {
+      // Keep existing
+      skipFiles.agentsMd = true;
+      console.log('  Keeping existing AGENTS.md');
+      validChoice = true;
+    } else if (choice === '3') {
+      // Replace (backup first)
+      try {
+        fs.copyFileSync(agentsPath, agentsPath + '.backup');
+        console.log('  Backup created: AGENTS.md.backup');
+      } catch (err) {
+        console.log('  Warning: Could not create backup');
+        console.warn('Backup creation failed:', err.message);
+      }
+      skipFiles.agentsMd = false;
+      skipFiles.useSemanticMerge = false;
+      console.log('  Will replace AGENTS.md');
+      validChoice = true;
+    } else {
+      console.log('  Please enter 1, 2, or 3');
+    }
+  }
+}
+
+/**
  * Prompt for file overwrite and update skipFiles
+ * Enhanced: For AGENTS.md without markers, offers intelligent merge option
  */
 async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
   if (!exists) return;
@@ -1961,6 +2167,21 @@ async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
   const config = fileLabels[fileType];
   if (!config) return;
 
+  // Enhanced: For AGENTS.md, check if it has Forge markers
+  if (fileType === 'agentsMd') {
+    const agentsPath = path.join(projectRoot, 'AGENTS.md');
+    const existingContent = fs.readFileSync(agentsPath, 'utf8');
+    const hasUserMarkers = existingContent.includes('<!-- USER:START');
+    const hasForgeMarkers = existingContent.includes('<!-- FORGE:START');
+
+    if (!hasUserMarkers && !hasForgeMarkers) {
+      // No markers - offer 3 options via helper function
+      await promptForAgentsMdWithoutMarkers(question, skipFiles, agentsPath);
+      return;
+    }
+  }
+
+  // Default behavior: Binary y/n for files with markers or .claude/commands
   const overwrite = await askYesNo(question, config.prompt, true);
   if (overwrite) {
     console.log(`  Will overwrite ${config.message}`);
@@ -1995,7 +2216,7 @@ function displayAgentOptions(agentKeys) {
  */
 function validateAgentSelection(input, agentKeys) {
   // Handle empty input
-  if (!input || !input.trim()) {
+  if (!input?.trim()) {
     return { valid: false, agents: [], message: 'Please enter at least one agent number or "all".' };
   }
 
@@ -2049,6 +2270,31 @@ async function promptForAgentSelection(question, agentKeys) {
 }
 
 /**
+ * Attempt semantic merge with fallback to replace
+ * Reduces cognitive complexity by extracting merge logic (S3776)
+ * @param {string} destPath - Destination file path
+ * @param {string} existingContent - Existing file content
+ * @param {string} newContent - New template content
+ * @param {string} srcPath - Source template path
+ */
+function trySemanticMerge(destPath, existingContent, newContent, srcPath) {
+  try {
+    // Add markers to enable future marker-based updates
+    const semanticMerged = contextMerge.semanticMerge(existingContent, newContent, {
+      addMarkers: true
+    });
+    fs.writeFileSync(destPath, semanticMerged, 'utf8');
+    console.log('  Updated: AGENTS.md (intelligent merge - preserved your content)');
+    console.log('  Note: Added USER/FORGE markers for future updates');
+  } catch (error) {
+    console.log(`  Warning: Semantic merge failed (${error.message}), using replace strategy`);
+    if (copyFile(srcPath, 'AGENTS.md')) {
+      console.log('  Updated: AGENTS.md (universal standard)');
+    }
+  }
+}
+
+/**
  * Handle AGENTS.md installation
  */
 async function installAgentsMd(skipFiles) {
@@ -2067,8 +2313,12 @@ async function installAgentsMd(skipFiles) {
     const merged = smartMergeAgentsMd(existingContent, newContent);
 
     if (merged) {
+      // Has markers - use existing smart merge
       fs.writeFileSync(agentsDest, merged, 'utf8');
       console.log('  Updated: AGENTS.md (preserved USER sections)');
+    } else if (skipFiles.useSemanticMerge) {
+      // Enhanced: No markers but user chose intelligent merge
+      trySemanticMerge(agentsDest, existingContent, newContent, agentsSrc);
     } else if (copyFile(agentsSrc, 'AGENTS.md')) {
       // No markers, do normal copy (user already approved overwrite)
       console.log('  Updated: AGENTS.md (universal standard)');
@@ -2254,7 +2504,7 @@ async function interactiveSetup() {
   // =============================================
   // PROJECT DETECTION
   // =============================================
-  const projectStatus = detectProjectStatus();
+  const projectStatus = await detectProjectStatus();
   displayInstallationStatus(projectStatus);
 
   // Track which files to skip based on user choices
@@ -2333,7 +2583,10 @@ function parseFlags() {
     agents: null,
     all: false,
     help: false,
-    path: null
+    path: null,
+    merge: null,     // 'smart'|'preserve'|'replace'
+    type: null,      // 'critical'|'standard'|'simple'|'hotfix'|'docs'|'refactor'
+    interview: false // Force context interview
   };
 
   for (let i = 0; i < args.length; ) {
@@ -2351,33 +2604,24 @@ function parseFlags() {
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true;
       i++;
-    } else if (arg === '--path' || arg === '-p') {
-      // --path <directory> or -p <directory>
-      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-        flags.path = args[i + 1];
-        i += 2; // Skip current and next arg
-      } else {
-        i++;
-      }
-    } else if (arg.startsWith('--path=')) {
-      // --path=/some/dir format
-      flags.path = arg.replace('--path=', '');
-      i++;
-    } else if (arg === '--agents') {
-      // --agents claude cursor format
-      const agentList = [];
-      let j = i + 1;
-      while (j < args.length && !args[j].startsWith('-')) {
-        agentList.push(args[j]);
-        j++;
-      }
-      if (agentList.length > 0) {
-        flags.agents = agentList.join(',');
-      }
-      i = j; // Skip all consumed arguments
-    } else if (arg.startsWith('--agents=')) {
-      // --agents=claude,cursor format
-      flags.agents = arg.replace('--agents=', '');
+    } else if (arg === '--path' || arg === '-p' || arg.startsWith('--path=')) {
+      const result = parsePathFlag(args, i);
+      flags.path = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--agents' || arg.startsWith('--agents=')) {
+      const result = parseAgentsFlag(args, i);
+      flags.agents = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--merge' || arg.startsWith('--merge=')) {
+      const result = parseMergeFlag(args, i);
+      flags.merge = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--type' || arg.startsWith('--type=')) {
+      const result = parseTypeFlag(args, i);
+      flags.type = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--interview') {
+      flags.interview = true;
       i++;
     } else {
       i++;
@@ -2385,6 +2629,104 @@ function parseFlags() {
   }
 
   return flags;
+}
+
+// Parse --path flag with validation - extracted to reduce complexity
+function parsePathFlag(args, i) {
+  let inputPath = null;
+  let nextIndex = i + 1;
+
+  if (args[i].startsWith('--path=')) {
+    // --path=/some/dir format
+    inputPath = args[i].replace('--path=', '');
+  } else if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+    // --path <directory> format
+    inputPath = args[i + 1];
+    nextIndex = i + 2;
+  }
+
+  if (inputPath) {
+    const validation = validateUserInput(inputPath, 'directory_path');
+    if (!validation.valid) {
+      console.error(`Error: Invalid --path value: ${validation.error}`);
+      process.exit(1);
+    }
+  }
+
+  return { value: inputPath, nextIndex };
+}
+
+// Parse --agents flag with list - extracted to reduce complexity
+function parseAgentsFlag(args, i) {
+  if (args[i].startsWith('--agents=')) {
+    // --agents=claude,cursor format
+    return { value: args[i].replace('--agents=', ''), nextIndex: i + 1 };
+  }
+
+  // --agents claude cursor format
+  const agentList = [];
+  let j = i + 1;
+  while (j < args.length && !args[j].startsWith('-')) {
+    agentList.push(args[j]);
+    j++;
+  }
+
+  return { value: agentList.length > 0 ? agentList.join(',') : null, nextIndex: j };
+}
+
+// Parse --merge flag with enum validation - extracted to reduce complexity
+function parseMergeFlag(args, i) {
+  const validModes = ['smart', 'preserve', 'replace'];
+  let mergeMode = null;
+  let nextIndex = i + 1;
+
+  if (args[i].startsWith('--merge=')) {
+    // --merge=smart format
+    mergeMode = args[i].replace('--merge=', '');
+  } else if (i + 1 < args.length) {
+    // --merge smart format
+    mergeMode = args[i + 1];
+    nextIndex = i + 2;
+  } else {
+    console.error('--merge requires a value: smart, preserve, or replace');
+    process.exit(1);
+  }
+
+  if (!validModes.includes(mergeMode)) {
+    console.error(`Invalid --merge value: ${mergeMode}`);
+    console.error('Valid options: smart, preserve, replace');
+    process.exit(1);
+  }
+
+  return { value: mergeMode, nextIndex };
+}
+
+// Parse --type flag with enum validation - extracted to reduce complexity
+function parseTypeFlag(args, i) {
+  const validTypes = ['critical', 'standard', 'simple', 'hotfix', 'docs', 'refactor'];
+  let workType = null;
+  let nextIndex = i + 1;
+
+  if (args[i].startsWith('--type=')) {
+    // --type=critical format
+    workType = args[i].replace('--type=', '');
+  } else if (i + 1 < args.length) {
+    // --type critical format
+    workType = args[i + 1];
+    nextIndex = i + 2;
+  } else {
+    console.error('--type requires a value');
+    console.error(`Valid options: ${validTypes.join(', ')}`);
+    process.exit(1);
+  }
+
+  if (!validTypes.includes(workType)) {
+    console.error(`Invalid --type value: ${workType}`);
+    console.error(`Valid options: ${validTypes.join(', ')}`);
+    process.exit(1);
+  }
+
+  return { value: workType, nextIndex };
 }
 
 // Validate agent names
@@ -2419,6 +2761,12 @@ function showHelp() {
   console.log('                       Accepts: --agents claude cursor');
   console.log('                                --agents=claude,cursor');
   console.log('  --all                Install for all available agents');
+  console.log('  --merge <mode>       Merge strategy for existing AGENTS.md files');
+  console.log('                       Options: smart (intelligent merge), preserve (keep existing),');
+  console.log('                                replace (overwrite with new)');
+  console.log('  --type <type>        Set workflow profile type manually');
+  console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
+  console.log('  --interview          Force context interview (gather project information)');
   console.log('  --help, -h           Show this help message');
   console.log('');
   console.log('Available agents:');
@@ -2437,6 +2785,9 @@ function showHelp() {
   console.log('  npx forge setup --skip-external          # No service configuration');
   console.log('  npx forge setup --agents claude --quick  # Quick + specific agent');
   console.log('  npx forge setup --all --skip-external    # All agents, no services');
+  console.log('  npx forge setup --merge=smart            # Use intelligent merge for existing files');
+  console.log('  npx forge setup --type=critical          # Set workflow profile manually');
+  console.log('  npx forge setup --interview              # Force context interview');
   console.log('');
   console.log('Also works with bun:');
   console.log('  bunx forge setup --quick');
@@ -2478,6 +2829,7 @@ function installGitHooks() {
           fs.chmodSync(hookTarget, 0o755);
         } catch (err) {
           // Windows doesn't need chmod
+          console.warn('chmod not available (Windows):', err.message);
         }
       }
     }
@@ -2489,13 +2841,15 @@ function installGitHooks() {
       try {
         execFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (local)');
-      } catch (npxErr) {
+      } catch (error_) {
         // Fallback to global lefthook
+        console.warn('npx lefthook failed, trying global:', error_.message);
         execFileSync('lefthook', ['version'], { stdio: 'ignore' });
         execFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (global)');
       }
     } catch (err) {
+      console.warn('Lefthook installation failed:', err.message);
       console.log('  ℹ Lefthook not found. Install it:');
       console.log('    bun add -d lefthook  (recommended)');
       console.log('    OR: bun add -g lefthook  (global)');
@@ -2520,6 +2874,7 @@ function checkForLefthook() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     return !!(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
   } catch (err) {
+    console.warn('Failed to check lefthook in package.json:', err.message);
     return false;
   }
 }
@@ -2532,6 +2887,7 @@ function checkForBeads() {
     return 'global';
   } catch (err) {
     // Not global
+    console.warn('Beads not found globally:', err.message);
   }
 
   // Check if bunx can run it
@@ -2540,17 +2896,20 @@ function checkForBeads() {
     return 'bunx';
   } catch (err) {
     // Not bunx-capable
+    console.warn('Beads not available via bunx:', err.message);
   }
 
   // Check local project installation
   const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return false;
+  if (!fs.existsSync(pkgPath)) return null;
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return !!(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
+    const isInstalled = pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd'];
+    return isInstalled ? 'local' : null;
   } catch (err) {
-    return false;
+    console.warn('Failed to check Beads in package.json:', err.message);
+    return null;
   }
 }
 
@@ -2562,6 +2921,7 @@ function checkForOpenSpec() {
     return 'global';
   } catch (err) {
     // Not global
+    console.warn('OpenSpec not found globally:', err.message);
   }
 
   // Check if bunx can run it
@@ -2570,17 +2930,20 @@ function checkForOpenSpec() {
     return 'bunx';
   } catch (err) {
     // Not bunx-capable
+    console.warn('OpenSpec not available via bunx:', err.message);
   }
 
   // Check local project installation
   const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return false;
+  if (!fs.existsSync(pkgPath)) return null;
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return !!(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
+    const isInstalled = pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec'];
+    return isInstalled ? 'local' : null;
   } catch (err) {
-    return false;
+    console.warn('Failed to check OpenSpec in package.json:', err.message);
+    return null;
   }
 }
 
@@ -2638,6 +3001,184 @@ function initializeOpenSpec(installType) {
   }
 }
 
+// Prompt for Beads setup - extracted to reduce cognitive complexity
+async function promptBeadsSetup(question) {
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('Beads Setup (Recommended)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const beadsInitialized = isBeadsInitialized();
+  const beadsStatus = checkForBeads();
+
+  if (beadsInitialized) {
+    console.log('✓ Beads is already initialized in this project');
+    console.log('');
+    return;
+  }
+
+  if (beadsStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ Beads is installed (${beadsStatus}), but not initialized`);
+    const initBeads = await question('Initialize Beads in this project? (y/n): ');
+
+    if (initBeads.toLowerCase() === 'y') {
+      initializeBeads(beadsStatus);
+    } else {
+      console.log('Skipped Beads initialization. Run manually: bd init');
+    }
+    console.log('');
+    return;
+  }
+
+  // Not installed
+  console.log('ℹ Beads is not installed');
+  const installBeads = await question('Install Beads? (y/n): ');
+
+  if (installBeads.toLowerCase() !== 'y') {
+    console.log('Skipped Beads installation');
+    console.log('');
+    return;
+  }
+
+  console.log('');
+  console.log('Choose installation method:');
+  console.log('  1. Global (recommended) - Available system-wide');
+  console.log('  2. Local - Project-specific devDependency');
+  console.log('  3. Bunx - Use via bunx (requires bun)');
+  console.log('');
+  const method = await question('Choose method (1-3): ');
+
+  console.log('');
+  installBeadsWithMethod(method);
+  console.log('');
+}
+
+// Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
+function installBeadsWithMethod(method) {
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (method === '1') {
+      console.log('Installing Beads globally...');
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      console.log('  ✓ Beads installed globally');
+      initializeBeads('global');
+    } else if (method === '2') {
+      console.log('Installing Beads locally...');
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Beads installed locally');
+      initializeBeads('local');
+    } else if (method === '3') {
+      console.log('Testing bunx capability...');
+      try {
+        execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+        console.log('  ✓ Bunx is available');
+        initializeBeads('bunx');
+      } catch (err) {
+        console.warn('Beads bunx test failed:', err.message);
+        console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
+      }
+    } else {
+      console.log('Invalid choice. Skipping Beads installation.');
+    }
+  } catch (err) {
+    console.warn('Beads installation failed:', err.message);
+    console.log('  ⚠ Failed to install Beads:', err.message);
+    console.log('  Run manually: bun add -g @beads/bd && bd init');
+  }
+}
+
+// Prompt for OpenSpec setup - extracted to reduce cognitive complexity
+async function promptOpenSpecSetup(question) {
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('OpenSpec Setup (Optional)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const openspecInitialized = isOpenSpecInitialized();
+  const openspecStatus = checkForOpenSpec();
+
+  if (openspecInitialized) {
+    console.log('✓ OpenSpec is already initialized in this project');
+    console.log('');
+    return;
+  }
+
+  if (openspecStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ OpenSpec is installed (${openspecStatus}), but not initialized`);
+    const initOpenSpec = await question('Initialize OpenSpec in this project? (y/n): ');
+
+    if (initOpenSpec.toLowerCase() === 'y') {
+      initializeOpenSpec(openspecStatus);
+    } else {
+      console.log('Skipped OpenSpec initialization. Run manually: openspec init');
+    }
+    console.log('');
+    return;
+  }
+
+  // Not installed
+  console.log('ℹ OpenSpec is not installed');
+  const installOpenSpec = await question('Install OpenSpec? (y/n): ');
+
+  if (installOpenSpec.toLowerCase() !== 'y') {
+    console.log('Skipped OpenSpec installation');
+    console.log('');
+    return;
+  }
+
+  console.log('');
+  console.log('Choose installation method:');
+  console.log('  1. Global (recommended) - Available system-wide');
+  console.log('  2. Local - Project-specific devDependency');
+  console.log('  3. Bunx - Use via bunx (requires bun)');
+  console.log('');
+  const method = await question('Choose method (1-3): ');
+
+  console.log('');
+  installOpenSpecWithMethod(method);
+  console.log('');
+}
+
+// Helper: Install OpenSpec with chosen method - extracted to reduce cognitive complexity
+function installOpenSpecWithMethod(method) {
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (method === '1') {
+      console.log('Installing OpenSpec globally...');
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
+      console.log('  ✓ OpenSpec installed globally');
+      initializeOpenSpec('global');
+    } else if (method === '2') {
+      console.log('Installing OpenSpec locally...');
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ OpenSpec installed locally');
+      initializeOpenSpec('local');
+    } else if (method === '3') {
+      console.log('Testing bunx capability...');
+      try {
+        execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+        console.log('  ✓ Bunx is available');
+        initializeOpenSpec('bunx');
+      } catch (err) {
+        console.warn('OpenSpec bunx test failed:', err.message);
+        console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
+      }
+    } else {
+      console.log('Invalid choice. Skipping OpenSpec installation.');
+    }
+  } catch (err) {
+    console.warn('OpenSpec installation failed:', err.message);
+    console.log('  ⚠ Failed to install OpenSpec:', err.message);
+    console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
+  }
+}
+
 // Interactive setup for Beads and OpenSpec
 async function setupProjectTools(rl, question) {
   console.log('');
@@ -2656,158 +3197,35 @@ async function setupProjectTools(rl, question) {
   console.log('  Command: openspec init, openspec status');
   console.log('');
 
-  // ========================================
-  // BEADS SETUP
-  // ========================================
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('Beads Setup (Recommended)');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
+  // Use helper functions to reduce complexity
+  await promptBeadsSetup(question);
+  await promptOpenSpecSetup(question);
+}
 
-  const beadsInitialized = isBeadsInitialized();
+// Auto-setup Beads in quick mode - extracted to reduce cognitive complexity
+function autoSetupBeadsInQuickMode() {
   const beadsStatus = checkForBeads();
+  const beadsInitialized = isBeadsInitialized();
 
-  if (beadsInitialized) {
-    console.log('✓ Beads is already initialized in this project');
+  if (!beadsInitialized && beadsStatus) {
+    console.log('📦 Initializing Beads...');
+    initializeBeads(beadsStatus);
     console.log('');
-  } else if (beadsStatus) {
-    // Already installed, just need to initialize
-    console.log(`ℹ Beads is installed (${beadsStatus}), but not initialized`);
-    const initBeads = await question('Initialize Beads in this project? (y/n): ');
-
-    if (initBeads.toLowerCase() === 'y') {
-      initializeBeads(beadsStatus);
-    } else {
-      console.log('Skipped Beads initialization. Run manually: bd init');
+  } else if (!beadsInitialized && !beadsStatus) {
+    console.log('📦 Installing Beads globally...');
+    try {
+      // SECURITY: execFileSync with hardcoded command
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      console.log('  ✓ Beads installed globally');
+      initializeBeads('global');
+    } catch (err) {
+      // Installation failed - provide manual instructions
+      console.log('  ⚠ Could not install Beads automatically');
+      console.log(`    Error: ${err.message}`);
+      console.log('  Run manually: npm install -g @beads/bd && bd init');
     }
     console.log('');
-  } else {
-    // Not installed
-    console.log('ℹ Beads is not installed');
-    const installBeads = await question('Install Beads? (y/n): ');
-
-    if (installBeads.toLowerCase() === 'y') {
-      console.log('');
-      console.log('Choose installation method:');
-      console.log('  1. Global (recommended) - Available system-wide');
-      console.log('  2. Local - Project-specific devDependency');
-      console.log('  3. Bunx - Use via bunx (requires bun)');
-      console.log('');
-      const method = await question('Choose method (1-3): ');
-
-      console.log('');
-      try {
-        // SECURITY: execFileSync with hardcoded commands
-        if (method === '1') {
-          console.log('Installing Beads globally...');
-          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-          execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
-          console.log('  ✓ Beads installed globally');
-          initializeBeads('global');
-        } else if (method === '2') {
-          console.log('Installing Beads locally...');
-          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-          execFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
-          console.log('  ✓ Beads installed locally');
-          initializeBeads('local');
-        } else if (method === '3') {
-          console.log('Testing bunx capability...');
-          try {
-            execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
-            console.log('  ✓ Bunx is available');
-            initializeBeads('bunx');
-          } catch (err) {
-            console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
-          }
-        } else {
-          console.log('Invalid choice. Skipping Beads installation.');
-        }
-      } catch (err) {
-        console.log('  ⚠ Failed to install Beads:', err.message);
-        console.log('  Run manually: bun add -g @beads/bd && bd init');
-      }
-      console.log('');
-    } else {
-      console.log('Skipped Beads installation');
-      console.log('');
-    }
-  }
-
-  // ========================================
-  // OPENSPEC SETUP
-  // ========================================
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('OpenSpec Setup (Optional)');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-
-  const openspecInitialized = isOpenSpecInitialized();
-  const openspecStatus = checkForOpenSpec();
-
-  if (openspecInitialized) {
-    console.log('✓ OpenSpec is already initialized in this project');
-    console.log('');
-  } else if (openspecStatus) {
-    // Already installed, just need to initialize
-    console.log(`ℹ OpenSpec is installed (${openspecStatus}), but not initialized`);
-    const initOpenSpec = await question('Initialize OpenSpec in this project? (y/n): ');
-
-    if (initOpenSpec.toLowerCase() === 'y') {
-      initializeOpenSpec(openspecStatus);
-    } else {
-      console.log('Skipped OpenSpec initialization. Run manually: openspec init');
-    }
-    console.log('');
-  } else {
-    // Not installed
-    console.log('ℹ OpenSpec is not installed');
-    const installOpenSpec = await question('Install OpenSpec? (y/n): ');
-
-    if (installOpenSpec.toLowerCase() === 'y') {
-      console.log('');
-      console.log('Choose installation method:');
-      console.log('  1. Global (recommended) - Available system-wide');
-      console.log('  2. Local - Project-specific devDependency');
-      console.log('  3. Bunx - Use via bunx (requires bun)');
-      console.log('');
-      const method = await question('Choose method (1-3): ');
-
-      console.log('');
-      try {
-        // SECURITY: execFileSync with hardcoded commands
-        if (method === '1') {
-          console.log('Installing OpenSpec globally...');
-          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-          execFileSync(pkgManager, ['install', '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
-          console.log('  ✓ OpenSpec installed globally');
-          initializeOpenSpec('global');
-        } else if (method === '2') {
-          console.log('Installing OpenSpec locally...');
-          const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-          execFileSync(pkgManager, ['install', '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
-          console.log('  ✓ OpenSpec installed locally');
-          initializeOpenSpec('local');
-        } else if (method === '3') {
-          console.log('Testing bunx capability...');
-          try {
-            execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
-            console.log('  ✓ Bunx is available');
-            initializeOpenSpec('bunx');
-          } catch (err) {
-            console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
-          }
-        } else {
-          console.log('Invalid choice. Skipping OpenSpec installation.');
-        }
-      } catch (err) {
-        console.log('  ⚠ Failed to install OpenSpec:', err.message);
-        console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
-      }
-      console.log('');
-    } else {
-      console.log('Skipped OpenSpec installation');
-      console.log('');
-    }
   }
 }
 
@@ -2842,6 +3260,7 @@ async function quickSetup(selectedAgents, skipExternal) {
       execFileSync('bun', ['add', '-d', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Lefthook installed');
     } catch (err) {
+      console.warn('Lefthook auto-install failed:', err.message);
       console.log('  ⚠ Could not install lefthook automatically');
       console.log('  Run manually: bun add -d lefthook');
     }
@@ -2849,27 +3268,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   }
 
   // Auto-setup Beads in quick mode (non-interactive)
-  const beadsStatus = checkForBeads();
-  const beadsInitialized = isBeadsInitialized();
-
-  if (!beadsInitialized && beadsStatus) {
-    console.log('📦 Initializing Beads...');
-    initializeBeads(beadsStatus);
-    console.log('');
-  } else if (!beadsInitialized && !beadsStatus) {
-    console.log('📦 Installing Beads globally...');
-    try {
-      // SECURITY: execFileSync with hardcoded command
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
-      console.log('  ✓ Beads installed globally');
-      initializeBeads('global');
-    } catch (err) {
-      console.log('  ⚠ Could not install Beads automatically');
-      console.log('  Run manually: npm install -g @beads/bd && bd init');
-    }
-    console.log('');
-  }
+  autoSetupBeadsInQuickMode();
 
   // OpenSpec: skip in quick mode (optional tool)
   // Only initialize if already installed
@@ -2958,6 +3357,55 @@ async function quickSetup(selectedAgents, skipExternal) {
   console.log('');
 }
 
+// Helper: Apply merge strategy to existing AGENTS.md - extracted to reduce cognitive complexity
+function applyAgentsMdMergeStrategy(mergeStrategy, agentsSrc, agentsDest, existingContent, newContent) {
+  if (mergeStrategy === 'preserve') {
+    console.log('  Preserved: AGENTS.md (--merge=preserve)');
+    return;
+  }
+
+  if (mergeStrategy === 'replace') {
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Replaced: AGENTS.md (--merge=replace)');
+    }
+    return;
+  }
+
+  // Default: smart merge
+  const merged = smartMergeAgentsMd(existingContent, newContent);
+  if (merged) {
+    fs.writeFileSync(agentsDest, merged, 'utf8');
+    console.log('  Updated: AGENTS.md (smart merge, preserved USER sections)');
+  } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+    console.log('  Updated: AGENTS.md (universal standard)');
+  }
+}
+
+// Setup AGENTS.md file with merge strategy - extracted to reduce cognitive complexity
+function setupAgentsMdFile(flags, skipFiles) {
+  if (skipFiles.agentsMd) {
+    console.log('  Skipped: AGENTS.md (keeping existing)');
+    return;
+  }
+
+  const agentsSrc = path.join(packageDir, 'AGENTS.md');
+  const agentsDest = path.join(projectRoot, 'AGENTS.md');
+  const mergeStrategy = flags.merge || 'smart';
+
+  if (fs.existsSync(agentsDest)) {
+    const existingContent = fs.readFileSync(agentsDest, 'utf8');
+    const newContent = fs.readFileSync(agentsSrc, 'utf8');
+    applyAgentsMdMergeStrategy(mergeStrategy, agentsSrc, agentsDest, existingContent, newContent);
+  } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+    console.log('  Created: AGENTS.md (universal standard)');
+    const detection = detectProjectType();
+    if (detection.hasPackageJson) {
+      updateAgentsMdWithProjectType(detection);
+      displayProjectType(detection);
+    }
+  }
+}
+
 // Interactive setup with flag support
 async function interactiveSetupWithFlags(flags) {
   const rl = readline.createInterface({
@@ -2997,7 +3445,35 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   // PROJECT DETECTION
   // =============================================
-  const projectStatus = detectProjectStatus();
+  const projectStatus = await detectProjectStatus();
+
+  // Handle user-provided flags to override auto-detection
+  if (flags.type || flags.interview) {
+    console.log('User-provided flags:');
+    if (flags.type) {
+      console.log(`  --type=${flags.type} (workflow profile override)`);
+      // Update saved context with manual type override
+      if (projectStatus.autoDetected) {
+        try {
+          const contextPath = path.join(projectRoot, '.forge', 'context.json');
+          if (fs.existsSync(contextPath)) {
+            const contextData = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
+            contextData.user_provided = contextData.user_provided || {};
+            contextData.user_provided.workflowType = flags.type;
+            contextData.last_updated = new Date().toISOString();
+            fs.writeFileSync(contextPath, JSON.stringify(contextData, null, 2), 'utf8');
+          }
+        } catch (error) {
+          console.warn('  Warning: Could not save workflow type override:', error.message);
+        }
+      }
+    }
+    if (flags.interview) {
+      console.log('  --interview (context interview mode)');
+      console.log('  Note: Enhanced context gathering is a future feature');
+    }
+    console.log('');
+  }
 
   if (projectStatus.type !== 'fresh') {
     console.log('==============================================');
@@ -3050,94 +3526,15 @@ async function interactiveSetupWithFlags(flags) {
     console.log('');
   }
 
-  // =============================================
-  // STEP 1: Agent Selection
-  // =============================================
-  console.log('STEP 1: Select AI Coding Agents');
-  console.log('================================');
-  console.log('');
-  console.log('Which AI coding agents do you use?');
-  console.log('(Enter numbers separated by spaces, or "all")');
-  console.log('');
-
+  // STEP 1: Agent Selection (delegated to helper)
   const agentKeys = Object.keys(AGENTS);
-  agentKeys.forEach((key, index) => {
-    const agent = AGENTS[key];
-    console.log(`  ${(index + 1).toString().padStart(2)}) ${agent.name.padEnd(20)} - ${agent.description}`);
-  });
-  console.log('');
-  console.log('  all) Install for all agents');
-  console.log('');
-
-  let selectedAgents = [];
-
-  // Loop until valid input is provided
-  while (selectedAgents.length === 0) {
-    const answer = await question('Your selection: ');
-
-    // Handle empty input - reprompt
-    if (!answer || !answer.trim()) {
-      console.log('  Please enter at least one agent number or "all".');
-      continue;
-    }
-
-    if (answer.toLowerCase() === 'all') {
-      selectedAgents = agentKeys;
-    } else {
-      const nums = answer.split(/[\s,]+/).map(n => Number.parseInt(n.trim())).filter(n => !Number.isNaN(n));
-
-      // Validate numbers are in range
-      const validNums = nums.filter(n => n >= 1 && n <= agentKeys.length);
-      const invalidNums = nums.filter(n => n < 1 || n > agentKeys.length);
-
-      if (invalidNums.length > 0) {
-        console.log(`  Warning: Invalid numbers ignored: ${invalidNums.join(', ')} (valid: 1-${agentKeys.length})`);
-      }
-
-      // Deduplicate selected agents using Set
-      selectedAgents = [...new Set(validNums.map(n => agentKeys[n - 1]))].filter(Boolean);
-    }
-
-    if (selectedAgents.length === 0) {
-      console.log('  No valid agents selected. Please try again.');
-    }
-  }
+  const selectedAgents = await promptForAgentSelection(question, agentKeys);
 
   console.log('');
   console.log('Installing Forge workflow...');
 
-  // Copy AGENTS.md unless skipped
-  if (skipFiles.agentsMd) {
-    console.log('  Skipped: AGENTS.md (keeping existing)');
-  } else {
-    const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    const agentsDest = path.join(projectRoot, 'AGENTS.md');
-
-    // Try smart merge if file exists
-    if (fs.existsSync(agentsDest)) {
-      const existingContent = fs.readFileSync(agentsDest, 'utf8');
-      const newContent = fs.readFileSync(agentsSrc, 'utf8');
-      const merged = smartMergeAgentsMd(existingContent, newContent);
-
-      if (merged) {
-        fs.writeFileSync(agentsDest, merged, 'utf8');
-        console.log('  Updated: AGENTS.md (preserved USER sections)');
-      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-        // No markers, do normal copy (user already approved overwrite)
-        console.log('  Updated: AGENTS.md (universal standard)');
-      }
-    } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-      // New file
-      console.log('  Created: AGENTS.md (universal standard)');
-
-      // Detect project type and update AGENTS.md
-      const detection = detectProjectType();
-      if (detection.hasPackageJson) {
-        updateAgentsMdWithProjectType(detection);
-        displayProjectType(detection);
-      }
-    }
-  }
+  // Setup AGENTS.md (delegated to helper)
+  setupAgentsMdFile(flags, skipFiles);
   console.log('');
 
   // Setup core documentation
@@ -3198,81 +3595,8 @@ async function interactiveSetupWithFlags(flags) {
   setupCompleted = true;
   rl.close();
 
-  // =============================================
-  // Final Summary
-  // =============================================
-  console.log('');
-  console.log('==============================================');
-  console.log(`  Forge v${VERSION} Setup Complete!`);
-  console.log('==============================================');
-  console.log('');
-  console.log('What\'s installed:');
-  console.log('  - AGENTS.md (universal instructions)');
-  console.log('  - docs/WORKFLOW.md (full workflow guide)');
-  console.log('  - docs/research/TEMPLATE.md (research template)');
-  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    if (agent.linkFile) {
-      console.log(`  - ${agent.linkFile} (${agent.name})`);
-    }
-    if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (9 workflow commands)`);
-    }
-    if (agent.hasSkill) {
-      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-      if (skillDir) {
-        console.log(`  - ${skillDir}/SKILL.md`);
-      }
-    }
-  });
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('📋  NEXT STEP - Complete AGENTS.md');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-  console.log('Ask your AI agent:');
-  console.log('  "Fill in the project description in AGENTS.md"');
-  console.log('');
-  console.log('The agent will:');
-  console.log('  ✓ Add one-sentence project description');
-  console.log('  ✓ Confirm package manager');
-  console.log('  ✓ Verify build commands');
-  console.log('');
-  console.log('Takes ~30 seconds. Done!');
-  console.log('');
-  console.log('💡 As you work: Add project patterns to AGENTS.md');
-  console.log('   USER:START section. Keep it minimal - budget is');
-  console.log('   ~150-200 instructions max.');
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-  console.log('Project Tools Status:');
-  console.log('');
-
-  // Beads status
-  if (isBeadsInitialized()) {
-    console.log('  ✓ Beads initialized - Track work: bd ready');
-  } else if (checkForBeads()) {
-    console.log('  ! Beads available - Run: bd init');
-  } else {
-    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  }
-
-  // OpenSpec status
-  if (isOpenSpecInitialized()) {
-    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
-  } else if (checkForOpenSpec()) {
-    console.log('  ! OpenSpec available - Run: openspec init');
-  } else {
-    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
-  }
-
-  console.log('');
-  console.log('Start with: /status');
-  console.log('');
-  console.log(`Package manager: ${PKG_MANAGER}`);
-  console.log('');
+  // Display final summary (delegated to helper)
+  displaySetupSummary(selectedAgents);
 }
 
 // Main
@@ -3306,6 +3630,9 @@ function handlePathSetup(targetPath) {
     console.error(`Error changing to directory: ${err.message}`);
     process.exit(1);
   }
+
+  // Return the resolved path so caller can update projectRoot
+  return resolvedPath;
 }
 
 // Helper: Determine selected agents from flags
@@ -3410,7 +3737,8 @@ async function main() {
 
   // Handle --path option: change to target directory
   if (flags.path) {
-    handlePathSetup(flags.path);
+    // Update projectRoot after changing directory to maintain state consistency
+    projectRoot = handlePathSetup(flags.path);
   }
 
   if (command === 'setup') {
@@ -3450,6 +3778,51 @@ async function main() {
 // Security: All inputs validated before use in git commands
 // See test/rollback-validation.test.js for validation test coverage
 
+// Helper: Validate commit hash for rollback - extracted to reduce cognitive complexity
+function validateCommitHash(target) {
+  if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
+    return { valid: false, error: 'Invalid commit hash format' };
+  }
+  return { valid: true };
+}
+
+// Helper: Validate file paths for partial rollback - extracted to reduce cognitive complexity
+function validatePartialRollbackPaths(target) {
+  const files = target.split(',').map(f => f.trim());
+  for (const file of files) {
+    // Reject shell metacharacters
+    if (/[;|&$`()<>\r\n]/.test(file)) {
+      return { valid: false, error: `Invalid characters in path: ${file}` };
+    }
+    // Reject URL-encoded path traversal attempts
+    if (/%2[eE]|%2[fF]|%5[cC]/.test(file)) {
+      return { valid: false, error: `URL-encoded characters not allowed: ${file}` };
+    }
+    // Reject non-ASCII/unicode characters
+    if (!/^[\x20-\x7E]+$/.test(file)) {
+      return { valid: false, error: `Only ASCII characters allowed in path: ${file}` };
+    }
+    // Prevent path traversal
+    const resolved = path.resolve(projectRoot, file);
+    if (!resolved.startsWith(projectRoot)) {
+      return { valid: false, error: `Path outside project: ${file}` };
+    }
+  }
+  return { valid: true };
+}
+
+// Helper: Validate branch range for rollback - extracted to reduce cognitive complexity
+function validateBranchRange(target) {
+  if (!target.includes('..')) {
+    return { valid: false, error: 'Branch range must use format: start..end' };
+  }
+  const [start, end] = target.split('..');
+  if (!/^[0-9a-f]{4,40}$/i.test(start) || !/^[0-9a-f]{4,40}$/i.test(end)) {
+    return { valid: false, error: 'Invalid commit hashes in range' };
+  }
+  return { valid: true };
+}
+
 // Validate rollback inputs (security-critical)
 function validateRollbackInput(method, target) {
   const validMethods = ['commit', 'pr', 'partial', 'branch'];
@@ -3457,46 +3830,17 @@ function validateRollbackInput(method, target) {
     return { valid: false, error: 'Invalid method' };
   }
 
-  // Validate commit hash (git allows 4-40 char abbreviations)
+  // Delegate to method-specific validators
   if (method === 'commit' || method === 'pr') {
-    if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
-      return { valid: false, error: 'Invalid commit hash format' };
-    }
+    return validateCommitHash(target);
   }
 
-  // Validate file paths
   if (method === 'partial') {
-    const files = target.split(',').map(f => f.trim());
-    for (const file of files) {
-      // Reject shell metacharacters
-      if (/[;|&$`()<>\r\n]/.test(file)) {
-        return { valid: false, error: `Invalid characters in path: ${file}` };
-      }
-      // Reject URL-encoded path traversal attempts
-      if (/%2[eE]|%2[fF]|%5[cC]/.test(file)) {
-        return { valid: false, error: `URL-encoded characters not allowed: ${file}` };
-      }
-      // Reject non-ASCII/unicode characters
-      if (!/^[\x20-\x7E]+$/.test(file)) {
-        return { valid: false, error: `Only ASCII characters allowed in path: ${file}` };
-      }
-      // Prevent path traversal
-      const resolved = path.resolve(projectRoot, file);
-      if (!resolved.startsWith(projectRoot)) {
-        return { valid: false, error: `Path outside project: ${file}` };
-      }
-    }
+    return validatePartialRollbackPaths(target);
   }
 
-  // Validate branch range
   if (method === 'branch') {
-    if (!target.includes('..')) {
-      return { valid: false, error: 'Branch range must use format: start..end' };
-    }
-    const [start, end] = target.split('..');
-    if (!/^[0-9a-f]{4,40}$/i.test(start) || !/^[0-9a-f]{4,40}$/i.test(end)) {
-      return { valid: false, error: 'Invalid commit hashes in range' };
-    }
+    return validateBranchRange(target);
   }
 
   return { valid: true };
@@ -3834,4 +4178,7 @@ async function showRollbackMenu() {
   await performRollback(method, target, dryRun);
 }
 
-main().catch(console.error);
+// Only execute main() when run directly, not when imported
+if (require.main === module) {
+  main().catch(console.error);
+}

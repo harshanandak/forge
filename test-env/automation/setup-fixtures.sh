@@ -391,7 +391,19 @@ create_read_only_dirs() {
 
   # Create read-only .claude directory
   mkdir -p "$fixture_path/.claude"
-  chmod 444 "$fixture_path/.claude"
+
+  # Set read-only permissions (may not work on Windows or minimal environments)
+  if command -v chmod >/dev/null 2>&1; then
+    if chmod 444 "$fixture_path/.claude" 2>/dev/null; then
+      log_info "  Set read-only permissions on .claude directory"
+    else
+      log_warning "  Could not set read-only permissions (chmod failed)"
+      log_warning "  Permission tests may be skipped on this system"
+    fi
+  else
+    log_warning "  chmod command not available"
+    log_warning "  Permission tests will be skipped on this system"
+  fi
 
   CREATED_FIXTURES+=("$fixture_name")
   log_success "Created: $fixture_name"

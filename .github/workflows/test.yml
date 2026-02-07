@@ -6,6 +6,7 @@ on:
     paths:
       - 'bin/**'
       - 'lib/**'
+      - 'test/**'
       - 'test-env/**'
       - 'package.json'
       - '.github/workflows/test.yml'
@@ -13,9 +14,11 @@ on:
     paths:
       - 'bin/**'
       - 'lib/**'
+      - 'test/**'
       - 'test-env/**'
       - 'package.json'
       - '.github/workflows/test.yml'
+  workflow_dispatch:  # Allow manual workflow runs
 
 jobs:
   test:
