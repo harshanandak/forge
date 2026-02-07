@@ -3206,6 +3206,34 @@ async function interactiveSetupWithFlags(flags) {
   // =============================================
   const projectStatus = await detectProjectStatus();
 
+  // Handle user-provided flags to override auto-detection
+  if (flags.type || flags.interview) {
+    console.log('User-provided flags:');
+    if (flags.type) {
+      console.log(`  --type=${flags.type} (workflow profile override)`);
+      // Update saved context with manual type override
+      if (projectStatus.autoDetected) {
+        try {
+          const contextPath = path.join(projectRoot, '.forge', 'context.json');
+          if (fs.existsSync(contextPath)) {
+            const contextData = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
+            contextData.user_provided = contextData.user_provided || {};
+            contextData.user_provided.workflowType = flags.type;
+            contextData.last_updated = new Date().toISOString();
+            fs.writeFileSync(contextPath, JSON.stringify(contextData, null, 2), 'utf8');
+          }
+        } catch (error) {
+          console.warn('  Warning: Could not save workflow type override:', error.message);
+        }
+      }
+    }
+    if (flags.interview) {
+      console.log('  --interview (context interview mode)');
+      console.log('  Note: Enhanced context gathering is a future feature');
+    }
+    console.log('');
+  }
+
   if (projectStatus.type !== 'fresh') {
     console.log('==============================================');
     console.log('  Existing Installation Detected');
@@ -3320,18 +3348,31 @@ async function interactiveSetupWithFlags(flags) {
     const agentsSrc = path.join(packageDir, 'AGENTS.md');
     const agentsDest = path.join(projectRoot, 'AGENTS.md');
 
-    // Try smart merge if file exists
+    // Respect --merge flag for file handling strategy
+    const mergeStrategy = flags.merge || 'smart'; // Default to 'smart' if not specified
+
     if (fs.existsSync(agentsDest)) {
       const existingContent = fs.readFileSync(agentsDest, 'utf8');
       const newContent = fs.readFileSync(agentsSrc, 'utf8');
-      const merged = smartMergeAgentsMd(existingContent, newContent);
 
-      if (merged) {
-        fs.writeFileSync(agentsDest, merged, 'utf8');
-        console.log('  Updated: AGENTS.md (preserved USER sections)');
-      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-        // No markers, do normal copy (user already approved overwrite)
-        console.log('  Updated: AGENTS.md (universal standard)');
+      if (mergeStrategy === 'preserve') {
+        // Keep existing file, don't modify
+        console.log('  Preserved: AGENTS.md (--merge=preserve)');
+      } else if (mergeStrategy === 'replace') {
+        // Replace with new content
+        if (copyFile(agentsSrc, 'AGENTS.md')) {
+          console.log('  Replaced: AGENTS.md (--merge=replace)');
+        }
+      } else {
+        // Default: smart merge
+        const merged = smartMergeAgentsMd(existingContent, newContent);
+        if (merged) {
+          fs.writeFileSync(agentsDest, merged, 'utf8');
+          console.log('  Updated: AGENTS.md (smart merge, preserved USER sections)');
+        } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+          // No markers, do normal copy (user already approved overwrite)
+          console.log('  Updated: AGENTS.md (universal standard)');
+        }
       }
     } else if (copyFile(agentsSrc, 'AGENTS.md')) {
       // New file
