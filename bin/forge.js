@@ -791,8 +791,10 @@ async function detectProjectStatus() {
     // Project tools status
     hasBeads: isBeadsInitialized(),
     hasOpenSpec: isOpenSpecInitialized(),
+    hasSkills: isSkillsInitialized(),
     beadsInstallType: checkForBeads(),
     openspecInstallType: checkForOpenSpec(),
+    skillsInstallType: checkForSkills(),
     // Enhanced: Auto-detected project context
     autoDetected: null
   };
@@ -2457,6 +2459,15 @@ function displaySetupSummary(selectedAgents) {
     console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
   }
 
+  // Skills status
+  if (isSkillsInitialized()) {
+    console.log('  ✓ Skills initialized - Manage skills: skills list');
+  } else if (checkForSkills()) {
+    console.log('  ! Skills available - Run: skills init');
+  } else {
+    console.log(`  - Skills not installed - Run: ${PKG_MANAGER} install -g @forge/skills`);
+  }
+
   console.log('');
   console.log('Start with: /status');
   console.log('');
@@ -3001,6 +3012,67 @@ function initializeOpenSpec(installType) {
   }
 }
 
+// Check if Skills CLI is installed
+function checkForSkills() {
+  // Try global install first
+  try {
+    execFileSync('skills', ['--version'], { stdio: 'ignore' });
+    return 'global';
+  } catch (err) {
+    // Not global
+    console.warn('Skills not found globally:', err.message);
+  }
+
+  // Check if bunx can run it
+  try {
+    execFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
+    return 'bunx';
+  } catch (err) {
+    // Not bunx-capable
+    console.warn('Skills not available via bunx:', err.message);
+  }
+
+  // Check local project installation
+  const pkgPath = path.join(projectRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return null;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const isInstalled = pkg.devDependencies?.['@forge/skills'] || pkg.dependencies?.['@forge/skills'];
+    return isInstalled ? 'local' : null;
+  } catch (err) {
+    console.warn('Failed to check Skills in package.json:', err.message);
+    return null;
+  }
+}
+
+// Check if Skills is initialized in project
+function isSkillsInitialized() {
+  return fs.existsSync(path.join(projectRoot, '.skills'));
+}
+
+// Initialize Skills in the project
+function initializeSkills(installType) {
+  console.log('Initializing Skills in project...');
+
+  try {
+    // SECURITY: execFileSync with hardcoded commands
+    if (installType === 'global') {
+      execFileSync('skills', ['init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'bunx') {
+      execFileSync('bunx', ['@forge/skills', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    } else if (installType === 'local') {
+      execFileSync('npx', ['skills', 'init'], { stdio: 'inherit', cwd: projectRoot });
+    }
+    console.log('  ✓ Skills initialized');
+    return true;
+  } catch (err) {
+    console.log('  ⚠ Failed to initialize Skills:', err.message);
+    console.log('  Run manually: skills init');
+    return false;
+  }
+}
+
 // Prompt for Beads setup - extracted to reduce cognitive complexity
 async function promptBeadsSetup(question) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -3179,6 +3251,85 @@ function installOpenSpecWithMethod(method) {
   }
 }
 
+// Prompt for Skills setup - extracted to reduce cognitive complexity
+async function promptSkillsSetup(question) {
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('Skills CLI Setup (Recommended)');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  const skillsInitialized = isSkillsInitialized();
+  const skillsStatus = checkForSkills();
+
+  if (skillsInitialized) {
+    console.log('✓ Skills is already initialized in this project');
+    console.log('');
+    return;
+  }
+
+  if (skillsStatus) {
+    // Already installed, just need to initialize
+    console.log(`ℹ Skills is installed (${skillsStatus}), but not initialized`);
+    const initSkills = await question('Initialize Skills in this project? (y/n): ');
+
+    if (initSkills.toLowerCase() === 'y') {
+      initializeSkills(skillsStatus);
+    } else {
+      console.log('Skipped Skills initialization. Run manually: skills init');
+    }
+    console.log('');
+    return;
+  }
+
+  // Not installed
+  console.log('ℹ Skills is not installed');
+  const installSkills = await question('Install Skills CLI? (y/n): ');
+
+  if (installSkills.toLowerCase() !== 'y') {
+    console.log('Skipped Skills installation');
+    console.log('');
+    return;
+  }
+
+  console.log('');
+  console.log('Choose installation method:');
+  console.log('  1. Global (recommended) - Available system-wide');
+  console.log('  2. Local - Project-specific devDependency');
+  console.log('  3. Bunx - Use via bunx (requires bun)');
+  console.log('');
+  const installMethod = await question('Choose installation method (1-3): ');
+
+  try {
+    if (installMethod === '1') {
+      console.log('Installing Skills globally...');
+      execFileSync(PKG_MANAGER, ['add', '-g', '@forge/skills'], { stdio: 'inherit' });
+      console.log('  ✓ Skills installed globally');
+      initializeSkills('global');
+    } else if (installMethod === '2') {
+      console.log('Installing Skills locally...');
+      execFileSync(PKG_MANAGER, ['add', '-d', '@forge/skills'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Skills installed locally');
+      initializeSkills('local');
+    } else if (installMethod === '3') {
+      console.log('Testing bunx capability...');
+      try {
+        execFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
+        console.log('  ✓ Bunx is available');
+        initializeSkills('bunx');
+      } catch (err) {
+        console.warn('Skills bunx test failed:', err.message);
+        console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
+      }
+    } else {
+      console.log('Invalid choice. Skipping Skills installation.');
+    }
+  } catch (err) {
+    console.warn('Skills installation failed:', err.message);
+    console.log('  ⚠ Failed to install Skills:', err.message);
+    console.log('  Run manually: bun add -g @forge/skills && skills init');
+  }
+}
+
 // Interactive setup for Beads and OpenSpec
 async function setupProjectTools(rl, question) {
   console.log('');
@@ -3186,7 +3337,7 @@ async function setupProjectTools(rl, question) {
   console.log('  STEP 2: Project Tools (Recommended)');
   console.log('═══════════════════════════════════════════════════════════');
   console.log('');
-  console.log('Forge recommends two tools for enhanced workflows:');
+  console.log('Forge recommends three tools for enhanced workflows:');
   console.log('');
   console.log('• Beads - Git-backed issue tracking');
   console.log('  Persists tasks across sessions, tracks dependencies.');
@@ -3196,10 +3347,15 @@ async function setupProjectTools(rl, question) {
   console.log('  Structured specifications for complex features.');
   console.log('  Command: openspec init, openspec status');
   console.log('');
+  console.log('• Skills - Universal SKILL.md management');
+  console.log('  Manage AI agent skills across all agents.');
+  console.log('  Command: skills create, skills list, skills sync');
+  console.log('');
 
   // Use helper functions to reduce complexity
   await promptBeadsSetup(question);
   await promptOpenSpecSetup(question);
+  await promptSkillsSetup(question);
 }
 
 // Auto-setup Beads in quick mode - extracted to reduce cognitive complexity
@@ -3278,6 +3434,16 @@ async function quickSetup(selectedAgents, skipExternal) {
   if (openspecStatus && !openspecInitialized) {
     console.log('📦 Initializing OpenSpec...');
     initializeOpenSpec(openspecStatus);
+    console.log('');
+  }
+
+  // Skills: initialize if already installed (recommended tool)
+  const skillsStatus = checkForSkills();
+  const skillsInitialized = isSkillsInitialized();
+
+  if (skillsStatus && !skillsInitialized) {
+    console.log('📦 Initializing Skills...');
+    initializeSkills(skillsStatus);
     console.log('');
   }
 
