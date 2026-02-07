@@ -1401,6 +1401,162 @@ This file exists to avoid Claude Code reading both CLAUDE.md and AGENTS.md (whic
   return true;
 }
 
+// Prompt for code review tool selection - extracted to reduce cognitive complexity
+async function promptForCodeReviewTool(question) {
+  console.log('');
+  console.log('Code Review Tool');
+  console.log('----------------');
+  console.log('Select your code review integration:');
+  console.log('');
+  console.log('  1) GitHub Code Quality (FREE, built-in) [RECOMMENDED]');
+  console.log('     Zero setup - uses GitHub\'s built-in code quality features');
+  console.log('');
+  console.log('  2) CodeRabbit (FREE for open source)');
+  console.log('     AI-powered reviews - install GitHub App at https://coderabbit.ai');
+  console.log('');
+  console.log('  3) Greptile (Paid - $99+/mo)');
+  console.log('     Enterprise code review - https://greptile.com');
+  console.log('');
+  console.log('  4) Skip code review integration');
+  console.log('');
+
+  const choice = await question('Select [1]: ') || '1';
+  const tokens = {};
+
+  switch (choice) {
+    case '1': {
+      tokens['CODE_REVIEW_TOOL'] = 'github-code-quality';
+      console.log('  ✓ Using GitHub Code Quality (FREE)');
+      break;
+    }
+    case '2': {
+      tokens['CODE_REVIEW_TOOL'] = 'coderabbit';
+      console.log('  ✓ Using CodeRabbit - Install the GitHub App to activate');
+      console.log('     https://coderabbit.ai');
+      break;
+    }
+    case '3': {
+      const greptileKey = await question('  Enter Greptile API key: ');
+      if (greptileKey?.trim()) {
+        tokens['CODE_REVIEW_TOOL'] = 'greptile';
+        tokens['GREPTILE_API_KEY'] = greptileKey.trim();
+        console.log('  ✓ Greptile configured');
+      } else {
+        tokens['CODE_REVIEW_TOOL'] = 'none';
+        console.log('  Skipped - No API key provided');
+      }
+      break;
+    }
+    default: {
+      tokens['CODE_REVIEW_TOOL'] = 'none';
+      console.log('  Skipped code review integration');
+    }
+  }
+
+  return tokens;
+}
+
+// Prompt for code quality tool selection - extracted to reduce cognitive complexity
+async function promptForCodeQualityTool(question) {
+  console.log('');
+  console.log('Code Quality Tool');
+  console.log('-----------------');
+  console.log('Select your code quality/security scanner:');
+  console.log('');
+  console.log('  1) ESLint only (FREE, built-in) [RECOMMENDED]');
+  console.log('     No external server required - uses project\'s linting');
+  console.log('');
+  console.log('  2) SonarCloud (50k LoC free, cloud-hosted)');
+  console.log('     Get token: https://sonarcloud.io/account/security');
+  console.log('');
+  console.log('  3) SonarQube Community (FREE, self-hosted, unlimited LoC)');
+  console.log('     Run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
+  console.log('');
+  console.log('  4) Skip code quality integration');
+  console.log('');
+
+  const choice = await question('Select [1]: ') || '1';
+  const tokens = {};
+
+  switch (choice) {
+    case '1': {
+      tokens['CODE_QUALITY_TOOL'] = 'eslint';
+      console.log('  ✓ Using ESLint (built-in)');
+      break;
+    }
+    case '2': {
+      const sonarToken = await question('  Enter SonarCloud token: ');
+      const sonarOrg = await question('  Enter SonarCloud organization: ');
+      const sonarProject = await question('  Enter SonarCloud project key: ');
+      if (sonarToken?.trim()) {
+        tokens['CODE_QUALITY_TOOL'] = 'sonarcloud';
+        tokens['SONAR_TOKEN'] = sonarToken.trim();
+        if (sonarOrg) tokens['SONAR_ORGANIZATION'] = sonarOrg.trim();
+        if (sonarProject) tokens['SONAR_PROJECT_KEY'] = sonarProject.trim();
+        console.log('  ✓ SonarCloud configured');
+      } else {
+        tokens['CODE_QUALITY_TOOL'] = 'eslint';
+        console.log('  Falling back to ESLint');
+      }
+      break;
+    }
+    case '3': {
+      console.log('');
+      console.log('  SonarQube Self-Hosted Setup:');
+      console.log('  docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
+      console.log('  Access: http://localhost:9000 (admin/admin)');
+      console.log('');
+      const sqUrl = await question('  Enter SonarQube URL [http://localhost:9000]: ') || 'http://localhost:9000';
+      const sqToken = await question('  Enter SonarQube token (optional): ');
+      tokens['CODE_QUALITY_TOOL'] = 'sonarqube';
+      tokens['SONARQUBE_URL'] = sqUrl;
+      if (sqToken?.trim()) {
+        tokens['SONARQUBE_TOKEN'] = sqToken.trim();
+      }
+      console.log('  ✓ SonarQube self-hosted configured');
+      break;
+    }
+    default: {
+      tokens['CODE_QUALITY_TOOL'] = 'none';
+      console.log('  Skipped code quality integration');
+    }
+  }
+
+  return tokens;
+}
+
+// Prompt for research tool selection - extracted to reduce cognitive complexity
+async function promptForResearchTool(question) {
+  console.log('');
+  console.log('Research Tool');
+  console.log('-------------');
+  console.log('Select your research tool for /research stage:');
+  console.log('');
+  console.log('  1) Manual research only [DEFAULT]');
+  console.log('     Use web browser and codebase exploration');
+  console.log('');
+  console.log('  2) Parallel AI (comprehensive web research)');
+  console.log('     Get key: https://platform.parallel.ai');
+  console.log('');
+
+  const choice = await question('Select [1]: ') || '1';
+  const tokens = {};
+
+  if (choice === '2') {
+    const parallelKey = await question('  Enter Parallel AI API key: ');
+    if (parallelKey?.trim()) {
+      tokens['PARALLEL_API_KEY'] = parallelKey.trim();
+      console.log('  ✓ Parallel AI configured');
+    } else {
+      console.log('  Skipped - No API key provided');
+    }
+  } else {
+    console.log('  ✓ Using manual research');
+  }
+
+  return tokens;
+}
+
 // Configure external services interactively
 async function configureExternalServices(rl, question, selectedAgents = [], projectStatus = null) {
   console.log('');
@@ -1446,154 +1602,17 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
     return;
   }
 
+  // Prompt for each service and collect tokens
   const tokens = {};
 
-  // ============================================
-  // CODE REVIEW TOOL SELECTION
-  // ============================================
-  console.log('');
-  console.log('Code Review Tool');
-  console.log('----------------');
-  console.log('Select your code review integration:');
-  console.log('');
-  console.log('  1) GitHub Code Quality (FREE, built-in) [RECOMMENDED]');
-  console.log('     Zero setup - uses GitHub\'s built-in code quality features');
-  console.log('');
-  console.log('  2) CodeRabbit (FREE for open source)');
-  console.log('     AI-powered reviews - install GitHub App at https://coderabbit.ai');
-  console.log('');
-  console.log('  3) Greptile (Paid - $99+/mo)');
-  console.log('     Enterprise code review - https://greptile.com');
-  console.log('');
-  console.log('  4) Skip code review integration');
-  console.log('');
+  // CODE REVIEW TOOL
+  Object.assign(tokens, await promptForCodeReviewTool(question));
 
-  const codeReviewChoice = await question('Select [1]: ') || '1';
+  // CODE QUALITY TOOL
+  Object.assign(tokens, await promptForCodeQualityTool(question));
 
-  switch (codeReviewChoice) {
-    case '1': {
-      tokens['CODE_REVIEW_TOOL'] = 'github-code-quality';
-      console.log('  ✓ Using GitHub Code Quality (FREE)');
-      break;
-    }
-    case '2': {
-      tokens['CODE_REVIEW_TOOL'] = 'coderabbit';
-      console.log('  ✓ Using CodeRabbit - Install the GitHub App to activate');
-      console.log('     https://coderabbit.ai');
-      break;
-    }
-    case '3': {
-      const greptileKey = await question('  Enter Greptile API key: ');
-      if (greptileKey?.trim()) {
-        tokens['CODE_REVIEW_TOOL'] = 'greptile';
-        tokens['GREPTILE_API_KEY'] = greptileKey.trim();
-        console.log('  ✓ Greptile configured');
-      } else {
-        tokens['CODE_REVIEW_TOOL'] = 'none';
-        console.log('  Skipped - No API key provided');
-      }
-      break;
-    }
-    default: {
-      tokens['CODE_REVIEW_TOOL'] = 'none';
-      console.log('  Skipped code review integration');
-    }
-  }
-
-  // ============================================
-  // CODE QUALITY TOOL SELECTION
-  // ============================================
-  console.log('');
-  console.log('Code Quality Tool');
-  console.log('-----------------');
-  console.log('Select your code quality/security scanner:');
-  console.log('');
-  console.log('  1) ESLint only (FREE, built-in) [RECOMMENDED]');
-  console.log('     No external server required - uses project\'s linting');
-  console.log('');
-  console.log('  2) SonarCloud (50k LoC free, cloud-hosted)');
-  console.log('     Get token: https://sonarcloud.io/account/security');
-  console.log('');
-  console.log('  3) SonarQube Community (FREE, self-hosted, unlimited LoC)');
-  console.log('     Run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
-  console.log('');
-  console.log('  4) Skip code quality integration');
-  console.log('');
-
-  const codeQualityChoice = await question('Select [1]: ') || '1';
-
-  switch (codeQualityChoice) {
-    case '1': {
-      tokens['CODE_QUALITY_TOOL'] = 'eslint';
-      console.log('  ✓ Using ESLint (built-in)');
-      break;
-    }
-    case '2': {
-      const sonarToken = await question('  Enter SonarCloud token: ');
-      const sonarOrg = await question('  Enter SonarCloud organization: ');
-      const sonarProject = await question('  Enter SonarCloud project key: ');
-      if (sonarToken?.trim()) {
-        tokens['CODE_QUALITY_TOOL'] = 'sonarcloud';
-        tokens['SONAR_TOKEN'] = sonarToken.trim();
-        if (sonarOrg) tokens['SONAR_ORGANIZATION'] = sonarOrg.trim();
-        if (sonarProject) tokens['SONAR_PROJECT_KEY'] = sonarProject.trim();
-        console.log('  ✓ SonarCloud configured');
-      } else {
-        tokens['CODE_QUALITY_TOOL'] = 'eslint';
-        console.log('  Falling back to ESLint');
-      }
-      break;
-    }
-    case '3': {
-      console.log('');
-      console.log('  SonarQube Self-Hosted Setup:');
-      console.log('  docker run -d --name sonarqube -p 9000:9000 sonarqube:community');
-      console.log('  Access: http://localhost:9000 (admin/admin)');
-      console.log('');
-      const sqUrl = await question('  Enter SonarQube URL [http://localhost:9000]: ') || 'http://localhost:9000';
-      const sqToken = await question('  Enter SonarQube token (optional): ');
-      tokens['CODE_QUALITY_TOOL'] = 'sonarqube';
-      tokens['SONARQUBE_URL'] = sqUrl;
-      if (sqToken?.trim()) {
-        tokens['SONARQUBE_TOKEN'] = sqToken.trim();
-      }
-      console.log('  ✓ SonarQube self-hosted configured');
-      break;
-    }
-    default: {
-      tokens['CODE_QUALITY_TOOL'] = 'none';
-      console.log('  Skipped code quality integration');
-    }
-  }
-
-  // ============================================
-  // RESEARCH TOOL SELECTION
-  // ============================================
-  console.log('');
-  console.log('Research Tool');
-  console.log('-------------');
-  console.log('Select your research tool for /research stage:');
-  console.log('');
-  console.log('  1) Manual research only [DEFAULT]');
-  console.log('     Use web browser and codebase exploration');
-  console.log('');
-  console.log('  2) Parallel AI (comprehensive web research)');
-  console.log('     Get key: https://platform.parallel.ai');
-  console.log('');
-
-  const researchChoice = await question('Select [1]: ') || '1';
-
-  if (researchChoice === '2') {
-    const parallelKey = await question('  Enter Parallel AI API key: ');
-    if (parallelKey?.trim()) {
-      tokens['PARALLEL_API_KEY'] = parallelKey.trim();
-      console.log('  ✓ Parallel AI configured');
-    } else {
-      console.log('  Skipped - No API key provided');
-    }
-  } else {
-    console.log('  ✓ Using manual research');
-  }
+  // RESEARCH TOOL
+  Object.assign(tokens, await promptForResearchTool(question));
 
   // ============================================
   // CONTEXT7 MCP - Library Documentation
