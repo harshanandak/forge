@@ -2155,6 +2155,31 @@ async function promptForAgentSelection(question, agentKeys) {
 }
 
 /**
+ * Attempt semantic merge with fallback to replace
+ * Reduces cognitive complexity by extracting merge logic (S3776)
+ * @param {string} destPath - Destination file path
+ * @param {string} existingContent - Existing file content
+ * @param {string} newContent - New template content
+ * @param {string} srcPath - Source template path
+ */
+function trySemanticMerge(destPath, existingContent, newContent, srcPath) {
+  try {
+    // Add markers to enable future marker-based updates
+    const semanticMerged = contextMerge.semanticMerge(existingContent, newContent, {
+      addMarkers: true
+    });
+    fs.writeFileSync(destPath, semanticMerged, 'utf8');
+    console.log('  Updated: AGENTS.md (intelligent merge - preserved your content)');
+    console.log('  Note: Added USER/FORGE markers for future updates');
+  } catch (error) {
+    console.log(`  Warning: Semantic merge failed (${error.message}), using replace strategy`);
+    if (copyFile(srcPath, 'AGENTS.md')) {
+      console.log('  Updated: AGENTS.md (universal standard)');
+    }
+  }
+}
+
+/**
  * Handle AGENTS.md installation
  */
 async function installAgentsMd(skipFiles) {
@@ -2178,20 +2203,7 @@ async function installAgentsMd(skipFiles) {
       console.log('  Updated: AGENTS.md (preserved USER sections)');
     } else if (skipFiles.useSemanticMerge) {
       // Enhanced: No markers but user chose intelligent merge
-      try {
-        // Add markers to enable future marker-based updates
-        const semanticMerged = contextMerge.semanticMerge(existingContent, newContent, {
-          addMarkers: true
-        });
-        fs.writeFileSync(agentsDest, semanticMerged, 'utf8');
-        console.log('  Updated: AGENTS.md (intelligent merge - preserved your content)');
-        console.log('  Note: Added USER/FORGE markers for future updates');
-      } catch (error) {
-        console.log(`  Warning: Semantic merge failed (${error.message}), using replace strategy`);
-        if (copyFile(agentsSrc, 'AGENTS.md')) {
-          console.log('  Updated: AGENTS.md (universal standard)');
-        }
-      }
+      trySemanticMerge(agentsDest, existingContent, newContent, agentsSrc);
     } else if (copyFile(agentsSrc, 'AGENTS.md')) {
       // No markers, do normal copy (user already approved overwrite)
       console.log('  Updated: AGENTS.md (universal standard)');
