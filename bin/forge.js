@@ -2850,14 +2850,15 @@ function checkForBeads() {
 
   // Check local project installation
   const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return false;
+  if (!fs.existsSync(pkgPath)) return null;
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return Boolean(pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd']) ? 'local' : false;
+    const isInstalled = pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd'];
+    return isInstalled ? 'local' : null;
   } catch (err) {
     console.warn('Failed to check Beads in package.json:', err.message);
-    return false;
+    return null;
   }
 }
 
@@ -2883,14 +2884,15 @@ function checkForOpenSpec() {
 
   // Check local project installation
   const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return false;
+  if (!fs.existsSync(pkgPath)) return null;
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return Boolean(pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec']) ? 'local' : false;
+    const isInstalled = pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec'];
+    return isInstalled ? 'local' : null;
   } catch (err) {
     console.warn('Failed to check OpenSpec in package.json:', err.message);
-    return false;
+    return null;
   }
 }
 
