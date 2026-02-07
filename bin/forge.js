@@ -4045,4 +4045,7 @@ async function showRollbackMenu() {
   await performRollback(method, target, dryRun);
 }
 
-main().catch(console.error);
+// Only execute main() when run directly, not when imported
+if (require.main === module) {
+  main().catch(console.error);
+}
