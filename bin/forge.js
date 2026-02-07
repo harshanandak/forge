@@ -2552,103 +2552,22 @@ function parseFlags() {
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true;
       i++;
-    } else if (arg === '--path' || arg === '-p') {
-      // --path <directory> or -p <directory>
-      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-        const inputPath = args[i + 1];
-        const validation = validateUserInput(inputPath, 'directory_path');
-        if (!validation.valid) {
-          console.error(`Error: Invalid --path value: ${validation.error}`);
-          process.exit(1);
-        }
-        flags.path = inputPath;
-        i += 2; // Skip current and next arg
-      } else {
-        i++;
-      }
-    } else if (arg.startsWith('--path=')) {
-      // --path=/some/dir format
-      const inputPath = arg.replace('--path=', '');
-      const validation = validateUserInput(inputPath, 'directory_path');
-      if (!validation.valid) {
-        console.error(`Error: Invalid --path value: ${validation.error}`);
-        process.exit(1);
-      }
-      flags.path = inputPath;
-      i++;
-    } else if (arg === '--agents') {
-      // --agents claude cursor format
-      const agentList = [];
-      let j = i + 1;
-      while (j < args.length && !args[j].startsWith('-')) {
-        agentList.push(args[j]);
-        j++;
-      }
-      if (agentList.length > 0) {
-        flags.agents = agentList.join(',');
-      }
-      i = j; // Skip all consumed arguments
-    } else if (arg.startsWith('--agents=')) {
-      // --agents=claude,cursor format
-      flags.agents = arg.replace('--agents=', '');
-      i++;
-    } else if (arg === '--merge') {
-      // --merge smart|preserve|replace
-      if (i + 1 < args.length) {
-        const mergeMode = args[i + 1];
-        if (['smart', 'preserve', 'replace'].includes(mergeMode)) {
-          flags.merge = mergeMode;
-          i += 2;
-        } else {
-          console.error(`Invalid --merge value: ${mergeMode}`);
-          console.error('Valid options: smart, preserve, replace');
-          process.exit(1);
-        }
-      } else {
-        console.error('--merge requires a value: smart, preserve, or replace');
-        process.exit(1);
-      }
-    } else if (arg.startsWith('--merge=')) {
-      // --merge=smart format
-      const mergeMode = arg.replace('--merge=', '');
-      if (['smart', 'preserve', 'replace'].includes(mergeMode)) {
-        flags.merge = mergeMode;
-        i++;
-      } else {
-        console.error(`Invalid --merge value: ${mergeMode}`);
-        console.error('Valid options: smart, preserve, replace');
-        process.exit(1);
-      }
-    } else if (arg === '--type') {
-      // --type critical|standard|simple|hotfix|docs|refactor
-      if (i + 1 < args.length) {
-        const workType = args[i + 1];
-        const validTypes = ['critical', 'standard', 'simple', 'hotfix', 'docs', 'refactor'];
-        if (validTypes.includes(workType)) {
-          flags.type = workType;
-          i += 2;
-        } else {
-          console.error(`Invalid --type value: ${workType}`);
-          console.error(`Valid options: ${validTypes.join(', ')}`);
-          process.exit(1);
-        }
-      } else {
-        console.error('--type requires a value');
-        console.error('Valid options: critical, standard, simple, hotfix, docs, refactor');
-        process.exit(1);
-      }
-    } else if (arg.startsWith('--type=')) {
-      // --type=critical format
-      const workType = arg.replace('--type=', '');
-      const validTypes = ['critical', 'standard', 'simple', 'hotfix', 'docs', 'refactor'];
-      if (validTypes.includes(workType)) {
-        flags.type = workType;
-        i++;
-      } else {
-        console.error(`Invalid --type value: ${workType}`);
-        console.error(`Valid options: ${validTypes.join(', ')}`);
-        process.exit(1);
-      }
+    } else if (arg === '--path' || arg === '-p' || arg.startsWith('--path=')) {
+      const result = parsePathFlag(args, i);
+      flags.path = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--agents' || arg.startsWith('--agents=')) {
+      const result = parseAgentsFlag(args, i);
+      flags.agents = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--merge' || arg.startsWith('--merge=')) {
+      const result = parseMergeFlag(args, i);
+      flags.merge = result.value;
+      i = result.nextIndex;
+    } else if (arg === '--type' || arg.startsWith('--type=')) {
+      const result = parseTypeFlag(args, i);
+      flags.type = result.value;
+      i = result.nextIndex;
     } else if (arg === '--interview') {
       flags.interview = true;
       i++;
@@ -2658,6 +2577,104 @@ function parseFlags() {
   }
 
   return flags;
+}
+
+// Parse --path flag with validation - extracted to reduce complexity
+function parsePathFlag(args, i) {
+  let inputPath = null;
+  let nextIndex = i + 1;
+
+  if (args[i].startsWith('--path=')) {
+    // --path=/some/dir format
+    inputPath = args[i].replace('--path=', '');
+  } else if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+    // --path <directory> format
+    inputPath = args[i + 1];
+    nextIndex = i + 2;
+  }
+
+  if (inputPath) {
+    const validation = validateUserInput(inputPath, 'directory_path');
+    if (!validation.valid) {
+      console.error(`Error: Invalid --path value: ${validation.error}`);
+      process.exit(1);
+    }
+  }
+
+  return { value: inputPath, nextIndex };
+}
+
+// Parse --agents flag with list - extracted to reduce complexity
+function parseAgentsFlag(args, i) {
+  if (args[i].startsWith('--agents=')) {
+    // --agents=claude,cursor format
+    return { value: args[i].replace('--agents=', ''), nextIndex: i + 1 };
+  }
+
+  // --agents claude cursor format
+  const agentList = [];
+  let j = i + 1;
+  while (j < args.length && !args[j].startsWith('-')) {
+    agentList.push(args[j]);
+    j++;
+  }
+
+  return { value: agentList.length > 0 ? agentList.join(',') : null, nextIndex: j };
+}
+
+// Parse --merge flag with enum validation - extracted to reduce complexity
+function parseMergeFlag(args, i) {
+  const validModes = ['smart', 'preserve', 'replace'];
+  let mergeMode = null;
+  let nextIndex = i + 1;
+
+  if (args[i].startsWith('--merge=')) {
+    // --merge=smart format
+    mergeMode = args[i].replace('--merge=', '');
+  } else if (i + 1 < args.length) {
+    // --merge smart format
+    mergeMode = args[i + 1];
+    nextIndex = i + 2;
+  } else {
+    console.error('--merge requires a value: smart, preserve, or replace');
+    process.exit(1);
+  }
+
+  if (!validModes.includes(mergeMode)) {
+    console.error(`Invalid --merge value: ${mergeMode}`);
+    console.error('Valid options: smart, preserve, replace');
+    process.exit(1);
+  }
+
+  return { value: mergeMode, nextIndex };
+}
+
+// Parse --type flag with enum validation - extracted to reduce complexity
+function parseTypeFlag(args, i) {
+  const validTypes = ['critical', 'standard', 'simple', 'hotfix', 'docs', 'refactor'];
+  let workType = null;
+  let nextIndex = i + 1;
+
+  if (args[i].startsWith('--type=')) {
+    // --type=critical format
+    workType = args[i].replace('--type=', '');
+  } else if (i + 1 < args.length) {
+    // --type critical format
+    workType = args[i + 1];
+    nextIndex = i + 2;
+  } else {
+    console.error('--type requires a value');
+    console.error(`Valid options: ${validTypes.join(', ')}`);
+    process.exit(1);
+  }
+
+  if (!validTypes.includes(workType)) {
+    console.error(`Invalid --type value: ${workType}`);
+    console.error(`Valid options: ${validTypes.join(', ')}`);
+    process.exit(1);
+  }
+
+  return { value: workType, nextIndex };
 }
 
 // Validate agent names
