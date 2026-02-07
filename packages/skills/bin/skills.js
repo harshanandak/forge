@@ -29,6 +29,7 @@ import { validateCommand } from '../src/commands/validate.js';
 import { addCommand } from '../src/commands/add.js';
 import { publishCommand } from '../src/commands/publish.js';
 import { searchCommand } from '../src/commands/search.js';
+import { configCommand } from '../src/commands/config.js';
 
 const program = new Command();
 
@@ -83,19 +84,30 @@ program
 program
   .command('add <name>')
   .description('Install skill from Vercel registry')
+  .option('-f, --force', 'Overwrite if skill exists')
+  .option('--no-sync', 'Skip auto-sync to agents')
   .action(addCommand);
 
 // skills publish <name>
 program
   .command('publish <name>')
   .description('Publish skill to Vercel registry')
+  .option('-f, --force', 'Overwrite if skill exists in registry')
   .action(publishCommand);
 
 // skills search <query>
 program
   .command('search <query>')
   .description('Search Vercel registry for skills')
+  .option('-c, --category <category>', 'Filter by category')
+  .option('-a, --author <author>', 'Filter by author')
   .action(searchCommand);
+
+// skills config
+program
+  .command('config <action> [key] [value]')
+  .description('Manage configuration (API keys, registry URL)')
+  .action(configCommand);
 
 // Parse arguments
 program.parse();
