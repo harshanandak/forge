@@ -179,6 +179,30 @@ describe('Remove Command', () => {
       removeCommand('', { force: true })
     ).rejects.toThrow();
   });
+
+  test('removeCommand prevents path traversal with ../', async () => {
+    await expect(
+      removeCommand('../etc', { force: true })
+    ).rejects.toThrow('Invalid skill name');
+  });
+
+  test('removeCommand prevents path traversal with absolute paths', async () => {
+    await expect(
+      removeCommand('/etc/passwd', { force: true })
+    ).rejects.toThrow('Invalid skill name');
+  });
+
+  test('removeCommand prevents path traversal with Windows paths', async () => {
+    await expect(
+      removeCommand('..\\..\\Windows', { force: true })
+    ).rejects.toThrow('Invalid skill name');
+  });
+
+  test('removeCommand prevents uppercase skill names', async () => {
+    await expect(
+      removeCommand('UPPERCASE-SKILL', { force: true })
+    ).rejects.toThrow('Invalid skill name');
+  });
 });
 
 /**

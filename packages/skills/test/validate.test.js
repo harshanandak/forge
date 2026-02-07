@@ -246,6 +246,30 @@ category: coding
 
     expect(output).toMatch(/invalid|error|✗/i);
   });
+
+  test('validateCommand prevents path traversal with ../', async () => {
+    const result = await validateCommand('../etc');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('Invalid skill name'))).toBe(true);
+  });
+
+  test('validateCommand prevents path traversal with absolute paths', async () => {
+    const result = await validateCommand('/etc/passwd');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('Invalid skill name'))).toBe(true);
+  });
+
+  test('validateCommand prevents Windows path traversal', async () => {
+    const result = await validateCommand('..\\..\\Windows');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('Invalid skill name'))).toBe(true);
+  });
+
+  test('validateCommand prevents skill names with slashes', async () => {
+    const result = await validateCommand('my/skill');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('Invalid skill name'))).toBe(true);
+  });
 });
 
 /**
