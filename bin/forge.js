@@ -554,11 +554,11 @@ function createSymlinkOrCopy(source, target) {
   // SECURITY: Prevent path traversal attacks
   if (!fullSource.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Source path escape blocked: ${source}`);
-    return false;
+    return null;
   }
   if (!fullTarget.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Target path escape blocked: ${target}`);
-    return false;
+    return null;
   }
 
   try {
@@ -582,7 +582,7 @@ function createSymlinkOrCopy(source, target) {
     }
   } catch (err) {
     console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
-    return false;
+    return null;
   }
 }
 
@@ -1888,7 +1888,7 @@ function setupAiderAgent() {
   const aiderPath = path.join(projectRoot, '.aider.conf.yml');
   if (fs.existsSync(aiderPath)) {
     console.log('  Skipped: .aider.conf.yml already exists');
-    return true; // Signal early return
+    return;
   }
 
   writeFile('.aider.conf.yml', `# Aider configuration
@@ -1898,7 +1898,6 @@ read:
   - docs/WORKFLOW.md
 `);
   console.log('  Created: .aider.conf.yml');
-  return true; // Signal early return
 }
 
 // Helper: Convert command to agent-specific format
@@ -2048,8 +2047,8 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
   }
 
   if (agent.customSetup === 'aider') {
-    const shouldReturn = setupAiderAgent();
-    if (shouldReturn) return;
+    setupAiderAgent();
+    return;
   }
 
   // Convert/copy commands
@@ -3358,6 +3357,30 @@ async function quickSetup(selectedAgents, skipExternal) {
   console.log('');
 }
 
+// Helper: Apply merge strategy to existing AGENTS.md - extracted to reduce cognitive complexity
+function applyAgentsMdMergeStrategy(mergeStrategy, agentsSrc, agentsDest, existingContent, newContent) {
+  if (mergeStrategy === 'preserve') {
+    console.log('  Preserved: AGENTS.md (--merge=preserve)');
+    return;
+  }
+
+  if (mergeStrategy === 'replace') {
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Replaced: AGENTS.md (--merge=replace)');
+    }
+    return;
+  }
+
+  // Default: smart merge
+  const merged = smartMergeAgentsMd(existingContent, newContent);
+  if (merged) {
+    fs.writeFileSync(agentsDest, merged, 'utf8');
+    console.log('  Updated: AGENTS.md (smart merge, preserved USER sections)');
+  } else if (copyFile(agentsSrc, 'AGENTS.md')) {
+    console.log('  Updated: AGENTS.md (universal standard)');
+  }
+}
+
 // Setup AGENTS.md file with merge strategy - extracted to reduce cognitive complexity
 function setupAgentsMdFile(flags, skipFiles) {
   if (skipFiles.agentsMd) {
@@ -3367,38 +3390,14 @@ function setupAgentsMdFile(flags, skipFiles) {
 
   const agentsSrc = path.join(packageDir, 'AGENTS.md');
   const agentsDest = path.join(projectRoot, 'AGENTS.md');
-
-  // Respect --merge flag for file handling strategy
-  const mergeStrategy = flags.merge || 'smart'; // Default to 'smart' if not specified
+  const mergeStrategy = flags.merge || 'smart';
 
   if (fs.existsSync(agentsDest)) {
     const existingContent = fs.readFileSync(agentsDest, 'utf8');
     const newContent = fs.readFileSync(agentsSrc, 'utf8');
-
-    if (mergeStrategy === 'preserve') {
-      // Keep existing file, don't modify
-      console.log('  Preserved: AGENTS.md (--merge=preserve)');
-    } else if (mergeStrategy === 'replace') {
-      // Replace with new content
-      if (copyFile(agentsSrc, 'AGENTS.md')) {
-        console.log('  Replaced: AGENTS.md (--merge=replace)');
-      }
-    } else {
-      // Default: smart merge
-      const merged = smartMergeAgentsMd(existingContent, newContent);
-      if (merged) {
-        fs.writeFileSync(agentsDest, merged, 'utf8');
-        console.log('  Updated: AGENTS.md (smart merge, preserved USER sections)');
-      } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-        // No markers, do normal copy (user already approved overwrite)
-        console.log('  Updated: AGENTS.md (universal standard)');
-      }
-    }
+    applyAgentsMdMergeStrategy(mergeStrategy, agentsSrc, agentsDest, existingContent, newContent);
   } else if (copyFile(agentsSrc, 'AGENTS.md')) {
-    // New file
     console.log('  Created: AGENTS.md (universal standard)');
-
-    // Detect project type and update AGENTS.md
     const detection = detectProjectType();
     if (detection.hasPackageJson) {
       updateAgentsMdWithProjectType(detection);
