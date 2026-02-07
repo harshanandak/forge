@@ -413,9 +413,9 @@ This is a SaaS platform.
     test('should block Windows system directories in directory_path validation', () => {
       if (process.platform === 'win32') {
         const blockedPaths = [
-          'C:\\Windows',
-          'C:\\Program Files',
-          'c:\\windows\\system32'
+          String.raw`C:\Windows`,
+          String.raw`C:\Program Files`,
+          String.raw`c:\windows\system32`
         ];
 
         blockedPaths.forEach(blockedPath => {
@@ -423,8 +423,8 @@ This is a SaaS platform.
 
           // Should match blocked path patterns
           const isBlocked =
-            normalized.startsWith('c:\\windows') ||
-            normalized.startsWith('c:\\program files');
+            normalized.startsWith(String.raw`c:\windows`) ||
+            normalized.startsWith(String.raw`c:\program files`);
 
           assert.ok(isBlocked, `Path "${blockedPath}" should be blocked`);
         });
@@ -435,7 +435,11 @@ This is a SaaS platform.
     });
 
     test('should block Unix system directories in directory_path validation', () => {
-      if (process.platform !== 'win32') {
+      // Use positive condition instead of negation (S7735)
+      if (process.platform === 'win32') {
+        // Skip on Windows
+        assert.ok(true, 'Test skipped on Windows platform');
+      } else {
         const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
 
         blockedPaths.forEach(blockedPath => {
@@ -448,9 +452,6 @@ This is a SaaS platform.
 
           assert.ok(isBlocked, `Path "${blockedPath}" should be blocked`);
         });
-      } else {
-        // Skip on Windows
-        assert.ok(true, 'Test skipped on Windows platform');
       }
     });
 
@@ -459,7 +460,7 @@ This is a SaaS platform.
         './my-project',
         '../sibling-project',
         '/home/user/projects/myapp',
-        'C:\\Users\\user\\Documents\\myapp'
+        String.raw`C:\Users\user\Documents\myapp`
       ];
 
       safePaths.forEach(safePath => {
