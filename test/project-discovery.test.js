@@ -1,5 +1,5 @@
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -173,22 +173,18 @@ describe('project-discovery', () => {
       try {
         await fs.promises.rm(testProjectPath, { recursive: true, force: true });
       } catch (err) {
-        // Ignore cleanup errors
+        // Ignore cleanup errors - test directories may not exist
+        console.warn('Test cleanup warning:', err.message);
       }
     });
 
     test('should save context to .forge/context.json', async () => {
+      // saveContext now expects flat shape (Greptile feedback + SonarCloud fix)
       const context = {
-        auto_detected: {
-          framework: 'Next.js',
-          language: 'typescript',
-          stage: 'active',
-          confidence: 0.85
-        },
-        user_provided: {
-          description: 'Test project',
-          current_work: 'Testing'
-        }
+        framework: 'Next.js',
+        language: 'typescript',
+        stage: 'active',
+        confidence: 0.85
       };
 
       await saveContext(context, testProjectPath);
@@ -203,16 +199,12 @@ describe('project-discovery', () => {
     });
 
     test('should load saved context', async () => {
+      // saveContext now expects flat shape (Greptile feedback + SonarCloud fix)
       const original = {
-        auto_detected: {
-          framework: 'Next.js',
-          language: 'typescript',
-          stage: 'active',
-          confidence: 0.85
-        },
-        user_provided: {
-          description: 'Test project'
-        }
+        framework: 'Next.js',
+        language: 'typescript',
+        stage: 'active',
+        confidence: 0.85
       };
 
       await saveContext(original, testProjectPath);
@@ -220,7 +212,8 @@ describe('project-discovery', () => {
 
       assert.strictEqual(loaded.auto_detected.framework, 'Next.js');
       assert.strictEqual(loaded.auto_detected.stage, 'active');
-      assert.strictEqual(loaded.user_provided.description, 'Test project');
+      // user_provided is now always {} since saveContext only takes flat shape
+      assert.ok(loaded.user_provided);
     });
 
     test('should return null for non-existent context', async () => {
