@@ -246,6 +246,51 @@ function safeExec(cmd) {
   }
 }
 
+// Detect package manager from command availability and lock files
+// Extracted to reduce cognitive complexity
+function detectPackageManager(errors) {
+  // Try detecting from installed commands
+  const bunVersion = safeExec('bun --version');
+  if (bunVersion) {
+    PKG_MANAGER = 'bun';
+    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
+  } else {
+    const pnpmVersion = safeExec('pnpm --version');
+    if (pnpmVersion) {
+      PKG_MANAGER = 'pnpm';
+      console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
+    } else {
+      const yarnVersion = safeExec('yarn --version');
+      if (yarnVersion) {
+        PKG_MANAGER = 'yarn';
+        console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
+      } else {
+        const npmVersion = safeExec('npm --version');
+        if (npmVersion) {
+          PKG_MANAGER = 'npm';
+          console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
+        } else {
+          errors.push('npm, yarn, pnpm, or bun - Install a package manager');
+        }
+      }
+    }
+  }
+
+  // Override from lock files if present (more authoritative)
+  const bunLock = path.join(projectRoot, 'bun.lockb');
+  const bunLock2 = path.join(projectRoot, 'bun.lock');
+  const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
+  const yarnLock = path.join(projectRoot, 'yarn.lock');
+
+  if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
+    PKG_MANAGER = 'bun';
+  } else if (fs.existsSync(pnpmLock)) {
+    PKG_MANAGER = 'pnpm';
+  } else if (fs.existsSync(yarnLock)) {
+    PKG_MANAGER = 'yarn';
+  }
+}
+
 // Prerequisite check function
 function checkPrerequisites() {
   const errors = [];
@@ -285,45 +330,7 @@ function checkPrerequisites() {
   }
 
   // Detect package manager
-  const bunVersion = safeExec('bun --version');
-  if (bunVersion) {
-    PKG_MANAGER = 'bun';
-    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
-  } else {
-    const pnpmVersion = safeExec('pnpm --version');
-    if (pnpmVersion) {
-      PKG_MANAGER = 'pnpm';
-      console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
-    } else {
-      const yarnVersion = safeExec('yarn --version');
-      if (yarnVersion) {
-        PKG_MANAGER = 'yarn';
-        console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
-      } else {
-        const npmVersion = safeExec('npm --version');
-        if (npmVersion) {
-          PKG_MANAGER = 'npm';
-          console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
-        } else {
-          errors.push('npm, yarn, pnpm, or bun - Install a package manager');
-        }
-      }
-    }
-  }
-
-  // Also detect from lock files if present
-  const bunLock = path.join(projectRoot, 'bun.lockb');
-  const bunLock2 = path.join(projectRoot, 'bun.lock');
-  const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
-  const yarnLock = path.join(projectRoot, 'yarn.lock');
-
-  if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
-    PKG_MANAGER = 'bun';
-  } else if (fs.existsSync(pnpmLock)) {
-    PKG_MANAGER = 'pnpm';
-  } else if (fs.existsSync(yarnLock)) {
-    PKG_MANAGER = 'yarn';
-  }
+  detectPackageManager(errors);
 
   // Show errors
   if (errors.length > 0) {
