@@ -114,7 +114,8 @@ describe('Create Command Integration', () => {
       description: 'Test skill',
       category: 'coding',
       author: 'Test User',
-      nonInteractive: true // Skip prompts for testing
+      nonInteractive: true, // Skip prompts for testing
+      noSync: true // Skip auto-sync for testing
     });
 
     const skillDir = join(skillsDir, 'my-skill');
@@ -128,7 +129,8 @@ describe('Create Command Integration', () => {
       description: 'Test skill',
       category: 'coding',
       author: 'Test User',
-      nonInteractive: true
+      nonInteractive: true,
+      noSync: true
     });
 
     const skillMdPath = join(skillsDir, 'my-skill', 'SKILL.md');
@@ -147,7 +149,8 @@ describe('Create Command Integration', () => {
       description: 'Test skill',
       category: 'coding',
       author: 'Test User',
-      nonInteractive: true
+      nonInteractive: true,
+      noSync: true
     });
 
     const metaPath = join(skillsDir, 'my-skill', '.skill-meta.json');
@@ -168,7 +171,8 @@ describe('Create Command Integration', () => {
       description: 'Test skill',
       category: 'coding',
       author: 'Test User',
-      nonInteractive: true
+      nonInteractive: true,
+      noSync: true
     });
 
     const registryPath = join(skillsDir, '.registry.json');
@@ -184,7 +188,8 @@ describe('Create Command Integration', () => {
       title: 'Research Skill',
       description: 'Test research',
       author: 'Test User',
-      nonInteractive: true
+      nonInteractive: true,
+      noSync: true
     });
 
     const skillMdPath = join(skillsDir, 'research-skill', 'SKILL.md');
@@ -202,7 +207,8 @@ describe('Create Command Integration', () => {
       description: 'Test skill',
       category: 'coding',
       author: 'Test User',
-      nonInteractive: true
+      nonInteractive: true,
+      noSync: true
     });
 
     // Try to create again
@@ -222,7 +228,8 @@ describe('Create Command Integration', () => {
     await expect(
       createCommand('invalid name', {
         template: 'default',
-        nonInteractive: true
+        nonInteractive: true,
+        noSync: true
       })
     ).rejects.toThrow('Invalid skill name');
   });
@@ -236,7 +243,8 @@ describe('Create Command Integration', () => {
       description: 'Test skill',
       category: 'coding',
       author: 'Test User',
-      nonInteractive: true
+      nonInteractive: true,
+      noSync: true
     });
 
     const afterCreate = Date.now();
