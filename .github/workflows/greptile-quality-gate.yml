@@ -3,6 +3,7 @@ name: Greptile Quality Gate
 on:
   pull_request_review:
     types: [submitted]
+    branches: ["master"]
 
 jobs:
   quality-gate:
@@ -17,11 +18,11 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // Only run for Greptile reviews
+            // Only run for Greptile reviews (exact match)
             const reviewer = context.payload.review?.user?.login || '';
             console.log(`Review submitted by: ${reviewer}`);
 
-            if (!reviewer.includes('greptile')) {
+            if (reviewer !== 'greptile-apps[bot]') {
               console.log('⏭️ Skipping: Not a Greptile review');
               return;
             }
