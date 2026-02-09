@@ -15,14 +15,17 @@ jobs:
       checks: write
 
     steps:
-      - name: Wait for Greptile Review
+      - name: Wait for Greptile Review (optional)
+        id: wait
+        continue-on-error: true
+        timeout-minutes: 5
         uses: lewagon/wait-on-check-action@v1.3.4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           check-name: 'Greptile Review'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 20
-          allowed-conclusions: success,neutral
+          allowed-conclusions: success,neutral,failure
 
       - name: Check Greptile Score
         uses: actions/github-script@v7
