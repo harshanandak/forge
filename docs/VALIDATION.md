@@ -58,7 +58,7 @@ git commit --no-verify  # Skip in emergencies
 **Trigger**: Before every push
 
 **Checks**:
-- Runs `npm test`
+- Runs `bun test`
 - Verifies all tests pass
 
 **Override**:
@@ -97,7 +97,7 @@ forge-validate <command>
 **Checks**:
 - ✓ Git repository initialized
 - ✓ `package.json` exists
-- ✓ Test framework configured (`npm test` script)
+- ✓ Test framework configured (`bun test` script)
 - ✓ Node.js installed
 
 **Example**:
@@ -169,7 +169,7 @@ Validation Results:
 
 **Checks**:
 - ✓ Tests exist (`.test.js`, `.spec.ts` files)
-- ✓ Tests pass (`npm test` succeeds)
+- ✓ Tests pass (`bun test` succeeds)
 - ✓ Documentation updated (`README.md` or `docs/`)
 - ✓ No uncommitted changes
 
@@ -239,7 +239,7 @@ pre-commit:
 pre-push:
   commands:
     tests:
-      run: npm test
+      run: bun test
       tags: tests
 ```
 
@@ -292,10 +292,10 @@ Hooks are automatically installed when you run:
 
 ```bash
 # Install lefthook (one-time)
-npm install -D lefthook
+bun add -d lefthook
 
 # Set up Forge
-npx forge setup
+bunx forge setup
 ```
 
 The hooks will be automatically installed in your project's `.git/hooks/` directory.
@@ -304,7 +304,7 @@ The hooks will be automatically installed in your project's `.git/hooks/` direct
 
 ```bash
 # If you prefer global installation
-npm install -g lefthook
+bun install -g lefthook
 
 # Install hooks
 lefthook install
@@ -338,7 +338,7 @@ If the hook incorrectly flags a file:
 
 ```bash
 # Run tests locally
-npm test
+bun test
 
 # Fix failures, then
 git push

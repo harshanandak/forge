@@ -40,8 +40,8 @@ Forge is a universal AI agent workflow tool supporting 11 agent plugins with com
 ### Installation Entry Points
 
 1. **Postinstall** (automatic): Creates AGENTS.md + docs/ (minimal)
-2. **Interactive setup**: `npx forge setup` (full agent selection)
-3. **Quick mode**: `npx forge setup --quick` (all defaults)
+2. **Interactive setup**: `bunx forge setup` (full agent selection)
+3. **Quick mode**: `bunx forge setup --quick` (all defaults)
 4. **Curl install**: `install.sh` (bash script, 1063 lines)
 
 ### Critical Files
@@ -105,14 +105,14 @@ function validateRollbackInput(method, target) {
 
 ```
 Mode 1: Postinstall (automatic)
-  npm install forge-workflow
+  bun add forge-workflow
   ↓
   Creates: AGENTS.md + docs/ only
   Duration: ~5 seconds
   Files created: ~5
 
 Mode 2: Interactive Setup
-  npx forge setup
+  bunx forge setup
   ↓
   Prompts: Agent selection (11 options)
   Prompts: File overwrites (if exists)
@@ -124,7 +124,7 @@ Mode 2: Interactive Setup
   Files created: 5-50 depending on agents
 
 Mode 3: Quick Mode
-  npx forge setup --quick
+  bunx forge setup --quick
   ↓
   Defaults: All agents, GitHub Code Quality, ESLint
   No prompts (except file overwrites)
@@ -226,7 +226,7 @@ Realistic sampling strategy:
 **Needed**:
 - Transaction-like installation (all-or-nothing)
 - Backup directory with timestamp
-- Rollback command: `npx forge rollback --backup <timestamp>`
+- Rollback command: `bunx forge rollback --backup <timestamp>`
 - Keep last 5 backups, auto-cleanup
 
 ### 8. Performance Characteristics

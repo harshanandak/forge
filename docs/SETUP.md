@@ -17,14 +17,14 @@ Complete setup instructions for all AI agents and optional toolchain.
 
 ## Installation Options
 
-### Option 1: npm (Recommended)
+### Option 1: Bun (Recommended)
 
 ```bash
 # Step 1: Install the package
-npm install forge-workflow
+bun add forge-workflow
 
 # Step 2: Interactive setup
-npx forge setup
+bunx forge setup
 ```
 
 **Interactive prompts**:
@@ -42,10 +42,10 @@ npx forge setup
 
 ```bash
 # Install for specific agents
-npx forge setup --agents claude,cursor,windsurf
+bunx forge setup --agents claude,cursor,windsurf
 
 # Install for all agents
-npx forge setup --all
+bunx forge setup --all
 ```
 
 ### Option 3: curl (One-Command Install)
@@ -234,7 +234,7 @@ gh auth status
 
 ```bash
 # Install globally
-npm install -g @beads/bd
+bun install -g @beads/bd
 
 # Initialize in your project
 cd your-project
@@ -267,7 +267,7 @@ bd list
 node --version
 
 # Install globally
-npm install -g @fission-ai/openspec
+bun install -g @fission-ai/openspec
 
 # Initialize in project
 cd your-project
@@ -420,9 +420,8 @@ curl -X POST "https://api.greptile.com/v2/repositories" \
 **Already configured!** Just run:
 
 ```bash
-npm run lint
-# or
 bun run lint
+# or: npm run lint
 ```
 
 #### SonarCloud Setup
@@ -448,7 +447,7 @@ sonar.javascript.lcov.reportPaths=coverage/lcov.info
 EOF
 
 # 6. Run analysis locally
-npx sonarqube-scanner
+bunx sonarqube-scanner
 
 # 7. Add to CI (.github/workflows/quality.yml)
 ```
@@ -502,7 +501,7 @@ sonar.tests=tests
 EOF
 
 # 7. Run analysis
-npx sonarqube-scanner
+bunx sonarqube-scanner
 ```
 
 ---
@@ -637,14 +636,14 @@ your-project/
 
 ## Troubleshooting
 
-### "Command not found: npx forge"
+### "Command not found: bunx forge"
 
 ```bash
 # Ensure forge-workflow is installed
-npm list forge-workflow
+bun pm ls | grep forge-workflow
 
 # If not, install
-npm install forge-workflow
+bun add forge-workflow
 ```
 
 ### "Permission denied: gh"
@@ -661,7 +660,7 @@ gh auth status
 
 ```bash
 # Install globally
-npm install -g @beads/bd
+bun install -g @beads/bd
 
 # Verify
 bd --version

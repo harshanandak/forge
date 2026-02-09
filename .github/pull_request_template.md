@@ -46,7 +46,7 @@
 
 - [ ] I reviewed the full diff on GitHub
 - [ ] No debug code (console.log, commented code, temporary changes)
-- [ ] ESLint passes with zero warnings (`npx eslint .`)
+- [ ] ESLint passes with zero warnings (`bunx eslint .`)
 - [ ] All tests pass locally (`bun test`)
 - [ ] No hardcoded secrets or API keys
 - [ ] Error handling implemented where needed

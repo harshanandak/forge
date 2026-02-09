@@ -91,8 +91,8 @@ See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for detailed MCP setup instructions.
 
 ## Toolchain
 
-- **Beads** (recommended): Auto-installed during `npx forge setup` - Git-backed issue tracking
-- **OpenSpec** (optional): Auto-installed during `npx forge setup` - Spec-driven development
+- **Beads** (recommended): Auto-installed during `bunx forge setup` - Git-backed issue tracking
+- **OpenSpec** (optional): Auto-installed during `bunx forge setup` - Spec-driven development
 - **GitHub CLI**: `gh auth login` - PR workflow
 
 Setup prompts for Beads/OpenSpec during interactive installation. Manual install: see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).

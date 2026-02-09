@@ -41,13 +41,13 @@ pre-push:
     lint:
       run: |
         echo "🔍 Running ESLint..."
-        npx eslint .
+        bunx eslint .
         if [ $? -ne 0 ]; then
           echo ""
           echo "❌ ESLint errors found. Fix them before pushing."
           echo ""
-          echo "To see errors: npx eslint ."
-          echo "To auto-fix: npx eslint . --fix"
+          echo "To see errors: bunx eslint ."
+          echo "To auto-fix: bunx eslint . --fix"
           echo ""
           echo "Emergency bypass: LEFTHOOK=0 git push"
           echo ""
