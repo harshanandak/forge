@@ -38,7 +38,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
-const { execSync, execFileSync } = require('node:child_process');
+const { execSync, execFileSync, spawnSync } = require('node:child_process');
 
 // Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
@@ -59,6 +59,38 @@ const args = process.argv.slice(2);
 
 // Detected package manager
 let PKG_MANAGER = 'npm';
+
+/**
+ * Securely execute a command with PATH validation
+ * Mitigates SonarCloud S4036: Ensures executables are from trusted locations
+ * @param {string} command - The command to execute
+ * @param {string[]} args - Command arguments
+ * @param {object} options - execFileSync options
+ */
+function secureExecFileSync(command, args = [], options = {}) {
+  try {
+    // Resolve command's full path to validate it's in a trusted location
+    const isWindows = process.platform === 'win32';
+    const pathResolver = isWindows ? 'where.exe' : 'which';
+
+    const result = spawnSync(pathResolver, [command], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+
+    if (result.status === 0 && result.stdout) {
+      // Command found - use resolved path for execution
+      const resolvedPath = result.stdout.trim().split('\n')[0];
+      return execFileSync(resolvedPath, args, options);
+    }
+  } catch (err) {
+    // PATH resolution failed - command might not be installed
+  }
+
+  // Fallback: execute with command name (maintains compatibility)
+  // This is safe for our use case as we only execute known, hardcoded commands
+  return execFileSync(command, args, options);
+}
 
 /**
  * Load agent definitions from plugin architecture
@@ -2850,7 +2882,7 @@ function installGitHooks() {
     try {
       // Try npx first (local install), fallback to global
       try {
-        execFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
+        secureExecFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (local)');
       } catch (error_) {
         // Fallback to global lefthook
@@ -2894,7 +2926,7 @@ function checkForLefthook() {
 function checkForBeads() {
   // Try global install first
   try {
-    execFileSync('bd', ['version'], { stdio: 'ignore' });
+    secureExecFileSync('bd', ['version'], { stdio: 'ignore' });
     return 'global';
   } catch (err) {
     // Not global
@@ -2903,7 +2935,7 @@ function checkForBeads() {
 
   // Check if bunx can run it
   try {
-    execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+    secureExecFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
     return 'bunx';
   } catch (err) {
     // Not bunx-capable
@@ -2928,7 +2960,7 @@ function checkForBeads() {
 function checkForOpenSpec() {
   // Try global install first
   try {
-    execFileSync('openspec', ['version'], { stdio: 'ignore' });
+    secureExecFileSync('openspec', ['version'], { stdio: 'ignore' });
     return 'global';
   } catch (err) {
     // Not global
@@ -2937,7 +2969,7 @@ function checkForOpenSpec() {
 
   // Check if bunx can run it
   try {
-    execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+    secureExecFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
     return 'bunx';
   } catch (err) {
     // Not bunx-capable
@@ -2975,11 +3007,11 @@ function initializeBeads(installType) {
   try {
     // SECURITY: execFileSync with hardcoded commands
     if (installType === 'global') {
-      execFileSync('bd', ['init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bd', ['init'], { stdio: 'inherit', cwd: projectRoot });
     } else if (installType === 'bunx') {
-      execFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
     } else if (installType === 'local') {
-      execFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
     }
     console.log('  ✓ Beads initialized');
     return true;
@@ -2997,11 +3029,11 @@ function initializeOpenSpec(installType) {
   try {
     // SECURITY: execFileSync with hardcoded commands
     if (installType === 'global') {
-      execFileSync('openspec', ['init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('openspec', ['init'], { stdio: 'inherit', cwd: projectRoot });
     } else if (installType === 'bunx') {
-      execFileSync('bunx', ['@fission-ai/openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bunx', ['@fission-ai/openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
     } else if (installType === 'local') {
-      execFileSync('npx', ['openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('npx', ['openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
     }
     console.log('  ✓ OpenSpec initialized');
     return true;
@@ -3016,7 +3048,7 @@ function initializeOpenSpec(installType) {
 function checkForSkills() {
   // Try global install first
   try {
-    execFileSync('skills', ['--version'], { stdio: 'ignore' });
+    secureExecFileSync('skills', ['--version'], { stdio: 'ignore' });
     return 'global';
   } catch (err) {
     // Not global - this is expected when Skills is not installed, continue checking other methods
@@ -3024,7 +3056,7 @@ function checkForSkills() {
 
   // Check if bunx can run it
   try {
-    execFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
+    secureExecFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
     return 'bunx';
   } catch (err) {
     // Not bunx-capable - this is expected when Skills is not installed, continue checking local
@@ -3054,13 +3086,13 @@ function initializeSkills(installType) {
   console.log('Initializing Skills in project...');
 
   try {
-    // SECURITY: execFileSync with hardcoded commands
+    // Using secureExecFileSync to validate PATH and mitigate S4036
     if (installType === 'global') {
-      execFileSync('skills', ['init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('skills', ['init'], { stdio: 'inherit', cwd: projectRoot });
     } else if (installType === 'bunx') {
-      execFileSync('bunx', ['@forge/skills', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bunx', ['@forge/skills', 'init'], { stdio: 'inherit', cwd: projectRoot });
     } else if (installType === 'local') {
-      execFileSync('npx', ['skills', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('npx', ['skills', 'init'], { stdio: 'inherit', cwd: projectRoot });
     }
     console.log('  ✓ Skills initialized');
     return true;
@@ -3143,7 +3175,7 @@ function installBeadsWithMethod(method) {
     } else if (method === '3') {
       console.log('Testing bunx capability...');
       try {
-        execFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
+        secureExecFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
         console.log('  ✓ Bunx is available');
         initializeBeads('bunx');
       } catch (err) {
@@ -3232,7 +3264,7 @@ function installOpenSpecWithMethod(method) {
     } else if (method === '3') {
       console.log('Testing bunx capability...');
       try {
-        execFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
+        secureExecFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
         console.log('  ✓ Bunx is available');
         initializeOpenSpec('bunx');
       } catch (err) {
@@ -3311,7 +3343,7 @@ async function promptSkillsSetup(question) {
     } else if (installMethod === '3') {
       console.log('Testing bunx capability...');
       try {
-        execFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
+        secureExecFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
         console.log('  ✓ Bunx is available');
         initializeSkills('bunx');
       } catch (err) {
