@@ -20,6 +20,10 @@ on:
       - '.github/workflows/test.yml'
   workflow_dispatch:  # Allow manual workflow runs
 
+# Limit GITHUB_TOKEN permissions to minimum required
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test Suite

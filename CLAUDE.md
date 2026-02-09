@@ -99,6 +99,38 @@ Setup prompts for Beads/OpenSpec during interactive installation. Manual install
 
 ---
 
+## Git Workflow
+
+This project uses the **Professional Git Workflow** with Lefthook for automated quality gates:
+
+**Pre-commit hooks** (automatic):
+- TDD enforcement: Source files must have corresponding tests
+- Interactive prompts: Option to unstage, continue, or abort
+
+**Pre-push hooks** (automatic):
+- Branch protection: Blocks direct push to main/master
+- ESLint check: Blocks on errors (warnings allowed for now - see forge-y8z)
+- Test suite: All tests must pass
+
+**Pull Request workflow**:
+- PR template auto-fills with standardized format
+- Self-review checklist catches 80% of bugs before review
+- Beads integration: Reference issues with `Closes beads-xxx`
+- **All review comments must be resolved** before merge
+- Squash-only merging: Clean, linear git history
+
+**Emergency bypass**:
+```bash
+LEFTHOOK=0 git push              # Skip all pre-push hooks
+git commit --no-verify           # Skip pre-commit hooks
+```
+
+**⚠️ Only use bypasses for emergencies.** Document reason in PR description.
+
+See [.github/pull_request_template.md](.github/pull_request_template.md) for PR guidelines.
+
+---
+
 <!-- USER:START - Add project-specific learnings here as you work -->
 
 💡 **Keep this section focused** - Add patterns you discover while working.
