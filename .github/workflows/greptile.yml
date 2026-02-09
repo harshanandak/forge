@@ -1,0 +1,76 @@
+name: Greptile Code Review
+
+on:
+  pull_request:
+    branches: [ "master", "main" ]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  greptile-review:
+    name: Greptile Quality Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      - name: Run Greptile Analysis
+        id: greptile
+        uses: greptile-apps/greptile-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          greptile-api-key: ${{ secrets.GREPTILE_API_KEY }}
+
+      - name: Check Greptile Score
+        id: score-check
+        run: |
+          SCORE=${{ steps.greptile.outputs.score }}
+          echo "Greptile Score: $SCORE"
+
+          if (( $(echo "$SCORE < 4" | bc -l) )); then
+            echo "❌ FAILED: Greptile score $SCORE is below minimum threshold of 4.0"
+            echo "score-pass=false" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ PASSED: Greptile score $SCORE meets minimum threshold"
+            echo "score-pass=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment Score on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const score = '${{ steps.greptile.outputs.score }}';
+            const passed = '${{ steps.score-check.outputs.score-pass }}' === 'true';
+            const emoji = passed ? '✅' : '❌';
+            const status = passed ? 'PASSED' : 'FAILED';
+
+            const body = `## ${emoji} Greptile Code Quality Score: ${score}/5
+
+            **Status**: ${status}
+            **Minimum Required**: 4.0
+
+            ${passed ?
+              '✅ Code quality meets merge requirements.' :
+              '❌ Code quality below threshold. Please address feedback and improve code quality before merging.'
+            }
+
+            ---
+            📊 [View detailed analysis](https://app.greptile.com)
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
