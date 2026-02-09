@@ -3159,17 +3159,17 @@ async function promptBeadsSetup(question) {
 // Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
 function installBeadsWithMethod(method) {
   try {
-    // SECURITY: execFileSync with hardcoded commands
+    // SECURITY: secureExecFileSync with hardcoded commands
     if (method === '1') {
       console.log('Installing Beads globally...');
       const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
       console.log('  ✓ Beads installed globally');
       initializeBeads('global');
     } else if (method === '2') {
       console.log('Installing Beads locally...');
       const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Beads installed locally');
       initializeBeads('local');
     } else if (method === '3') {
@@ -3248,17 +3248,19 @@ async function promptOpenSpecSetup(question) {
 // Helper: Install OpenSpec with chosen method - extracted to reduce cognitive complexity
 function installOpenSpecWithMethod(method) {
   try {
-    // SECURITY: execFileSync with hardcoded commands
+    // SECURITY: secureExecFileSync with hardcoded commands
     if (method === '1') {
       console.log('Installing OpenSpec globally...');
       const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
+      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
+      secureExecFileSync(pkgManager, [installCmd, '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
       console.log('  ✓ OpenSpec installed globally');
       initializeOpenSpec('global');
     } else if (method === '2') {
       console.log('Installing OpenSpec locally...');
       const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
+      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
+      secureExecFileSync(pkgManager, [installCmd, '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ OpenSpec installed locally');
       initializeOpenSpec('local');
     } else if (method === '3') {
@@ -3400,9 +3402,9 @@ function autoSetupBeadsInQuickMode() {
   } else if (!beadsInitialized && !beadsStatus) {
     console.log('📦 Installing Beads globally...');
     try {
-      // SECURITY: execFileSync with hardcoded command
+      // SECURITY: secureExecFileSync with hardcoded command
       const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      execFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
       console.log('  ✓ Beads installed globally');
       initializeBeads('global');
     } catch (err) {
@@ -4151,8 +4153,8 @@ function updateBeadsIssue(commitMessage) {
   if (!issueMatch) return;
 
   try {
-    const { execSync } = require('node:child_process');
-    execSync(`bd update ${issueMatch[1]} --status reverted --comment "PR reverted"`, { stdio: 'inherit' });
+    const { execFileSync } = require('node:child_process');
+    execFileSync('bd', ['update', issueMatch[1], '--status', 'reverted', '--comment', 'PR reverted'], { stdio: 'inherit' });
     console.log(`     Updated Beads issue #${issueMatch[1]} to 'reverted'`);
   } catch {
     // Beads not installed - silently continue
@@ -4189,15 +4191,16 @@ function handlePrRollback(target, dryRun, execSync) {
 
 // Helper: Handle partial file rollback
 function handlePartialRollback(target, dryRun, execSync) {
+  const { execFileSync } = require('node:child_process');
   const files = target.split(',').map(f => f.trim());
   if (dryRun) {
     console.log('     Would restore files:');
     files.forEach(f => console.log(`       - ${f}`));
   } else {
     files.forEach(f => {
-      execSync(`git checkout HEAD~1 -- "${f}"`, { stdio: 'inherit' });
+      execFileSync('git', ['checkout', 'HEAD~1', '--', f], { stdio: 'inherit' });
     });
-    execSync(`git commit -m "chore: rollback ${files.join(', ')}"`, { stdio: 'inherit' });
+    execFileSync('git', ['commit', '-m', `chore: rollback ${files.join(', ')}`], { stdio: 'inherit' });
   }
 }
 
