@@ -8,9 +8,9 @@
  */
 
 import { Command } from 'commander';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { readFileSync } from 'fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
 
 // Get package version
 const __filename = fileURLToPath(import.meta.url);
@@ -74,10 +74,10 @@ program
   .option('-f, --force', 'Skip confirmation')
   .action(removeCommand);
 
-// skills validate <file>
+// skills validate <name>
 program
-  .command('validate <file>')
-  .description('Validate SKILL.md format')
+  .command('validate <name>')
+  .description('Validate skill by name')
   .action(validateCommand);
 
 // skills add <name>

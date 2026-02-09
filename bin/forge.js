@@ -3332,12 +3332,12 @@ async function promptSkillsSetup(question) {
   try {
     if (installMethod === '1') {
       console.log('Installing Skills globally...');
-      execFileSync(PKG_MANAGER, ['add', '-g', '@forge/skills'], { stdio: 'inherit' });
+      secureExecFileSync(PKG_MANAGER, ['add', '-g', '@forge/skills'], { stdio: 'inherit' });
       console.log('  ✓ Skills installed globally');
       initializeSkills('global');
     } else if (installMethod === '2') {
       console.log('Installing Skills locally...');
-      execFileSync(PKG_MANAGER, ['add', '-d', '@forge/skills'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync(PKG_MANAGER, ['add', '-d', '@forge/skills'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Skills installed locally');
       initializeSkills('local');
     } else if (installMethod === '3') {

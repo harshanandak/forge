@@ -63,7 +63,8 @@ export async function publishCommand(name, options = {}) {
         throw new Error('SKILL.md frontmatter not found');
       }
 
-      const yaml = await import('js-yaml');
+      const yamlModule = await import('js-yaml');
+      const yaml = yamlModule.default || yamlModule;
       metadata = yaml.load(frontmatterMatch[1], { schema: yaml.JSON_SCHEMA });
     }
 
