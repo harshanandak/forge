@@ -3019,7 +3019,7 @@ function checkForSkills() {
     execFileSync('skills', ['--version'], { stdio: 'ignore' });
     return 'global';
   } catch (err) {
-    // Not global - this is expected when Skills is not installed
+    // Not global - this is expected when Skills is not installed, continue checking other methods
   }
 
   // Check if bunx can run it
@@ -3027,7 +3027,7 @@ function checkForSkills() {
     execFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
     return 'bunx';
   } catch (err) {
-    // Not bunx-capable - this is expected when Skills is not installed
+    // Not bunx-capable - this is expected when Skills is not installed, continue checking local
   }
 
   // Check local project installation
@@ -3039,7 +3039,7 @@ function checkForSkills() {
     const isInstalled = pkg.devDependencies?.['@forge/skills'] || pkg.dependencies?.['@forge/skills'];
     return isInstalled ? 'local' : null;
   } catch (err) {
-    // Failed to parse package.json - silently return null
+    // Failed to parse package.json
     return null;
   }
 }
