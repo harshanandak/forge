@@ -3,12 +3,12 @@ name: Greptile Quality Gate
 on:
   pull_request_review:
     types: [submitted]
-    branches: ["master"]
 
 jobs:
   quality-gate:
     name: Greptile Quality Gate (≥4/5)
     runs-on: ubuntu-latest
+    if: github.event.pull_request.base.ref == 'master'
     permissions:
       contents: read
       pull-requests: write
