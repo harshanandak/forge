@@ -2,27 +2,17 @@
  * skills list - Show all installed skills
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import chalk from 'chalk';
+import { ensureRegistryExists, readRegistry } from '../lib/common.js';
 
 /**
  * List all installed skills
  */
 export async function listCommand(options) {
   try {
-    const skillsDir = join(process.cwd(), '.skills');
-    const registryPath = join(skillsDir, '.registry.json');
-
-    // Check if registry exists
-    if (!existsSync(registryPath)) {
-      console.error(chalk.red('✗ Skills registry not found'));
-      console.error(chalk.yellow('Run "skills init" first to initialize the registry'));
-      throw new Error('Registry not found');
-    }
-
-    // Load registry
-    const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+    // Ensure registry exists and load it (with graceful error handling)
+    ensureRegistryExists();
+    const registry = readRegistry();
     let skills = Object.entries(registry.skills || {});
 
     // Filter by category if specified
@@ -57,22 +47,22 @@ export async function listCommand(options) {
     const categoryWidth = 12;
     const descWidth = 50;
 
-    // Display table header
+    // Display table header (pad first, then colorize)
     const header = [
-      chalk.bold('Name').padEnd(nameWidth + 10), // +10 for color codes
-      chalk.bold('Category').padEnd(categoryWidth + 10),
+      chalk.bold('Name'.padEnd(nameWidth)),
+      chalk.bold('Category'.padEnd(categoryWidth)),
       chalk.bold('Description')
     ].join('  ');
     console.log(header);
     console.log('─'.repeat(nameWidth + categoryWidth + descWidth + 4));
 
-    // Display skills
+    // Display skills (pad first, then colorize)
     for (const [name, skill] of skills) {
       const categoryColor = getCategoryColor(skill.category);
 
       const row = [
-        chalk.cyan(name).padEnd(nameWidth + 10),
-        chalk[categoryColor](skill.category).padEnd(categoryWidth + 10),
+        chalk.cyan(name.padEnd(nameWidth)),
+        chalk[categoryColor](skill.category.padEnd(categoryWidth)),
         truncate(skill.description, descWidth)
       ].join('  ');
 
