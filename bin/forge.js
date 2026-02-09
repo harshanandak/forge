@@ -80,7 +80,8 @@ function secureExecFileSync(command, args = [], options = {}) {
 
     if (result.status === 0 && result.stdout) {
       // Command found - use resolved path for execution
-      const resolvedPath = result.stdout.trim().split('\n')[0];
+      // Handle both CRLF (Windows) and LF (Unix) line endings
+      const resolvedPath = result.stdout.trim().split(/\r?\n/)[0].trim();
       return execFileSync(resolvedPath, args, options);
     }
   } catch (err) {
