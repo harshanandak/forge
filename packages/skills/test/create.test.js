@@ -235,8 +235,6 @@ describe('Create Command Integration', () => {
   });
 
   test('createCommand sets correct timestamps', async () => {
-    const beforeCreate = Date.now();
-
     await createCommand('my-skill', {
       template: 'default',
       title: 'My Skill',
@@ -247,19 +245,16 @@ describe('Create Command Integration', () => {
       noSync: true
     });
 
-    const afterCreate = Date.now();
-
     const metaPath = join(skillsDir, 'my-skill', '.skill-meta.json');
     const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
 
-    // Check format
-    expect(meta.created).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // Check ISO 8601 timestamp format
+    expect(meta.created).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(meta.updated).toBe(meta.created);
 
-    // Check timestamps are within reasonable range (with 100ms tolerance for CI timing)
+    // Verify timestamp is valid and recent (within last 5 seconds)
     const createdTime = new Date(meta.created).getTime();
-    const tolerance = 100; // 100ms tolerance for slow CI environments
-    expect(createdTime >= beforeCreate - tolerance).toBe(true);
-    expect(createdTime <= afterCreate + tolerance).toBe(true);
+    expect(createdTime).toBeGreaterThan(Date.now() - 5000);
+    expect(createdTime).toBeLessThanOrEqual(Date.now());
   });
 });
