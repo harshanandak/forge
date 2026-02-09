@@ -26,79 +26,32 @@ export async function syncCommand(options) {
     // Load registry
     const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
 
-    // Get all valid skills (directories with SKILL.md)
-    const skills = [];
-    if (existsSync(skillsDir)) {
-      const entries = readdirSync(skillsDir);
-      for (const entry of entries) {
-        // Validate entry name before processing (prevents path traversal)
-        try {
-          validateSkillName(entry);
-        } catch (error) {
-          // Skip invalid entries (e.g., .registry.json, malicious paths)
-          continue;
-        }
-
-        const skillPath = join(skillsDir, entry);
-        const skillMdPath = join(skillPath, 'SKILL.md');
-
-        // Skip non-directories and directories without SKILL.md
-        try {
-          if (statSync(skillPath).isDirectory() && existsSync(skillMdPath)) {
-            skills.push(entry);
-          }
-        } catch (error) {
-          // Skip entries that cause errors (e.g., permission issues)
-          continue;
-        }
-      }
-    }
-
-    // Check if there are skills to sync
+    // Get all valid skills
+    const skills = getValidSkills(skillsDir);
     if (skills.length === 0) {
       console.log(chalk.yellow('No skills to sync'));
       console.log(chalk.gray('Create a skill with: skills create my-skill'));
       return;
     }
 
-    // Detect agents
-    const allAgents = detectAgents();
-    const enabledAgents = allAgents.filter(agent => agent.enabled);
-
-    // Check if there are agents
+    // Detect and filter enabled agents
+    const enabledAgents = detectAgents().filter(agent => agent.enabled);
     if (enabledAgents.length === 0) {
       console.log(chalk.yellow('No agents detected'));
       console.log(chalk.gray('Supported agents: Cursor (.cursor), GitHub (.github)'));
       return;
     }
 
-    // Sync skills to each enabled agent
+    // Display sync header
     console.log(chalk.bold('\nSyncing skills to agents...'));
     console.log();
-
-    // Display skills being synced
     console.log('Skills:', skills.map(s => chalk.cyan(s)).join(', '));
     console.log();
 
-    for (const agent of enabledAgents) {
-      const agentSkillsPath = join(process.cwd(), agent.path);
+    // Perform sync
+    syncSkillsToAgents(skills, skillsDir, enabledAgents);
 
-      // Create agent skills directory if needed
-      mkdirSync(agentSkillsPath, { recursive: true });
-
-      // Copy each skill
-      for (const skill of skills) {
-        const sourcePath = join(skillsDir, skill);
-        const targetPath = join(agentSkillsPath, skill);
-
-        // Copy entire skill directory (SKILL.md, .skill-meta.json, etc.)
-        cpSync(sourcePath, targetPath, { recursive: true, force: true });
-      }
-
-      console.log(chalk.green('✓'), `Synced to ${chalk.cyan(agent.name)}`);
-    }
-
-    // Update registry with sync timestamp
+    // Update registry timestamp
     registry.config.lastSync = new Date().toISOString();
     writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
 
@@ -117,6 +70,64 @@ export async function syncCommand(options) {
       console.error(chalk.red('✗ Error:'), error.message);
     }
     throw error;
+  }
+}
+
+/**
+ * Get all valid skills from skills directory
+ * @param {string} skillsDir - Skills directory path
+ * @returns {string[]} List of valid skill names
+ */
+function getValidSkills(skillsDir) {
+  const skills = [];
+
+  if (!existsSync(skillsDir)) {
+    return skills;
+  }
+
+  const entries = readdirSync(skillsDir);
+  for (const entry of entries) {
+    // Validate entry name before processing (prevents path traversal)
+    try {
+      validateSkillName(entry);
+    } catch (error) {
+      continue; // Skip invalid entries
+    }
+
+    const skillPath = join(skillsDir, entry);
+    const skillMdPath = join(skillPath, 'SKILL.md');
+
+    // Skip non-directories and directories without SKILL.md
+    try {
+      if (statSync(skillPath).isDirectory() && existsSync(skillMdPath)) {
+        skills.push(entry);
+      }
+    } catch (error) {
+      continue; // Skip entries that cause errors
+    }
+  }
+
+  return skills;
+}
+
+/**
+ * Sync skills to agent directories
+ * @param {string[]} skills - List of skill names
+ * @param {string} skillsDir - Skills directory path
+ * @param {Array} enabledAgents - List of enabled agents
+ */
+function syncSkillsToAgents(skills, skillsDir, enabledAgents) {
+  for (const agent of enabledAgents) {
+    const agentSkillsPath = join(process.cwd(), agent.path);
+    mkdirSync(agentSkillsPath, { recursive: true });
+
+    for (const skill of skills) {
+      const sourcePath = join(skillsDir, skill);
+      const targetPath = join(agentSkillsPath, skill);
+      cpSync(sourcePath, targetPath, { recursive: true, force: true });
+    }
+
+    console.log(chalk.green('✓'), `Synced to ${chalk.cyan(agent.name)}`);
   }
 }
 

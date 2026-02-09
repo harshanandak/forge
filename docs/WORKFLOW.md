@@ -260,6 +260,138 @@ See [.claude/commands/rollback.md](../.claude/commands/rollback.md) for complete
 
 ---
 
+## Git Workflow Integration
+
+This project uses **Lefthook** for automated quality gates at commit and push time.
+
+### Pre-Commit Checks (Automatic)
+
+**TDD Enforcement**:
+- Verifies source files have corresponding test files
+- Interactive prompts: Option to unstage, continue, or abort
+- Supports multiple languages: JS, TS, JSX, TSX, Python, Go, Java, Ruby
+
+**Bypass** (emergencies only):
+```bash
+git commit --no-verify
+```
+
+### Pre-Push Checks (Automatic)
+
+**Three-layer protection**:
+
+1. **Branch Protection**: Blocks direct push to main/master
+   ```
+   ✅ Feature branches: allowed
+   ❌ main/master: blocked
+   ```
+
+2. **ESLint Check**: Strict mode (zero errors, zero warnings)
+   ```bash
+   npx eslint .  # Must pass before push
+   ```
+
+3. **Test Suite**: All tests must pass
+   ```bash
+   bun test  # Auto-detects package manager
+   ```
+
+**Bypass** (emergencies only):
+```bash
+LEFTHOOK=0 git push
+```
+
+### Pull Request Workflow
+
+**Feature branch naming**:
+```bash
+feat/feature-name    # New feature
+fix/bug-name         # Bug fix
+docs/doc-name        # Documentation
+refactor/name        # Code refactoring
+test/test-name       # Test additions
+chore/name           # Maintenance
+```
+
+**PR checklist** (auto-filled from template):
+- Summary & detailed changes
+- Type of change (feat/fix/docs/refactor/test/chore)
+- Forge workflow stage (research/dev/check/verify)
+- Testing plan (manual/e2e/unit)
+- **Self-review checklist** (catches 80% of bugs!)
+- **Beads integration**: `Closes beads-xxx`
+- Screenshots (if UI changes)
+- Merge criteria verification
+
+**Merge strategy** (squash-only):
+- GitHub configured for squash merging only
+- One clean commit per PR
+- Linear git history
+- Branches auto-delete after merge
+
+### Git + Beads Workflow
+
+**Complete cycle**:
+```bash
+# 1. Create Beads issue
+bd create "Add feature X"  # Returns: beads-abc123
+
+# 2. Create feature branch
+git checkout -b feat/feature-x
+
+# 3. Develop with TDD
+# (Pre-commit hook checks tests exist)
+git commit -m "test: add feature tests"
+git commit -m "feat: implement feature"
+git commit -m "refactor: optimize logic"
+
+# 4. Push to remote
+# (Pre-push checks: branch protection ✅, ESLint ✅, tests ✅)
+git push -u origin feat/feature-x
+
+# 5. Create PR with Beads reference
+gh pr create --title "feat: add feature X" --body "Closes beads-abc123"
+
+# 6. After merge
+bd close beads-abc123  # Automatic if PR body has "Closes beads-xxx"
+bd sync                # Sync to git remote
+git checkout main
+git pull               # Get merged changes
+```
+
+### Emergency Bypasses
+
+**When to use**:
+- Production outage
+- Critical security patch
+- Data loss prevention
+- CI/CD system down
+
+**How to bypass**:
+```bash
+# Skip pre-commit (TDD check)
+git commit --no-verify
+
+# Skip pre-push (branch protection + ESLint + tests)
+LEFTHOOK=0 git push
+```
+
+**⚠️ IMPORTANT**: Always document bypass reason in PR description!
+
+### Quality Gate Results
+
+After implementing this workflow:
+
+| Metric | Target | How to Measure |
+|--------|--------|----------------|
+| Bugs in production | <2/month | Issue tracker |
+| ESLint issues shipped | 0 | `npx eslint .` |
+| Test coverage regressions | 0 | `bun test` |
+| Emergency bypasses | <1/month | Git log |
+| Time to merge | <30 min | GitHub PR metrics |
+
+---
+
 ## Tips & Best Practices
 
 1. **Always TDD**: Write tests BEFORE implementation

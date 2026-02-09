@@ -39,7 +39,7 @@ export async function addCommand(name, options = {}) {
     console.log('📦 Downloading from Vercel registry...');
     const skillPackage = await downloadSkill(name);
 
-    if (!skillPackage || !skillPackage.content || !skillPackage.metadata) {
+    if (!skillPackage?.content || !skillPackage?.metadata) {
       throw new Error('Invalid skill package received from registry');
     }
 

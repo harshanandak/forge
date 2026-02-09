@@ -56,7 +56,8 @@ export async function searchCommand(query, options = {}) {
         console.log(chalk.gray(`  Downloads: ${skill.downloads}`));
       }
 
-      console.log(chalk.gray(`  Install: ${chalk.white(`skills add ${skill.name}`)}`));
+      const installCmd = `skills add ${skill.name}`;
+      console.log(chalk.gray(`  Install: ${chalk.white(installCmd)}`));
       console.log();
     }
 
