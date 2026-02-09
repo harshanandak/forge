@@ -1,5 +1,12 @@
 # Forge
 
+[![npm version](https://img.shields.io/npm/v/forge-workflow.svg)](https://www.npmjs.com/package/forge-workflow)
+[![npm downloads](https://img.shields.io/npm/dw/forge-workflow.svg)](https://www.npmjs.com/package/forge-workflow)
+[![license](https://img.shields.io/npm/l/forge-workflow.svg)](https://github.com/harshanandak/forge/blob/master/LICENSE)
+[![Tests](https://github.com/harshanandak/forge/actions/workflows/test.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/test.yml)
+[![ESLint](https://github.com/harshanandak/forge/actions/workflows/eslint.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/eslint.yml)
+[![Greptile Quality Gate](https://github.com/harshanandak/forge/actions/workflows/greptile-quality-gate.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/greptile-quality-gate.yml)
+
 Ship features with confidence using a 9-stage TDD-first workflow for AI coding agents.
 
 ```
@@ -74,7 +81,7 @@ bunx forge setup
 | **4. Dev** | `/dev` | TDD development (RED-GREEN-REFACTOR) |
 | **5. Check** | `/check` | Validate: types, lint, tests, security |
 | **6. Ship** | `/ship` | Create PR with documentation |
-| **7. Review** | `/review` | Address ALL PR feedback |
+| **7. Review** | `/review` | Address ALL PR feedback (Greptile, reviewers, CI/CD) |
 | **8. Merge** | `/merge` | Update docs, merge, cleanup |
 | **9. Verify** | `/verify` | Final documentation check |
 
@@ -207,6 +214,31 @@ bunx forge setup --interview    # Gather project context
 
 → [Enhanced onboarding guide](docs/ENHANCED_ONBOARDING.md)
 
+### 7. Automated Quality Gates 🆕
+Multi-layer quality enforcement before merge:
+
+**Greptile AI Code Review**
+- AI-powered review on every PR
+- Catches bugs, security issues, performance problems
+- Detailed inline feedback with fix suggestions
+- Automatic re-review after changes
+```bash
+# Branch protection requires Greptile review to pass
+# Typically completes in 1-2 minutes
+```
+
+**GitHub Actions Workflows**
+- Greptile Quality Gate: Enforces minimum score (≥4/5)
+- ESLint checks: Code quality validation
+- Test suite: All tests must pass
+
+**Git Hooks (Lefthook)**
+- Pre-commit: TDD enforcement (tests required)
+- Pre-push: Full test suite + lint checks
+- Branch protection: Blocks direct push to main/master
+
+→ [Greptile setup guide](docs/GREPTILE_SETUP.md)
+
 ---
 
 ## The Toolchain
@@ -258,7 +290,7 @@ gh auth login
 
 ## Real-World Examples
 
-### Example 1: Simple Feature (15 minutes)
+### Example 1: Simple Feature (20 minutes)
 **Task**: Add a health check endpoint
 
 ```bash
@@ -267,9 +299,12 @@ gh auth login
 /dev                             # 8 min: TDD implementation
 /check                           # 2 min: All validations pass
 /ship                            # 2 min: PR created
+# → Greptile AI review completes (~2 min)
+/review                          # 3 min: Address Greptile feedback
+/merge                           # 2 min: Merge + cleanup
 ```
 
-### Example 2: Bug Fix with Security (20 minutes)
+### Example 2: Bug Fix with Security (30 minutes)
 **Task**: Fix SQL injection vulnerability
 
 ```bash
@@ -278,6 +313,9 @@ gh auth login
 /dev                             # 8 min: Fix + tests
 /check                           # 3 min: Security scan
 /ship                            # 2 min: PR with security notes
+# → Greptile validates security fix (~2 min)
+/review                          # 5 min: Address security feedback
+/merge                           # 3 min: Merge + verify
 ```
 
 ### Example 3: Architecture Change (2-3 days)
