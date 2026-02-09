@@ -4,7 +4,7 @@
  * Security-critical functions for preventing path traversal and injection attacks
  */
 
-import { resolve, sep } from 'path';
+import { resolve, sep } from 'node:path';
 
 /**
  * Regex for valid skill names

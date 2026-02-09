@@ -2,7 +2,7 @@
  * skills add - Install skill from Vercel registry
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import chalk from 'chalk';
 import { downloadSkill } from '../lib/registry.js';
 import { validateSkillName } from '../lib/validation.js';

@@ -4,8 +4,8 @@
  * Detects AI agents in the current project based on directory presence
  */
 
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Agent definitions

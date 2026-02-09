@@ -2,8 +2,8 @@
  * skills init - Initialize skills registry in current project
  */
 
-import { join } from 'path';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 
 export async function initCommand() {
   const skillsDir = join(process.cwd(), '.skills');

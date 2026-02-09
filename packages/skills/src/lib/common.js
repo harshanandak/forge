@@ -3,8 +3,8 @@
  * Reduces code duplication across command files
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import chalk from 'chalk';
 
 /**

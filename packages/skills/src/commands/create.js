@@ -2,8 +2,8 @@
  * skills create - Create new skill from template
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { loadTemplate, renderTemplate, getCurrentDate, getCurrentTimestamp } from '../lib/template.js';

@@ -2,8 +2,8 @@
  * skills sync - Synchronize skills to agent directories
  */
 
-import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
 import { validateSkillName } from '../lib/validation.js';

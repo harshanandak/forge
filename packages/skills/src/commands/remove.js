@@ -2,8 +2,8 @@
  * skills remove - Remove a skill from .skills/ and agent directories
  */
 
-import { existsSync, rmSync } from 'fs';
-import { join } from 'path';
+import { existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
 import { validateSkillName, ensurePathWithin } from '../lib/validation.js';

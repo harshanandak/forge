@@ -2,7 +2,7 @@
  * skills publish - Publish skill to Vercel registry
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'node:fs';
 import chalk from 'chalk';
 import { publishSkill, skillExists } from '../lib/registry.js';
 import { validateSkillName } from '../lib/validation.js';
