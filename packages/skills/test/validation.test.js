@@ -83,14 +83,14 @@ describe('ensurePathWithin', () => {
     expect(() => ensurePathWithin(base, target)).not.toThrow();
   });
 
-  test('handles Windows paths', () => {
+  test.skipIf(process.platform !== 'win32')('handles Windows paths', () => {
     const base = 'C:\\Users\\test\\.skills';
     const target = 'C:\\Users\\test\\.skills\\my-skill';
 
     expect(() => ensurePathWithin(base, target)).not.toThrow();
   });
 
-  test('prevents Windows path traversal', () => {
+  test.skipIf(process.platform !== 'win32')('prevents Windows path traversal', () => {
     const base = 'C:\\Users\\test\\.skills';
     const target = 'C:\\Users\\test\\other-dir';
 
