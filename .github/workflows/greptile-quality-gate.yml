@@ -1,8 +1,8 @@
 name: Greptile Quality Gate
 
 on:
-  pull_request:
-    branches: ["master"]
+  pull_request_review:
+    types: [submitted]
 
 jobs:
   quality-gate:
@@ -17,11 +17,20 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // Only run for Greptile reviews
+            const reviewer = context.payload.review?.user?.login || '';
+            console.log(`Review submitted by: ${reviewer}`);
+
+            if (!reviewer.includes('greptile')) {
+              console.log('⏭️ Skipping: Not a Greptile review');
+              return;
+            }
+
             // Get PR details
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.issue.number
+              pull_number: context.payload.pull_request.number
             });
 
             const prBody = pr.body || '';
@@ -31,7 +40,7 @@ jobs:
             const scoreMatch = prBody.match(/Confidence Score:\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*5/i);
 
             if (!scoreMatch) {
-              console.log('⚠️ No Greptile score found - allowing merge');
+              core.setFailed('❌ No Greptile confidence score found in PR description');
               return;
             }
 
@@ -42,7 +51,7 @@ jobs:
             console.log(`🎯 Required: ${minScore}/5`);
 
             if (score < minScore) {
-              core.setFailed(`Greptile score ${score}/5 < ${minScore}/5`);
+              core.setFailed(`❌ Greptile score ${score}/5 is below minimum ${minScore}/5`);
             } else {
               console.log(`✅ PASSED: Score ${score}/5 meets threshold!`);
             }
