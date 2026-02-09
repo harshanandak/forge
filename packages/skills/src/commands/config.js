@@ -2,7 +2,7 @@
  * skills config - Manage configuration (API keys, registry URL, etc.)
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import chalk from 'chalk';
 
@@ -68,7 +68,7 @@ function saveConfig(config) {
  * @param {string} value - Config value (for set)
  * @param {Object} options - Command options
  */
-export async function configCommand(action, key, value, options = {}) {
+export async function configCommand(action, key, value, _options = {}) {
   try {
     const config = loadConfig();
 
@@ -140,6 +140,7 @@ function configGet(config, key) {
 
   // Mask API keys for security
   if (normalizedKey === 'apiKey' || key.toLowerCase().includes('key')) {
+    // codeql[js/clear-text-logging] - Key is masked with maskApiKey() before logging
     console.log(maskApiKey(value));
   } else {
     console.log(value);
@@ -155,6 +156,7 @@ function configSet(config, key, value) {
   config[normalizedKey] = value;
   saveConfig(config);
 
+  // codeql[js/clear-text-logging] - Key is masked with maskApiKey() before logging
   console.log(chalk.green('✓'), `Set ${key} =`, normalizedKey === 'apiKey' ? maskApiKey(value) : value);
   console.log(chalk.gray(`  Config saved to .skills/.config.json`));
 }
@@ -180,6 +182,7 @@ function configList(config) {
     if (value === null || value === undefined) {
       console.log(chalk.gray(`${key}: (not set)`));
     } else if (key === 'apiKey' || key.toLowerCase().includes('key')) {
+      // codeql[js/clear-text-logging] - Key is masked with maskApiKey() before logging
       console.log(`${key}: ${maskApiKey(value)}`);
     } else {
       console.log(`${key}: ${value}`);
@@ -189,6 +192,7 @@ function configList(config) {
   console.log();
   console.log(chalk.gray('Environment variables:'));
   if (process.env.SKILLS_API_KEY) {
+    // codeql[js/clear-text-logging] - Key is masked with maskApiKey() before logging
     console.log(chalk.gray(`  SKILLS_API_KEY: ${maskApiKey(process.env.SKILLS_API_KEY)}`));
   }
   if (process.env.SKILLS_REGISTRY_API) {

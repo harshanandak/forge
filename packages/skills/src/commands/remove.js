@@ -12,7 +12,7 @@ import { getSkillPaths, ensureRegistryExists, removeFromRegistry } from '../lib/
 /**
  * Remove a skill
  */
-export async function removeCommand(name, options) {
+export async function removeCommand(name, _options) {
   try {
     // Validate skill name (prevents path traversal attacks)
     validateSkillName(name);

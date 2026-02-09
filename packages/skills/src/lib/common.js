@@ -51,10 +51,22 @@ export function ensureRegistryExists() {
 /**
  * Read registry file
  * @returns {Object} Registry data
+ * @throws {Error} If registry file is corrupted or invalid
  */
 export function readRegistry() {
   const { registryPath } = getSkillPaths('');
-  return JSON.parse(readFileSync(registryPath, 'utf8'));
+
+  try {
+    const content = readFileSync(registryPath, 'utf8');
+    return JSON.parse(content);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      console.error(chalk.red('✗ Registry file is corrupted'));
+      console.error(chalk.yellow('  Delete .skills/.registry.json and run "skills init" to recreate'));
+      throw new Error(`Corrupted registry file: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 /**
