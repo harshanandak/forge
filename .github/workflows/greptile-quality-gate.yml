@@ -2,7 +2,7 @@ name: Greptile Quality Gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    branches: ["master"]
 
 jobs:
   quality-gate:
