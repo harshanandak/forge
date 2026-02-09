@@ -2,29 +2,22 @@
  * skills sync - Synchronize skills to agent directories
  */
 
-import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
 import { validateSkillName } from '../lib/validation.js';
+import { ensureRegistryExists, readRegistry, getSkillPaths } from '../lib/common.js';
 
 /**
  * Sync skills to agent directories
  */
 export async function syncCommand(options) {
   try {
-    const skillsDir = join(process.cwd(), '.skills');
-    const registryPath = join(skillsDir, '.registry.json');
-
-    // Check if registry exists
-    if (!existsSync(registryPath)) {
-      console.error(chalk.red('✗ Skills registry not found'));
-      console.error(chalk.yellow('Run "skills init" first to initialize the registry'));
-      throw new Error('Registry not found');
-    }
-
-    // Load registry
-    const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+    // Ensure registry exists and load it (with graceful error handling)
+    ensureRegistryExists();
+    const registry = readRegistry();
+    const { skillsDir, registryPath } = getSkillPaths('');
 
     // Get all valid skills
     const skills = getValidSkills(skillsDir);

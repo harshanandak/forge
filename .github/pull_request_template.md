@@ -108,5 +108,3 @@ After merging, remember to:
 - [ ] Pull latest main: `git checkout main && git pull`
 
 ---
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)

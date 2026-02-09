@@ -55,7 +55,13 @@ export async function publishCommand(name, options = {}) {
     // Read metadata
     let metadata;
     if (existsSync(metaPath)) {
-      metadata = JSON.parse(readFileSync(metaPath, 'utf8'));
+      try {
+        metadata = JSON.parse(readFileSync(metaPath, 'utf8'));
+      } catch (error) {
+        console.error(chalk.red('✗ Failed to parse .skill-meta.json'));
+        console.error(chalk.yellow('  File may be corrupted. Delete it and run "skills validate" to regenerate'));
+        throw new Error(`Corrupted metadata file: ${error.message}`);
+      }
     } else {
       // Extract from SKILL.md frontmatter
       const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
