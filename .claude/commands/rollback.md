@@ -11,7 +11,7 @@ This command provides safe rollback operations with comprehensive validation and
 ## Usage
 
 ```bash
-npx forge rollback
+bunx forge rollback
 ```
 
 Interactive menu with 6 options:
@@ -90,7 +90,7 @@ git revert HEAD --no-edit
 
 **Example**:
 ```bash
-npx forge rollback
+bunx forge rollback
 # Select: 1. Rollback last commit
 
 ✓ Working directory is clean
@@ -115,7 +115,7 @@ git revert <commit-hash> --no-edit
 
 **Example**:
 ```bash
-npx forge rollback
+bunx forge rollback
 # Select: 2. Rollback specific commit
 # Enter: a1b2c3d
 
@@ -148,7 +148,7 @@ git revert -m 1 <merge-commit-hash> --no-edit
 
 **Example**:
 ```bash
-npx forge rollback
+bunx forge rollback
 # Select: 3. Rollback merged PR
 # Enter: def456 (merge commit hash)
 
@@ -184,7 +184,7 @@ git commit -m "Rollback: <files>"
 
 **Example**:
 ```bash
-npx forge rollback
+bunx forge rollback
 # Select: 4. Rollback specific files
 # Enter: AGENTS.md,docs/WORKFLOW.md
 
@@ -219,7 +219,7 @@ git revert <start-commit>..<end-commit> --no-edit
 
 **Example**:
 ```bash
-npx forge rollback
+bunx forge rollback
 # Select: 5. Rollback entire branch
 # Enter: abc123..def456
 
@@ -253,7 +253,7 @@ Rollback complete!
 
 **Example**:
 ```bash
-npx forge rollback
+bunx forge rollback
 # Select: 6. Preview rollback (dry run)
 # Enter method: partial
 # Enter target: AGENTS.md,package.json
@@ -309,9 +309,9 @@ No changes made (dry run).
 /status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
 
 # Recovery workflow
-/dev → (issues discovered) → npx forge rollback → /dev (retry)
-/ship → (CI fails) → npx forge rollback → /dev (fix) → /ship
-/merge → (production issues) → npx forge rollback → /plan (redesign)
+/dev → (issues discovered) → bunx forge rollback → /dev (retry)
+/ship → (CI fails) → bunx forge rollback → /dev (fix) → /ship
+/merge → (production issues) → bunx forge rollback → /plan (redesign)
 ```
 
 ### Example: Failed Feature Implementation
@@ -327,7 +327,7 @@ git commit -m "feat: add payment integration"
 # ERROR: Security vulnerability in payment handling
 
 # 3. Rollback the implementation
-npx forge rollback
+bunx forge rollback
 # Select: 1. Rollback last commit
 
 # 4. Research better approach
@@ -346,7 +346,7 @@ npx forge rollback
 
 ## Beads Integration
 
-If Beads is installed (`npm i -g @beads/bd`), rollback automatically updates issue tracking.
+If Beads is installed (`bun install -g @beads/bd`), rollback automatically updates issue tracking.
 
 ### PR Rollback → Issue Status
 
@@ -385,7 +385,7 @@ git commit -m "wip: current work"
 git stash
 
 # Then retry rollback
-npx forge rollback
+bunx forge rollback
 ```
 
 ### Error: "Invalid commit hash format"
@@ -420,7 +420,7 @@ git log --oneline
 **Solution**:
 ```bash
 # Use relative paths within project
-npx forge rollback
+bunx forge rollback
 # Select: 4. Rollback specific files
 # Enter: src/auth.js,docs/API.md (relative paths)
 ```
@@ -454,7 +454,7 @@ mv "file;name.js" "filename.js"
 **Solution**:
 ```bash
 # Use correct format
-npx forge rollback
+bunx forge rollback
 # Select: 5. Rollback entire branch
 # Enter: <start-commit>..<end-commit>
 ```
@@ -575,11 +575,11 @@ git add .
 git commit -m "wip: current state"
 
 # 2. Use dry run to preview
-npx forge rollback
+bunx forge rollback
 # Select: 6. Preview rollback (dry run)
 
 # 3. Execute rollback
-npx forge rollback
+bunx forge rollback
 # Select appropriate method
 
 # 4. Verify USER sections preserved
@@ -600,7 +600,7 @@ git log --oneline
 # abc123d (HEAD) feat: add caching layer
 # def456e fix: validation bug
 
-npx forge rollback
+bunx forge rollback
 # 1. Rollback last commit
 
 # Output:
@@ -626,7 +626,7 @@ git log --oneline
 # feat456a feat: add real-time updates
 # bugfix123 fix: websocket connection
 
-npx forge rollback
+bunx forge rollback
 # 3. Rollback merged PR
 # Enter: merge789
 
@@ -659,7 +659,7 @@ git show HEAD --name-only
 #   docs/API.md
 #   README.md
 
-npx forge rollback
+bunx forge rollback
 # 4. Rollback specific files
 # Enter: AGENTS.md
 
@@ -684,7 +684,7 @@ git status
 ```bash
 # Scenario: Want to see what rollback would do
 
-npx forge rollback
+bunx forge rollback
 # 6. Preview rollback (dry run)
 # Method: commit
 # Target: HEAD
@@ -712,7 +712,7 @@ npx forge rollback
 # No changes made (dry run).
 
 # Decision: Proceed with rollback
-npx forge rollback
+bunx forge rollback
 # 1. Rollback last commit
 ```
 

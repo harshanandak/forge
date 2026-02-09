@@ -242,7 +242,7 @@ bd sync && git push
 If something goes wrong, use rollback to safely revert changes:
 
 ```bash
-npx forge rollback
+bunx forge rollback
 ```
 
 **Rollback methods**:
@@ -288,7 +288,7 @@ git commit --no-verify
 
 2. **ESLint Check**: Strict mode (zero errors, zero warnings)
    ```bash
-   npx eslint .  # Must pass before push
+   bunx eslint .  # Must pass before push
    ```
 
 3. **Test Suite**: All tests must pass
@@ -385,7 +385,7 @@ After implementing this workflow:
 | Metric | Target | How to Measure |
 |--------|--------|----------------|
 | Bugs in production | <2/month | Issue tracker |
-| ESLint issues shipped | 0 | `npx eslint .` |
+| ESLint issues shipped | 0 | `bunx eslint .` |
 | Test coverage regressions | 0 | `bun test` |
 | Emergency bypasses | <1/month | Git log |
 | Time to merge | <30 min | GitHub PR metrics |

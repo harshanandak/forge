@@ -95,7 +95,7 @@ If auto-detection has low confidence, ask the user:
 Execute the Forge setup command with detected agent:
 
 ```bash
-npx forge setup --agents $DETECTED_AGENT
+bunx forge setup --agents $DETECTED_AGENT
 ```
 
 **Expected Output:**
@@ -105,7 +105,7 @@ npx forge setup --agents $DETECTED_AGENT
 
 **If command fails:**
 - Check Node.js version: `node --version` (need v18+)
-- Try with npx: `npx forge@latest setup --agents $DETECTED_AGENT`
+- Try with bunx: `bunx forge@latest setup --agents $DETECTED_AGENT`
 - Report error to user with instructions to check `https://github.com/your-repo/issues`
 
 ---
@@ -253,7 +253,7 @@ If yes → Run the `/status` skill/command
 # Backup existing file
 cp AGENTS.md AGENTS.md.backup
 # Then retry installation
-npx forge setup --merge=smart --agents $DETECTED_AGENT
+bunx forge setup --merge=smart --agents $DETECTED_AGENT
 ```
 
 **Error: "Permission denied"**
@@ -304,7 +304,7 @@ EOF
 
 > Great! Running installation...
 >
-> *[Executes: `npx forge setup --agents claude-code`]*
+> *[Executes: `bunx forge setup --agents claude-code`]*
 >
 > ✅ **Installation Complete!**
 >

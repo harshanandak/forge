@@ -19,7 +19,7 @@ This command validates all code before creating a pull request.
 ### Step 1: Type Check
 ```bash
 # Run your project's type check command
-npm run typecheck    # or: bun run typecheck, tsc, etc.
+bun run typecheck    # or: npm run typecheck, tsc, etc.
 ```
 - Verify all TypeScript types are valid
 - No `any` types allowed
@@ -28,7 +28,7 @@ npm run typecheck    # or: bun run typecheck, tsc, etc.
 ### Step 2: Lint
 ```bash
 # Run your project's lint command
-npm run lint    # or: bun run lint, eslint ., etc.
+bun run lint    # or: npm run lint, eslint ., etc.
 ```
 - Linting rules
 - Code style consistency
@@ -59,7 +59,7 @@ npm run lint    # or: bun run lint, eslint ., etc.
 **Automated Security Scan**:
 ```bash
 # Run your project's security scan
-npm audit    # or: bun audit, snyk test, etc.
+bunx npm audit    # or: npm audit, snyk test, etc.
 ```
 
 **Manual Review**:
@@ -70,7 +70,7 @@ npm audit    # or: bun audit, snyk test, etc.
 ### Step 5: Tests
 ```bash
 # Run your project's test command
-npm run test    # or: bun run test, jest, vitest, etc.
+bun test    # or: npm run test, jest, vitest, etc.
 ```
 - All tests passing
 - Includes security test scenarios

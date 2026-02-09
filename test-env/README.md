@@ -28,14 +28,14 @@ test-env/
 
 ```bash
 # Run all tests
-npm test
+bun test
 
 # Run specific category
-npm test test-env/edge-cases/
-npm test test-env/integration-tests/
+bun test test-env/edge-cases/
+bun test test-env/integration-tests/
 
 # Run with coverage
-npm test -- --coverage
+bun test --coverage
 ```
 
 ### Setup Test Fixtures
@@ -221,7 +221,7 @@ All tests follow TDD RED-GREEN-REFACTOR cycles:
 
 3. Run tests:
    ```bash
-   npm test test-env/edge-cases/new-feature.test.js
+   bun test test-env/edge-cases/new-feature.test.js
    ```
 
 ## References

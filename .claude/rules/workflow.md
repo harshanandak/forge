@@ -69,10 +69,10 @@ Customize these commands for your stack:
 
 ```bash
 # In your project's CLAUDE.md or .claude/rules/
-TYPE_CHECK_COMMAND="npm run typecheck"   # or: bun run typecheck, tsc, etc.
-LINT_COMMAND="npm run lint"               # or: bun run lint, eslint, etc.
-TEST_COMMAND="npm run test"               # or: bun run test:e2e, jest, etc.
-SECURITY_SCAN="npm audit"                 # or: bun audit, snyk test, etc.
+TYPE_CHECK_COMMAND="bun run typecheck"   # or: npm run typecheck, tsc, etc.
+LINT_COMMAND="bun run lint"               # or: npm run lint, eslint, etc.
+TEST_COMMAND="bun test"                   # or: npm run test, jest, etc.
+SECURITY_SCAN="bunx npm audit"            # or: npm audit, snyk test, etc.
 ```
 
 ## Skills Integration

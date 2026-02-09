@@ -86,7 +86,7 @@ To add support for a new AI coding agent:
 1. **Create plugin file**: `lib/agents/your-agent.plugin.json`
 2. **Follow schema**: Use the template below or copy an existing plugin
 3. **Validate**: Run tests to ensure your plugin is valid
-4. **Test**: Run `npx forge setup --agents your-agent` to verify
+4. **Test**: Run `bunx forge setup --agents your-agent` to verify
 5. **Submit PR**: Contribute back to the community!
 
 ### Plugin Template
@@ -130,7 +130,7 @@ The PluginManager automatically validates all plugins on load:
 Run tests to validate your plugin:
 
 ```bash
-npm test test/plugins/
+bun test test/plugins/
 ```
 
 ## Community Contributions
@@ -139,7 +139,7 @@ We welcome community contributions for new AI coding agents!
 
 **Before submitting:**
 1. Ensure your plugin passes all validation tests
-2. Test the agent setup with `npx forge setup --agents your-agent`
+2. Test the agent setup with `bunx forge setup --agents your-agent`
 3. Document any special setup requirements
 4. Follow the existing plugin structure
 
@@ -180,12 +180,12 @@ This ensures existing code continues to work without modifications.
 
 ### Plugin Not Loading
 
-If your plugin isn't appearing in `npx forge setup`:
+If your plugin isn't appearing in `bunx forge setup`:
 
 1. **Check filename**: Must end with `.plugin.json`
 2. **Validate JSON**: Ensure file is valid JSON (no trailing commas, quotes correct)
 3. **Check required fields**: id, name, version, directories must be present
-4. **Run tests**: `npm test test/plugins/` will show specific errors
+4. **Run tests**: `bun test test/plugins/` will show specific errors
 5. **Check logs**: Any loading errors will be displayed
 
 ### Schema Validation Errors

@@ -35,24 +35,24 @@ Forge works with **all major AI coding agents** using the universal AGENTS.md st
 
 ## Installation
 
-### Option 1: npm (Recommended)
+### Option 1: Bun (Recommended)
 
 ```bash
 # Step 1: Install the package (minimal: AGENTS.md + docs)
-npm install forge-workflow
+bun add forge-workflow
 
 # Step 2: Configure for your agents (interactive)
-npx forge setup
+bunx forge setup
 ```
 
 Or specify agents directly:
 
 ```bash
 # Install for specific agents
-npx forge setup --agents claude,cursor,windsurf
+bunx forge setup --agents claude,cursor,windsurf
 
 # Install for all agents
-npx forge setup --all
+bunx forge setup --all
 ```
 
 ### Option 2: curl (Interactive)
@@ -105,7 +105,7 @@ Forge integrates with three powerful tools for complete workflow management:
 
 ```bash
 # Install
-npm install -g @beads/bd
+bun install -g @beads/bd
 
 # Initialize in your project
 bd init
@@ -150,7 +150,7 @@ See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for complete Beads command reference.
 
 ```bash
 # Install (requires Node.js 20.19+)
-npm install -g @fission-ai/openspec
+bun install -g @fission-ai/openspec
 
 # Initialize
 openspec init
@@ -390,7 +390,7 @@ git checkout main && git pull
 
 ## Directory Structure
 
-After running `npx forge setup`, only selected agents are configured:
+After running `bunx forge setup`, only selected agents are configured:
 
 ```
 your-project/
@@ -532,7 +532,7 @@ curl -X POST "https://api.greptile.com/v2/repositories" \
 Already configured in your project - no additional setup needed.
 
 ```bash
-npm run lint  # or bun run lint
+bun run lint  # or: npm run lint
 ```
 
 **Option 2: SonarCloud (Cloud-Hosted)**
@@ -551,7 +551,7 @@ sonar.projectKey=$SONAR_PROJECT_KEY
 sonar.sources=src" > sonar-project.properties
 
 # 5. Run analysis (in CI or locally)
-npx sonarqube-scanner
+bunx sonarqube-scanner
 ```
 
 **Option 3: SonarQube Community (FREE, Self-Hosted)**
@@ -573,7 +573,7 @@ sonar.projectKey=your-project
 sonar.sources=src" > sonar-project.properties
 
 # 6. Run analysis
-npx sonarqube-scanner
+bunx sonarqube-scanner
 ```
 
 ### Research Tool Setup
@@ -634,7 +634,7 @@ export $(grep -v '^#' .env.local | xargs)
 
 - **Beads** - Issue tracking across sessions
   ```bash
-  npm install -g @beads/bd
+  bun install -g @beads/bd
   bd init
   ```
 
@@ -642,7 +642,7 @@ export $(grep -v '^#' .env.local | xargs)
 
 - **OpenSpec** - Spec-driven development (requires Node.js 20.19+)
   ```bash
-  npm install -g @fission-ai/openspec
+  bun install -g @fission-ai/openspec
   openspec init
   ```
 
@@ -855,6 +855,6 @@ Contributions welcome! Please read `docs/WORKFLOW.md` before submitting PRs.
 
 ---
 
-**Start with:** `npm install forge-workflow && npx forge setup`
+**Start with:** `bun add forge-workflow && bunx forge setup`
 
 **Then:** `/status` to see where to begin!

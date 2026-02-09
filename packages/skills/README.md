@@ -49,7 +49,7 @@ AI agents (Claude Code, Cursor, Cline, Continue) each have their own skill manag
 ```bash
 bun add -g @forge/skills
 # or
-npm install -g @forge/skills
+bun install -g @forge/skills
 ```
 
 ### Local (Project-specific)
@@ -57,7 +57,7 @@ npm install -g @forge/skills
 ```bash
 bun add -d @forge/skills
 # or
-npm install --save-dev @forge/skills
+bun add -d @forge/skills
 ```
 
 ### Via Bunx (No installation)
@@ -341,14 +341,14 @@ Skills CLI is integrated into the Forge workflow:
 ### Installation via Forge Setup
 
 ```bash
-npx forge setup
+bunx forge setup
 # Prompts for Skills installation and initialization
 ```
 
 ### Status Display
 
 ```bash
-npx forge status
+bunx forge status
 ```
 
 Shows:
@@ -362,7 +362,7 @@ Project Tools Status:
 ### Auto-Setup (Quick Mode)
 
 ```bash
-npx forge setup --quick
+bunx forge setup --quick
 # Auto-initializes Skills if already installed
 ```
 
