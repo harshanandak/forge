@@ -3334,16 +3334,34 @@ async function promptSkillsSetup(question) {
   try {
     if (installMethod === '1') {
       console.log('Installing Skills globally...');
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
-      secureExecFileSync(pkgManager, [installCmd, '-g', '@forge/skills'], { stdio: 'inherit' });
+      // Map install commands per package manager
+      let installArgs;
+      if (PKG_MANAGER === 'bun') {
+        installArgs = ['add', '-g', '@forge/skills'];
+      } else if (PKG_MANAGER === 'yarn') {
+        installArgs = ['global', 'add', '@forge/skills'];
+      } else if (PKG_MANAGER === 'pnpm') {
+        installArgs = ['add', '-g', '@forge/skills'];
+      } else {
+        installArgs = ['install', '-g', '@forge/skills'];
+      }
+      secureExecFileSync(PKG_MANAGER, installArgs, { stdio: 'inherit' });
       console.log('  ✓ Skills installed globally');
       initializeSkills('global');
     } else if (installMethod === '2') {
       console.log('Installing Skills locally...');
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
-      secureExecFileSync(pkgManager, [installCmd, '-D', '@forge/skills'], { stdio: 'inherit', cwd: projectRoot });
+      // Map install commands per package manager
+      let installArgs;
+      if (PKG_MANAGER === 'bun') {
+        installArgs = ['add', '-D', '@forge/skills'];
+      } else if (PKG_MANAGER === 'yarn') {
+        installArgs = ['add', '-D', '@forge/skills'];
+      } else if (PKG_MANAGER === 'pnpm') {
+        installArgs = ['add', '-D', '@forge/skills'];
+      } else {
+        installArgs = ['install', '-D', '@forge/skills'];
+      }
+      secureExecFileSync(PKG_MANAGER, installArgs, { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Skills installed locally');
       initializeSkills('local');
     } else if (installMethod === '3') {

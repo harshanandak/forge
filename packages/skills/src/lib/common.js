@@ -112,6 +112,12 @@ export function updateRegistrySkill(name, metadata, options = {}) {
  */
 export function removeFromRegistry(name) {
   const registry = readRegistry();
+
+  // Ensure registry.skills exists before deleting
+  if (!registry.skills) {
+    registry.skills = {};
+  }
+
   delete registry.skills[name];
   writeRegistry(registry);
 }
