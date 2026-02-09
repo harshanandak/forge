@@ -20,11 +20,21 @@ export async function listCommand(options) {
       skills = skills.filter(([_, skill]) => skill.category === options.category);
     }
 
+    // Filter by agent if specified
+    if (options.agent) {
+      skills = skills.filter(([_, skill]) =>
+        skill.agents && skill.agents.includes(options.agent)
+      );
+    }
+
     // Handle empty results
     if (skills.length === 0) {
       if (options.category) {
         console.log(chalk.yellow(`No skills found in category: ${options.category}`));
         console.log(chalk.gray('Available categories: research, coding, review, testing, deployment'));
+      } else if (options.agent) {
+        console.log(chalk.yellow(`No skills found for agent: ${options.agent}`));
+        console.log(chalk.gray('Skills must specify agents in their metadata'));
       } else {
         console.log(chalk.yellow('No skills installed yet'));
         console.log();

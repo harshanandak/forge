@@ -8,10 +8,30 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Registry API base URL
- * TODO: Update with actual Vercel registry endpoint when available
+ * Get registry URL from config or environment
+ *
+ * @returns {string} Registry API URL
  */
-const REGISTRY_API = process.env.SKILLS_REGISTRY_API || 'https://skills.sh/api';
+function getRegistryUrl() {
+  // 1. Check config file first
+  try {
+    const configPath = join(process.cwd(), '.skills', '.config.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    if (config.registryUrl) {
+      return config.registryUrl;
+    }
+  } catch (err) {
+    // Config file doesn't exist or is invalid - continue
+  }
+
+  // 2. Check environment variable
+  if (process.env.SKILLS_REGISTRY_API) {
+    return process.env.SKILLS_REGISTRY_API;
+  }
+
+  // 3. Use default
+  return 'https://skills.sh/api';
+}
 
 /**
  * Get API key from config or environment
@@ -102,7 +122,8 @@ function validateSearchResults(results) {
  */
 async function apiRequest(endpoint, options = {}) {
   const apiKey = getApiKey();
-  const url = `${REGISTRY_API}${endpoint}`;
+  const registryUrl = getRegistryUrl();
+  const url = `${registryUrl}${endpoint}`;
 
   const headers = {
     'Content-Type': 'application/json',
