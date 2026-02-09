@@ -2,12 +2,12 @@
  * skills add - Install skill from Vercel registry
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import chalk from 'chalk';
 import { downloadSkill } from '../lib/registry.js';
 import { validateSkillName } from '../lib/validation.js';
 import { syncCommand } from './sync.js';
+import { getSkillPaths, ensureRegistryExists, updateRegistrySkill, handleNetworkError, logSuccess } from '../lib/common.js';
 
 /**
  * Add (install) a skill from the registry
@@ -20,16 +20,9 @@ export async function addCommand(name, options = {}) {
     // Validate skill name (prevents path traversal)
     validateSkillName(name);
 
-    const skillsDir = join(process.cwd(), '.skills');
-    const registryPath = join(skillsDir, '.registry.json');
-    const skillDir = join(skillsDir, name);
-
-    // Check if registry exists
-    if (!existsSync(registryPath)) {
-      console.error(chalk.red('✗ Skills registry not found'));
-      console.error(chalk.yellow('Run "skills init" first to initialize the registry'));
-      throw new Error('Registry not found');
-    }
+    // Get paths and ensure registry exists
+    const { skillDir, skillMdPath, metaPath } = getSkillPaths(name);
+    ensureRegistryExists();
 
     // Check if skill already exists locally
     if (existsSync(skillDir) && !options.force) {
@@ -50,16 +43,14 @@ export async function addCommand(name, options = {}) {
       throw new Error('Invalid skill package received from registry');
     }
 
-    // Create skill directory
+    // Create skill directory and write files
     mkdirSync(skillDir, { recursive: true });
 
     // Write SKILL.md
-    const skillMdPath = join(skillDir, 'SKILL.md');
     writeFileSync(skillMdPath, skillPackage.content, 'utf8');
     console.log(chalk.green('✓'), 'Downloaded SKILL.md');
 
     // Write .skill-meta.json
-    const metaPath = join(skillDir, '.skill-meta.json');
     const metadata = {
       ...skillPackage.metadata,
       installedFrom: 'registry',
@@ -69,18 +60,7 @@ export async function addCommand(name, options = {}) {
     console.log(chalk.green('✓'), 'Created metadata');
 
     // Update registry
-    const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
-    registry.skills[name] = {
-      title: skillPackage.metadata.title,
-      description: skillPackage.metadata.description,
-      category: skillPackage.metadata.category,
-      author: skillPackage.metadata.author,
-      version: skillPackage.metadata.version,
-      created: skillPackage.metadata.created,
-      updated: new Date().toISOString(),
-      source: 'registry'
-    };
-    writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+    updateRegistrySkill(name, skillPackage.metadata, { source: 'registry' });
     console.log(chalk.green('✓'), 'Updated registry');
 
     // Sync to agents (unless disabled)
@@ -91,11 +71,10 @@ export async function addCommand(name, options = {}) {
 
     // Success message
     console.log();
-    console.log(chalk.green('✓'), `Installed skill: ${chalk.bold(name)}`);
-    console.log(chalk.gray(`  Location: ${skillDir}`));
-    console.log(chalk.gray(`  Version: ${skillPackage.metadata.version}`));
-    console.log(chalk.gray(`  Author: ${skillPackage.metadata.author}`));
-    console.log();
+    logSuccess('Installed', name, skillDir, {
+      version: skillPackage.metadata.version,
+      author: skillPackage.metadata.author
+    });
 
     // Next steps
     console.log('Next steps:');
@@ -110,15 +89,8 @@ export async function addCommand(name, options = {}) {
       throw error;
     }
 
-    // Network/API errors
-    if (error.message.includes('Registry API error') || error.message.includes('fetch')) {
-      console.error(chalk.red('✗ Failed to download skill'));
-      console.error(chalk.yellow('  Check your internet connection and registry availability'));
-      console.error(chalk.gray(`  Error: ${error.message}`));
-    } else {
-      console.error(chalk.red('✗ Error:'), error.message);
-    }
-
+    // Handle network/API errors
+    handleNetworkError(error, 'download');
     throw error;
   }
 }

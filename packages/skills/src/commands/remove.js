@@ -2,11 +2,12 @@
  * skills remove - Remove a skill from .skills/ and agent directories
  */
 
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
 import { validateSkillName, ensurePathWithin } from '../lib/validation.js';
+import { getSkillPaths, ensureRegistryExists, removeFromRegistry } from '../lib/common.js';
 
 /**
  * Remove a skill
@@ -16,22 +17,12 @@ export async function removeCommand(name, options) {
     // Validate skill name (prevents path traversal attacks)
     validateSkillName(name);
 
-    const skillsDir = join(process.cwd(), '.skills');
-    const registryPath = join(skillsDir, '.registry.json');
-    const skillDir = join(skillsDir, name);
+    // Get paths and ensure registry exists
+    const { skillsDir, skillDir } = getSkillPaths(name);
+    ensureRegistryExists();
 
     // Ensure skill directory is within .skills/ (defense in depth)
     ensurePathWithin(skillsDir, skillDir);
-
-    // Check if registry exists
-    if (!existsSync(registryPath)) {
-      console.error(chalk.red('✗ Skills registry not found'));
-      console.error(chalk.yellow('Run "skills init" first to initialize the registry'));
-      throw new Error('Registry not found');
-    }
-
-    // Load registry
-    const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
 
     // Check if skill exists
     if (!existsSync(skillDir)) {
@@ -42,10 +33,7 @@ export async function removeCommand(name, options) {
     rmSync(skillDir, { recursive: true, force: true });
 
     // Remove from registry
-    delete registry.skills[name];
-
-    // Save updated registry
-    writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+    removeFromRegistry(name);
 
     // Remove from agent directories
     const agents = detectAgents();

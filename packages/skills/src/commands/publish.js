@@ -3,11 +3,11 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import chalk from 'chalk';
 import { publishSkill, skillExists } from '../lib/registry.js';
 import { validateSkillName } from '../lib/validation.js';
 import { validateCommand } from './validate.js';
+import { getSkillPaths, handleNetworkError } from '../lib/common.js';
 
 /**
  * Publish a skill to the Vercel registry
@@ -20,10 +20,8 @@ export async function publishCommand(name, options = {}) {
     // Validate skill name (prevents path traversal)
     validateSkillName(name);
 
-    const skillsDir = join(process.cwd(), '.skills');
-    const skillDir = join(skillsDir, name);
-    const skillMdPath = join(skillDir, 'SKILL.md');
-    const metaPath = join(skillDir, '.skill-meta.json');
+    // Get skill paths
+    const { skillDir, skillMdPath, metaPath } = getSkillPaths(name);
 
     // Check if skill exists locally
     if (!existsSync(skillDir)) {
@@ -122,27 +120,8 @@ export async function publishCommand(name, options = {}) {
       throw error;
     }
 
-    // API key errors
-    if (error.message.includes('API key required')) {
-      console.error(chalk.red('✗ API key required for publishing'));
-      console.error();
-      console.error('Set your API key:');
-      console.error(chalk.white('  export SKILLS_API_KEY=<your-key>'));
-      console.error(chalk.gray('  or'));
-      console.error(chalk.white('  skills config set api-key <your-key>'));
-      console.error();
-      console.error('Get API key: https://skills.sh/settings/api-keys');
-      console.error();
-    }
-    // Network/API errors
-    else if (error.message.includes('Registry API error') || error.message.includes('fetch')) {
-      console.error(chalk.red('✗ Failed to publish skill'));
-      console.error(chalk.yellow('  Check your internet connection and registry availability'));
-      console.error(chalk.gray(`  Error: ${error.message}`));
-    } else {
-      console.error(chalk.red('✗ Error:'), error.message);
-    }
-
+    // Handle network/API errors
+    handleNetworkError(error, 'publish');
     throw error;
   }
 }
