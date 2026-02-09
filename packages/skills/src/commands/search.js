@@ -48,9 +48,13 @@ export async function searchCommand(query, options = {}) {
     console.log();
 
     for (const skill of results) {
-      console.log(chalk.cyan.bold(skill.name), chalk.gray(`(v${skill.version})`));
+      const version = skill.version || '1.0.0';
+      const category = skill.category || 'general';
+      const author = skill.author || 'unknown';
+
+      console.log(chalk.cyan.bold(skill.name), chalk.gray(`(v${version})`));
       console.log(chalk.gray(`  ${skill.description}`));
-      console.log(chalk.gray(`  Category: ${skill.category} | Author: ${skill.author}`));
+      console.log(chalk.gray(`  Category: ${category} | Author: ${author}`));
 
       if (skill.downloads) {
         console.log(chalk.gray(`  Downloads: ${skill.downloads}`));

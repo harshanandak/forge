@@ -3334,12 +3334,16 @@ async function promptSkillsSetup(question) {
   try {
     if (installMethod === '1') {
       console.log('Installing Skills globally...');
-      secureExecFileSync(PKG_MANAGER, ['add', '-g', '@forge/skills'], { stdio: 'inherit' });
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
+      secureExecFileSync(pkgManager, [installCmd, '-g', '@forge/skills'], { stdio: 'inherit' });
       console.log('  ✓ Skills installed globally');
       initializeSkills('global');
     } else if (installMethod === '2') {
       console.log('Installing Skills locally...');
-      secureExecFileSync(PKG_MANAGER, ['add', '-d', '@forge/skills'], { stdio: 'inherit', cwd: projectRoot });
+      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
+      secureExecFileSync(pkgManager, [installCmd, '-D', '@forge/skills'], { stdio: 'inherit', cwd: projectRoot });
       console.log('  ✓ Skills installed locally');
       initializeSkills('local');
     } else if (installMethod === '3') {

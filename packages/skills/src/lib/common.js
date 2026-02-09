@@ -87,6 +87,11 @@ export function writeRegistry(registry) {
 export function updateRegistrySkill(name, metadata, options = {}) {
   const registry = readRegistry();
 
+  // Ensure registry.skills exists
+  if (!registry.skills) {
+    registry.skills = {};
+  }
+
   registry.skills[name] = {
     title: metadata.title,
     description: metadata.description,

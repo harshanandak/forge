@@ -151,8 +151,11 @@ function updateAgentsMd(skills, registry) {
   if (skills.length > 0) {
     content += '## Available Skills\n\n';
 
+    // Ensure registry.skills exists
+    const skills_registry = registry.skills || {};
+
     for (const skillName of skills) {
-      const skillMeta = registry.skills[skillName];
+      const skillMeta = skills_registry[skillName];
       if (!skillMeta) continue;
 
       content += `### ${skillMeta.title}\n`;

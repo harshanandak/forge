@@ -81,10 +81,12 @@ Related to beads-yyy
 
 - [ ] All CI checks passing (ESLint, tests, CodeQL, dependency review)
 - [ ] Self-review completed (checklist above ✅)
-- [ ] All review comments addressed/resolved
+- [ ] **All review comment threads resolved** (required by branch protection)
+- [ ] All reviewer feedback addressed
 - [ ] Branch is up-to-date with main
 - [ ] No merge conflicts
 - [ ] PR is marked "Ready for review" (not Draft/WIP)
+- [ ] Required approvals obtained (if configured)
 - [ ] Beads issues updated (`bd close <id>` after merge)
 
 **⚠️ Do NOT merge if:**
