@@ -283,19 +283,27 @@ git push
 
 ### What is Greptile?
 
-Greptile provides AI-powered code review that analyzes:
-- Code complexity and maintainability
-- Best practice violations
-- Potential bugs and edge cases
-- Security vulnerabilities
-- Code duplication and patterns
+Greptile provides AI-powered code review with two components:
+
+**1. Greptile Review (GitHub App)**
+- Analyzes code complexity and maintainability
+- Identifies best practice violations
+- Detects potential bugs and edge cases
+- Finds security vulnerabilities
+- Reports code duplication and patterns
+- **Posts confidence score** in PR description
+
+**2. Greptile Quality Gate (Custom Workflow)**
+- Extracts confidence score from Greptile Review
+- Enforces minimum threshold of 4.0/5
+- Blocks merge if score is below threshold
 
 ### How It Works
 
-1. **Automatic Trigger**: Runs on every PR to `main`/`master`
-2. **Score Calculation**: Greptile analyzes code and assigns 0-5 score
-3. **Quality Gate**: PRs with score < 4.0 **cannot be merged**
-4. **PR Comment**: Detailed feedback posted automatically
+1. **Greptile Review runs**: Analyzes PR and posts confidence score in description
+2. **Quality Gate workflow triggers**: Extracts score from PR body
+3. **Score validation**: If score < 4.0, workflow fails and blocks merge
+4. **Merge allowed**: Only when score ≥ 4.0 and all other checks pass
 
 ### Score Interpretation
 

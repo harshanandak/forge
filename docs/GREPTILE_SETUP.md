@@ -8,42 +8,32 @@ Greptile provides AI-powered code review as a **GitHub App** that automatically 
 
 ## Current Status
 
-🎉 **You Already Have Greptile!**
+🎉 **Greptile is Fully Operational!**
 
-Your repository already has Greptile installed and working. Check PR #13 to see:
-- ✅ "Greptile Review" status check running
-- ✅ Detailed code review comments posted
-- ✅ Feedback on bugs, security, and best practices
+Your repository has both Greptile features working:
+- ✅ **Greptile Review** (GitHub App) - Provides detailed code review comments
+- ✅ **Greptile Quality Gate** (Workflow) - Enforces minimum score of 4.0/5 before merge
+- ✅ Both integrated into branch protection for master branch
 
 ---
 
-## How to Require Greptile Reviews Before Merge
+## Branch Protection Status
 
-### Step 1: Wait for Greptile Check to Run
+### ✅ Fully Configured!
 
-The "Greptile Review" check needs to run at least once before it appears in branch protection settings.
+Branch protection for `master` now requires:
 
-**Current PR #13**: Greptile is already running (status: IN_PROGRESS)
+1. **Greptile Review** (GitHub App check) - Must pass
+2. **Greptile Quality Gate (≥4/5)** (Custom workflow) - Must pass with score ≥ 4.0
+3. **Other Required Checks**: ESLint, CodeQL, dependency-review
+4. **PR Reviews**: At least 1 approving review required
+5. **Conversation Resolution**: All review threads must be resolved
 
-### Step 2: Enable Branch Protection
-
-1. **Navigate to Branch Protection**:
-   ```
-   https://github.com/harshanandak/forge/settings/branches
-   ```
-
-2. **Edit the `master` branch rule** (click "Edit")
-
-3. **Enable Required Status Checks**:
-   ```
-   ✅ Require status checks to pass before merging
-      ✅ Require branches to be up to date before merging
-
-      Search for and select:
-      ✅ Greptile Review  ← Select this check
-   ```
-
-4. **Save changes**
+**Result**: PRs cannot be merged unless:
+- Greptile Review completes successfully
+- Greptile confidence score is at least 4.0/5
+- All other quality checks pass
+- Code has been reviewed and approved
 
 ---
 
@@ -83,14 +73,15 @@ Fail: ❌ Blocked (if required in branch protection)
 
 ## Understanding Greptile Feedback
 
-### No Numeric Scores
+### Confidence Score
 
-Unlike some tools, Greptile doesn't provide a 0-5 score. Instead:
+Greptile provides a confidence score (0-5) in the PR description that reflects overall code quality:
 
+📊 **Confidence Score Format**: "Confidence Score: X/5" or "Confidence Score: X out of 5"
+🎯 **Quality Gate Threshold**: Minimum 4.0/5 required to merge
 ✅ **Detailed inline comments** on specific lines of code
 ✅ **Issue severity** indicators (critical, major, minor)
 ✅ **Actionable suggestions** with example fixes
-✅ **Pass/Fail status** in the check
 
 ### Example from Your PR #13
 
@@ -340,7 +331,7 @@ Use this to confirm Greptile is set up correctly:
 ## FAQ
 
 **Q: Does Greptile use a scoring system (like 4.0/5.0)?**
-A: No. Greptile provides detailed feedback and pass/fail status, not numeric scores.
+A: Yes! Greptile Review provides a confidence score (0-5) in the PR description. Our custom Quality Gate workflow enforces a minimum score of 4.0/5 before allowing merges.
 
 **Q: Will it review every single commit?**
 A: It reviews at the PR level. Runs when PR is opened and when new commits are pushed.
@@ -367,11 +358,12 @@ A: Yes, via `.greptile/config.yml` configuration file.
 
 ## Next Steps
 
-1. ✅ **Wait** for Greptile to finish analyzing PR #13
-2. ✅ **Enable** "Greptile Review" as required check in branch protection
-3. ✅ **Test** by creating/updating a PR and verifying blocking works
-4. ✅ **Document** your team's policy for handling Greptile feedback
-5. ✅ **Celebrate** improved code quality! 🎉
+1. ✅ **DONE** - Greptile Review is active and running
+2. ✅ **DONE** - Greptile Quality Gate (≥4/5) is enforced in branch protection
+3. ✅ **DONE** - All required checks configured for master branch
+4. 🎯 **Create new PRs** and watch the quality gate in action
+5. 📚 **Document** your team's policy for handling Greptile feedback
+6. 🎉 **Celebrate** improved code quality!
 
 ---
 
@@ -387,20 +379,22 @@ A: Yes, via `.greptile/config.yml` configuration file.
 ## Summary
 
 **What Greptile Is:**
-- ✅ GitHub App (not a GitHub Action)
-- ✅ AI-powered code reviewer
-- ✅ Automatic analysis on every PR
-- ✅ Detailed, actionable feedback
+- ✅ GitHub App providing detailed code reviews
+- ✅ Custom Quality Gate workflow enforcing minimum score 4.0/5
+- ✅ AI-powered code analysis on every PR
+- ✅ Detailed, actionable feedback with confidence scores
 
-**What You Need to Do:**
-- ✅ Greptile is already installed ← You're done here!
-- ✅ Enable "Greptile Review" in branch protection ← Do this next
-- ✅ Address feedback on PRs ← Ongoing workflow
+**What's Now Active:**
+- ✅ Greptile Review (GitHub App) is installed and running
+- ✅ Greptile Quality Gate (≥4/5) is enforced in branch protection
+- ✅ PRs to master require score ≥ 4.0/5 to merge
+- ✅ All review comments must be resolved before merge
 
 **Result:**
-- 🚀 Higher code quality
+- 🚀 Higher code quality with enforced standards
 - 🐛 Fewer bugs in production
+- 📊 Objective quality metrics (4.0/5 minimum)
+- 🛡️ Automated security and best practice checks
 - 📚 Team learning from AI feedback
-- 🛡️ Automated security checks
 
-Enjoy your new AI code reviewer! 🤖✨
+Enjoy your new AI code reviewer with quality enforcement! 🤖✨
