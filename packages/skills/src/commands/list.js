@@ -68,12 +68,14 @@ export async function listCommand(options) {
 
     // Display skills (pad first, then colorize)
     for (const [name, skill] of skills) {
-      const categoryColor = getCategoryColor(skill.category);
+      const category = skill.category || 'unknown';
+      const description = skill.description || 'No description';
+      const categoryColor = getCategoryColor(category);
 
       const row = [
         chalk.cyan(name.padEnd(nameWidth)),
-        chalk[categoryColor](skill.category.padEnd(categoryWidth)),
-        truncate(skill.description, descWidth)
+        chalk[categoryColor](category.padEnd(categoryWidth)),
+        truncate(description, descWidth)
       ].join('  ');
 
       console.log(row);

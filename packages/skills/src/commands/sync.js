@@ -2,7 +2,7 @@
  * skills sync - Synchronize skills to agent directories
  */
 
-import { existsSync, writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import chalk from 'chalk';
 import { detectAgents } from '../lib/agents.js';
@@ -45,6 +45,9 @@ export async function syncCommand(options) {
     syncSkillsToAgents(skills, skillsDir, enabledAgents);
 
     // Update registry timestamp
+    if (!registry.config) {
+      registry.config = {};
+    }
     registry.config.lastSync = new Date().toISOString();
     writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
 
