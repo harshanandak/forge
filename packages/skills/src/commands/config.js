@@ -140,7 +140,7 @@ function configGet(config, key) {
 
   // Mask API keys for security
   if (normalizedKey === 'apiKey' || key.toLowerCase().includes('key')) {
-    console.log(maskApiKey(value)); // lgtm[js/clear-text-logging] - API key is masked before logging
+    console.log(maskApiKey(value)); // codeql[js/clear-text-logging] - API key is masked before logging
   } else {
     console.log(value);
   }
@@ -155,7 +155,7 @@ function configSet(config, key, value) {
   config[normalizedKey] = value;
   saveConfig(config);
 
-  console.log(chalk.green('✓'), `Set ${key} =`, normalizedKey === 'apiKey' ? maskApiKey(value) : value); // lgtm[js/clear-text-logging] - API key is masked before logging
+  console.log(chalk.green('✓'), `Set ${key} =`, normalizedKey === 'apiKey' ? maskApiKey(value) : value); // codeql[js/clear-text-logging] - API key is masked before logging
   console.log(chalk.gray(`  Config saved to .skills/.config.json`));
 }
 
@@ -180,7 +180,7 @@ function configList(config) {
     if (value === null || value === undefined) {
       console.log(chalk.gray(`${key}: (not set)`));
     } else if (key === 'apiKey' || key.toLowerCase().includes('key')) {
-      console.log(`${key}: ${maskApiKey(value)}`); // lgtm[js/clear-text-logging] - API key is masked before logging
+      console.log(`${key}: ${maskApiKey(value)}`); // codeql[js/clear-text-logging] - API key is masked before logging
     } else {
       console.log(`${key}: ${value}`);
     }
@@ -189,7 +189,7 @@ function configList(config) {
   console.log();
   console.log(chalk.gray('Environment variables:'));
   if (process.env.SKILLS_API_KEY) {
-    console.log(chalk.gray(`  SKILLS_API_KEY: ${maskApiKey(process.env.SKILLS_API_KEY)}`)); // lgtm[js/clear-text-logging] - API key is masked before logging
+    console.log(chalk.gray(`  SKILLS_API_KEY: ${maskApiKey(process.env.SKILLS_API_KEY)}`)); // codeql[js/clear-text-logging] - API key is masked before logging
   }
   if (process.env.SKILLS_REGISTRY_API) {
     console.log(chalk.gray(`  SKILLS_REGISTRY_API: ${process.env.SKILLS_REGISTRY_API}`));
