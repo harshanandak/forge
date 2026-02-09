@@ -1,0 +1,98 @@
+name: Greptile Quality Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review_comment:
+    types: [created, edited]
+
+jobs:
+  quality-gate:
+    name: Greptile Quality Gate (≥4/5)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+
+    steps:
+      - name: Wait for Greptile Review to complete
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          check-name: 'Greptile Review'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          allowed-conclusions: success,neutral
+
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            return pr.body;
+
+      - name: Extract and Check Greptile Score
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = ${{ steps.pr.outputs.result }};
+
+            // Extract Greptile confidence score from PR body
+            // Format: "Confidence Score: X/5" or "Confidence Score: X out of 5"
+            const scoreMatch = prBody.match(/Confidence Score:\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*5/i);
+
+            if (!scoreMatch) {
+              console.log('⚠️ No Greptile confidence score found in PR body');
+              console.log('PR will be allowed to merge (score check skipped)');
+              return;
+            }
+
+            const score = parseFloat(scoreMatch[1]);
+            const minScore = 4.0;
+
+            console.log(`📊 Greptile Confidence Score: ${score}/5`);
+            console.log(`🎯 Minimum Required Score: ${minScore}/5`);
+
+            if (score < minScore) {
+              core.setFailed(
+                `❌ Greptile score ${score}/5 is below minimum threshold of ${minScore}/5.\n\n` +
+                `Please address the feedback in the Greptile review comments to improve code quality.`
+              );
+            } else {
+              console.log(`✅ PASSED: Score ${score}/5 meets the minimum threshold!`);
+            }
+
+      - name: Comment on PR (if failed)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = ${{ steps.pr.outputs.result }};
+            const scoreMatch = prBody.match(/Confidence Score:\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*5/i);
+            const score = scoreMatch ? parseFloat(scoreMatch[1]) : 'unknown';
+
+            const comment = `## ❌ Greptile Quality Gate Failed
+
+**Current Score**: ${score}/5
+**Required Score**: ≥4.0/5
+
+### Next Steps:
+1. Review the Greptile feedback comments on your PR
+2. Address the issues identified in the code review
+3. Push your fixes to trigger a re-analysis
+4. Once the score reaches 4.0+, this check will pass
+
+[View Greptile Settings](https://app.greptile.com/review/github)`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
