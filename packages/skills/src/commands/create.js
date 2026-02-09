@@ -9,17 +9,7 @@ import chalk from 'chalk';
 import { loadTemplate, renderTemplate, getCurrentDate, getCurrentTimestamp } from '../lib/template.js';
 import { syncCommand } from './sync.js';
 import { getSkillPaths, ensureRegistryExists, updateRegistrySkill, logSuccess } from '../lib/common.js';
-
-/**
- * Validate skill name (alphanumeric, hyphens, underscores only)
- */
-function validateSkillName(name) {
-  const validNameRegex = /^[a-z0-9-_]+$/;
-  if (!validNameRegex.test(name)) {
-    throw new Error('Invalid skill name: Use lowercase letters, numbers, hyphens, and underscores only');
-  }
-  return true;
-}
+import { validateSkillName } from '../lib/validation.js';
 
 /**
  * Create new skill from template

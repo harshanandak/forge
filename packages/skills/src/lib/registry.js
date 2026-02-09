@@ -117,7 +117,7 @@ async function apiRequest(endpoint, options = {}) {
     const response = await fetch(url, {
       ...options,
       headers,
-      timeout: 30000 // 30 second timeout
+      signal: AbortSignal.timeout(30000) // 30 second timeout
     });
 
     if (!response.ok) {

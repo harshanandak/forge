@@ -86,7 +86,8 @@ export function ensurePathWithin(basePath, targetPath) {
   //   base: /home/user/.skills
   //   target: /home/user/.skills-malicious
   // The separator ensures we're checking directory boundaries
-  if (!resolvedTarget.startsWith(resolvedBase + sep)) {
+  // Allow exact match (resolvedTarget === resolvedBase) for the base directory itself
+  if (resolvedTarget !== resolvedBase && !resolvedTarget.startsWith(resolvedBase + sep)) {
     throw new Error('Path traversal detected');
   }
 
