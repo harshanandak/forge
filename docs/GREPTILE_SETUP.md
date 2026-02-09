@@ -1,430 +1,406 @@
-# Greptile Quality Gate Setup Guide
+# Greptile Code Review - Branch Protection Setup
 
-This guide walks you through enforcing a **minimum Greptile score of 4.0** before PR merge.
+**✅ Greptile is already working on your repository!**
 
----
-
-## Prerequisites
-
-- GitHub repository with Actions enabled
-- Admin access to repository settings
-- Greptile account (free tier available)
+Greptile provides AI-powered code review as a **GitHub App** that automatically analyzes every PR.
 
 ---
 
-## Step 1: Get Greptile API Key
+## Current Status
 
-1. **Sign up/Login**: Visit [https://app.greptile.com](https://app.greptile.com)
+🎉 **You Already Have Greptile!**
 
-2. **Navigate to API Settings**:
-   - Click your profile → Settings → API Keys
-
-3. **Create API Key**:
-   - Click "Generate New Key"
-   - Name: `forge-github-actions`
-   - Permissions: `code:review`, `pr:write`
-   - Copy the key (you won't see it again!)
+Your repository already has Greptile installed and working. Check PR #13 to see:
+- ✅ "Greptile Review" status check running
+- ✅ Detailed code review comments posted
+- ✅ Feedback on bugs, security, and best practices
 
 ---
 
-## Step 2: Add Secret to GitHub
+## How to Require Greptile Reviews Before Merge
 
-1. **Navigate to Repository Secrets**:
-   ```
-   https://github.com/harshanandak/forge/settings/secrets/actions
-   ```
+### Step 1: Wait for Greptile Check to Run
 
-2. **Click "New repository secret"**
+The "Greptile Review" check needs to run at least once before it appears in branch protection settings.
 
-3. **Add Secret**:
-   - Name: `GREPTILE_API_KEY`
-   - Value: [paste your API key]
-   - Click "Add secret"
+**Current PR #13**: Greptile is already running (status: IN_PROGRESS)
 
----
-
-## Step 3: Verify Workflow File
-
-The workflow file should already exist at [`.github/workflows/greptile.yml`](../.github/workflows/greptile.yml).
-
-**Key configuration**:
-```yaml
-- name: Check Greptile Score
-  run: |
-    SCORE=${{ steps.greptile.outputs.score }}
-    if (( $(echo "$SCORE < 4" | bc -l) )); then
-      exit 1  # Fails the check
-    fi
-```
-
-**Customize threshold** (optional):
-- Change `4` to your desired minimum (e.g., `3.5`, `4.5`)
-- Range: 0-5
-
----
-
-## Step 4: Enable Branch Protection
+### Step 2: Enable Branch Protection
 
 1. **Navigate to Branch Protection**:
    ```
    https://github.com/harshanandak/forge/settings/branches
    ```
 
-2. **Edit rule for `main` branch** (or create if doesn't exist)
+2. **Edit the `master` branch rule** (click "Edit")
 
 3. **Enable Required Status Checks**:
    ```
    ✅ Require status checks to pass before merging
       ✅ Require branches to be up to date before merging
 
-      Required status checks:
-      ✅ test
-      ✅ eslint
-      ✅ CodeQL
-      ✅ dependency-review
-      ✅ greptile-review  ← ADD THIS
+      Search for and select:
+      ✅ Greptile Review  ← Select this check
    ```
 
 4. **Save changes**
 
 ---
 
-## Step 5: Test the Setup
+## How Greptile Works
 
-### Create a Test PR
+### GitHub App Integration
 
-```bash
-# Create a branch with intentionally low-quality code
-git checkout -b test/greptile-gate
+- **Automatic**: Runs on every PR (no manual trigger needed)
+- **No Workflow Needed**: Works as a GitHub App, not a GitHub Action
+- **No API Key Required**: Authorized through GitHub App installation
 
-# Create a complex, problematic file
-cat > test-quality.js << 'EOF'
-function doEverything(a, b, c, d, e) {
-  if (a) {
-    if (b) {
-      if (c) {
-        if (d) {
-          if (e) {
-            return a + b + c + d + e;
-          }
-        }
-      }
-    }
-  }
-  return 0;
-}
+### Review Process
 
-// Magic number
-if (user.age > 18) {
-  // No error handling
-  const result = fetch('https://api.example.com/data');
-  console.log(result);
-}
-EOF
-
-git add test-quality.js
-git commit -m "test: verify Greptile quality gate"
-git push -u origin test/greptile-gate
-
-# Create PR
-gh pr create --title "Test: Greptile Quality Gate" \
-  --body "Testing minimum score enforcement"
+```
+PR created/updated
+    ↓
+Greptile automatically analyzes code
+    ↓
+Posts detailed feedback as comments
+    ↓
+Updates "Greptile Review" check status
+    ↓
+Pass: ✅ Can merge
+Fail: ❌ Blocked (if required in branch protection)
 ```
 
-### Expected Behavior
+### What Greptile Checks
 
-1. **Greptile workflow runs** (~1-2 minutes)
-2. **Score calculated** (likely < 4.0 for the test code)
-3. **PR comment posted** with score and feedback
-4. **Merge blocked** if score < 4.0
-
-### Verify Blocking
-
-1. Go to PR page
-2. Scroll to merge button
-3. Should see: "Merging is blocked - greptile-review check failed"
-
-### Fix and Re-test
-
-```bash
-# Improve the code
-cat > test-quality.js << 'EOF'
-const LEGAL_AGE = 18;
-
-/**
- * Safely sums up to 5 numbers
- */
-function sumNumbers(...numbers) {
-  return numbers.reduce((sum, num) => sum + (num || 0), 0);
-}
-
-async function fetchUserData() {
-  try {
-    const response = await fetch('https://api.example.com/data');
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('Failed to fetch user data:', error);
-    throw error;
-  }
-}
-EOF
-
-git add test-quality.js
-git commit -m "refactor: improve code quality for Greptile"
-git push
-```
-
-**Expected**:
-- New Greptile run
-- Score ≥ 4.0
-- Merge button enabled ✅
+- 🐛 **Bugs & Edge Cases**: Potential runtime errors, null pointers, race conditions
+- 🔒 **Security**: Vulnerabilities, injection risks, auth issues
+- 📊 **Code Quality**: Complexity, duplication, naming conventions
+- ⚡ **Performance**: Inefficient algorithms, memory leaks
+- 📝 **Best Practices**: Error handling, type safety, modern patterns
+- 🧪 **Testing**: Missing test coverage, test quality
 
 ---
 
-## Step 6: Clean Up Test
+## Understanding Greptile Feedback
 
-```bash
-# Close and delete test PR
-gh pr close test/greptile-gate --delete-branch
-```
+### No Numeric Scores
+
+Unlike some tools, Greptile doesn't provide a 0-5 score. Instead:
+
+✅ **Detailed inline comments** on specific lines of code
+✅ **Issue severity** indicators (critical, major, minor)
+✅ **Actionable suggestions** with example fixes
+✅ **Pass/Fail status** in the check
+
+### Example from Your PR #13
+
+Greptile identified and you fixed:
+- ✅ Windows path validation bug
+- ✅ Duplicate function definitions
+- ✅ Incorrect fetch timeout implementation
+- ✅ Security vulnerabilities (command injection)
+- ✅ JSON parse crash issues
+- ✅ Unused variables
+
+**Result**: 16/16 issues addressed! 🎉
 
 ---
 
-## Customization Options
+## Addressing Greptile Feedback
 
-### Adjust Score Threshold
+### Workflow
 
-Edit [`.github/workflows/greptile.yml`](../.github/workflows/greptile.yml):
+1. **Read Comments**
+   - Greptile posts inline comments on changed files
+   - Each explains the issue and suggests fixes
 
-```yaml
-# Current: Minimum 4.0
-if (( $(echo "$SCORE < 4" | bc -l) )); then
+2. **Fix Issues**
+   ```bash
+   # Make changes based on feedback
+   git add .
+   git commit -m "fix: address Greptile feedback"
+   git push
+   ```
 
-# Option 1: Stricter (4.5)
-if (( $(echo "$SCORE < 4.5" | bc -l) )); then
+3. **Auto Re-analysis**
+   - Greptile automatically reviews again after push
+   - Verifies fixes
+   - Updates check status
 
-# Option 2: More lenient (3.5)
-if (( $(echo "$SCORE < 3.5" | bc -l) )); then
+4. **Resolve Conversations**
+   - Click "Resolve conversation" on each fixed comment
+   - Helps track progress
+
+---
+
+## Branch Protection Behavior
+
+### When "Greptile Review" is Required:
+
+```
+✅ All issues addressed          → Check: SUCCESS → ✅ Can merge
+❌ Outstanding issues            → Check: PENDING → ❌ Blocked
+🔄 Analysis in progress          → Check: PENDING → ❌ Blocked
 ```
 
-### Exclude Certain Files
+### Emergency Override
 
-Add to workflow:
+If you **must** merge despite Greptile feedback:
 
-```yaml
-- name: Run Greptile Analysis
-  with:
-    exclude-paths: |
-      test/**
-      docs/**
-      **/*.md
+1. **Get approval** from tech lead/architect
+2. **Document in PR description**:
+   ```markdown
+   **Emergency Bypass**: Production hotfix for [critical-issue]
+   **Greptile Status**: Bypassed
+   **Justification**: [detailed reason]
+   **Follow-up**: Issue #123 created to address feedback
+   ```
+3. **Temporarily disable branch protection** (admin only)
+4. **Merge**
+5. **Re-enable protection immediately**
+6. **Create follow-up issue** to address Greptile feedback
+
+---
+
+## Configuration
+
+### No Setup Required! ✅
+
+Since Greptile is a GitHub App:
+
+- ❌ No API keys needed in secrets
+- ❌ No workflow files needed
+- ❌ No manual configuration
+
+It just works automatically!
+
+### Managing the GitHub App
+
+**View installed apps**:
+```
+https://github.com/settings/installations
 ```
 
-### Custom Greptile Config
+**Repository-specific settings** (admin only):
+```
+https://github.com/harshanandak/forge/settings/installations
+```
 
-Create `.greptile.yml` in repo root:
+You can:
+- Enable/disable Greptile for specific repos
+- Adjust review frequency
+- Configure notification settings
+
+---
+
+## Customization (Optional)
+
+### Repository Configuration
+
+Create `.greptile/config.yml` in repo root:
 
 ```yaml
-version: 1
-checks:
-  complexity:
-    max_cyclomatic: 10
-  security:
-    enabled: true
-  style:
-    enforce: true
-ignore:
-  - "*.test.js"
-  - "*.spec.js"
-  - "dist/**"
+# Greptile configuration
+review:
+  # File patterns to ignore
+  exclude:
+    - "*.md"
+    - "test/**"
+    - "docs/**"
+    - "*.test.js"
+    - "dist/**"
+
+  # Focus areas (prioritize these checks)
+  focus:
+    - security
+    - bugs
+    - performance
+
+  # Review depth
+  depth: thorough  # quick, normal, thorough
+```
+
+### Per-PR Instructions
+
+Add comments in PR description to guide Greptile:
+
+```markdown
+@greptile focus on security and performance
+@greptile ignore docs/ and test files
+@greptile be extra strict on src/auth/
 ```
 
 ---
 
 ## Troubleshooting
 
-### "Greptile check not appearing"
+### "Greptile Review check not appearing in branch protection"
 
-**Cause**: Workflow hasn't run yet.
-
-**Fix**:
-1. Create a test PR
-2. Wait for workflow to run once
-3. Then it will appear in branch protection options
-
-### "GREPTILE_API_KEY not found"
-
-**Cause**: Secret not configured.
+**Cause**: Check hasn't completed at least once on any PR.
 
 **Fix**:
-1. Verify secret exists: Settings → Secrets → Actions
-2. Name must be **exactly** `GREPTILE_API_KEY`
-3. Re-run workflow
+1. It's currently running on PR #13
+2. Wait for it to complete
+3. Then refresh branch protection settings page
+4. "Greptile Review" should now appear in the list
 
-### "Score always 0.0"
+### "Greptile didn't review my PR"
 
-**Cause**: API key invalid or rate limit hit.
-
-**Fix**:
-1. Check API key is valid
-2. Check Greptile account status
-3. Review workflow logs for error messages
-
-### "Merge blocked but score is 4.2"
-
-**Cause**: Branch protection cached old status.
+**Possible causes**:
+- GitHub App not installed or disabled
+- PR is a draft (some apps skip drafts)
+- Repository not in allowed list
 
 **Fix**:
-1. Refresh PR page
-2. Make a trivial commit to trigger re-check
-3. Verify check is actually passing (green ✓)
+1. Visit: https://github.com/harshanandak/forge/settings/installations
+2. Verify Greptile is installed and enabled
+3. Check repository access permissions
+4. Convert draft to ready for review if applicable
 
----
+### "How do I request a re-review?"
 
-## Monitoring & Metrics
+**Methods**:
+1. **Push new commit** - Triggers automatic re-analysis
+2. **Comment on PR**: `@greptile please review` or `@greptile recheck`
+3. **Close and reopen PR** - Forces fresh analysis
 
-### View Greptile Trends
+### "Can I see why Greptile flagged something?"
 
-```bash
-# Check recent scores
-gh pr list --json number,title --jq '.[] | .number' | while read pr; do
-  gh pr view $pr --json number,title,comments \
-    | jq -r '.comments[] | select(.body | contains("Greptile")) | .body' \
-    | grep -oP 'Score: \K[0-9.]+'
-done
-```
-
-### Team Dashboard
-
-Consider creating a dashboard to track:
-- Average Greptile score over time
-- PRs blocked by quality gate
-- Most common issues flagged
-- Time to resolution
+**Yes!**
+1. Go to "Files changed" tab in PR
+2. Find Greptile's comment thread
+3. Each comment explains:
+   - What the issue is
+   - Why it's problematic
+   - How to fix it
+   - Often includes code examples
 
 ---
 
 ## Best Practices
 
-### 1. Review Feedback, Don't Just Hit 4.0
+### 1. Address Feedback Incrementally
 
-Greptile's feedback is valuable even if score passes. Read it!
+Don't batch all fixes into one commit:
+- Fix issues as you see them
+- Commit after each logical fix
+- Easier to review and debug
 
 ### 2. Use as Learning Tool
 
-- Share high-scoring PRs as examples
-- Discuss low scores in team meetings
-- Identify patterns to avoid
+Greptile explains *why* something is an issue:
+- Read the explanations, don't just apply fixes blindly
+- Share interesting findings with your team
+- Update coding standards based on patterns
 
-### 3. Balance with Velocity
+### 3. Combine with Human Review
 
-- Start with 3.5 threshold, increase gradually
-- Don't let perfect be enemy of good
-- Emergency bypasses should be rare (< 1%)
+| Review Type | What It Catches |
+|-------------|-----------------|
+| 🤖 Greptile | Technical bugs, security, complexity, patterns |
+| 👥 Human    | Business logic, UX, architecture, context |
 
-### 4. Combine with Human Review
+**Both are essential!** They catch different types of issues.
 
-- Greptile catches technical issues
-- Humans review business logic, UX, architecture
-- Both are needed for quality code
+### 4. Don't Fight the AI Unnecessarily
 
----
+If Greptile flags something:
+- There's usually a valid reason
+- Read the explanation carefully
+- If you disagree, comment why (helps improve Greptile)
+- Propose alternative if you have a better approach
 
-## Migration Strategy
+### 5. Track Common Patterns
 
-If adding to existing repo with many open PRs:
-
-### Week 1: Observe Only
-```yaml
-continue-on-error: true  # Don't block merges yet
-```
-
-### Week 2: Soft Enforcement
-- Make Greptile check required
-- But only require 3.0 score
-- Team learns to address feedback
-
-### Week 3: Increase to 3.5
-- Most PRs should pass
-- Address patterns causing failures
-
-### Week 4: Full Enforcement at 4.0
-- Team is familiar with expectations
-- Code quality has improved
-- Gates are effective
+Notice recurring issues across PRs?
+- Document in coding standards
+- Add to .greptile/config.yml to auto-enforce
+- Share with team in README or CONTRIBUTING.md
+- Consider pre-commit hooks for common issues
 
 ---
 
-## Cost Considerations
+## Verification Checklist
 
-**Greptile Pricing** (as of 2026):
-- Free tier: 100 PR reviews/month
-- Pro: $29/month - 500 reviews
-- Team: $99/month - Unlimited
+Use this to confirm Greptile is set up correctly:
 
-**Estimate for forge**:
-- ~20-30 PRs/month → Free tier sufficient
-- If exceeding, consider Team plan
-
----
-
-## Alternative Approaches
-
-### Option 1: Advisory Only
-
-Don't block, just comment scores:
-
-```yaml
-- name: Check Greptile Score
-  continue-on-error: true  # Never fails
 ```
-
-### Option 2: Gradual Threshold
-
-Start lenient, tighten over time:
-
-```yaml
-# Month 1: 3.0
-# Month 2: 3.5
-# Month 3: 4.0
-```
-
-### Option 3: File-Level Gates
-
-Only enforce for critical files:
-
-```yaml
-if [[ "$CHANGED_FILES" == *"src/auth"* ]] && [[ "$SCORE" < 4.5 ]]; then
-  exit 1
-fi
+✅ Greptile GitHub App is installed
+✅ Greptile has access to your repository
+✅ "Greptile Review" check runs on PRs
+✅ Greptile posts code review comments
+✅ "Greptile Review" appears in branch protection options
+✅ "Greptile Review" is selected as required check
+✅ Branch protection rule is saved
+✅ Test: Create PR → Greptile reviews → Merge blocked if issues
 ```
 
 ---
 
-## Support
+## FAQ
 
-**Greptile Issues**: https://github.com/greptile-apps/greptile-action/issues
+**Q: Does Greptile use a scoring system (like 4.0/5.0)?**
+A: No. Greptile provides detailed feedback and pass/fail status, not numeric scores.
 
-**Forge Issues**: https://github.com/harshanandak/forge/issues
+**Q: Will it review every single commit?**
+A: It reviews at the PR level. Runs when PR is opened and when new commits are pushed.
 
-**Questions**: See [.github/BRANCH_PROTECTION_GUIDE.md](../.github/BRANCH_PROTECTION_GUIDE.md)
+**Q: Does it slow down development?**
+A: No! Reviews typically complete in 1-2 minutes. Runs in parallel with other checks.
+
+**Q: Can I disable it for specific PRs?**
+A: Yes, via PR description: `@greptile skip` (but only if not required in branch protection)
+
+**Q: Is it free?**
+A: Greptile has free and paid tiers. Check https://greptile.com/pricing for current plans.
+
+**Q: Does it replace code review?**
+A: No! It augments human review by catching technical issues, allowing humans to focus on architecture, business logic, and UX.
+
+**Q: What languages does it support?**
+A: Most modern languages including JavaScript, TypeScript, Python, Go, Java, Rust, etc.
+
+**Q: Can I customize what it checks for?**
+A: Yes, via `.greptile/config.yml` configuration file.
 
 ---
 
-## Summary Checklist
+## Next Steps
 
-```
-[ ] Got Greptile API key from app.greptile.com
-[ ] Added GREPTILE_API_KEY secret to GitHub
-[ ] Verified .github/workflows/greptile.yml exists
-[ ] Enabled greptile-review in branch protection
-[ ] Tested with sample PR
-[ ] Verified blocking works
-[ ] Configured team/communicated changes
-[ ] Set up monitoring (optional)
-```
+1. ✅ **Wait** for Greptile to finish analyzing PR #13
+2. ✅ **Enable** "Greptile Review" as required check in branch protection
+3. ✅ **Test** by creating/updating a PR and verifying blocking works
+4. ✅ **Document** your team's policy for handling Greptile feedback
+5. ✅ **Celebrate** improved code quality! 🎉
 
-**Once complete**: All PRs require Greptile score ≥ 4.0 to merge ✅
+---
+
+## Additional Resources
+
+- **Greptile Documentation**: https://docs.greptile.com
+- **GitHub App Settings**: https://github.com/settings/installations
+- **Branch Protection Guide**: [../.github/BRANCH_PROTECTION_GUIDE.md](../.github/BRANCH_PROTECTION_GUIDE.md)
+- **Your PR #13** (example): https://github.com/harshanandak/forge/pull/13
+
+---
+
+## Summary
+
+**What Greptile Is:**
+- ✅ GitHub App (not a GitHub Action)
+- ✅ AI-powered code reviewer
+- ✅ Automatic analysis on every PR
+- ✅ Detailed, actionable feedback
+
+**What You Need to Do:**
+- ✅ Greptile is already installed ← You're done here!
+- ✅ Enable "Greptile Review" in branch protection ← Do this next
+- ✅ Address feedback on PRs ← Ongoing workflow
+
+**Result:**
+- 🚀 Higher code quality
+- 🐛 Fewer bugs in production
+- 📚 Team learning from AI feedback
+- 🛡️ Automated security checks
+
+Enjoy your new AI code reviewer! 🤖✨
