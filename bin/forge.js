@@ -3019,8 +3019,7 @@ function checkForSkills() {
     execFileSync('skills', ['--version'], { stdio: 'ignore' });
     return 'global';
   } catch (err) {
-    // Not global
-    console.warn('Skills not found globally:', err.message);
+    // Not global - this is expected when Skills is not installed
   }
 
   // Check if bunx can run it
@@ -3028,8 +3027,7 @@ function checkForSkills() {
     execFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
     return 'bunx';
   } catch (err) {
-    // Not bunx-capable
-    console.warn('Skills not available via bunx:', err.message);
+    // Not bunx-capable - this is expected when Skills is not installed
   }
 
   // Check local project installation
@@ -3041,7 +3039,7 @@ function checkForSkills() {
     const isInstalled = pkg.devDependencies?.['@forge/skills'] || pkg.dependencies?.['@forge/skills'];
     return isInstalled ? 'local' : null;
   } catch (err) {
-    console.warn('Failed to check Skills in package.json:', err.message);
+    // Failed to parse package.json - silently return null
     return null;
   }
 }
