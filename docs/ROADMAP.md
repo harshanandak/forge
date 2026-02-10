@@ -283,8 +283,8 @@ Each PR follows the Forge workflow:
 
 ### Plan Files
 
-- **Master Plan**: `C:\Users\harsha_befach\.claude\plans\enumerated-watching-chipmunk.md` (global, tracked by Claude Code)
-- **Roadmap**: [docs/ROADMAP.md](ROADMAP.md) (repository, git-tracked)
+- **Master Plan**: `.claude/plans/*.md` (global, tracked by Claude Code)
+- **Roadmap**: `docs/ROADMAP.md` (repository, git-tracked)
 - **Beads Tracking**: `.beads/issues.jsonl` (git-tracked)
 
 ---
