@@ -1,0 +1,62 @@
+name: YAML Validation
+
+on:
+  push:
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+  pull_request:
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+
+jobs:
+  yaml-lint:
+    name: Validate YAML Syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Validate workflow YAML files
+        run: |
+          echo "Validating GitHub workflow YAML files..."
+          EXIT_CODE=0
+          for file in .github/workflows/*.yml .github/workflows/*.yaml; do
+            if [ -f "$file" ]; then
+              echo "Checking $file..."
+              if ! bun x js-yaml "$file" > /dev/null 2>&1; then
+                echo "❌ FAILED: $file"
+                EXIT_CODE=1
+              else
+                echo "✅ PASSED: $file"
+              fi
+            fi
+          done
+          exit $EXIT_CODE
+
+      - name: Validate other YAML files
+        run: |
+          echo "Validating other YAML files..."
+          EXIT_CODE=0
+          while IFS= read -r file; do
+            if [ -f "$file" ]; then
+              echo "Checking $file..."
+              if ! bun x js-yaml "$file" > /dev/null 2>&1; then
+                echo "❌ FAILED: $file"
+                EXIT_CODE=1
+              else
+                echo "✅ PASSED: $file"
+              fi
+            fi
+          done < <(find . \( -name "*.yml" -o -name "*.yaml" \) | grep -v ".github/workflows" | grep -v "node_modules")
+          exit $EXIT_CODE

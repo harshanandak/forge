@@ -16,7 +16,8 @@
     "postinstall": "node ./bin/forge.js",
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
     "setup": "node ./bin/forge.js setup",
-    "help": "node ./bin/forge.js --help"
+    "help": "node ./bin/forge.js --help",
+    "validate:yaml": "find . \\( -name '*.yml' -o -name '*.yaml' \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && bun x js-yaml \"$file\" > /dev/null || exit 1; done"
   },
   "peerDependencies": {
     "lefthook": "^1.0.0"
@@ -31,6 +32,7 @@
     "@microsoft/eslint-formatter-sarif": "^3.1.0",
     "eslint": "^10.0.0",
     "globals": "^17.3.0",
+    "js-yaml": "^4.1.1",
     "lefthook": "^1.10.1"
   },
   "keywords": [

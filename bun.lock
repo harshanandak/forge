@@ -12,6 +12,7 @@
         "@microsoft/eslint-formatter-sarif": "^3.1.0",
         "eslint": "^10.0.0",
         "globals": "^17.3.0",
+        "js-yaml": "^4.1.1",
         "lefthook": "^1.10.1",
       },
       "peerDependencies": {
