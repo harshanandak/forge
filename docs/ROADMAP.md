@@ -328,7 +328,7 @@ Each PR is self-contained and can be rolled back independently:
 
 ## Resources
 
-- **Master Plan**: `C:\Users\harsha_befach\.claude\plans\enumerated-watching-chipmunk.md`
+- **Master Plan**: `.claude/plans/*.md`
 - **Beads Issues**: `bd list` or `bd show <issue-id>`
 - **Workflow Guide**: [WORKFLOW.md](WORKFLOW.md)
 - **Architecture Docs**: Coming in PR0 - [ARCHITECTURE.md](ARCHITECTURE.md)
