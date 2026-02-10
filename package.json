@@ -17,7 +17,7 @@
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help",
-    "validate:yaml": "bun add -g js-yaml && find .github/workflows \\( -name '*.yml' -o -name '*.yaml' \\) -exec sh -c 'echo \"Checking $1...\" && npx js-yaml \"$1\" > /dev/null' _ {} \\;"
+    "validate:yaml": "bun add js-yaml && find .github/workflows \\( -name '*.yml' -o -name '*.yaml' \\) -exec sh -c 'echo \"Checking $1...\" && bunx js-yaml \"$1\" > /dev/null' _ {} \\;"
   },
   "peerDependencies": {
     "lefthook": "^1.0.0"

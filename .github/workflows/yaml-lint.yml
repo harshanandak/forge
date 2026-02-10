@@ -3,12 +3,12 @@ name: YAML Validation
 on:
   push:
     paths:
-      - '**.yml'
-      - '**.yaml'
+      - '**/*.yml'
+      - '**/*.yaml'
   pull_request:
     paths:
-      - '**.yml'
-      - '**.yaml'
+      - '**/*.yml'
+      - '**/*.yaml'
 
 jobs:
   yaml-lint:
@@ -25,7 +25,7 @@ jobs:
           bun-version: latest
 
       - name: Install js-yaml
-        run: bun add -g js-yaml
+        run: bun add js-yaml
 
       - name: Validate workflow YAML files
         run: |
@@ -34,7 +34,7 @@ jobs:
           for file in .github/workflows/*.yml .github/workflows/*.yaml; do
             if [ -f "$file" ]; then
               echo "Checking $file..."
-              if ! npx js-yaml "$file" > /dev/null 2>&1; then
+              if ! bunx js-yaml "$file" > /dev/null 2>&1; then
                 echo "❌ FAILED: $file"
                 EXIT_CODE=1
               else
@@ -51,7 +51,7 @@ jobs:
           while IFS= read -r file; do
             if [ -f "$file" ]; then
               echo "Checking $file..."
-              if ! npx js-yaml "$file" > /dev/null 2>&1; then
+              if ! bunx js-yaml "$file" > /dev/null 2>&1; then
                 echo "❌ FAILED: $file"
                 EXIT_CODE=1
               else
