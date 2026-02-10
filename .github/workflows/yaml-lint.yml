@@ -34,7 +34,7 @@ jobs:
           for file in .github/workflows/*.yml .github/workflows/*.yaml; do
             if [ -f "$file" ]; then
               echo "Checking $file..."
-              if ! bunx js-yaml "$file" > /dev/null 2>&1; then
+              if ! bun x js-yaml "$file" > /dev/null 2>&1; then
                 echo "❌ FAILED: $file"
                 EXIT_CODE=1
               else
@@ -51,7 +51,7 @@ jobs:
           while IFS= read -r file; do
             if [ -f "$file" ]; then
               echo "Checking $file..."
-              if ! bunx js-yaml "$file" > /dev/null 2>&1; then
+              if ! bun x js-yaml "$file" > /dev/null 2>&1; then
                 echo "❌ FAILED: $file"
                 EXIT_CODE=1
               else
