@@ -48,7 +48,7 @@ jobs:
         run: |
           echo "Validating other YAML files..."
           EXIT_CODE=0
-          find . -name "*.yml" -o -name "*.yaml" | grep -v ".github/workflows" | grep -v "node_modules" | while IFS= read -r file; do
+          while IFS= read -r file; do
             if [ -f "$file" ]; then
               echo "Checking $file..."
               if ! npx js-yaml "$file" > /dev/null 2>&1; then
@@ -58,5 +58,5 @@ jobs:
                 echo "✅ PASSED: $file"
               fi
             fi
-          done
+          done < <(find . \( -name "*.yml" -o -name "*.yaml" \) | grep -v ".github/workflows" | grep -v "node_modules")
           exit $EXIT_CODE
