@@ -1,7 +1,7 @@
-# This workflow will run tests using node and then publish a package to GitHub Packages when a release is created
+# This workflow will run tests using Bun and then publish a package to npm when a release is created
 # For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
 
-name: Node.js Package
+name: Bun Package
 
 on:
   release:
@@ -18,11 +18,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 20
-      - run: npm ci
-      - run: npm test
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
 
   publish-npm:
     needs: build
@@ -32,11 +32,14 @@ jobs:
       id-token: write  # Required for npm provenance
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org/
-      - run: npm ci
-      - run: npm publish
+      - run: bun install --frozen-lockfile
+      - run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}
