@@ -15,6 +15,21 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Check for jq dependency
+check_jq() {
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Error: jq is required but not installed${NC}"
+        echo ""
+        echo "Please install jq:"
+        echo "  • Ubuntu/Debian: sudo apt-get install jq"
+        echo "  • macOS: brew install jq"
+        echo "  • Windows: choco install jq"
+        echo "  • Or download from: https://jqlang.github.io/jq/download/"
+        echo ""
+        exit 1
+    fi
+}
+
 usage() {
     cat <<EOF
 Usage: $(basename "$0") <command> <pr-number> [options]
@@ -134,7 +149,7 @@ cmd_list() {
     local unresolved_count=0
     local greptile_count=0
 
-    echo "$threads" | jq -r '.[] | @json' | while IFS= read -r thread; do
+    while IFS= read -r thread; do
         local thread_id
         thread_id=$(echo "$thread" | jq -r '.id')
 
@@ -188,7 +203,7 @@ cmd_list() {
         title=$(echo "$body" | head -n 1 | sed 's/\*\*//g')
         echo -e "  ${BLUE}Issue:${NC} $title"
         echo ""
-    done
+    done < <(echo "$threads" | jq -r '.[] | @json')
 
     echo -e "\n${YELLOW}═══════════════════════════════════════${NC}"
     echo -e "${BLUE}Statistics for PR #$pr_number:${NC}"
@@ -289,7 +304,7 @@ cmd_resolve_all() {
     local resolved_count=0
     local failed_count=0
 
-    echo "$threads" | jq -r '.[] | @json' | while IFS= read -r thread; do
+    while IFS= read -r thread; do
         local thread_id
         thread_id=$(echo "$thread" | jq -r '.id')
 
@@ -321,7 +336,7 @@ cmd_resolve_all() {
 
         # Small delay to avoid rate limiting
         sleep 0.5
-    done
+    done < <(echo "$threads" | jq -r '.[] | @json')
 
     echo -e "\n${YELLOW}═══════════════════════════════════════${NC}"
     echo -e "${GREEN}✓ Resolved: $resolved_count threads${NC}"
@@ -379,6 +394,9 @@ cmd_stats() {
 
 # Main command dispatcher
 main() {
+    # Check for jq dependency
+    check_jq
+
     if [ $# -lt 2 ]; then
         usage
     fi
