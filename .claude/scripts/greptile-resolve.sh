@@ -5,8 +5,26 @@
 
 set -e
 
-OWNER="harshanandak"
-REPO="forge"
+# Auto-detect repository from git config
+detect_repo() {
+    local repo_info
+    repo_info=$(gh repo view --json owner,name 2>/dev/null) || {
+        echo -e "${RED}Error: Not in a git repository or gh CLI not authenticated${NC}"
+        echo "Run: gh auth login"
+        exit 1
+    }
+
+    OWNER=$(echo "$repo_info" | jq -r '.owner.login')
+    REPO=$(echo "$repo_info" | jq -r '.name')
+
+    if [ -z "$OWNER" ] || [ -z "$REPO" ]; then
+        echo -e "${RED}Error: Could not detect repository${NC}"
+        exit 1
+    fi
+}
+
+# Initialize repo detection
+detect_repo
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,9 +34,12 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Check for jq dependency
+# Note: exit 1 is intentional - script cannot function without jq for JSON parsing
 check_jq() {
     if ! command -v jq &> /dev/null; then
         echo -e "${RED}Error: jq is required but not installed${NC}"
+        echo ""
+        echo "This script requires jq for JSON parsing and cannot continue without it."
         echo ""
         echo "Please install jq:"
         echo "  • Ubuntu/Debian: sudo apt-get install jq"
@@ -57,34 +78,61 @@ EOF
     exit 1
 }
 
-# Fetch all review threads for a PR
+# Fetch all review threads for a PR (with pagination)
 fetch_threads() {
     local pr_number="$1"
+    local all_threads="[]"
+    local has_next_page=true
+    local end_cursor="null"
 
-    gh api graphql -f owner="$OWNER" -f repo="$REPO" -F prNumber="$pr_number" -f query='
-        query($owner: String!, $repo: String!, $prNumber: Int!) {
-            repository(owner: $owner, name: $repo) {
-                pullRequest(number: $prNumber) {
-                    reviewThreads(first: 100) {
-                        nodes {
-                            id
-                            isResolved
-                            comments(first: 1) {
-                                nodes {
-                                    databaseId
-                                    author { login }
-                                    body
-                                    path
-                                    line
-                                    createdAt
+    while [ "$has_next_page" = "true" ]; do
+        local cursor_arg=""
+        if [ "$end_cursor" != "null" ]; then
+            cursor_arg="-f after=\"$end_cursor\""
+        fi
+
+        local response
+        response=$(gh api graphql -f owner="$OWNER" -f repo="$REPO" -F prNumber="$pr_number" $cursor_arg -f query='
+            query($owner: String!, $repo: String!, $prNumber: Int!, $after: String) {
+                repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $prNumber) {
+                        reviewThreads(first: 100, after: $after) {
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                            nodes {
+                                id
+                                isResolved
+                                comments(first: 1) {
+                                    nodes {
+                                        databaseId
+                                        author { login }
+                                        body
+                                        path
+                                        line
+                                        createdAt
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
-    '
+        ')
+
+        # Extract pagination info
+        has_next_page=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+        end_cursor=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+
+        # Merge threads
+        local page_threads
+        page_threads=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.nodes')
+        all_threads=$(echo "$all_threads" | jq --argjson new "$page_threads" '. + $new')
+    done
+
+    # Return in original format
+    echo "{\"data\":{\"repository\":{\"pullRequest\":{\"reviewThreads\":{\"nodes\":$all_threads}}}}}"
 }
 
 # Reply to a review comment (REST API)
