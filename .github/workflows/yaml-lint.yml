@@ -24,8 +24,8 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install js-yaml
-        run: bun add js-yaml
+      - name: Install dependencies
+        run: bun install
 
       - name: Validate workflow YAML files
         run: |
