@@ -119,10 +119,10 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 **Impact**: High
 
 #### Key Deliverables
-1. Multi-Tool AI Review Quality Gate (Greptile + CodeRabbit)
-2. Unified /check script
-3. Lefthook Windows compatibility
-4. Package size monitoring
+1. Unified /check script - Orchestrate all validation steps
+2. Lefthook Windows compatibility fixes
+3. Package size monitoring workflow
+4. Manual review guidance - Best practices for achieving high quality scores
 
 ---
 
