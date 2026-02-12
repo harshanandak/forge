@@ -5,6 +5,13 @@
 
 set -e
 
+# Colors for output (defined before use)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
 # Auto-detect repository from git config
 detect_repo() {
     local repo_info
@@ -25,13 +32,6 @@ detect_repo() {
 
 # Initialize repo detection
 detect_repo
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
 
 # Check for jq dependency
 # Note: exit 1 is intentional - script cannot function without jq for JSON parsing
@@ -86,14 +86,10 @@ fetch_threads() {
     local end_cursor="null"
 
     while [ "$has_next_page" = "true" ]; do
-        local cursor_arg=""
-        if [ "$end_cursor" != "null" ]; then
-            cursor_arg="-f after=\"$end_cursor\""
-        fi
-
         local response
-        response=$(gh api graphql -f owner="$OWNER" -f repo="$REPO" -F prNumber="$pr_number" $cursor_arg -f query='
-            query($owner: String!, $repo: String!, $prNumber: Int!, $after: String) {
+        if [ "$end_cursor" != "null" ]; then
+            response=$(gh api graphql -f owner="$OWNER" -f repo="$REPO" -F prNumber="$pr_number" -f after="$end_cursor" -f query='
+                query($owner: String!, $repo: String!, $prNumber: Int!, $after: String) {
                 repository(owner: $owner, name: $repo) {
                     pullRequest(number: $prNumber) {
                         reviewThreads(first: 100, after: $after) {
@@ -120,6 +116,36 @@ fetch_threads() {
                 }
             }
         ')
+        else
+            response=$(gh api graphql -f owner="$OWNER" -f repo="$REPO" -F prNumber="$pr_number" -f query='
+                query($owner: String!, $repo: String!, $prNumber: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                        pullRequest(number: $prNumber) {
+                            reviewThreads(first: 100) {
+                                pageInfo {
+                                    hasNextPage
+                                    endCursor
+                                }
+                                nodes {
+                                    id
+                                    isResolved
+                                    comments(first: 1) {
+                                        nodes {
+                                            databaseId
+                                            author { login }
+                                            body
+                                            path
+                                            line
+                                            createdAt
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            ')
+        fi
 
         # Extract pagination info
         has_next_page=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
@@ -197,27 +223,8 @@ cmd_list() {
     local unresolved_count=0
     local greptile_count=0
 
-    while IFS= read -r thread; do
-        local thread_id
-        thread_id=$(echo "$thread" | jq -r '.id')
-
-        local is_resolved
-        is_resolved=$(echo "$thread" | jq -r '.isResolved')
-
-        local author
-        author=$(echo "$thread" | jq -r '.comments.nodes[0].author.login // "unknown"')
-
-        local body
-        body=$(echo "$thread" | jq -r '.comments.nodes[0].body // ""')
-
-        local path
-        path=$(echo "$thread" | jq -r '.comments.nodes[0].path // "unknown"')
-
-        local line
-        line=$(echo "$thread" | jq -r '.comments.nodes[0].line // "?"')
-
-        local comment_id
-        comment_id=$(echo "$thread" | jq -r '.comments.nodes[0].databaseId // "?"')
+    while IFS='|' read -r thread_id is_resolved author body path line comment_id; do
+        # Values already extracted by jq in one pass
 
         # Count
         if [ "$is_resolved" = "true" ]; then
@@ -251,7 +258,7 @@ cmd_list() {
         title=$(echo "$body" | head -n 1 | sed 's/\*\*//g')
         echo -e "  ${BLUE}Issue:${NC} $title"
         echo ""
-    done < <(echo "$threads" | jq -r '.[] | @json')
+    done < <(echo "$threads" | jq -r '.[] | [.id, .isResolved, (.comments.nodes[0].author.login // "unknown"), (.comments.nodes[0].body // ""), (.comments.nodes[0].path // "unknown"), (.comments.nodes[0].line // "?"), (.comments.nodes[0].databaseId // "?")] | join("|")')
 
     echo -e "\n${YELLOW}═══════════════════════════════════════${NC}"
     echo -e "${BLUE}Statistics for PR #$pr_number:${NC}"
