@@ -332,7 +332,7 @@ describe('E2E: Full setup workflow', () => {
       steps.push('detect_project');
 
       // Step 3: Detect agents
-      const agents = await detectInstalledAgents(tempDir);
+      const _agents = await detectInstalledAgents(tempDir);
       await markStepComplete(tempDir, 'detect_agents');
       steps.push('detect_agents');
 
