@@ -78,6 +78,64 @@ See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for detailed MCP setup instructions.
 
 ---
 
+## Multi-Agent Support
+
+Forge now supports **5 Tier 1 agents** with universal AGENTS.md configuration:
+
+**Tier 1 (Primary Support)**:
+- ✅ **Claude Code** - Native custom slash commands, .claude/ directory
+- ✅ **GitHub Copilot** - Enterprise adoption, .github/copilot-instructions.md
+- ✅ **Kilo Code** - Managed indexing, auto failure recovery, .kilo.md
+- ✅ **Cursor** - IDE-first, .cursor/rules/ with native modes
+- ✅ **Aider** - Terminal-native, git-integrated, .aider.conf.yml
+
+**Tier 2 (Optional Support)**:
+- ⚠️ **OpenCode** (Anomaly fork) - opencode.json + AGENTS.md
+- ⚠️ **Goose** - Model flexibility, open-source
+- ⚠️ **Antigravity** - Google-backed, early preview
+
+**Universal AGENTS.md**:
+- Works with ALL agents (100% compatibility)
+- Single source of truth for Forge workflow
+- No agent-specific setup required
+- Agent-specific configs are optional enhancements
+
+**Migration from CLAUDE.md-only**:
+
+If you're using Claude Code exclusively, no migration needed. To enable cross-agent support:
+
+```bash
+# Option 1: Generate AGENTS.md + agent-specific configs
+bunx forge setup --all
+
+# Option 2: Generate for specific agent
+bunx forge setup --agent=copilot    # GitHub Copilot
+bunx forge setup --agent=cursor     # Cursor IDE
+bunx forge setup --agent=kilo       # Kilo Code
+bunx forge setup --agent=aider      # Aider
+
+# Option 3: Keep CLAUDE.md (Claude Code only)
+# No action needed - existing setup works
+```
+
+**What gets created**:
+- `AGENTS.md` - Universal workflow (all agents)
+- `.github/copilot-instructions.md` - Copilot-specific (optional)
+- `.cursor/rules/*.mdc` - Cursor-specific (optional)
+- `.kilo.md` - Kilo-specific (optional)
+- `.aider.conf.yml` - Aider-specific (optional)
+- `opencode.json` - OpenCode-specific (optional)
+
+**Benefits**:
+- Switch agents anytime without reconfiguration
+- Team members can use their preferred agent
+- Consistent workflow across all agents
+- Optional enhancements for agent-specific features
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how Commands, Skills, and MCP work together.
+
+---
+
 ## Quick Start
 
 1. `/status` - Check where you are
