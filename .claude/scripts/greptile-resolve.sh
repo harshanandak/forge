@@ -223,8 +223,10 @@ cmd_list() {
     local unresolved_count=0
     local greptile_count=0
 
-    while IFS='|' read -r thread_id is_resolved author body path line comment_id; do
-        # Values already extracted by jq in one pass
+    while IFS=$'\t' read -r thread_id is_resolved author body_b64 path line comment_id; do
+        # Values already extracted by jq (body is base64-encoded to handle newlines)
+        local body
+        body=$(echo "$body_b64" | base64 -d 2>/dev/null || echo "")
 
         # Count
         if [ "$is_resolved" = "true" ]; then
@@ -258,7 +260,7 @@ cmd_list() {
         title=$(echo "$body" | head -n 1 | sed 's/\*\*//g')
         echo -e "  ${BLUE}Issue:${NC} $title"
         echo ""
-    done < <(echo "$threads" | jq -r '.[] | [.id, .isResolved, (.comments.nodes[0].author.login // "unknown"), (.comments.nodes[0].body // ""), (.comments.nodes[0].path // "unknown"), (.comments.nodes[0].line // "?"), (.comments.nodes[0].databaseId // "?")] | join("|")')
+    done < <(echo "$threads" | jq -r '.[] | [.id, .isResolved, (.comments.nodes[0].author.login // "unknown"), ((.comments.nodes[0].body // "") | @base64), (.comments.nodes[0].path // "unknown"), (.comments.nodes[0].line // "?"), (.comments.nodes[0].databaseId // "?")] | join("\t")')
 
     echo -e "\n${YELLOW}═══════════════════════════════════════${NC}"
     echo -e "${BLUE}Statistics for PR #$pr_number:${NC}"
