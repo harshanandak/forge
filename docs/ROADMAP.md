@@ -3,7 +3,7 @@
 **Comprehensive implementation plan for transforming Forge into a fully automated, orchestrated workflow system.**
 
 **Plan Created**: 2026-02-10
-**Status**: Phase 0 (PR0) - In Progress
+**Status**: Phase 1 (PR1) - In Progress | PR0 ✅ Completed
 **Timeline**: 3-4 weeks total
 **Strategy**: Quick wins first → Build testing foundation → Add automation → Enable extensibility
 
@@ -79,8 +79,8 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 | PR | Depends On | Blocks | Can Start When |
 |----|------------|--------|----------------|
-| PR0 | None | PR1 | ✅ Ready now |
-| PR1 | PR0 | PR2 | After PR0 merged |
+| PR0 | None | PR1 | ✅ **MERGED** (2026-02-12) |
+| PR1 | PR0 | PR2 | ✅ **Ready now** |
 | PR2 | PR1 | PR3 | After PR1 merged |
 | PR3 | PR2 | PR4 | After PR2 merged |
 | PR4 | PR3 | PR5, PR6 | After PR3 merged |
@@ -96,7 +96,8 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 ### **PR0: Architecture Simplification** 🎯
 **Branch**: `feat/pr0-agent-simplification`
 **Beads Issue**: `forge-wp2`
-**Status**: ✅ In Progress
+**PR**: #26
+**Status**: ✅ **COMPLETED & MERGED** (2026-02-12)
 **Timeline**: 2-3 days
 **Type**: `refactor`
 **Impact**: Critical - Foundation for all subsequent PRs

@@ -15,7 +15,7 @@ Ship features with confidence using a 9-stage TDD-first workflow for AI coding a
 
 ✅ **TDD-First**: Write tests before code
 ✅ **Research-First**: Understand before building
-✅ **Universal**: Works with 11+ AI agents
+✅ **Multi-Agent**: Universal AGENTS.md works with 8 agents
 
 ---
 
@@ -91,37 +91,42 @@ bunx forge setup
 
 ## Supported AI Agents
 
-Works with **11+ AI coding agents**:
+Works with **8 AI coding agents** via universal AGENTS.md:
 
-| Agent | Status | Setup Time |
-|-------|--------|------------|
-| **Claude Code** | ✅ Full support | 30 seconds |
-| **Cursor** | ✅ Full support | 30 seconds |
-| **Windsurf** | ✅ Full support | 30 seconds |
-| **GitHub Copilot** | ✅ Full support | 30 seconds |
-| **Google Antigravity** | ✅ Full support | 30 seconds |
-| **Kilo Code** | ✅ Full support | 30 seconds |
-| **OpenCode** | ✅ Full support | 30 seconds |
-| **Continue** | ✅ Full support | 30 seconds |
-| **Cline** | ✅ Full support | 30 seconds |
-| **Roo Code** | ✅ Full support | 30 seconds |
-| **Aider** | ✅ Full support | 30 seconds |
+### Tier 1 (Primary Support)
 
-**Setup for specific agents**:
+| Agent | Features | Setup Time |
+|-------|----------|------------|
+| **Claude Code** | Custom slash commands, .claude/ directory | 30 seconds |
+| **GitHub Copilot** | Enterprise support, .github/copilot-instructions.md | 30 seconds |
+| **Kilo Code** | Auto failure recovery, .kilo.md | 30 seconds |
+| **Cursor** | Native modes (Plan/Ask/Debug), .cursor/rules/ | 30 seconds |
+| **Aider** | Git-integrated, terminal-native, .aider.conf.yml | 30 seconds |
+
+### Tier 2 (Optional Support)
+
+| Agent | Features | Setup Time |
+|-------|----------|------------|
+| **OpenCode** | Flexible, opencode.json | 30 seconds |
+| **Goose** | Model flexibility, open-source | 30 seconds |
+| **Antigravity** | Google-backed, early preview | 30 seconds |
+
+**Quick setup** (auto-detects agents):
 ```bash
-bunx forge setup --agents claude,cursor,windsurf
+bunx forge setup
 ```
 
-**Setup for all agents**:
+**Setup for specific agent**:
+```bash
+bunx forge setup --agent=copilot     # GitHub Copilot
+bunx forge setup --agent=cursor      # Cursor IDE
+bunx forge setup --agent=kilo        # Kilo Code
+bunx forge setup --agent=aider       # Aider
+```
+
+**Setup for all Tier 1 agents**:
 ```bash
 bunx forge setup --all
-```
-
-**Enhanced setup options** (v1.6.0):
-```bash
-bunx forge setup --merge=smart       # Intelligent merge for existing files
-bunx forge setup --type=critical     # Set workflow profile
-bunx forge setup --interview         # Gather project context
 ```
 
 → [Agent-specific setup instructions](docs/SETUP.md)
