@@ -5,8 +5,9 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 
 // Modules under test
-const { detectProjectMetadata, detectInstalledAgents } = require('../lib/project-discovery');
+const { detectInstalledAgents } = require('../../lib/project-discovery');
 const {
+  detectProjectMetadata,
   generateAgentsMd,
   generateCopilotConfig,
   generateCursorConfig,
@@ -16,14 +17,14 @@ const {
   generateArchitectureDoc,
   generateConfigurationDoc,
   generateMcpSetupDoc
-} = require('../lib/agents-config');
+} = require('../../lib/agents-config');
 const {
   saveSetupState,
   loadSetupState,
   isSetupComplete,
   getNextStep,
   markStepComplete
-} = require('../lib/setup');
+} = require('../../lib/setup');
 
 describe('E2E: Full setup workflow', () => {
   let tempDir;
@@ -167,11 +168,16 @@ describe('E2E: Full setup workflow', () => {
         '# Claude Code'
       );
 
+      await fs.promises.writeFile(
+        path.join(tempDir, '.github', 'copilot-instructions.md'),
+        '# Copilot Instructions'
+      );
+
       // Step 2: Detect agents
       const agents = await detectInstalledAgents(tempDir);
 
       assert.ok(agents.includes('claude'), 'Should detect Claude Code');
-      assert.ok(agents.includes('copilot'), 'Should detect GitHub Copilot (.github exists)');
+      assert.ok(agents.includes('copilot'), 'Should detect GitHub Copilot');
       assert.ok(agents.includes('cursor'), 'Should detect Cursor');
 
       // Step 3: Generate configs for detected agents
