@@ -68,21 +68,68 @@ Greptile provides TWO types of feedback:
 1. **Inline comments** on specific code lines
 2. **Summary** with overall recommendations
 
-#### 3A. Check Greptile Inline Comments
+**IMPORTANT**: Use the **systematic Greptile resolution process** documented in `.claude/rules/greptile-review-process.md`. This process has been standardized to ensure:
+- All threads are replied to directly (not as separate PR comments)
+- All threads are marked as resolved after fixing
+- No manual tracking overhead for maintainers
+
+#### 3A. Check Greptile Inline Comments (Use Systematic Process)
+
+**Step 1: List all unresolved threads**
 ```bash
-# View all PR comments (includes Greptile inline comments)
-gh pr view <pr-number> --comments --json comments
+bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
 ```
 
-For each Greptile inline comment:
-- **What Greptile does**: AI code review bot that provides context-aware suggestions
-- **How it helps**: Catches bugs, suggests improvements, identifies security issues, recommends best practices
+This shows:
+- Thread ID (for resolving)
+- Comment ID (for replying)
+- File path and line number
+- Issue description
 
-Categorize each comment:
-- **Valid**: Should be implemented (security issue, bug, clear improvement)
-- **Invalid**: Greptile misunderstood context
-- **Conflicting**: Contradicts research decisions with good reason
-- **Out of scope**: Valid but not for this PR
+**Step 2: For EACH unresolved thread:**
+
+1. **Understand the issue**
+   - Read the comment carefully
+   - Check the file and line number
+
+2. **Categorize the comment**:
+   - **Valid**: Should be implemented (security issue, bug, clear improvement)
+   - **Invalid**: Greptile misunderstood context
+   - **Conflicting**: Contradicts research decisions with good reason
+   - **Out of scope**: Valid but not for this PR
+
+3. **Fix the issue** (if valid)
+   - Make code changes
+   - Commit with clear message
+
+4. **Reply and resolve** (for ALL comments, even invalid ones)
+   ```bash
+   # For valid issues (fixed):
+   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+     "✅ Fixed: [description]
+
+     Changed: [what was changed]
+     Reason: [why this fixes the issue]
+     Commit: [commit-sha]"
+
+   # For invalid/conflicting issues:
+   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+     "This approach is correct because:
+     - Reasoning: [from research doc]
+     - Evidence: [link to research source]
+     - Alternative considered: [what Greptile suggested]
+     - Why rejected: [specific reason]
+
+     See: docs/research/<feature-slug>.md (Decision #X)"
+   ```
+
+**Step 3: Verify all resolved**
+```bash
+bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+```
+Should show: "✓ All Greptile threads resolved!"
+
+**See complete process**: `.claude/rules/greptile-review-process.md`
 
 #### 3B. Check Greptile Summary
 ```bash
@@ -165,38 +212,31 @@ git push
 # Actions will auto-rerun
 ```
 
-For **Greptile inline comments** (Valid):
+For **Greptile inline comments** (Use Systematic Script):
 ```bash
-# Fix the issue
-# Reply to inline comment (NOT separate comment)
-gh pr comment <pr-number> --body-file - <<EOF
-**Addressing comment on <file>:<line>**
+# Use the standardized Greptile resolution script
+# See .claude/rules/greptile-review-process.md for complete process
 
-✓ Fixed: [description of change]
-Commit: <commit-sha>
+# For valid comments (fixed):
+bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+  "✅ Fixed: [description]
 
-[Optional: reasoning if decision was reconsidered]
-EOF
+  Changed: [what was changed]
+  Reason: [why this fixes the issue]
+  Commit: [commit-sha]"
 
-# Mark comment as resolved (via GitHub web or API)
-```
+# For invalid/conflicting comments:
+bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+  "This approach is correct because:
+  - Reasoning: [from research doc]
+  - Evidence: [link to research source]
+  - Alternative considered: [what Greptile suggested]
+  - Why rejected: [specific reason]
 
-For **Greptile inline comments** (Invalid/Conflicting):
-```bash
-# Reply with reasoning
-gh pr comment <pr-number> --body-file - <<EOF
-**Re: comment on <file>:<line>**
+  See: docs/research/<feature-slug>.md (Decision #X)"
 
-This approach is correct because:
-- Reasoning: [from research doc]
-- Evidence: [link to research source]
-- Alternative considered: [what Greptile suggested]
-- Why rejected: [specific reason]
-
-See: docs/research/<feature-slug>.md (Decision #X)
-EOF
-
-# Mark comment as resolved
+# Verify all threads resolved:
+bash .claude/scripts/greptile-resolve.sh stats <pr-number>
 ```
 
 For **Greptile summary recommendations**:
