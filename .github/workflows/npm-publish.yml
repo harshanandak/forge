@@ -21,7 +21,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      - run: bun install
       - run: bun test
 
   publish-npm:
@@ -39,7 +39,7 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org/
-      - run: bun install --frozen-lockfile
+      - run: bun install
       # Verify package contents before publishing (no build needed - pure JS package)
       - name: Verify package contents
         run: npm pack --dry-run
