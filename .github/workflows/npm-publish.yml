@@ -40,6 +40,9 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org/
       - run: bun install
+      # Verify package contents before publishing (no build needed - pure JS package)
+      - name: Verify package contents
+        run: npm pack --dry-run
       - run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}

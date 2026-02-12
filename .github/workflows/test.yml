@@ -9,7 +9,7 @@ on:
       - 'test/**'
       - 'test-env/**'
       - 'package.json'
-      - '.github/workflows/test.yml'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'bin/**'
@@ -17,7 +17,7 @@ on:
       - 'test/**'
       - 'test-env/**'
       - 'package.json'
-      - '.github/workflows/test.yml'
+      - '.github/workflows/**'
   workflow_dispatch:  # Allow manual workflow runs
 
 # Limit GITHUB_TOKEN permissions to minimum required
@@ -45,7 +45,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
