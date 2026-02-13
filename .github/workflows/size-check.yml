@@ -10,6 +10,9 @@ jobs:
   size-check:
     name: Check Package Size
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -60,8 +63,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const sizeMB = '${{ steps.size.outputs.size_mb }}';
-            const sizeKB = '${{ steps.size.outputs.size_kb }}';
+            const sizeMB = parseInt('${{ steps.size.outputs.size_mb }}', 10);
+            const sizeKB = parseInt('${{ steps.size.outputs.size_kb }}', 10);
             const threshold = 10;
 
             const body = `## 📦 Package Size Report
@@ -78,7 +81,7 @@ jobs:
             ` : ''}
             `;
 
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
