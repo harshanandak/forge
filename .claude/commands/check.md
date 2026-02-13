@@ -14,7 +14,15 @@ This command validates all code before creating a pull request.
 /check
 ```
 
+Or use the unified validation script:
+
+```bash
+bun run check    # Runs all checks automatically
+```
+
 ## What This Command Does
+
+**Quick Start**: The unified `bun run check` command (implemented in `scripts/check.sh`) automatically runs all validation steps in sequence. See individual steps below for details.
 
 ### Step 1: Type Check
 ```bash
