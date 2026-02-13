@@ -2,7 +2,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 
 describe('scripts/check.sh', () => {
   const checkScriptPath = path.join(__dirname, '..', 'scripts', 'check.sh');
@@ -35,24 +34,9 @@ describe('scripts/check.sh', () => {
     });
   });
 
-  describe('Exit codes', () => {
-    test('should exit 0 when all checks pass', () => {
-      // This test assumes all checks are passing in CI
-      // If not, skip this test in CI
-      const result = spawnSync('bash', ['scripts/check.sh'], {
-        cwd: path.join(__dirname, '..'),
-        stdio: 'pipe',
-        env: { ...process.env, CI: 'true' }
-      });
-
-      if (result.status === 0) {
-        assert.ok(true, 'Script should exit 0 on success');
-      } else {
-        // If tests fail, we expect non-zero exit
-        assert.ok(result.status > 0, 'Failed checks should return non-zero exit code');
-      }
-    });
-  });
+  // Note: Exit code testing removed to avoid recursion
+  // (check.sh runs all tests including this test file)
+  // Manual verification: Run `bun run check` separately
 
   describe('Check orchestration', () => {
     test('should run checks in correct order', () => {
