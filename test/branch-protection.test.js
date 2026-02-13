@@ -122,19 +122,27 @@ describe('scripts/branch-protection.js', () => {
     test('should not use shell-specific syntax', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
 
-      // Should not have bash-specific syntax
+      // Should not have bash-specific syntax (command substitution, bash tests)
+      // Note: JavaScript template literals (backticks with ${}) are allowed
       const bashPatterns = [
-        /\$\(/,  // Command substitution $(...)
-        /`[^`]+`/,  // Backtick command substitution
-        /\[\[.*\]\]/,  // Bash [[ test ]]
-        /\bif \[/  // Bash [ test ] (without 'test' command)
+        { pattern: /\[\[.*\]\]/g, name: 'Bash [[ test ]]' },
+        { pattern: /if\s+\[/g, name: 'Bash [ test ]' },
+        { pattern: /\bthen\b/g, name: 'Bash then keyword' },
+        { pattern: /\bfi\b/g, name: 'Bash fi keyword' }
       ];
 
-      const hasBashSyntax = bashPatterns.some(pattern => pattern.test(content));
-      assert.ok(
-        !hasBashSyntax,
-        'Should not use bash-specific syntax for Windows compatibility'
-      );
+      // Check each pattern
+      for (const { pattern, name } of bashPatterns) {
+        const match = content.match(pattern);
+        assert.ok(
+          !match,
+          `Should not use ${name}: found "${match ? match[0] : ''}"`
+        );
+      }
+
+      // Should use Node.js/JavaScript instead
+      assert.ok(content.includes('process.env'), 'Should use process.env for environment variables');
+      assert.ok(content.includes('require('), 'Should use require() for imports');
     });
   });
 

@@ -16,23 +16,9 @@ pre-commit:
 pre-push:
   commands:
     # 1. Block direct push to main/master (dual-layer protection)
+    # Uses Node.js for cross-platform compatibility (Windows, macOS, Linux)
     branch-protection:
-      run: |
-        branch=$(git branch --show-current)
-        if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
-          echo ""
-          echo "🚫 Direct push to main/master blocked!"
-          echo ""
-          echo "Please use the feature branch workflow:"
-          echo "  1. git checkout -b feat/your-feature"
-          echo "  2. Make changes and commit"
-          echo "  3. git push -u origin feat/your-feature"
-          echo "  4. Create PR: gh pr create"
-          echo ""
-          echo "Emergency bypass: LEFTHOOK=0 git push"
-          echo ""
-          exit 1
-        fi
+      run: node scripts/branch-protection.js
       tags: protection
 
     # 2. ESLint check (blocks on errors, warnings allowed)
