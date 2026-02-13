@@ -1,0 +1,89 @@
+name: Package Size Monitor
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  size-check:
+    name: Check Package Size
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Calculate package size
+        id: size
+        run: |
+          # Calculate size of published package files
+          SIZE=$(du -sb --apparent-size . --exclude=node_modules --exclude=.git --exclude=test --exclude=test-env | awk '{print $1}')
+          SIZE_KB=$((SIZE / 1024))
+          SIZE_MB=$((SIZE_KB / 1024))
+
+          echo "Package size: ${SIZE_MB}MB (${SIZE_KB}KB)"
+          echo "size_bytes=$SIZE" >> $GITHUB_OUTPUT
+          echo "size_kb=$SIZE_KB" >> $GITHUB_OUTPUT
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
+
+      - name: Check size threshold
+        run: |
+          SIZE_MB=${{ steps.size.outputs.size_mb }}
+          THRESHOLD_MB=10
+
+          echo "📦 Package size: ${SIZE_MB}MB"
+          echo "🎯 Threshold: ${THRESHOLD_MB}MB"
+
+          if [ $SIZE_MB -gt $THRESHOLD_MB ]; then
+            echo "⚠️ Warning: Package size (${SIZE_MB}MB) exceeds threshold (${THRESHOLD_MB}MB)"
+            echo "Consider:"
+            echo "  - Removing unnecessary files"
+            echo "  - Adding more patterns to .npmignore"
+            echo "  - Optimizing assets and dependencies"
+            exit 1
+          else
+            echo "✅ Package size is within threshold"
+          fi
+
+      - name: Comment PR with size
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sizeMB = parseInt('${{ steps.size.outputs.size_mb }}', 10);
+            const sizeKB = parseInt('${{ steps.size.outputs.size_kb }}', 10);
+            const threshold = 10;
+
+            const body = `## 📦 Package Size Report
+
+            **Size:** ${sizeMB}MB (${sizeKB}KB)
+            **Threshold:** ${threshold}MB
+            **Status:** ${sizeMB > threshold ? '⚠️ Exceeds threshold' : '✅ Within threshold'}
+
+            ${sizeMB > threshold ? `
+            ### Recommendations:
+            - Review added files and dependencies
+            - Check .npmignore for excluded files
+            - Consider optimizing large assets
+            ` : ''}
+            `;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
