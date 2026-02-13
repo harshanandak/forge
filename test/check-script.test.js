@@ -83,11 +83,10 @@ describe('scripts/check.sh', () => {
       assert.ok(echoCount >= 4, 'Should have progress messages for each check');
     });
 
-    test('should use colors for better readability', function() {
+    test('should use colors for better readability', () => {
       // Skip color checks on CI environments that don't support it
       if (process.env.CI) {
-        this.skip();
-        return;
+        return; // Skip in CI
       }
 
       const content = fs.readFileSync(checkScriptPath, 'utf-8');

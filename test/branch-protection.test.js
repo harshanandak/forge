@@ -96,10 +96,9 @@ describe('scripts/branch-protection.js', () => {
   });
 
   describe('Cross-platform execution', () => {
-    test('should work on Windows (current platform)', function() {
+    test('should work on Windows (current platform)', () => {
       if (process.platform !== 'win32') {
-        this.skip();
-        return;
+        return; // Skip on non-Windows platforms
       }
 
       // Test script can be executed on Windows
