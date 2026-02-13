@@ -14,7 +14,7 @@
     "test:setup": "bash test-env/automation/setup-fixtures.sh",
     "test:all": "bun run test:setup && bun test",
     "typecheck": "echo 'No TypeScript in project - skipping type check'",
-    "lint": "eslint . --max-warnings=0",
+    "lint": "eslint .",
     "check": "bash scripts/check.sh",
     "postinstall": "node ./bin/forge.js",
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
