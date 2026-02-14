@@ -1,0 +1,9 @@
+{
+  "name": "existing-project-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Existing project fixture with AGENTS.md for E2E testing",
+  "scripts": {
+    "test": "echo \"Test\""
+  }
+}
