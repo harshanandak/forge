@@ -7,6 +7,8 @@
 [![ESLint](https://github.com/harshanandak/forge/actions/workflows/eslint.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/eslint.yml)
 [![Greptile Quality Gate](https://github.com/harshanandak/forge/actions/workflows/greptile-quality-gate.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/greptile-quality-gate.yml)
 [![Package Size](https://github.com/harshanandak/forge/actions/workflows/size-check.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/size-check.yml)
+[![CodeQL](https://github.com/harshanandak/forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/codeql.yml)
+[![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](https://github.com/harshanandak/forge/blob/master/SECURITY.md)
 
 Ship features with confidence using a 9-stage TDD-first workflow for AI coding agents.
 

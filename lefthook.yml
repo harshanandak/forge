@@ -5,6 +5,12 @@
 #   git commit --no-verify  (skip pre-commit)
 #   LEFTHOOK=0 git push     (skip pre-push)
 
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx commitlint --edit {1}
+      tags: commitlint
+
 pre-commit:
   commands:
     tdd-check:

@@ -75,6 +75,234 @@ Branch name pattern: `main`
    └─ Prevents accidental branch deletion
 ```
 
+#### **Commit Signing (Recommended)**
+
+```
+✅ Require signed commits
+   └─ All commits must be signed with GPG, SSH, or S/MIME
+   └─ Provides cryptographic proof of commit authorship
+   └─ Prevents commit spoofing and impersonation
+```
+
+**Note**: Commit signing is **optional** for solo projects but **highly recommended** for team projects and open-source repositories.
+
+---
+
+## Commit Signing Setup
+
+### Why Sign Commits?
+
+**Without signing**, anyone can impersonate you:
+```bash
+# Attacker can fake your identity:
+git config user.name "Your Name"
+git config user.email "your@email.com"
+git commit -m "malicious code"
+# Appears as YOU in git log and GitHub!
+```
+
+**With signing**, commits are cryptographically verified:
+```bash
+# Your signature proves YOU created this commit
+git commit -S -m "verified change"
+# GitHub shows "Verified" badge ✅
+```
+
+### Setting Up GPG Signing
+
+#### 1. Generate GPG Key
+
+```bash
+# Generate new GPG key
+gpg --full-generate-key
+
+# Select:
+# - Key type: (1) RSA and RSA
+# - Key size: 4096
+# - Expiration: 2y (2 years, recommended)
+# - Name: Your Full Name
+# - Email: your-github@email.com (MUST match GitHub email)
+# - Passphrase: Strong password
+```
+
+#### 2. Get Your GPG Key ID
+
+```bash
+# List GPG keys
+gpg --list-secret-keys --keyid-format=long
+
+# Output shows:
+# sec   rsa4096/YOUR_KEY_ID 2026-02-09 [SC] [expires: 2028-02-09]
+#       LONG_FINGERPRINT
+# uid   [ultimate] Your Name <your@email.com>
+
+# Copy YOUR_KEY_ID (e.g., 3AA5C34371567BD2)
+```
+
+#### 3. Configure Git to Use GPG
+
+```bash
+# Set your GPG key
+git config --global user.signingkey YOUR_KEY_ID
+
+# Enable automatic signing
+git config --global commit.gpgsign true
+
+# Set GPG program (Windows/Linux)
+git config --global gpg.program gpg
+```
+
+#### 4. Add GPG Key to GitHub
+
+```bash
+# Export your public key
+gpg --armor --export YOUR_KEY_ID
+
+# Copy output starting with:
+# -----BEGIN PGP PUBLIC KEY BLOCK-----
+# ... (entire block)
+# -----END PGP PUBLIC KEY BLOCK-----
+```
+
+**Then**:
+1. Go to: [GitHub Settings > SSH and GPG keys](https://github.com/settings/keys)
+2. Click **"New GPG key"**
+3. Paste your public key
+4. Click **"Add GPG key"**
+
+#### 5. Verify Signing Works
+
+```bash
+# Create signed commit
+git commit -S -m "test: verify GPG signing"
+
+# Push to GitHub
+git push
+
+# Check on GitHub - should show "Verified" badge ✅
+```
+
+### Setting Up SSH Signing (Alternative)
+
+GitHub also supports SSH commit signing (simpler than GPG):
+
+#### 1. Generate SSH Key (if you don't have one)
+
+```bash
+ssh-keygen -t ed25519 -C "your@email.com"
+```
+
+#### 2. Configure Git to Use SSH
+
+```bash
+# Set signing format to SSH
+git config --global gpg.format ssh
+
+# Set your SSH key
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+
+# Enable automatic signing
+git config --global commit.gpgsign true
+```
+
+#### 3. Add SSH Key to GitHub
+
+1. Copy your public key:
+   ```bash
+   cat ~/.ssh/id_ed25519.pub
+   ```
+2. Go to: [GitHub Settings > SSH and GPG keys](https://github.com/settings/keys)
+3. Click **"New SSH key"**
+4. Select type: **"Signing Key"**
+5. Paste your public key
+6. Click **"Add SSH key"**
+
+#### 4. Configure Allowed Signers (Required for SSH)
+
+```bash
+# Create allowed signers file
+echo "$(git config --get user.email) $(cat ~/.ssh/id_ed25519.pub)" > ~/.ssh/allowed_signers
+
+# Tell git about it
+git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+```
+
+### Troubleshooting Commit Signing
+
+#### "gpg: signing failed: Inappropriate ioctl for device"
+
+```bash
+# Solution: Set GPG_TTY
+export GPG_TTY=$(tty)
+
+# Add to ~/.bashrc or ~/.zshrc for persistence:
+echo 'export GPG_TTY=$(tty)' >> ~/.bashrc
+```
+
+#### "error: gpg failed to sign the data"
+
+```bash
+# Check GPG key exists
+gpg --list-secret-keys --keyid-format=long
+
+# Test GPG
+echo "test" | gpg --clearsign
+
+# If fails, reinstall GPG
+```
+
+#### "Commits show unverified on GitHub"
+
+**Causes**:
+- Email in GPG key doesn't match GitHub email
+- GPG public key not added to GitHub
+- Expired GPG key
+
+**Fix**:
+```bash
+# Check key email matches GitHub
+gpg --list-keys
+
+# If mismatch, create new key with correct email
+# Then add to GitHub as described above
+```
+
+### Team Commit Signing Policy
+
+For team projects, require all contributors to sign commits:
+
+#### 1. Enable in Branch Protection
+
+Navigate to: `https://github.com/harshanandak/forge/settings/branches`
+
+Enable: **"Require signed commits"**
+
+#### 2. Document in CONTRIBUTING.md
+
+Add to contributor guidelines:
+```markdown
+## Commit Signing Required
+
+All commits must be signed. Setup instructions:
+- GPG: See .github/BRANCH_PROTECTION_GUIDE.md#commit-signing-setup
+- SSH: Simpler alternative, see guide above
+
+Unsigned commits will be rejected by branch protection.
+```
+
+#### 3. Verify Contributions
+
+```bash
+# Check if commits are signed
+git log --show-signature
+
+# Filter for unsigned commits
+git log --format="%H %G?" | grep -v "G$"
+# G = Good signature
+# N = No signature
+# B = Bad signature
+```
+
 ---
 
 ## What Each Setting Does

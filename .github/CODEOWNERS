@@ -1,0 +1,43 @@
+# Code Owners for Forge
+#
+# This file defines individuals or teams that are responsible for code in this repository.
+# Code owners are automatically requested for review when someone opens a pull request
+# that modifies code that they own.
+#
+# Learn more: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+# These owners will be requested for review when someone opens a pull request.
+* @harshanandak
+
+# Core infrastructure (core team)
+/bin/ @harshanandak @forge-core-team
+/lib/ @harshanandak @forge-core-team
+/scripts/ @harshanandak @forge-core-team
+
+# AI agent configuration and workflows (workflow team)
+/.claude/ @harshanandak @forge-workflow-team
+/AGENTS.md @harshanandak @forge-workflow-team
+/CLAUDE.md @harshanandak @forge-workflow-team
+
+# Documentation (documentation team)
+/docs/ @harshanandak @forge-docs-team
+/README.md @harshanandak @forge-docs-team
+/QUICKSTART.md @harshanandak @forge-docs-team
+
+# GitHub workflows and configuration (devops team)
+/.github/ @harshanandak @forge-devops-team
+
+# Testing infrastructure (testing team)
+/test/ @harshanandak @forge-testing-team
+/test-env/ @harshanandak @forge-testing-team
+
+# Package configuration (core team)
+/package.json @harshanandak @forge-core-team
+/bun.lock @harshanandak @forge-core-team
+/lefthook.yml @harshanandak @forge-core-team
+
+# Security-sensitive files (security team)
+/SECURITY.md @harshanandak @forge-security-team
+/.github/workflows/codeql.yml @harshanandak @forge-security-team
+/.github/workflows/eslint.yml @harshanandak @forge-security-team
