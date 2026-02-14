@@ -94,8 +94,23 @@ describe('Code Coverage Configuration', () => {
       const readme = fs.readFileSync(readmePath, 'utf-8');
 
       // Should have coverage badge (shields.io or similar)
-      const hasCoverageBadge = readme.includes('coverage') &&
-                               (readme.includes('badge') || readme.includes('shields.io'));
+      // Extract all badge URLs from markdown
+      const badgeRegex = /!\[.*?\]\((https?:\/\/[^\s)]+)\)/g;
+      const urls = [...readme.matchAll(badgeRegex)].map(match => match[1]);
+
+      // Validate URL comes from trusted badge provider with coverage keyword
+      const hasCoverageBadge = urls.some(url => {
+        try {
+          const urlObj = new URL(url);
+          const isTrustedDomain = urlObj.hostname === 'img.shields.io' ||
+                                 urlObj.hostname === 'shields.io' ||
+                                 urlObj.hostname === 'codecov.io' ||
+                                 urlObj.hostname === 'coveralls.io';
+          return url.includes('coverage') && isTrustedDomain;
+        } catch {
+          return false; // Invalid URL
+        }
+      });
 
       assert.ok(hasCoverageBadge, 'README should have coverage badge');
     });
