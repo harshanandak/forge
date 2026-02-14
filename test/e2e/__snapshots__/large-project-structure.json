@@ -1,7 +1,7 @@
 {
   "files": [
-    "package.json",
-    "README.md"
+    "README.md",
+    "package.json"
   ],
   "directories": [
     "docs",

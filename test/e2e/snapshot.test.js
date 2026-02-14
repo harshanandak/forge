@@ -45,10 +45,10 @@ describe('Snapshot Testing', () => {
       const entries = fs.readdirSync(emptyFixture);
       const snapshotPath = path.join(snapshotsDir, 'empty-project-structure.json');
 
-      // Create or validate snapshot
+      // Create or validate snapshot (sort for cross-platform consistency)
       const structure = {
-        files: entries.filter(e => !fs.statSync(path.join(emptyFixture, e)).isDirectory()),
-        directories: entries.filter(e => fs.statSync(path.join(emptyFixture, e)).isDirectory()),
+        files: entries.filter(e => !fs.statSync(path.join(emptyFixture, e)).isDirectory()).sort(),
+        directories: entries.filter(e => fs.statSync(path.join(emptyFixture, e)).isDirectory()).sort(),
       };
 
       if (!fs.existsSync(snapshotPath)) {
@@ -73,8 +73,8 @@ describe('Snapshot Testing', () => {
       const snapshotPath = path.join(snapshotsDir, 'large-project-structure.json');
 
       const structure = {
-        files: entries.filter(e => !fs.statSync(path.join(largeFixture, e)).isDirectory()),
-        directories: entries.filter(e => fs.statSync(path.join(largeFixture, e)).isDirectory()),
+        files: entries.filter(e => !fs.statSync(path.join(largeFixture, e)).isDirectory()).sort(),
+        directories: entries.filter(e => fs.statSync(path.join(largeFixture, e)).isDirectory()).sort(),
       };
 
       if (!fs.existsSync(snapshotPath)) {
