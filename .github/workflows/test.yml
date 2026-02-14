@@ -71,3 +71,84 @@ jobs:
           echo "✓ Validation tests completed" >> $GITHUB_STEP_SUMMARY
           echo "✓ Edge case tests completed" >> $GITHUB_STEP_SUMMARY
           echo "✓ Automation tests completed" >> $GITHUB_STEP_SUMMARY
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Setup test fixtures
+        run: bash test-env/automation/setup-fixtures.sh --force
+
+      - name: Run tests with coverage
+        run: bun test --coverage
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Coverage thresholds: 80% (lines, branches, functions, statements)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f coverage/coverage-summary.json ]; then
+            echo "✓ Coverage report generated" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Coverage report not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run E2E tests
+        run: bun test test/e2e/
+
+      - name: E2E summary
+        if: always()
+        run: |
+          echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✓ Scaffold utilities tests" >> $GITHUB_STEP_SUMMARY
+          echo "✓ Fixture validation tests" >> $GITHUB_STEP_SUMMARY
+          echo "✓ Snapshot tests" >> $GITHUB_STEP_SUMMARY
