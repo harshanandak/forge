@@ -12,6 +12,7 @@ export default [
       '*.min.js',
       'test-env/fixtures/**',
       'packages/skills/test/fixtures/**',
+      'test/e2e/fixtures/**',
     ],
   },
   // ES Modules (packages/skills and eslint.config.js)
