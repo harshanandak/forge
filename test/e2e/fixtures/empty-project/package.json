@@ -1,0 +1,6 @@
+{
+  "name": "empty-project-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Empty project fixture for E2E testing"
+}

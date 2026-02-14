@@ -1,0 +1,19 @@
+{
+  "name": "large-project-fixture",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Large project fixture for E2E testing",
+  "scripts": {
+    "test": "jest",
+    "build": "webpack",
+    "dev": "webpack-dev-server"
+  },
+  "dependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "webpack": "^5.0.0"
+  }
+}
