@@ -1,0 +1,11 @@
+{
+  "files": [
+    "package.json",
+    "README.md"
+  ],
+  "directories": [
+    "docs",
+    "src",
+    "tests"
+  ]
+}
