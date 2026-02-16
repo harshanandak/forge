@@ -100,6 +100,11 @@ function hasTestFile(sourceFile, stagedFiles) {
     `tests/unit/${basename}.spec${ext}`,
     `tests/integration/${basename}.test${ext}`,
     `tests/integration/${basename}.spec${ext}`,
+    // Mirror source directory structure (lib/commands/foo.js → test/commands/foo.test.js)
+    sourceFile.replace(/^(lib|src)\//, 'test/').replace(ext, `.test${ext}`),
+    sourceFile.replace(/^(lib|src)\//, 'test/').replace(ext, `.spec${ext}`),
+    sourceFile.replace(/^(lib|src)\//, 'tests/').replace(ext, `.test${ext}`),
+    sourceFile.replace(/^(lib|src)\//, 'tests/').replace(ext, `.spec${ext}`),
   ];
 
   // Check if test file exists in staged files or filesystem
@@ -198,7 +203,7 @@ async function main() {
         try {
           execFileSync("git", ["reset", "HEAD", file], { stdio: "inherit" });
           console.log(`  ✓ Unstaged: ${file}`);
-        } catch (error) {
+        } catch (_error) {
           console.error(`  ✗ Failed to unstage: ${file}`);
         }
       });
