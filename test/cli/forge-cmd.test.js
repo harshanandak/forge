@@ -4,6 +4,7 @@ const {
 	parseArgs,
 	isValidCommand,
 	validateArgs,
+	validateSlug,
 	getHelpText,
 } = require('../../bin/forge-cmd.js');
 
@@ -64,6 +65,61 @@ describe('CLI Command Dispatcher', () => {
 		});
 	});
 
+	describe('Security: Slug validation', () => {
+		test('should accept valid slugs', () => {
+			const validSlugs = [
+				'stripe-billing',
+				'user-auth',
+				'api-v2',
+				'test123',
+				'feature-name',
+			];
+
+			for (const slug of validSlugs) {
+				const result = validateSlug(slug);
+				assert.strictEqual(result.valid, true, `${slug} should be valid`);
+			}
+		});
+
+		test('should reject slugs with uppercase letters', () => {
+			const result = validateSlug('Feature-Name');
+			assert.strictEqual(result.valid, false);
+			assert.match(result.error, /lowercase/i);
+		});
+
+		test('should reject slugs with spaces', () => {
+			const result = validateSlug('feature name');
+			assert.strictEqual(result.valid, false);
+			assert.match(result.error, /invalid slug format/i);
+		});
+
+		test('should reject path traversal attempts', () => {
+			const invalidSlugs = [
+				'../../../etc/passwd',
+				'..\\windows\\system32',
+				'test/../evil',
+			];
+
+			for (const slug of invalidSlugs) {
+				const result = validateSlug(slug);
+				assert.strictEqual(result.valid, false, `${slug} should be rejected`);
+			}
+		});
+
+		test('should reject slugs with special characters', () => {
+			const invalidSlugs = [
+				'test;rm -rf /',
+				'test&whoami',
+				'test|cat /etc/passwd',
+			];
+
+			for (const slug of invalidSlugs) {
+				const result = validateSlug(slug);
+				assert.strictEqual(result.valid, false, `${slug} should be rejected`);
+			}
+		});
+	});
+
 	describe('Argument validation', () => {
 		test('should reject research without feature name', () => {
 			const command = 'research';
@@ -101,6 +157,21 @@ describe('CLI Command Dispatcher', () => {
 			const args = ['stripe-billing'];
 			const validation = validateArgs(command, args);
 			assert.strictEqual(validation.valid, true);
+		});
+
+		test('should reject research with invalid slug', () => {
+			const command = 'research';
+			const args = ['Invalid Feature'];
+			const validation = validateArgs(command, args);
+			assert.strictEqual(validation.valid, false);
+			assert.match(validation.error, /invalid slug format/i);
+		});
+
+		test('should reject plan with path traversal attempt', () => {
+			const command = 'plan';
+			const args = ['../../../etc/passwd'];
+			const validation = validateArgs(command, args);
+			assert.strictEqual(validation.valid, false);
 		});
 	});
 

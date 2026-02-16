@@ -71,6 +71,33 @@ function isValidCommand(command) {
 }
 
 /**
+ * Validate slug format (security: prevent path traversal, command injection)
+ * @param {string} slug - Feature slug to validate
+ * @returns {{valid: boolean, error?: string}}
+ */
+function validateSlug(slug) {
+	// Security: Only allow lowercase letters, numbers, and hyphens
+	const slugPattern = /^[a-z0-9-]+$/;
+
+	if (!slugPattern.test(slug)) {
+		return {
+			valid: false,
+			error: `Error: Invalid slug format '${slug}'\n\nSlug must contain only lowercase letters, numbers, and hyphens\nExample: stripe-billing, user-auth, api-v2`,
+		};
+	}
+
+	// Security: Prevent path traversal attempts
+	if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+		return {
+			valid: false,
+			error: `Error: Invalid slug '${slug}'\n\nPath traversal not allowed`,
+		};
+	}
+
+	return { valid: true };
+}
+
+/**
  * Validate command arguments
  * @param {string} command - Command name
  * @param {string[]} args - Command arguments
@@ -85,6 +112,15 @@ function validateArgs(command, args) {
 			valid: false,
 			error: `Error: ${argName} required\n\nUsage: forge ${command} <${argName}>`,
 		};
+	}
+
+	// Security: Validate slug format for slug-based commands
+	const slugCommands = ['research', 'plan'];
+	if (slugCommands.includes(command) && args.length > 0) {
+		const slugValidation = validateSlug(args[0]);
+		if (!slugValidation.valid) {
+			return slugValidation;
+		}
 	}
 
 	return { valid: true };
@@ -176,5 +212,6 @@ module.exports = {
 	parseArgs,
 	isValidCommand,
 	validateArgs,
+	validateSlug,
 	getHelpText,
 };
