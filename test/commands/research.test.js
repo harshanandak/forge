@@ -65,11 +65,9 @@ describe('Research Command - Parallel AI Integration', () => {
 		});
 
 		test.skip('should handle parallel-ai API errors gracefully', async () => {
-			const featureName = 'test-feature';
-
 			// TODO: Implement with mocking in REFACTOR phase
 			// Mock parallel-ai to throw error
-			// const result = await conductResearch(featureName);
+			// const result = await conductResearch('test-feature');
 			// assert.ok(result.error);
 			// assert.ok(result.partialResults);
 		});
@@ -172,12 +170,9 @@ describe('Research Command - Parallel AI Integration', () => {
 		});
 
 		test.skip('should handle file write errors', () => {
-			const featureSlug = 'test-feature';
-			const content = '# Research';
-
 			// TODO: Implement with mocking in REFACTOR phase
 			// Mock fs to throw error
-			// const result = saveResearchDoc(featureSlug, content);
+			// const result = saveResearchDoc('test-feature', '# Research');
 			// assert.strictEqual(result.success, false);
 			// assert.ok(result.error);
 		});

@@ -70,15 +70,31 @@ function isValidCommand(command) {
 	return VALID_COMMANDS.includes(command);
 }
 
+const MIN_SLUG_LENGTH = 3;
+const MAX_SLUG_LENGTH = 100;
+
 /**
  * Validate slug format (security: prevent path traversal, command injection)
  * @param {string} slug - Feature slug to validate
  * @returns {{valid: boolean, error?: string}}
  */
 function validateSlug(slug) {
+	// Security: Enforce length limits to prevent resource exhaustion (OWASP A01)
+	if (!slug || slug.length < MIN_SLUG_LENGTH) {
+		return {
+			valid: false,
+			error: `Error: Slug too short (minimum ${MIN_SLUG_LENGTH} characters)\n\nExample: stripe-billing, user-auth, api-v2`,
+		};
+	}
+	if (slug.length > MAX_SLUG_LENGTH) {
+		return {
+			valid: false,
+			error: `Error: Slug too long (maximum ${MAX_SLUG_LENGTH} characters)`,
+		};
+	}
+
 	// Security: Only allow lowercase letters, numbers, and hyphens
 	const slugPattern = /^[a-z0-9-]+$/;
-
 	if (!slugPattern.test(slug)) {
 		return {
 			valid: false,

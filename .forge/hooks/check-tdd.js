@@ -105,6 +105,11 @@ function hasTestFile(sourceFile, stagedFiles) {
     sourceFile.replace(/^(lib|src)\//, 'test/').replace(ext, `.spec${ext}`),
     sourceFile.replace(/^(lib|src)\//, 'tests/').replace(ext, `.test${ext}`),
     sourceFile.replace(/^(lib|src)\//, 'tests/').replace(ext, `.spec${ext}`),
+    // bin/ directory (bin/forge-cmd.js → test/cli/forge-cmd.test.js)
+    sourceFile.replace(/^bin\//, 'test/cli/').replace(ext, `.test${ext}`),
+    sourceFile.replace(/^bin\//, 'test/cli/').replace(ext, `.spec${ext}`),
+    sourceFile.replace(/^bin\//, 'test/bin/').replace(ext, `.test${ext}`),
+    sourceFile.replace(/^bin\//, 'test/bin/').replace(ext, `.spec${ext}`),
   ];
 
   // Check if test file exists in staged files or filesystem
