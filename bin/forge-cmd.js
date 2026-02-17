@@ -7,7 +7,6 @@
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
-const path = require('path');
 
 // Command handlers - connected to lib/commands/
 const HANDLERS = {
