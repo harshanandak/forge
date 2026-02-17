@@ -32,7 +32,7 @@ function loadConfig() {
 
   try {
     return JSON.parse(readFileSync(configPath, 'utf8'));
-  } catch (err) {
+  } catch (_err) {
     console.warn(chalk.yellow('Warning: Failed to parse config file, using defaults'));
     return {
       apiKey: null,

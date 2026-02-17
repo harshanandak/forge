@@ -23,7 +23,7 @@ export async function listCommand(options) {
     // Filter by agent if specified
     if (options.agent) {
       skills = skills.filter(([_, skill]) =>
-        skill.agents && skill.agents.includes(options.agent)
+        skill.agents?.includes(options.agent)
       );
     }
 

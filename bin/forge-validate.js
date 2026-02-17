@@ -16,7 +16,7 @@
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
-const path = require("node:path");
+// const path = require("node:path"); // Currently unused
 
 // Validation results
 let checks = [];

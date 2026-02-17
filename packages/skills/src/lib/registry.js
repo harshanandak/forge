@@ -20,8 +20,7 @@ function getRegistryUrl() {
     if (config.registryUrl) {
       return config.registryUrl;
     }
-  } catch (err) {
-    // Config file doesn't exist or is invalid - continue
+  } catch (_err) { // NOSONAR - config file absence is normal; errors mean use defaults
   }
 
   // 2. Check environment variable
@@ -49,7 +48,7 @@ function getApiKey() {
     const configPath = join(process.cwd(), '.skills', '.config.json');
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
     return config.apiKey || null;
-  } catch (err) {
+  } catch (_err) {
     return null;
   }
 }
@@ -275,7 +274,7 @@ export async function checkConnection() {
   try {
     await apiRequest('/health');
     return true;
-  } catch (err) {
+  } catch (_err) {
     return false;
   }
 }

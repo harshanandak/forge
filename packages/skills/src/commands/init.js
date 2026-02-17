@@ -10,15 +10,17 @@ export async function initCommand() {
   const registryPath = join(skillsDir, '.registry.json');
 
   // Create .skills/ directory
-  if (!existsSync(skillsDir)) {
+  if (existsSync(skillsDir)) {
+    console.log('⚠ Skills directory already exists');
+  } else {
     mkdirSync(skillsDir, { recursive: true });
     console.log('✓ Created .skills/ directory');
-  } else {
-    console.log('⚠ Skills directory already exists');
   }
 
   // Create .registry.json if doesn't exist
-  if (!existsSync(registryPath)) {
+  if (existsSync(registryPath)) {
+    console.log('⚠ Registry already exists');
+  } else {
     const registry = {
       version: '1.0.0',
       skills: {},
@@ -32,8 +34,6 @@ export async function initCommand() {
 
     writeFileSync(registryPath, JSON.stringify(registry, null, 2));
     console.log('✓ Created .registry.json');
-  } else {
-    console.log('⚠ Registry already exists');
   }
 
   console.log('\n✅ Skills registry initialized');
