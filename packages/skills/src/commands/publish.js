@@ -28,7 +28,7 @@ async function loadMetadata(metaPath, content) {
   }
 
   // Extract from SKILL.md frontmatter
-  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  const frontmatterMatch = /^---\n([\s\S]*?)\n---/.exec(content);
   if (!frontmatterMatch) {
     throw new Error('SKILL.md frontmatter not found');
   }
