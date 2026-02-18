@@ -1,7 +1,7 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
-const path = require('path');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 const {
 	parseArgs,
 	isValidCommand,
@@ -98,7 +98,7 @@ describe('CLI Command Dispatcher', () => {
 		test('should reject path traversal attempts', () => {
 			const invalidSlugs = [
 				'../../../etc/passwd',
-				'..\\windows\\system32',
+				String.raw`..\\windows\\system32`,
 				'test/../evil',
 			];
 

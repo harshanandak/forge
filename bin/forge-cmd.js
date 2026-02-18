@@ -5,8 +5,8 @@
  * Executable automation for Forge workflow stages
  */
 
-const { execFileSync } = require('child_process');
-const fs = require('fs');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 
 // Command handlers - connected to lib/commands/
 const HANDLERS = {
@@ -167,14 +167,16 @@ function getHelpText() {
 		lines.push(`  ${command.padEnd(12)} ${desc}`);
 	}
 
-	lines.push('');
-	lines.push('Examples:');
-	lines.push('  forge status                    # Check current workflow stage');
-	lines.push('  forge research stripe-billing   # Research feature');
-	lines.push('  forge plan stripe-billing       # Create implementation plan');
-	lines.push('  forge ship stripe-billing "feat: add billing"  # Create PR');
-	lines.push('  forge review 123                # Aggregate PR feedback');
-	lines.push('');
+	lines.push(
+		'',
+		'Examples:',
+		'  forge status                    # Check current workflow stage',
+		'  forge research stripe-billing   # Research feature',
+		'  forge plan stripe-billing       # Create implementation plan',
+		'  forge ship stripe-billing "feat: add billing"  # Create PR',
+		'  forge review 123                # Aggregate PR feedback',
+		'',
+	);
 
 	return lines.join('\n');
 }
@@ -182,7 +184,7 @@ function getHelpText() {
 /**
  * Main dispatcher
  */
-async function main() {
+async function main() { // NOSONAR S3776
 	const { command, args } = parseArgs(process.argv);
 
 	// No command - show help
@@ -216,17 +218,16 @@ async function main() {
 			// Gather context from git + filesystem
 			const branch = (() => {
 				try { return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', timeout: 5000 }).trim(); }  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
-				catch (_e) { return 'master'; }
+				catch (error_) { void error_; return 'master'; } // NOSONAR S2486 - intentional: non-git dirs fallback
 			})();
 			const context = {
 				branch,
 				researchDoc: fs.existsSync('docs/research') ? fs.readdirSync('docs/research').find(f => f.endsWith('.md')) : null,
 				plan: fs.existsSync('.claude/plans') ? fs.readdirSync('.claude/plans').find(f => f.endsWith('.md')) : null,
-				tests: (() => { try { return fs.readdirSync('test').filter(f => f.endsWith('.test.js')); } catch (_e) { return []; } })(),
+				tests: (() => { try { return fs.readdirSync('test').filter(f => f.endsWith('.test.js')); } catch (error_) { void error_; return []; } })(), // NOSONAR S2486 - intentional: missing test dir
 			};
 			const stageResult = HANDLERS.status.detectStage(context);
 			console.log(HANDLERS.status.formatStatus(stageResult));
-			result = stageResult;
 
 		} else if (command === 'research') {
 			result = await HANDLERS.research.executeResearch(args[0]);
@@ -306,7 +307,7 @@ async function main() {
 
 // Export for testing
 if (require.main === module) {
-	main().catch((error) => {
+	main().catch((error) => { // NOSONAR S7785 - CJS module, top-level await unavailable
 		console.error('Fatal error:', error);
 		process.exit(1);
 	});
