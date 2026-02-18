@@ -45,13 +45,13 @@ const COMMAND_DESCRIPTIONS = {
 const REQUIRED_ARGS = {
 	research: ['feature-name'],
 	plan: ['feature-slug'],
+	ship: ['feature-slug', 'title'],
 	review: ['pr-number'],
 	merge: ['pr-number'],
 	// Other commands don't require arguments
 	status: [],
 	dev: [],
 	check: [],
-	ship: [],
 	verify: [],
 };
 
@@ -115,14 +115,6 @@ function validateSlug(slug) {
 		};
 	}
 
-	// Security: Prevent path traversal attempts
-	if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
-		return {
-			valid: false,
-			error: `Error: Invalid slug '${slug}'\n\nPath traversal not allowed`,
-		};
-	}
-
 	return { valid: true };
 }
 
@@ -179,7 +171,7 @@ function getHelpText() {
 	lines.push('  forge status                    # Check current workflow stage');
 	lines.push('  forge research stripe-billing   # Research feature');
 	lines.push('  forge plan stripe-billing       # Create implementation plan');
-	lines.push('  forge ship                      # Create PR');
+	lines.push('  forge ship stripe-billing "feat: add billing"  # Create PR');
 	lines.push('  forge review 123                # Aggregate PR feedback');
 	lines.push('');
 
