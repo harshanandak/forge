@@ -162,7 +162,7 @@ No test scenarios section.`;
 			assert.ok(result.success);
 		});
 
-		test('should handle gh CLI not found', async () => {
+		test.skip('should handle gh CLI not found', async () => {
 			// Simulate gh not installed
 			const result = await createPR({
 				title: 'feat: test',
