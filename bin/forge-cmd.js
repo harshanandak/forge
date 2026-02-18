@@ -127,16 +127,16 @@ function validateSlug(slug) {
 function validateArgs(command, args) {
 	const required = REQUIRED_ARGS[command] || [];
 
-	if (required.length > 0 && args.length === 0) {
-		const argName = required[0];
+	if (required.length > 0 && args.length < required.length) {
+		const missing = required.slice(args.length);
 		return {
 			valid: false,
-			error: `Error: ${argName} required\n\nUsage: forge ${command} <${argName}>`,
+			error: `Error: ${missing[0]} required\n\nUsage: forge ${command} <${required.join('> <')}>`,
 		};
 	}
 
 	// Security: Validate slug format for slug-based commands
-	const slugCommands = ['research', 'plan'];
+	const slugCommands = ['research', 'plan', 'ship'];
 	if (slugCommands.includes(command) && args.length > 0) {
 		const slugValidation = validateSlug(args[0]);
 		if (!slugValidation.valid) {
