@@ -209,7 +209,8 @@ async function main() { // NOSONAR S3776
 
 	// Execute command
 	try {
-		console.log(`Executing: forge ${command}${args.length > 0 ? ' ' + args.join(' ') : ''}`);
+		const quotedArgs = args.map(a => `"${a.replaceAll('"', '\\"')}"`);
+		console.log(`Executing: forge ${command}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`);
 		console.log('');
 
 		let result;
@@ -277,7 +278,6 @@ async function main() { // NOSONAR S3776
 			}
 
 		} else if (command === 'ship') {
-			const positionalArgs = args.filter(a => !a.startsWith('--'));
 			const featureSlug = positionalArgs[0];
 			const title = positionalArgs[1];
 			const dryRun = args.includes('--dry-run');
