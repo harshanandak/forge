@@ -256,7 +256,12 @@ async function main() {
 
 		} else if (command === 'dev') {
 			const featureName = args[0] || 'feature';
+			const VALID_PHASES = ['RED', 'GREEN', 'REFACTOR'];
 			const phase = args[1] ? args[1].toUpperCase() : undefined;
+			if (phase && !VALID_PHASES.includes(phase)) {
+				console.error(`✗ Invalid phase '${args[1]}'. Valid phases: red, green, refactor`);
+				process.exit(1);
+			}
 			result = await HANDLERS.dev.executeDev(featureName, { phase });
 			if (result.success) {
 				console.log(`✓ TDD Phase: ${result.phase || result.detectedPhase}`);
@@ -277,8 +282,9 @@ async function main() {
 			}
 
 		} else if (command === 'ship') {
-			const featureSlug = args[0];
-			const title = args[1];
+			const positionalArgs = args.filter(a => !a.startsWith('--'));
+			const featureSlug = positionalArgs[0];
+			const title = positionalArgs[1];
 			const dryRun = args.includes('--dry-run');
 			result = await HANDLERS.ship.executeShip({ featureSlug, title, dryRun });
 			if (result.success) {
