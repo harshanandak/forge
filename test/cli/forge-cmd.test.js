@@ -139,12 +139,11 @@ describe('CLI Command Dispatcher', () => {
 			assert.match(validation.error, /feature-slug required/i);
 		});
 
-		test('should reject review without PR number', () => {
+		test('should accept review without PR number (guided stage, no args required)', () => {
 			const command = 'review';
 			const args = [];
 			const validation = validateArgs(command, args);
-			assert.strictEqual(validation.valid, false);
-			assert.match(validation.error, /pr-number required/i);
+			assert.strictEqual(validation.valid, true); // review/merge are guided stages, pr-number is optional
 		});
 
 		test('should accept status without arguments', () => {

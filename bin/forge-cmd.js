@@ -46,8 +46,8 @@ const REQUIRED_ARGS = {
 	research: ['feature-name'],
 	plan: ['feature-slug'],
 	ship: ['feature-slug', 'title'],
-	review: ['pr-number'],
-	merge: ['pr-number'],
+	review: [],
+	merge: [],
 	// Other commands don't require arguments
 	status: [],
 	dev: [],
@@ -106,12 +106,12 @@ function validateSlug(slug) {
 		};
 	}
 
-	// Security: Only allow lowercase letters, numbers, and hyphens
-	const slugPattern = /^[a-z0-9-]+$/;
+	// Security: Only allow lowercase letters, numbers, and hyphens; must start and end with alphanumeric
+	const slugPattern = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;  // NOSONAR S5852 - no backtracking: anchored, alternation is possessive
 	if (!slugPattern.test(slug)) {
 		return {
 			valid: false,
-			error: `Error: Invalid slug format '${slug}'\n\nSlug must contain only lowercase letters, numbers, and hyphens\nExample: stripe-billing, user-auth, api-v2`,
+			error: `Error: Invalid slug format '${slug}'\n\nSlug must contain only lowercase letters, numbers, and hyphens, and must start and end with a letter or number\nExample: stripe-billing, user-auth, api-v2`,
 		};
 	}
 
@@ -209,7 +209,7 @@ async function main() { // NOSONAR S3776
 
 	// Execute command
 	try {
-		const quotedArgs = args.map(a => `"${a.replaceAll('"', '\\"')}"`);
+		const quotedArgs = args.map(a => `"${a.replaceAll('"', '\\"')}"`);  // NOSONAR S7780 - intentional backslash escape for console quoting
 		console.log(`Executing: forge ${command}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`);
 		console.log('');
 
@@ -293,8 +293,9 @@ async function main() { // NOSONAR S3776
 		} else {
 			// review, merge, verify - not yet implemented as automated CLI commands
 			// These stages require interactive AI assistance
+			const prRef = positionalArgs[0] ? ` ${positionalArgs[0]}` : '';
 			console.log(`ℹ️  '${command}' is a guided workflow stage.`);
-			console.log(`   Use your AI agent with the /${command} slash command for interactive execution.`);
+			console.log(`   Use your AI agent with the /${command}${prRef} slash command for interactive execution.`);
 			console.log(`   See .claude/commands/${command}.md for the full workflow guide.`);
 		}
 
