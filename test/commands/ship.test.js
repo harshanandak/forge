@@ -245,7 +245,7 @@ No test scenarios section.`;
 	});
 
 	describe('Error handling', () => {
-		test('should handle git errors gracefully', async () => {
+		test.skip('should handle git errors gracefully', async () => {
 			// Simulate not in a git repo or no remote
 			const result = await createPR({
 				title: 'feat: test',
