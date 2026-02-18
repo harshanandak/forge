@@ -221,7 +221,7 @@ No test scenarios section.`;
 			assert.match(result.error, /title/i);
 		});
 
-		test.skip('should handle missing research doc gracefully', async () => {
+		test('should handle missing research doc gracefully', async () => {
 			const result = await executeShip({
 				featureSlug: 'nonexistent-feature',
 				title: 'feat: test',
@@ -231,7 +231,7 @@ No test scenarios section.`;
 			// Should either fail or warn about missing research
 		});
 
-		test.skip('should return PR URL on success', async () => {
+		test('should return PR URL on success', async () => {
 			const result = await executeShip({
 				featureSlug: 'test-feature',
 				title: 'feat: test',
@@ -245,7 +245,7 @@ No test scenarios section.`;
 	});
 
 	describe('Error handling', () => {
-		test.skip('should handle git errors gracefully', async () => {
+		test('should handle git errors gracefully', async () => {
 			// Simulate not in a git repo or no remote
 			const result = await createPR({
 				title: 'feat: test',
