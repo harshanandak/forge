@@ -238,7 +238,7 @@ async function main() {
 		} else if (command === 'research') {
 			result = await HANDLERS.research.executeResearch(args[0]);
 			if (result.success) {
-				console.log(`✓ Research complete: ${result.summary || result.outputFile || ''}`);
+				console.log(`✓ Research complete: ${result.researchDocPath || ''}`);
 			} else {
 				console.error(`✗ Research failed: ${result.error}`);
 				process.exit(1);
@@ -247,8 +247,8 @@ async function main() {
 		} else if (command === 'plan') {
 			result = await HANDLERS.plan.executePlan(args[0]);
 			if (result.success) {
-				console.log(`✓ Plan created: ${result.planFile || ''}`);
-				if (result.beadsId) console.log(`  Beads: ${result.beadsId}`);
+				console.log(`✓ Plan created: ${result.summary || result.branchName || ''}`);
+				if (result.beadsIssueId) console.log(`  Beads: ${result.beadsIssueId}`);
 			} else {
 				console.error(`✗ Plan failed: ${result.error}`);
 				process.exit(1);
