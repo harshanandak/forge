@@ -248,11 +248,12 @@ async function main() {
 			}
 
 		} else if (command === 'dev') {
-			const featureName = args[0] || 'feature';
+			const positionalArgs = args.filter(a => !a.startsWith('--'));
+			const featureName = positionalArgs[0] || 'feature';
 			const VALID_PHASES = ['RED', 'GREEN', 'REFACTOR'];
-			const phase = args[1] ? args[1].toUpperCase() : undefined;
+			const phase = positionalArgs[1] ? positionalArgs[1].toUpperCase() : undefined;
 			if (phase && !VALID_PHASES.includes(phase)) {
-				console.error(`✗ Invalid phase '${args[1]}'. Valid phases: red, green, refactor`);
+				console.error(`✗ Invalid phase '${positionalArgs[1]}'. Valid phases: red, green, refactor`);
 				process.exit(1);
 			}
 			result = await HANDLERS.dev.executeDev(featureName, { phase });

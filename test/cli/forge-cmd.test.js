@@ -1,5 +1,7 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('child_process');
+const path = require('path');
 const {
 	parseArgs,
 	isValidCommand,
@@ -192,20 +194,23 @@ describe('CLI Command Dispatcher', () => {
 	});
 
 	describe('Error handling', () => {
+		const CLI = path.join(__dirname, '../../bin/forge-cmd.js');
+
 		test('should exit with code 1 for unknown command', () => {
-			// Exit code testing requires spawning process - covered by E2E tests
-			// This is tested via the main() function in E2E
-			assert.ok(true, 'Exit code handling tested in E2E');
+			const result = spawnSync(process.execPath, [CLI, 'unknown-command'], { encoding: 'utf8' });
+			assert.strictEqual(result.status, 1);
 		});
 
 		test('should exit with code 1 for missing required arguments', () => {
-			// Exit code testing requires spawning process - covered by E2E tests
-			assert.ok(true, 'Exit code handling tested in E2E');
+			// 'research' requires <feature-name> — fails at validateArgs before any handler runs
+			const result = spawnSync(process.execPath, [CLI, 'research'], { encoding: 'utf8' });
+			assert.strictEqual(result.status, 1);
 		});
 
 		test('should exit with code 0 for successful execution', () => {
-			// Exit code testing requires spawning process - covered by E2E tests
-			assert.ok(true, 'Exit code handling tested in E2E');
+			// 'status' reads filesystem/git (all try/catch) — no network, exits 0
+			const result = spawnSync(process.execPath, [CLI, 'status'], { encoding: 'utf8', timeout: 10000 });
+			assert.strictEqual(result.status, 0);
 		});
 	});
 });
