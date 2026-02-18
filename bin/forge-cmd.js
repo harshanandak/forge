@@ -213,6 +213,7 @@ async function main() { // NOSONAR S3776
 		console.log('');
 
 		let result;
+		const positionalArgs = args.filter(a => !a.startsWith('--'));
 
 		if (command === 'status') {
 			// Gather context from git + filesystem
@@ -230,7 +231,7 @@ async function main() { // NOSONAR S3776
 			console.log(HANDLERS.status.formatStatus(stageResult));
 
 		} else if (command === 'research') {
-			result = await HANDLERS.research.executeResearch(args[0]);
+			result = await HANDLERS.research.executeResearch(positionalArgs[0]);
 			if (result.success) {
 				console.log(`✓ Research complete: ${result.researchDocPath || ''}`);
 			} else {
@@ -239,7 +240,7 @@ async function main() { // NOSONAR S3776
 			}
 
 		} else if (command === 'plan') {
-			result = await HANDLERS.plan.executePlan(args[0]);
+			result = await HANDLERS.plan.executePlan(positionalArgs[0]);
 			if (result.success) {
 				console.log(`✓ Plan created: ${result.summary || result.branchName || ''}`);
 				if (result.beadsIssueId) console.log(`  Beads: ${result.beadsIssueId}`);
@@ -249,7 +250,6 @@ async function main() { // NOSONAR S3776
 			}
 
 		} else if (command === 'dev') {
-			const positionalArgs = args.filter(a => !a.startsWith('--'));
 			const featureName = positionalArgs[0] || 'feature';
 			const VALID_PHASES = ['RED', 'GREEN', 'REFACTOR'];
 			const phase = positionalArgs[1] ? positionalArgs[1].toUpperCase() : undefined;
