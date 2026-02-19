@@ -38,6 +38,32 @@ describe('Ship Command - PR Creation', () => {
 			assert.ok(decisions[1].includes('httpOnly cookies'));
 		});
 
+		test('should extract decisions from heading and reasoning format', () => {
+			const researchContent = `# Feature - Research Document
+
+## Key Decisions & Reasoning
+
+### Decision 1: Use JWT tokens
+
+**Reasoning**: Stateless auth scales better for APIs
+
+### Decision 2: Use refresh token rotation
+
+**Reasoning**: Limits replay risk on token theft
+
+## TDD Test Scenarios
+
+### Scenario 1: Happy path test
+`;
+
+			const decisions = extractKeyDecisions(researchContent);
+			assert.ok(Array.isArray(decisions));
+			assert.strictEqual(decisions.length, 2);
+			assert.ok(decisions[0].includes('Use JWT tokens'));
+			assert.ok(decisions[0].includes('Reasoning: Stateless auth scales better for APIs'));
+			assert.ok(decisions[1].includes('Use refresh token rotation'));
+		});
+
 		test('should handle research doc with no decisions section', () => {
 			const researchContent = `# Research: Simple Feature
 
@@ -63,6 +89,25 @@ Some research content without decisions section.`;
 			const scenarios = extractTestScenarios(researchContent);
 			assert.ok(Array.isArray(scenarios));
 			assert.ok(scenarios.length >= 3);
+		});
+
+		test('should extract scenarios from research.js heading format', () => {
+			const researchContent = `# Research: Feature
+
+## TDD Test Scenarios
+
+### Scenario 1: Happy path test
+
+**Test File**: test/feature.test.js
+
+### Scenario 2: Error handling
+
+**Test File**: test/feature.test.js
+`;
+
+			const scenarios = extractTestScenarios(researchContent);
+			assert.ok(Array.isArray(scenarios));
+			assert.deepStrictEqual(scenarios, ['Happy path test', 'Error handling']);
 		});
 
 		test('should handle research doc with no test scenarios', () => {
