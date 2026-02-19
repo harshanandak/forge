@@ -51,7 +51,8 @@ const PluginManager = require('../lib/plugin-manager');
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
 const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
-const workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
+// workflowProfiles is loaded but not currently used in the setup flow
+// const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
 // Get the project root (let allows reassignment after --path flag handling)
 let projectRoot = process.env.INIT_CWD || process.cwd();
@@ -84,8 +85,9 @@ function secureExecFileSync(command, args = [], options = {}) {
       const resolvedPath = result.stdout.trim().split(/\r?\n/)[0].trim();
       return execFileSync(resolvedPath, args, options);
     }
-  } catch (err) {
+  } catch (_err) {
     // PATH resolution failed - command might not be installed
+    // Error is intentionally ignored as we fall back to direct command execution
   }
 
   // Fallback: execute with command name (maintains compatibility)
@@ -227,8 +229,9 @@ function validateHashInput(input) {
  * Check write permission to a directory or file
  * @param {string} filePath - Path to check
  * @returns {{writable: boolean, error?: string}}
+ * @private - Currently unused but kept for future permission validation
  */
-function checkWritePermission(filePath) {
+function _checkWritePermission(filePath) {
   try {
     const dir = fs.statSync(filePath).isDirectory() ? filePath : path.dirname(filePath);
     const testFile = path.join(dir, `.forge-write-test-${Date.now()}`);
@@ -248,8 +251,8 @@ function checkWritePermission(filePath) {
 
 const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify', 'rollback'];
 
-// Code review tool options
-const CODE_REVIEW_TOOLS = {
+// Code review tool options (reserved for future feature)
+const _CODE_REVIEW_TOOLS = {
   'github-code-quality': {
     name: 'GitHub Code Quality',
     description: 'FREE, built-in - Zero setup required',
@@ -268,8 +271,8 @@ const CODE_REVIEW_TOOLS = {
   }
 };
 
-// Code quality tool options
-const CODE_QUALITY_TOOLS = {
+// Code quality tool options (reserved for future feature)
+const _CODE_QUALITY_TOOLS = {
   'eslint': {
     name: 'ESLint only',
     description: 'FREE, built-in - No external server required',
@@ -1132,6 +1135,23 @@ function detectGenericProject(deps, features) {
   };
 }
 
+/**
+ * Read package.json from project root
+ * @returns {object|null} Parsed package.json or null if not found
+ */
+function readPackageJson() {
+  try {
+    const pkgPath = path.join(projectRoot, 'package.json');
+    if (!fs.existsSync(pkgPath)) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  } catch (_err) {
+    // Invalid package.json or read error
+    return null;
+  }
+}
+
 // Detect project type from package.json
 function detectProjectType() {
   const detection = {
@@ -1193,11 +1213,11 @@ function displayProjectType(detection) {
   if (!detection.hasPackageJson) return;
 
   console.log('');
-  console.log(chalk.cyan('  📦 Project Detection:'));
+  console.log('  📦 Project Detection:');
 
   if (detection.framework) {
     const confidence = detection.frameworkConfidence >= 90 ? '✓' : '~';
-    console.log(`     Framework: ${chalk.bold(detection.framework)} ${confidence}`);
+    console.log(`     Framework: ${detection.framework} ${confidence}`);
   }
 
   if (detection.projectType) {
@@ -1459,7 +1479,8 @@ function handleNoFilesExist(hasClaude, hasOtherAgents) {
 }
 
 // Smart file selection with context warnings
-async function handleInstructionFiles(rl, question, selectedAgents, projectStatus) {
+// @private - Currently unused, reserved for future interactive setup flow
+async function _handleInstructionFiles(rl, question, selectedAgents, projectStatus) {
   const hasClaude = selectedAgents.some(a => a.key === 'claude');
   const hasOtherAgents = selectedAgents.some(a => a.key !== 'claude');
 
@@ -1483,7 +1504,8 @@ async function handleInstructionFiles(rl, question, selectedAgents, projectStatu
 }
 
 // Create minimal CLAUDE.md that references AGENTS.md
-function createClaudeReference(destPath) {
+// @private - Currently unused, reserved for future setup flow
+function _createClaudeReference(destPath) {
   const content = `# Claude Code Instructions
 
 See [AGENTS.md](AGENTS.md) for all project instructions.
@@ -2510,7 +2532,8 @@ function displaySetupSummary(selectedAgents) {
 
 
 // Interactive setup
-async function interactiveSetup() {
+// @private - Currently unused, reserved for future interactive flow
+async function _interactiveSetup() {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
@@ -3051,7 +3074,7 @@ function checkForSkills() {
   try {
     secureExecFileSync('skills', ['--version'], { stdio: 'ignore' });
     return 'global';
-  } catch (err) {
+  } catch (_err) {
     // Not global - this is expected when Skills is not installed, continue checking other methods
   }
 
@@ -3059,7 +3082,7 @@ function checkForSkills() {
   try {
     secureExecFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
     return 'bunx';
-  } catch (err) {
+  } catch (_err) {
     // Not bunx-capable - this is expected when Skills is not installed, continue checking local
   }
 
@@ -3071,7 +3094,7 @@ function checkForSkills() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     const isInstalled = pkg.devDependencies?.['@forge/skills'] || pkg.dependencies?.['@forge/skills'];
     return isInstalled ? 'local' : null;
-  } catch (err) {
+  } catch (_err) {
     // Failed to parse package.json
     return null;
   }
@@ -4159,13 +4182,13 @@ function checkGitWorkingDirectory() {
     const { execSync } = require('node:child_process');
     const status = execSync('git status --porcelain', { encoding: 'utf-8' });
     if (status.trim() !== '') {
-      console.log(chalk.red('  ❌ Working directory has uncommitted changes'));
+      console.log('  ❌ Working directory has uncommitted changes');
       console.log('     Commit or stash changes before rollback');
       return false;
     }
     return true;
   } catch (err) {
-    console.log(chalk.red('  ❌ Git error:'), err.message);
+    console.log('  ❌ Git error:', err.message);
     return false;
   }
 }
@@ -4213,7 +4236,7 @@ function handlePrRollback(target, dryRun, execSync) {
 }
 
 // Helper: Handle partial file rollback
-function handlePartialRollback(target, dryRun, execSync) {
+function handlePartialRollback(target, dryRun, _execSync) {
   const { execFileSync } = require('node:child_process');
   const files = target.split(',').map(f => f.trim());
   if (dryRun) {
@@ -4228,7 +4251,7 @@ function handlePartialRollback(target, dryRun, execSync) {
 }
 
 // Helper: Handle branch range rollback
-function handleBranchRollback(target, dryRun, execSync) {
+function handleBranchRollback(target, dryRun, _execSync) {
   const [startCommit, endCommit] = target.split('..');
   if (dryRun) {
     console.log(`     Would revert range: ${startCommit}..${endCommit}`);
@@ -4254,23 +4277,23 @@ function finalizeRollback(agentsPath, savedSections) {
   }
 
   console.log('');
-  console.log(chalk.green('  ✅ Rollback complete'));
+  console.log('  ✅ Rollback complete');
   console.log('     User content preserved');
 }
 
 async function performRollback(method, target, dryRun = false) {
   console.log('');
-  console.log(chalk.cyan(`  🔄 Rollback: ${method}`));
+  console.log(`  🔄 Rollback: ${method}`);
   console.log(`     Target: ${target}`);
   if (dryRun) {
-    console.log(chalk.yellow('     Mode: DRY RUN (preview only)'));
+    console.log('     Mode: DRY RUN (preview only)');
   }
   console.log('');
 
   // Validate inputs BEFORE any git operations
   const validation = validateRollbackInput(method, target);
   if (!validation.valid) {
-    console.log(chalk.red(`  ❌ ${validation.error}`));
+    console.log(`  ❌ ${validation.error}`);
     return false;
   }
 
@@ -4307,7 +4330,7 @@ async function performRollback(method, target, dryRun = false) {
     return true;
   } catch (err) {
     console.log('');
-    console.log(chalk.red('  ❌ Rollback failed:'), err.message);
+    console.log('  ❌ Rollback failed:', err.message);
     console.log('     Try manual rollback with: git revert <commit>');
     return false;
   }
@@ -4316,7 +4339,7 @@ async function performRollback(method, target, dryRun = false) {
 // Interactive rollback menu
 async function showRollbackMenu() {
   console.log('');
-  console.log(chalk.cyan.bold('  🔄 Forge Rollback'));
+  console.log('  🔄 Forge Rollback');
   console.log('');
   console.log('  Choose rollback method:');
   console.log('');
@@ -4389,7 +4412,7 @@ async function showRollbackMenu() {
       break;
     }
     default: {
-      console.log(chalk.red('  Invalid choice'));
+      console.log('  Invalid choice');
       rl.close();
       return;
     }

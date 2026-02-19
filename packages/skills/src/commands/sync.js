@@ -86,7 +86,7 @@ function getValidSkills(skillsDir) {
     // Validate entry name before processing (prevents path traversal)
     try {
       validateSkillName(entry);
-    } catch (error) {
+    } catch (_error) {
       continue; // Skip invalid entries
     }
 
@@ -98,7 +98,7 @@ function getValidSkills(skillsDir) {
       if (statSync(skillPath).isDirectory() && existsSync(skillMdPath)) {
         skills.push(entry);
       }
-    } catch (error) {
+    } catch (_error) {
       continue; // Skip entries that cause errors
     }
   }

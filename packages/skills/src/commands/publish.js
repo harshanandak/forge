@@ -10,6 +10,35 @@ import { validateCommand } from './validate.js';
 import { getSkillPaths, handleNetworkError } from '../lib/common.js';
 
 /**
+ * Load skill metadata from .skill-meta.json or SKILL.md frontmatter
+ *
+ * @param {string} metaPath - Path to .skill-meta.json
+ * @param {string} content - SKILL.md content
+ * @returns {Promise<Object>} Metadata object
+ */
+async function loadMetadata(metaPath, content) {
+  if (existsSync(metaPath)) {
+    try {
+      return JSON.parse(readFileSync(metaPath, 'utf8'));
+    } catch (error) {
+      console.error(chalk.red('✗ Failed to parse .skill-meta.json'));
+      console.error(chalk.yellow('  File may be corrupted. Delete it and run "skills validate" to regenerate'));
+      throw new Error(`Corrupted metadata file: ${error.message}`);
+    }
+  }
+
+  // Extract from SKILL.md frontmatter
+  const frontmatterMatch = /^---\n([\s\S]*?)\n---/.exec(content);
+  if (!frontmatterMatch) {
+    throw new Error('SKILL.md frontmatter not found');
+  }
+
+  const yamlModule = await import('js-yaml');
+  const yaml = yamlModule.default || yamlModule;
+  return yaml.load(frontmatterMatch[1], { schema: yaml.JSON_SCHEMA });
+}
+
+/**
  * Publish a skill to the Vercel registry
  *
  * @param {string} name - Skill name to publish
@@ -49,30 +78,9 @@ export async function publishCommand(name, options = {}) {
       throw new Error('Validation failed');
     }
 
-    // Read SKILL.md
+    // Read SKILL.md and metadata
     const content = readFileSync(skillMdPath, 'utf8');
-
-    // Read metadata
-    let metadata;
-    if (existsSync(metaPath)) {
-      try {
-        metadata = JSON.parse(readFileSync(metaPath, 'utf8'));
-      } catch (error) {
-        console.error(chalk.red('✗ Failed to parse .skill-meta.json'));
-        console.error(chalk.yellow('  File may be corrupted. Delete it and run "skills validate" to regenerate'));
-        throw new Error(`Corrupted metadata file: ${error.message}`);
-      }
-    } else {
-      // Extract from SKILL.md frontmatter
-      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (!frontmatterMatch) {
-        throw new Error('SKILL.md frontmatter not found');
-      }
-
-      const yamlModule = await import('js-yaml');
-      const yaml = yamlModule.default || yamlModule;
-      metadata = yaml.load(frontmatterMatch[1], { schema: yaml.JSON_SCHEMA });
-    }
+    const metadata = await loadMetadata(metaPath, content);
 
     // Check if skill already exists in registry (unless force)
     if (!options.force) {
