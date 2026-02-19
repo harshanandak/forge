@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { describe, test, before, after } = require('node:test');
+const { describe, test, before, after: _after } = require('node:test');
 const assert = require('node:assert/strict');
 
 describe('E2E Scaffold Utilities', () => {
@@ -30,7 +30,7 @@ describe('E2E Scaffold Utilities', () => {
       // Try to load scaffold module
       try {
         scaffold = require(scaffoldPath);
-      } catch (error) {
+      } catch (_error) {
         // Module doesn't exist yet (RED phase)
         scaffold = null;
       }
@@ -109,7 +109,7 @@ describe('E2E Scaffold Utilities', () => {
       // Try to load cleanup module
       try {
         cleanup = require(cleanupPath);
-      } catch (error) {
+      } catch (_error) {
         // Module doesn't exist yet (RED phase)
         cleanup = null;
       }

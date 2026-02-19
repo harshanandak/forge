@@ -81,7 +81,7 @@ describe('CI Workflow Configuration', () => {
 
     test('e2e job should setup test fixtures', () => {
       const e2e = workflow.jobs.e2e;
-      const fixtureStep = e2e.steps.find(s => s.name && s.name.includes('fixture'));
+      const _fixtureStep = e2e.steps.find(s => s.name && s.name.includes('fixture'));
       // E2E tests create their own fixtures, but might need setup
       assert.ok(true, 'E2E tests manage their own fixtures via scaffold helpers');
     });

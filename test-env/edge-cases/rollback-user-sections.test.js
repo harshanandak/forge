@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const testDir = path.join(__dirname, 'temp-user-section-test');
-const projectRoot = testDir;
+const _projectRoot = testDir;
 
 // Test implementation of extractUserSections
 function extractUserSections(filePath) {
@@ -71,7 +71,7 @@ describe('USER Section Extraction & Preservation Tests', () => {
   after(() => {
     try {
       fs.rmdirSync(testDir, { recursive: true });
-    } catch (err) {
+    } catch (_err) {
       // Ignore
     }
   });

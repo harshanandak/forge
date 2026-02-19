@@ -29,11 +29,11 @@ after(() => {
         } else {
           fs.chmodSync(fullPath, 0o644);
         }
-      } catch (e) {
+      } catch (_e) {
         // May fail on Windows, that's OK
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Ignore cleanup errors
   }
 
@@ -68,7 +68,7 @@ describe('permission-errors', () => {
       // Make directory read-only (may not work on Windows)
       try {
         fs.chmodSync(readOnlyDir, 0o444);
-      } catch (e) {
+      } catch (_e) {
         // Skip on Windows
         return;
       }
@@ -106,7 +106,7 @@ describe('permission-errors', () => {
 
       try {
         fs.chmodSync(nestedDir, 0o444);
-      } catch (e) {
+      } catch (_e) {
         // Skip on Windows
         return;
       }
@@ -127,7 +127,7 @@ describe('permission-errors', () => {
 
       try {
         fs.chmodSync(filePath, 0o444);
-      } catch (e) {
+      } catch (_e) {
         // Skip on Windows
         return;
       }
@@ -175,7 +175,7 @@ describe('permission-errors', () => {
 
       try {
         fs.chmodSync(readOnlyDir, 0o444);
-      } catch (e) {
+      } catch (_e) {
         // Skip on Windows
         return;
       }
@@ -202,7 +202,7 @@ describe('permission-errors', () => {
       try {
         // Make directory read-only
         fs.chmodSync(targetDir, 0o444);
-      } catch (e) {
+      } catch (_e) {
         // Skip on Windows
         return;
       }
@@ -210,14 +210,14 @@ describe('permission-errors', () => {
       // Attempt to write - should fail
       try {
         fs.writeFileSync(path.join(targetDir, 'test.txt'), 'content');
-      } catch (err) {
+      } catch (_err) {
         // Expected on Unix
       }
 
       try {
         // Restore permissions to check
         fs.chmodSync(targetDir, 0o755);
-      } catch (e) {
+      } catch (_e) {
         // May fail
       }
 

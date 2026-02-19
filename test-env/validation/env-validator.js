@@ -18,7 +18,7 @@ function validateEnvFile(filePath) {
   }
 
   const content = fs.readFileSync(filePath, 'utf8');
-  const parsed = parseEnvFile(content);
+  const _parsed = parseEnvFile(content);
 
   const failures = [];
   let totalLines = 0;
