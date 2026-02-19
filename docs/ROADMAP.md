@@ -3,7 +3,7 @@
 **Comprehensive implementation plan for transforming Forge into a fully automated, orchestrated workflow system.**
 
 **Plan Created**: 2026-02-10
-**Status**: Phase 1 (PR1) - In Progress | PR0 ✅ Completed
+**Status**: Phase 2 (PR4) - Completed, PR5/PR6 Ready
 **Timeline**: 3-4 weeks total
 **Strategy**: Quick wins first → Build testing foundation → Add automation → Enable extensibility
 
@@ -83,9 +83,9 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 | PR1 | PR0 | PR2 | ✅ **Ready now** |
 | PR2 | PR1 | PR3 | After PR1 merged |
 | PR3 | PR2 | PR4 | After PR2 merged |
-| PR4 | PR3 | PR5, PR6 | After PR3 merged |
-| PR5 | PR4 | None | After PR4 merged |
-| PR6 | PR4 | PR7 | After PR4 merged |
+| PR4 | PR3 | PR5, PR6 | ✅ **MERGED** (2026-02-19, PR #33) |
+| PR5 | PR4 | None | ✅ **Ready now** |
+| PR6 | PR4 | PR7 | ✅ **Ready now** |
 | PR7 | PR6 | PR8 | After PR6 merged |
 | PR8 | PR7 | None | After PR7 merged |
 
@@ -158,7 +158,8 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ### **PR4: CLI Command Automation** 🤖
 **Beads Issue**: `forge-9tp`
-**Status**: Blocked (waiting on PR3)
+**PR**: #33
+**Status**: ✅ **COMPLETED & MERGED** (2026-02-19)
 **Timeline**: 3-4 days
 **Impact**: High
 
@@ -173,7 +174,7 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ### **PR5: Advanced Testing Expansion** 🔬
 **Beads Issue**: `forge-01p`
-**Status**: Blocked (waiting on PR4)
+**Status**: Ready (PR4 merged)
 **Timeline**: 2-3 days
 **Impact**: Medium
 
@@ -187,7 +188,7 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ### **PR6: Plugin Architecture & Extensibility** 🔌
 **Beads Issue**: `forge-a7n`
-**Status**: Blocked (waiting on PR4)
+**Status**: Ready (PR4 merged)
 **Timeline**: 3-4 days
 **Impact**: High
 
@@ -262,9 +263,9 @@ All PRs tracked in Beads with proper dependencies:
 | PR1 | forge-bdo | Blocked | P1 | PR0 |
 | PR2 | forge-aom | Blocked | P1 | PR1 |
 | PR3 | forge-5uh | Blocked | P1 | PR2 |
-| PR4 | forge-9tp | Blocked | P2 | PR3 |
-| PR5 | forge-01p | Blocked | P2 | PR4 |
-| PR6 | forge-a7n | Blocked | P2 | PR4 |
+| PR4 | forge-9tp | ✅ Completed (PR #33) | P2 | PR3 |
+| PR5 | forge-01p | Ready | P2 | None |
+| PR6 | forge-a7n | Ready | P2 | None |
 | PR7 | forge-jvc | Blocked | P3 | PR6 |
 | PR8 | forge-dwm | Blocked | P3 | PR7 |
 
@@ -280,7 +281,7 @@ Each PR follows the Forge workflow:
 /status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
 ```
 
-**Current branch**: `feat/pr0-agent-simplification`
+**Current branch**: `feat/pr4-cli-automation`
 **Base branch**: `master`
 
 ### Plan Files
@@ -309,19 +310,17 @@ Each PR is self-contained and can be rolled back independently:
 
 ## Next Steps
 
-1. ✅ **PR0 In Progress** - Architecture simplification
-   - Universal AGENTS.md template
-   - Agent-specific config generators
-   - Smart setup detection
-   - Documentation files
+1. ✅ **PR4 Completed** - CLI command automation merged
+   - Command dispatcher + automated command handlers
+   - `/review` quality-gate execution path validated
+   - Ship/review parser consistency fixes applied
 
-2. **After PR0 Completion**:
-   - Run `/check` to validate
-   - Run `/ship` to create PR
-   - Get approval and merge
-   - PR1 automatically becomes unblocked
+2. **Next up: PR5 and PR6**:
+   - PR5: Advanced testing expansion
+   - PR6: Plugin architecture and extensibility
+   - Both are now unblocked
 
-3. **Follow Forge Workflow** for each PR:
+3. **Follow Forge Workflow** for each next PR:
    ```
    /research → /plan → /dev → /check → /ship → /review → /merge → /verify
    ```
@@ -337,6 +336,6 @@ Each PR is self-contained and can be rolled back independently:
 
 ---
 
-**Last Updated**: 2026-02-10
-**Current Phase**: Phase 0 (PR0) - In Progress
-**Next Milestone**: PR0 completion → PR1 start
+**Last Updated**: 2026-02-19
+**Current Phase**: Phase 2 - PR4 completed
+**Next Milestone**: Start PR5 and PR6
