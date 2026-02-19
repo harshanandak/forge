@@ -33,7 +33,7 @@ pre-push:
     lint:
       run: |
         echo "🔍 Running ESLint..."
-        bunx eslint .
+        bunx eslint . --max-warnings 0
         if [ $? -ne 0 ]; then
           echo ""
           echo "❌ ESLint errors found. Fix them before pushing."
