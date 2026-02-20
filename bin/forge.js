@@ -154,13 +154,13 @@ function validateCommonSecurity(input) {
     return { valid: false, error: 'Only ASCII printable characters allowed' };
   }
 
-  return null; // No security issues found
+  return { valid: true }; // No security issues found
 }
 
 function validateUserInput(input, type) {
   // Common security checks first
   const securityResult = validateCommonSecurity(input);
-  if (securityResult) return securityResult;
+  if (!securityResult.valid) return securityResult;
 
   // Type-specific validation - delegated to helpers
   switch (type) {
@@ -571,11 +571,11 @@ function createSymlinkOrCopy(source, target) {
   // SECURITY: Prevent path traversal attacks
   if (!fullSource.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Source path escape blocked: ${source}`);
-    return null;
+    return '';
   }
   if (!fullTarget.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Target path escape blocked: ${target}`);
-    return null;
+    return '';
   }
 
   try {
@@ -599,7 +599,7 @@ function createSymlinkOrCopy(source, target) {
     }
   } catch (err) {
     console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
-    return null;
+    return '';
   }
 }
 
@@ -735,8 +735,8 @@ function smartMergeAgentsMd(existingContent, newContent) {
   const hasForgeMarkers = existingContent.includes('<!-- FORGE:START') && existingContent.includes('<!-- FORGE:END');
 
   if (!hasUserMarkers || !hasForgeMarkers) {
-    // Old format without markers - return new content (let user decide via overwrite prompt)
-    return null;
+    // Old format without markers - return empty to signal merge not possible
+    return '';
   }
 
   // Extract USER section from existing content
@@ -1501,8 +1501,13 @@ This file exists to avoid Claude Code reading both CLAUDE.md and AGENTS.md (whic
 💡 **Keep this minimal** - Main instructions are in AGENTS.md
 `;
 
-  fs.writeFileSync(destPath, content, 'utf8');
-  return true;
+  try {
+    fs.writeFileSync(destPath, content, 'utf8');
+    return true;
+  } catch (err) {
+    console.error(`  ✗ Failed to write Claude reference: ${err.message}`);
+    return false;
+  }
 }
 
 // Prompt for code review tool selection - extracted to reduce cognitive complexity
@@ -2931,7 +2936,7 @@ function checkForLefthook() {
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return !!(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
+    return Boolean(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
   } catch (err) {
     console.warn('Failed to check lefthook in package.json:', err.message);
     return false;
