@@ -37,6 +37,9 @@ stryker-report/
 # Benchmark results
 benchmark-results.json
 
+# Test dashboard
+test-dashboard.json
+
 # Temporary files
 *.tmp
 *.temp

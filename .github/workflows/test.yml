@@ -19,6 +19,8 @@ on:
       - 'package.json'
       - '.github/workflows/**'
   workflow_dispatch:  # Allow manual workflow runs
+  schedule:
+    - cron: '0 3 * * 0'  # Weekly mutation testing: Sunday 3am UTC
 
 # Limit GITHUB_TOKEN permissions to minimum required
 permissions:
@@ -152,3 +154,91 @@ jobs:
           echo "✓ Scaffold utilities tests" >> $GITHUB_STEP_SUMMARY
           echo "✓ Fixture validation tests" >> $GITHUB_STEP_SUMMARY
           echo "✓ Snapshot tests" >> $GITHUB_STEP_SUMMARY
+
+  mutation:
+    name: Mutation Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Setup test fixtures
+        run: bash test-env/automation/setup-fixtures.sh --force
+
+      - name: Run mutation testing
+        run: npx stryker run
+
+      - name: Upload mutation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: stryker-report/
+          retention-days: 30
+
+      - name: Mutation summary
+        if: always()
+        run: |
+          echo "## Mutation Testing Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f stryker-report/mutation.json ]; then
+            echo "✓ Mutation report generated" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Mutation report not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  dashboard:
+    name: Test Dashboard
+    runs-on: ubuntu-latest
+    needs: [test, coverage]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Generate test dashboard
+        run: node scripts/test-dashboard.js
+
+      - name: Upload dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-dashboard
+          path: test-dashboard.json
+          retention-days: 7
+
+      - name: Dashboard summary
+        if: always()
+        run: |
+          echo "## Test Quality Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f test-dashboard.json ]; then
+            cat test-dashboard.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Tests: {d[\"testCount\"]}'); print(f'Coverage threshold: {d[\"coverageThreshold\"]}%'); print(f'ESLint warnings: {d[\"eslintWarnings\"]}')" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "✓ Dashboard generated" >> $GITHUB_STEP_SUMMARY
+          fi
