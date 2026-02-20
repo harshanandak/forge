@@ -2,7 +2,7 @@
 
 ## Current Focus
 <!-- What you're working on -->
-Ready for PR5: Advanced Testing Expansion
+Research complete for PR5 and PR6. Ready for `/plan advanced-testing`.
 
 ## Completed
 
@@ -215,3 +215,19 @@ Ready for PR5: Advanced Testing Expansion
 
 ## Upcoming
 <!-- Next priorities -->
+
+### PR5: Advanced Testing Expansion
+- **Beads**: forge-01p
+- **Research**: [docs/research/advanced-testing.md](../research/advanced-testing.md) (PR #36, merged 2026-02-20)
+- **Deliverables**: Stryker mutation testing, performance benchmarks, OWASP A02/A07 security tests, test quality dashboard
+- **Status**: Research complete, ready for `/plan`
+
+### PR5.5: Skills Restructure for skills.sh
+- **Deliverables**: Restructure parallel-ai into 4 focused skills, publish to skills.sh, add citation-standards rule
+- **Status**: Scoped in PR6 research
+
+### PR6: Plugin Architecture & Smart Recommendations (EXPANDED)
+- **Beads**: forge-a7n
+- **Research**: [docs/research/plugin-architecture.md](../research/plugin-architecture.md) (PR #37, merged 2026-02-20)
+- **Deliverables**: Plugin catalog, expanded tech stack detection (20+ frameworks), CLI-first recommendation engine, pricing transparency with free alternatives, budget modes, installation orchestration
+- **Status**: Research complete, absorbs forge-mlm scope
