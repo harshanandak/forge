@@ -60,6 +60,7 @@ function isSourceFile(file) {
     /^test\//,
     /^tests\//,
     /__tests__\//,
+    /^scripts\//, // build/utility scripts (benchmarks, CI tools)
     /package\.json/,
     /tsconfig/,
     /jest\.config/,

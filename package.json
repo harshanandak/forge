@@ -22,7 +22,8 @@
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help",
     "validate:yaml": "find . \\( -name '*.yml' -o -name '*.yaml' \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && bun x js-yaml \"$file\" > /dev/null || exit 1; done",
-    "test:mutation": "npx stryker run"
+    "test:mutation": "npx stryker run",
+    "test:benchmark": "node scripts/benchmark.js"
   },
   "peerDependencies": {
     "lefthook": "^1.0.0"
