@@ -75,7 +75,7 @@ function getExpectedFiles(agentId) {
 
     // Add agent-specific directory files (e.g., .claude/commands/)
     if (plugin.directories && typeof plugin.directories === 'object') {
-      for (const [dirType, dirPath] of Object.entries(plugin.directories)) {
+      for (const [_dirType, dirPath] of Object.entries(plugin.directories)) {
         // Check if directory exists
         files.push({
           path: dirPath,

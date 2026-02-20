@@ -85,9 +85,7 @@ function secureExecFileSync(command, args = [], options = {}) {
       const resolvedPath = result.stdout.trim().split(/\r?\n/)[0].trim();
       return execFileSync(resolvedPath, args, options);
     }
-  } catch (_err) {
-    // PATH resolution failed - command might not be installed
-    // Error is intentionally ignored as we fall back to direct command execution
+  } catch (_err) { // NOSONAR - S2486: Intentionally ignored; falls back to direct command execution below
   }
 
   // Fallback: execute with command name (maintains compatibility)
@@ -137,7 +135,8 @@ Object.values(AGENTS).forEach(agent => Object.freeze(agent));
  * @param {string} type - Input type: 'path', 'agent', 'hash'
  * @returns {{valid: boolean, error?: string}}
  */
-function validateUserInput(input, type) {
+// Helper: Run common security checks on input - extracted to reduce cognitive complexity
+function validateCommonSecurity(input) {
   // Shell injection check - common shell metacharacters
   if (/[;|&$`()<>\r\n]/.test(input)) {
     return { valid: false, error: 'Invalid characters detected (shell metacharacters)' };
@@ -152,6 +151,14 @@ function validateUserInput(input, type) {
   if (!/^[\x20-\x7E]+$/.test(input)) {
     return { valid: false, error: 'Only ASCII printable characters allowed' };
   }
+
+  return { valid: true }; // No security issues found
+}
+
+function validateUserInput(input, type) {
+  // Common security checks first
+  const securityResult = validateCommonSecurity(input);
+  if (!securityResult.valid) return securityResult;
 
   // Type-specific validation - delegated to helpers
   switch (type) {
@@ -188,20 +195,16 @@ function validateDirectoryPathInput(input) {
   const resolved = path.resolve(input);
   const normalizedResolved = path.normalize(resolved).toLowerCase();
 
-  // Windows: Block system directories
-  if (process.platform === 'win32') {
-    const blockedPaths = [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`];
-    if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
-      return { valid: false, error: 'Cannot target Windows system directories' };
-    }
-  }
+  // Get platform-specific blocked paths
+  const blockedPaths = process.platform === 'win32'
+    ? [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`]
+    : ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
+  const errorMsg = process.platform === 'win32'
+    ? 'Cannot target Windows system directories'
+    : 'Cannot target system directories';
 
-  // Unix: Block system directories
-  if (process.platform !== 'win32') {
-    const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
-    if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
-      return { valid: false, error: 'Cannot target system directories' };
-    }
+  if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
+    return { valid: false, error: errorMsg };
   }
 
   return { valid: true };
@@ -305,64 +308,40 @@ function safeExec(cmd) {
   }
 }
 
+// Helper: Try to detect a package manager from lock file - returns true if found
+function detectFromLockFile(name, lockFiles, versionPrefix) {
+  const found = lockFiles.some(f => fs.existsSync(path.join(projectRoot, f)));
+  if (!found) return false;
+
+  PKG_MANAGER = name;
+  const version = safeExec(`${name} --version`);
+  if (version) console.log(`  ✓ ${versionPrefix}${version} (detected from lock file)`);
+  return true;
+}
+
+// Helper: Try to detect a package manager from command availability - returns true if found
+function detectFromCommand(name, versionPrefix) {
+  const version = safeExec(`${name} --version`);
+  if (!version) return false;
+
+  PKG_MANAGER = name;
+  console.log(`  ✓ ${versionPrefix}${version} (detected as package manager)`);
+  return true;
+}
+
 // Detect package manager from command availability and lock files
 // Extracted to reduce cognitive complexity
 function detectPackageManager(errors) {
   // Check lock files first (most authoritative)
-  const bunLock = path.join(projectRoot, 'bun.lockb');
-  const bunLock2 = path.join(projectRoot, 'bun.lock');
-  const pnpmLock = path.join(projectRoot, 'pnpm-lock.yaml');
-  const yarnLock = path.join(projectRoot, 'yarn.lock');
-
-  if (fs.existsSync(bunLock) || fs.existsSync(bunLock2)) {
-    PKG_MANAGER = 'bun';
-    const version = safeExec('bun --version');
-    if (version) console.log(`  ✓ bun v${version} (detected from lock file)`);
-    return;
-  }
-
-  if (fs.existsSync(pnpmLock)) {
-    PKG_MANAGER = 'pnpm';
-    const version = safeExec('pnpm --version');
-    if (version) console.log(`  ✓ pnpm ${version} (detected from lock file)`);
-    return;
-  }
-
-  if (fs.existsSync(yarnLock)) {
-    PKG_MANAGER = 'yarn';
-    const version = safeExec('yarn --version');
-    if (version) console.log(`  ✓ yarn ${version} (detected from lock file)`);
-    return;
-  }
+  if (detectFromLockFile('bun', ['bun.lockb', 'bun.lock'], 'bun v')) return;
+  if (detectFromLockFile('pnpm', ['pnpm-lock.yaml'], 'pnpm ')) return;
+  if (detectFromLockFile('yarn', ['yarn.lock'], 'yarn ')) return;
 
   // Fallback: detect from installed commands
-  const bunVersion = safeExec('bun --version');
-  if (bunVersion) {
-    PKG_MANAGER = 'bun';
-    console.log(`  ✓ bun v${bunVersion} (detected as package manager)`);
-    return;
-  }
-
-  const pnpmVersion = safeExec('pnpm --version');
-  if (pnpmVersion) {
-    PKG_MANAGER = 'pnpm';
-    console.log(`  ✓ pnpm ${pnpmVersion} (detected as package manager)`);
-    return;
-  }
-
-  const yarnVersion = safeExec('yarn --version');
-  if (yarnVersion) {
-    PKG_MANAGER = 'yarn';
-    console.log(`  ✓ yarn ${yarnVersion} (detected as package manager)`);
-    return;
-  }
-
-  const npmVersion = safeExec('npm --version');
-  if (npmVersion) {
-    PKG_MANAGER = 'npm';
-    console.log(`  ✓ npm ${npmVersion} (detected as package manager)`);
-    return;
-  }
+  if (detectFromCommand('bun', 'bun v')) return;
+  if (detectFromCommand('pnpm', 'pnpm ')) return;
+  if (detectFromCommand('yarn', 'yarn ')) return;
+  if (detectFromCommand('npm', 'npm ')) return;
 
   // No package manager found
   errors.push('npm, yarn, pnpm, or bun - Install a package manager');
@@ -590,11 +569,11 @@ function createSymlinkOrCopy(source, target) {
   // SECURITY: Prevent path traversal attacks
   if (!fullSource.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Source path escape blocked: ${source}`);
-    return null;
+    return '';
   }
   if (!fullTarget.startsWith(resolvedProjectRoot)) {
     console.error(`  ✗ Security: Target path escape blocked: ${target}`);
-    return null;
+    return '';
   }
 
   try {
@@ -618,7 +597,7 @@ function createSymlinkOrCopy(source, target) {
     }
   } catch (err) {
     console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
-    return null;
+    return '';
   }
 }
 
@@ -754,8 +733,8 @@ function smartMergeAgentsMd(existingContent, newContent) {
   const hasForgeMarkers = existingContent.includes('<!-- FORGE:START') && existingContent.includes('<!-- FORGE:END');
 
   if (!hasUserMarkers || !hasForgeMarkers) {
-    // Old format without markers - return new content (let user decide via overwrite prompt)
-    return null;
+    // Old format without markers - return empty to signal merge not possible
+    return '';
   }
 
   // Extract USER section from existing content
@@ -906,22 +885,22 @@ function detectLanguageFeatures(pkg) {
 
   // Detect monorepo
   if (pkg.workspaces ||
-      fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) ||
-      fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
+    fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) ||
+    fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
     features.monorepo = true;
   }
 
   // Detect Docker
   if (fs.existsSync(path.join(projectRoot, 'Dockerfile')) ||
-      fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
+    fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
     features.docker = true;
   }
 
   // Detect CI/CD
   if (fs.existsSync(path.join(projectRoot, '.github/workflows')) ||
-      fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
-      fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
-      fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
+    fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
+    fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
+    fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
     features.cicd = true;
   }
 
@@ -1146,8 +1125,7 @@ function readPackageJson() {
       return null;
     }
     return JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-  } catch (_err) {
-    // Invalid package.json or read error
+  } catch (_err) { // NOSONAR - S2486: Returns null on invalid/missing package.json
     return null;
   }
 }
@@ -1520,8 +1498,13 @@ This file exists to avoid Claude Code reading both CLAUDE.md and AGENTS.md (whic
 💡 **Keep this minimal** - Main instructions are in AGENTS.md
 `;
 
-  fs.writeFileSync(destPath, content, 'utf8');
-  return true;
+  try {
+    fs.writeFileSync(destPath, content, 'utf8');
+    return true;
+  } catch (err) {
+    console.error(`  ✗ Failed to write Claude reference: ${err.message}`);
+    return false;
+  }
 }
 
 // Prompt for code review tool selection - extracted to reduce cognitive complexity
@@ -1710,6 +1693,61 @@ async function checkExistingServiceConfig(question, projectStatus) {
   return true; // Proceed with configuration
 }
 
+// Helper: Display Context7 MCP status for selected agents - extracted to reduce cognitive complexity
+function displayMcpStatus(selectedAgents) {
+  console.log('');
+  console.log('Context7 MCP - Library Documentation');
+  console.log('-------------------------------------');
+  console.log('Provides up-to-date library docs for AI coding agents.');
+  console.log('');
+
+  // Show what was/will be auto-installed
+  if (selectedAgents.includes('claude')) {
+    console.log('  ✓ Auto-installed for Claude Code (.mcp.json)');
+  }
+  if (selectedAgents.includes('continue')) {
+    console.log('  ✓ Auto-installed for Continue (.continue/config.yaml)');
+  }
+
+  // Show manual setup instructions for GUI-based agents
+  const manualMcpMap = {
+    cursor: 'Cursor: Configure via Cursor Settings > MCP',
+    windsurf: 'Windsurf: Install via Plugin Store',
+    cline: 'Cline: Install via MCP Marketplace',
+  };
+  const needsManualMcp = Object.entries(manualMcpMap)
+    .filter(([key]) => selectedAgents.includes(key))
+    .map(([, msg]) => msg);
+
+  if (needsManualMcp.length > 0) {
+    needsManualMcp.forEach(msg => console.log(`  ! ${msg}`));
+    console.log('');
+    console.log('  Package: @upstash/context7-mcp@latest');
+    console.log('  Docs: https://github.com/upstash/context7-mcp');
+  }
+}
+
+// Helper: Display env token write results - extracted to reduce cognitive complexity
+function displayEnvTokenResults(added, preserved) {
+  console.log('');
+  if (preserved.length > 0) {
+    console.log('Preserved existing values:');
+    preserved.forEach(key => {
+      console.log(`  - ${key} already configured - keeping existing value`);
+    });
+    console.log('');
+  }
+  if (added.length > 0) {
+    console.log('Added new configuration:');
+    added.forEach(key => {
+      console.log(`  - ${key}`);
+    });
+    console.log('');
+  }
+  console.log('Configuration saved to .env.local');
+  console.log('Note: .env.local has been added to .gitignore');
+}
+
 // Configure external services interactively
 async function configureExternalServices(rl, question, selectedAgents = [], projectStatus = null) {
   console.log('');
@@ -1748,59 +1786,15 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   // RESEARCH TOOL
   Object.assign(tokens, await promptForResearchTool(question));
 
-  // ============================================
-  // CONTEXT7 MCP - Library Documentation
-  // ============================================
-  console.log('');
-  console.log('Context7 MCP - Library Documentation');
-  console.log('-------------------------------------');
-  console.log('Provides up-to-date library docs for AI coding agents.');
-  console.log('');
-
-  // Show what was/will be auto-installed
-  if (selectedAgents.includes('claude')) {
-    console.log('  ✓ Auto-installed for Claude Code (.mcp.json)');
-  }
-  if (selectedAgents.includes('continue')) {
-    console.log('  ✓ Auto-installed for Continue (.continue/config.yaml)');
-  }
-
-  // Show manual setup instructions for GUI-based agents
-  const needsManualMcp = [];
-  if (selectedAgents.includes('cursor')) needsManualMcp.push('Cursor: Configure via Cursor Settings > MCP');
-  if (selectedAgents.includes('windsurf')) needsManualMcp.push('Windsurf: Install via Plugin Store');
-  if (selectedAgents.includes('cline')) needsManualMcp.push('Cline: Install via MCP Marketplace');
-
-  if (needsManualMcp.length > 0) {
-    needsManualMcp.forEach(msg => console.log(`  ! ${msg}`));
-    console.log('');
-    console.log('  Package: @upstash/context7-mcp@latest');
-    console.log('  Docs: https://github.com/upstash/context7-mcp');
-  }
+  // Context7 MCP - Library Documentation
+  displayMcpStatus(selectedAgents);
 
   // Save package manager preference
   tokens['PKG_MANAGER'] = PKG_MANAGER;
 
   // Write all tokens to .env.local (preserving existing values)
   const { added, preserved } = writeEnvTokens(tokens, true);
-
-  console.log('');
-  if (preserved.length > 0) {
-    console.log('Preserved existing values:');
-    preserved.forEach(key => {
-      console.log(`  - ${key} already configured - keeping existing value`);
-    });
-    console.log('');
-  }
-  if (added.length > 0) {
-    console.log('Added new configuration:');
-    added.forEach(key => {
-      console.log(`  - ${key}`);
-    });
-    console.log('');
-  }
-  console.log('Configuration saved to .env.local');
-  console.log('Note: .env.local has been added to .gitignore');
+  displayEnvTokenResults(added, preserved);
 }
 
 // Display the Forge banner
@@ -2418,27 +2412,10 @@ function loadClaudeCommands(selectedAgents) {
 
 /**
  * Setup agents with progress indication
+ * Delegates to setupSelectedAgents to avoid duplicate implementations (S4144)
  */
 function setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles) {
-  const totalAgents = selectedAgents.length;
-
-  selectedAgents.forEach((agentKey, index) => {
-    const agent = AGENTS[agentKey];
-    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
-    if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands, skipFiles);
-    }
-  });
-
-  // Agent installation success
-  console.log('');
-  console.log('Agent configuration complete!');
-  console.log('');
-  console.log('Installed for:');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    console.log(`  * ${agent.name}`);
-  });
+  setupSelectedAgents(selectedAgents, claudeCommands, skipFiles);
 }
 
 /**
@@ -2656,7 +2633,7 @@ function parseFlags() {
     interview: false // Force context interview
   };
 
-  for (let i = 0; i < args.length; ) {
+  for (let i = 0; i < args.length;) {
     const arg = args[i];
 
     if (arg === '--quick' || arg === '-q') {
@@ -2939,7 +2916,7 @@ function checkForLefthook() {
 
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return !!(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
+    return Boolean(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
   } catch (err) {
     console.warn('Failed to check lefthook in package.json:', err.message);
     return false;
@@ -3074,16 +3051,14 @@ function checkForSkills() {
   try {
     secureExecFileSync('skills', ['--version'], { stdio: 'ignore' });
     return 'global';
-  } catch (_err) {
-    // Not global - this is expected when Skills is not installed, continue checking other methods
+  } catch (_err) { // NOSONAR - S2486: Expected when Skills is not installed globally
   }
 
   // Check if bunx can run it
   try {
     secureExecFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
     return 'bunx';
-  } catch (_err) {
-    // Not bunx-capable - this is expected when Skills is not installed, continue checking local
+  } catch (_err) { // NOSONAR - S2486: Expected when Skills is not available via bunx
   }
 
   // Check local project installation
@@ -3094,8 +3069,7 @@ function checkForSkills() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     const isInstalled = pkg.devDependencies?.['@forge/skills'] || pkg.dependencies?.['@forge/skills'];
     return isInstalled ? 'local' : null;
-  } catch (_err) {
-    // Failed to parse package.json
+  } catch (_err) { // NOSONAR - S2486: Returns null on malformed package.json
     return null;
   }
 }
@@ -3180,6 +3154,19 @@ async function promptBeadsSetup(question) {
   console.log('');
 }
 
+// Helper: Install tool via bunx - extracted to reduce cognitive complexity
+function installViaBunx(packageName, versionArgs, initFn, toolName) {
+  console.log('Testing bunx capability...');
+  try {
+    secureExecFileSync('bunx', [packageName, ...versionArgs], { stdio: 'ignore' });
+    console.log('  ✓ Bunx is available');
+    initFn('bunx');
+  } catch (err) {
+    console.warn(`${toolName} bunx test failed:`, err.message);
+    console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
+  }
+}
+
 // Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
 function installBeadsWithMethod(method) {
   try {
@@ -3197,15 +3184,7 @@ function installBeadsWithMethod(method) {
       console.log('  ✓ Beads installed locally');
       initializeBeads('local');
     } else if (method === '3') {
-      console.log('Testing bunx capability...');
-      try {
-        secureExecFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
-        console.log('  ✓ Bunx is available');
-        initializeBeads('bunx');
-      } catch (err) {
-        console.warn('Beads bunx test failed:', err.message);
-        console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
-      }
+      installViaBunx('@beads/bd', ['version'], initializeBeads, 'Beads');
     } else {
       console.log('Invalid choice. Skipping Beads installation.');
     }
@@ -3288,15 +3267,7 @@ function installOpenSpecWithMethod(method) {
       console.log('  ✓ OpenSpec installed locally');
       initializeOpenSpec('local');
     } else if (method === '3') {
-      console.log('Testing bunx capability...');
-      try {
-        secureExecFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
-        console.log('  ✓ Bunx is available');
-        initializeOpenSpec('bunx');
-      } catch (err) {
-        console.warn('OpenSpec bunx test failed:', err.message);
-        console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
-      }
+      installViaBunx('@fission-ai/openspec', ['version'], initializeOpenSpec, 'OpenSpec');
     } else {
       console.log('Invalid choice. Skipping OpenSpec installation.');
     }
@@ -3304,6 +3275,41 @@ function installOpenSpecWithMethod(method) {
     console.warn('OpenSpec installation failed:', err.message);
     console.log('  ⚠ Failed to install OpenSpec:', err.message);
     console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
+  }
+}
+
+// Helper: Get package-manager-specific install args for Skills
+function getSkillsInstallArgs(scope) {
+  const globalFlag = scope === 'global' ? '-g' : '-D';
+  if (PKG_MANAGER === 'yarn' && scope === 'global') {
+    return ['global', 'add', '@forge/skills'];
+  }
+  const cmd = (PKG_MANAGER === 'bun' || PKG_MANAGER === 'pnpm') ? 'add' : 'install';
+  return [cmd, globalFlag, '@forge/skills'];
+}
+
+// Helper: Install Skills with chosen method - extracted to reduce cognitive complexity
+function installSkillsWithMethod(method) {
+  try {
+    if (method === '1') {
+      console.log('Installing Skills globally...');
+      secureExecFileSync(PKG_MANAGER, getSkillsInstallArgs('global'), { stdio: 'inherit' });
+      console.log('  ✓ Skills installed globally');
+      initializeSkills('global');
+    } else if (method === '2') {
+      console.log('Installing Skills locally...');
+      secureExecFileSync(PKG_MANAGER, getSkillsInstallArgs('local'), { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Skills installed locally');
+      initializeSkills('local');
+    } else if (method === '3') {
+      installViaBunx('@forge/skills', ['--version'], initializeSkills, 'Skills');
+    } else {
+      console.log('Invalid choice. Skipping Skills installation.');
+    }
+  } catch (err) {
+    console.warn('Skills installation failed:', err.message);
+    console.log('  ⚠ Failed to install Skills:', err.message);
+    console.log('  Run manually: bun add -g @forge/skills && skills init');
   }
 }
 
@@ -3355,57 +3361,9 @@ async function promptSkillsSetup(question) {
   console.log('');
   const installMethod = await question('Choose installation method (1-3): ');
 
-  try {
-    if (installMethod === '1') {
-      console.log('Installing Skills globally...');
-      // Map install commands per package manager
-      let installArgs;
-      if (PKG_MANAGER === 'bun') {
-        installArgs = ['add', '-g', '@forge/skills'];
-      } else if (PKG_MANAGER === 'yarn') {
-        installArgs = ['global', 'add', '@forge/skills'];
-      } else if (PKG_MANAGER === 'pnpm') {
-        installArgs = ['add', '-g', '@forge/skills'];
-      } else {
-        installArgs = ['install', '-g', '@forge/skills'];
-      }
-      secureExecFileSync(PKG_MANAGER, installArgs, { stdio: 'inherit' });
-      console.log('  ✓ Skills installed globally');
-      initializeSkills('global');
-    } else if (installMethod === '2') {
-      console.log('Installing Skills locally...');
-      // Map install commands per package manager
-      let installArgs;
-      if (PKG_MANAGER === 'bun') {
-        installArgs = ['add', '-D', '@forge/skills'];
-      } else if (PKG_MANAGER === 'yarn') {
-        installArgs = ['add', '-D', '@forge/skills'];
-      } else if (PKG_MANAGER === 'pnpm') {
-        installArgs = ['add', '-D', '@forge/skills'];
-      } else {
-        installArgs = ['install', '-D', '@forge/skills'];
-      }
-      secureExecFileSync(PKG_MANAGER, installArgs, { stdio: 'inherit', cwd: projectRoot });
-      console.log('  ✓ Skills installed locally');
-      initializeSkills('local');
-    } else if (installMethod === '3') {
-      console.log('Testing bunx capability...');
-      try {
-        secureExecFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
-        console.log('  ✓ Bunx is available');
-        initializeSkills('bunx');
-      } catch (err) {
-        console.warn('Skills bunx test failed:', err.message);
-        console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
-      }
-    } else {
-      console.log('Invalid choice. Skipping Skills installation.');
-    }
-  } catch (err) {
-    console.warn('Skills installation failed:', err.message);
-    console.log('  ⚠ Failed to install Skills:', err.message);
-    console.log('  Run manually: bun add -g @forge/skills && skills init');
-  }
+  console.log('');
+  installSkillsWithMethod(installMethod);
+  console.log('');
 }
 
 // Interactive setup for Beads and OpenSpec
@@ -3463,6 +3421,72 @@ function autoSetupBeadsInQuickMode() {
   }
 }
 
+// Helper: Auto-install lefthook if not present - extracted to reduce cognitive complexity
+function autoInstallLefthook() {
+  const hasLefthook = checkForLefthook();
+  if (hasLefthook) return;
+
+  console.log('📦 Installing lefthook for git hooks...');
+  try {
+    // SECURITY: execFileSync with hardcoded command
+    execFileSync('bun', ['add', '-d', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
+    console.log('  ✓ Lefthook installed');
+  } catch (err) {
+    console.warn('Lefthook auto-install failed:', err.message);
+    console.log('  ⚠ Could not install lefthook automatically');
+    console.log('  Run manually: bun add -d lefthook');
+  }
+  console.log('');
+}
+
+// Helper: Auto-setup tools (OpenSpec, Skills) in quick mode - extracted to reduce cognitive complexity
+function autoSetupToolsInQuickMode() {
+  // Beads: auto-install or initialize
+  autoSetupBeadsInQuickMode();
+
+  // OpenSpec: only initialize if already installed (optional tool)
+  const openspecStatus = checkForOpenSpec();
+  if (openspecStatus && !isOpenSpecInitialized()) {
+    console.log('📦 Initializing OpenSpec...');
+    initializeOpenSpec(openspecStatus);
+    console.log('');
+  }
+
+  // Skills: only initialize if already installed (recommended tool)
+  const skillsStatus = checkForSkills();
+  if (skillsStatus && !isSkillsInitialized()) {
+    console.log('📦 Initializing Skills...');
+    initializeSkills(skillsStatus);
+    console.log('');
+  }
+}
+
+// Helper: Configure default external services in quick mode - extracted to reduce cognitive complexity
+function configureDefaultExternalServices(skipExternal) {
+  if (skipExternal) {
+    console.log('');
+    console.log('Skipping external services configuration...');
+    return;
+  }
+
+  console.log('');
+  console.log('Configuring default services...');
+  console.log('');
+
+  const tokens = {
+    CODE_REVIEW_TOOL: 'github-code-quality',
+    CODE_QUALITY_TOOL: 'eslint',
+    PKG_MANAGER: PKG_MANAGER
+  };
+
+  writeEnvTokens(tokens);
+
+  console.log('  * Code Review: GitHub Code Quality (FREE)');
+  console.log('  * Code Quality: ESLint (built-in)');
+  console.log('');
+  console.log('Configuration saved to .env.local');
+}
+
 // Quick setup with defaults
 async function quickSetup(selectedAgents, skipExternal) {
   showBanner('Quick Setup');
@@ -3485,107 +3509,22 @@ async function quickSetup(selectedAgents, skipExternal) {
   setupCoreDocs();
   console.log('');
 
-  // Check if lefthook is installed, auto-install if not
-  const hasLefthook = checkForLefthook();
-  if (!hasLefthook) {
-    console.log('📦 Installing lefthook for git hooks...');
-    try {
-      // SECURITY: execFileSync with hardcoded command
-      execFileSync('bun', ['add', '-d', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
-      console.log('  ✓ Lefthook installed');
-    } catch (err) {
-      console.warn('Lefthook auto-install failed:', err.message);
-      console.log('  ⚠ Could not install lefthook automatically');
-      console.log('  Run manually: bun add -d lefthook');
-    }
-    console.log('');
-  }
+  // Auto-install lefthook if missing
+  autoInstallLefthook();
 
-  // Auto-setup Beads in quick mode (non-interactive)
-  autoSetupBeadsInQuickMode();
+  // Auto-setup project tools (Beads, OpenSpec, Skills)
+  autoSetupToolsInQuickMode();
 
-  // OpenSpec: skip in quick mode (optional tool)
-  // Only initialize if already installed
-  const openspecStatus = checkForOpenSpec();
-  const openspecInitialized = isOpenSpecInitialized();
-
-  if (openspecStatus && !openspecInitialized) {
-    console.log('📦 Initializing OpenSpec...');
-    initializeOpenSpec(openspecStatus);
-    console.log('');
-  }
-
-  // Skills: initialize if already installed (recommended tool)
-  const skillsStatus = checkForSkills();
-  const skillsInitialized = isSkillsInitialized();
-
-  if (skillsStatus && !skillsInitialized) {
-    console.log('📦 Initializing Skills...');
-    initializeSkills(skillsStatus);
-    console.log('');
-  }
-
-  // Load Claude commands if needed
-  let claudeCommands = {};
-  if (selectedAgents.includes('claude')) {
-    setupAgent('claude', null);
-  }
-
-  if (selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
-    COMMANDS.forEach(cmd => {
-      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-      const content = readFile(cmdPath);
-      if (content) {
-        claudeCommands[`${cmd}.md`] = content;
-      }
-    });
-  }
-
-  // Setup each selected agent
-  const totalAgents = selectedAgents.length;
-  selectedAgents.forEach((agentKey, index) => {
-    const agent = AGENTS[agentKey];
-    console.log(`[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
-    if (agentKey !== 'claude') {
-      setupAgent(agentKey, claudeCommands);
-    }
-  });
-
-  console.log('');
-  console.log('Agent configuration complete!');
-  console.log('');
-  console.log('Installed for:');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    console.log(`  * ${agent.name}`);
-  });
+  // Load Claude commands and setup agents (reuse existing helpers)
+  const claudeCommands = loadAndSetupClaudeCommands(selectedAgents);
+  setupSelectedAgents(selectedAgents, claudeCommands);
 
   // Install git hooks for TDD enforcement
   console.log('');
   installGitHooks();
 
   // Configure external services with defaults (unless skipped)
-  if (skipExternal) {
-    console.log('');
-    console.log('Skipping external services configuration...');
-  } else {
-    console.log('');
-    console.log('Configuring default services...');
-    console.log('');
-
-    const tokens = {
-      CODE_REVIEW_TOOL: 'github-code-quality',
-      CODE_QUALITY_TOOL: 'eslint',
-      PKG_MANAGER: PKG_MANAGER
-    };
-
-    writeEnvTokens(tokens);
-
-    console.log('  * Code Review: GitHub Code Quality (FREE)');
-    console.log('  * Code Quality: ESLint (built-in)');
-    console.log('');
-    console.log('Configuration saved to .env.local');
-  }
+  configureDefaultExternalServices(skipExternal);
 
   // Final summary
   console.log('');
@@ -3650,6 +3589,153 @@ function setupAgentsMdFile(flags, skipFiles) {
   }
 }
 
+// Helper: Handle user-provided flags override - extracted to reduce cognitive complexity
+function handleFlagsOverride(flags, projectStatus) {
+  if (!flags.type && !flags.interview) {
+    return;
+  }
+
+  console.log('User-provided flags:');
+  if (flags.type) {
+    console.log(`  --type=${flags.type} (workflow profile override)`);
+    saveWorkflowTypeOverride(flags.type, projectStatus.autoDetected);
+  }
+  if (flags.interview) {
+    console.log('  --interview (context interview mode)');
+    console.log('  Note: Enhanced context gathering is a future feature');
+  }
+  console.log('');
+}
+
+// Helper: Save workflow type override to context - extracted to reduce cognitive complexity
+function saveWorkflowTypeOverride(type, autoDetected) {
+  if (!autoDetected) {
+    return;
+  }
+  try {
+    const contextPath = path.join(projectRoot, '.forge', 'context.json');
+    if (fs.existsSync(contextPath)) {
+      const contextData = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
+      contextData.user_provided = contextData.user_provided || {};
+      contextData.user_provided.workflowType = type;
+      contextData.last_updated = new Date().toISOString();
+      fs.writeFileSync(contextPath, JSON.stringify(contextData, null, 2), 'utf8');
+    }
+  } catch (error) {
+    console.warn('  Warning: Could not save workflow type override:', error.message);
+  }
+}
+
+// Helper: Display existing installation status - extracted to reduce cognitive complexity
+function displayExistingInstallation(projectStatus) {
+  if (projectStatus.type === 'fresh') {
+    return;
+  }
+
+  console.log('==============================================');
+  console.log('  Existing Installation Detected');
+  console.log('==============================================');
+  console.log('');
+
+  console.log(projectStatus.type === 'upgrade'
+    ? 'Found existing Forge installation:'
+    : 'Found partial installation:');
+
+  if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
+  if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
+  if (projectStatus.hasEnvLocal) console.log('  - .env.local');
+  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
+  console.log('');
+}
+
+// Helper: Prompt for overwrite decisions - extracted to reduce cognitive complexity
+async function promptForOverwriteDecisions(question, projectStatus) {
+  const skipFiles = {
+    agentsMd: false,
+    claudeCommands: false
+  };
+
+  if (projectStatus.hasAgentsMd) {
+    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
+    skipFiles.agentsMd = !overwriteAgents;
+    console.log(overwriteAgents ? '  Will overwrite AGENTS.md' : '  Keeping existing AGENTS.md');
+  }
+
+  if (projectStatus.hasClaudeCommands) {
+    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
+    skipFiles.claudeCommands = !overwriteCommands;
+    console.log(overwriteCommands ? '  Will overwrite .claude/commands/' : '  Keeping existing .claude/commands/');
+  }
+
+  if (projectStatus.type !== 'fresh') {
+    console.log('');
+  }
+
+  return skipFiles;
+}
+
+// Helper: Load and setup Claude commands - extracted to reduce cognitive complexity
+function loadAndSetupClaudeCommands(selectedAgents, skipFiles) {
+  const claudeCommands = {};
+  const needsClaudeCommands = selectedAgents.includes('claude') ||
+    selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands);
+
+  if (!needsClaudeCommands) {
+    return claudeCommands;
+  }
+
+  // First ensure Claude is set up
+  if (selectedAgents.includes('claude')) {
+    setupAgent('claude', null, skipFiles);
+  }
+
+  // Then load the commands (from existing or newly created)
+  COMMANDS.forEach(cmd => {
+    const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+    const content = readFile(cmdPath);
+    if (content) {
+      claudeCommands[`${cmd}.md`] = content;
+    }
+  });
+
+  return claudeCommands;
+}
+
+// Helper: Setup all selected agents - extracted to reduce cognitive complexity
+function setupSelectedAgents(selectedAgents, claudeCommands, skipFiles) {
+  const totalAgents = selectedAgents.length;
+  selectedAgents.forEach((agentKey, index) => {
+    const agent = AGENTS[agentKey];
+    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
+    if (agentKey !== 'claude') { // Claude already done above
+      setupAgent(agentKey, claudeCommands, skipFiles);
+    }
+  });
+
+  console.log('');
+  console.log('Agent configuration complete!');
+  console.log('');
+  console.log('Installed for:');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  * ${agent.name}`);
+  });
+}
+
+// Helper: Configure external services step - extracted to reduce cognitive complexity
+async function handleExternalServicesStep(flags, rl, question, selectedAgents, projectStatus) {
+  if (flags.skipExternal) {
+    console.log('');
+    console.log('Skipping external services configuration...');
+    return;
+  }
+
+  console.log('');
+  console.log('STEP 2: External Services (Optional)');
+  console.log('=====================================');
+  await configureExternalServices(rl, question, selectedAgents, projectStatus);
+}
+
 // Interactive setup with flag support
 async function interactiveSetupWithFlags(flags) {
   const rl = readline.createInterface({
@@ -3686,89 +3772,17 @@ async function interactiveSetupWithFlags(flags) {
   checkPrerequisites();
   console.log('');
 
-  // =============================================
   // PROJECT DETECTION
-  // =============================================
   const projectStatus = await detectProjectStatus();
 
   // Handle user-provided flags to override auto-detection
-  if (flags.type || flags.interview) {
-    console.log('User-provided flags:');
-    if (flags.type) {
-      console.log(`  --type=${flags.type} (workflow profile override)`);
-      // Update saved context with manual type override
-      if (projectStatus.autoDetected) {
-        try {
-          const contextPath = path.join(projectRoot, '.forge', 'context.json');
-          if (fs.existsSync(contextPath)) {
-            const contextData = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
-            contextData.user_provided = contextData.user_provided || {};
-            contextData.user_provided.workflowType = flags.type;
-            contextData.last_updated = new Date().toISOString();
-            fs.writeFileSync(contextPath, JSON.stringify(contextData, null, 2), 'utf8');
-          }
-        } catch (error) {
-          console.warn('  Warning: Could not save workflow type override:', error.message);
-        }
-      }
-    }
-    if (flags.interview) {
-      console.log('  --interview (context interview mode)');
-      console.log('  Note: Enhanced context gathering is a future feature');
-    }
-    console.log('');
-  }
+  handleFlagsOverride(flags, projectStatus);
 
-  if (projectStatus.type !== 'fresh') {
-    console.log('==============================================');
-    console.log('  Existing Installation Detected');
-    console.log('==============================================');
-    console.log('');
+  // Display existing installation status
+  displayExistingInstallation(projectStatus);
 
-    if (projectStatus.type === 'upgrade') {
-      console.log('Found existing Forge installation:');
-    } else {
-      console.log('Found partial installation:');
-    }
-
-    if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
-    if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
-    if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-    if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
-    console.log('');
-  }
-
-  // Track which files to skip based on user choices
-  const skipFiles = {
-    agentsMd: false,
-    claudeCommands: false
-  };
-
-  // Ask about overwriting AGENTS.md if it exists
-  if (projectStatus.hasAgentsMd) {
-    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
-    if (overwriteAgents) {
-      console.log('  Will overwrite AGENTS.md');
-    } else {
-      skipFiles.agentsMd = true;
-      console.log('  Keeping existing AGENTS.md');
-    }
-  }
-
-  // Ask about overwriting .claude/commands/ if it exists
-  if (projectStatus.hasClaudeCommands) {
-    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
-    if (overwriteCommands) {
-      console.log('  Will overwrite .claude/commands/');
-    } else {
-      skipFiles.claudeCommands = true;
-      console.log('  Keeping existing .claude/commands/');
-    }
-  }
-
-  if (projectStatus.type !== 'fresh') {
-    console.log('');
-  }
+  // Prompt for overwrite decisions
+  const skipFiles = await promptForOverwriteDecisions(question, projectStatus);
 
   // STEP 1: Agent Selection (delegated to helper)
   const agentKeys = Object.keys(AGENTS);
@@ -3785,56 +3799,14 @@ async function interactiveSetupWithFlags(flags) {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands if needed
-  let claudeCommands = {};
-  if (selectedAgents.includes('claude') || selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
-    // First ensure Claude is set up
-    if (selectedAgents.includes('claude')) {
-      setupAgent('claude', null, skipFiles);
-    }
-    // Then load the commands (from existing or newly created)
-    COMMANDS.forEach(cmd => {
-      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-      const content = readFile(cmdPath);
-      if (content) {
-        claudeCommands[`${cmd}.md`] = content;
-      }
-    });
-  }
+  // Load Claude commands if needed (delegated to helper)
+  const claudeCommands = loadAndSetupClaudeCommands(selectedAgents, skipFiles);
 
-  // Setup each selected agent with progress indication
-  const totalAgents = selectedAgents.length;
-  selectedAgents.forEach((agentKey, index) => {
-    const agent = AGENTS[agentKey];
-    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
-    if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands, skipFiles);
-    }
-  });
+  // Setup each selected agent with progress indication (delegated to helper)
+  setupSelectedAgents(selectedAgents, claudeCommands, skipFiles);
 
-  // Agent installation success
-  console.log('');
-  console.log('Agent configuration complete!');
-  console.log('');
-  console.log('Installed for:');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    console.log(`  * ${agent.name}`);
-  });
-
-  // =============================================
-  // STEP 2: External Services Configuration
-  // =============================================
-  if (flags.skipExternal) {
-    console.log('');
-    console.log('Skipping external services configuration...');
-  } else {
-    console.log('');
-    console.log('STEP 2: External Services (Optional)');
-    console.log('=====================================');
-
-    await configureExternalServices(rl, question, selectedAgents, projectStatus);
-  }
+  // Handle external services step (delegated to helper)
+  await handleExternalServicesStep(flags, rl, question, selectedAgents, projectStatus);
 
   setupCompleted = true;
   rl.close();
@@ -4425,5 +4397,11 @@ async function showRollbackMenu() {
 
 // Only execute main() when run directly, not when imported
 if (require.main === module) {
-  main().catch(console.error);
+  (async () => { // NOSONAR - S7785: Top-level await requires ESM; this file uses CommonJS
+    try {
+      await main();
+    } catch (error) {
+      console.error(error);
+    }
+  })();
 }

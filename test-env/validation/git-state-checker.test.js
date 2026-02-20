@@ -69,7 +69,7 @@ function createMergeConflict(directory) {
     // Try to merge - this will create a conflict
     try {
       execSync('git merge feature-branch', { cwd: directory, stdio: 'pipe' });
-    } catch (error) {
+    } catch (_error) {
       // Expected - merge conflict
     }
   } catch (error) {

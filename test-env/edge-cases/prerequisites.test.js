@@ -11,7 +11,7 @@ const path = require('node:path');
 function safeExec(cmd) {
   try {
     return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-  } catch (e) {
+  } catch (_e) {
     return null;
   }
 }

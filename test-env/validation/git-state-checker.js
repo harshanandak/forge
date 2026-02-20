@@ -101,7 +101,7 @@ function isDetachedHead(directory) {
     });
     // Success means we're on a branch (not detached)
     return { detached: false, branch: 'HEAD' };
-  } catch (error) {
+  } catch (_error) {
     // Exit code 1 means detached HEAD
     return { detached: true, branch: null };
   }
@@ -126,7 +126,7 @@ function hasUncommittedChanges(directory) {
       hasChanges: files.length > 0,
       files: files
     };
-  } catch (error) {
+  } catch (_error) {
     // If git status fails, assume no changes
     return { hasChanges: false, files: [] };
   }
@@ -155,7 +155,7 @@ function hasMergeConflict(directory) {
     });
     // No conflict markers found
     return { hasConflict: false, conflictedFiles: [] };
-  } catch (error) {
+  } catch (_error) {
     // Conflict markers detected or merge in progress
     // Get list of conflicted files
     try {
@@ -166,7 +166,7 @@ function hasMergeConflict(directory) {
       });
       const conflictedFiles = output.trim().split('\n').filter(f => f.length > 0);
       return { hasConflict: true, conflictedFiles };
-    } catch (e) {
+    } catch (_e) {
       // Fallback: we know there's a conflict, just can't list files
       return { hasConflict: true, conflictedFiles: [] };
     }

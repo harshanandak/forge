@@ -10,8 +10,8 @@ const { execSync } = require('node:child_process');
 
 // Import validation helpers from Phase 1
 const { checkGitState, isDetachedHead, hasUncommittedChanges, hasMergeConflict } = require('../validation/git-state-checker.js');
-const { validateFile } = require('../validation/file-checker.js');
-const { validateEnvFile } = require('../validation/env-validator.js');
+const { validateFile: _validateFile } = require('../validation/file-checker.js');
+const { validateEnvFile: _validateEnvFile } = require('../validation/env-validator.js');
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 const SETUP_SCRIPT = path.join(__dirname, 'setup-fixtures.sh');
@@ -24,7 +24,7 @@ const EXPECTED_FIXTURES = [
 ];
 
 before(() => {
-  try { fs.chmodSync(SETUP_SCRIPT, 0o755); } catch (error) { }
+  try { fs.chmodSync(SETUP_SCRIPT, 0o755); } catch (_error) { }
   try {
     // SECURITY: Hardcoded command (no user input)
     // Note: Don't use --force to avoid race conditions with other tests

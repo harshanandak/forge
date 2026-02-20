@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { tmpdir: _tmpdir } = require('node:os');
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 

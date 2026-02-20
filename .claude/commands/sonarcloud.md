@@ -36,8 +36,6 @@ Pull code quality data from SonarCloud. Requires `SONARCLOUD_TOKEN` environment 
 
 ## Instructions
 
-<steps>
-
 1. Parse the query from `$ARGUMENTS` to determine:
    - Query type (issues, metrics, gate, health, pr, hotspots, history)
    - Project key
@@ -54,8 +52,6 @@ Pull code quality data from SonarCloud. Requires `SONARCLOUD_TOKEN` environment 
    - "Show issues in specific file?"
    - "Get more details on a specific issue?"
    - "Compare with another branch?"
-
-</steps>
 
 ## Example Outputs
 
