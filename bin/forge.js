@@ -85,9 +85,7 @@ function secureExecFileSync(command, args = [], options = {}) {
       const resolvedPath = result.stdout.trim().split(/\r?\n/)[0].trim();
       return execFileSync(resolvedPath, args, options);
     }
-  } catch (_err) {
-    // PATH resolution failed - command might not be installed
-    // Error is intentionally ignored as we fall back to direct command execution
+  } catch (_err) { // NOSONAR - S2486: Intentionally ignored; falls back to direct command execution below
   }
 
   // Fallback: execute with command name (maintains compatibility)
@@ -1127,8 +1125,7 @@ function readPackageJson() {
       return null;
     }
     return JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-  } catch (_err) {
-    // Invalid package.json or read error
+  } catch (_err) { // NOSONAR - S2486: Returns null on invalid/missing package.json
     return null;
   }
 }
@@ -2415,27 +2412,10 @@ function loadClaudeCommands(selectedAgents) {
 
 /**
  * Setup agents with progress indication
+ * Delegates to setupSelectedAgents to avoid duplicate implementations (S4144)
  */
 function setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles) {
-  const totalAgents = selectedAgents.length;
-
-  selectedAgents.forEach((agentKey, index) => {
-    const agent = AGENTS[agentKey];
-    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
-    if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands, skipFiles);
-    }
-  });
-
-  // Agent installation success
-  console.log('');
-  console.log('Agent configuration complete!');
-  console.log('');
-  console.log('Installed for:');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    console.log(`  * ${agent.name}`);
-  });
+  setupSelectedAgents(selectedAgents, claudeCommands, skipFiles);
 }
 
 /**
@@ -3071,16 +3051,14 @@ function checkForSkills() {
   try {
     secureExecFileSync('skills', ['--version'], { stdio: 'ignore' });
     return 'global';
-  } catch (_err) {
-    // Not global - this is expected when Skills is not installed, continue checking other methods
+  } catch (_err) { // NOSONAR - S2486: Expected when Skills is not installed globally
   }
 
   // Check if bunx can run it
   try {
     secureExecFileSync('bunx', ['@forge/skills', '--version'], { stdio: 'ignore' });
     return 'bunx';
-  } catch (_err) {
-    // Not bunx-capable - this is expected when Skills is not installed, continue checking local
+  } catch (_err) { // NOSONAR - S2486: Expected when Skills is not available via bunx
   }
 
   // Check local project installation
@@ -3091,8 +3069,7 @@ function checkForSkills() {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     const isInstalled = pkg.devDependencies?.['@forge/skills'] || pkg.dependencies?.['@forge/skills'];
     return isInstalled ? 'local' : null;
-  } catch (_err) {
-    // Failed to parse package.json
+  } catch (_err) { // NOSONAR - S2486: Returns null on malformed package.json
     return null;
   }
 }
@@ -4420,7 +4397,7 @@ async function showRollbackMenu() {
 
 // Only execute main() when run directly, not when imported
 if (require.main === module) {
-  (async () => {
+  (async () => { // NOSONAR - S7785: Top-level await requires ESM; this file uses CommonJS
     try {
       await main();
     } catch (error) {
