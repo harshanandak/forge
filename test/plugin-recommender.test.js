@@ -2,7 +2,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { recommend, matchesDetection } = require('../lib/plugin-recommender');
-const { CATALOG, TIERS } = require('../lib/plugin-catalog');
+const { CATALOG } = require('../lib/plugin-catalog');
 
 // Helper: minimal tech stack with all fields
 function emptyStack() {
