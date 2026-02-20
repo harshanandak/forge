@@ -438,13 +438,312 @@ bin/forge.js
 
 ---
 
+## Implementation Risk Analysis
+
+### R1: npm Package Extraction — Breaking Existing Users
+
+**Risk**: Removing `.claude/skills/` from the `files` array means users who `npm update` will lose bundled skills.
+
+**Severity**: MEDIUM
+
+**Analysis**:
+- npm replaces the entire package on update — skills files vanish from `node_modules/`
+- The `setupClaudeAgent()` function (bin/forge.js:1916) copies from `packageDir` paths — if skills aren't there, copy silently fails
+- The `postinstall` script (`node ./bin/forge.js`) runs `minimalInstall()` which doesn't reference skills
+- Skills are referenced in `.claude/commands/research.md` as recommended tools (soft reference, not hard dependency)
+
+**Mitigation**:
+1. Add `fs.existsSync()` guards before copying skills from packageDir
+2. Show migration notice during setup: "Skills are now installed separately via `npx skills add`"
+3. Don't remove skills from `files` in PR6 — **defer to PR7** after skills.sh publishing is validated
+
+**Decision**: **Defer skill extraction to PR7.** PR6 adds the catalog + recommendation engine. PR7 publishes skills to skills.sh and removes them from the npm package. This avoids a breaking change before the alternative install path is proven.
+
+### R2: Cross-Platform Prerequisite Checking
+
+**Risk**: `execFileSync` with `go version`, `gh --version`, `jq --version` behaves differently across platforms.
+
+**Severity**: MEDIUM
+
+**Analysis**:
+- Windows: `execFileSync('go', ['version'])` works for `.exe` but NOT for `.cmd`/`.bat` wrappers (some npm-installed CLIs use these)
+- Windows: `where.exe` returns multiple lines; must take first line only
+- macOS (Apple Silicon): Homebrew at `/opt/homebrew/bin/` may not be in non-interactive shell PATH
+- `jq --version` outputs `jq-1.7.1` (non-standard format with prefix)
+- `go version` output includes platform info: `go version go1.22.0 windows/amd64`
+
+**Mitigation**:
+1. Use the existing `secureExecFileSync()` pattern (bin/forge.js:71-94) which already resolves via `where.exe`/`which`
+2. For version checks, only check command exists (exit code 0), don't parse version strings
+3. Wrap all checks in try/catch, return structured `{ met: [], missing: [] }`
+4. Add platform-conditional tests with `test.skip` for Windows-specific behavior
+
+### R3: Installation Orchestration Pitfalls
+
+**Risk**: Real-world installs can fail in many ways — timeouts, prompts, permissions, partial state.
+
+**Severity**: HIGH
+
+**Analysis**:
+- `npx` may prompt "Need to install the following packages... Ok to proceed?" — blocks in non-interactive mode
+- `go install` requires GOPATH/GOBIN on PATH — installed binary may not be found after install
+- Global npm installs (`npm install -g`) need root/admin on some systems
+- Network failures leave partial installation state with no rollback
+- `PKG_MANAGER` global (bin/forge.js:62) defaults to `'npm'` if `checkPrerequisites()` hasn't run
+
+**Mitigation**:
+1. Always use `--yes` flag with npx: `npx --yes skills add owner/repo`
+2. Add 60s timeout for npm installs, 120s for `go install`, 30s for version checks
+3. Track per-tool results: `{ installed: [], failed: [], skipped: [], prerequisitesMissing: [] }`
+4. Never abort batch on single failure — continue installing remaining tools
+5. Detect package manager before any install (don't rely on global state)
+
+**Decision**: **Defer actual installation orchestration to PR6.5 or PR7.** PR6 focuses on `forge recommend` (read-only, zero side effects). Installation via `forge install` comes later after recommendation output is validated with real projects.
+
+### R4: Catalog Scope — 90+ Tools Is Too Ambitious
+
+**Risk**: 90+ tool entries means 90+ data assertions, 90+ detection rules, massive maintenance burden.
+
+**Severity**: HIGH
+
+**Analysis**:
+- Tool versions, pricing, URLs, and free alternatives change frequently
+- Each tool's `detectWhen` rules need testing — combinatorial explosion of project types
+- Review burden: a 500+ line data file is hard to review in one PR
+- Many tools will never be detected because they serve niche stacks
+
+**Decision**: **Start with 30-35 core tools in PR6.** Expand to 90+ in PR8. Core tools cover:
+- The most common JS/TS stacks (React, Next.js, Vue, Angular, Express, NestJS)
+- Essential code quality (ESLint, Biome, Prettier)
+- Security scanning (npm audit, eslint-plugin-security, SonarCloud)
+- Testing (node:test, Vitest, Jest, Playwright)
+- Forge workflow tools (Beads, OpenSpec, Skills CLI, gh, lefthook)
+- Skills: parallel-ai, sonarcloud, vercel-agent-skills
+- MCPs: Context7 (justified — no CLI equivalent)
+
+### R5: Setup Flow Integration Conflicts
+
+**Risk**: Adding `forge recommend` to the setup flow may conflict with existing tools installation.
+
+**Severity**: MEDIUM
+
+**Analysis**:
+- Current setup flow: `checkPrerequisites()` → agent selection → `setupProjectTools()` (Beads, OpenSpec, Skills) → complete
+- `checkPrerequisites()` calls `process.exit(1)` on failure — `forge recommend` must NOT depend on this
+- `setupProjectTools()` at bin/forge.js:3370 already handles Skills CLI installation
+- If `forge recommend` also suggests Skills CLI, user gets asked twice
+
+**Integration approach**:
+1. `forge recommend` is a **standalone command** — works without setup, never calls `process.exit()`
+2. `forge setup` OPTIONALLY shows recommendations AFTER current tool setup completes
+3. Recommendations come after `setupProjectTools()`, framed as "Additional tools for your stack"
+4. No conflict with existing Skills CLI prompt — recommendations suggest individual skills (e.g., `npx skills add vercel-labs/agent-skills`), not the Skills CLI itself
+
+### R6: `bin/forge.js` Size Concerns
+
+**Risk**: bin/forge.js is already 4,407 lines. Adding more logic makes it harder to maintain.
+
+**Severity**: LOW
+
+**Analysis**: New commands (`recommend`, `install`) will be thin dispatchers in `main()`, delegating to `lib/plugin-recommender.js` and `lib/plugin-installer.js`. This follows the existing pattern (commands delegate to lib/ modules).
+
+**Mitigation**: Each new command is ~10-15 lines in `main()`. All logic lives in lib/ modules.
+
+---
+
+## Setup Flow Architecture
+
+### Current Flow (bin/forge.js)
+
+```
+main() [line 3944]
+  ├─ parseFlags()
+  ├─ handlePathSetup() (if --path)
+  └─ if command === 'setup':
+      ├─ quickSetup()                    [if --quick]
+      ├─ handleSetupCommand()            [if agents specified]
+      └─ interactiveSetupWithFlags()     [interactive mode]
+            ├─ checkPrerequisites()      [line 351] → git, gh, node, pkg manager
+            ├─ setupAgentsMdFile()       [AGENTS.md]
+            ├─ setupCoreDocs()           [docs/ARCHITECTURE.md, etc.]
+            ├─ loadAndSetupClaudeCommands() [.claude/commands/*.md]
+            ├─ setupSelectedAgents()     [agent-specific configs]
+            └─ displaySetupSummary()
+```
+
+### Project Tools Sub-Flow
+
+```
+setupProjectTools() [line 3370]
+  ├─ promptBeadsSetup()      [line 3105] → check/install/init @beads/bd
+  ├─ promptOpenSpecSetup()   [line 3199] → check/install/init openspec
+  └─ promptSkillsSetup()     [line 3317] → check/install/init @forge/skills
+```
+
+### New Flow (PR6 additions)
+
+```
+main() [line 3944]
+  ├─ ... existing commands ...
+  ├─ if command === 'recommend':
+  │     └─ handleRecommend(flags)        [NEW — standalone, no setup required]
+  │           ├─ detectTechStack()       [lib/project-discovery.js — expanded]
+  │           ├─ recommend()             [lib/plugin-recommender.js]
+  │           └─ displayRecommendations()
+  └─ if command === 'setup':
+        └─ interactiveSetupWithFlags()
+              ├─ ... existing flow ...
+              └─ showRecommendations()   [NEW — optional, after tool setup]
+                    ├─ detectTechStack()
+                    ├─ recommend()
+                    └─ "Run 'forge recommend' for more details"
+```
+
+### Key Design Decisions
+
+1. **`forge recommend` is read-only** — no installations, no side effects, safe to run anytime
+2. **`forge setup` shows brief recommendations** — teaser after existing tool setup
+3. **`forge install <tool>` deferred** — comes in PR7 after recommendation output is validated
+4. **Never calls `process.exit()`** — `forge recommend` always succeeds (even with empty results)
+5. **Detects package manager independently** — doesn't rely on global `PKG_MANAGER` state
+
+### Example Output: `forge recommend`
+
+```
+$ forge recommend --budget startup
+
+Detected stack: Next.js + TypeScript + Supabase + Stripe
+
+Recommended tools for your project:
+
+  RESEARCH
+  ✓ Context7 MCP          [F]  Live library docs       npx add-mcp context7
+  ✓ parallel-ai skill     [F]  Web research            npx skills add parallel-ai
+
+  DEV
+  ✓ TypeScript LSP         [F]  Type checking           .lsp.json
+  ✓ Supabase CLI           [FL] Local dev, migrations   npm install -D supabase
+  ✓ Stripe CLI             [F]  Webhook testing         brew install stripe/stripe-cli/stripe
+
+  CHECK
+  ✓ ESLint                 [F]  Linting                 npm install -D eslint
+  ✓ eslint-plugin-security [F]  Security rules          npm install -D eslint-plugin-security
+  ✓ SonarCloud skill       [FP] Quality gate            npx skills add sonarcloud
+
+  SHIP
+  ✓ gh CLI                 [F]  PR workflow             https://cli.github.com
+  ✓ Lefthook               [F]  Git hooks               npm install -D lefthook
+
+  Skipped (budget: startup):
+  ✗ Greptile              [P]  $30/mo  → Free alt: CodeRabbit (free for public repos)
+  ✗ Snyk                  [P]  $25/mo  → Free alt: npm audit + eslint-plugin-security
+
+[F]=Free  [FP]=Free-Public  [FL]=Free-Limited  [P]=Paid
+
+Run 'forge install <tool>' to install individually.
+Run 'forge install --all' to install all recommended tools.
+```
+
+---
+
+## PR Deferral Strategy
+
+### PR6 Scope (This PR) — Catalog + Recommendations
+
+| Component | Action | Why in PR6 |
+|-----------|--------|-----------|
+| `lib/plugin-catalog.js` | CREATE | Core data structure, no side effects |
+| `lib/plugin-recommender.js` | CREATE | Read-only engine, no side effects |
+| `lib/project-discovery.js` | EDIT (additive) | Expanded detection powers recommendations |
+| `bin/forge.js` | EDIT | Add `recommend` command (thin dispatcher) |
+| `test/plugin-catalog.test.js` | CREATE | Data validation tests |
+| `test/plugin-detection.test.js` | CREATE | Detection accuracy tests |
+| `test/plugin-recommender.test.js` | CREATE | Recommendation logic tests |
+| `test/plugin-recommend.test.js` | CREATE | CLI command tests |
+
+**Risk**: LOW — all read-only, no installations, no file mutations, no side effects
+
+### PR7 Scope (Deferred) — Installation + Skill Extraction
+
+| Component | Action | Why deferred |
+|-----------|--------|-------------|
+| `lib/plugin-installer.js` | CREATE | Side effects (runs npm/go/npx), needs real-world validation |
+| Prerequisite checking | Part of installer | Cross-platform complexity needs careful testing |
+| `forge install` command | CREATE | Depends on installer being battle-tested |
+| Skill extraction from npm `files` | EDIT package.json | Breaking change — needs migration path proven first |
+| Skills publish to skills.sh | External | Must publish before removing from npm |
+| `test/plugin-installer.test.js` | CREATE | Complex mocking for 7 install methods |
+| `test/plugin-setup-integration.test.js` | CREATE | E2E integration with setup flow |
+
+**Risk**: MEDIUM-HIGH — file mutations, subprocess execution, cross-platform issues
+
+### PR8 Scope (Future) — Catalog Expansion
+
+| Component | Action | Why deferred |
+|-----------|--------|-------------|
+| Expand catalog to 90+ tools | EDIT catalog | Needs community feedback on core 30 |
+| Language-specific LSPs | EDIT catalog | Niche, low priority |
+| AI tool creation (from forge-mlm) | CREATE | Separate feature, different user flow |
+
+---
+
+## Security Analysis (OWASP Top 10)
+
+### A03: Injection — Command Injection via Tool Names
+
+**Risk**: HIGH
+**Applicable**: Yes — `plugin-installer.js` will pass user-influenced data to `execFileSync`
+**Mitigation**:
+- Use `execFileSync` with array args (never string concatenation)
+- Validate tool IDs against catalog (whitelist only)
+- Catalog entries are frozen objects — can't be modified at runtime
+- All install commands come from catalog data, never user input
+**Tests**: Verify tool IDs are validated, reject arbitrary input
+
+### A05: Security Misconfiguration — Installing Untrusted Packages
+
+**Risk**: MEDIUM
+**Applicable**: Yes — `npx skills add` and `npm install` fetch from registries
+**Mitigation**:
+- Only install packages listed in the frozen catalog
+- Show exact package name and source before install
+- Never auto-install without user confirmation
+- `--dry-run` flag shows what would be installed
+**Tests**: Verify frozen catalog can't be modified, dry-run produces no side effects
+
+### A06: Vulnerable Components — Recommending Outdated Tools
+
+**Risk**: LOW
+**Applicable**: Yes — catalog may recommend tools with known CVEs
+**Mitigation**:
+- Catalog is a static data file — easy to audit and update
+- `npm audit` already runs as part of `/check`
+- SonarCloud detects vulnerable dependencies
+**Tests**: Existing CI/CD checks catch vulnerable dependencies
+
+### A08: Software and Data Integrity — Catalog Tampering
+
+**Risk**: LOW
+**Applicable**: Yes — if catalog is modified, wrong tools could be recommended
+**Mitigation**:
+- `Object.freeze()` on catalog object — can't be modified at runtime
+- Catalog is in lib/ (part of npm package) — protected by npm integrity checks
+- Tests validate catalog structure on every CI run
+**Tests**: Verify catalog is frozen, verify all entries pass schema validation
+
+### Other OWASP categories (A01, A02, A04, A07, A09, A10)
+
+**Not applicable** — PR6 is read-only (no auth, no data storage, no network requests, no user accounts). Installation in PR7 will need re-evaluation for A03 and A08.
+
+---
+
 ## Scope Assessment
 
 - **Classification**: Strategic (new feature, architecture change)
-- **Complexity**: High (catalog + detection + recommendation + installation)
-- **Timeline**: PR5.5 (1-2 days) + PR6 (4-5 days)
-- **Risk**: Medium (additive, but touches setup flow)
-- **Dependencies**: PR5.5 before PR6
+- **Complexity**: Medium (reduced scope — catalog + recommendation only)
+- **PR split**: PR6 (catalog + recommend) → PR7 (installer + extraction) → PR8 (expansion)
+- **Risk**: LOW for PR6 (read-only), MEDIUM for PR7 (side effects)
+- **Dependencies**: None for PR6 (PR5.5 deferred — skills stay bundled for now)
 
 ---
 

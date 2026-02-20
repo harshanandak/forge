@@ -2,9 +2,56 @@
 
 ## Current Focus
 <!-- What you're working on -->
-Research complete for PR5 and PR6. Ready for `/plan advanced-testing`.
+PR5 merged. PR6 (Plugin Architecture) ready for `/plan`.
 
 ## Completed
+
+### PR5: Advanced Testing Expansion (2026-02-20)
+- **PR**: #40
+- **Beads**: forge-01p (closed)
+- **Research**: [docs/research/advanced-testing.md](../research/advanced-testing.md) (PR #36, merged 2026-02-20)
+- **Description**: Advanced testing infrastructure with Stryker mutation testing, performance benchmarks, OWASP A02/A07 security tests, and test quality dashboard
+- **Deliverables**:
+  - **Stryker Mutation Testing** (stryker.config.json):
+    - Command runner mode with `bun test` for Bun compatibility
+    - Scope: `lib/**/*.js` (excludes `bin/forge.js` CLI entry point)
+    - Thresholds: high 80, low 60, break 50
+    - Incremental mode for faster CI re-runs
+    - Weekly schedule (Sunday 3am UTC) + manual dispatch
+    - 10 comprehensive tests validating configuration
+  - **Performance Benchmarks** (scripts/benchmark.js):
+    - CLI startup benchmark (`node bin/forge.js --help`)
+    - `autoDetect()` and `detectFramework()` timing
+    - Safe subprocess handling with `execFileSync` (no shell injection)
+    - JSON output for CI integration
+    - 6 comprehensive tests
+  - **OWASP A02 Cryptographic Failure Tests** (test-env/edge-cases/crypto-security.test.js):
+    - .gitignore patterns for .env files (3 tests)
+    - No hardcoded secrets in lib/ and bin/ (2 tests)
+    - AGENTS.md template and MCP config clean (2 tests)
+    - No tracked .env files (1 test)
+    - 8 comprehensive tests
+  - **OWASP A07 Authentication Security Tests** (test-env/edge-cases/auth-security.test.js):
+    - Branch protection validates main/master
+    - No default credentials in templates
+    - Config files use process.env for tokens
+    - 6 comprehensive tests
+  - **Test Quality Dashboard** (scripts/test-dashboard.js):
+    - File-based test counting (avoids recursive `bun test`)
+    - Coverage threshold from c8 config
+    - Mutation score from Stryker report
+    - Skipped test detection
+    - CI job with artifact upload (needs test+coverage)
+    - 6 comprehensive tests
+  - **CI Workflow Enhancements** (.github/workflows/test.yml):
+    - `mutation` job: weekly + manual, Stryker run, 30-day artifact retention
+    - `dashboard` job: depends on test+coverage, generates dashboard, 7-day retention
+    - `schedule` trigger: cron `0 3 * * 0` (Sunday 3am UTC)
+    - 8 new CI validation tests
+- **Impact**: 44 new tests (851 total), mutation testing infrastructure, OWASP security validation, automated quality dashboard
+- **Files**: stryker.config.json, scripts/benchmark.js, scripts/test-dashboard.js, test/mutation-config.test.js, test/benchmarks.test.js, test/test-dashboard.test.js, test-env/edge-cases/crypto-security.test.js, test-env/edge-cases/auth-security.test.js, test/ci-workflow.test.js, .github/workflows/test.yml, package.json, .gitignore, .forge/hooks/check-tdd.js
+- **Validation**: 851/852 tests passing (1 pre-existing flaky), 0 ESLint warnings, all 22 CI checks passing, Greptile PASSED, SonarCloud Quality Gate PASSED (0 issues, 0 hotspots)
+- **Security**: OWASP A02+A07 automated tests, no hardcoded secrets, safe subprocess handling, branch protection validated
 
 ### Pre-PR5 Code Quality Cleanup (2026-02-20)
 - **PR**: #34
@@ -215,12 +262,6 @@ Research complete for PR5 and PR6. Ready for `/plan advanced-testing`.
 
 ## Upcoming
 <!-- Next priorities -->
-
-### PR5: Advanced Testing Expansion
-- **Beads**: forge-01p
-- **Research**: [docs/research/advanced-testing.md](../research/advanced-testing.md) (PR #36, merged 2026-02-20)
-- **Deliverables**: Stryker mutation testing, performance benchmarks, OWASP A02/A07 security tests, test quality dashboard
-- **Status**: Research complete, ready for `/plan`
 
 ### PR5.5: Skills Restructure for skills.sh
 - **Deliverables**: Restructure parallel-ai into 4 focused skills, publish to skills.sh, add citation-standards rule
