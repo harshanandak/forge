@@ -27,9 +27,7 @@ pre-push:
       run: node scripts/branch-protection.js
       tags: protection
 
-    # 2. ESLint check (blocks on errors, warnings allowed)
-    # To enable strict mode (errors + warnings): add --max-warnings 0
-    # See Beads issue: forge-y8z for cleanup tracking
+    # 2. ESLint check (strict mode: blocks on errors and warnings)
     lint:
       run: |
         echo "🔍 Running ESLint..."
