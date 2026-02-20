@@ -3,7 +3,7 @@
 **Comprehensive implementation plan for transforming Forge into a fully automated, orchestrated workflow system.**
 
 **Plan Created**: 2026-02-10
-**Status**: Phase 2 (PR4) - Completed, PR5/PR6 Ready
+**Status**: Phase 2 complete. PR5/PR6 research done, ready for planning.
 **Timeline**: 3-4 weeks total
 **Strategy**: Quick wins first → Build testing foundation → Add automation → Enable extensibility
 
@@ -72,22 +72,23 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
                                             ↓
                                     PR4 (Automation) → PR5 (Test Expansion)
                                             ↓
-                                PR6 (Plugins) → PR7 (Docs) → PR8 (Advanced)
+                              PR5.5 (Skills) → PR6 (Plugins) → PR7 (Docs) → PR8 (Advanced)
 ```
 
 ### Dependency Chain
 
-| PR | Depends On | Blocks | Can Start When |
-|----|------------|--------|----------------|
-| PR0 | None | PR1 | ✅ **MERGED** (2026-02-12) |
-| PR1 | PR0 | PR2 | ✅ **Ready now** |
-| PR2 | PR1 | PR3 | After PR1 merged |
-| PR3 | PR2 | PR4 | After PR2 merged |
-| PR4 | PR3 | PR5, PR6 | ✅ **MERGED** (2026-02-19, PR #33) |
-| PR5 | PR4 | None | ✅ **Ready now** |
-| PR6 | PR4 | PR7 | ✅ **Ready now** |
-| PR7 | PR6 | PR8 | After PR6 merged |
-| PR8 | PR7 | None | After PR7 merged |
+| PR | Depends On | Blocks | Status |
+|----|------------|--------|--------|
+| PR0 | None | PR1 | ✅ MERGED (2026-02-12, PR #26) |
+| PR1 | PR0 | PR2 | ✅ MERGED (2026-02-13, PR #28) |
+| PR2 | PR1 | PR3 | ✅ MERGED (2026-02-14, PR #29) |
+| PR3 | PR2 | PR4 | ✅ MERGED (2026-02-14, PR #30) |
+| PR4 | PR3 | PR5 | ✅ MERGED (2026-02-19, PR #33) |
+| PR5 | PR4 | PR5.5 | Research done, ready for `/plan` |
+| PR5.5 | PR5 | PR6 | Scoped in PR6 research |
+| PR6 | PR5.5 | PR7 | Research done |
+| PR7 | PR6 | PR8 | Blocked |
+| PR8 | PR7 | None | Blocked |
 
 ---
 
@@ -174,7 +175,8 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ### **PR5: Advanced Testing Expansion** 🔬
 **Beads Issue**: `forge-01p`
-**Status**: Ready (PR4 merged)
+**Research**: [docs/research/advanced-testing.md](docs/research/advanced-testing.md) (PR #36)
+**Status**: Research complete, ready for `/plan`
 **Timeline**: 2-3 days
 **Impact**: Medium
 
@@ -186,17 +188,35 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ---
 
-### **PR6: Plugin Architecture & Extensibility** 🔌
-**Beads Issue**: `forge-a7n`
-**Status**: Ready (PR4 merged)
-**Timeline**: 3-4 days
-**Impact**: High
+### **PR5.5: Skills Restructure for skills.sh** 📦
+**Status**: Scoped (part of PR6 research)
+**Timeline**: 1-2 days
+**Impact**: Medium
 
 #### Key Deliverables
-1. Configuration system (.forgerc.json)
-2. Plugin system (lib/plugin-system.js)
-3. Custom check plugin support
-4. Plugin development guide
+1. Restructure parallel-ai into 4 focused skills (search, extract, deep-research, enrichment)
+2. Adopt `parallel-cli` as primary method (fallback to curl)
+3. Add citation-standards rule
+4. Update sonarcloud skill for skills.sh format
+5. Publish to GitHub (auto-registers on skills.sh)
+
+---
+
+### **PR6: Plugin Architecture & Smart Recommendations** 🔌
+**Beads Issue**: `forge-a7n`
+**Research**: [docs/research/plugin-architecture.md](docs/research/plugin-architecture.md) (PR #37)
+**Status**: Research complete, ready for `/plan`
+**Timeline**: 4-5 days
+**Impact**: High (flagship feature)
+
+#### Key Deliverables
+1. Plugin catalog — tech stack to tool mapping (JSON data structure)
+2. Expanded detection — 20+ frameworks, databases, auth, payments, LSPs
+3. CLI-first recommendation engine — prefer CLI tools over MCPs
+4. Pricing transparency — free alternatives for every paid tool
+5. Budget modes — Free/OpenSource/Startup/Professional/Custom
+6. Installation orchestration — `npx skills add`, `npx add-mcp`, config generation, LSP setup
+7. Absorbs forge-mlm scope (sync, validate; AI creation deferred to PR8)
 
 ---
 
@@ -259,15 +279,17 @@ All PRs tracked in Beads with proper dependencies:
 
 | PR | Issue ID | Status | Priority | Blocked By |
 |----|----------|--------|----------|------------|
-| PR0 | forge-wp2 | ✅ In Progress | P0 | None |
-| PR1 | forge-bdo | Blocked | P1 | PR0 |
-| PR2 | forge-aom | Blocked | P1 | PR1 |
-| PR3 | forge-5uh | Blocked | P1 | PR2 |
-| PR4 | forge-9tp | ✅ Completed (PR #33) | P2 | PR3 |
-| PR5 | forge-01p | Ready | P2 | None |
-| PR6 | forge-a7n | Ready | P2 | None |
+| PR0 | forge-wp2 | ✅ Completed (PR #26) | P0 | None |
+| PR1 | forge-bdo | ✅ Completed (PR #28) | P1 | None |
+| PR2 | forge-aom | ✅ Completed (PR #29) | P1 | None |
+| PR3 | forge-5uh | ✅ Completed (PR #30) | P1 | None |
+| PR4 | forge-9tp | ✅ Completed (PR #33) | P2 | None |
+| PR5 | forge-01p | Research done | P2 | None |
+| PR5.5 | — | Scoped | P2 | PR5 |
+| PR6 | forge-a7n | Research done | P2 | PR5.5 |
 | PR7 | forge-jvc | Blocked | P3 | PR6 |
 | PR8 | forge-dwm | Blocked | P3 | PR7 |
+| ~~Skills CLI~~ | ~~forge-mlm~~ | ~~Absorbed into PR5.5 + PR6 + PR8~~ | — | — |
 
 **View all issues**: `bd list`
 **View ready work**: `bd ready`
@@ -281,7 +303,7 @@ Each PR follows the Forge workflow:
 /status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
 ```
 
-**Current branch**: `feat/pr4-cli-automation`
+**Current branch**: `master` (ready for next feature branch)
 **Base branch**: `master`
 
 ### Plan Files
@@ -302,6 +324,7 @@ Each PR is self-contained and can be rolled back independently:
 - **PR3**: Remove coverage requirements, remove E2E tests
 - **PR4**: Remove CLI commands, keep manual workflow
 - **PR5**: Remove mutation tests, remove benchmarks
+- **PR5.5**: Revert skills to monolithic format in .claude/skills/
 - **PR6**: Remove plugin system, keep core functionality
 - **PR7**: Remove doc automation, keep manual verification
 - **PR8**: Remove advanced features, keep core workflow
@@ -310,20 +333,15 @@ Each PR is self-contained and can be rolled back independently:
 
 ## Next Steps
 
-1. ✅ **PR4 Completed** - CLI command automation merged
-   - Command dispatcher + automated command handlers
-   - `/review` quality-gate execution path validated
-   - Ship/review parser consistency fixes applied
+1. ✅ **PR4 Completed** — CLI command automation merged (PR #33)
 
-2. **Next up: PR5 and PR6**:
-   - PR5: Advanced testing expansion
-   - PR6: Plugin architecture and extensibility
-   - Both are now unblocked
+2. ✅ **Research complete** for PR5 and PR6:
+   - PR5 research: [docs/research/advanced-testing.md](docs/research/advanced-testing.md) (PR #36)
+   - PR6 research: [docs/research/plugin-architecture.md](docs/research/plugin-architecture.md) (PR #37)
+   - PR6 scope expanded: smart plugin recommendations, CLI-first, pricing transparency
+   - forge-mlm absorbed into PR5.5 + PR6 + PR8
 
-3. **Follow Forge Workflow** for each next PR:
-   ```
-   /research → /plan → /dev → /check → /ship → /review → /merge → /verify
-   ```
+3. **Next: `/plan advanced-testing`** to start PR5 implementation
 
 ---
 
@@ -336,6 +354,6 @@ Each PR is self-contained and can be rolled back independently:
 
 ---
 
-**Last Updated**: 2026-02-19
-**Current Phase**: Phase 2 - PR4 completed
-**Next Milestone**: Start PR5 and PR6
+**Last Updated**: 2026-02-20
+**Current Phase**: Phase 2 complete, research done for Phase 3
+**Next Milestone**: Plan and implement PR5 (Advanced Testing)
