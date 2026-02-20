@@ -30,6 +30,16 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Mutation testing (Stryker)
+.stryker-tmp/
+stryker-report/
+
+# Benchmark results
+benchmark-results.json
+
+# Test dashboard
+test-dashboard.json
+
 # Temporary files
 *.tmp
 *.temp
