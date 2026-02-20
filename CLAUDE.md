@@ -167,7 +167,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated 
 
 **Pre-push hooks** (automatic):
 - Branch protection: Blocks direct push to main/master
-- ESLint check: Blocks on errors (warnings allowed for now - see forge-y8z)
+- ESLint check: Blocks on errors and warnings (strict mode, `--max-warnings 0`)
 - Test suite: All tests must pass
 
 **Pull Request workflow**:
