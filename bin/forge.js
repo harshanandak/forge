@@ -906,22 +906,22 @@ function detectLanguageFeatures(pkg) {
 
   // Detect monorepo
   if (pkg.workspaces ||
-      fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) ||
-      fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
+    fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) ||
+    fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
     features.monorepo = true;
   }
 
   // Detect Docker
   if (fs.existsSync(path.join(projectRoot, 'Dockerfile')) ||
-      fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
+    fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
     features.docker = true;
   }
 
   // Detect CI/CD
   if (fs.existsSync(path.join(projectRoot, '.github/workflows')) ||
-      fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
-      fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
-      fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
+    fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
+    fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
+    fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
     features.cicd = true;
   }
 
@@ -2656,7 +2656,7 @@ function parseFlags() {
     interview: false // Force context interview
   };
 
-  for (let i = 0; i < args.length; ) {
+  for (let i = 0; i < args.length;) {
     const arg = args[i];
 
     if (arg === '--quick' || arg === '-q') {
@@ -3650,6 +3650,153 @@ function setupAgentsMdFile(flags, skipFiles) {
   }
 }
 
+// Helper: Handle user-provided flags override - extracted to reduce cognitive complexity
+function handleFlagsOverride(flags, projectStatus) {
+  if (!flags.type && !flags.interview) {
+    return;
+  }
+
+  console.log('User-provided flags:');
+  if (flags.type) {
+    console.log(`  --type=${flags.type} (workflow profile override)`);
+    saveWorkflowTypeOverride(flags.type, projectStatus.autoDetected);
+  }
+  if (flags.interview) {
+    console.log('  --interview (context interview mode)');
+    console.log('  Note: Enhanced context gathering is a future feature');
+  }
+  console.log('');
+}
+
+// Helper: Save workflow type override to context - extracted to reduce cognitive complexity
+function saveWorkflowTypeOverride(type, autoDetected) {
+  if (!autoDetected) {
+    return;
+  }
+  try {
+    const contextPath = path.join(projectRoot, '.forge', 'context.json');
+    if (fs.existsSync(contextPath)) {
+      const contextData = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
+      contextData.user_provided = contextData.user_provided || {};
+      contextData.user_provided.workflowType = type;
+      contextData.last_updated = new Date().toISOString();
+      fs.writeFileSync(contextPath, JSON.stringify(contextData, null, 2), 'utf8');
+    }
+  } catch (error) {
+    console.warn('  Warning: Could not save workflow type override:', error.message);
+  }
+}
+
+// Helper: Display existing installation status - extracted to reduce cognitive complexity
+function displayExistingInstallation(projectStatus) {
+  if (projectStatus.type === 'fresh') {
+    return;
+  }
+
+  console.log('==============================================');
+  console.log('  Existing Installation Detected');
+  console.log('==============================================');
+  console.log('');
+
+  console.log(projectStatus.type === 'upgrade'
+    ? 'Found existing Forge installation:'
+    : 'Found partial installation:');
+
+  if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
+  if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
+  if (projectStatus.hasEnvLocal) console.log('  - .env.local');
+  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
+  console.log('');
+}
+
+// Helper: Prompt for overwrite decisions - extracted to reduce cognitive complexity
+async function promptForOverwriteDecisions(question, projectStatus) {
+  const skipFiles = {
+    agentsMd: false,
+    claudeCommands: false
+  };
+
+  if (projectStatus.hasAgentsMd) {
+    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
+    skipFiles.agentsMd = !overwriteAgents;
+    console.log(overwriteAgents ? '  Will overwrite AGENTS.md' : '  Keeping existing AGENTS.md');
+  }
+
+  if (projectStatus.hasClaudeCommands) {
+    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
+    skipFiles.claudeCommands = !overwriteCommands;
+    console.log(overwriteCommands ? '  Will overwrite .claude/commands/' : '  Keeping existing .claude/commands/');
+  }
+
+  if (projectStatus.type !== 'fresh') {
+    console.log('');
+  }
+
+  return skipFiles;
+}
+
+// Helper: Load and setup Claude commands - extracted to reduce cognitive complexity
+function loadAndSetupClaudeCommands(selectedAgents, skipFiles) {
+  const claudeCommands = {};
+  const needsClaudeCommands = selectedAgents.includes('claude') ||
+    selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands);
+
+  if (!needsClaudeCommands) {
+    return claudeCommands;
+  }
+
+  // First ensure Claude is set up
+  if (selectedAgents.includes('claude')) {
+    setupAgent('claude', null, skipFiles);
+  }
+
+  // Then load the commands (from existing or newly created)
+  COMMANDS.forEach(cmd => {
+    const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
+    const content = readFile(cmdPath);
+    if (content) {
+      claudeCommands[`${cmd}.md`] = content;
+    }
+  });
+
+  return claudeCommands;
+}
+
+// Helper: Setup all selected agents - extracted to reduce cognitive complexity
+function setupSelectedAgents(selectedAgents, claudeCommands, skipFiles) {
+  const totalAgents = selectedAgents.length;
+  selectedAgents.forEach((agentKey, index) => {
+    const agent = AGENTS[agentKey];
+    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
+    if (agentKey !== 'claude') { // Claude already done above
+      setupAgent(agentKey, claudeCommands, skipFiles);
+    }
+  });
+
+  console.log('');
+  console.log('Agent configuration complete!');
+  console.log('');
+  console.log('Installed for:');
+  selectedAgents.forEach(key => {
+    const agent = AGENTS[key];
+    console.log(`  * ${agent.name}`);
+  });
+}
+
+// Helper: Configure external services step - extracted to reduce cognitive complexity
+async function handleExternalServicesStep(flags, rl, question, selectedAgents, projectStatus) {
+  if (flags.skipExternal) {
+    console.log('');
+    console.log('Skipping external services configuration...');
+    return;
+  }
+
+  console.log('');
+  console.log('STEP 2: External Services (Optional)');
+  console.log('=====================================');
+  await configureExternalServices(rl, question, selectedAgents, projectStatus);
+}
+
 // Interactive setup with flag support
 async function interactiveSetupWithFlags(flags) {
   const rl = readline.createInterface({
@@ -3686,89 +3833,17 @@ async function interactiveSetupWithFlags(flags) {
   checkPrerequisites();
   console.log('');
 
-  // =============================================
   // PROJECT DETECTION
-  // =============================================
   const projectStatus = await detectProjectStatus();
 
   // Handle user-provided flags to override auto-detection
-  if (flags.type || flags.interview) {
-    console.log('User-provided flags:');
-    if (flags.type) {
-      console.log(`  --type=${flags.type} (workflow profile override)`);
-      // Update saved context with manual type override
-      if (projectStatus.autoDetected) {
-        try {
-          const contextPath = path.join(projectRoot, '.forge', 'context.json');
-          if (fs.existsSync(contextPath)) {
-            const contextData = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
-            contextData.user_provided = contextData.user_provided || {};
-            contextData.user_provided.workflowType = flags.type;
-            contextData.last_updated = new Date().toISOString();
-            fs.writeFileSync(contextPath, JSON.stringify(contextData, null, 2), 'utf8');
-          }
-        } catch (error) {
-          console.warn('  Warning: Could not save workflow type override:', error.message);
-        }
-      }
-    }
-    if (flags.interview) {
-      console.log('  --interview (context interview mode)');
-      console.log('  Note: Enhanced context gathering is a future feature');
-    }
-    console.log('');
-  }
+  handleFlagsOverride(flags, projectStatus);
 
-  if (projectStatus.type !== 'fresh') {
-    console.log('==============================================');
-    console.log('  Existing Installation Detected');
-    console.log('==============================================');
-    console.log('');
+  // Display existing installation status
+  displayExistingInstallation(projectStatus);
 
-    if (projectStatus.type === 'upgrade') {
-      console.log('Found existing Forge installation:');
-    } else {
-      console.log('Found partial installation:');
-    }
-
-    if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
-    if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
-    if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-    if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
-    console.log('');
-  }
-
-  // Track which files to skip based on user choices
-  const skipFiles = {
-    agentsMd: false,
-    claudeCommands: false
-  };
-
-  // Ask about overwriting AGENTS.md if it exists
-  if (projectStatus.hasAgentsMd) {
-    const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
-    if (overwriteAgents) {
-      console.log('  Will overwrite AGENTS.md');
-    } else {
-      skipFiles.agentsMd = true;
-      console.log('  Keeping existing AGENTS.md');
-    }
-  }
-
-  // Ask about overwriting .claude/commands/ if it exists
-  if (projectStatus.hasClaudeCommands) {
-    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
-    if (overwriteCommands) {
-      console.log('  Will overwrite .claude/commands/');
-    } else {
-      skipFiles.claudeCommands = true;
-      console.log('  Keeping existing .claude/commands/');
-    }
-  }
-
-  if (projectStatus.type !== 'fresh') {
-    console.log('');
-  }
+  // Prompt for overwrite decisions
+  const skipFiles = await promptForOverwriteDecisions(question, projectStatus);
 
   // STEP 1: Agent Selection (delegated to helper)
   const agentKeys = Object.keys(AGENTS);
@@ -3785,56 +3860,14 @@ async function interactiveSetupWithFlags(flags) {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands if needed
-  let claudeCommands = {};
-  if (selectedAgents.includes('claude') || selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
-    // First ensure Claude is set up
-    if (selectedAgents.includes('claude')) {
-      setupAgent('claude', null, skipFiles);
-    }
-    // Then load the commands (from existing or newly created)
-    COMMANDS.forEach(cmd => {
-      const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-      const content = readFile(cmdPath);
-      if (content) {
-        claudeCommands[`${cmd}.md`] = content;
-      }
-    });
-  }
+  // Load Claude commands if needed (delegated to helper)
+  const claudeCommands = loadAndSetupClaudeCommands(selectedAgents, skipFiles);
 
-  // Setup each selected agent with progress indication
-  const totalAgents = selectedAgents.length;
-  selectedAgents.forEach((agentKey, index) => {
-    const agent = AGENTS[agentKey];
-    console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
-    if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands, skipFiles);
-    }
-  });
+  // Setup each selected agent with progress indication (delegated to helper)
+  setupSelectedAgents(selectedAgents, claudeCommands, skipFiles);
 
-  // Agent installation success
-  console.log('');
-  console.log('Agent configuration complete!');
-  console.log('');
-  console.log('Installed for:');
-  selectedAgents.forEach(key => {
-    const agent = AGENTS[key];
-    console.log(`  * ${agent.name}`);
-  });
-
-  // =============================================
-  // STEP 2: External Services Configuration
-  // =============================================
-  if (flags.skipExternal) {
-    console.log('');
-    console.log('Skipping external services configuration...');
-  } else {
-    console.log('');
-    console.log('STEP 2: External Services (Optional)');
-    console.log('=====================================');
-
-    await configureExternalServices(rl, question, selectedAgents, projectStatus);
-  }
+  // Handle external services step (delegated to helper)
+  await handleExternalServicesStep(flags, rl, question, selectedAgents, projectStatus);
 
   setupCompleted = true;
   rl.close();
@@ -4425,5 +4458,11 @@ async function showRollbackMenu() {
 
 // Only execute main() when run directly, not when imported
 if (require.main === module) {
-  main().catch(console.error);
+  (async () => {
+    try {
+      await main();
+    } catch (error) {
+      console.error(error);
+    }
+  })();
 }
