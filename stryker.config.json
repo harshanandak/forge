@@ -1,0 +1,12 @@
+{
+  "testRunner": "command",
+  "commandRunner": { "command": "bun test" },
+  "mutate": ["lib/**/*.js"],
+  "coverageAnalysis": "off",
+  "thresholds": { "high": 80, "low": 60, "break": 50 },
+  "reporters": ["clear-text", "html", "json"],
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
+  "incremental": true,
+  "incrementalFile": "stryker-report/stryker-incremental.json"
+}
