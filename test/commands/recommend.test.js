@@ -3,7 +3,7 @@ const path = require('node:path');
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { formatRecommendations, handleRecommend } = require('../lib/commands/recommend');
+const { formatRecommendations, handleRecommend } = require('../../lib/commands/recommend');
 
 describe('forge recommend CLI command', () => {
   describe('module exports', () => {
@@ -68,13 +68,13 @@ describe('forge recommend CLI command', () => {
 
   describe('forge.js integration', () => {
     test('recommend command is recognized in forge.js main()', () => {
-      const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+      const forgePath = path.join(__dirname, '..', '..', 'bin', 'forge.js');
       const content = fs.readFileSync(forgePath, 'utf-8');
       assert.ok(content.includes("'recommend'"), 'forge.js should recognize recommend command');
     });
 
     test('forge --help includes recommend command', () => {
-      const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+      const forgePath = path.join(__dirname, '..', '..', 'bin', 'forge.js');
       const content = fs.readFileSync(forgePath, 'utf-8');
       assert.ok(content.includes('recommend'), 'help should mention recommend command');
     });
