@@ -127,6 +127,75 @@ describe('CI Workflow Configuration', () => {
     });
   });
 
+  describe('Mutation Testing Job', () => {
+    test('mutation job exists in workflow', () => {
+      assert.ok(workflow.jobs.mutation, 'Mutation testing job should exist');
+    });
+
+    test('mutation job runs on ubuntu-latest', () => {
+      const mutation = workflow.jobs.mutation;
+      assert.strictEqual(mutation['runs-on'], 'ubuntu-latest');
+    });
+
+    test('mutation job has workflow_dispatch or schedule condition', () => {
+      const mutation = workflow.jobs.mutation;
+      assert.ok(mutation.if, 'Mutation job should have conditional execution');
+      const condition = mutation.if;
+      assert.ok(
+        condition.includes('workflow_dispatch') || condition.includes('schedule'),
+        'Mutation job should run on manual trigger or schedule'
+      );
+    });
+
+    test('mutation job uploads artifacts', () => {
+      const mutation = workflow.jobs.mutation;
+      const uploadStep = mutation.steps.find(s =>
+        s.uses && s.uses.includes('upload-artifact')
+      );
+      assert.ok(uploadStep, 'Mutation job should upload report artifacts');
+    });
+  });
+
+  describe('Dashboard Job', () => {
+    test('dashboard job exists in workflow', () => {
+      assert.ok(workflow.jobs.dashboard, 'Dashboard job should exist');
+    });
+
+    test('dashboard job depends on test and coverage', () => {
+      const dashboard = workflow.jobs.dashboard;
+      assert.ok(dashboard.needs, 'Dashboard job should have dependencies');
+      const needs = Array.isArray(dashboard.needs) ? dashboard.needs : [dashboard.needs];
+      assert.ok(needs.includes('test'), 'Dashboard should depend on test job');
+      assert.ok(needs.includes('coverage'), 'Dashboard should depend on coverage job');
+    });
+
+    test('dashboard job uploads artifacts', () => {
+      const dashboard = workflow.jobs.dashboard;
+      const uploadStep = dashboard.steps.find(s =>
+        s.uses && s.uses.includes('upload-artifact')
+      );
+      assert.ok(uploadStep, 'Dashboard job should upload artifacts');
+    });
+  });
+
+  describe('Schedule Trigger', () => {
+    test('workflow has schedule trigger for mutation testing', () => {
+      assert.ok(workflow.on.schedule, 'Workflow should have schedule trigger');
+      assert.ok(
+        Array.isArray(workflow.on.schedule),
+        'Schedule should be an array of cron entries'
+      );
+      assert.ok(
+        workflow.on.schedule.length > 0,
+        'Should have at least one schedule entry'
+      );
+      assert.ok(
+        workflow.on.schedule[0].cron,
+        'Schedule entry should have a cron expression'
+      );
+    });
+  });
+
   describe('Workflow Structure', () => {
     test('should have test, coverage, and e2e jobs', () => {
       assert.ok(workflow.jobs.test, 'Test job should exist');
