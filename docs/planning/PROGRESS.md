@@ -2,9 +2,47 @@
 
 ## Current Focus
 <!-- What you're working on -->
-PR5 merged. PR6 (Plugin Architecture) ready for `/plan`.
+PR6 merged. Next: PR5.5 (Skills Restructure) or PR7 (Installation Orchestrator).
 
 ## Completed
+
+### PR6: Plugin Architecture & Smart Recommendations (2026-02-21)
+- **PR**: #41
+- **Beads**: forge-a7n (closed)
+- **Research**: [docs/research/plugin-architecture.md](../research/plugin-architecture.md)
+- **Description**: Read-only plugin catalog with 30 curated tools, tech stack detection across 9 categories, recommendation engine with 5 budget modes, and `forge recommend` CLI command
+- **Deliverables**:
+  - **Plugin Catalog** (lib/plugin-catalog.js):
+    - 30 tools across 7 workflow stages (research → merge)
+    - 4 pricing tiers: free, free-public, free-limited, paid
+    - 5 tool types: cli, skill, mcp, config, lsp
+    - 5 budget modes: free, open-source, startup, professional, custom
+    - Prerequisite registry (data-only, runtime deferred to PR7)
+    - Frozen immutable data, zero runtime I/O
+    - Every paid/free-limited tool has free alternatives
+    - CLI-first principle: MCPs only when no CLI equivalent exists
+    - 21 comprehensive tests
+  - **Tech Stack Detection** (lib/project-discovery.js, additive):
+    - `detectTechStack()` covering 9 categories: frameworks, languages, databases, auth, payments, CI/CD, testing, linting, LSPs
+    - 50+ technologies recognized across 12 internal helper functions
+    - Backward compatible: existing `detectFramework()`, `autoDetect()`, `detectLanguage()` unchanged
+    - 20 comprehensive tests (temp dir fixtures, backward compat)
+  - **Recommendation Engine** (lib/plugin-recommender.js):
+    - `recommend(techStack, budgetMode)` → `{ recommended, skipped }`
+    - `matchesDetection(conditions, techStack)` — OR logic for dep/file/framework conditions
+    - CLI-first enforcement, tier-based sorting (free first)
+    - Budget mode validation
+    - 26 comprehensive tests
+  - **CLI Command** (lib/commands/recommend.js, bin/forge.js):
+    - `forge recommend` with `--budget <mode>` flag
+    - Stage-grouped output with tier labels [F]/[FP]/[FL]/[P]
+    - Free alternatives shown inline for paid tools
+    - Default budget: startup
+    - 11 comprehensive tests
+- **Impact**: 78 new tests (930 total), read-only architecture with zero side effects, foundation for PR7 installation orchestrator
+- **Files**: lib/plugin-catalog.js (new), lib/plugin-recommender.js (new), lib/commands/recommend.js (new), lib/project-discovery.js (+149 lines), bin/forge.js (+22 lines), test/plugin-catalog.test.js, test/plugin-detection.test.js, test/plugin-recommender.test.js, test/commands/recommend.test.js
+- **Validation**: 930/930 tests passing, 0 ESLint warnings, all 19 CI checks passing, Greptile PASSED (0 comments), SonarCloud Quality Gate PASSED (0 open issues)
+- **Security**: OWASP Top 10 reviewed (all N/A or PASS for read-only data module), Object.freeze() on all catalog data, no user input flows to subprocess calls
 
 ### PR5: Advanced Testing Expansion (2026-02-20)
 - **PR**: #40
@@ -265,10 +303,13 @@ PR5 merged. PR6 (Plugin Architecture) ready for `/plan`.
 
 ### PR5.5: Skills Restructure for skills.sh
 - **Deliverables**: Restructure parallel-ai into 4 focused skills, publish to skills.sh, add citation-standards rule
-- **Status**: Scoped in PR6 research
+- **Status**: Scoped in PR6 research, prerequisite for PR7 skill extraction
 
-### PR6: Plugin Architecture & Smart Recommendations (EXPANDED)
-- **Beads**: forge-a7n
-- **Research**: [docs/research/plugin-architecture.md](../research/plugin-architecture.md) (PR #37, merged 2026-02-20)
-- **Deliverables**: Plugin catalog, expanded tech stack detection (20+ frameworks), CLI-first recommendation engine, pricing transparency with free alternatives, budget modes, installation orchestration
-- **Status**: Research complete, absorbs forge-mlm scope
+### PR7: Installation Orchestrator + Skill Extraction
+- **Deliverables**: `forge install <tool>` command, prerequisite runtime verification, skill extraction from npm `files`, cross-platform installer
+- **Status**: Blocked on PR5.5 (skills.sh publishing)
+- **Research**: Risk analysis R1-R6 in [docs/research/plugin-architecture.md](../research/plugin-architecture.md)
+
+### PR8: Catalog Expansion
+- **Deliverables**: Expand catalog from 30 to 90+ tools, language-specific LSPs, community feedback integration
+- **Status**: After PR7
