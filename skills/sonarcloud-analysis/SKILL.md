@@ -1,5 +1,5 @@
 ---
-name: sonarcloud
+name: sonarcloud-analysis
 description: Pull issues, metrics, quality gates, and analysis data from SonarCloud. Use when checking code quality, security vulnerabilities, test coverage, technical debt, or CI/CD quality gates.
 category: Code Quality
 tags: [sonarcloud, code-quality, issues, metrics, security]
@@ -159,17 +159,6 @@ curl ... | jq '.projectStatus.conditions | map(select(.status == "ERROR"))'
 curl ... | jq '.component.measures | map({(.metric): .value}) | add'
 ```
 
-## TypeScript Client
-
-See [sonarcloud.ts](../../../next-app/src/lib/integrations/sonarcloud.ts):
-
-```typescript
-import { createSonarCloudClient } from '@/lib/integrations/sonarcloud';
-const client = createSonarCloudClient('my-org');
-await client.getProjectHealth('my-project');
-await client.getQualityGateStatus('my-project', { pullRequest: '123' });
-```
-
 ## Detailed Reference
 
-For complete API parameters and response schemas, see [reference.md](reference.md).
+For complete API parameters and response schemas, see [references/api-reference.md](references/api-reference.md).

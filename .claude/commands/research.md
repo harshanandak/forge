@@ -1,5 +1,5 @@
 ---
-description: Deep research with parallel-ai, document findings
+description: Deep research with parallel-web-search, document findings
 ---
 
 Research a feature comprehensively using codebase exploration and web research.
@@ -24,8 +24,8 @@ Use the Explore agent to:
 - Find integration points
 - Review similar features
 
-### Step 2: Web Research (MANDATORY: parallel-ai skill)
-Use the `parallel-ai` skill for:
+### Step 2: Web Research (MANDATORY: parallel-web-search skill)
+Use the `parallel-web-search` skill for:
 
 **Best Practices**:
 - "Next.js 16 [feature] best practices 2026"
@@ -79,7 +79,7 @@ See `docs/research/TEMPLATE.md` for the complete template structure.
   - Affected: 8 files across 4 modules
   - Tests: Existing payment test harness available
 
-✓ Web Research (parallel-ai): Complete
+✓ Web Research (parallel-web-search): Complete
   - Best practices: 12 sources reviewed
   - Known issues: 5 gotchas identified
   - Documentation: Context7 Stripe SDK reviewed
@@ -118,7 +118,7 @@ Next: /plan stripe-billing-integration
 
 ## Tips
 
-- **Always use parallel-ai**: Never skip web research
+- **Always use parallel-web-search**: Never skip web research
 - **Document sources**: Include URLs for all research
 - **Identify TDD scenarios upfront**: Tests before implementation
 - **Security first**: OWASP Top 10 analysis is mandatory
