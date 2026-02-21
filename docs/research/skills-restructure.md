@@ -362,6 +362,139 @@ Key security review: Confirm no API keys or credentials leak into any SKILL.md o
 
 ---
 
+---
+
+## Supplementary Research: vercel-labs/agent-skills & skills.sh Mechanism (2026-02-21)
+
+### Critical Correction: No `metadata.json` File
+
+The previous Explore agent hallucinated a `metadata.json` file. **It does not exist** in either `vercel-labs/agent-skills` or `anthropics/skills`. Confirmed by direct GitHub API inspection of both repos.
+
+**All metadata lives in SKILL.md YAML frontmatter only.**
+
+### Official SKILL.md Frontmatter Spec
+
+From [Vercel docs](https://vercel.com/docs/agent-resources/skills) + [KB guide](https://vercel.com/kb/guide/agent-skills-creating-installing-and-sharing-reusable-agent-context):
+
+```yaml
+---
+name: skill-name          # REQUIRED: must match directory name, ^[a-z0-9]+(-[a-z0-9]+)*$, 1-64 chars
+description: "..."        # REQUIRED: what it does + when to use it, 1-1024 chars
+
+# Optional:
+license: "MIT"
+compatibility: "Requires parallel-cli and internet access."   # max 500 chars
+metadata:                 # arbitrary key/value pairs (good for versioning, author)
+  author: harshanandak
+  version: "1.0.0"
+  internal: true          # hides from public skills.sh discovery (INSTALL_INTERNAL_SKILLS=1 to see)
+allowed-tools:            # experimental, varies by agent
+  - Bash(parallel-cli:*)
+---
+```
+
+**In practice** (from `anthropics/skills/frontend-design/SKILL.md` and vercel-labs examples): most production skills use only `name`, `description`, and optionally `license`. The `metadata`, `compatibility`, and `allowed-tools` fields are advanced/optional.
+
+### Real-World Skill Directory Structure
+
+From `anthropics/skills/skill-creator/`:
+```
+skill-creator/
+├── SKILL.md              ← required
+├── LICENSE.txt           ← optional (real skills include this)
+├── references/           ← optional reference docs
+└── scripts/              ← optional helper scripts
+```
+
+No `metadata.json`. No `assets/`. Simple.
+
+### anthropics/skills Repo (16 Published Skills)
+
+Anthropic publishes their own skills at `github.com/anthropics/skills`:
+`algorithmic-art`, `brand-guidelines`, `canvas-design`, `doc-coauthoring`, `docx`, `frontend-design`, `internal-comms`, `mcp-builder`, `pdf`, `pptx`, `skill-creator`, `slack-gif-creator`, `theme-factory`, `web-artifacts-builder`, `webapp-testing`, `xlsx`
+
+**Implication**: Both Vercel and Anthropic use the same `skills/<name>/SKILL.md` structure. This is the de-facto standard.
+
+### skills.sh CLI — On-Demand Download Mechanism
+
+```bash
+# Install all skills from a repo
+npx skills add vercel-labs/agent-skills
+
+# Install a specific skill from a multi-skill repo
+npx skills add harshanandak/forge --skill sonarcloud-analysis
+
+# Find skills by query
+npx skills find "sonarcloud code quality"
+
+# Also works with full URLs, GitLab, local paths
+npx skills add https://github.com/anthropics/skills --skill pdf
+```
+
+Skills are downloaded directly from GitHub on demand. **Not published to any central registry** — GitHub repo IS the source of truth.
+
+### Package.json `files` Finding (Current Forge State)
+
+```json
+"files": [
+  "bin/",
+  "lib/",
+  ".claude/commands/",
+  ".claude/rules/",
+  ".claude/scripts/",
+  ".claude/skills/",       ← currently includes OLD skill location
+  ...
+]
+```
+
+`skills/` (repo root) is **NOT** in `files` — it will be excluded from the npm package automatically when we create it. This is the correct behavior: skills are downloaded on demand via `npx skills add`, not shipped with the npm package.
+
+**PR5.5 action**: After migrating skills to `skills/`, remove `.claude/skills/` from `package.json` `files` (since we'll be deleting that directory).
+
+### Revised Design Decision: CLI + Curl Dual Path in `skills/`
+
+**Updated from previous research**: Rather than pointing catalog to official `parallel-web/parallel-agent-skills` only, the forge `skills/` directory hosts **curl-based** versions of the 4 parallel skills as a no-binary fallback.
+
+```
+skills/
+  parallel-web-search/      ← forge-hosted curl version (PARALLEL_API_KEY, no parallel-cli)
+  parallel-web-extract/     ← forge-hosted curl version
+  parallel-deep-research/   ← forge-hosted curl version
+  parallel-data-enrichment/ ← forge-hosted curl version
+  sonarcloud-analysis/      ← forge-specific, curl-based
+  citation-standards/       ← forge-specific, rules-based
+```
+
+Catalog entry for `parallel-web-search` exposes BOTH:
+- `install.cmd` → official CLI path (`parallel-web/parallel-agent-skills`)
+- `install.cmdCurl` → forge curl path (`harshanandak/forge --skill parallel-web-search`)
+
+`forge recommend` shows both options with "CLI (recommended)" + "Curl (no install)" labels.
+
+### Updated Catalog Schema Extension
+
+Add `cmdCurl` as optional field on `install`:
+```js
+'parallel-web-search': {
+  install: {
+    method: 'skills',
+    cmd: 'bunx skills add parallel-web/parallel-agent-skills --skill parallel-web-search',
+    cmdCurl: 'bunx skills add harshanandak/forge --skill parallel-web-search',
+  },
+  prerequisites: ['parallel-cli'],   // only for CLI path
+},
+```
+
+Add `parallel-cli` to PREREQUISITES registry:
+```js
+'parallel-cli': {
+  check: 'parallel-cli --version',
+  installUrl: 'https://parallel.ai/install.sh',
+},
+```
+
+---
+
 ## Sources
 
 - [GitHub vercel-labs/skills](https://github.com/vercel-labs/skills) — Official skills.sh CLI and format spec
@@ -369,3 +502,7 @@ Key security review: Confirm no API keys or credentials leak into any SKILL.md o
 - [skills.sh FAQ](https://skills.sh/docs/faq) — Agent skills directory
 - [npm: skills package](https://www.npmjs.com/package/skills) — CLI installation
 - [add-skill.org](https://add-skill.org/) — Alternative skill installer reference
+- [Vercel Agent Skills docs](https://vercel.com/docs/agent-resources/skills) — Official install guide
+- [Vercel KB: Creating Agent Skills](https://vercel.com/kb/guide/agent-skills-creating-installing-and-sharing-reusable-agent-context) — Complete SKILL.md spec
+- [vercel-labs/agent-skills](https://github.com/vercel-labs/agent-skills) — Vercel's official skills collection
+- [anthropics/skills](https://github.com/anthropics/skills) — Anthropic's 16 official skills (confirmed no metadata.json)
