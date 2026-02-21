@@ -180,11 +180,17 @@ forge-validate dev       # Validate before /dev stage
 forge-validate ship      # Validate before /ship stage
 ```
 
-### 5. Plugin Architecture (v1.5.0)
-11 agent plugins with specialized capabilities:
-- Each agent defined by JSON configuration
-- Community contributions welcome
-- Backwards compatible
+### 5. Smart Tool Recommendations (v1.7.0)
+Intelligent plugin catalog with 30+ curated tools:
+- **Auto-detection**: Scans your project for frameworks, databases, auth, payments, and more
+- **Budget modes**: free, open-source, startup, professional, custom
+- **CLI-first**: Prefers CLI tools over MCPs for portability
+- **Free alternatives**: Every paid tool shows free alternatives
+
+```bash
+bunx forge recommend                  # Recommendations for your project
+bunx forge recommend --budget free    # Only free tools
+```
 
 → [Validation docs](docs/VALIDATION.md) | [Plugin docs](lib/agents/README.md)
 
