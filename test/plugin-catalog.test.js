@@ -200,6 +200,53 @@ describe('plugin-catalog', () => {
     });
   });
 
+  describe('skills restructure (PR5.5)', () => {
+    test("catalog has 'parallel-web-search' entry (not 'parallel-ai')", () => {
+      assert.ok(CATALOG['parallel-web-search'], "CATALOG should have 'parallel-web-search' entry");
+      assert.ok(!CATALOG['parallel-ai'], "CATALOG should NOT have legacy 'parallel-ai' entry");
+    });
+
+    test("parallel-web-search install.cmd references parallel-web/parallel-agent-skills", () => {
+      const entry = CATALOG['parallel-web-search'];
+      if (!entry) return;
+      assert.ok(
+        entry.install.cmd.includes('parallel-web/parallel-agent-skills'),
+        "parallel-web-search CLI cmd should reference 'parallel-web/parallel-agent-skills'"
+      );
+    });
+
+    test("parallel-web-search has install.cmdCurl referencing harshanandak/forge", () => {
+      const entry = CATALOG['parallel-web-search'];
+      if (!entry) return;
+      assert.ok(
+        entry.install.cmdCurl,
+        "parallel-web-search should have install.cmdCurl for curl fallback"
+      );
+      assert.ok(
+        entry.install.cmdCurl.includes('harshanandak/forge'),
+        "parallel-web-search cmdCurl should reference 'harshanandak/forge'"
+      );
+    });
+
+    test("catalog has 'sonarcloud-analysis' entry (not 'sonarcloud')", () => {
+      assert.ok(CATALOG['sonarcloud-analysis'], "CATALOG should have 'sonarcloud-analysis' entry");
+      assert.ok(!CATALOG['sonarcloud'], "CATALOG should NOT have legacy 'sonarcloud' entry");
+    });
+
+    test("sonarcloud-analysis install.cmd references harshanandak/forge", () => {
+      const entry = CATALOG['sonarcloud-analysis'];
+      if (!entry) return;
+      assert.ok(
+        entry.install.cmd.includes('harshanandak/forge'),
+        "sonarcloud-analysis cmd should reference 'harshanandak/forge'"
+      );
+    });
+
+    test("PREREQUISITES has 'parallel-cli' entry", () => {
+      assert.ok(PREREQUISITES['parallel-cli'], "PREREQUISITES should have 'parallel-cli' entry");
+    });
+  });
+
   describe('PREREQUISITES', () => {
     test('each prerequisite has check command and installUrl', () => {
       for (const [id, prereq] of Object.entries(PREREQUISITES)) {
