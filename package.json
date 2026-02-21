@@ -82,7 +82,6 @@
     ".claude/commands/",
     ".claude/rules/",
     ".claude/scripts/",
-    ".claude/skills/",
     ".forge/hooks/",
     ".github/PLUGIN_TEMPLATE.json",
     "docs/",
