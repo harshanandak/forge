@@ -53,6 +53,61 @@ Restructure the existing monolithic `parallel-ai` skill into 4 focused skills an
 
 ---
 
+## Critical Finding: Official Parallel Skills Repo Already Exists
+
+**Source**: [github.com/parallel-web/parallel-agent-skills](https://github.com/parallel-web/parallel-agent-skills) | [github.com/parallel-web/parallel-cursor-plugin](https://github.com/parallel-web/parallel-cursor-plugin)
+
+Parallel AI already publishes the exact 4 skills we planned to write ourselves:
+
+| Skill | Official Name | Install |
+|-------|--------------|---------|
+| Web search | `parallel-web-search` | `npx skills add parallel-web/parallel-agent-skills --skill parallel-web-search` |
+| URL extraction | `parallel-web-extract` | `npx skills add parallel-web/parallel-agent-skills --skill parallel-web-extract` |
+| Deep research | `parallel-deep-research` | `npx skills add parallel-web/parallel-agent-skills --skill parallel-deep-research` |
+| Data enrichment | `parallel-data-enrichment` | `npx skills add parallel-web/parallel-agent-skills --skill parallel-data-enrichment` |
+
+**Key difference from our current skill**: The official skills use **`parallel-cli`** (a CLI tool), NOT direct REST API calls. The CLI is installed via:
+```bash
+curl -fsSL https://parallel.ai/install.sh | bash
+# or: pipx install "parallel-web-tools[cli]"
+parallel-cli login   # or: export PARALLEL_API_KEY="..."
+```
+
+Official SKILL.md frontmatter (confirmed from source):
+```yaml
+---
+name: parallel-web-search
+description: "DEFAULT for all research... Fast and cost-effective..."
+context: fork
+compatibility: Requires parallel-cli and internet access.
+allowed-tools: Bash(parallel-cli:*)
+metadata:
+  author: parallel
+---
+```
+
+Official skills use commands like:
+```bash
+parallel-cli search "$ARGUMENTS" -q "<keyword>" --json --max-results 10 -o "$FILENAME.json"
+parallel-cli extract "$ARGUMENTS" --json
+parallel-cli enrich run --data '[...]' --intent "..." --target "output.csv" --no-wait
+```
+
+**The `parallel-cursor-plugin` also has `citation-standards.mdc`** (a Cursor rule) with identical citation format guidance.
+
+### Revised Scope: What PR5.5 Actually Does
+
+**Old plan**: Write 4 custom parallel skills (REST API approach) + host in forge repo
+**New plan**: Delete our REST API skill, point catalog to official `parallel-web/parallel-agent-skills`, host only forge-specific skills
+
+**Why this is better**:
+1. Users get the canonical, maintained version — parallel-cli is actively developed
+2. We don't maintain a stale REST API skill while the official CLI evolves
+3. Our `parallel-ai` skill has a fundamental mismatch — it documents the REST API but the official tool is `parallel-cli`
+4. Less code, less maintenance, same outcome
+
+---
+
 ## Web Research Findings
 
 ### skills.sh Format (2025/2026)
@@ -254,18 +309,18 @@ sonarcloud: {
 | A09 Logging Failures | N/A | N/A |
 | A10 SSRF | Parallel AI URLs hardcoded in examples — not user-controlled | ✓ PASS |
 
-**Key security review**: Confirm no API keys or credentials leak into any SKILL.md or reference file (check existing files — none found during research).
+Key security review: Confirm no API keys or credentials leak into any SKILL.md or reference file (check existing files — none found during research).
 
 ---
 
 ## Scope Assessment
 
-**Type**: Tactical (file restructure + docs), no new runtime logic
-**Complexity**: Small (1-2 days)
-**Parallelizable**: No — sequential content split, single author
-**Test count estimate**: ~19 new tests
-**Risk**: Low — pure documentation/structure change, no behavior change
-**Blocking**: PR7 (needs skills published before extraction)
+- Type: Tactical (file restructure + docs), no new runtime logic
+- Complexity: Small (1-2 days)
+- Parallelizable: No — sequential content split, single author
+- Test count estimate: ~19 new tests
+- Risk: Low — pure documentation/structure change, no behavior change
+- Blocking: PR7 (needs skills published before extraction)
 
 ### What's NOT in PR5.5
 
@@ -280,7 +335,7 @@ sonarcloud: {
 
 ## Implementation Checklist
 
-**Step 1: Create `skills/` directory with 6 new SKILL.md files**
+### Step 1: Create `skills/` directory with 6 new SKILL.md files
 - `skills/parallel-web-search/SKILL.md` — extract Search API content
 - `skills/parallel-web-extract/SKILL.md` — extract Extract API content
 - `skills/parallel-deep-research/SKILL.md` — extract Task (pro/ultra) content + polling
@@ -288,20 +343,20 @@ sonarcloud: {
 - `skills/sonarcloud-analysis/SKILL.md` — migrate from `.claude/skills/sonarcloud/SKILL.md`
 - `skills/citation-standards/SKILL.md` — NEW
 
-**Step 2: Move reference files**
+### Step 2: Move reference files
 - `skills/parallel-web-search/references/api-reference.md`
 - `skills/parallel-deep-research/references/research-workflows.md`
 - `skills/sonarcloud-analysis/references/api-reference.md` (from sonarcloud/reference.md)
 
-**Step 3: Remove old skill directories**
+### Step 3: Remove old skill directories
 - Delete `.claude/skills/parallel-ai/`
 - Delete `.claude/skills/sonarcloud/`
 
-**Step 4: Update catalog**
+### Step 4: Update catalog
 - `lib/plugin-catalog.js`: rename `parallel-ai` → `parallel-web-search`, update cmd
 - `lib/plugin-catalog.js`: update `sonarcloud` cmd to `harshanandak/forge --skill sonarcloud-analysis`
 
-**Step 5: Update references**
+### Step 5: Update references
 - `.claude/commands/research.md`: update skill name references
 - `CLAUDE.md` or `AGENTS.md` if they reference skills by path
 
