@@ -2,9 +2,94 @@
 
 ## Current Focus
 <!-- What you're working on -->
-Research complete for PR5 and PR6. Ready for `/plan advanced-testing`.
+PR6 merged. Next: PR5.5 (Skills Restructure) or PR7 (Installation Orchestrator).
 
 ## Completed
+
+### PR6: Plugin Architecture & Smart Recommendations (2026-02-21)
+- **PR**: #41
+- **Beads**: forge-a7n (closed)
+- **Research**: [docs/research/plugin-architecture.md](../research/plugin-architecture.md)
+- **Description**: Read-only plugin catalog with 30 curated tools, tech stack detection across 9 categories, recommendation engine with 5 budget modes, and `forge recommend` CLI command
+- **Deliverables**:
+  - **Plugin Catalog** (lib/plugin-catalog.js):
+    - 30 tools across 7 workflow stages (research → merge)
+    - 4 pricing tiers: free, free-public, free-limited, paid
+    - 5 tool types: cli, skill, mcp, config, lsp
+    - 5 budget modes: free, open-source, startup, professional, custom
+    - Prerequisite registry (data-only, runtime deferred to PR7)
+    - Frozen immutable data, zero runtime I/O
+    - Every paid/free-limited tool has free alternatives
+    - CLI-first principle: MCPs only when no CLI equivalent exists
+    - 21 comprehensive tests
+  - **Tech Stack Detection** (lib/project-discovery.js, additive):
+    - `detectTechStack()` covering 9 categories: frameworks, languages, databases, auth, payments, CI/CD, testing, linting, LSPs
+    - 50+ technologies recognized across 12 internal helper functions
+    - Backward compatible: existing `detectFramework()`, `autoDetect()`, `detectLanguage()` unchanged
+    - 20 comprehensive tests (temp dir fixtures, backward compat)
+  - **Recommendation Engine** (lib/plugin-recommender.js):
+    - `recommend(techStack, budgetMode)` → `{ recommended, skipped }`
+    - `matchesDetection(conditions, techStack)` — OR logic for dep/file/framework conditions
+    - CLI-first enforcement, tier-based sorting (free first)
+    - Budget mode validation
+    - 26 comprehensive tests
+  - **CLI Command** (lib/commands/recommend.js, bin/forge.js):
+    - `forge recommend` with `--budget <mode>` flag
+    - Stage-grouped output with tier labels [F]/[FP]/[FL]/[P]
+    - Free alternatives shown inline for paid tools
+    - Default budget: startup
+    - 11 comprehensive tests
+- **Impact**: 78 new tests (930 total), read-only architecture with zero side effects, foundation for PR7 installation orchestrator
+- **Files**: lib/plugin-catalog.js (new), lib/plugin-recommender.js (new), lib/commands/recommend.js (new), lib/project-discovery.js (+149 lines), bin/forge.js (+22 lines), test/plugin-catalog.test.js, test/plugin-detection.test.js, test/plugin-recommender.test.js, test/commands/recommend.test.js
+- **Validation**: 930/930 tests passing, 0 ESLint warnings, all 19 CI checks passing, Greptile PASSED (0 comments), SonarCloud Quality Gate PASSED (0 open issues)
+- **Security**: OWASP Top 10 reviewed (all N/A or PASS for read-only data module), Object.freeze() on all catalog data, no user input flows to subprocess calls
+
+### PR5: Advanced Testing Expansion (2026-02-20)
+- **PR**: #40
+- **Beads**: forge-01p (closed)
+- **Research**: [docs/research/advanced-testing.md](../research/advanced-testing.md) (PR #36, merged 2026-02-20)
+- **Description**: Advanced testing infrastructure with Stryker mutation testing, performance benchmarks, OWASP A02/A07 security tests, and test quality dashboard
+- **Deliverables**:
+  - **Stryker Mutation Testing** (stryker.config.json):
+    - Command runner mode with `bun test` for Bun compatibility
+    - Scope: `lib/**/*.js` (excludes `bin/forge.js` CLI entry point)
+    - Thresholds: high 80, low 60, break 50
+    - Incremental mode for faster CI re-runs
+    - Weekly schedule (Sunday 3am UTC) + manual dispatch
+    - 10 comprehensive tests validating configuration
+  - **Performance Benchmarks** (scripts/benchmark.js):
+    - CLI startup benchmark (`node bin/forge.js --help`)
+    - `autoDetect()` and `detectFramework()` timing
+    - Safe subprocess handling with `execFileSync` (no shell injection)
+    - JSON output for CI integration
+    - 6 comprehensive tests
+  - **OWASP A02 Cryptographic Failure Tests** (test-env/edge-cases/crypto-security.test.js):
+    - .gitignore patterns for .env files (3 tests)
+    - No hardcoded secrets in lib/ and bin/ (2 tests)
+    - AGENTS.md template and MCP config clean (2 tests)
+    - No tracked .env files (1 test)
+    - 8 comprehensive tests
+  - **OWASP A07 Authentication Security Tests** (test-env/edge-cases/auth-security.test.js):
+    - Branch protection validates main/master
+    - No default credentials in templates
+    - Config files use process.env for tokens
+    - 6 comprehensive tests
+  - **Test Quality Dashboard** (scripts/test-dashboard.js):
+    - File-based test counting (avoids recursive `bun test`)
+    - Coverage threshold from c8 config
+    - Mutation score from Stryker report
+    - Skipped test detection
+    - CI job with artifact upload (needs test+coverage)
+    - 6 comprehensive tests
+  - **CI Workflow Enhancements** (.github/workflows/test.yml):
+    - `mutation` job: weekly + manual, Stryker run, 30-day artifact retention
+    - `dashboard` job: depends on test+coverage, generates dashboard, 7-day retention
+    - `schedule` trigger: cron `0 3 * * 0` (Sunday 3am UTC)
+    - 8 new CI validation tests
+- **Impact**: 44 new tests (851 total), mutation testing infrastructure, OWASP security validation, automated quality dashboard
+- **Files**: stryker.config.json, scripts/benchmark.js, scripts/test-dashboard.js, test/mutation-config.test.js, test/benchmarks.test.js, test/test-dashboard.test.js, test-env/edge-cases/crypto-security.test.js, test-env/edge-cases/auth-security.test.js, test/ci-workflow.test.js, .github/workflows/test.yml, package.json, .gitignore, .forge/hooks/check-tdd.js
+- **Validation**: 851/852 tests passing (1 pre-existing flaky), 0 ESLint warnings, all 22 CI checks passing, Greptile PASSED, SonarCloud Quality Gate PASSED (0 issues, 0 hotspots)
+- **Security**: OWASP A02+A07 automated tests, no hardcoded secrets, safe subprocess handling, branch protection validated
 
 ### Pre-PR5 Code Quality Cleanup (2026-02-20)
 - **PR**: #34
@@ -216,18 +301,15 @@ Research complete for PR5 and PR6. Ready for `/plan advanced-testing`.
 ## Upcoming
 <!-- Next priorities -->
 
-### PR5: Advanced Testing Expansion
-- **Beads**: forge-01p
-- **Research**: [docs/research/advanced-testing.md](../research/advanced-testing.md) (PR #36, merged 2026-02-20)
-- **Deliverables**: Stryker mutation testing, performance benchmarks, OWASP A02/A07 security tests, test quality dashboard
-- **Status**: Research complete, ready for `/plan`
-
 ### PR5.5: Skills Restructure for skills.sh
 - **Deliverables**: Restructure parallel-ai into 4 focused skills, publish to skills.sh, add citation-standards rule
-- **Status**: Scoped in PR6 research
+- **Status**: Scoped in PR6 research, prerequisite for PR7 skill extraction
 
-### PR6: Plugin Architecture & Smart Recommendations (EXPANDED)
-- **Beads**: forge-a7n
-- **Research**: [docs/research/plugin-architecture.md](../research/plugin-architecture.md) (PR #37, merged 2026-02-20)
-- **Deliverables**: Plugin catalog, expanded tech stack detection (20+ frameworks), CLI-first recommendation engine, pricing transparency with free alternatives, budget modes, installation orchestration
-- **Status**: Research complete, absorbs forge-mlm scope
+### PR7: Installation Orchestrator + Skill Extraction
+- **Deliverables**: `forge install <tool>` command, prerequisite runtime verification, skill extraction from npm `files`, cross-platform installer
+- **Status**: Blocked on PR5.5 (skills.sh publishing)
+- **Research**: Risk analysis R1-R6 in [docs/research/plugin-architecture.md](../research/plugin-architecture.md)
+
+### PR8: Catalog Expansion
+- **Deliverables**: Expand catalog from 30 to 90+ tools, language-specific LSPs, community feedback integration
+- **Status**: After PR7

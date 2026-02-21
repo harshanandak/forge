@@ -2630,7 +2630,8 @@ function parseFlags() {
     path: null,
     merge: null,     // 'smart'|'preserve'|'replace'
     type: null,      // 'critical'|'standard'|'simple'|'hotfix'|'docs'|'refactor'
-    interview: false // Force context interview
+    interview: false, // Force context interview
+    budget: null,     // Budget mode for recommend command
   };
 
   for (let i = 0; i < args.length;) {
@@ -2666,6 +2667,14 @@ function parseFlags() {
       i = result.nextIndex;
     } else if (arg === '--interview') {
       flags.interview = true;
+      i++;
+    } else if (arg === '--budget' || arg.startsWith('--budget=')) {
+      if (arg.startsWith('--budget=')) {
+        flags.budget = arg.split('=')[1];
+      } else if (i + 1 < args.length) {
+        flags.budget = args[i + 1];
+        i++;
+      }
       i++;
     } else {
       i++;
@@ -2793,6 +2802,7 @@ function showHelp() {
   console.log('');
   console.log('Usage:');
   console.log('  npx forge setup [options]     Interactive agent configuration');
+  console.log('  npx forge recommend           Show recommended tools for your project');
   console.log('  npx forge                     Minimal install (AGENTS.md + docs)');
   console.log('');
   console.log('Options:');
@@ -2811,6 +2821,7 @@ function showHelp() {
   console.log('  --type <type>        Set workflow profile type manually');
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
   console.log('  --interview          Force context interview (gather project information)');
+  console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
   console.log('  --help, -h           Show this help message');
   console.log('');
   console.log('Available agents:');
@@ -3979,6 +3990,15 @@ async function main() {
 
     // Interactive setup (skip-external still applies)
     await interactiveSetupWithFlags(flags);
+  } else if (command === 'recommend') {
+    const { handleRecommend, formatRecommendations } = require('../lib/commands/recommend');
+    const result = handleRecommend(flags, projectRoot);
+    if (result.error) {
+      console.error(`Error: ${result.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(formatRecommendations(result.recommendations));
   } else if (command === 'rollback') {
     // Execute rollback menu
     await showRollbackMenu();
