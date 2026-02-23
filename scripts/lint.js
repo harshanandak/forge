@@ -7,13 +7,24 @@
 
 const { spawnSync } = require('node:child_process');
 
+// On Windows, npx is npx.cmd — shell: true resolves .cmd extensions
+const isWindows = process.platform === 'win32';
+
 console.log('🔍 Running ESLint...');
 
 const result = spawnSync(
   'npx',
   ['--yes', 'eslint', '.', '--max-warnings', '0'],
-  { stdio: 'inherit', shell: false }
+  { stdio: 'inherit', shell: isWindows }
 );
+
+if (result.error) {
+  console.error('');
+  console.error(`❌ Failed to run ESLint: ${result.error.message}`);
+  console.error('   Is Node.js/npm installed and on PATH?');
+  console.error('');
+  process.exit(1);
+}
 
 if (result.status !== 0) {
   console.error('');
