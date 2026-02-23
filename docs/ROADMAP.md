@@ -84,9 +84,9 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 | PR2 | PR1 | PR3 | ✅ MERGED (2026-02-14, PR #29) |
 | PR3 | PR2 | PR4 | ✅ MERGED (2026-02-14, PR #30) |
 | PR4 | PR3 | PR5 | ✅ MERGED (2026-02-19, PR #33) |
-| PR5 | PR4 | PR5.5 | Research done, ready for `/plan` |
-| PR5.5 | PR5 | PR6 | Scoped in PR6 research |
-| PR6 | PR5.5 | PR7 | Research done |
+| PR5 | PR4 | PR5.5 | ✅ MERGED (2026-02-20, PR #40) |
+| PR5.5 | PR5 | PR6 | ✅ MERGED (2026-02-23, PR #43) |
+| PR6 | PR5.5 | PR7 | ✅ MERGED (2026-02-21, PR #41) |
 | PR7 | PR6 | PR8 | Blocked |
 | PR8 | PR7 | None | Blocked |
 
@@ -284,10 +284,10 @@ All PRs tracked in Beads with proper dependencies:
 | PR2 | forge-aom | ✅ Completed (PR #29) | P1 | None |
 | PR3 | forge-5uh | ✅ Completed (PR #30) | P1 | None |
 | PR4 | forge-9tp | ✅ Completed (PR #33) | P2 | None |
-| PR5 | forge-01p | Research done | P2 | None |
-| PR5.5 | — | Scoped | P2 | PR5 |
-| PR6 | forge-a7n | Research done | P2 | PR5.5 |
-| PR7 | forge-jvc | Blocked | P3 | PR6 |
+| PR5 | forge-01p | ✅ Completed (PR #40) | P2 | None |
+| PR5.5 | forge-qst | ✅ Completed (PR #43) | P2 | PR5 |
+| PR6 | forge-a7n | ✅ Completed (PR #41) | P2 | PR5.5 |
+| PR7 | forge-jvc | Ready | P3 | PR6 |
 | PR8 | forge-dwm | Blocked | P3 | PR7 |
 | ~~Skills CLI~~ | ~~forge-mlm~~ | ~~Absorbed into PR5.5 + PR6 + PR8~~ | — | — |
 
