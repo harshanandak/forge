@@ -6,10 +6,15 @@
   "homepage": "https://aider.chat",
   "capabilities": {
     "commands": false,
-    "skills": false,
+    "skills": true,
     "hooks": false
   },
-  "directories": {},
+  "directories": {
+    "skills": ".aider/skills/forge-workflow"
+  },
+  "files": {
+    "rootConfig": ".aider.conf.yml"
+  },
   "setup": {
     "customSetup": "aider"
   }
