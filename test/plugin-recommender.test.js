@@ -200,16 +200,16 @@ describe('plugin-recommender', () => {
   });
 
   describe('specific tools appear', () => {
-    test('parallel-ai appears in recommendations', () => {
+    test('parallel-web-search appears in recommendations', () => {
       const result = recommend(emptyStack(), 'startup');
-      const parallelAi = result.recommended.find((t) => t.id === 'parallel-ai');
-      assert.ok(parallelAi, 'parallel-ai should appear in recommendations');
+      const parallelWebSearch = result.recommended.find((t) => t.id === 'parallel-web-search');
+      assert.ok(parallelWebSearch, 'parallel-web-search should appear in recommendations');
     });
 
-    test('sonarcloud appears for open-source projects', () => {
+    test('sonarcloud-analysis appears for open-source projects', () => {
       const result = recommend(emptyStack(), 'open-source');
-      const sonar = result.recommended.find((t) => t.id === 'sonarcloud');
-      assert.ok(sonar, 'sonarcloud should appear for open-source budget');
+      const sonar = result.recommended.find((t) => t.id === 'sonarcloud-analysis');
+      assert.ok(sonar, 'sonarcloud-analysis should appear for open-source budget');
     });
   });
 });
