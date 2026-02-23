@@ -3179,11 +3179,19 @@ function installViaBunx(packageName, versionArgs, initFn, toolName) {
 }
 
 // Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
+// SECURITY NOTE: Downloads and executes a remote PowerShell script.
+// The npm @beads/bd package is broken on Windows (GitHub Issue #1031, closed "not planned"),
+// so the official PowerShell installer is the only supported path.
+// Mitigations: HTTPS transport (prevents MITM), official beads repo, user-visible URL.
+// TODO: Pin to a versioned release tag once beads publishes tagged releases (e.g. v0.49.1).
+const BEADS_INSTALL_PS1_URL = 'https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1';
+
 function installBeadsOnWindows() {
   console.log('  (Windows detected: using PowerShell installer)');
+  console.log(`  Downloading: ${BEADS_INSTALL_PS1_URL}`);
   secureExecFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command',
-    'irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex'
+    `irm ${BEADS_INSTALL_PS1_URL} | iex`
   ], { stdio: 'inherit' });
 }
 
