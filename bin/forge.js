@@ -3222,7 +3222,8 @@ function installBeadsWithMethod(method) {
         secureExecFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
       }
       console.log('  ✓ Beads installed');
-      initializeBeads('local');
+      // On Windows the fallback was global (PowerShell installer), so init as 'global'
+      initializeBeads(process.platform === 'win32' ? 'global' : 'local');
     } else if (method === '3') {
       installViaBunx('@beads/bd', ['version'], initializeBeads, 'Beads');
     } else {
