@@ -2,9 +2,35 @@
 
 ## Current Focus
 <!-- What you're working on -->
-PR6 merged. Next: PR5.5 (Skills Restructure) or PR7 (Installation Orchestrator).
+PR5.5 merged. Next: PR7 (Installation Orchestrator).
 
 ## Completed
+
+### PR5.5: Skills Restructure for skills.sh (2026-02-23)
+- **PR**: #43
+- **Beads**: forge-qst (closed)
+- **Research**: [docs/research/skills-restructure.md](../research/skills-restructure.md)
+- **Description**: Migrated skills to `skills/` (repo root, skills.sh standard), split monolithic `parallel-ai` into 4 focused curl-based skills, added dual CLI/curl install paths in catalog and `forge recommend` output, removed legacy `.claude/skills/` directories
+- **Deliverables**:
+  - **skills/ directory** (6 skills, downloadable on-demand via `npx skills add harshanandak/forge --skill <name>`):
+    - `parallel-web-search` — curl-based Parallel AI Search API
+    - `parallel-web-extract` — curl-based Parallel AI Extract API
+    - `parallel-deep-research` — curl-based Parallel AI Task API (pro/ultra processors)
+    - `parallel-data-enrichment` — curl-based Parallel AI Task API (core/base processors)
+    - `sonarcloud-analysis` — migrated from `.claude/skills/sonarcloud/` with corrected name
+    - `citation-standards` — new internal rule skill for research docs
+  - **Catalog changes** (lib/plugin-catalog.js):
+    - `parallel-web-search` replaces `parallel-ai` — dual install paths (`install.cmd` CLI + `install.cmdCurl` curl)
+    - `sonarcloud-analysis` replaces `sonarcloud`
+    - `parallel-cli` added to PREREQUISITES registry
+  - **Recommend output** (lib/commands/recommend.js):
+    - Shows "CLI (recommended)" and "Curl (no install)" options for dual-path tools
+  - **Skills structure validation** (test/skills-structure.test.js): 34 new tests
+  - **Legacy cleanup**: Deleted `.claude/skills/parallel-ai/` (5 files) and `.claude/skills/sonarcloud/` (2 files)
+- **Impact**: 67 new PR5.5-specific tests, skills.sh compatible structure, users can download individual skills on demand without bloating npm package
+- **Files**: skills/ (7 new files), lib/plugin-catalog.js, lib/commands/recommend.js, test/skills-structure.test.js (new), test/plugin-catalog.test.js (+6 tests), test/plugin-recommend.test.js (new), package.json, .claude/commands/research.md
+- **Validation**: 974/1012 tests passing (2 pre-existing failures in packages/skills unrelated to PR5.5), all 18 CI checks passing, Greptile Quality Gate PASSED, SonarCloud Quality Gate PASSED (0 issues after fix), CodeQL false positive dismissed
+- **Security**: OWASP Top 10 reviewed (all N/A or PASS for static data + display-only changes), skills excluded from npm package by default, catalog frozen immutable data
 
 ### PR6: Plugin Architecture & Smart Recommendations (2026-02-21)
 - **PR**: #41
