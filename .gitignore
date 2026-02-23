@@ -48,8 +48,10 @@ test-dashboard.json
 .claude/settings.json
 .claude/settings.local.json
 
-# Skills CLI registry (local, recreated by `skills init`)
+# Skills (local, populated by skills.sh or skills CLI — not committed)
 .skills/
+.agents/
+skills-lock.json
 
 # MCP local configuration (use .mcp.json.example as template)
 .mcp.json
