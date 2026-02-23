@@ -89,8 +89,9 @@ bunx forge setup
 
 **Skills available**:
 - `forge-workflow` - All 9 stages
-- `parallel-ai` - Web research (if API key configured)
-- `sonarcloud` - Code quality (if token configured)
+- `parallel-web-search` - Quick web research (if PARALLEL_API_KEY configured)
+- `parallel-deep-research` - Deep analysis (if PARALLEL_API_KEY configured)
+- `sonarcloud-analysis` - Code quality (if SONARCLOUD_TOKEN configured)
 
 ---
 

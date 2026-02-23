@@ -7,7 +7,7 @@
 | Phase | Command | Purpose |
 |-------|---------|---------|
 | 1 | `/status` | Check current stage, active work, recent completions |
-| 2 | `/research` | Deep research with parallel-ai, save to docs/research/ |
+| 2 | `/research` | Deep research with parallel-web-search, save to docs/research/ |
 | 3 | `/plan` | Create formal plan, branch, OpenSpec proposal (if strategic) |
 | 4 | `/dev` | Implement with TDD, parallel if needed |
 | 5 | `/check` | Type check, lint, code review, security, tests |
@@ -25,7 +25,7 @@
 
 ### Research-First Approach
 - All features start with comprehensive research
-- Use parallel-ai for web research (MANDATORY)
+- Use parallel-web-search (or parallel-deep-research) for web research (MANDATORY)
 - Document findings in `docs/research/<feature-slug>.md`
 
 ### Security Built-In
@@ -77,10 +77,11 @@ SECURITY_SCAN="bunx npm audit"            # or: npm audit, snyk test, etc.
 
 ## Skills Integration
 
-### parallel-ai (MANDATORY for web research)
+### Parallel AI (MANDATORY for web research)
+Use focused skills from `skills/` directory:
 ```bash
-# Use Skill tool for web research
-Skill("parallel-ai")
+Skill("parallel-web-search")     # Quick web lookups, news, sources
+Skill("parallel-deep-research")  # Deep analysis, market reports
 ```
 
 ### sonarcloud (Code quality)
