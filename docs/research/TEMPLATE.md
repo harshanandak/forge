@@ -28,7 +28,7 @@
 
 ## Web Research
 
-### Best Practices (parallel-ai)
+### Best Practices (parallel-web-search)
 1. **Source**: [URL]
    - **Key insight**: [Summary of best practice]
    - **Applicability**: [How it applies to our project]
@@ -38,7 +38,7 @@
 2. **Source**: [URL]
    - [...]
 
-### Known Issues (parallel-ai)
+### Known Issues (parallel-web-search)
 1. **Issue**: [Description]
    - **Source**: [GitHub/SO/Blog URL]
    - **Mitigation**: [How to avoid]
@@ -276,7 +276,7 @@
 ## Research Checklist
 
 - [ ] Codebase exploration complete
-- [ ] parallel-ai web research complete (multiple sources)
+- [ ] parallel-web-search web research complete (multiple sources)
 - [ ] Context7 library documentation reviewed
 - [ ] Case studies analyzed
 - [ ] All key decisions documented with evidence

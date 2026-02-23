@@ -6,7 +6,7 @@ Complete 9-stage TDD-first workflow for feature development. Works with any tech
 
 This workflow integrates:
 - **Test-Driven Development (TDD)**: Tests written UPFRONT
-- **Research-First**: Evidence-based decisions with parallel-ai
+- **Research-First**: Evidence-based decisions with parallel-web-search / parallel-deep-research
 - **Issue Tracking**: Beads for persistent tracking across agents
 - **Strategic Planning**: OpenSpec for architectural changes
 - **Security**: OWASP Top 10 analysis for every feature
@@ -20,7 +20,7 @@ This workflow integrates:
 └────┬────┘
      │
 ┌────▼──────┐
-│ /research │ → Deep research (parallel-ai), save to docs/research/
+│ /research │ → Deep research (parallel-web-search), save to docs/research/
 └────┬──────┘
      │
 ┌────▼────┐
@@ -59,7 +59,7 @@ This workflow integrates:
 | Stage | Command | Key Actions |
 |-------|---------|-------------|
 | 1. Status | `/status` | Check PROGRESS.md, Beads, OpenSpec |
-| 2. Research | `/research <name>` | parallel-ai + codebase, save to docs/research/ |
+| 2. Research | `/research <name>` | parallel-web-search + codebase, save to docs/research/ |
 | 3. Plan | `/plan <slug>` | OpenSpec (if strategic) + Beads + branch |
 | 4. Dev | `/dev` | TDD cycles (RED-GREEN-REFACTOR) |
 | 5. Check | `/check` | Type/lint/security/tests |
@@ -148,9 +148,9 @@ export function validateEmail(email: string): boolean {
 - Make informed security decisions
 - Document reasoning for future reference
 
-### parallel-ai Integration
+### Parallel AI Integration
 
-**MANDATORY for all features**: Use parallel-ai skill for web research
+**MANDATORY for all features**: Use parallel-web-search (or parallel-deep-research) skill for web research
 
 **Research Queries**:
 ```
@@ -395,7 +395,7 @@ After implementing this workflow:
 ## Tips & Best Practices
 
 1. **Always TDD**: Write tests BEFORE implementation
-2. **Research everything**: Use parallel-ai for every feature
+2. **Research everything**: Use parallel-web-search / parallel-deep-research for every feature
 3. **Security first**: OWASP Top 10 analysis mandatory
 4. **Document decisions**: Evidence and reasoning in research docs
 5. **Update Beads regularly**: Keep status current for handoffs

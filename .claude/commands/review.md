@@ -428,6 +428,6 @@ Next: /merge <pr-number> (user approval required)
 - **Use sonarcloud skill**: Don't just check the web UI
 - **Verify all checks**: Ensure everything is green before /merge
 - **Update Beads**: Keep issue status current
-- **Research if needed**: Use parallel-ai for unclear suggestions
+- **Research if needed**: Use parallel-web-search for unclear suggestions
 - **Document fixes**: Clear commit messages for all fixes
 - **Don't leave unresolved**: Address every comment and check
