@@ -53,6 +53,20 @@ test-dashboard.json
 .agents/
 skills-lock.json
 
+# Agent skill dirs created by skills.sh (junctions/symlinks, not committed)
+.agent/
+.goose/
+.augment/
+.claude/skills/
+.cursor/skills/
+.cline/skills/
+.continue/skills/
+.roo/skills/
+.kilocode/skills/
+.windsurf/skills/
+.opencode/skills/
+.github/skills/
+
 # MCP local configuration (use .mcp.json.example as template)
 .mcp.json
 
