@@ -3232,7 +3232,7 @@ function installBeadsWithMethod(method) {
     console.warn('Beads installation failed:', err.message);
     console.log('  ⚠ Failed to install Beads:', err.message);
     if (process.platform === 'win32') {
-      console.log('  Run manually: irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex');
+      console.log(`  Run manually: irm ${BEADS_INSTALL_PS1_URL} | iex`);
     } else {
       console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @beads/bd && bd init`);
     }
@@ -3464,7 +3464,7 @@ function autoSetupBeadsInQuickMode() {
       console.log('  ⚠ Could not install Beads automatically');
       console.log(`    Error: ${err.message}`);
       if (process.platform === 'win32') {
-        console.log('  Run manually: irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex');
+        console.log(`  Run manually: irm ${BEADS_INSTALL_PS1_URL} | iex`);
       } else {
         console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @beads/bd && bd init`);
       }

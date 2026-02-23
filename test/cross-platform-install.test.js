@@ -71,9 +71,11 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
+    // Accepts either direct powershell/install.ps1 reference OR delegation to installBeadsOnWindows()
+    // (the latter is preferred as it centralises the URL via BEADS_INSTALL_PS1_URL constant)
     assert.ok(
-      fnBody.includes('powershell') || fnBody.includes('install.ps1'),
-      'Windows beads install must use PowerShell installer (install.ps1)'
+      fnBody.includes('powershell') || fnBody.includes('install.ps1') || fnBody.includes('installBeadsOnWindows'),
+      'Windows beads install must use PowerShell installer (directly or via installBeadsOnWindows)'
     );
   });
 
