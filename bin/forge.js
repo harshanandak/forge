@@ -3179,13 +3179,25 @@ function installViaBunx(packageName, versionArgs, initFn, toolName) {
 }
 
 // Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
+function installBeadsOnWindows() {
+  console.log('  (Windows detected: using PowerShell installer)');
+  secureExecFileSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    'irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex'
+  ], { stdio: 'inherit' });
+}
+
 function installBeadsWithMethod(method) {
   try {
     // SECURITY: secureExecFileSync with hardcoded commands
     if (method === '1') {
       console.log('Installing Beads globally...');
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      if (process.platform === 'win32') {
+        installBeadsOnWindows();
+      } else {
+        const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+        secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      }
       console.log('  ✓ Beads installed globally');
       initializeBeads('global');
     } else if (method === '2') {
@@ -3202,7 +3214,11 @@ function installBeadsWithMethod(method) {
   } catch (err) {
     console.warn('Beads installation failed:', err.message);
     console.log('  ⚠ Failed to install Beads:', err.message);
-    console.log('  Run manually: bun add -g @beads/bd && bd init');
+    if (process.platform === 'win32') {
+      console.log('  Run manually: irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex');
+    } else {
+      console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @beads/bd && bd init`);
+    }
   }
 }
 
@@ -3285,7 +3301,7 @@ function installOpenSpecWithMethod(method) {
   } catch (err) {
     console.warn('OpenSpec installation failed:', err.message);
     console.log('  ⚠ Failed to install OpenSpec:', err.message);
-    console.log('  Run manually: bun add -g @fission-ai/openspec && openspec init');
+    console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @fission-ai/openspec && openspec init`);
   }
 }
 
@@ -3320,7 +3336,7 @@ function installSkillsWithMethod(method) {
   } catch (err) {
     console.warn('Skills installation failed:', err.message);
     console.log('  ⚠ Failed to install Skills:', err.message);
-    console.log('  Run manually: bun add -g @forge/skills && skills init');
+    console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @forge/skills && skills init`);
   }
 }
 
@@ -3417,16 +3433,24 @@ function autoSetupBeadsInQuickMode() {
   } else if (!beadsInitialized && !beadsStatus) {
     console.log('📦 Installing Beads globally...');
     try {
-      // SECURITY: secureExecFileSync with hardcoded command
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      // SECURITY: use PowerShell on Windows (npm @beads/bd is broken on Windows - Issue #1031)
+      if (process.platform === 'win32') {
+        installBeadsOnWindows();
+      } else {
+        const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+        secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
+      }
       console.log('  ✓ Beads installed globally');
       initializeBeads('global');
     } catch (err) {
       // Installation failed - provide manual instructions
       console.log('  ⚠ Could not install Beads automatically');
       console.log(`    Error: ${err.message}`);
-      console.log('  Run manually: npm install -g @beads/bd && bd init');
+      if (process.platform === 'win32') {
+        console.log('  Run manually: irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex');
+      } else {
+        console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @beads/bd && bd init`);
+      }
     }
     console.log('');
   }
@@ -3439,15 +3463,31 @@ function autoInstallLefthook() {
 
   console.log('📦 Installing lefthook for git hooks...');
   try {
-    // SECURITY: execFileSync with hardcoded command
-    execFileSync('bun', ['add', '-d', 'lefthook'], { stdio: 'inherit', cwd: projectRoot });
+    // SECURITY: secureExecFileSync with PKG_MANAGER — cross-platform support
+    const installArgs = PKG_MANAGER === 'yarn'
+      ? ['add', '--dev', 'lefthook']
+      : PKG_MANAGER === 'npm'
+        ? ['install', '--save-dev', 'lefthook']
+        : ['add', '-d', 'lefthook']; // bun and pnpm both use 'add'
+    secureExecFileSync(PKG_MANAGER, installArgs, { stdio: 'inherit', cwd: projectRoot });
     console.log('  ✓ Lefthook installed');
   } catch (err) {
     console.warn('Lefthook auto-install failed:', err.message);
     console.log('  ⚠ Could not install lefthook automatically');
-    console.log('  Run manually: bun add -d lefthook');
+    console.log(`  Run manually: ${PKG_MANAGER === 'yarn' ? 'yarn add --dev' : PKG_MANAGER === 'npm' ? 'npm install --save-dev' : PKG_MANAGER === 'pnpm' ? 'pnpm add -D' : 'bun add -d'} lefthook`);
   }
   console.log('');
+}
+
+// Helper: Verify a tool is callable after install - extracted to reduce cognitive complexity
+function verifyToolInstall(command, args, toolName) {
+  try {
+    secureExecFileSync(command, args, { stdio: 'ignore' });
+    return true;
+  } catch (_err) { // NOSONAR - S2486: Intentionally ignored; verification failure is handled by caller
+    console.log(`  ⚠ ${toolName} installed but not callable. Check your PATH.`);
+    return false;
+  }
 }
 
 // Helper: Auto-setup tools (OpenSpec, Skills) in quick mode - extracted to reduce cognitive complexity
@@ -3455,11 +3495,20 @@ function autoSetupToolsInQuickMode() {
   // Beads: auto-install or initialize
   autoSetupBeadsInQuickMode();
 
+  // Post-install verification for Beads
+  if (isBeadsInitialized()) {
+    verifyToolInstall('bd', ['version'], 'Beads');
+  }
+
   // OpenSpec: only initialize if already installed (optional tool)
   const openspecStatus = checkForOpenSpec();
   if (openspecStatus && !isOpenSpecInitialized()) {
     console.log('📦 Initializing OpenSpec...');
     initializeOpenSpec(openspecStatus);
+    console.log('');
+  } else if (!openspecStatus) {
+    const installCmd = PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g';
+    console.log(`  ℹ OpenSpec not found — install with: ${installCmd} @fission-ai/openspec`);
     console.log('');
   }
 
@@ -3468,6 +3517,10 @@ function autoSetupToolsInQuickMode() {
   if (skillsStatus && !isSkillsInitialized()) {
     console.log('📦 Initializing Skills...');
     initializeSkills(skillsStatus);
+    console.log('');
+  } else if (!skillsStatus) {
+    const installCmd = PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g';
+    console.log(`  ℹ Skills not found — install with: ${installCmd} @forge/skills`);
     console.log('');
   }
 }

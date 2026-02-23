@@ -8,7 +8,7 @@
 commit-msg:
   commands:
     commitlint:
-      run: bunx commitlint --edit {1}
+      run: npx --yes commitlint --edit {1}
       tags: commitlint
 
 pre-commit:
@@ -28,44 +28,12 @@ pre-push:
       tags: protection
 
     # 2. ESLint check (strict mode: blocks on errors and warnings)
+    # Uses Node.js script for cross-platform compatibility
     lint:
-      run: |
-        echo "🔍 Running ESLint..."
-        bunx eslint . --max-warnings 0
-        if [ $? -ne 0 ]; then
-          echo ""
-          echo "❌ ESLint errors found. Fix them before pushing."
-          echo ""
-          echo "To see errors: bunx eslint ."
-          echo "To auto-fix: bunx eslint . --fix"
-          echo ""
-          echo "Emergency bypass: LEFTHOOK=0 git push"
-          echo ""
-          exit 1
-        fi
-        echo "✅ ESLint check passed (no errors)"
+      run: node scripts/lint.js
       tags: lint
 
-    # 3. Test suite (detect package manager: bun > pnpm > yarn > npm)
+    # 3. Test suite (cross-platform Node.js script detects package manager)
     tests:
-      run: |
-        echo "🧪 Running test suite..."
-        if command -v bun >/dev/null 2>&1 && [ -f "bun.lockb" ]; then
-          bun test
-        elif command -v pnpm >/dev/null 2>&1 && [ -f "pnpm-lock.yaml" ]; then
-          pnpm test
-        elif command -v yarn >/dev/null 2>&1 && [ -f "yarn.lock" ]; then
-          yarn test
-        else
-          npm test
-        fi
-        if [ $? -ne 0 ]; then
-          echo ""
-          echo "❌ Tests failed. Fix them before pushing."
-          echo ""
-          echo "Emergency bypass: LEFTHOOK=0 git push"
-          echo ""
-          exit 1
-        fi
-        echo "✅ All tests passed"
+      run: node scripts/test.js
       tags: tests
