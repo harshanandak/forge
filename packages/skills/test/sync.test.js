@@ -116,22 +116,20 @@ describe('Sync Command', () => {
     expect(existsSync('.cursor/skills')).toBe(true);
   });
 
-  test('syncCommand only syncs to enabled agents', async () => {
-    // Create all agent directories
+  test('syncCommand syncs to ALL detected agent directories', async () => {
+    // All agents are now enabled: true — directory existence is the gate
     mkdirSync('.cursor', { recursive: true });
     mkdirSync('.github', { recursive: true });
-    mkdirSync('.cline', { recursive: true }); // Disabled by default
-    mkdirSync('.continue', { recursive: true }); // Disabled by default
+    mkdirSync('.cline', { recursive: true });
+    mkdirSync('.continue', { recursive: true });
 
     await syncCommand({});
 
-    // Enabled agents should have skills
+    // All detected agents should have skills
     expect(existsSync('.cursor/skills/test-skill/SKILL.md')).toBe(true);
     expect(existsSync('.github/skills/test-skill/SKILL.md')).toBe(true);
-
-    // Disabled agents should NOT have skills
-    expect(existsSync('.cline/skills/test-skill/SKILL.md')).toBe(false);
-    expect(existsSync('.continue/skills/test-skill/SKILL.md')).toBe(false);
+    expect(existsSync('.cline/skills/test-skill/SKILL.md')).toBe(true);
+    expect(existsSync('.continue/skills/test-skill/SKILL.md')).toBe(true);
   });
 
   test('syncCommand handles no agents gracefully', async () => {
@@ -241,6 +239,44 @@ describe('Sync Command', () => {
     // Should show sync messages for each agent
     expect(output).toContain('cursor');
     expect(output).toContain('github');
+  });
+
+  test('syncCommand syncs skills to Claude agent directory', async () => {
+    mkdirSync('.claude', { recursive: true });
+    await syncCommand({});
+    expect(existsSync('.claude/skills/test-skill/SKILL.md')).toBe(true);
+  });
+
+  test('syncCommand syncs skills to Kilo Code directory', async () => {
+    mkdirSync('.kilocode', { recursive: true });
+    await syncCommand({});
+    expect(existsSync('.kilocode/skills/test-skill/SKILL.md')).toBe(true);
+  });
+
+  test('syncCommand syncs skills to Aider directory', async () => {
+    mkdirSync('.aider', { recursive: true });
+    await syncCommand({});
+    expect(existsSync('.aider/skills/test-skill/SKILL.md')).toBe(true);
+  });
+
+  test('syncCommand reads skills from root skills/ directory', async () => {
+    mkdirSync('.cursor', { recursive: true });
+    mkdirSync('skills/root-skill', { recursive: true });
+    writeFileSync('skills/root-skill/SKILL.md',
+      '---\nname: root-skill\ndescription: A root skill\n---\n\n# Root Skill');
+    await syncCommand({});
+    expect(existsSync('.cursor/skills/root-skill/SKILL.md')).toBe(true);
+  });
+
+  test('syncCommand deduplicates: .skills/ takes priority over skills/', async () => {
+    mkdirSync('.cursor', { recursive: true });
+    mkdirSync('skills/test-skill', { recursive: true });
+    writeFileSync('skills/test-skill/SKILL.md',
+      '---\nname: test-skill\ndescription: Root version\n---\n\n# Root Version');
+    await syncCommand({});
+    const content = readFileSync('.cursor/skills/test-skill/SKILL.md', 'utf8');
+    expect(content).toContain('Test Skill'); // .skills/ version wins
+    expect(content).not.toContain('Root Version');
   });
 
   test('syncCommand updates registry with sync timestamp', async () => {
