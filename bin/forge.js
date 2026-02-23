@@ -3210,9 +3210,18 @@ function installBeadsWithMethod(method) {
       initializeBeads('global');
     } else if (method === '2') {
       console.log('Installing Beads locally...');
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      secureExecFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
-      console.log('  ✓ Beads installed locally');
+      // On Windows, npm postinstall for @beads/bd runs Expand-Archive which has EPERM file-locking
+      // (GitHub Issue #1031, closed "not planned") — same root cause as global install.
+      // Redirect Windows users to the global PowerShell installer instead.
+      if (process.platform === 'win32') {
+        console.log('  ⚠ Local install not supported on Windows (npm @beads/bd EPERM issue).');
+        console.log('  Falling back to global PowerShell installer...');
+        installBeadsOnWindows();
+      } else {
+        const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
+        secureExecFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
+      }
+      console.log('  ✓ Beads installed');
       initializeBeads('local');
     } else if (method === '3') {
       installViaBunx('@beads/bd', ['version'], initializeBeads, 'Beads');
@@ -3476,7 +3485,9 @@ function autoInstallLefthook() {
       ? ['add', '--dev', 'lefthook']
       : PKG_MANAGER === 'npm'
         ? ['install', '--save-dev', 'lefthook']
-        : ['add', '-d', 'lefthook']; // bun and pnpm both use 'add'
+        : PKG_MANAGER === 'pnpm'
+          ? ['add', '-D', 'lefthook'] // pnpm requires uppercase -D for devDependencies
+          : ['add', '-d', 'lefthook']; // bun uses 'add -d'
     secureExecFileSync(PKG_MANAGER, installArgs, { stdio: 'inherit', cwd: projectRoot });
     console.log('  ✓ Lefthook installed');
   } catch (err) {
