@@ -52,21 +52,28 @@ Complete reference for all tools integrated with the Forge workflow.
 bunx forge setup
 # Prompts: "Install Beads? (y/n)"
 # Automatically installs and initializes
+# On Windows: uses PowerShell installer (npm @beads/bd has an EPERM bug on Windows)
 ```
 
 **Manual installation**:
 ```bash
-# bun (global)
+# macOS / Linux (global)
 bun add -g @beads/bd
 bd init
 
-# bun (local)
+# macOS / Linux (local)
 bun add -d @beads/bd
 bunx bd init
 
-# Or with bunx (no install needed)
+# Windows (global) — use PowerShell installer, NOT npm/bun add -g
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+bd init
+
+# Or with bunx (macOS/Linux, no install needed)
 bunx @beads/bd init
 ```
+
+> **Windows note**: The `npm install -g @beads/bd` postinstall script uses `Expand-Archive`, which triggers an EPERM file-locking error on Windows (issue #1031, closed "not planned"). Use the PowerShell installer above instead.
 
 ### File Structure
 
@@ -413,7 +420,7 @@ The system SHALL support optional 2FA
 
 ### Context7 - Library Documentation
 
-**Package**: `@upstash/context7-mcp@latest`
+**Package**: `@upstash/context7-mcp@2` (pin to major version, not `@latest`)
 **Purpose**: Up-to-date documentation and code examples for any programming library
 **Used in**: `/research` stage, any library lookup
 
@@ -800,8 +807,19 @@ gh pr merge <n> --squash    # Merge
 
 **"bd: command not found"**
 ```bash
+# macOS / Linux
 bun add -g @beads/bd
 # Or use bunx @beads/bd <command>
+
+# Windows — use PowerShell installer
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+```
+
+**Windows EPERM error during `npm install -g @beads/bd`**
+```bash
+# npm @beads/bd has a known EPERM bug on Windows (Issue #1031)
+# Use the PowerShell installer instead:
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 ```
 
 **"database locked"**

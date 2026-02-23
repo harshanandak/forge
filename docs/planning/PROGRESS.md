@@ -2,9 +2,31 @@
 
 ## Current Focus
 <!-- What you're working on -->
-PR5.5 merged. Next: PR7 (Installation Orchestrator).
+PR5.6 merged (cross-platform install fixes). Next: PR7 (Installation Orchestrator).
 
 ## Completed
+
+### PR5.6: Cross-Platform Install Fixes (2026-02-23)
+- **PR**: #45
+- **Beads**: forge-k6p, forge-63c, forge-jxb, forge-92t, forge-4zz, forge-0xb, forge-cvr, forge-6q4 (all closed)
+- **Research**: [docs/research/dependency-chain.md](../research/dependency-chain.md)
+- **Description**: Fixed 8 cross-platform installation bugs covering Windows Beads EPERM bug, hardcoded `bun`/`bunx` in hooks and error messages, bash-only syntax in lefthook, and unpinned MCP versions
+- **Deliverables**:
+  - **Windows Beads install** (`bin/forge.js`): `installBeadsOnWindows()` uses PowerShell `irm install.ps1 | iex` on `win32` — bypasses `npm @beads/bd` EPERM postinstall bug (Issue #1031). All 3 install methods (global, local, method '2') detect win32 and delegate to `installBeadsOnWindows()`
+  - **`BEADS_INSTALL_PS1_URL` constant**: Centralised URL for PowerShell installer — used in `installBeadsOnWindows()`, error messages, and printed before execution for transparency
+  - **`autoInstallLefthook` PKG_MANAGER flags** (`bin/forge.js`): Removed hardcoded `bun add -d lefthook`; now uses `PKG_MANAGER` with correct flags per manager: `bun add -d`, `pnpm add -D`, `yarn add --dev`, `npm install --save-dev`
+  - **Error messages** (`bin/forge.js`): All "run manually" error messages now use `${PKG_MANAGER}` with correct flag instead of hardcoded `bun add -g`
+  - **OpenSpec/Skills messaging** (`bin/forge.js`): Shows explicit "not found — install with:" message when tools are not pre-installed (instead of silent skip)
+  - **Post-install verification** (`bin/forge.js`): `verifyToolInstall()` called after install, runs `bd version` to confirm tool is callable
+  - **Cross-platform lefthook hooks** (`lefthook.yml`): Replaced `bunx commitlint` → `npx --yes commitlint`, replaced `bunx eslint` + bash `if [$?]`/`command -v` syntax → `node scripts/lint.js` and `node scripts/test.js`
+  - **`scripts/lint.js`** (new): Cross-platform ESLint runner using `spawnSync('npx', ..., { shell: isWindows })` with `result.error` check
+  - **`scripts/test.js`** (new): Cross-platform test runner with `detectPackageManager()` lock file detection, `result.error` check
+  - **`.mcp.json.example`**: Pinned `context7-mcp@2` and `grep_app_mcp@1` instead of `@latest`
+  - **22 tests** (`test/cross-platform-install.test.js`): Source-inspection tests covering all 8 beads issues (forge-k6p through forge-6q4)
+- **Impact**: Forge `setup` command now works on Windows, npm/pnpm/yarn users, and any CI environment — not just bun/macOS/Linux
+- **Files**: `bin/forge.js`, `lefthook.yml`, `scripts/lint.js` (new), `scripts/test.js` (new), `test/cross-platform-install.test.js` (new), `.mcp.json.example`, `docs/research/dependency-chain.md` (new)
+- **Validation**: 22 new tests, 997+ passing total, all 26 CI checks passing (Windows, macOS, Linux × Node 20/22), Greptile Quality Gate PASSED, SonarCloud PASSED, CodeQL PASSED
+- **Security**: OWASP Top 10 reviewed, `BEADS_INSTALL_PS1_URL` printed before PowerShell execution for transparency, `spawnSync` uses `result.error` check (no silent failures), no shell injection (explicit args arrays)
 
 ### PR5.5: Skills Restructure for skills.sh (2026-02-23)
 - **PR**: #43
@@ -329,7 +351,7 @@ PR5.5 merged. Next: PR7 (Installation Orchestrator).
 
 ### PR5.5: Skills Restructure for skills.sh
 - **Deliverables**: Restructure parallel-ai into 4 focused skills, publish to skills.sh, add citation-standards rule
-- **Status**: Scoped in PR6 research, prerequisite for PR7 skill extraction
+- **Status**: ✅ Merged as PR #43
 
 ### PR7: Installation Orchestrator + Skill Extraction
 - **Deliverables**: `forge install <tool>` command, prerequisite runtime verification, skill extraction from npm `files`, cross-platform installer
