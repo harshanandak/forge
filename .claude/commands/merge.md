@@ -1,12 +1,12 @@
 ---
-description: Update docs, merge PR, archive, cleanup
+description: Update docs, prep PR for merge, archive proposals, and clean up — merge is done by the user
 ---
 
-Update project documentation, merge the pull request, archive proposals, and clean up.
+Update project documentation, prepare the PR for merge, archive proposals, and clean up.
 
 # Merge
 
-This command completes the feature by merging the PR and updating documentation.
+This command prepares everything for merge. **The actual merge is always done by the user in the GitHub UI — never by this command.**
 
 ## Usage
 
@@ -85,32 +85,48 @@ See: docs/research/<feature-slug>.md"
 git push
 ```
 
-### Step 3: Merge PR
-```bash
-gh pr merge <pr-number> --squash --delete-branch
-```
-
-### Step 4: Archive OpenSpec (if strategic)
+### Step 3: Archive OpenSpec (if strategic)
 ```bash
 openspec archive <feature-slug> --yes
 ```
 
-### Step 5: Sync Beads
+### Step 4: Sync Beads
 ```bash
 bd sync
 ```
 
-### Step 6: Switch to Main
-```bash
-git checkout main
-git pull
+### Step 5: Hand off to user — STOP HERE
+
+**DO NOT run `gh pr merge`.** Present the PR as ready and wait for the user to merge.
+
+Output a clear summary like:
+
+```
+✅ PR #<number> is ready to merge
+
+  All checks: ✓ passing
+  Documentation: ✓ updated
+  Beads: ✓ synced
+  OpenSpec: ✓ archived (if applicable)
+
+  👉 Please merge in the GitHub UI:
+     https://github.com/<owner>/<repo>/pull/<number>
+
+  Merge options:
+  - Squash and merge (recommended — keeps main history clean)
+  - Create a merge commit
+
+After you merge, run /verify to cross-check documentation.
 ```
 
-### Step 7: Verify Cleanup
-- Documentation updated: ✓
-- Branch deleted: ✓
-- OpenSpec archived (if strategic): ✓
-- Beads synced: ✓
+### Step 6: After user merges — cleanup
+
+Once the user confirms merge is done:
+
+```bash
+git checkout master
+git pull
+```
 
 ## Example Output
 
@@ -118,31 +134,19 @@ git pull
 ✓ Documentation Updates:
   - docs/planning/PROGRESS.md: Feature marked complete
   - docs/reference/API_REFERENCE.md: 3 new endpoints documented
-  - docs/architecture/: Payment system diagram updated
   - README.md: Billing features added
   - Committed: docs: update project documentation
 
 ✓ PR checks: All passing
-✓ PR approval: Approved by user
-✓ PR merged: squash-merge to main
-✓ Branch deleted: feat/stripe-billing
-✓ OpenSpec archived: openspec/changes/stripe-billing/ (if strategic)
 ✓ Beads synced
-✓ Switched to main
+✓ OpenSpec archived: openspec/changes/stripe-billing/ (if strategic)
 
-Merge complete!
+✅ PR #123 is ready to merge
 
-Summary:
-  - Feature: Stripe billing integration
-  - Research: docs/research/stripe-billing.md
-  - Beads: bd-x7y2 (closed)
-  - OpenSpec: Archived (if strategic)
-  - PR: #123 (merged)
-  - Commits: 18 (across 3 parallel tracks + integration)
-  - Tests: 42 test cases, all passing
-  - Documentation: Updated across 4 files
+  👉 Please merge in the GitHub UI:
+     https://github.com/harshanandak/forge/pull/123
 
-Next: /verify (cross-check all documentation)
+After you merge, run /verify to cross-check documentation.
 ```
 
 ## Integration with Workflow
@@ -155,16 +159,14 @@ Next: /verify (cross-check all documentation)
 5. /check                → Validate
 6. /ship                 → Create PR
 7. /review               → Address comments
-8. /merge                → Merge and cleanup (you are here)
-9. /verify               → Final documentation check
+8. /merge                → Prep for merge, hand off to user (you are here)
+9. /verify               → Final documentation check (after user merges)
 ```
 
-## Tips
+## Rules
 
-- **Update docs BEFORE merge**: All documentation must be current
-- **Verify PR approval**: Ensure user has approved the PR
-- **Squash merge**: Keep main branch history clean
-- **Archive OpenSpec**: Strategic proposals get archived after merge
-- **Sync Beads**: Ensure Beads database is up-to-date
-- **Switch to main**: Ready for next feature
-- **Run /verify**: Final documentation verification step
+- **NEVER run `gh pr merge`** — this is blocked by a PreToolUse hook in `.claude/settings.json`
+- **Merging is the user's decision** — always present the PR URL and stop
+- **Update docs BEFORE handing off**: All documentation must be current before telling the user to merge
+- **Archive OpenSpec**: Strategic proposals get archived before handoff
+- **Sync Beads**: Ensure Beads database is up-to-date before handoff
