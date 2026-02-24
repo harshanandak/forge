@@ -6,11 +6,12 @@
   "homepage": "https://github.com/roocode/roo",
   "capabilities": {
     "commands": true,
-    "skills": false,
+    "skills": true,
     "hooks": false
   },
   "directories": {
-    "commands": ".roo/commands"
+    "commands": ".roo/commands",
+    "skills": ".roo/skills/forge-workflow"
   },
   "files": {
     "rootConfig": ".clinerules"

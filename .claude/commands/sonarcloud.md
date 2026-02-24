@@ -143,7 +143,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## Full Skill Reference
 
-See `.claude/skills/sonarcloud/SKILL.md` for complete API documentation including:
+See `skills/sonarcloud-analysis/SKILL.md` for complete API documentation including:
 
 - All endpoints and parameters
 - Response structures

@@ -6,12 +6,13 @@
   "homepage": "https://github.com/features/copilot",
   "capabilities": {
     "commands": false,
-    "skills": false,
+    "skills": true,
     "hooks": false
   },
   "directories": {
     "prompts": ".github/prompts",
-    "instructions": ".github/instructions"
+    "instructions": ".github/instructions",
+    "skills": ".github/skills/forge-workflow"
   },
   "files": {
     "rootConfig": ".github/copilot-instructions.md"

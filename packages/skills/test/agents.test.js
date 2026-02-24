@@ -66,7 +66,7 @@ describe('Agent Detection', () => {
     expect(agents.length).toBe(1);
     expect(agents[0].name).toBe('cline');
     expect(agents[0].path).toBe('.cline/skills');
-    expect(agents[0].enabled).toBe(false); // Disabled by default
+    expect(agents[0].enabled).toBe(true);
   });
 
   test('detectAgents finds Continue agent', () => {
@@ -77,7 +77,7 @@ describe('Agent Detection', () => {
     expect(agents.length).toBe(1);
     expect(agents[0].name).toBe('continue');
     expect(agents[0].path).toBe('.continue/skills');
-    expect(agents[0].enabled).toBe(false); // Disabled by default
+    expect(agents[0].enabled).toBe(true);
   });
 
   test('detectAgents finds multiple agents', () => {
@@ -123,7 +123,7 @@ describe('Agent Detection', () => {
     expect(github.enabled).toBe(true);
   });
 
-  test('detectAgents marks secondary agents as disabled', () => {
+  test('detectAgents marks all agents as enabled', () => {
     mkdirSync('.cline', { recursive: true });
     mkdirSync('.continue', { recursive: true });
 
@@ -132,8 +132,8 @@ describe('Agent Detection', () => {
     const cline = agents.find(a => a.name === 'cline');
     const continueAgent = agents.find(a => a.name === 'continue');
 
-    expect(cline.enabled).toBe(false);
-    expect(continueAgent.enabled).toBe(false);
+    expect(cline.enabled).toBe(true);
+    expect(continueAgent.enabled).toBe(true);
   });
 
   test('detectAgents includes correct skills path for each agent', () => {
@@ -172,5 +172,70 @@ describe('Agent Detection', () => {
   test('detectAgents handles missing directories gracefully', () => {
     // No directories created - should not throw
     expect(() => detectAgents()).not.toThrow();
+  });
+
+  // New agents: Tier 1
+  test('detectAgents finds Claude agent', () => {
+    mkdirSync('.claude', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('claude');
+    expect(agents[0].path).toBe('.claude/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
+  test('detectAgents finds Kilo Code agent', () => {
+    mkdirSync('.kilocode', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('kilocode');
+    expect(agents[0].path).toBe('.kilocode/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
+  test('detectAgents finds Aider agent', () => {
+    mkdirSync('.aider', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('aider');
+    expect(agents[0].path).toBe('.aider/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
+  // New agents: previously disabled
+  test('detectAgents finds Roo Code agent', () => {
+    mkdirSync('.roo', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('roo');
+    expect(agents[0].path).toBe('.roo/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
+  test('detectAgents finds Windsurf agent', () => {
+    mkdirSync('.windsurf', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('windsurf');
+    expect(agents[0].path).toBe('.windsurf/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
+  test('detectAgents finds OpenCode agent', () => {
+    mkdirSync('.opencode', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('opencode');
+    expect(agents[0].path).toBe('.opencode/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
+  test('detectAgents finds Antigravity agent', () => {
+    mkdirSync('.agent', { recursive: true });
+    const agents = detectAgents();
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('antigravity');
+    expect(agents[0].path).toBe('.agent/skills');
+    expect(agents[0].enabled).toBe(true);
   });
 });
