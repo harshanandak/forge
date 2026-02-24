@@ -73,4 +73,4 @@ Next: /research <feature-name>
 
 - **If starting new work**: Run `/research <feature-name>`
 - **If continuing work**: Resume with appropriate phase command
-- **If reviewing**: Run `/review <pr-number>` or `/merge <pr-number>`
+- **If reviewing**: Run `/review <pr-number>` or `/premerge <pr-number>`

@@ -292,7 +292,7 @@ No changes made (dry run).
 - CI/CD failures indicate architecture problems
 - Breaking changes need to be reverted
 
-**After Merging** (`/merge`):
+**After Merging** (`/premerge` + user merge):
 - Production issues discovered
 - Need to revert feature entirely
 - Rollback PR merge commit
@@ -306,12 +306,12 @@ No changes made (dry run).
 
 ```bash
 # Standard workflow
-/status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
+/status → /research → /plan → /dev → /check → /ship → /review → /premerge → /verify
 
 # Recovery workflow
 /dev → (issues discovered) → bunx forge rollback → /dev (retry)
 /ship → (CI fails) → bunx forge rollback → /dev (fix) → /ship
-/merge → (production issues) → bunx forge rollback → /plan (redesign)
+/premerge → (production issues) → bunx forge rollback → /plan (redesign)
 ```
 
 ### Example: Failed Feature Implementation

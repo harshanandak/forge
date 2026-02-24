@@ -355,7 +355,7 @@ bd sync
 ✓ All checks passing: ✓
 ✓ Beads updated: Ready for merge
 
-Next: /merge <pr-number> (user approval required)
+Next: /premerge <pr-number>
 ```
 
 ## Integration with Workflow
@@ -368,7 +368,7 @@ Next: /merge <pr-number> (user approval required)
 5. /check                → Validate
 6. /ship                 → Create PR
 7. /review               → Address ALL PR issues (you are here)
-8. /merge                → Merge and cleanup
+8. /premerge             → Complete docs, hand off PR to user
 9. /verify               → Final documentation check
 ```
 
@@ -426,7 +426,7 @@ Next: /merge <pr-number> (user approval required)
 - **Reply inline to Greptile**: Respond to each comment directly
 - **Post summary response**: Address Greptile's overall assessment
 - **Use sonarcloud skill**: Don't just check the web UI
-- **Verify all checks**: Ensure everything is green before /merge
+- **Verify all checks**: Ensure everything is green before /premerge
 - **Update Beads**: Keep issue status current
 - **Research if needed**: Use parallel-web-search for unclear suggestions
 - **Document fixes**: Clear commit messages for all fixes

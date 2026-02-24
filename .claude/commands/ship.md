@@ -106,7 +106,7 @@ Next: /review <pr-number> (after automated checks complete)
 5. /check                → Validate
 6. /ship                 → Create PR (you are here)
 7. /review               → Address comments
-8. /merge                → Merge and cleanup
+8. /premerge             → Complete docs, hand off PR to user
 9. /verify               → Final documentation check
 ```
 

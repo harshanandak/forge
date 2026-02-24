@@ -136,7 +136,7 @@ bd update <id> --comment "OpenSpec: openspec/changes/<feature-slug>"
 5. /check                → Validate
 6. /ship                 → Create PR
 7. /review               → Address comments
-8. /merge                → Merge and cleanup
+8. /premerge             → Complete docs, hand off PR to user
 9. /verify               → Final documentation check
 ```
 
