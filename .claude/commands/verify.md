@@ -27,13 +27,15 @@ Confirm the merge actually landed on main. If the PR isn't merged yet, stop and 
 
 ### Step 2: Confirm PR Is Merged
 
+Detect the most recently merged PR from the current HEAD commit:
+
 ```bash
-gh pr view <pr-number> --json state,mergedAt,mergedBy
+gh pr list --state merged --base master --limit 1 --json number,state,mergedAt,mergedBy
 ```
 
 - `state` should be `MERGED`
-- If `state` is `CLOSED` (not merged): flag this — the PR was closed without merging
-- If `state` is `OPEN`: merge hasn't happened yet — stop
+- If no PR found: the merge may not have landed yet — stop and tell the user to merge first
+- If the wrong PR appears: user can specify the number directly with `gh pr view <number> --json state,mergedAt,mergedBy`
 
 ### Step 3: Check CI on Main After Merge
 
@@ -51,11 +53,11 @@ Check the most recent workflow runs on `master`:
 Check if the project has a deployment target:
 
 ```bash
-# Check Vercel deployments (if configured)
-gh pr view <pr-number> --json deployments
-
-# Or check deployment status from latest run
+# Check deployment status from latest run
 gh run list --branch master --limit 1
+
+# Check Vercel deployments for the merged PR (use number from Step 2)
+gh pr view <number> --json deployments
 ```
 
 If deployments exist:
