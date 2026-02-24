@@ -98,6 +98,7 @@ export async function createCommand(name, options) {
     writeFileSync(skillMdPath, renderedSkill, 'utf8');
 
     // Create .skill-meta.json
+    const now = getCurrentTimestamp();
     const skillMeta = {
       id: name,
       title: metadata.title,
@@ -105,8 +106,8 @@ export async function createCommand(name, options) {
       category: metadata.category,
       version: '1.0.0',
       author: metadata.author,
-      created: getCurrentTimestamp(),
-      updated: getCurrentTimestamp(),
+      created: now,
+      updated: now,
       tags: metadata.tags || [],
       usage: {
         invocations: 0,
