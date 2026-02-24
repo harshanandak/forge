@@ -13,8 +13,8 @@ This project enforces a **strict TDD-first development workflow** with 9 stages:
 | 5     | `/check`    | Validation (type/lint/security/tests)        | All types    |
 | 6     | `/ship`     | Create PR with documentation                 | All types    |
 | 7     | `/review`   | Address ALL PR feedback                      | Critical, Standard |
-| 8     | `/merge`    | Update docs, merge PR, cleanup               | All types    |
-| 9     | `/verify`   | Final documentation verification             | All types    |
+| 8     | `/premerge` | Complete docs on feature branch, hand off PR | All types    |
+| 9     | `/verify`   | Post-merge health check (CI, deployments)    | All types    |
 
 ## Automatic Change Classification
 
@@ -162,7 +162,7 @@ You show live progress:
 - [.claude/commands/check.md](.claude/commands/check.md) - How to run validation
 - [.claude/commands/ship.md](.claude/commands/ship.md) - How to create PRs
 - [.claude/commands/review.md](.claude/commands/review.md) - How to address PR feedback
-- [.claude/commands/merge.md](.claude/commands/merge.md) - How to merge and cleanup
+- [.claude/commands/premerge.md](.claude/commands/premerge.md) - How to complete docs and hand off PR for merge
 - [.claude/commands/verify.md](.claude/commands/verify.md) - How to verify documentation
 
 **Comprehensive workflow guide:**

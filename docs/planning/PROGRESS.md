@@ -2,9 +2,29 @@
 
 ## Current Focus
 <!-- What you're working on -->
-PR5.6 merged (cross-platform install fixes). Next: PR7 (Installation Orchestrator).
+PR5.7 merged (skills sync fix for all 11 agents). Next: PR7 (Installation Orchestrator).
 
 ## Completed
+
+### PR5.7: Fix Skills Sync — All 11 Agents + Dual-Source Reading (2026-02-24)
+- **PR**: #46
+- **Beads**: forge-ab6 (closed)
+- **Research**: [docs/research/skills-restructure.md](../research/skills-restructure.md)
+- **Description**: After PR5.5 moved skills to `skills/` root, `bunx skills sync` stopped distributing to any agent. Fixed all 3 root causes with TDD.
+- **Root Causes Fixed**:
+  1. `AGENT_DEFINITIONS` had only 4 of 11 agents — expanded to all 11 (claude, kilocode, aider, roo, windsurf, opencode, antigravity added)
+  2. `getValidSkills()` only read from `.skills/` (empty) — now reads `skills/` root + `.skills/` with Map deduplication (`.skills/` wins)
+  3. copilot, roo, aider `plugin.json` had `skills: false` — all corrected to `true`
+- **Deliverables**:
+  - **`packages/skills/src/lib/agents.js`**: All 11 agents in `AGENT_DEFINITIONS`, all `enabled: true`; `configFile` passthrough for agents needing config-file updates
+  - **`packages/skills/src/commands/sync.js`**: Dual-source `getValidSkills()` via Map; `_collectSkillsFrom()` helper; `syncSkillsToAgents()` uses `skill.sourcePath`; new `updateAiderConfig()` writes `read:` entries to `.aider.conf.yml`
+  - **`lib/agents/copilot.plugin.json`**, **`roo.plugin.json`**, **`aider.plugin.json`**: Fixed `skills: false → true`
+  - **`.gitignore`**: Added `.agents/`, `.skills/`, `skills-lock.json`, all agent skill junction dirs (`.aider/skills/`, `.claude/skills/`, etc.)
+  - **`.claude/commands/sonarcloud.md`**: Updated skill reference path from `.claude/skills/sonarcloud/` → `skills/sonarcloud-analysis/`
+  - **12 new tests**: 7 agent detection tests + 5 sync validation tests (dual-source, dedup, claude/kilocode/aider sync)
+- **skills.sh mechanism understood**: Real files in `.agents/skills/`; agent dirs get OS-level junctions (not copies); junctions not committed to git
+- **Validation**: 105 pass in skills package, all CI checks green, Greptile 4/5 (Quality Gate passed), SonarCloud passed
+- **Files**: `packages/skills/src/lib/agents.js`, `packages/skills/src/commands/sync.js`, `packages/skills/test/agents.test.js`, `packages/skills/test/sync.test.js`, `lib/agents/copilot.plugin.json`, `lib/agents/roo.plugin.json`, `lib/agents/aider.plugin.json`, `.claude/commands/sonarcloud.md`, `.gitignore`
 
 ### PR5.6: Cross-Platform Install Fixes (2026-02-23)
 - **PR**: #45

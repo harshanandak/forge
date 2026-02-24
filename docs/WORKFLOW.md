@@ -44,7 +44,7 @@ This workflow integrates:
 └────┬─────┘
      │
 ┌────▼─────┐
-│  /merge  │ → Update docs, merge PR, archive, cleanup
+│ /premerge│ → Complete docs on feature branch, hand off PR to user
 └────┬─────┘
      │
 ┌────▼──────┐
@@ -65,8 +65,8 @@ This workflow integrates:
 | 5. Check | `/check` | Type/lint/security/tests |
 | 6. Ship | `/ship` | Create PR with full docs |
 | 7. Review | `/review <pr>` | Fix ALL PR issues |
-| 8. Merge | `/merge <pr>` | Update docs, merge, archive |
-| 9. Verify | `/verify` | Cross-check docs, update if needed |
+| 8. Premerge | `/premerge <pr>` | Complete docs on feature branch, hand off PR |
+| 9. Verify | `/verify` | Post-merge health check (CI, deployments) |
 
 For detailed information on each stage, see the individual command files in `.claude/commands/`.
 

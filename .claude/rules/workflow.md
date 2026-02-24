@@ -13,8 +13,8 @@
 | 5 | `/check` | Type check, lint, code review, security, tests |
 | 6 | `/ship` | Push and create PR with full documentation |
 | 7 | `/review` | Handle ALL PR issues (GitHub Actions, reviewers, CI/CD) |
-| 8 | `/merge` | Update docs, merge PR, archive, cleanup |
-| 9 | `/verify` | Final documentation verification, update if needed |
+| 8 | `/premerge` | Complete docs on feature branch, hand off PR to user |
+| 9 | `/verify` | Post-merge health check (CI, deployments) |
 
 ## Core Principles
 
@@ -92,7 +92,7 @@ Skill("parallel-deep-research")  # Deep analysis, market reports
 ## Flow Visualization
 
 ```
-/status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
+/status → /research → /plan → /dev → /check → /ship → /review → /premerge → /verify
    ↓          ↓          ↓        ↓        ↓         ↓          ↓          ↓         ↓
   Check     Research   OpenSpec   TDD    Validate   PR      Address     Merge    Verify
  context    + docs    + Beads   cycles   + scan   create   feedback    + docs    docs

@@ -28,10 +28,10 @@ This project uses the **Forge 9-stage TDD workflow**:
 | 5     | `/check`    | Validation (type/lint/security/tests)        |
 | 6     | `/ship`     | Create PR with documentation                 |
 | 7     | `/review`   | Address ALL PR feedback                      |
-| 8     | `/merge`    | Update docs, merge PR, cleanup               |
-| 9     | `/verify`   | Final documentation verification             |
+| 8     | `/premerge` | Complete docs on feature branch, hand off PR |
+| 9     | `/verify`   | Post-merge health check (CI, deployments)    |
 
-**Flow**: `/status` → `/research` → `/plan` → `/dev` → `/check` → `/ship` → `/review` → `/merge` → `/verify`
+**Flow**: `/status` → `/research` → `/plan` → `/dev` → `/check` → `/ship` → `/review` → `/premerge` → `/verify`
 
 See [docs/WORKFLOW.md](docs/WORKFLOW.md) for complete workflow guide.
 
