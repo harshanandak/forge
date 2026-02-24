@@ -57,6 +57,7 @@ skills-lock.json
 .agent/
 .goose/
 .augment/
+.aider/skills/
 .claude/skills/
 .cursor/skills/
 .cline/skills/
