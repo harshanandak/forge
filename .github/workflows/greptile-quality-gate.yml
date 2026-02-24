@@ -1,14 +1,14 @@
 name: Greptile Quality Gate
 
 on:
-  pull_request_review:
-    types: [submitted]
+  check_run:
+    types: [completed]
 
 jobs:
   quality-gate:
     name: Greptile Quality Gate (≥4/5)
     runs-on: ubuntu-latest
-    if: github.event.pull_request.base.ref == 'master'
+    if: github.event.check_run.name == 'Greptile Review'
     permissions:
       contents: read
       pull-requests: write
@@ -18,26 +18,34 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // Only run for Greptile reviews (exact match)
-            const reviewer = context.payload.review?.user?.login || '';
-            console.log(`Review submitted by: ${reviewer}`);
+            const checkRun = context.payload.check_run;
+            const prs = checkRun.pull_requests;
 
-            if (reviewer !== 'greptile-apps[bot]') {
-              console.log('⏭️ Skipping: Not a Greptile review');
+            if (!prs || prs.length === 0) {
+              console.log('⏭️ No PRs associated with this check run');
               return;
             }
 
-            // Get PR details
-            const { data: pr } = await github.rest.pulls.get({
+            const pr = prs[0];
+
+            // Only enforce on PRs targeting master
+            if (pr.base.ref !== 'master') {
+              console.log(`⏭️ Skipping: PR targets ${pr.base.ref}, not master`);
+              return;
+            }
+
+            console.log(`🔍 Checking Greptile score for PR #${pr.number}...`);
+
+            // Get full PR details including body (Greptile updates body before marking check complete)
+            const { data: prDetails } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number
+              pull_number: pr.number
             });
 
-            const prBody = pr.body || '';
-            console.log('Checking Greptile score in PR body...');
+            const prBody = prDetails.body || '';
 
-            // Extract score
+            // Extract confidence score
             const scoreMatch = prBody.match(/Confidence Score:\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*5/i);
 
             if (!scoreMatch) {
