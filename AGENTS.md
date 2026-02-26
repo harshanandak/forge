@@ -115,7 +115,7 @@ Task 2: Validation logic
   "id": "bd-x7y2",
   "type": "critical",
   "currentStage": "dev",
-  "completedStages": ["status", "research", "plan"],
+  "completedStages": ["plan"],
   "skippedStages": [],
   "workflowDecisions": {
     "classification": "critical",

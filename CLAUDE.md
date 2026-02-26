@@ -15,34 +15,9 @@ bun test         # Run tests
 
 ---
 
-## Forge Workflow
+## Workflow
 
-This project uses the **Forge 9-stage TDD workflow**:
-
-| Stage | Command     | Purpose                                      |
-|-------|-------------|----------------------------------------------|
-| 1     | `/status`   | Check current context, active work           |
-| 2     | `/research` | Research with web search, document findings  |
-| 3     | `/plan`     | Create implementation plan, branch, OpenSpec |
-| 4     | `/dev`      | TDD development (RED-GREEN-REFACTOR)         |
-| 5     | `/check`    | Validation (type/lint/security/tests)        |
-| 6     | `/ship`     | Create PR with documentation                 |
-| 7     | `/review`   | Address ALL PR feedback                      |
-| 8     | `/premerge` | Complete docs on feature branch, hand off PR |
-| 9     | `/verify`   | Post-merge health check (CI, deployments)    |
-
-**Flow**: `/status` → `/research` → `/plan` → `/dev` → `/check` → `/ship` → `/review` → `/premerge` → `/verify`
-
-See [docs/WORKFLOW.md](docs/WORKFLOW.md) for complete workflow guide.
-
----
-
-## Core Principles
-
-- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-- **Research-First**: Understand before building, document decisions
-- **Security Built-In**: OWASP Top 10 analysis for every feature
-- **Documentation Progressive**: Update at each stage, verify at end
+> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of every session to load the complete Forge 7-stage workflow, change classification, and detailed stage instructions. AGENTS.md is the single source of truth for the workflow.
 
 ---
 
@@ -65,95 +40,16 @@ See [.mcp.json.example](.mcp.json.example) for configuration. Setup varies by ag
 - **Cursor**: Check Cursor Settings > MCP for setup
 - **Your agent**: If MCP-capable, configure using the example file
 
-**Agent instructions:**
-
-```text
-If you support MCP and don't have these servers configured:
-1. Read .mcp.json.example to see the configuration
-2. Set up Context7 and grep.app based on your MCP implementation
-3. Verify by testing: "Search grep.app for React hooks examples"
-```
-
 See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for detailed MCP setup instructions.
-
----
-
-## Multi-Agent Support
-
-Forge now supports **5 Tier 1 agents** with universal AGENTS.md configuration:
-
-**Tier 1 (Primary Support)**:
-- ✅ **Claude Code** - Native custom slash commands, .claude/ directory
-- ✅ **GitHub Copilot** - Enterprise adoption, .github/copilot-instructions.md
-- ✅ **Kilo Code** - Managed indexing, auto failure recovery, .kilo.md
-- ✅ **Cursor** - IDE-first, .cursor/rules/ with native modes
-- ✅ **Aider** - Terminal-native, git-integrated, .aider.conf.yml
-
-**Tier 2 (Optional Support)**:
-- ⚠️ **OpenCode** (Anomaly fork) - opencode.json + AGENTS.md
-- ⚠️ **Goose** - Model flexibility, open-source
-- ⚠️ **Antigravity** - Google-backed, early preview
-
-**Universal AGENTS.md**:
-- Works with ALL agents (100% compatibility)
-- Single source of truth for Forge workflow
-- No agent-specific setup required
-- Agent-specific configs are optional enhancements
-
-**Migration from CLAUDE.md-only**:
-
-If you're using Claude Code exclusively, no migration needed. To enable cross-agent support:
-
-```bash
-# Option 1: Generate AGENTS.md + agent-specific configs
-bunx forge setup --all
-
-# Option 2: Generate for specific agent
-bunx forge setup --agent=copilot    # GitHub Copilot
-bunx forge setup --agent=cursor     # Cursor IDE
-bunx forge setup --agent=kilo       # Kilo Code
-bunx forge setup --agent=aider      # Aider
-
-# Option 3: Keep CLAUDE.md (Claude Code only)
-# No action needed - existing setup works
-```
-
-**What gets created**:
-- `AGENTS.md` - Universal workflow (all agents)
-- `.github/copilot-instructions.md` - Copilot-specific (optional)
-- `.cursor/rules/*.mdc` - Cursor-specific (optional)
-- `.kilo.md` - Kilo-specific (optional)
-- `.aider.conf.yml` - Aider-specific (optional)
-- `opencode.json` - OpenCode-specific (optional)
-
-**Benefits**:
-- Switch agents anytime without reconfiguration
-- Team members can use their preferred agent
-- Consistent workflow across all agents
-- Optional enhancements for agent-specific features
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how Commands, Skills, and MCP work together.
-
----
-
-## Quick Start
-
-1. `/status` - Check where you are
-2. `/research <feature-name>` - Research the feature
-3. `/plan <feature-slug>` - Create formal plan
-4. `/dev` - Implement with TDD
-5. `/check` - Validate everything
-6. `/ship` - Create PR
 
 ---
 
 ## Toolchain
 
 - **Beads** (recommended): Auto-installed during `bunx forge setup` - Git-backed issue tracking
-- **OpenSpec** (optional): Auto-installed during `bunx forge setup` - Spec-driven development
 - **GitHub CLI**: `gh auth login` - PR workflow
 
-Setup prompts for Beads/OpenSpec during interactive installation. Manual install: see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
+Setup prompts for Beads during interactive installation. Manual install: see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
 
 ---
 
@@ -195,6 +91,7 @@ See [.github/pull_request_template.md](.github/pull_request_template.md) for PR 
 
 As you work, when you give the same instruction twice, add it here:
 
+- **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
 - Coding style preferences
 - Architecture decisions
 - Domain concepts unique to this project

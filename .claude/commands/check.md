@@ -71,7 +71,7 @@ bunx npm audit    # or: npm audit, snyk test, etc.
 ```
 
 **Manual Review**:
-- Review security test scenarios (from research doc)
+- Review security test scenarios (from design doc — `## Technical Research` section)
 - Verify security mitigations implemented
 - Check for sensitive data exposure
 
@@ -86,11 +86,11 @@ bun test    # or: npm run test, jest, vitest, etc.
 
 > **💭 Plan-Act-Reflect Checkpoint**
 > Before declaring validation complete:
-> - Are all security test scenarios from your research doc actually implemented and passing?
+> - Are all security test scenarios from your design doc actually implemented and passing?
 > - Did you verify OWASP Top 10 mitigations, not just check a box?
 > - Are there edge cases or integration scenarios you haven't tested?
 >
-> **If unsure**: Re-read the "Security Analysis" and "TDD Test Scenarios" sections in research doc
+> **If unsure**: Re-read the `## Technical Research` section in `docs/plans/YYYY-MM-DD-<slug>-design.md`
 
 ### Step 6: Handle Failures
 

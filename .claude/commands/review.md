@@ -115,12 +115,12 @@ This shows:
    # For invalid/conflicting issues:
    bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
      "This approach is correct because:
-     - Reasoning: [from research doc]
-     - Evidence: [link to research source]
+     - Reasoning: [from design doc]
+     - Evidence: [link to source]
      - Alternative considered: [what Greptile suggested]
      - Why rejected: [specific reason]
 
-     See: docs/research/<feature-slug>.md (Decision #X)"
+     See: docs/plans/YYYY-MM-DD-<slug>-design.md (Decision #X)"
    ```
 
 **Step 3: Verify all resolved**
@@ -228,12 +228,12 @@ bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-
 # For invalid/conflicting comments:
 bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
   "This approach is correct because:
-  - Reasoning: [from research doc]
-  - Evidence: [link to research source]
+  - Reasoning: [from design doc]
+  - Evidence: [link to source]
   - Alternative considered: [what Greptile suggested]
   - Why rejected: [specific reason]
 
-  See: docs/research/<feature-slug>.md (Decision #X)"
+  See: docs/plans/YYYY-MM-DD-<slug>-design.md (Decision #X)"
 
 # Verify all threads resolved:
 bash .claude/scripts/greptile-resolve.sh stats <pr-number>

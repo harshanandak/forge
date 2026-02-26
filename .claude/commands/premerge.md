@@ -48,7 +48,7 @@ Check each of the following and update if the feature affects it. Be selective â
 
 **A. `docs/planning/PROGRESS.md`** (always):
 - Add feature entry to completed section:
-  - Feature name, completion date, Beads ID, PR number, research doc link
+  - Feature name, completion date, Beads ID, PR number, design doc link
   - Key deliverables and files changed
 - Note: `docs/planning/` is gitignored â€” update locally only, no commit needed
 
