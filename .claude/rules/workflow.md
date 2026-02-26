@@ -1,52 +1,54 @@
 # Forge Workflow Rules
 
-9-stage TDD-first development workflow for any project.
+7-stage TDD-first development workflow for any project.
 
 ## Workflow Commands
 
-| Phase | Command | Purpose |
+| Stage | Command | Purpose |
 |-------|---------|---------|
-| 1 | `/status` | Check current stage, active work, recent completions |
-| 2 | `/research` | Deep research with parallel-web-search, save to docs/research/ |
-| 3 | `/plan` | Create formal plan, branch, OpenSpec proposal (if strategic) |
-| 4 | `/dev` | Implement with TDD, parallel if needed |
-| 5 | `/check` | Type check, lint, code review, security, tests |
-| 6 | `/ship` | Push and create PR with full documentation |
-| 7 | `/review` | Handle ALL PR issues (GitHub Actions, reviewers, CI/CD) |
-| 8 | `/premerge` | Complete docs on feature branch, hand off PR to user |
-| 9 | `/verify` | Post-merge health check (CI, deployments) |
+| utility | `/status` | Check current stage, active work, recent completions |
+| 1 | `/plan` | Design intent (brainstorm) → research → branch + worktree + task list |
+| 2 | `/dev` | Subagent-driven TDD per task: implementer → spec review → quality review |
+| 3 | `/check` | Type check, lint, code review, security, tests — all fresh output |
+| 4 | `/ship` | Push and create PR with design doc reference |
+| 5 | `/review` | Handle ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
+| 6 | `/premerge` | Complete docs on feature branch, hand off PR to user |
+| 7 | `/verify` | Post-merge health check (CI on main, close Beads) |
 
 ## Core Principles
 
-### TDD-First Development
-- Tests written UPFRONT in RED-GREEN-REFACTOR cycles
-- No implementation without failing test first
-- Commit after each GREEN cycle
+### Design-First Planning
+- All features start with Phase 1: one-question-at-a-time Q&A to capture design intent
+- Design doc saved to `docs/plans/YYYY-MM-DD-<slug>-design.md`
+- Research (Phase 2) and task list (Phase 3) follow design approval
+- Phase 1 quality directly determines /dev autonomy — resolve ambiguity upfront
 
-### Research-First Approach
-- All features start with comprehensive research
-- Use parallel-web-search (or parallel-deep-research) for web research (MANDATORY)
-- Document findings in `docs/research/<feature-slug>.md`
+### TDD-First Development
+- Task list pre-made in /plan Phase 3; /dev reads and executes it
+- Each task: implementer subagent → spec compliance reviewer → code quality reviewer
+- RED-GREEN-REFACTOR enforced inside implementer via HARD-GATE
+- Decision gate (7-dimension scoring) fires when spec gap found mid-task
+
+### HARD-GATES at Stage Exits
+- Structural enforcement — not soft instructions
+- Every stage exit has explicit conditions that must be met
+- "Should be fine" and "was passing earlier" are never evidence
+- Run the command, show the output, THEN declare done
 
 ### Security Built-In
-- OWASP Top 10 analysis for every feature
-- Security test scenarios identified upfront
-- Automated scans + manual review
-
-### Documentation Progressive
-- Updated at relevant stages
-- Cross-checked at end with `/verify`
-- Never accumulate documentation debt
+- OWASP Top 10 analysis documented in design doc (Phase 2)
+- Security test scenarios identified before /dev
+- Automated scans + manual review at /check
 
 ## Issue Tracking
 
 Use Beads for persistent tracking across sessions:
 ```bash
-bd create "Feature name"           # Create issue
-bd update <id> --status in_progress  # Claim work
-bd update <id> --comment "Progress"  # Add notes
-bd close <id>                      # Complete
-bd sync                            # Sync with git
+bd create --title="Feature name" --type=feature   # Create issue
+bd update <id> --status=in_progress               # Claim work
+bd update <id> --comment "Progress"               # Add notes
+bd close <id>                                     # Complete
+bd sync                                           # Sync with git
 ```
 
 ## Git Workflow
@@ -61,6 +63,10 @@ docs/<doc-slug>
 git commit -m "test: add validation tests"     # RED
 git commit -m "feat: implement validation"     # GREEN
 git commit -m "refactor: extract helpers"      # REFACTOR
+
+# Worktrees (required for /dev)
+git worktree add .worktrees/<slug> feat/<slug>
+# .worktrees/ is gitignored
 ```
 
 ## Configuration
@@ -77,7 +83,7 @@ SECURITY_SCAN="bunx npm audit"            # or: npm audit, snyk test, etc.
 
 ## Skills Integration
 
-### Parallel AI (MANDATORY for web research)
+### Parallel AI (MANDATORY for Phase 2 web research)
 Use focused skills from `skills/` directory:
 ```bash
 Skill("parallel-web-search")     # Quick web lookups, news, sources
@@ -92,8 +98,9 @@ Skill("parallel-deep-research")  # Deep analysis, market reports
 ## Flow Visualization
 
 ```
-/status → /research → /plan → /dev → /check → /ship → /review → /premerge → /verify
-   ↓          ↓          ↓        ↓        ↓         ↓          ↓          ↓         ↓
-  Check     Research   OpenSpec   TDD    Validate   PR      Address     Merge    Verify
- context    + docs    + Beads   cycles   + scan   create   feedback    + docs    docs
+/plan → /dev → /check → /ship → /review → /premerge → /verify
+  ↓        ↓        ↓        ↓        ↓          ↓         ↓
+Design   Task-by  Validate   PR      Address    Merge    Verify
++Research  task    +GATE    create   feedback    +docs    CI on
++Tasks    TDD                                   GATE     master
 ```
