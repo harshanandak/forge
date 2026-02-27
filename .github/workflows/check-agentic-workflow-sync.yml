@@ -1,0 +1,32 @@
+name: Check Agentic Workflow Sync
+on:
+  pull_request:
+    paths:
+      - '.github/agentic-workflows/*.md'
+      - '.github/agentic-workflows/*.lock.yml'
+jobs:
+  sync-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check behavioral-test .lock.yml exists
+        run: |
+          if [ ! -f .github/agentic-workflows/behavioral-test.lock.yml ]; then
+            echo "❌ behavioral-test.lock.yml not found"
+            echo "Run: gh aw compile .github/agentic-workflows/behavioral-test.md"
+            exit 1
+          fi
+          echo "✅ behavioral-test.lock.yml exists"
+      - name: Check .md and .lock.yml are in sync
+        run: |
+          # Extract engine.model from .md frontmatter
+          MD_MODEL=$(grep -A2 'engine:' .github/agentic-workflows/behavioral-test.md | grep 'model:' | awk '{print $2}')
+          # Extract engine.model from .lock.yml
+          LOCK_MODEL=$(grep -A2 'engine:' .github/agentic-workflows/behavioral-test.lock.yml | grep 'model:' | awk '{print $2}')
+
+          if [ "$MD_MODEL" != "$LOCK_MODEL" ]; then
+            echo "❌ Sync mismatch: .md model=$MD_MODEL but .lock.yml model=$LOCK_MODEL"
+            echo "Run: gh aw compile .github/agentic-workflows/behavioral-test.md"
+            exit 1
+          fi
+          echo "✅ .md and .lock.yml are in sync (model: $MD_MODEL)"
