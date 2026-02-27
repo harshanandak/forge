@@ -8,7 +8,7 @@
 commit-msg:
   commands:
     commitlint:
-      run: node_modules/.bin/commitlint --edit {1}
+      run: npx commitlint --edit {1}
       tags: commitlint
 
 pre-commit:
