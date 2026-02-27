@@ -7,9 +7,6 @@ const {
 	createFeatureBranch,
 	extractDesignDecisions,
 	extractTasksFromResearch,
-	createOpenSpecProposal,
-	formatProposalPRBody,
-	createProposalPR,
 	executePlan,
 } = require('../../lib/commands/plan.js');
 
@@ -127,26 +124,6 @@ Major architectural impact.
 	});
 
 	describe('OpenSpec proposal creation', () => {
-		test.skip('should create OpenSpec proposal for strategic scope', () => {
-			const featureSlug = 'payment-integration';
-			const researchContent = '# Payment Research\n\nKey decisions...';
-
-			const result = createOpenSpecProposal(featureSlug, researchContent);
-			assert.ok(result.proposalPath);
-			assert.match(result.proposalPath, /openspec\/changes\/payment-integration/);
-			assert.strictEqual(result.success, true);
-		});
-
-		test.skip('should include proposal structure (proposal.md, tasks.md, design.md)', () => {
-			const featureSlug = 'test-feature';
-			const researchContent = '# Research';
-
-			const result = createOpenSpecProposal(featureSlug, researchContent);
-			assert.ok(result.files.includes('proposal.md'));
-			assert.ok(result.files.includes('tasks.md'));
-			assert.ok(result.files.includes('design.md'));
-		});
-
 		test('should extract decisions from research for design.md', () => {
 			const researchContent = `
 ## Key Decisions
@@ -169,27 +146,6 @@ Major architectural impact.
 			const tasks = extractTasksFromResearch(researchContent);
 			assert.ok(tasks.length > 0);
 			assert.ok(tasks[0].phase); // RED, GREEN, or REFACTOR
-		});
-	});
-
-	describe('Proposal PR creation', () => {
-		test.skip('should create proposal PR for strategic scope', () => {
-			const featureName = 'payment-integration';
-			const proposalPath = 'openspec/changes/payment-integration';
-
-			const result = createProposalPR(featureName, proposalPath);
-			assert.ok(result.prUrl);
-			assert.ok(result.prNumber);
-			assert.strictEqual(result.success, true);
-		});
-
-		test('should format PR body with proposal summary', () => {
-			const featureName = 'test-feature';
-			const proposalPath = 'openspec/changes/test-feature';
-
-			const body = formatProposalPRBody(featureName, proposalPath);
-			assert.match(body, /## Proposal/);
-			assert.match(body, /openspec\/changes\/test-feature/);
 		});
 	});
 

@@ -20,9 +20,9 @@ describe('CLI Command Dispatcher', () => {
 		});
 
 		test('should parse command with single argument', () => {
-			const args = ['node', 'forge-cmd.js', 'research', 'stripe-billing'];
+			const args = ['node', 'forge-cmd.js', 'plan', 'stripe-billing'];
 			const result = parseArgs(args);
-			assert.strictEqual(result.command, 'research');
+			assert.strictEqual(result.command, 'plan');
 			assert.deepStrictEqual(result.args, ['stripe-billing']);
 		});
 
@@ -50,7 +50,6 @@ describe('CLI Command Dispatcher', () => {
 		test('should accept valid commands', () => {
 			const validCommands = [
 				'status',
-				'research',
 				'plan',
 				'dev',
 				'check',
@@ -123,14 +122,6 @@ describe('CLI Command Dispatcher', () => {
 	});
 
 	describe('Argument validation', () => {
-		test('should reject research without feature name', () => {
-			const command = 'research';
-			const args = [];
-			const validation = validateArgs(command, args);
-			assert.strictEqual(validation.valid, false);
-			assert.match(validation.error, /feature-name required/i);
-		});
-
 		test('should reject plan without feature slug', () => {
 			const command = 'plan';
 			const args = [];
@@ -153,21 +144,6 @@ describe('CLI Command Dispatcher', () => {
 			assert.strictEqual(validation.valid, true);
 		});
 
-		test('should accept research with feature name', () => {
-			const command = 'research';
-			const args = ['stripe-billing'];
-			const validation = validateArgs(command, args);
-			assert.strictEqual(validation.valid, true);
-		});
-
-		test('should reject research with invalid slug', () => {
-			const command = 'research';
-			const args = ['Invalid Feature'];
-			const validation = validateArgs(command, args);
-			assert.strictEqual(validation.valid, false);
-			assert.match(validation.error, /invalid slug format/i);
-		});
-
 		test('should reject plan with path traversal attempt', () => {
 			const command = 'plan';
 			const args = ['../../../etc/passwd'];
@@ -181,14 +157,13 @@ describe('CLI Command Dispatcher', () => {
 			const helpText = getHelpText();
 			assert.match(helpText, /forge <command>/i);
 			assert.match(helpText, /status/i);
-			assert.match(helpText, /research/i);
 			assert.match(helpText, /plan/i);
 		});
 
 		test('should include command descriptions', () => {
 			const helpText = getHelpText();
 			assert.match(helpText, /detect current workflow stage/i);
-			assert.match(helpText, /auto-invoke parallel-ai/i);
+			assert.match(helpText, /create branch/i);
 		});
 	});
 
@@ -201,8 +176,8 @@ describe('CLI Command Dispatcher', () => {
 		});
 
 		test('should exit with code 1 for missing required arguments', () => {
-			// 'research' requires <feature-name> — fails at validateArgs before any handler runs
-			const result = spawnSync(process.execPath, [CLI, 'research'], { encoding: 'utf8' });
+			// 'plan' requires <feature-slug> — fails at validateArgs before any handler runs
+			const result = spawnSync(process.execPath, [CLI, 'plan'], { encoding: 'utf8' });
 			assert.strictEqual(result.status, 1);
 		});
 

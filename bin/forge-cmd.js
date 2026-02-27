@@ -11,7 +11,6 @@ const fs = require('node:fs');
 // Command handlers - connected to lib/commands/
 const HANDLERS = {
 	status: require('../lib/commands/status'),
-	research: require('../lib/commands/research'),
 	plan: require('../lib/commands/plan'),
 	dev: require('../lib/commands/dev'),
 	check: require('../lib/commands/check'),
@@ -20,7 +19,6 @@ const HANDLERS = {
 
 const VALID_COMMANDS = [
 	'status',
-	'research',
 	'plan',
 	'dev',
 	'check',
@@ -32,7 +30,6 @@ const VALID_COMMANDS = [
 
 const COMMAND_DESCRIPTIONS = {
 	status: 'Detect current workflow stage (1-9)',
-	research: 'Auto-invoke parallel-ai for web research',
 	plan: 'Create branch + Beads + OpenSpec proposal',
 	dev: 'Implement with TDD (RED-GREEN-REFACTOR)',
 	check: 'Run type check, lint, security, tests',
@@ -43,7 +40,6 @@ const COMMAND_DESCRIPTIONS = {
 };
 
 const REQUIRED_ARGS = {
-	research: ['feature-name'],
 	plan: ['feature-slug'],
 	ship: ['feature-slug', 'title'],
 	review: [],
@@ -137,7 +133,7 @@ function validateArgs(command, args) {
 	}
 
 	// Security: Validate slug format for slug-based commands
-	const slugCommands = ['research', 'plan', 'ship'];
+	const slugCommands = ['plan', 'ship'];
 	if (slugCommands.includes(command) && positionalArgs.length > 0) {
 		const slugValidation = validateSlug(positionalArgs[0]);
 		if (!slugValidation.valid) {
@@ -171,7 +167,6 @@ function getHelpText() {
 		'',
 		'Examples:',
 		'  forge status                    # Check current workflow stage',
-		'  forge research stripe-billing   # Research feature',
 		'  forge plan stripe-billing       # Create implementation plan',
 		'  forge ship stripe-billing "feat: add billing"  # Create PR',
 		'  forge review 123                # Aggregate PR feedback',
@@ -230,15 +225,6 @@ async function main() { // NOSONAR S3776
 			};
 			const stageResult = HANDLERS.status.detectStage(context);
 			console.log(HANDLERS.status.formatStatus(stageResult));
-
-		} else if (command === 'research') {
-			result = await HANDLERS.research.executeResearch(positionalArgs[0]);
-			if (result.success) {
-				console.log(`✓ Research complete: ${result.researchDocPath || ''}`);
-			} else {
-				console.error(`✗ Research failed: ${result.error}`);
-				process.exit(1);
-			}
 
 		} else if (command === 'plan') {
 			result = await HANDLERS.plan.executePlan(positionalArgs[0]);
