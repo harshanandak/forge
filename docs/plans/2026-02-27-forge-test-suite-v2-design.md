@@ -153,20 +153,42 @@ tools:
 
 ### Judge Model Decision (Researched)
 
-**Primary: MiniMax M2.5** (`minimax/minimax-m2.5` on OpenRouter)
-- Cost: $0.30/1M input, $1.10/1M output — ~50% cheaper than Kimi K2.5
-- Speed: 56.6 tok/s vs 40.8 tok/s
-- No documented JSON/tool-call invocation bugs
-- Mandatory `<think>` reasoning tags — actually improves rubric consistency (forces chain-of-thought before scoring)
-- Parse: use `response_format: {type: "json_object"}` to get clean structured output (strips `<think>` automatically)
+**Model hierarchy (all called via OpenRouter):**
 
-**Fallback: Kimi K2.5** (`moonshotai/kimi-k2.5` on OpenRouter)
-- Cost: $0.60/1M input, $2.50/1M output
-- Documented ~1% tool-call invocation failure rate (model returns JSON as plain text instead of invoking tool) — use `response_format: json_object`, NOT tool calling
-- Disable thinking mode for structured scoring: `chat_template_kwargs: {thinking: false}`
-- Higher intelligence index (47 vs 42) but operational risk outweighs quality gain for judge workload
+| Role | Model | ID | Input | Output | Intelligence | Speed |
+|---|---|---|---|---|---|---|
+| **Primary** | GLM-5 | `z-ai/glm-5` | $0.95/1M | $2.55/1M | 50/100 (#1 of 66) | 68.9 tok/s |
+| **Fallback** | MiniMax M2.5 | `minimax/minimax-m2.5` | $0.30/1M | $1.10/1M | 42/100 | 56.6 tok/s |
+| **Last resort** | Kimi K2.5 | `moonshotai/kimi-k2.5` | $0.60/1M | $2.50/1M | 47/100 | 40.8 tok/s |
+
+**Primary: GLM-5** (`z-ai/glm-5` on OpenRouter)
+- Highest intelligence of the three: #1 of 66 models (score 50)
+- Fastest: 68.9 tok/s
+- No documented JSON/tool-call invocation bugs
+- **Reasoning must be DISABLED** for judge use — GLM-5 is #64/66 on verbosity (110M tokens vs 15M median) which causes score inflation when reasoning runs unchecked. Call with `"reasoning": {"enabled": false}` to force direct structured output
+- Already trusted in production (used as Fact Checker in n8n workflow)
+- Call pattern: `response_format: {type: "json_object"}`, `temperature: 0`, `reasoning: {enabled: false}`
+
+**Fallback: MiniMax M2.5** (`minimax/minimax-m2.5` on OpenRouter)
+- Cheapest option ($0.30/1M input) — use when GLM-5 is unavailable or rate-limited
+- Mandatory `<think>` reasoning (cannot disable) — acceptable at fallback tier
+- No documented JSON/tool-call bugs
+- Call pattern: `response_format: {type: "json_object"}`, `temperature: 0`
+
+**Last resort: Kimi K2.5** (`moonshotai/kimi-k2.5` on OpenRouter)
+- Documented ~1% tool-call invocation failure — use `response_format: json_object` ONLY, never tool calling
+- Disable thinking: `chat_template_kwargs: {thinking: false}`
+- Only used if both GLM-5 and MiniMax M2.5 return INCONCLUSIVE
 
 **Do NOT use**: `minimax/minimax-m1` — older, superseded by M2.5, more expensive
+
+**Fallback trigger logic:**
+```
+1. Call GLM-5 (reasoning disabled, json_object mode)
+2. If 429/5xx → call MiniMax M2.5
+3. If MiniMax also fails → call Kimi K2.5 (response_format only)
+4. If all three fail → mark run as INCONCLUSIVE, do not FAIL
+```
 
 ---
 
