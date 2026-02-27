@@ -1,14 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('E2E Test Fixtures', () => {
   const fixturesDir = path.join(__dirname, 'fixtures');
 
   describe('Fixtures directory', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(fixturesDir), 'test/e2e/fixtures should exist');
+      expect(fs.existsSync(fixturesDir)).toBeTruthy();
     });
   });
 
@@ -16,15 +15,15 @@ describe('E2E Test Fixtures', () => {
     const emptyFixturePath = path.join(fixturesDir, 'empty-project');
 
     test('should exist', () => {
-      assert.ok(fs.existsSync(emptyFixturePath), 'empty-project fixture should exist');
+      expect(fs.existsSync(emptyFixturePath)).toBeTruthy();
     });
 
     test('should have package.json', () => {
       const packagePath = path.join(emptyFixturePath, 'package.json');
-      assert.ok(fs.existsSync(packagePath), 'empty-project should have package.json');
+      expect(fs.existsSync(packagePath)).toBeTruthy();
 
       const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
-      assert.ok(pkg.name, 'package.json should have name');
+      expect(pkg.name).toBeTruthy();
     });
 
     test('should have minimal structure (no existing Forge files)', () => {
@@ -32,8 +31,8 @@ describe('E2E Test Fixtures', () => {
       const agentsPath = path.join(emptyFixturePath, 'AGENTS.md');
       const claudePath = path.join(emptyFixturePath, 'CLAUDE.md');
 
-      assert.ok(!fs.existsSync(agentsPath), 'empty-project should not have AGENTS.md');
-      assert.ok(!fs.existsSync(claudePath), 'empty-project should not have CLAUDE.md');
+      expect(!fs.existsSync(agentsPath)).toBeTruthy();
+      expect(!fs.existsSync(claudePath)).toBeTruthy();
     });
   });
 
@@ -41,20 +40,20 @@ describe('E2E Test Fixtures', () => {
     const existingFixturePath = path.join(fixturesDir, 'existing-project');
 
     test('should exist', () => {
-      assert.ok(fs.existsSync(existingFixturePath), 'existing-project fixture should exist');
+      expect(fs.existsSync(existingFixturePath)).toBeTruthy();
     });
 
     test('should have package.json', () => {
       const packagePath = path.join(existingFixturePath, 'package.json');
-      assert.ok(fs.existsSync(packagePath), 'existing-project should have package.json');
+      expect(fs.existsSync(packagePath)).toBeTruthy();
     });
 
     test('should have existing AGENTS.md', () => {
       const agentsPath = path.join(existingFixturePath, 'AGENTS.md');
-      assert.ok(fs.existsSync(agentsPath), 'existing-project should have AGENTS.md');
+      expect(fs.existsSync(agentsPath)).toBeTruthy();
 
       const content = fs.readFileSync(agentsPath, 'utf-8');
-      assert.ok(content.length > 0, 'AGENTS.md should have content');
+      expect(content.length > 0).toBeTruthy();
     });
 
     test('should have some source files', () => {
@@ -63,7 +62,7 @@ describe('E2E Test Fixtures', () => {
       if (fs.existsSync(srcPath)) {
         // If src directory exists, should have at least one file
         const hasFiles = fs.readdirSync(srcPath).length > 0;
-        assert.ok(hasFiles, 'existing-project src/ should have files');
+        expect(hasFiles).toBeTruthy();
       }
       // OK if no src directory (might have files in root)
     });
@@ -73,19 +72,19 @@ describe('E2E Test Fixtures', () => {
     const largeFixturePath = path.join(fixturesDir, 'large-project');
 
     test('should exist', () => {
-      assert.ok(fs.existsSync(largeFixturePath), 'large-project fixture should exist');
+      expect(fs.existsSync(largeFixturePath)).toBeTruthy();
     });
 
     test('should have package.json', () => {
       const packagePath = path.join(largeFixturePath, 'package.json');
-      assert.ok(fs.existsSync(packagePath), 'large-project should have package.json');
+      expect(fs.existsSync(packagePath)).toBeTruthy();
     });
 
     test('should have multiple directories', () => {
       const entries = fs.readdirSync(largeFixturePath, { withFileTypes: true });
       const directories = entries.filter(e => e.isDirectory());
 
-      assert.ok(directories.length >= 3, 'large-project should have at least 3 directories');
+      expect(directories.length >= 3).toBeTruthy();
     });
 
     test('should have multiple source files', () => {
@@ -95,11 +94,11 @@ describe('E2E Test Fixtures', () => {
         const files = fs.readdirSync(srcPath, { withFileTypes: true });
         const jsFiles = files.filter(f => f.name.endsWith('.js') || f.name.endsWith('.ts'));
 
-        assert.ok(jsFiles.length >= 5, 'large-project should have at least 5 source files');
+        expect(jsFiles.length >= 5).toBeTruthy();
       } else {
         // If no src directory, count files in root
         const entries = fs.readdirSync(largeFixturePath);
-        assert.ok(entries.length >= 10, 'large-project should have at least 10 files/directories');
+        expect(entries.length >= 10).toBeTruthy();
       }
     });
   });
@@ -121,7 +120,7 @@ describe('E2E Test Fixtures', () => {
 
       // Verify package.json was copied
       const packagePath = path.join(tempDir, 'package.json');
-      assert.ok(fs.existsSync(packagePath), 'Copied fixture should have package.json');
+      expect(fs.existsSync(packagePath)).toBeTruthy();
 
       await cleanup.cleanupTempProject(tempDir);
     });
@@ -139,7 +138,7 @@ describe('E2E Test Fixtures', () => {
 
       // Verify AGENTS.md was copied
       const agentsPath = path.join(tempDir, 'AGENTS.md');
-      assert.ok(fs.existsSync(agentsPath), 'Copied fixture should have AGENTS.md');
+      expect(fs.existsSync(agentsPath)).toBeTruthy();
 
       await cleanup.cleanupTempProject(tempDir);
     });
@@ -157,7 +156,7 @@ describe('E2E Test Fixtures', () => {
 
       // Verify multiple files were copied
       const entries = fs.readdirSync(tempDir);
-      assert.ok(entries.length >= 3, 'Copied large-project should have multiple files');
+      expect(entries.length >= 3).toBeTruthy();
 
       await cleanup.cleanupTempProject(tempDir);
     });

@@ -1,8 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { describe, test, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, afterEach, expect } = require('bun:test');
 
 const {
   detectTechStack,
@@ -45,15 +44,15 @@ describe('plugin-detection (detectTechStack)', () => {
     test('returns correct shape with all category arrays', () => {
       tmpDir = createTempProject();
       const result = detectTechStack(tmpDir);
-      assert.ok(Array.isArray(result.frameworks), 'frameworks should be an array');
-      assert.ok(Array.isArray(result.languages), 'languages should be an array');
-      assert.ok(Array.isArray(result.databases), 'databases should be an array');
-      assert.ok(Array.isArray(result.auth), 'auth should be an array');
-      assert.ok(Array.isArray(result.payments), 'payments should be an array');
-      assert.ok(Array.isArray(result.cicd), 'cicd should be an array');
-      assert.ok(Array.isArray(result.testing), 'testing should be an array');
-      assert.ok(Array.isArray(result.linting), 'linting should be an array');
-      assert.ok(Array.isArray(result.lsps), 'lsps should be an array');
+      expect(Array.isArray(result.frameworks)).toBeTruthy();
+      expect(Array.isArray(result.languages)).toBeTruthy();
+      expect(Array.isArray(result.databases)).toBeTruthy();
+      expect(Array.isArray(result.auth)).toBeTruthy();
+      expect(Array.isArray(result.payments)).toBeTruthy();
+      expect(Array.isArray(result.cicd)).toBeTruthy();
+      expect(Array.isArray(result.testing)).toBeTruthy();
+      expect(Array.isArray(result.linting)).toBeTruthy();
+      expect(Array.isArray(result.lsps)).toBeTruthy();
     });
   });
 
@@ -61,39 +60,39 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects React from react dependency', () => {
       tmpDir = createTempProject({ react: '^18.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.frameworks.includes('react'));
+      expect(result.frameworks.includes('react')).toBeTruthy();
     });
 
     test('detects Next.js from next dependency', () => {
       tmpDir = createTempProject({ next: '^14.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.frameworks.includes('nextjs'));
+      expect(result.frameworks.includes('nextjs')).toBeTruthy();
     });
 
     test('detects Angular from @angular/core', () => {
       tmpDir = createTempProject({ '@angular/core': '^17.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.frameworks.includes('angular'));
+      expect(result.frameworks.includes('angular')).toBeTruthy();
     });
 
     test('detects Express from express dependency', () => {
       tmpDir = createTempProject({ express: '^4.18.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.frameworks.includes('express'));
+      expect(result.frameworks.includes('express')).toBeTruthy();
     });
 
     test('detects NestJS from @nestjs/core', () => {
       tmpDir = createTempProject({ '@nestjs/core': '^10.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.frameworks.includes('nestjs'));
+      expect(result.frameworks.includes('nestjs')).toBeTruthy();
     });
 
     test('detects multiple frameworks simultaneously', () => {
       tmpDir = createTempProject({ next: '^14.0.0', react: '^18.0.0', express: '^4.18.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.frameworks.includes('nextjs'));
-      assert.ok(result.frameworks.includes('react'));
-      assert.ok(result.frameworks.includes('express'));
+      expect(result.frameworks.includes('nextjs')).toBeTruthy();
+      expect(result.frameworks.includes('react')).toBeTruthy();
+      expect(result.frameworks.includes('express')).toBeTruthy();
     });
   });
 
@@ -101,13 +100,13 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects Supabase from @supabase/supabase-js', () => {
       tmpDir = createTempProject({ '@supabase/supabase-js': '^2.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.databases.includes('supabase'));
+      expect(result.databases.includes('supabase')).toBeTruthy();
     });
 
     test('detects Prisma from @prisma/client', () => {
       tmpDir = createTempProject({ '@prisma/client': '^5.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.databases.includes('prisma'));
+      expect(result.databases.includes('prisma')).toBeTruthy();
     });
   });
 
@@ -115,7 +114,7 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects Stripe from stripe dependency', () => {
       tmpDir = createTempProject({ stripe: '^14.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.payments.includes('stripe'));
+      expect(result.payments.includes('stripe')).toBeTruthy();
     });
   });
 
@@ -123,7 +122,7 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects Clerk from @clerk/nextjs', () => {
       tmpDir = createTempProject({ '@clerk/nextjs': '^4.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.auth.includes('clerk'));
+      expect(result.auth.includes('clerk')).toBeTruthy();
     });
   });
 
@@ -131,7 +130,7 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects TypeScript LSP from tsconfig.json', () => {
       tmpDir = createTempProject({ typescript: '^5.0.0' }, {}, ['tsconfig.json']);
       const result = detectTechStack(tmpDir);
-      assert.ok(result.lsps.includes('typescript'));
+      expect(result.lsps.includes('typescript')).toBeTruthy();
     });
   });
 
@@ -139,7 +138,7 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects Biome from biome.json', () => {
       tmpDir = createTempProject({}, {}, ['biome.json']);
       const result = detectTechStack(tmpDir);
-      assert.ok(result.linting.includes('biome'));
+      expect(result.linting.includes('biome')).toBeTruthy();
     });
   });
 
@@ -147,13 +146,13 @@ describe('plugin-detection (detectTechStack)', () => {
     test('detects Vitest from vitest dependency', () => {
       tmpDir = createTempProject({}, { vitest: '^1.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.testing.includes('vitest'));
+      expect(result.testing.includes('vitest')).toBeTruthy();
     });
 
     test('detects Playwright from @playwright/test', () => {
       tmpDir = createTempProject({}, { '@playwright/test': '^1.40.0' });
       const result = detectTechStack(tmpDir);
-      assert.ok(result.testing.includes('playwright'));
+      expect(result.testing.includes('playwright')).toBeTruthy();
     });
   });
 
@@ -161,18 +160,18 @@ describe('plugin-detection (detectTechStack)', () => {
     test('returns empty arrays for unrecognized project', () => {
       tmpDir = createTempProject({ 'some-unknown-lib': '^1.0.0' });
       const result = detectTechStack(tmpDir);
-      assert.strictEqual(result.frameworks.length, 0);
-      assert.strictEqual(result.databases.length, 0);
-      assert.strictEqual(result.auth.length, 0);
-      assert.strictEqual(result.payments.length, 0);
+      expect(result.frameworks.length).toBe(0);
+      expect(result.databases.length).toBe(0);
+      expect(result.auth.length).toBe(0);
+      expect(result.payments.length).toBe(0);
     });
 
     test('handles missing package.json gracefully', () => {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-detect-'));
       // No package.json created
       const result = detectTechStack(tmpDir);
-      assert.ok(Array.isArray(result.frameworks));
-      assert.ok(Array.isArray(result.languages));
+      expect(Array.isArray(result.frameworks)).toBeTruthy();
+      expect(Array.isArray(result.languages)).toBeTruthy();
     });
   });
 
@@ -180,21 +179,21 @@ describe('plugin-detection (detectTechStack)', () => {
     test('existing detectFramework() still works unchanged', async () => {
       tmpDir = createTempProject({ next: '^14.0.0' });
       const framework = await detectFramework(tmpDir);
-      assert.strictEqual(framework, 'Next.js');
+      expect(framework).toBe('Next.js');
     });
 
     test('existing autoDetect() still works unchanged', async () => {
       tmpDir = createTempProject({ react: '^18.0.0' }, { typescript: '^5.0.0' });
       const result = await autoDetect(tmpDir);
-      assert.ok(result.framework);
-      assert.ok(result.language);
-      assert.ok(result.stage);
+      expect(result.framework).toBeTruthy();
+      expect(result.language).toBeTruthy();
+      expect(result.stage).toBeTruthy();
     });
 
     test('existing detectLanguage() still works unchanged', async () => {
       tmpDir = createTempProject({}, { typescript: '^5.0.0' });
       const language = await detectLanguage(tmpDir);
-      assert.strictEqual(language, 'typescript');
+      expect(language).toBe('typescript');
     });
   });
 });

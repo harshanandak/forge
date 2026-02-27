@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('Snapshot Testing', () => {
   const snapshotsDir = path.join(__dirname, '__snapshots__');
@@ -14,7 +13,7 @@ describe('Snapshot Testing', () => {
       if (!fs.existsSync(snapshotsDir)) {
         fs.mkdirSync(snapshotsDir, { recursive: true });
       }
-      assert.ok(fs.existsSync(snapshotsDir), '__snapshots__ directory should exist');
+      expect(fs.existsSync(snapshotsDir)).toBeTruthy();
     });
   });
 
@@ -26,10 +25,10 @@ describe('Snapshot Testing', () => {
       const pkg = JSON.parse(packageContent);
 
       // Validate structure (snapshot-like test)
-      assert.ok(pkg.name, 'package.json should have name');
-      assert.strictEqual(pkg.version, '1.0.0', 'package.json should have version 1.0.0');
-      assert.strictEqual(pkg.private, true, 'package.json should be private');
-      assert.ok(pkg.description, 'package.json should have description');
+      expect(pkg.name).toBeTruthy();
+      expect(pkg.version).toBe('1.0.0');
+      expect(pkg.private).toBe(true);
+      expect(pkg.description).toBeTruthy();
 
       await cleanup.cleanupTempProject(tempDir);
     });
@@ -58,7 +57,7 @@ describe('Snapshot Testing', () => {
 
       // Validate against snapshot
       const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
-      assert.deepStrictEqual(structure, snapshot, 'Fixture structure should match snapshot');
+      expect(structure).toEqual(snapshot);
     });
 
     test('should snapshot large-project structure', async () => {
@@ -84,7 +83,7 @@ describe('Snapshot Testing', () => {
 
       // Validate against snapshot
       const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8'));
-      assert.deepStrictEqual(structure, snapshot, 'Large project structure should match snapshot');
+      expect(structure).toEqual(snapshot);
     });
   });
 
@@ -103,7 +102,7 @@ describe('Snapshot Testing', () => {
       delete pkg1.description;
       delete pkg2.description;
 
-      assert.deepStrictEqual(pkg1, pkg2, 'Generated files should be consistent');
+      expect(pkg1).toEqual(pkg2);
 
       await cleanup.cleanupTempProject(tempDir1);
       await cleanup.cleanupTempProject(tempDir2);

@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -29,12 +28,12 @@ describe('Documentation file generation', () => {
       const architecturePath = path.join(tempDir, 'docs', 'ARCHITECTURE.md');
       const exists = await fs.promises.access(architecturePath).then(() => true).catch(() => false);
 
-      assert.ok(exists, 'docs/ARCHITECTURE.md should be created');
+      expect(exists).toBeTruthy();
 
       const content = await fs.promises.readFile(architecturePath, 'utf-8');
 
       // Should be markdown
-      assert.ok(content.startsWith('#'), 'Should start with markdown heading');
+      expect(content.startsWith('#')).toBeTruthy();
     });
 
     test('should explain Commands vs Skills vs MCP', async () => {
@@ -44,15 +43,15 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(architecturePath, 'utf-8');
 
       // Should explain three mechanisms
-      assert.ok(content.includes('Commands') || content.includes('commands'), 'Should mention Commands');
-      assert.ok(content.includes('Skills') || content.includes('skills'), 'Should mention Skills');
-      assert.ok(content.includes('MCP'), 'Should mention MCP');
+      expect(content.includes('Commands') || content.includes('commands')).toBeTruthy();
+      expect(content.includes('Skills') || content.includes('skills')).toBeTruthy();
+      expect(content.includes('MCP')).toBeTruthy();
 
       // Should explain AGENTS.md
-      assert.ok(content.includes('AGENTS.md'), 'Should mention AGENTS.md');
+      expect(content.includes('AGENTS.md')).toBeTruthy();
 
       // Should explain how mechanisms work
-      assert.ok(content.includes('how') || content.includes('How'), 'Should explain how things work');
+      expect(content.includes('how') || content.includes('How')).toBeTruthy();
     });
 
     test('should include examples of each mechanism', async () => {
@@ -62,9 +61,9 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(architecturePath, 'utf-8');
 
       // Should have examples
-      assert.ok(content.includes('/status') || content.includes('/research'), 'Should include command examples');
-      assert.ok(content.includes('parallel-ai') || content.includes('sonarcloud'), 'Should include skill examples');
-      assert.ok(content.includes('context7'), 'Should include MCP server examples');
+      expect(content.includes('/status') || content.includes('/research')).toBeTruthy();
+      expect(content.includes('parallel-ai') || content.includes('sonarcloud')).toBeTruthy();
+      expect(content.includes('context7')).toBeTruthy();
     });
 
     test('should explain universal vs agent-specific', async () => {
@@ -74,8 +73,8 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(architecturePath, 'utf-8');
 
       // Should explain universality
-      assert.ok(content.includes('universal') || content.includes('Universal'), 'Should mention universal approach');
-      assert.ok(content.includes('agent') && content.includes('specific'), 'Should mention agent-specific');
+      expect(content.includes('universal') || content.includes('Universal')).toBeTruthy();
+      expect(content.includes('agent') && content.includes('specific')).toBeTruthy();
     });
 
     test('should not overwrite existing ARCHITECTURE.md by default', async () => {
@@ -89,7 +88,7 @@ describe('Documentation file generation', () => {
       await generateArchitectureDoc(tempDir, { overwrite: false });
 
       const content = await fs.promises.readFile(architecturePath, 'utf-8');
-      assert.strictEqual(content, existingContent, 'Should not overwrite when overwrite=false');
+      expect(content).toBe(existingContent);
     });
   });
 
@@ -100,10 +99,10 @@ describe('Documentation file generation', () => {
       const configPath = path.join(tempDir, 'docs', 'CONFIGURATION.md');
       const exists = await fs.promises.access(configPath).then(() => true).catch(() => false);
 
-      assert.ok(exists, 'docs/CONFIGURATION.md should be created');
+      expect(exists).toBeTruthy();
 
       const content = await fs.promises.readFile(configPath, 'utf-8');
-      assert.ok(content.startsWith('#'), 'Should start with markdown heading');
+      expect(content.startsWith('#')).toBeTruthy();
     });
 
     test('should explain solo vs team configuration', async () => {
@@ -113,13 +112,12 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(configPath, 'utf-8');
 
       // Should mention both profiles
-      assert.ok(content.includes('solo') || content.includes('Solo'), 'Should mention solo profile');
-      assert.ok(content.includes('team') || content.includes('Team'), 'Should mention team profile');
+      expect(content.includes('solo') || content.includes('Solo')).toBeTruthy();
+      expect(content.includes('team') || content.includes('Team')).toBeTruthy();
 
       // Should explain differences
-      assert.ok(content.includes('branch protection') || content.includes('Branch protection'),
-        'Should mention branch protection');
-      assert.ok(content.includes('reviewer'), 'Should mention reviewers');
+      expect(content.includes('branch protection') || content.includes('Branch protection')).toBeTruthy();
+      expect(content.includes('reviewer')).toBeTruthy();
     });
 
     test('should include .forgerc.json example', async () => {
@@ -129,8 +127,8 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(configPath, 'utf-8');
 
       // Should have config file reference
-      assert.ok(content.includes('.forgerc'), 'Should mention .forgerc configuration');
-      assert.ok(content.includes('profile'), 'Should show profile configuration');
+      expect(content.includes('.forgerc')).toBeTruthy();
+      expect(content.includes('profile')).toBeTruthy();
     });
 
     test('should explain configuration options', async () => {
@@ -140,9 +138,8 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(configPath, 'utf-8');
 
       // Should explain key options
-      assert.ok(content.includes('auto_merge') || content.includes('auto-merge'), 'Should mention auto-merge');
-      assert.ok(content.includes('commit_signing') || content.includes('commit signing'),
-        'Should mention commit signing');
+      expect(content.includes('auto_merge') || content.includes('auto-merge')).toBeTruthy();
+      expect(content.includes('commit_signing') || content.includes('commit signing')).toBeTruthy();
     });
 
     test('should not overwrite existing CONFIGURATION.md by default', async () => {
@@ -156,7 +153,7 @@ describe('Documentation file generation', () => {
       await generateConfigurationDoc(tempDir, { overwrite: false });
 
       const content = await fs.promises.readFile(configPath, 'utf-8');
-      assert.strictEqual(content, existingContent, 'Should not overwrite when overwrite=false');
+      expect(content).toBe(existingContent);
     });
   });
 
@@ -167,10 +164,10 @@ describe('Documentation file generation', () => {
       const mcpPath = path.join(tempDir, 'docs', 'MCP_SETUP.md');
       const exists = await fs.promises.access(mcpPath).then(() => true).catch(() => false);
 
-      assert.ok(exists, 'docs/MCP_SETUP.md should be created');
+      expect(exists).toBeTruthy();
 
       const content = await fs.promises.readFile(mcpPath, 'utf-8');
-      assert.ok(content.startsWith('#'), 'Should start with markdown heading');
+      expect(content.startsWith('#')).toBeTruthy();
     });
 
     test('should explain MCP server setup', async () => {
@@ -180,12 +177,11 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(mcpPath, 'utf-8');
 
       // Should explain MCP
-      assert.ok(content.includes('MCP') || content.includes('Model Context Protocol'),
-        'Should explain MCP');
-      assert.ok(content.includes('server'), 'Should mention servers');
+      expect(content.includes('MCP') || content.includes('Model Context Protocol')).toBeTruthy();
+      expect(content.includes('server')).toBeTruthy();
 
       // Should explain setup
-      assert.ok(content.includes('setup') || content.includes('Setup'), 'Should explain setup process');
+      expect(content.includes('setup') || content.includes('Setup')).toBeTruthy();
     });
 
     test('should include agent-specific setup instructions', async () => {
@@ -195,9 +191,9 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(mcpPath, 'utf-8');
 
       // Should mention Tier 1 agents
-      assert.ok(content.includes('Claude') || content.includes('claude'), 'Should mention Claude Code');
-      assert.ok(content.includes('Copilot') || content.includes('copilot'), 'Should mention GitHub Copilot');
-      assert.ok(content.includes('Cursor') || content.includes('cursor'), 'Should mention Cursor');
+      expect(content.includes('Claude') || content.includes('claude')).toBeTruthy();
+      expect(content.includes('Copilot') || content.includes('copilot')).toBeTruthy();
+      expect(content.includes('Cursor') || content.includes('cursor')).toBeTruthy();
     });
 
     test('should include MCP server examples', async () => {
@@ -207,8 +203,8 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(mcpPath, 'utf-8');
 
       // Should have server examples
-      assert.ok(content.includes('parallel-ai'), 'Should mention parallel-ai server');
-      assert.ok(content.includes('context7'), 'Should mention context7 server');
+      expect(content.includes('parallel-ai')).toBeTruthy();
+      expect(content.includes('context7')).toBeTruthy();
     });
 
     test('should include configuration examples', async () => {
@@ -218,8 +214,8 @@ describe('Documentation file generation', () => {
       const content = await fs.promises.readFile(mcpPath, 'utf-8');
 
       // Should have config examples
-      assert.ok(content.includes('.mcp.json') || content.includes('mcp.json'), 'Should mention MCP config files');
-      assert.ok(content.includes('mcpServers'), 'Should show config structure');
+      expect(content.includes('.mcp.json') || content.includes('mcp.json')).toBeTruthy();
+      expect(content.includes('mcpServers')).toBeTruthy();
     });
 
     test('should not overwrite existing MCP_SETUP.md by default', async () => {
@@ -233,7 +229,7 @@ describe('Documentation file generation', () => {
       await generateMcpSetupDoc(tempDir, { overwrite: false });
 
       const content = await fs.promises.readFile(mcpPath, 'utf-8');
-      assert.strictEqual(content, existingContent, 'Should not overwrite when overwrite=false');
+      expect(content).toBe(existingContent);
     });
   });
 
@@ -242,13 +238,13 @@ describe('Documentation file generation', () => {
       // Ensure docs/ doesn't exist
       const docsDir = path.join(tempDir, 'docs');
       const docsDirExists = fs.existsSync(docsDir);
-      assert.ok(!docsDirExists, 'docs/ should not exist initially');
+      expect(!docsDirExists).toBeTruthy();
 
       // Generate any doc
       await generateArchitectureDoc(tempDir);
 
       // Check docs/ was created
-      assert.ok(fs.existsSync(docsDir), 'docs/ directory should be created');
+      expect(fs.existsSync(docsDir)).toBeTruthy();
     });
   });
 });

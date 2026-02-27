@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const {
 	detectTDDPhase,
 	identifyFilePairs,
@@ -19,7 +18,7 @@ describe('Dev Command - TDD Cycle Management', () => {
 			};
 
 			const phase = detectTDDPhase(context);
-			assert.strictEqual(phase, 'RED');
+			expect(phase).toBe('RED');
 		});
 
 		test('should detect GREEN phase (tests failing, implementation exists)', () => {
@@ -30,7 +29,7 @@ describe('Dev Command - TDD Cycle Management', () => {
 			};
 
 			const phase = detectTDDPhase(context);
-			assert.strictEqual(phase, 'GREEN');
+			expect(phase).toBe('GREEN');
 		});
 
 		test('should detect REFACTOR phase (tests passing)', () => {
@@ -41,7 +40,7 @@ describe('Dev Command - TDD Cycle Management', () => {
 			};
 
 			const phase = detectTDDPhase(context);
-			assert.strictEqual(phase, 'REFACTOR');
+			expect(phase).toBe('REFACTOR');
 		});
 	});
 
@@ -54,9 +53,9 @@ describe('Dev Command - TDD Cycle Management', () => {
 			];
 
 			const pairs = identifyFilePairs(files);
-			assert.strictEqual(pairs.length, 1);
-			assert.strictEqual(pairs.pairs[0].source, 'lib/commands/status.js');
-			assert.strictEqual(pairs.pairs[0].test, 'test/commands/status.test.js');
+			expect(pairs.length).toBe(1);
+			expect(pairs.pairs[0].source).toBe('lib/commands/status.js');
+			expect(pairs.pairs[0].test).toBe('test/commands/status.test.js');
 		});
 
 		test('should detect orphaned test files (no implementation)', () => {
@@ -65,8 +64,8 @@ describe('Dev Command - TDD Cycle Management', () => {
 			];
 
 			const result = identifyFilePairs(files);
-			assert.ok(result.orphanedTests);
-			assert.strictEqual(result.orphanedTests.length, 1);
+			expect(result.orphanedTests).toBeTruthy();
+			expect(result.orphanedTests.length).toBe(1);
 		});
 
 		test('should detect orphaned source files (no tests)', () => {
@@ -75,8 +74,8 @@ describe('Dev Command - TDD Cycle Management', () => {
 			];
 
 			const result = identifyFilePairs(files);
-			assert.ok(result.orphanedSources);
-			assert.strictEqual(result.orphanedSources.length, 1);
+			expect(result.orphanedSources).toBeTruthy();
+			expect(result.orphanedSources.length).toBe(1);
 		});
 	});
 
@@ -85,23 +84,23 @@ describe('Dev Command - TDD Cycle Management', () => {
 			const testFile = 'test/commands/status.test.js';
 
 			const result = await runTests(testFile);
-			assert.ok(result.passed !== undefined);
-			assert.ok(result.failed !== undefined);
-			assert.ok(result.duration);
+			expect(result.passed !== undefined).toBeTruthy();
+			expect(result.failed !== undefined).toBeTruthy();
+			expect(result.duration).toBeTruthy();
 		});
 
 		test('should handle test execution failures', async () => {
 			const testFile = 'test/nonexistent.test.js';
 
 			const result = await runTests(testFile);
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
 		});
 
 		test.skip('should run all tests when no file specified', async () => {
 			const result = await runTests();
-			assert.ok(result.totalTests > 0);
-			assert.ok(result.passed !== undefined);
+			expect(result.totalTests > 0).toBeTruthy();
+			expect(result.passed !== undefined).toBeTruthy();
 		});
 	});
 
@@ -110,24 +109,24 @@ describe('Dev Command - TDD Cycle Management', () => {
 			const phase = 'RED';
 
 			const guidance = getTDDGuidance(phase);
-			assert.match(guidance, /write.*test/i);
-			assert.match(guidance, /fail/i);
+			expect(guidance).toMatch(/write.*test/i);
+			expect(guidance).toMatch(/fail/i);
 		});
 
 		test('should provide GREEN phase guidance', () => {
 			const phase = 'GREEN';
 
 			const guidance = getTDDGuidance(phase);
-			assert.match(guidance, /implement/i);
-			assert.match(guidance, /pass.*test/i);
+			expect(guidance).toMatch(/implement/i);
+			expect(guidance).toMatch(/pass.*test/i);
 		});
 
 		test('should provide REFACTOR phase guidance', () => {
 			const phase = 'REFACTOR';
 
 			const guidance = getTDDGuidance(phase);
-			assert.match(guidance, /improve/i);
-			assert.match(guidance, /maintain.*pass/i);
+			expect(guidance).toMatch(/improve/i);
+			expect(guidance).toMatch(/maintain.*pass/i);
 		});
 	});
 
@@ -140,9 +139,9 @@ describe('Dev Command - TDD Cycle Management', () => {
 			};
 
 			const message = generateCommitMessage(context);
-			assert.match(message, /test:/);
-			assert.match(message, /RED/i);
-			assert.ok(message.includes('15'));
+			expect(message).toMatch(/test:/);
+			expect(message).toMatch(/RED/i);
+			expect(message.includes('15')).toBeTruthy();
 		});
 
 		test('should generate GREEN phase commit message', () => {
@@ -153,8 +152,8 @@ describe('Dev Command - TDD Cycle Management', () => {
 			};
 
 			const message = generateCommitMessage(context);
-			assert.match(message, /feat:|implement/i);
-			assert.match(message, /GREEN/i);
+			expect(message).toMatch(/feat:|implement/i);
+			expect(message).toMatch(/GREEN/i);
 		});
 
 		test('should generate REFACTOR phase commit message', () => {
@@ -165,8 +164,8 @@ describe('Dev Command - TDD Cycle Management', () => {
 			};
 
 			const message = generateCommitMessage(context);
-			assert.match(message, /refactor:/i);
-			assert.match(message, /REFACTOR/i);
+			expect(message).toMatch(/refactor:/i);
+			expect(message).toMatch(/REFACTOR/i);
 		});
 	});
 
@@ -175,42 +174,42 @@ describe('Dev Command - TDD Cycle Management', () => {
 			const featureName = 'test-feature';
 
 			const result = await executeDev(featureName, { phase: 'RED' });
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.phase, 'RED');
-			assert.ok(result.guidance);
-			assert.ok(result.nextPhase === 'GREEN');
+			expect(result.success).toBe(true);
+			expect(result.phase).toBe('RED');
+			expect(result.guidance).toBeTruthy();
+			expect(result.nextPhase === 'GREEN').toBeTruthy();
 		});
 
 		test.skip('should execute full GREEN cycle', async () => {
 			const featureName = 'test-feature';
 
 			const result = await executeDev(featureName, { phase: 'GREEN' });
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.phase, 'GREEN');
-			assert.ok(result.testResults);
+			expect(result.success).toBe(true);
+			expect(result.phase).toBe('GREEN');
+			expect(result.testResults).toBeTruthy();
 		});
 
 		test.skip('should execute full REFACTOR cycle', async () => {
 			const featureName = 'test-feature';
 
 			const result = await executeDev(featureName, { phase: 'REFACTOR' });
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.phase, 'REFACTOR');
-			assert.ok(result.summary);
+			expect(result.success).toBe(true);
+			expect(result.phase).toBe('REFACTOR');
+			expect(result.summary).toBeTruthy();
 		});
 
 		test('should auto-detect phase when not specified', async () => {
 			const featureName = 'test-feature';
 
 			const result = await executeDev(featureName);
-			assert.ok(result.detectedPhase);
-			assert.ok(['RED', 'GREEN', 'REFACTOR'].includes(result.detectedPhase));
+			expect(result.detectedPhase).toBeTruthy();
+			expect(['RED', 'GREEN', 'REFACTOR'].includes(result.detectedPhase)).toBeTruthy();
 		});
 
 		test('should validate tests pass before allowing REFACTOR', async () => {
 			const result = await executeDev('feature', { phase: 'REFACTOR', testsPassing: false });
-			assert.strictEqual(result.success, false);
-			assert.match(result.error, /tests.*fail/i);
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/tests.*fail/i);
 		});
 	});
 
@@ -223,9 +222,9 @@ describe('Dev Command - TDD Cycle Management', () => {
 			];
 
 			const parallel = identifyParallelWork(features);
-			assert.strictEqual(parallel.length, 2); // a and b can be done in parallel
-			assert.ok(parallel.includes('feature-a'));
-			assert.ok(parallel.includes('feature-b'));
+			expect(parallel.length).toBe(2); // a and b can be done in parallel
+			expect(parallel.includes('feature-a')).toBeTruthy();
+			expect(parallel.includes('feature-b')).toBeTruthy();
 		});
 
 		test('should handle circular dependencies', () => {
@@ -235,8 +234,8 @@ describe('Dev Command - TDD Cycle Management', () => {
 			];
 
 			const result = identifyParallelWork(features);
-			assert.ok(result.error);
-			assert.match(result.error, /circular/i);
+			expect(result.error).toBeTruthy();
+			expect(result.error).toMatch(/circular/i);
 		});
 	});
 });

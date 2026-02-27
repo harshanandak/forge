@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 const {
   CATALOG,
@@ -13,78 +12,78 @@ const {
 describe('plugin-catalog', () => {
   describe('exports', () => {
     test('exports CATALOG, TIERS, TOOL_TYPES, STAGES, BUDGET_MODES, PREREQUISITES', () => {
-      assert.ok(CATALOG, 'CATALOG should be exported');
-      assert.ok(TIERS, 'TIERS should be exported');
-      assert.ok(TOOL_TYPES, 'TOOL_TYPES should be exported');
-      assert.ok(STAGES, 'STAGES should be exported');
-      assert.ok(BUDGET_MODES, 'BUDGET_MODES should be exported');
-      assert.ok(PREREQUISITES, 'PREREQUISITES should be exported');
+      expect(CATALOG).toBeTruthy();
+      expect(TIERS).toBeTruthy();
+      expect(TOOL_TYPES).toBeTruthy();
+      expect(STAGES).toBeTruthy();
+      expect(BUDGET_MODES).toBeTruthy();
+      expect(PREREQUISITES).toBeTruthy();
     });
 
     test('CATALOG is a frozen object', () => {
-      assert.ok(Object.isFrozen(CATALOG));
+      expect(Object.isFrozen(CATALOG)).toBeTruthy();
     });
   });
 
   describe('TIERS', () => {
     test('has exactly 4 values: free, free-public, free-limited, paid', () => {
       const values = Object.values(TIERS);
-      assert.strictEqual(values.length, 4);
-      assert.ok(values.includes('free'));
-      assert.ok(values.includes('free-public'));
-      assert.ok(values.includes('free-limited'));
-      assert.ok(values.includes('paid'));
+      expect(values.length).toBe(4);
+      expect(values.includes('free')).toBeTruthy();
+      expect(values.includes('free-public')).toBeTruthy();
+      expect(values.includes('free-limited')).toBeTruthy();
+      expect(values.includes('paid')).toBeTruthy();
     });
   });
 
   describe('TOOL_TYPES', () => {
     test('has exactly 5 values: cli, skill, mcp, config, lsp', () => {
       const values = Object.values(TOOL_TYPES);
-      assert.strictEqual(values.length, 5);
-      assert.ok(values.includes('cli'));
-      assert.ok(values.includes('skill'));
-      assert.ok(values.includes('mcp'));
-      assert.ok(values.includes('config'));
-      assert.ok(values.includes('lsp'));
+      expect(values.length).toBe(5);
+      expect(values.includes('cli')).toBeTruthy();
+      expect(values.includes('skill')).toBeTruthy();
+      expect(values.includes('mcp')).toBeTruthy();
+      expect(values.includes('config')).toBeTruthy();
+      expect(values.includes('lsp')).toBeTruthy();
     });
   });
 
   describe('STAGES', () => {
     test('covers all 7 workflow stages', () => {
       const values = Object.values(STAGES);
-      assert.strictEqual(values.length, 7);
-      assert.ok(values.includes('research'));
-      assert.ok(values.includes('plan'));
-      assert.ok(values.includes('dev'));
-      assert.ok(values.includes('check'));
-      assert.ok(values.includes('ship'));
-      assert.ok(values.includes('review'));
-      assert.ok(values.includes('merge'));
+      expect(values.length).toBe(7);
+      expect(values.includes('research')).toBeTruthy();
+      expect(values.includes('plan')).toBeTruthy();
+      expect(values.includes('dev')).toBeTruthy();
+      expect(values.includes('check')).toBeTruthy();
+      expect(values.includes('ship')).toBeTruthy();
+      expect(values.includes('review')).toBeTruthy();
+      expect(values.includes('merge')).toBeTruthy();
     });
   });
 
   describe('BUDGET_MODES', () => {
     test('has exactly 5 modes', () => {
       const keys = Object.keys(BUDGET_MODES);
-      assert.strictEqual(keys.length, 5);
-      assert.ok(keys.includes('free'));
-      assert.ok(keys.includes('open-source'));
-      assert.ok(keys.includes('startup'));
-      assert.ok(keys.includes('professional'));
-      assert.ok(keys.includes('custom'));
+      expect(keys.length).toBe(5);
+      expect(keys.includes('free')).toBeTruthy();
+      expect(keys.includes('open-source')).toBeTruthy();
+      expect(keys.includes('startup')).toBeTruthy();
+      expect(keys.includes('professional')).toBeTruthy();
+      expect(keys.includes('custom')).toBeTruthy();
     });
 
     test('free mode includes only free tier', () => {
-      assert.deepStrictEqual(BUDGET_MODES.free.includes, ['free']);
+      expect(BUDGET_MODES.free.includes).toEqual(['free']);
     });
 
     test('professional mode includes all 4 tiers', () => {
       const prof = BUDGET_MODES.professional.includes;
-      assert.strictEqual(prof.length, 4);
-      assert.ok(prof.includes('free'));
-      assert.ok(prof.includes('free-public'));
-      assert.ok(prof.includes('free-limited'));
-      assert.ok(prof.includes('paid'));
+      expect(prof.length).toBe(4);
+      expect(prof.includes('free')).toBeTruthy();
+      expect(prof.includes('free-public')).toBeTruthy();
+      expect(prof.includes('free-limited')).toBeTruthy();
+      expect(prof.includes('paid')).toBeTruthy();
     });
   });
 
@@ -96,68 +95,62 @@ describe('plugin-catalog', () => {
 
     test('at least 30 tools in the catalog', () => {
       const toolCount = Object.keys(CATALOG).length;
-      assert.ok(toolCount >= 30, `Expected >= 30 tools, got ${toolCount}`);
+      expect(toolCount >= 30).toBeTruthy();
     });
 
     test('no duplicate tool IDs', () => {
       const ids = Object.keys(CATALOG);
       const unique = new Set(ids);
-      assert.strictEqual(ids.length, unique.size, 'Duplicate tool IDs found');
+      expect(ids.length).toBe(unique.size);
     });
 
     test('every tool has required fields: name, type, tier, stage, detectWhen, install', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
-        assert.ok(tool.name, `${id} missing name`);
-        assert.ok(tool.type, `${id} missing type`);
-        assert.ok(tool.tier, `${id} missing tier`);
-        assert.ok(tool.stage, `${id} missing stage`);
-        assert.ok(Array.isArray(tool.detectWhen), `${id} missing or invalid detectWhen`);
-        assert.ok(tool.install, `${id} missing install`);
+        expect(tool.name).toBeTruthy();
+        expect(tool.type).toBeTruthy();
+        expect(tool.tier).toBeTruthy();
+        expect(tool.stage).toBeTruthy();
+        expect(Array.isArray(tool.detectWhen)).toBeTruthy();
+        expect(tool.install).toBeTruthy();
       }
     });
 
     test('every tool tier is a valid TIERS value', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
-        assert.ok(validTiers.includes(tool.tier), `${id} has invalid tier: ${tool.tier}`);
+        expect(validTiers.includes(tool.tier)).toBeTruthy();
       }
     });
 
     test('every tool type is a valid TOOL_TYPES value', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
-        assert.ok(validTypes.includes(tool.type), `${id} has invalid type: ${tool.type}`);
+        expect(validTypes.includes(tool.type)).toBeTruthy();
       }
     });
 
     test('every tool stage is a valid STAGES value', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
-        assert.ok(validStages.includes(tool.stage), `${id} has invalid stage: ${tool.stage}`);
+        expect(validStages.includes(tool.stage)).toBeTruthy();
       }
     });
 
     test('every tool install has a valid method', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
-        assert.ok(
-          validInstallMethods.includes(tool.install.method),
-          `${id} has invalid install method: ${tool.install.method}`
-        );
+        expect(validInstallMethods.includes(tool.install.method)).toBeTruthy();
       }
     });
 
     test('every tool detectWhen is an array', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
-        assert.ok(Array.isArray(tool.detectWhen), `${id} detectWhen is not an array`);
+        expect(Array.isArray(tool.detectWhen)).toBeTruthy();
       }
     });
 
     test('every paid tool has >= 1 free alternative', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
         if (tool.tier === 'paid') {
-          assert.ok(
-            tool.alternatives && tool.alternatives.length >= 1,
-            `Paid tool ${id} must have at least 1 free alternative`
-          );
+          expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
           const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free' || alt.tier === 'free-public');
-          assert.ok(hasFreeAlt, `Paid tool ${id} must have at least 1 free/free-public alternative`);
+          expect(hasFreeAlt).toBeTruthy();
         }
       }
     });
@@ -165,12 +158,9 @@ describe('plugin-catalog', () => {
     test('every free-limited tool has >= 1 free alternative', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
         if (tool.tier === 'free-limited') {
-          assert.ok(
-            tool.alternatives && tool.alternatives.length >= 1,
-            `Free-limited tool ${id} must have at least 1 free alternative`
-          );
+          expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
           const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free');
-          assert.ok(hasFreeAlt, `Free-limited tool ${id} must have at least 1 free alternative`);
+          expect(hasFreeAlt).toBeTruthy();
         }
       }
     });
@@ -178,11 +168,7 @@ describe('plugin-catalog', () => {
     test('every MCP-type tool has mcpJustified boolean', () => {
       for (const [id, tool] of Object.entries(CATALOG)) {
         if (tool.type === 'mcp') {
-          assert.strictEqual(
-            typeof tool.mcpJustified,
-            'boolean',
-            `MCP tool ${id} must have mcpJustified boolean`
-          );
+          expect(typeof tool.mcpJustified).toBe('boolean');
         }
       }
     });
@@ -192,68 +178,53 @@ describe('plugin-catalog', () => {
         const freeTools = Object.values(CATALOG).filter(
           (t) => t.stage === stage && t.tier === 'free'
         );
-        assert.ok(
-          freeTools.length >= 1,
-          `Stage '${stage}' must have at least 1 free tool, found ${freeTools.length}`
-        );
+        expect(freeTools.length >= 1).toBeTruthy();
       }
     });
   });
 
   describe('skills restructure (PR5.5)', () => {
     test("catalog has 'parallel-web-search' entry (not 'parallel-ai')", () => {
-      assert.ok(CATALOG['parallel-web-search'], "CATALOG should have 'parallel-web-search' entry");
-      assert.ok(!CATALOG['parallel-ai'], "CATALOG should NOT have legacy 'parallel-ai' entry");
+      expect(CATALOG['parallel-web-search']).toBeTruthy();
+      expect(!CATALOG['parallel-ai']).toBeTruthy();
     });
 
     test("parallel-web-search install.cmd references parallel-web/parallel-agent-skills", () => {
       const entry = CATALOG['parallel-web-search'];
       if (!entry) return;
-      assert.ok(
-        entry.install.cmd.includes('parallel-web/parallel-agent-skills'),
-        "parallel-web-search CLI cmd should reference 'parallel-web/parallel-agent-skills'"
-      );
+      expect(entry.install.cmd.includes('parallel-web/parallel-agent-skills')).toBeTruthy();
     });
 
     test("parallel-web-search has install.cmdCurl referencing harshanandak/forge", () => {
       const entry = CATALOG['parallel-web-search'];
       if (!entry) return;
-      assert.ok(
-        entry.install.cmdCurl,
-        "parallel-web-search should have install.cmdCurl for curl fallback"
-      );
-      assert.ok(
-        entry.install.cmdCurl.includes('harshanandak/forge'),
-        "parallel-web-search cmdCurl should reference 'harshanandak/forge'"
-      );
+      expect(entry.install.cmdCurl).toBeTruthy();
+      expect(entry.install.cmdCurl.includes('harshanandak/forge')).toBeTruthy();
     });
 
     test("catalog has 'sonarcloud-analysis' entry (not 'sonarcloud')", () => {
-      assert.ok(CATALOG['sonarcloud-analysis'], "CATALOG should have 'sonarcloud-analysis' entry");
-      assert.ok(!CATALOG['sonarcloud'], "CATALOG should NOT have legacy 'sonarcloud' entry");
+      expect(CATALOG['sonarcloud-analysis']).toBeTruthy();
+      expect(!CATALOG['sonarcloud']).toBeTruthy();
     });
 
     test("sonarcloud-analysis install.cmd references harshanandak/forge", () => {
       const entry = CATALOG['sonarcloud-analysis'];
       if (!entry) return;
-      assert.ok(
-        entry.install.cmd.includes('harshanandak/forge'),
-        "sonarcloud-analysis cmd should reference 'harshanandak/forge'"
-      );
+      expect(entry.install.cmd.includes('harshanandak/forge')).toBeTruthy();
     });
 
     test("PREREQUISITES has 'parallel-cli' entry", () => {
-      assert.ok(PREREQUISITES['parallel-cli'], "PREREQUISITES should have 'parallel-cli' entry");
+      expect(PREREQUISITES['parallel-cli']).toBeTruthy();
     });
   });
 
   describe('PREREQUISITES', () => {
     test('each prerequisite has check command and installUrl', () => {
       for (const [id, prereq] of Object.entries(PREREQUISITES)) {
-        assert.ok(prereq.check, `${id} missing check command`);
-        assert.strictEqual(typeof prereq.check, 'string', `${id} check must be a string`);
+        expect(prereq.check).toBeTruthy();
+        expect(typeof prereq.check).toBe('string');
         // installUrl can be null (e.g. curl is usually pre-installed)
-        assert.ok('installUrl' in prereq, `${id} missing installUrl field`);
+        expect('installUrl' in prereq).toBeTruthy();
       }
     });
   });
