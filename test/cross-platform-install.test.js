@@ -180,10 +180,10 @@ describe('forge-0xb: lefthook.yml uses npx not bunx', () => {
     );
   });
 
-  test('lefthook.yml commit-msg should use npx', () => {
+  test('lefthook.yml commit-msg should delegate to scripts/commitlint.js', () => {
     assert.ok(
-      lefthookSource.includes('npx') && lefthookSource.includes('commitlint'),
-      'commit-msg hook must use npx commitlint'
+      lefthookSource.includes('node scripts/commitlint.js'),
+      'commit-msg hook must delegate to node scripts/commitlint.js (cross-platform)'
     );
   });
 
