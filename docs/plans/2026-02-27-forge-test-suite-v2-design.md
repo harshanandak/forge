@@ -109,13 +109,98 @@ Examples of decisions that SHOULD pause and ask:
 
 ## Technical Research
 
-*(To be completed in Phase 2)*
+### gh-aw Workflow Format (Researched)
 
-### Web Research Needed
-- gh-aw markdown frontmatter format and available triggers
-- Kimi K2.5 vs Minimax M1 (Minimax 2.5) via OpenRouter — which scores structured rubrics more consistently at temperature=0
-- GitHub Actions `workflow_run` trigger for file-change detection
-- Bun native test runner mocking patterns for subagent dispatch
+**Engine configuration for Claude:**
+```yaml
+engine: claude
+# or extended:
+engine:
+  type: claude
+  model: claude-sonnet-4-6
+  max-turns: 10
+
+secrets:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Trigger configuration (schedule + manual + auto):**
+```yaml
+on:
+  - schedule: "0 3 * * SUN"   # Weekly Sunday 3am UTC
+  - workflow_dispatch          # Manual via gh aw run
+  - workflow_run:              # Auto-trigger when command files change
+      workflows: ["detect-command-file-changes.yml"]
+      types: [completed]
+```
+
+**Key limitation**: gh-aw does NOT support direct file-path pattern matching in triggers. To auto-trigger when `.claude/commands/plan.md` changes, a separate lightweight `detect-command-file-changes.yml` workflow must watch for those file changes on push-to-master and fire, which then triggers `workflow_run` on the behavioral test. This is two workflows, not one.
+
+**Compilation**: Frontmatter changes require `gh aw compile`. Markdown body changes take effect immediately without recompile. `.lock.yml` has SHA-pinned dependencies and is the auditable compiled form.
+
+**write permissions**: gh-aw cannot use `contents: write` at compile time. All write operations go through `safe-outputs`. For committing trend scores to `.github/behavioral-test-scores.json`, the behavioral test must use a PAT secret (`GH_AW_CI_TRIGGER_TOKEN`) or a safe-output that creates a commit.
+
+**Available tools for behavioral test:**
+```yaml
+tools:
+  - github:
+      toolsets: [repos, issues, actions]
+  - bash
+  - edit
+```
+
+---
+
+### Judge Model Decision (Researched)
+
+**Primary: MiniMax M2.5** (`minimax/minimax-m2.5` on OpenRouter)
+- Cost: $0.30/1M input, $1.10/1M output — ~50% cheaper than Kimi K2.5
+- Speed: 56.6 tok/s vs 40.8 tok/s
+- No documented JSON/tool-call invocation bugs
+- Mandatory `<think>` reasoning tags — actually improves rubric consistency (forces chain-of-thought before scoring)
+- Parse: use `response_format: {type: "json_object"}` to get clean structured output (strips `<think>` automatically)
+
+**Fallback: Kimi K2.5** (`moonshotai/kimi-k2.5` on OpenRouter)
+- Cost: $0.60/1M input, $2.50/1M output
+- Documented ~1% tool-call invocation failure rate (model returns JSON as plain text instead of invoking tool) — use `response_format: json_object`, NOT tool calling
+- Disable thinking mode for structured scoring: `chat_template_kwargs: {thinking: false}`
+- Higher intelligence index (47 vs 42) but operational risk outweighs quality gain for judge workload
+
+**Do NOT use**: `minimax/minimax-m1` — older, superseded by M2.5, more expensive
+
+---
+
+### Bun Mocking Patterns (Researched)
+
+**Critical finding**: Existing tests use `node:test` + `assert/strict`. Bun's `mock.module` API is only available from `bun:test`. Switching test files to `bun:test` is required to use module mocking.
+
+**`mock.module` must be declared BEFORE importing module under test:**
+```js
+import { describe, test, expect, mock, beforeEach } from "bun:test";
+
+// Declare mocks FIRST — before any import of lib/commands/plan.js
+const execFileSyncMock = mock();
+mock.module("node:child_process", () => ({ execFileSync: execFileSyncMock }));
+
+// Only NOW safe to import
+const { createBeadsIssue } = await import("../../lib/commands/plan.js");
+```
+
+**Key gotchas:**
+- `mock.restore()` only restores `spyOn` wrappers — does NOT reset `mock.module` overrides
+- `mock.module` scope is global per worker — use `mock.clearAllMocks()` in `beforeEach` to reset call counts
+- `__mocks__` directory (Jest auto-mocking) is NOT supported in Bun
+- For global `fetch` mocking: replace `global.fetch` directly, restore in `afterEach`
+
+**For `spawnSync` + `execFileSync` together:**
+```js
+mock.module("node:child_process", () => ({
+  execFileSync: mock(() => ""),
+  spawnSync: mock(() => ({ status: 0, stdout: Buffer.from(""), stderr: Buffer.from(""), signal: null })),
+}));
+```
+
+---
 
 ### OWASP Top 10 Analysis
 
