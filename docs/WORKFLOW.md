@@ -1,38 +1,33 @@
 # Forge Development Workflow
 
-Complete 9-stage TDD-first workflow for feature development. Works with any tech stack.
+Complete 7-stage TDD-first workflow for feature development. Works with any tech stack.
 
 ## Overview
 
 This workflow integrates:
 - **Test-Driven Development (TDD)**: Tests written UPFRONT
-- **Research-First**: Evidence-based decisions with parallel-web-search / parallel-deep-research
+- **Design-First**: One-question-at-a-time Q&A captures intent before research
 - **Issue Tracking**: Beads for persistent tracking across agents
-- **Strategic Planning**: OpenSpec for architectural changes
-- **Security**: OWASP Top 10 analysis for every feature
+- **Security**: OWASP Top 10 analysis for every feature (in /plan Phase 2)
 - **Documentation**: Progressive updates, final verification
 
 ## Workflow Stages
 
 ```
 ┌─────────┐
-│ /status │ → Check current stage & context
-└────┬────┘
-     │
-┌────▼──────┐
-│ /research │ → Deep research (parallel-web-search), save to docs/research/
-└────┬──────┘
-     │
+│ /status │ → Check current stage & context (utility, not a numbered stage)
+└─────────┘
+
 ┌────▼────┐
-│  /plan  │ → OpenSpec (if strategic) + Beads + branch
+│  /plan  │ → Phase 1: Design Q&A → Phase 2: Research → Phase 3: Branch + task list
 └────┬────┘
      │
 ┌────▼───┐
-│  /dev  │ → TDD implementation (RED-GREEN-REFACTOR)
+│  /dev  │ → Subagent TDD per task: implementer → spec review → quality review
 └────┬───┘
      │
 ┌────▼────┐
-│ /check  │ → Validation (type/lint/tests/security)
+│ /check  │ → Validation (type/lint/tests/security) — HARD-GATE exit
 └────┬────┘
      │
 ┌────▼────┐
@@ -48,7 +43,7 @@ This workflow integrates:
 └────┬─────┘
      │
 ┌────▼──────┐
-│  /verify  │ → Cross-check all documentation, update if needed
+│  /verify  │ → Post-merge health check (CI on main, close Beads)
 └───────────┘
      │
      ✓ Complete
@@ -58,15 +53,14 @@ This workflow integrates:
 
 | Stage | Command | Key Actions |
 |-------|---------|-------------|
-| 1. Status | `/status` | Check PROGRESS.md, Beads, OpenSpec |
-| 2. Research | `/research <name>` | parallel-web-search + codebase, save to docs/research/ |
-| 3. Plan | `/plan <slug>` | OpenSpec (if strategic) + Beads + branch |
-| 4. Dev | `/dev` | TDD cycles (RED-GREEN-REFACTOR) |
-| 5. Check | `/check` | Type/lint/security/tests |
-| 6. Ship | `/ship` | Create PR with full docs |
-| 7. Review | `/review <pr>` | Fix ALL PR issues |
-| 8. Premerge | `/premerge <pr>` | Complete docs on feature branch, hand off PR |
-| 9. Verify | `/verify` | Post-merge health check (CI, deployments) |
+| utility | `/status` | Check current context, active Beads issues |
+| 1 | `/plan <slug>` | Design Q&A + research (OWASP) + branch + task list |
+| 2 | `/dev` | Subagent TDD cycles (implementer → spec review → quality review) |
+| 3 | `/check` | Type/lint/security/tests — HARD-GATE exit |
+| 4 | `/ship` | Create PR with full docs |
+| 5 | `/review <pr>` | Fix ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
+| 6 | `/premerge <pr>` | Complete docs on feature branch, hand off PR |
+| 7 | `/verify` | Post-merge health check (CI on main, close Beads) |
 
 For detailed information on each stage, see the individual command files in `.claude/commands/`.
 
@@ -137,20 +131,20 @@ export function validateEmail(email: string): boolean {
 
 ---
 
-## Research-First Approach
+## Design-First Planning (/plan Phase 2)
 
-### Why Research First?
+### Why Research in /plan?
 
-**Evidence-based decisions**:
+**Evidence-based decisions before writing code**:
 - Understand existing patterns before reinventing
 - Learn from others' mistakes (known issues)
 - Apply industry best practices
-- Make informed security decisions
-- Document reasoning for future reference
+- Make informed security decisions (OWASP Top 10)
+- Document reasoning for future reference in design doc
 
 ### Parallel AI Integration
 
-**MANDATORY for all features**: Use parallel-web-search (or parallel-deep-research) skill for web research
+**MANDATORY for /plan Phase 2 web research**: Use parallel-web-search (or parallel-deep-research) skill
 
 **Research Queries**:
 ```
@@ -161,7 +155,7 @@ export function validateEmail(email: string): boolean {
 "Secure [feature] implementation checklist"
 ```
 
-**Document Everything**:
+**Document in design doc** (`docs/plans/YYYY-MM-DD-<slug>-design.md`):
 - Source URLs
 - Key insights
 - Applicability to project
@@ -395,7 +389,7 @@ After implementing this workflow:
 ## Tips & Best Practices
 
 1. **Always TDD**: Write tests BEFORE implementation
-2. **Research everything**: Use parallel-web-search / parallel-deep-research for every feature
+2. **Research in /plan Phase 2**: Use parallel-web-search / parallel-deep-research before implementing
 3. **Security first**: OWASP Top 10 analysis mandatory
 4. **Document decisions**: Evidence and reasoning in research docs
 5. **Update Beads regularly**: Keep status current for handoffs

@@ -11,15 +11,15 @@
 [![CodeQL](https://github.com/harshanandak/forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/codeql.yml)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](https://github.com/harshanandak/forge/blob/master/SECURITY.md)
 
-Ship features with confidence using a 9-stage TDD-first workflow for AI coding agents.
+Ship features with confidence using a 7-stage TDD-first workflow for AI coding agents.
 
 ```
-/status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
+/plan → /dev → /check → /ship → /review → /premerge → /verify
 ```
 
 ✅ **TDD-First**: Write tests before code
-✅ **Research-First**: Understand before building
-✅ **Multi-Agent**: Universal AGENTS.md works with 8 agents
+✅ **Design-First**: One-question-at-a-time Q&A captures intent upfront
+✅ **Multi-Agent**: Universal AGENTS.md works with 11 agents
 
 ---
 
@@ -28,8 +28,7 @@ Ship features with confidence using a 9-stage TDD-first workflow for AI coding a
 **Adding a login button with Forge:**
 
 ```bash
-/research login-button    # AI researches best practices + security
-/plan login-button        # Creates plan, branch, tracking issue
+/plan login-button        # Design Q&A → research → branch + task list
 /dev                      # TDD: RED → GREEN → REFACTOR cycles
 /check                    # Type check + lint + tests + security scan
 /ship                     # Create PR with full documentation
@@ -69,25 +68,24 @@ bunx forge setup
 - Create docs/ folder with guides
 
 **Prerequisites**: Node.js, Git, GitHub account
-**Optional tools**: Beads (issue tracking), OpenSpec (architecture proposals)
+**Optional tools**: Beads (issue tracking)
 
 → [Detailed setup guide for all agents](docs/SETUP.md)
 
 ---
 
-## The 9 Stages
+## The 7 Stages
 
 | Stage | Command | Purpose |
 |-------|---------|---------|
-| **1. Status** | `/status` | Check current context, active work |
-| **2. Research** | `/research` | Deep research with AI, document findings |
-| **3. Plan** | `/plan` | Create plan + branch + tracking |
-| **4. Dev** | `/dev` | TDD development (RED-GREEN-REFACTOR) |
-| **5. Check** | `/check` | Validate: types, lint, tests, security |
-| **6. Ship** | `/ship` | Create PR with documentation |
-| **7. Review** | `/review` | Address ALL PR feedback (Greptile, reviewers, CI/CD) |
-| **8. Merge** | `/merge` | Update docs, merge, cleanup |
-| **9. Verify** | `/verify` | Final documentation check |
+| **utility** | `/status` | Check current context, active work |
+| **1. Plan** | `/plan` | Design Q&A → research → branch + task list |
+| **2. Dev** | `/dev` | Subagent TDD per task (spec + quality review) |
+| **3. Check** | `/check` | Validate: types, lint, tests, security |
+| **4. Ship** | `/ship` | Create PR with documentation |
+| **5. Review** | `/review` | Address ALL PR feedback (Greptile, reviewers, CI/CD) |
+| **6. Premerge** | `/premerge` | Complete docs on feature branch, hand off PR |
+| **7. Verify** | `/verify` | Post-merge health check (CI on main) |
 
 **Full workflow guide**: [docs/WORKFLOW.md](docs/WORKFLOW.md)
 
@@ -214,7 +212,7 @@ bunx forge setup --merge=smart    # Intelligent merge
 
 **Workflow Profiles**
 - Adapts workflow based on work type:
-  - `feature`: Full 9-stage workflow (auto-escalates to critical for auth/payment)
+  - `feature`: Full 7-stage workflow (auto-escalates to critical for auth/payment)
   - `fix`: Streamlined 5-stage workflow (auto-escalates to hotfix for production)
   - `refactor`: Behavior-preserving 5-stage workflow
   - `chore`: Minimal 3-stage workflow (docs/deps/config)
