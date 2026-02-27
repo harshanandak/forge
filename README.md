@@ -263,17 +263,17 @@ Forge integrates with powerful tools:
 │              FORGE TOOLCHAIN                 │
 ├──────────────────────────────────────────────┤
 │                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │  BEADS   │  │ OPENSPEC │  │  GITHUB  │   │
-│  │  Issue   │  │ Proposal │  │    PR    │   │
-│  │ Tracking │  │  System  │  │ Workflow │   │
-│  └──────────┘  └──────────┘  └──────────┘   │
-│       │              │              │        │
-│       └──────────────┴──────────────┘        │
+│  ┌──────────┐                  ┌──────────┐  │
+│  │  BEADS   │                  │  GITHUB  │  │
+│  │  Issue   │                  │    PR    │  │
+│  │ Tracking │                  │ Workflow │  │
+│  └──────────┘                  └──────────┘  │
+│       │                              │       │
+│       └──────────────────────────────┘       │
 │                      │                       │
 │                ┌─────▼─────┐                 │
 │                │   FORGE   │                 │
-│                │ 9-Stage   │                 │
+│                │ 7-Stage   │                 │
 │                │ Workflow  │                 │
 │                └───────────┘                 │
 │                                              │
@@ -285,11 +285,6 @@ Forge integrates with powerful tools:
 **Beads** (optional): Git-backed issue tracking that survives context clearing
 ```bash
 bun add -g @beads/bd && bd init
-```
-
-**OpenSpec** (optional): Spec-driven development for architecture changes
-```bash
-bun add -g @fission-ai/openspec && openspec init
 ```
 
 **GitHub CLI** (recommended): Required for PR workflow
@@ -307,43 +302,39 @@ gh auth login
 **Task**: Add a health check endpoint
 
 ```bash
-/research health-check-endpoint  # 2 min: Research patterns
-/plan health-check-endpoint      # 1 min: Create plan + branch
+/plan health-check-endpoint      # Design Q&A → research → branch + task list
 /dev                             # 8 min: TDD implementation
 /check                           # 2 min: All validations pass
 /ship                            # 2 min: PR created
 # → Greptile AI review completes (~2 min)
 /review                          # 3 min: Address Greptile feedback
-/merge                           # 2 min: Merge + cleanup
+/premerge                        # 2 min: Complete docs, hand off PR
 ```
 
 ### Example 2: Bug Fix with Security (30 minutes)
 **Task**: Fix SQL injection vulnerability
 
 ```bash
-/research sql-injection-fix      # 5 min: OWASP research
-/plan sql-injection-fix          # 2 min: Plan + branch
+/plan sql-injection-fix          # Design Q&A → OWASP research → branch
 /dev                             # 8 min: Fix + tests
 /check                           # 3 min: Security scan
 /ship                            # 2 min: PR with security notes
 # → Greptile validates security fix (~2 min)
 /review                          # 5 min: Address security feedback
-/merge                           # 3 min: Merge + verify
+/premerge                        # 3 min: Complete docs, hand off PR
 ```
 
 ### Example 3: Architecture Change (2-3 days)
 **Task**: Add authentication system
 
 ```bash
-/research user-authentication    # 30 min: Deep research
-/plan user-authentication        # 60 min: OpenSpec proposal
-# → Create PR for proposal approval first
+/plan user-authentication        # Design Q&A → deep research → branch
 /dev                             # 1-2 days: TDD implementation
 /check                           # 30 min: Full validation
 /ship                            # 15 min: PR with docs
 /review                          # Varies: Address feedback
-/merge                           # 15 min: Merge + cleanup
-/verify                          # 15 min: Final check
+/premerge                        # 15 min: Complete docs, hand off PR
+/verify                          # 15 min: Post-merge health check
 ```
 
 → [More examples in docs/EXAMPLES.md](docs/EXAMPLES.md)
@@ -353,7 +344,7 @@ gh auth login
 ## Core Principles
 
 **TDD-First**: Tests before code, always
-**Research-First**: Understand before building
+**Design-First**: One-question-at-a-time Q&A captures intent before research
 **Security Built-In**: OWASP Top 10 for every feature
 **Documentation Progressive**: Update at each stage
 **Multi-Session**: Work persists across sessions
@@ -371,7 +362,7 @@ gh auth login
 → [docs/WORKFLOW.md](docs/WORKFLOW.md) - Complete guide with examples
 
 🛠️ **Setup the toolchain**
-→ [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Beads, OpenSpec, GitHub CLI
+→ [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Beads, GitHub CLI
 
 🎯 **See real examples**
 → [docs/EXAMPLES.md](docs/EXAMPLES.md) - Real-world use cases
@@ -389,14 +380,13 @@ gh auth login
 ```bash
 # Forge commands
 /status                    # Check current context
-/research <feature>        # Research + document
-/plan <feature>            # Create plan + branch
+/plan <feature>            # Design Q&A → research → branch + task list
 /dev                       # TDD development
 /check                     # Validate everything
 /ship                      # Create PR
 /review <pr>               # Address feedback
-/merge <pr>                # Merge + cleanup
-/verify                    # Final docs check
+/premerge <pr>             # Complete docs, hand off PR
+/verify                    # Post-merge health check
 
 # Beads commands (optional)
 bd init                    # Initialize tracking
@@ -404,12 +394,6 @@ bd ready                   # Find ready work
 bd create "title"          # Create issue
 bd update <id> --status X  # Update status
 bd sync                    # Sync with git
-
-# OpenSpec commands (optional)
-/opsx:new                  # Start change
-/opsx:ff                   # Generate all docs
-/opsx:apply                # Implement tasks
-/opsx:archive              # Complete change
 ```
 
 ---
