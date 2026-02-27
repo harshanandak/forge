@@ -71,7 +71,7 @@ bunx npm audit    # or: npm audit, snyk test, etc.
 ```
 
 **Manual Review**:
-- Review security test scenarios (from research doc)
+- Review security test scenarios (from design doc — `## Technical Research` section)
 - Verify security mitigations implemented
 - Check for sensitive data exposure
 
@@ -86,11 +86,11 @@ bun test    # or: npm run test, jest, vitest, etc.
 
 > **💭 Plan-Act-Reflect Checkpoint**
 > Before declaring validation complete:
-> - Are all security test scenarios from your research doc actually implemented and passing?
+> - Are all security test scenarios from your design doc actually implemented and passing?
 > - Did you verify OWASP Top 10 mitigations, not just check a box?
 > - Are there edge cases or integration scenarios you haven't tested?
 >
-> **If unsure**: Re-read the "Security Analysis" and "TDD Test Scenarios" sections in research doc
+> **If unsure**: Re-read the `## Technical Research` section in `docs/plans/YYYY-MM-DD-<slug>-design.md`
 
 ### Step 6: Handle Failures
 
@@ -106,8 +106,20 @@ bd update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
 ```
 
 If all pass:
+
 ```
-Ready for /ship
+<HARD-GATE: /check exit>
+Do NOT output any variation of "check complete", "ready to ship", or proceed to /ship
+until ALL FOUR show fresh output in this session:
+
+1. Type check: [command run] → [actual output] → exit 0 confirmed
+2. Lint: [command run] → [actual output] → 0 errors, 0 warnings confirmed
+3. Tests: [command run] → [actual output] → N/N passing confirmed
+4. Security scan: [command run] → [actual output] → no critical issues confirmed
+
+"Should pass", "was passing earlier", and "I'm confident" are not evidence.
+Run the commands. Show the output. THEN declare done.
+</HARD-GATE>
 ```
 
 ## Example Output (Success)
@@ -141,15 +153,14 @@ Fix issues then re-run /check
 ## Integration with Workflow
 
 ```
-1. /status               → Understand current context
-2. /research <name>      → Research and document
-3. /plan <feature-slug>  → Create plan and tracking
-4. /dev                  → Implement with TDD
-5. /check                → Validate (you are here)
-6. /ship                 → Create PR
-7. /review               → Address comments
-8. /premerge             → Complete docs, hand off PR to user
-9. /verify               → Final documentation check
+Utility: /status     → Understand current context before starting
+Stage 1: /plan       → Design intent → research → branch + worktree + task list
+Stage 2: /dev        → Implement each task with subagent-driven TDD
+Stage 3: /check      → Type check, lint, tests, security — all fresh output (you are here)
+Stage 4: /ship       → Push + create PR
+Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
+Stage 6: /premerge   → Update docs, hand off PR to user
+Stage 7: /verify     → Post-merge CI check on main
 ```
 
 ## Tips

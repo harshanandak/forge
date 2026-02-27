@@ -115,12 +115,12 @@ This shows:
    # For invalid/conflicting issues:
    bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
      "This approach is correct because:
-     - Reasoning: [from research doc]
-     - Evidence: [link to research source]
+     - Reasoning: [from design doc]
+     - Evidence: [link to source]
      - Alternative considered: [what Greptile suggested]
      - Why rejected: [specific reason]
 
-     See: docs/research/<feature-slug>.md (Decision #X)"
+     See: docs/plans/YYYY-MM-DD-<slug>-design.md (Decision #X)"
    ```
 
 **Step 3: Verify all resolved**
@@ -228,12 +228,12 @@ bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-
 # For invalid/conflicting comments:
 bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
   "This approach is correct because:
-  - Reasoning: [from research doc]
-  - Evidence: [link to research source]
+  - Reasoning: [from design doc]
+  - Evidence: [link to source]
   - Alternative considered: [what Greptile suggested]
   - Why rejected: [specific reason]
 
-  See: docs/research/<feature-slug>.md (Decision #X)"
+  See: docs/plans/YYYY-MM-DD-<slug>-design.md (Decision #X)"
 
 # Verify all threads resolved:
 bash .claude/scripts/greptile-resolve.sh stats <pr-number>
@@ -358,18 +358,26 @@ bd sync
 Next: /premerge <pr-number>
 ```
 
+```
+<HARD-GATE: /review exit>
+Do NOT declare /review complete until:
+1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
+2. ALL human reviewer comments are either resolved or have a reply with explanation
+3. gh pr checks <pr-number> shows all checks passing
+</HARD-GATE>
+```
+
 ## Integration with Workflow
 
 ```
-1. /status               → Understand current context
-2. /research <name>      → Research and document
-3. /plan <feature-slug>  → Create plan and tracking
-4. /dev                  → Implement with TDD
-5. /check                → Validate
-6. /ship                 → Create PR
-7. /review               → Address ALL PR issues (you are here)
-8. /premerge             → Complete docs, hand off PR to user
-9. /verify               → Final documentation check
+Utility: /status     → Understand current context before starting
+Stage 1: /plan       → Design intent → research → branch + worktree + task list
+Stage 2: /dev        → Implement each task with subagent-driven TDD
+Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 4: /ship       → Push + create PR
+Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud (you are here)
+Stage 6: /premerge   → Update docs, hand off PR to user
+Stage 7: /verify     → Post-merge CI check on main
 ```
 
 ## Understanding the Tools

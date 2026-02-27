@@ -99,6 +99,24 @@ If deployments exist:
 bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
+### Step 7: Close Beads Issue (if healthy)
+
+If everything is clean, close the Beads issue:
+
+```bash
+bd close <id> --reason="Merged and verified on master"
+```
+
+```
+<HARD-GATE: /verify exit>
+Do NOT declare /verify complete until:
+1. gh run list --branch master --limit 3 shows actual CI output (not "should be fine")
+2. If healthy: Beads issue is closed (bd close <id> run and confirmed)
+3. If issues found: Beads tracking issue created for every problem
+"It should be fine" is not evidence. Run the command. Show the output.
+</HARD-GATE>
+```
+
 ## Rules
 
 - **Never commits** — this command is read-only
@@ -145,13 +163,12 @@ bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ## Integration with Workflow
 
 ```
-1. /status               → Understand current context
-2. /research <name>      → Research and document
-3. /plan <feature-slug>  → Create plan and tracking
-4. /dev                  → Implement with TDD
-5. /check                → Validate
-6. /ship                 → Create PR
-7. /review               → Address comments
-8. /premerge             → Complete docs, hand off to user
-9. /verify               → Post-merge health check (you are here) ✓
+Utility: /status     → Understand current context before starting
+Stage 1: /plan       → Design intent → research → branch + worktree + task list
+Stage 2: /dev        → Implement each task with subagent-driven TDD
+Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 4: /ship       → Push + create PR
+Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
+Stage 6: /premerge   → Update docs, hand off PR to user
+Stage 7: /verify     → Post-merge CI check on main (you are here) ✓
 ```

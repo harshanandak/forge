@@ -1,183 +1,144 @@
-# Forge - 9-Stage TDD Workflow
+# Forge - 7-Stage TDD Workflow
 
 A TDD-first workflow for AI coding agents. Ship features with confidence.
 
-## Commands (9 Stages)
+## Commands (7 Stages)
 
 | Stage | Command | Description |
 |-------|---------|-------------|
-| 1 | `/status` | Check current context, active work, recent completions |
-| 2 | `/research` | Deep research with web search, document to docs/research/ |
-| 3 | `/plan` | Create implementation plan, branch, OpenSpec if strategic |
-| 4 | `/dev` | TDD development (RED-GREEN-REFACTOR cycles) |
-| 5 | `/check` | Validation (type/lint/security/tests) |
-| 6 | `/ship` | Create PR with full documentation |
-| 7 | `/review` | Address ALL PR feedback |
-| 8 | `/merge` | Update docs, merge PR, cleanup |
-| 9 | `/verify` | Final documentation verification |
+| utility | `/status` | Check current context, active work, recent completions |
+| 1 | `/plan` | Design intent Q&A → research → branch + task list |
+| 2 | `/dev` | Subagent-driven TDD per task (spec + quality review) |
+| 3 | `/check` | Validation (type/lint/security/tests) |
+| 4 | `/ship` | Create PR with full documentation |
+| 5 | `/review` | Address ALL PR feedback |
+| 6 | `/premerge` | Complete docs on feature branch, hand off PR to user |
+| 7 | `/verify` | Post-merge health check (CI on main) |
 
 ## Workflow Flow
 
 ```
-/status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
+/plan → /dev → /check → /ship → /review → /premerge → /verify
 ```
 
 ## Core Principles
 
 - **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-- **Research-First**: Understand before building, document decisions
+- **Design-First**: One-question-at-a-time Q&A captures design intent upfront
+- **HARD-GATEs**: Every stage exit has explicit pass criteria — run the commands, show the output
 - **Security Built-In**: OWASP Top 10 analysis for every feature
-- **Documentation Progressive**: Update at each stage, verify at end
 
 ## Prerequisites
 
 - Git, GitHub CLI (`gh`)
 - Beads (recommended): `bun add -g @beads/bd && bd init`
-- OpenSpec (optional): `bun add -g @fission-ai/openspec && openspec init`
 
 ## Quick Start
 
 1. `/status` - Check where you are
-2. `/research <feature-name>` - Research the feature
-3. `/plan <feature-slug>` - Create formal plan
-4. `/dev` - Implement with TDD
-5. `/check` - Validate everything
-6. `/ship` - Create PR
+2. `/plan <feature-slug>` - Design intent → research → branch + task list
+3. `/dev` - Implement with TDD
+4. `/check` - Validate everything
+5. `/ship` - Create PR
+6. `/review <pr-number>` - Address all feedback
+7. `/premerge <pr-number>` - Docs + hand off to user
 
 ## Stage Details
 
-### 1. Status (`/status`)
+### Utility: Status (`/status`)
 
 Check current context before starting work:
 - Active issues (via Beads if installed)
 - Recent completions
 - Current branch state
-- OpenSpec proposals in progress
 
-### 2. Research (`/research <feature-name>`)
+### 1. Plan (`/plan <feature-slug>`)
 
-Research before building:
-- Web search for best practices
-- Security analysis (OWASP Top 10)
-- Existing patterns in codebase
-- Document to `docs/research/<feature>.md`
+Three phases:
+- **Phase 1**: Design intent Q&A (one-question-at-a-time with user)
+- **Phase 2**: Technical research (web + codebase, OWASP Top 10)
+- **Phase 3**: Create branch + task list (TDD-ordered)
 
-### 3. Plan (`/plan <feature-slug>`)
+### 2. Development (`/dev`)
 
-Create implementation plan:
-- Create feature branch
-- Define scope and approach
-- Create tracking issue (Beads)
-- OpenSpec proposal if strategic
+Subagent-driven TDD per task:
+- Implementer subagent: RED-GREEN-REFACTOR enforced by HARD-GATE
+- Spec compliance reviewer: checks every task
+- Code quality reviewer: checks after spec compliance
+- Decision gate: 7-dimension scoring when spec gap found
 
-### 4. Development (`/dev`)
+### 3. Check (`/check`)
 
-TDD implementation:
-- RED: Write failing test
-- GREEN: Make it pass
-- REFACTOR: Clean up
-- Commit after each GREEN cycle
-
-### 5. Check (`/check`)
-
-Validate everything:
+Validate everything (HARD-GATE exit — fresh output required):
 - Type checking
-- Linting
-- Unit tests
-- Integration tests
-- Security scan
+- Linting (0 errors, 0 warnings)
+- All tests passing
+- Security scan (OWASP Top 10)
 
-### 6. Ship (`/ship`)
+### 4. Ship (`/ship`)
 
 Create pull request:
 - Push branch
-- Create PR with documentation
-- Link to research doc
-- List test coverage
+- Create PR with design doc reference
+- Link to Beads issue
 
-### 7. Review (`/review`)
+### 5. Review (`/review <pr-number>`)
 
 Address ALL feedback:
 - GitHub Actions failures
-- Code review comments
-- Security scan issues
-- Automated tool feedback
+- Greptile inline comments (reply + resolve each)
+- SonarCloud issues
+- Other CI/CD tool feedback
 
-### 8. Merge (`/merge`)
+### 6. Premerge (`/premerge <pr-number>`)
 
-Complete the work:
-- Update documentation
-- Squash merge PR
-- Archive OpenSpec (if used)
-- Close tracking issues
+Complete docs and hand off (NEVER merges):
+- Update CLAUDE.md, AGENTS.md, GEMINI.md, README as needed
+- Commit docs to feature branch
+- Hand off PR URL to user for merge
 
-### 9. Verify (`/verify`)
+### 7. Verify (`/verify`)
 
-Final documentation check:
-- All docs updated
-- Cross-references valid
-- Examples work
-- README current
+Post-merge health check:
+- CI on main: all checks green
+- Close Beads issue
+- Confirm merge landed
 
 ## Directory Structure
 
 ```
 your-project/
-├── AGENTS.md                    # This file (universal)
+├── AGENTS.md                    # Universal (Windsurf, Cursor, Kilo, OpenCode, Cline, Roo, Aider)
 ├── CLAUDE.md                    # Claude Code
 ├── GEMINI.md                    # Google Antigravity
 ├── .cursorrules                 # Cursor
-├── .windsurfrules               # Windsurf
-├── .clinerules                  # Cline/Roo Code
-├── .github/
-│   └── copilot-instructions.md  # GitHub Copilot
 │
 ├── .claude/commands/            # Claude Code commands
-├── .agent/workflows/            # Antigravity workflows
-├── .cursor/rules/               # Cursor rules
-├── .windsurf/workflows/         # Windsurf workflows
-├── .kilocode/workflows/         # Kilo Code workflows
-├── .opencode/commands/          # OpenCode commands
-├── .continue/prompts/           # Continue prompts
-├── .roo/commands/               # Roo Code commands
-│
 └── docs/
-    ├── planning/
-    │   └── PROGRESS.md
-    ├── research/
-    │   └── TEMPLATE.md
+    ├── plans/
+    │   ├── YYYY-MM-DD-<slug>-design.md
+    │   └── YYYY-MM-DD-<slug>-tasks.md
     └── WORKFLOW.md
 ```
-
-## Skills (Universal SKILL.md Format)
-
-The `forge-workflow` skill is installed to all supporting agents:
-- `.claude/skills/forge-workflow/SKILL.md`
-- `.agent/skills/forge-workflow/SKILL.md` (Antigravity)
-- `.cursor/skills/forge-workflow/SKILL.md`
-- `.windsurf/skills/forge-workflow/SKILL.md`
-- `.kilocode/skills/forge-workflow/SKILL.md`
-- `.cline/skills/forge-workflow/SKILL.md`
-- `.continue/skills/forge-workflow/SKILL.md`
-- `.opencode/skills/forge-workflow/SKILL.md`
 
 ## Supported Agents
 
 This workflow works with ALL major AI coding agents:
 
-| Agent | Instructions | Commands | Skills |
-|-------|-------------|----------|--------|
-| Claude Code | CLAUDE.md | .claude/commands/ | .claude/skills/ |
-| Google Antigravity | GEMINI.md | .agent/workflows/ | .agent/skills/ |
-| Cursor | .cursorrules | .cursor/rules/ | .cursor/skills/ |
-| Windsurf | .windsurfrules | .windsurf/workflows/ | .windsurf/skills/ |
-| Kilo Code | AGENTS.md | .kilocode/workflows/ | .kilocode/skills/ |
-| OpenCode | AGENTS.md | .opencode/commands/ | .opencode/skills/ |
-| Cline | .clinerules | AGENTS.md | .cline/skills/ |
-| Roo Code | .clinerules | .roo/commands/ | - |
-| Continue | .continuerules | .continue/prompts/ | .continue/skills/ |
-| GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ | - |
-| Aider | AGENTS.md (via config) | In-chat | - |
+| Agent | Instructions | Commands |
+|-------|-------------|----------|
+| Claude Code | CLAUDE.md | .claude/commands/ |
+| Google Antigravity | GEMINI.md | .agent/workflows/ |
+| Cursor | .cursorrules | .cursor/rules/ |
+| Windsurf | AGENTS.md | .windsurf/workflows/ |
+| Kilo Code | AGENTS.md | .kilocode/workflows/ |
+| OpenCode | AGENTS.md | .opencode/commands/ |
+| Cline | AGENTS.md | - |
+| Roo Code | AGENTS.md | .roo/commands/ |
+| Continue | AGENTS.md | .continue/prompts/ |
+| GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ |
+| Aider | AGENTS.md (via .aider.conf.yml) | In-chat |
+| Codex CLI | AGENTS.md | In-chat |
 
 ## License
 

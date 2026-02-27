@@ -12,6 +12,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      checks: write
 
     steps:
       - name: Check Greptile Score
@@ -48,19 +49,44 @@ jobs:
             // Extract confidence score
             const scoreMatch = prBody.match(/Confidence Score:\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*5/i);
 
+            const headSha = checkRun.head_sha;
+            const minScore = 4.0;
+            let conclusion, title, summary;
+
             if (!scoreMatch) {
-              core.setFailed('❌ No Greptile confidence score found in PR description');
-              return;
+              conclusion = 'failure';
+              title = '❌ No Greptile confidence score found in PR description';
+              summary = 'Greptile may not have reviewed this PR yet, or the score format changed.';
+            } else {
+              const score = parseFloat(scoreMatch[1]);
+              console.log(`📊 Greptile Score: ${score}/5`);
+              console.log(`🎯 Required: ${minScore}/5`);
+
+              if (score < minScore) {
+                conclusion = 'failure';
+                title = `❌ Greptile score ${score}/5 is below minimum ${minScore}/5`;
+                summary = `Address Greptile review comments and push to re-trigger the review.`;
+              } else {
+                conclusion = 'success';
+                title = `✅ Greptile score ${score}/5 meets threshold`;
+                summary = `Greptile confidence score ${score}/5 meets the required ${minScore}/5.`;
+              }
             }
 
-            const score = parseFloat(scoreMatch[1]);
-            const minScore = 4.0;
+            // Create a check run on the PR's head commit so it appears in PR checks
+            // (core.setFailed alone only fails the workflow run on master, not the PR check)
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Greptile Quality Gate (≥4/5)',
+              head_sha: headSha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: { title, summary }
+            });
 
-            console.log(`📊 Greptile Score: ${score}/5`);
-            console.log(`🎯 Required: ${minScore}/5`);
+            console.log(`✅ Check run created on ${headSha} with conclusion: ${conclusion}`);
 
-            if (score < minScore) {
-              core.setFailed(`❌ Greptile score ${score}/5 is below minimum ${minScore}/5`);
-            } else {
-              console.log(`✅ PASSED: Score ${score}/5 meets threshold!`);
+            if (conclusion === 'failure') {
+              core.setFailed(title);
             }

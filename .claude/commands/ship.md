@@ -14,10 +14,20 @@ This command creates a PR after validation passes.
 /ship
 ```
 
+```
+<HARD-GATE: /ship entry>
+Do NOT create PR until:
+1. /check was run in this session with all four outputs shown (type, lint, tests, security)
+2. All checks confirmed passing — not assumed, not "was passing earlier"
+3. Beads issue is in_progress
+4. git branch --show-current output is NOT main or master
+</HARD-GATE>
+```
+
 ## What This Command Does
 
 ### Step 1: Verify /check Passed
-Ensure all validation completed successfully.
+Ensure all four validation checks completed successfully with fresh output in this session.
 
 ### Step 2: Update Beads
 ```bash
@@ -35,19 +45,19 @@ git push -u origin <branch-name>
 ```bash
 gh pr create --title "feat: <feature-name>" --body "$(cat <<'EOF'
 ## Summary
-[Auto-generated from commits and research doc]
+[Auto-generated from commits and design doc]
 
-## Research
-See: docs/research/<feature-slug>.md
+## Design Doc
+See: docs/plans/YYYY-MM-DD-<slug>-design.md
+
+## Decisions Log
+See: docs/plans/YYYY-MM-DD-<slug>-decisions.md (if any undocumented decisions arose during /dev)
 
 ## Beads Issue
 Closes: <issue-id>
 
-## OpenSpec (if strategic)
-See: openspec/changes/<feature-slug>/
-
 ## Key Decisions
-[From research doc - 3-5 key decisions with reasoning]
+[From design doc - 3-5 key decisions with reasoning]
 
 ## TDD Test Coverage
 - Unit tests: [count] tests, [X] scenarios
@@ -75,19 +85,19 @@ EOF
 ## Example Output
 
 ```
-✓ Validation: /check passed
-✓ Beads: Marked done & synced (bd-x7y2)
+✓ Validation: /check passed (all 4 checks — fresh output confirmed)
+✓ Beads: Marked done & synced (forge-xyz)
 ✓ Pushed: feat/stripe-billing
 ✓ PR created: https://github.com/.../pull/123
-  - Beads linked: bd-x7y2
-  - OpenSpec linked: openspec/changes/stripe-billing/
-  - Research linked: docs/research/stripe-billing.md
+  - Beads linked: forge-xyz
+  - Design doc linked: docs/plans/2026-02-26-stripe-billing-design.md
+  - Decisions log linked: docs/plans/2026-02-26-stripe-billing-decisions.md
   - Test coverage documented
   - Security review documented
 
 PR Summary:
-  - 18 commits (across 3 parallel tracks + integration)
-  - 42 test cases, all passing
+  - 12 commits
+  - 18 test cases, all passing
   - OWASP Top 10 security review completed
   - 3 key architectural decisions documented
 
@@ -99,21 +109,20 @@ Next: /review <pr-number> (after automated checks complete)
 ## Integration with Workflow
 
 ```
-1. /status               → Understand current context
-2. /research <name>      → Research and document
-3. /plan <feature-slug>  → Create plan and tracking
-4. /dev                  → Implement with TDD
-5. /check                → Validate
-6. /ship                 → Create PR (you are here)
-7. /review               → Address comments
-8. /premerge             → Complete docs, hand off PR to user
-9. /verify               → Final documentation check
+Utility: /status     → Understand current context before starting
+Stage 1: /plan       → Design intent → research → branch + worktree + task list
+Stage 2: /dev        → Implement each task with subagent-driven TDD
+Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 4: /ship       → Push + create PR (you are here)
+Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
+Stage 6: /premerge   → Update docs, hand off PR to user
+Stage 7: /verify     → Post-merge CI check on main
 ```
 
 ## Tips
 
-- **Complete PR body**: Include all research, decisions, and test coverage
-- **Link everything**: Research doc, OpenSpec, Beads issue
+- **Complete PR body**: Include design doc, decisions log, and test coverage
+- **Link everything**: Design doc, decisions log, Beads issue
 - **Document security**: OWASP Top 10 review in PR body
 - **Test coverage**: Show all test scenarios passing
 - **Wait for checks**: Let GitHub Actions, Greptile, SonarCloud run

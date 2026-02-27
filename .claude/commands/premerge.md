@@ -48,7 +48,7 @@ Check each of the following and update if the feature affects it. Be selective �
 
 **A. `docs/planning/PROGRESS.md`** (always):
 - Add feature entry to completed section:
-  - Feature name, completion date, Beads ID, PR number, research doc link
+  - Feature name, completion date, Beads ID, PR number, design doc link
   - Key deliverables and files changed
 - Note: `docs/planning/` is gitignored — update locally only, no commit needed
 
@@ -89,21 +89,13 @@ git push
 
 ⚠️  **After pushing**: CI will re-trigger (Greptile, SonarCloud, etc.). Wait for checks to pass. If new Greptile comments appear on the doc changes, run `/review <pr-number>` again.
 
-### Step 4: Archive OpenSpec (if strategic)
-
-```bash
-openspec archive <feature-slug> --yes
-```
-
-Only run if this feature had an OpenSpec proposal.
-
-### Step 5: Sync Beads
+### Step 4: Sync Beads
 
 ```bash
 bd sync
 ```
 
-### Step 6: Hand Off — STOP HERE
+### Step 5: Hand Off — STOP HERE
 
 **DO NOT run `gh pr merge`.** Present the PR and wait for the user to merge.
 
@@ -115,7 +107,6 @@ Output:
   All checks: ✓ passing
   Documentation: ✓ updated on feature branch
   Beads: ✓ synced
-  OpenSpec: ✓ archived (if applicable)
 
   👉 Please merge in the GitHub UI:
      https://github.com/<owner>/<repo>/pull/<number>
@@ -123,6 +114,16 @@ Output:
   Recommended: Squash and merge (keeps main history clean)
 
 After you merge, run /verify to confirm everything landed correctly.
+```
+
+```
+<HARD-GATE: /premerge exit>
+Do NOT run gh pr merge.
+Do NOT suggest merging.
+/premerge ends here. Output the PR URL and status. Wait for user.
+
+"After you merge, run /verify to confirm everything landed correctly."
+</HARD-GATE>
 ```
 
 ## Example Output
@@ -157,13 +158,12 @@ After you merge, run /verify
 ## Integration with Workflow
 
 ```
-1. /status               → Understand current context
-2. /research <name>      → Research and document
-3. /plan <feature-slug>  → Create plan and tracking
-4. /dev                  → Implement with TDD
-5. /check                → Validate
-6. /ship                 → Create PR
-7. /review               → Address comments
-8. /premerge             → Complete docs, hand off to user (you are here)
-9. /verify               → Post-merge health check
+Utility: /status     → Understand current context before starting
+Stage 1: /plan       → Design intent → research → branch + worktree + task list
+Stage 2: /dev        → Implement each task with subagent-driven TDD
+Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 4: /ship       → Push + create PR
+Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
+Stage 6: /premerge   → Update docs, hand off PR to user (you are here)
+Stage 7: /verify     → Post-merge CI check on main
 ```
