@@ -157,15 +157,30 @@ bd update <id> --status=in_progress
 
 ### Step 2: Branch + worktree
 
+**ALWAYS branch from master, never from the current branch.** If the working directory is on any branch other than master, the new feature branch would inherit all unmerged changes from that branch — contaminating the new feature's history.
+
 ```bash
+# Step 2a: Check the current branch — warn if not master
+CURRENT=$(git branch --show-current)
+if [ "$CURRENT" != "master" ] && [ "$CURRENT" != "main" ]; then
+  echo "WARNING: You are on '$CURRENT', not master."
+  echo "The new feature branch will be created from master regardless."
+fi
+
+# Step 2b: Create branch from master explicitly
+git checkout master
 git checkout -b feat/<slug>
 
-# Verify .worktrees/ is gitignored — add if missing
+# Step 2c: Verify .worktrees/ is gitignored — add if missing
 git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
 
+# Step 2d: Add worktree so /dev works in an isolated directory
+# (leaves the main working directory available for other features/sessions)
 git worktree add .worktrees/<slug> feat/<slug>
 cd .worktrees/<slug>
 ```
+
+**Why this matters**: Multiple parallel features or sessions each get their own isolated worktree. Changes to one feature never bleed into another. The main working directory can stay on any branch without affecting new feature branches.
 
 ### Step 3: Project setup in worktree
 
