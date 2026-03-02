@@ -2,33 +2,36 @@
 
 **Feature**: superpowers-gaps
 **Date**: 2026-03-02
-**Status**: Phase 1 approved, Phase 2 pending
-**Branch**: feat/superpowers-gaps (to be created in Phase 3)
-**Beads**: forge-6od (existing issue, covers confirmed gaps)
+**Status**: Phase 3 complete — ready for /dev
+**Branch**: feat/superpowers-gaps
+**Beads**: forge-6od (in_progress)
 
 ---
 
 ## Purpose
 
-Fill 4 workflow gaps identified in the OBRA/Superpowers integration research (`docs/research/superpowers.md`, `docs/research/superpowers-integration.md`, beads `forge-6od`):
+Fill 5 workflow gaps identified in the OBRA/Superpowers integration research (`docs/research/superpowers.md`, `docs/research/superpowers-integration.md`, beads `forge-6od`):
 
-1. **YAGNI enforcement** — No gate in `/plan` Phase 3 prevents over-scoped tasks
-2. **DRY enforcement** — No gate in `/plan` Phase 2 checks for existing implementations before planning new ones
-3. **Verification-before-completion** — `/dev` task completion and `/check` don't require end-to-end verification, only unit test passage
-4. **Systematic debugging** — No structured investigation workflow when validation fails
+1. **Worktree isolation** — `/plan` had no entry gate; planning could run on any branch, contaminating unrelated feature branches (discovered when superpowers-gaps commits leaked into forge-test-suite-v2 history)
+2. **YAGNI enforcement** — No gate in `/plan` Phase 3 prevents over-scoped tasks
+3. **DRY enforcement** — No gate in `/plan` Phase 2 checks for existing implementations before planning new ones
+4. **Verification-before-completion** — `/dev` task completion and `/check` don't require end-to-end verification, only unit test passage
+5. **Systematic debugging** — No structured investigation workflow when validation fails
 
-These gaps mean: code gets planned that already exists (DRY), tasks get created that aren't in the design (YAGNI), and validation failures get "fixed" without root-cause investigation (debug).
+These gaps mean: planning commits bleed into wrong branches (isolation), code gets planned that already exists (DRY), tasks get created that aren't in the design (YAGNI), and validation failures get "fixed" without root-cause investigation (debug).
 
 ---
 
 ## Success Criteria
 
-1. `/plan` Phase 2 includes an explicit DRY check step that searches for existing implementations before finalizing approach
-2. `/plan` Phase 3 task-writing includes a YAGNI filter: each task must map to a requirement in the design doc; tasks without a design doc anchor are flagged
-3. `/dev` task completion HARD-GATE requires actual behavior verification (run the feature/function, not just unit tests) before marking a task done
-4. `/check` is renamed to `/validate` and upgraded: failure path triggers automatic 4-phase systematic debug mode (Reproduce → Root-cause → Fix → Verify) with HARD-GATE: no fix without completed root-cause phase
-5. AGENTS.md, `docs/WORKFLOW.md`, and workflow table updated to reflect `/validate` naming and new capabilities
-6. All existing tests pass after changes
+1. ✅ `/plan` has a HARD-GATE at entry that checks the current branch, stops if not on master, then creates `feat/<slug>` + `.worktrees/<slug>` before any Phase 1 work begins (commit `86eaec8`)
+2. ✅ `/plan` Phase 3 branch creation explicitly uses `git checkout master` as base, not the current branch (commit `9b31bd9`)
+3. `/plan` Phase 2 includes an explicit DRY check step that searches for existing implementations before finalizing approach
+4. `/plan` Phase 3 task-writing includes a YAGNI filter: each task must map to a requirement in the design doc; tasks without a design doc anchor are flagged
+5. `/dev` task completion HARD-GATE requires actual behavior verification (run the feature/function, not just unit tests) before marking a task done
+6. `/check` is renamed to `/validate` and upgraded: failure path triggers automatic 4-phase systematic debug mode (Reproduce → Root-cause → Fix → Verify) with HARD-GATE: no fix without completed root-cause phase
+7. AGENTS.md, `docs/WORKFLOW.md`, and workflow table updated to reflect `/validate` naming and new capabilities
+8. All existing tests pass after changes
 
 ---
 

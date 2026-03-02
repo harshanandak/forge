@@ -11,8 +11,9 @@
 
 ## Overview
 
-5 changes, ordered by dependency:
-0. **Task 0**: ✅ Branch isolation fix in `/plan` Phase 3 — always branch from master (DONE: 9b31bd9)
+6 changes, ordered by dependency:
+0a. **Task 0a**: ✅ Entry HARD-GATE in `/plan` — blocks planning if not on master, creates worktree before Phase 1 (DONE: 86eaec8)
+0b. **Task 0b**: ✅ Branch isolation fix in `/plan` Phase 3 — always `git checkout master` before branching (DONE: 9b31bd9)
 1. **Task 1**: DRY gate in `plan.md` Phase 2 (instruction change only — no lib/test change)
 2. **Task 2**: YAGNI filter in `plan.md` Phase 3 + `lib/commands/plan.js` function + test
 3. **Task 3**: Verification HARD-GATE in `dev.md` task completion (instruction change only)
