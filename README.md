@@ -14,7 +14,7 @@
 Ship features with confidence using a 7-stage TDD-first workflow for AI coding agents.
 
 ```
-/plan → /dev → /check → /ship → /review → /premerge → /verify
+/plan → /dev → /validate → /ship → /review → /premerge → /verify
 ```
 
 ✅ **TDD-First**: Write tests before code
@@ -30,7 +30,7 @@ Ship features with confidence using a 7-stage TDD-first workflow for AI coding a
 ```bash
 /plan login-button        # Design Q&A → research → branch + task list
 /dev                      # TDD: RED → GREEN → REFACTOR cycles
-/check                    # Type check + lint + tests + security scan
+/validate                    # Type check + lint + tests + security scan
 /ship                     # Create PR with full documentation
 ```
 
@@ -81,7 +81,7 @@ bunx forge setup
 | **utility** | `/status` | Check current context, active work |
 | **1. Plan** | `/plan` | Design Q&A → research → branch + task list |
 | **2. Dev** | `/dev` | Subagent TDD per task (spec + quality review) |
-| **3. Check** | `/check` | Validate: types, lint, tests, security |
+| **3. Check** | `/validate` | Validate: types, lint, tests, security |
 | **4. Ship** | `/ship` | Create PR with documentation |
 | **5. Review** | `/review` | Address ALL PR feedback (Greptile, reviewers, CI/CD) |
 | **6. Premerge** | `/premerge` | Complete docs on feature branch, hand off PR |
@@ -304,7 +304,7 @@ gh auth login
 ```bash
 /plan health-check-endpoint      # Design Q&A → research → branch + task list
 /dev                             # 8 min: TDD implementation
-/check                           # 2 min: All validations pass
+/validate                           # 2 min: All validations pass
 /ship                            # 2 min: PR created
 # → Greptile AI review completes (~2 min)
 /review                          # 3 min: Address Greptile feedback
@@ -317,7 +317,7 @@ gh auth login
 ```bash
 /plan sql-injection-fix          # Design Q&A → OWASP research → branch
 /dev                             # 8 min: Fix + tests
-/check                           # 3 min: Security scan
+/validate                           # 3 min: Security scan
 /ship                            # 2 min: PR with security notes
 # → Greptile validates security fix (~2 min)
 /review                          # 5 min: Address security feedback
@@ -330,7 +330,7 @@ gh auth login
 ```bash
 /plan user-authentication        # Design Q&A → deep research → branch
 /dev                             # 1-2 days: TDD implementation
-/check                           # 30 min: Full validation
+/validate                           # 30 min: Full validation
 /ship                            # 15 min: PR with docs
 /review                          # Varies: Address feedback
 /premerge                        # 15 min: Complete docs, hand off PR
@@ -382,7 +382,7 @@ gh auth login
 /status                    # Check current context
 /plan <feature>            # Design Q&A → research → branch + task list
 /dev                       # TDD development
-/check                     # Validate everything
+/validate                     # Validate everything
 /ship                      # Create PR
 /review <pr>               # Address feedback
 /premerge <pr>             # Complete docs, hand off PR
