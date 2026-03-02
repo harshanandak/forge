@@ -107,7 +107,7 @@ describe('skills/ directory structure', () => {
       const filePath = path.join(ROOT, 'skills', 'sonarcloud-analysis', 'SKILL.md');
       if (!fs.existsSync(filePath)) return;
       const content = fs.readFileSync(filePath, 'utf8');
-      expect(content.includes('sonarcloud.io') || content.includes('SonarCloud')).toBeTruthy();
+      expect(content.includes('SonarCloud')).toBeTruthy();
     });
 
     test('citation-standards SKILL.md contains citation format examples (URL or Sources)', () => {
