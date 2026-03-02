@@ -584,6 +584,41 @@ describe('Plan Phase 2 — detectDRYViolation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 3: applyYAGNIFilter — YAGNI filter for task list creation
+// ---------------------------------------------------------------------------
+describe('Plan Phase 3 — applyYAGNIFilter', () => {
+	const { applyYAGNIFilter } = require('../../lib/commands/plan.js');
+
+	test('should pass YAGNI filter when task maps to design doc requirement', () => {
+		const result = applyYAGNIFilter({
+			task: 'Add validateSlug function',
+			designDoc: '## Success Criteria\n- validateSlug validates slug format',
+		});
+		expect(result.flagged).toBe(false);
+		expect(result.anchor).toEqual(expect.any(String));
+		expect(result.anchor.length).toBeGreaterThan(0);
+	});
+
+	test('should flag task with no design doc anchor', () => {
+		const result = applyYAGNIFilter({
+			task: 'Add dark mode toggle',
+			designDoc: '## Success Criteria\n- validateSlug validates slug format',
+		});
+		expect(result.flagged).toBe(true);
+		expect(result.reason).toBe('No matching requirement found in design doc');
+	});
+
+	test('should return allFlagged when all tasks fail YAGNI filter', () => {
+		const result = applyYAGNIFilter({
+			tasks: ['Task A', 'Task B'],
+			designDoc: '## Purpose\nFoo',
+		});
+		expect(result.allFlagged).toBe(true);
+		expect(result.message).toBe("Design doc doesn't cover all tasks — needs amendment");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Phase 3: executePlan — featureName validation (early exit, no I/O)
 // ---------------------------------------------------------------------------
 describe('Plan Phase 3 — executePlan featureName validation', () => {

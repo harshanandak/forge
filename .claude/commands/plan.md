@@ -265,6 +265,14 @@ Expected output: <what running the test/code produces when done>
 - Integration/wiring THIRD
 - Uncertain/ambiguous tasks LAST (so they can be deferred if blocked)
 
+**YAGNI filter** (after initial task draft, before saving):
+
+For each task, confirm it maps to a specific requirement, success criterion, or edge case in the design doc. Run `applyYAGNIFilter({ task, designDoc })` for each task.
+
+- Tasks that match → keep as-is.
+- Tasks with no anchor → flagged as "potential scope creep". Present flagged tasks to the user: "These tasks have no anchor in the design doc. Keep (specify which requirement it serves) or remove?"
+- If ALL tasks are flagged → return `allFlagged: true` and tell the user: "Design doc doesn't cover all tasks — needs amendment." Do not save the task list until the design doc is updated or tasks are removed.
+
 **Before finalizing**: flag any tasks that touch areas not fully specified in the design doc. Present flagged tasks to user for quick clarification before saving.
 
 Save to `docs/plans/YYYY-MM-DD-<slug>-tasks.md`.
