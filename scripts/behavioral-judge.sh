@@ -18,6 +18,32 @@
 
 set -e
 
+# ─── Subcommand: check-lock-sync ─────────────────────────────────────────────
+# Usage: bash behavioral-judge.sh check-lock-sync <workflow.md>
+# Compares engine.model in .md frontmatter against the compiled .lock.yml.
+# Outputs: LOCK_IN_SYNC or LOCK_OUT_OF_SYNC (exit 0 in both cases)
+if [ "$1" = "check-lock-sync" ]; then
+  MD_FILE="${2:-}"
+  if [ -z "$MD_FILE" ] || [ ! -f "$MD_FILE" ]; then
+    echo "LOCK_OUT_OF_SYNC" >&2
+    echo '{"result":"LOCK_OUT_OF_SYNC","reason":"md_file_not_found"}'
+    exit 0
+  fi
+  LOCK_FILE="${MD_FILE%.md}.lock.yml"
+  if [ ! -f "$LOCK_FILE" ]; then
+    echo "LOCK_OUT_OF_SYNC"
+    exit 0
+  fi
+  MD_MODEL=$(grep -A2 'engine:' "$MD_FILE" | grep 'model:' | awk '{print $2}' | tr -d '"' | head -1)
+  LOCK_MODEL=$(grep -A2 'engine:' "$LOCK_FILE" | grep 'model:' | awk '{print $2}' | tr -d '"' | head -1)
+  if [ "$MD_MODEL" = "$LOCK_MODEL" ]; then
+    echo "LOCK_IN_SYNC"
+  else
+    echo "LOCK_OUT_OF_SYNC"
+  fi
+  exit 0
+fi
+
 OPENROUTER_BASE_URL="https://openrouter.ai/api/v1/chat/completions"
 MODEL_PRIMARY="z-ai/glm-5"
 MODEL_SECONDARY="minimax/minimax-m2.5"
