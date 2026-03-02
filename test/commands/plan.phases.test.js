@@ -29,7 +29,9 @@
  *  - Instead we test validation paths (which return before I/O) and pure-function behavior
  */
 
-const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 
 const {
 	readResearchDoc,
@@ -113,18 +115,28 @@ describe('Plan Phase 1 — readResearchDoc slug validation', () => {
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return success=true reading an actual existing research doc (test-feature)', () => {
-		// docs/research/test-feature.md exists in the repo
-		const result = readResearchDoc('test-feature');
+	// These two tests create a temporary fixture file so they work in any CI environment
+	const fixtureDir = path.join(__dirname, '../../docs/research');
+	const fixturePath = path.join(fixtureDir, 'ci-test-fixture.md');
+	beforeAll(() => {
+		if (!fs.existsSync(fixtureDir)) fs.mkdirSync(fixtureDir, { recursive: true });
+		fs.writeFileSync(fixturePath, '# CI Test Fixture\n\nThis file is created by plan.phases.test.js and deleted after the test run.\n');
+	});
+	afterAll(() => {
+		if (fs.existsSync(fixturePath)) fs.unlinkSync(fixturePath);
+	});
+
+	test('should return success=true reading an actual existing research doc (fixture)', () => {
+		const result = readResearchDoc('ci-test-fixture');
 		expect(result.success).toBe(true);
 		expect(result.content).toBeTruthy();
-		expect(result.path).toBe('docs/research/test-feature.md');
+		expect(result.path).toBe('docs/research/ci-test-fixture.md');
 	});
 
 	test('should include path matching slug in success result', () => {
-		const result = readResearchDoc('new-feature');
+		const result = readResearchDoc('ci-test-fixture');
 		expect(result.success).toBe(true);
-		expect(result.path).toContain('new-feature');
+		expect(result.path).toContain('ci-test-fixture');
 	});
 });
 

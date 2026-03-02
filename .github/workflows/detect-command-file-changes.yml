@@ -6,6 +6,9 @@ on:
     paths:
       - '.claude/commands/**'
 
+permissions:
+  contents: read
+
 jobs:
   detect:
     runs-on: ubuntu-latest
