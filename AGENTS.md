@@ -8,7 +8,7 @@ This project enforces a **strict TDD-first development workflow** with 7 stages:
 |-------|-------------|-----------------------------------------------------------|--------------|
 | 1     | `/plan`     | Design intent → research → branch + worktree + task list | Critical, Standard, Refactor |
 | 2     | `/dev`      | Subagent-driven TDD per task (spec + quality review)     | All types    |
-| 3     | `/check`    | Validation (type/lint/security/tests)                    | All types    |
+| 3     | `/validate`    | Validate + 4-phase debug mode on failure                    | All types    |
 | 4     | `/ship`     | Create PR with documentation                             | All types    |
 | 5     | `/review`   | Address ALL PR feedback                                  | Critical, Standard |
 | 6     | `/premerge` | Complete docs on feature branch, hand off PR             | All types    |
@@ -150,7 +150,7 @@ Task 2: Validation logic
 - [.claude/commands/status.md](.claude/commands/status.md) - How to check current context (utility)
 - [.claude/commands/plan.md](.claude/commands/plan.md) - How to plan features (3 phases: design intent + research + branch/worktree/tasks)
 - [.claude/commands/dev.md](.claude/commands/dev.md) - How to implement with subagent-driven TDD and decision gate
-- [.claude/commands/check.md](.claude/commands/check.md) - How to run validation (with HARD-GATE exit)
+- [.claude/commands/validate.md](.claude/commands/validate.md) - How to run validation (with HARD-GATE exit)
 - [.claude/commands/ship.md](.claude/commands/ship.md) - How to create PRs
 - [.claude/commands/review.md](.claude/commands/review.md) - How to address PR feedback (with HARD-GATE exit)
 - [.claude/commands/premerge.md](.claude/commands/premerge.md) - How to complete docs and hand off PR for merge

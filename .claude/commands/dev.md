@@ -288,7 +288,7 @@ Document the gate count in the final commit message.
 
 ✓ Beads updated: forge-xyz → implementation complete
 
-Ready for /check
+Ready for /validate
 ```
 
 ## Integration with Workflow
@@ -297,7 +297,7 @@ Ready for /check
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD (you are here)
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user

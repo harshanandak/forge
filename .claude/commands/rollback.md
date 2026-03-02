@@ -306,7 +306,7 @@ No changes made (dry run).
 
 ```bash
 # Standard workflow
-/status → /research → /plan → /dev → /check → /ship → /review → /premerge → /verify
+/status → /research → /plan → /dev → /validate → /ship → /review → /premerge → /verify
 
 # Recovery workflow
 /dev → (issues discovered) → bunx forge rollback → /dev (retry)
@@ -323,7 +323,7 @@ No changes made (dry run).
 git commit -m "feat: add payment integration"
 
 # 2. Check phase - tests fail
-/check
+/validate
 # ERROR: Security vulnerability in payment handling
 
 # 3. Rollback the implementation
@@ -341,7 +341,7 @@ bunx forge rollback
 # ... proper implementation with security ...
 
 # 7. Verify and ship
-/check → /ship
+/validate → /ship
 ```
 
 ## Beads Integration
@@ -719,6 +719,6 @@ bunx forge rollback
 ## See Also
 
 - [/dev](.claude/commands/dev.md) - TDD development workflow
-- [/check](.claude/commands/check.md) - Validation before shipping
+- [/validate](.claude/commands/validate.md) - Validation before shipping
 - [docs/WORKFLOW.md](../../docs/WORKFLOW.md) - Complete workflow guide
 - [Beads](https://github.com/beadshq/beads) - Issue tracking integration

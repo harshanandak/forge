@@ -3,7 +3,7 @@
 A 9-stage TDD-first workflow for **ALL AI coding agents**. Ship features with confidence using test-driven development, research-first planning, and comprehensive documentation.
 
 ```
-/status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
+/status -> /research -> /plan -> /dev -> /validate -> /ship -> /review -> /merge -> /verify
 ```
 
 ## Why Forge?
@@ -233,7 +233,7 @@ Claude Code's built-in task system lets you save work state and resume later.
 | 2 | `/research` | Deep research, document findings | Web search, Codebase |
 | 3 | `/plan` | Create plan, branch, tracking | Beads, OpenSpec |
 | 4 | `/dev` | TDD development (RED-GREEN-REFACTOR) | Tests, Code |
-| 5 | `/check` | Validation (type/lint/security/tests) | CI tools |
+| 5 | `/validate` | Validate + 4-phase debug mode on failure | CI tools |
 | 6 | `/ship` | Create PR with documentation | GitHub CLI |
 | 7 | `/review` | Address ALL PR feedback | GitHub, Greptile |
 | 8 | `/merge` | Update docs, merge, cleanup | Git |
@@ -302,7 +302,7 @@ bd update <id> --status in_progress
 # ═══════════════════════════════════════════════════════════
 # STAGE 5: CHECK - Validate everything
 # ═══════════════════════════════════════════════════════════
-/check
+/validate
 
 # Runs:
 # - Type checking (tsc/typecheck)
@@ -491,9 +491,9 @@ SONARQUBE_TOKEN=your-token
 | **GitHub Code Quality** | FREE | Code review | Built-in | `/review` |
 | **CodeRabbit** | FREE (OSS) | AI code review | [coderabbit.ai](https://coderabbit.ai) | `/review` |
 | **Greptile** | $99+/mo | Enterprise review | [greptile.com](https://greptile.com) | `/review` |
-| **ESLint** | FREE | Linting | Built-in | `/check` |
-| **SonarCloud** | 50k LoC free | Cloud quality | [sonarcloud.io](https://sonarcloud.io) | `/check` |
-| **SonarQube** | FREE | Self-hosted quality | Docker | `/check` |
+| **ESLint** | FREE | Linting | Built-in | `/validate` |
+| **SonarCloud** | 50k LoC free | Cloud quality | [sonarcloud.io](https://sonarcloud.io) | `/validate` |
+| **SonarQube** | FREE | Self-hosted quality | Docker | `/validate` |
 | **Parallel AI** | Paid | Web research | [platform.parallel.ai](https://platform.parallel.ai) | `/research` |
 
 ### Code Review Setup
@@ -701,7 +701,7 @@ openspec archive <name>          # Archive completed
 /research <feature>              # Research a feature
 /plan <feature>                  # Create implementation plan
 /dev                             # TDD development
-/check                           # Run all validations
+/validate                           # Run all validations
 /ship                            # Create PR
 /review <pr>                     # Address PR feedback
 /merge <pr>                      # Merge PR
@@ -736,7 +736,7 @@ Every feature includes:
 
 - OWASP Top 10 analysis in research
 - Security test scenarios in TDD
-- Automated scans in `/check`
+- Automated scans in `/validate`
 - Security review in PR
 
 ### Documentation Progressive

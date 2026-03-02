@@ -13,7 +13,7 @@ const HANDLERS = {
 	status: require('../lib/commands/status'),
 	plan: require('../lib/commands/plan'),
 	dev: require('../lib/commands/dev'),
-	check: require('../lib/commands/check'),
+	validate: require('../lib/commands/validate'),
 	ship: require('../lib/commands/ship'),
 };
 
@@ -21,7 +21,7 @@ const VALID_COMMANDS = [
 	'status',
 	'plan',
 	'dev',
-	'check',
+	'validate',
 	'ship',
 	'review',
 	'merge',
@@ -32,7 +32,7 @@ const COMMAND_DESCRIPTIONS = {
 	status: 'Detect current workflow stage (1-9)',
 	plan: 'Create branch + Beads + OpenSpec proposal',
 	dev: 'Implement with TDD (RED-GREEN-REFACTOR)',
-	check: 'Run type check, lint, security, tests',
+	validate: 'Run type check, lint, security, tests',
 	ship: 'Auto-generate PR body and create PR',
 	review: 'Aggregate all review feedback',
 	merge: 'Update docs, merge PR, cleanup',
@@ -47,7 +47,7 @@ const REQUIRED_ARGS = {
 	// Other commands don't require arguments
 	status: [],
 	dev: [],
-	check: [],
+	validate: [],
 	verify: [],
 };
 
@@ -253,8 +253,8 @@ async function main() { // NOSONAR S3776
 				process.exit(1);
 			}
 
-		} else if (command === 'check') {
-			result = await HANDLERS.check.executeCheck();
+		} else if (command === 'validate') {
+			result = await HANDLERS.validate.executeValidate();
 			if (result.success) {
 				console.log(`✓ ${result.summary}`);
 			} else {
