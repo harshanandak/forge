@@ -560,6 +560,30 @@ describe('Plan Phase 3 — createFeatureBranch slug validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 2: detectDRYViolation — DRY gate before finalizing approach
+// ---------------------------------------------------------------------------
+describe('Plan Phase 2 — detectDRYViolation', () => {
+	const { detectDRYViolation } = require('../../lib/commands/plan.js');
+
+	test('should detect DRY violation when existing implementation found', () => {
+		const result = detectDRYViolation({
+			searchTerm: 'validateSlug',
+			matches: [{ file: 'lib/utils.js', line: 42 }],
+		});
+		expect(result.violation).toBe(true);
+		expect(result.existingFile).toBe('lib/utils.js');
+		expect(result.existingLine).toBe(42);
+	});
+
+	test('should return no violation when no matches found', () => {
+		const result = detectDRYViolation({ searchTerm: 'foo', matches: [] });
+		expect(result.violation).toBe(false);
+		expect(result.existingFile).toBeUndefined();
+		expect(result.existingLine).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Phase 3: executePlan — featureName validation (early exit, no I/O)
 // ---------------------------------------------------------------------------
 describe('Plan Phase 3 — executePlan featureName validation', () => {

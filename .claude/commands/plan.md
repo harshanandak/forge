@@ -149,6 +149,22 @@ For this feature's risk surface, document each relevant OWASP category:
 - Files this feature will affect
 - Existing test infrastructure to leverage
 
+### DRY check (mandatory — use actual search tools)
+
+Before finalizing the approach, run Grep/Glob/Read searches for existing implementations of the planned function or pattern. Do not rely on memory or assumptions — execute the searches.
+
+```
+Grep(searchTerm)   # e.g., the function or concept name
+Glob("**/*.js")    # narrow to affected file types if needed
+Read(matchedFile)  # inspect any match in context
+```
+
+If a match is found:
+- Update the design doc's "Approach selected" section to say "extend existing [file/function]" — not "create new".
+- Note the existing file path and line number in the design doc.
+
+If no match is found: proceed. The DRY gate is cleared.
+
 ### TDD test scenarios
 
 Identify at minimum 3 test scenarios:
