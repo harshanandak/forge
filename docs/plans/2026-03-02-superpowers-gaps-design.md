@@ -117,7 +117,112 @@ Phase 1 Q&A pre-resolved all major design questions. Remaining ambiguity should 
 
 ## Technical Research
 
-*(To be filled in Phase 2)*
+### YAGNI/DRY Enforcement — Key Findings
+
+**Critical discovery**: Superpowers `writing-plans/SKILL.md` only contains "DRY. YAGNI. TDD." as aspirational bullet points — no actual gates or enforcement mechanisms. Our approach (proper HARD-GATE wording) is stronger than Superpowers' implementation.
+
+**Effective YAGNI gate wording** (from Claude Code system prompts, Cursor rules, community research):
+- "Do not add features, refactor, or improve beyond what was asked."
+- "Only make changes that are directly requested or clearly necessary."
+- "YAGNI: No speculative implementation." (applied during GREEN phase)
+
+**Effective DRY gate wording**:
+- "Check if logic already exists before writing new code." (Cursor rules)
+- "Before creating new code, search the codebase for existing implementations" + explicit grep/glob tool calls
+
+**Critical gotcha**: Aspirational lists ("DRY. YAGNI.") are ignored under pressure. Effective enforcement requires imperative gate language AND explicit search commands (not just "check"). Agents hallucinate that nothing equivalent exists if not forced to search with tools.
+
+### Verification-Before-Completion — Key Findings
+
+From `superpowers:verification-before-completion/SKILL.md`:
+
+**Iron Law**: `NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE`
+
+**5-step gate**:
+1. IDENTIFY: What command proves this claim?
+2. RUN: Execute the FULL command (fresh, complete)
+3. READ: Full output, check exit code, count failures
+4. VERIFY: Does output confirm the claim?
+5. ONLY THEN: Make the claim
+
+**Enforcement**: "Skip any step = lying, not verifying"
+
+**Common failures table** (forbidden substitutes):
+- "Tests pass" ← `"Previous run", "should pass"` is not evidence
+- "Bug fixed" ← `"Code changed, assumed fixed"` is not evidence
+- "Requirements met" ← `"Tests passing"` alone is not sufficient
+
+**Red Flags — STOP**: Using "should", "probably", "seems to"; expressing satisfaction ("Great!", "Done!") before verification; trusting agent success reports.
+
+### Systematic Debugging — Key Findings
+
+From `superpowers:systematic-debugging/SKILL.md`:
+
+**Iron Law**: `NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST`
+
+**4-phase structure** (MUST complete each before proceeding):
+- Phase 1: Root Cause Investigation (reproduce, trace data flow)
+- Phase 2: Pattern Analysis (find working examples, compare references)
+- Phase 3: Hypothesis and Testing (form SINGLE hypothesis, test MINIMALLY)
+- Phase 4: Implementation (failing test FIRST, ONE change at a time)
+
+**3-fix architectural HARD-GATE**: If >= 3 fix attempts fail → STOP, question architecture. Do NOT attempt Fix #4.
+
+**Red Flags — STOP** (return to Phase 1):
+- "Quick fix for now, investigate later"
+- "It's probably X, let me fix that"
+- "I don't fully understand but this might work"
+
+**Key principle**: "Fix at source, not at symptom." Seeing symptoms ≠ understanding root cause.
+
+### Rename Scope (/check → /validate)
+
+**Files affected**: 25 files, ~70+ instances
+- Command file: `.claude/commands/check.md` → `.claude/commands/validate.md`
+- Implementation: `lib/commands/check.js` → `lib/commands/validate.js`
+- Test file: `test/commands/check.test.js` → `test/commands/validate.test.js`
+- Stage references in all command docs (dev.md, plan.md, ship.md, review.md, premerge.md, verify.md, research.md, rollback.md)
+- Docs: AGENTS.md, docs/WORKFLOW.md, docs/TOOLCHAIN.md, docs/VALIDATION.md, docs/EXAMPLES.md, docs/README-v1.3.md, docs/ROADMAP.md, docs/MANUAL_REVIEW_GUIDE.md, docs/ENHANCED_ONBOARDING.md
+- GitHub: .github/CONTRIBUTING.md, .github/pull_request_template.md, .github/agentic-workflows/behavioral-test.md
+- Rules: .claude/rules/workflow.md
+
+**Strategy**: Batch sed replacement across all files for `/check` → `/validate`, then manually update:
+- File renames (check.md → validate.md, check.js → validate.js, check.test.js → validate.test.js)
+- `<HARD-GATE: /check exit>` tag names
+- Function names in check.js that reference "check" semantically
+
+### OWASP Analysis
+
+All changes are to `.md` instruction files and `.js` command implementations. No security surface: no user input, no cryptography, no access control, no external service calls.
+
+Risk: Near-zero. No OWASP categories apply to this change type.
+
+### TDD Test Scenarios
+
+**Test 1 (Happy path — YAGNI filter)**:
+- Input: plan Phase 3 with 5 tasks, 3 mapped to design doc, 2 not mapped
+- Expected: `extractTasksFromDesign()` returns flagged tasks list: 2 tasks with `yaggniFlag: true`
+- Test file: `test/commands/plan.phases.test.js`
+
+**Test 2 (Happy path — /validate rename)**:
+- Input: `executeValidate({ skip: ['lint', 'security', 'tests'] })`
+- Expected: returns `{ success: boolean, checks: object, summary: string }` (same shape as check)
+- Test file: `test/commands/validate.test.js`
+
+**Test 3 (Verification gate — no completion without evidence)**:
+- Input: `validateCompletion({ claimed: 'tests pass', evidence: null })`
+- Expected: throws or returns `{ valid: false, reason: 'No fresh run evidence provided' }`
+- Test file: `test/commands/validate.test.js`
+
+**Test 4 (Edge case — all tasks flagged as YAGNI)**:
+- Input: plan Phase 3 with design doc that has no matching tasks
+- Expected: returns `{ allFlagged: true, message: 'Design doc doesn\'t cover all tasks — needs amendment' }`
+- Test file: `test/commands/plan.phases.test.js`
+
+**Test 5 (Debug mode — 3-fix architectural gate)**:
+- Input: `debugMode({ fixAttempts: 3, error: 'test failure' })`
+- Expected: returns `{ escalate: true, message: 'STOP: 3+ fixes attempted. Question architecture before Fix #4.' }`
+- Test file: `test/commands/validate.test.js`
 
 ---
 
