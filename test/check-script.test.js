@@ -1,25 +1,24 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('scripts/check.sh', () => {
   const checkScriptPath = path.join(__dirname, '..', 'scripts', 'check.sh');
 
   describe('Script existence and permissions', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(checkScriptPath), 'check.sh should exist');
+      expect(fs.existsSync(checkScriptPath)).toBeTruthy();
     });
 
     test('should be executable', () => {
       // On Windows, we check if file exists (executable bit not applicable)
       // On Unix, we check if executable bit is set
       if (process.platform === 'win32') {
-        assert.ok(fs.existsSync(checkScriptPath), 'check.sh should exist on Windows');
+        expect(fs.existsSync(checkScriptPath)).toBeTruthy();
       } else {
         const stats = fs.statSync(checkScriptPath);
         const isExecutable = (stats.mode & 0o111) !== 0;
-        assert.ok(isExecutable, 'check.sh should be executable on Unix');
+        expect(isExecutable).toBeTruthy();
       }
     });
 
@@ -27,10 +26,7 @@ describe('scripts/check.sh', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
       const firstLine = content.split('\n')[0];
       // Should use #!/usr/bin/env bash or #!/bin/sh for portability
-      assert.ok(
-        firstLine.includes('#!/usr/bin/env bash') || firstLine.includes('#!/bin/sh'),
-        'Should have portable shebang'
-      );
+      expect(firstLine.includes('#!/usr/bin/env bash') || firstLine.includes('#!/bin/sh')).toBeTruthy();
     });
   });
 
@@ -47,19 +43,16 @@ describe('scripts/check.sh', () => {
       const lintIndex = content.indexOf('lint');
       const testIndex = content.indexOf('test');
 
-      assert.ok(typecheckIndex > 0, 'Should include type check');
-      assert.ok(lintIndex > typecheckIndex, 'Lint should come after typecheck');
-      assert.ok(testIndex > lintIndex, 'Tests should come after lint');
+      expect(typecheckIndex > 0).toBeTruthy();
+      expect(lintIndex > typecheckIndex).toBeTruthy();
+      expect(testIndex > lintIndex).toBeTruthy();
     });
 
     test('should run security check', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
 
       // Should include security scan (npm audit or similar)
-      assert.ok(
-        content.includes('audit') || content.includes('security'),
-        'Should include security check'
-      );
+      expect(content.includes('audit') || content.includes('security')).toBeTruthy();
     });
 
     test('should stop on first failure', () => {
@@ -67,10 +60,7 @@ describe('scripts/check.sh', () => {
 
       // Should use 'set -e' to exit on first error
       // OR explicitly check exit codes
-      assert.ok(
-        content.includes('set -e') || content.includes('exit 1') || content.includes('$?'),
-        'Should handle failures properly'
-      );
+      expect(content.includes('set -e') || content.includes('exit 1') || content.includes('$?')).toBeTruthy();
     });
   });
 
@@ -80,7 +70,7 @@ describe('scripts/check.sh', () => {
 
       // Should have echo statements showing progress
       const echoCount = (content.match(/echo/g) || []).length;
-      assert.ok(echoCount >= 4, 'Should have progress messages for each check');
+      expect(echoCount >= 4).toBeTruthy();
     });
 
     test('should use colors for better readability', () => {
@@ -93,7 +83,7 @@ describe('scripts/check.sh', () => {
 
       // Should include ANSI color codes or tput commands
       const hasColors = content.includes('\033[') || content.includes('tput');
-      assert.ok(hasColors, 'Should use colors for output');
+      expect(hasColors).toBeTruthy();
     });
   });
 
@@ -103,11 +93,8 @@ describe('scripts/check.sh', () => {
         fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')
       );
 
-      assert.ok(packageJson.scripts.check, 'package.json should have check script');
-      assert.ok(
-        packageJson.scripts.check.includes('scripts/check.sh'),
-        'check script should reference scripts/check.sh'
-      );
+      expect(packageJson.scripts.check).toBeTruthy();
+      expect(packageJson.scripts.check.includes('scripts/check.sh')).toBeTruthy();
     });
   });
 });

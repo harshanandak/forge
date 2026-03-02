@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const yaml = require('yaml');
 
 describe('CI Workflow Configuration', () => {
@@ -11,40 +10,40 @@ describe('CI Workflow Configuration', () => {
 
   describe('Coverage Job', () => {
     test('should have a separate coverage job', () => {
-      assert.ok(workflow.jobs.coverage, 'Coverage job should exist');
+      expect(workflow.jobs.coverage).toBeTruthy();
     });
 
     test('coverage job should run on ubuntu-latest', () => {
       const coverage = workflow.jobs.coverage;
-      assert.strictEqual(coverage['runs-on'], 'ubuntu-latest', 'Coverage should run on ubuntu-latest for consistency');
+      expect(coverage['runs-on']).toBe('ubuntu-latest');
     });
 
     test('coverage job should install dependencies', () => {
       const coverage = workflow.jobs.coverage;
       const steps = coverage.steps.map(s => s.name);
-      assert.ok(steps.includes('Install dependencies'), 'Should install dependencies');
+      expect(steps.includes('Install dependencies')).toBeTruthy();
     });
 
     test('coverage job should run coverage command', () => {
       const coverage = workflow.jobs.coverage;
       const coverageStep = coverage.steps.find(s => s.name && s.name.includes('coverage'));
-      assert.ok(coverageStep, 'Should have a step that runs coverage');
-      assert.ok(coverageStep.run && coverageStep.run.includes('bun test --coverage'), 'Should run bun test --coverage');
+      expect(coverageStep).toBeTruthy();
+      expect(coverageStep.run && coverageStep.run.includes('bun test --coverage')).toBeTruthy();
     });
 
     test('coverage job should upload coverage artifacts', () => {
       const coverage = workflow.jobs.coverage;
       const uploadStep = coverage.steps.find(s => s.uses && s.uses.includes('actions/upload-artifact'));
-      assert.ok(uploadStep, 'Should upload coverage artifacts');
-      assert.ok(uploadStep.with && uploadStep.with.name, 'Upload should have a name');
-      assert.ok(uploadStep.with && uploadStep.with.path, 'Upload should have a path');
+      expect(uploadStep).toBeTruthy();
+      expect(uploadStep.with && uploadStep.with.name).toBeTruthy();
+      expect(uploadStep.with && uploadStep.with.path).toBeTruthy();
     });
 
     test('coverage artifacts should include coverage directory', () => {
       const coverage = workflow.jobs.coverage;
       const uploadStep = coverage.steps.find(s => s.uses && s.uses.includes('actions/upload-artifact'));
       if (uploadStep && uploadStep.with && uploadStep.with.path) {
-        assert.ok(uploadStep.with.path.includes('coverage'), 'Should upload coverage directory');
+        expect(uploadStep.with.path.includes('coverage')).toBeTruthy();
       }
     });
 
@@ -52,50 +51,50 @@ describe('CI Workflow Configuration', () => {
       const coverage = workflow.jobs.coverage;
       const coverageStep = coverage.steps.find(s => s.name && s.name.includes('coverage'));
       // c8 will fail automatically if below 80% threshold configured in package.json
-      assert.ok(coverageStep, 'Coverage step exists to enforce thresholds');
+      expect(coverageStep).toBeTruthy();
     });
   });
 
   describe('E2E Job', () => {
     test('should have a separate e2e job', () => {
-      assert.ok(workflow.jobs.e2e, 'E2E job should exist');
+      expect(workflow.jobs.e2e).toBeTruthy();
     });
 
     test('e2e job should run on ubuntu-latest', () => {
       const e2e = workflow.jobs.e2e;
-      assert.strictEqual(e2e['runs-on'], 'ubuntu-latest', 'E2E should run on ubuntu-latest for consistency');
+      expect(e2e['runs-on']).toBe('ubuntu-latest');
     });
 
     test('e2e job should install dependencies', () => {
       const e2e = workflow.jobs.e2e;
       const steps = e2e.steps.map(s => s.name);
-      assert.ok(steps.includes('Install dependencies'), 'Should install dependencies');
+      expect(steps.includes('Install dependencies')).toBeTruthy();
     });
 
     test('e2e job should run e2e tests specifically', () => {
       const e2e = workflow.jobs.e2e;
       const e2eStep = e2e.steps.find(s => s.name && s.name.includes('E2E'));
-      assert.ok(e2eStep, 'Should have a step for E2E tests');
-      assert.ok(e2eStep.run && e2eStep.run.includes('test/e2e'), 'Should run tests in test/e2e directory');
+      expect(e2eStep).toBeTruthy();
+      expect(e2eStep.run && e2eStep.run.includes('test/e2e')).toBeTruthy();
     });
 
     test('e2e job should setup test fixtures', () => {
       const e2e = workflow.jobs.e2e;
       const _fixtureStep = e2e.steps.find(s => s.name && s.name.includes('fixture'));
       // E2E tests create their own fixtures, but might need setup
-      assert.ok(true, 'E2E tests manage their own fixtures via scaffold helpers');
+      expect(true).toBeTruthy();
     });
   });
 
   describe('Job Dependencies', () => {
     test('coverage job should run independently', () => {
       const coverage = workflow.jobs.coverage;
-      assert.ok(!coverage.needs, 'Coverage job should not depend on other jobs');
+      expect(!coverage.needs).toBeTruthy();
     });
 
     test('e2e job should run independently', () => {
       const e2e = workflow.jobs.e2e;
-      assert.ok(!e2e.needs, 'E2E job should not depend on other jobs');
+      expect(!e2e.needs).toBeTruthy();
     });
 
     test('all jobs should run in parallel for speed', () => {
@@ -103,9 +102,9 @@ describe('CI Workflow Configuration', () => {
       const coverage = workflow.jobs.coverage;
       const e2e = workflow.jobs.e2e;
 
-      assert.ok(!test.needs, 'Test job should run independently');
-      assert.ok(!coverage.needs, 'Coverage job should run independently');
-      assert.ok(!e2e.needs, 'E2E job should run independently');
+      expect(!test.needs).toBeTruthy();
+      expect(!coverage.needs).toBeTruthy();
+      expect(!e2e.needs).toBeTruthy();
     });
   });
 
@@ -114,7 +113,7 @@ describe('CI Workflow Configuration', () => {
       const coverage = workflow.jobs.coverage;
       const summaryStep = coverage.steps.find(s => s.name && s.name.includes('summary'));
       if (summaryStep) {
-        assert.ok(summaryStep.run && summaryStep.run.includes('GITHUB_STEP_SUMMARY'), 'Should write to step summary');
+        expect(summaryStep.run && summaryStep.run.includes('GITHUB_STEP_SUMMARY')).toBeTruthy();
       }
     });
 
@@ -122,29 +121,26 @@ describe('CI Workflow Configuration', () => {
       const coverage = workflow.jobs.coverage;
       const uploadStep = coverage.steps.find(s => s.uses && s.uses.includes('actions/upload-artifact'));
       if (uploadStep && uploadStep.with && uploadStep.with['retention-days']) {
-        assert.ok(uploadStep.with['retention-days'] >= 7, 'Should retain artifacts for at least 7 days');
+        expect(uploadStep.with['retention-days'] >= 7).toBeTruthy();
       }
     });
   });
 
   describe('Mutation Testing Job', () => {
     test('mutation job exists in workflow', () => {
-      assert.ok(workflow.jobs.mutation, 'Mutation testing job should exist');
+      expect(workflow.jobs.mutation).toBeTruthy();
     });
 
     test('mutation job runs on ubuntu-latest', () => {
       const mutation = workflow.jobs.mutation;
-      assert.strictEqual(mutation['runs-on'], 'ubuntu-latest');
+      expect(mutation['runs-on']).toBe('ubuntu-latest');
     });
 
     test('mutation job has workflow_dispatch or schedule condition', () => {
       const mutation = workflow.jobs.mutation;
-      assert.ok(mutation.if, 'Mutation job should have conditional execution');
+      expect(mutation.if).toBeTruthy();
       const condition = mutation.if;
-      assert.ok(
-        condition.includes('workflow_dispatch') || condition.includes('schedule'),
-        'Mutation job should run on manual trigger or schedule'
-      );
+      expect(condition.includes('workflow_dispatch') || condition.includes('schedule')).toBeTruthy();
     });
 
     test('mutation job uploads artifacts', () => {
@@ -152,21 +148,21 @@ describe('CI Workflow Configuration', () => {
       const uploadStep = mutation.steps.find(s =>
         s.uses && s.uses.includes('upload-artifact')
       );
-      assert.ok(uploadStep, 'Mutation job should upload report artifacts');
+      expect(uploadStep).toBeTruthy();
     });
   });
 
   describe('Dashboard Job', () => {
     test('dashboard job exists in workflow', () => {
-      assert.ok(workflow.jobs.dashboard, 'Dashboard job should exist');
+      expect(workflow.jobs.dashboard).toBeTruthy();
     });
 
     test('dashboard job depends on test and coverage', () => {
       const dashboard = workflow.jobs.dashboard;
-      assert.ok(dashboard.needs, 'Dashboard job should have dependencies');
+      expect(dashboard.needs).toBeTruthy();
       const needs = Array.isArray(dashboard.needs) ? dashboard.needs : [dashboard.needs];
-      assert.ok(needs.includes('test'), 'Dashboard should depend on test job');
-      assert.ok(needs.includes('coverage'), 'Dashboard should depend on coverage job');
+      expect(needs.includes('test')).toBeTruthy();
+      expect(needs.includes('coverage')).toBeTruthy();
     });
 
     test('dashboard job uploads artifacts', () => {
@@ -174,50 +170,41 @@ describe('CI Workflow Configuration', () => {
       const uploadStep = dashboard.steps.find(s =>
         s.uses && s.uses.includes('upload-artifact')
       );
-      assert.ok(uploadStep, 'Dashboard job should upload artifacts');
+      expect(uploadStep).toBeTruthy();
     });
   });
 
   describe('Schedule Trigger', () => {
     test('workflow has schedule trigger for mutation testing', () => {
-      assert.ok(workflow.on.schedule, 'Workflow should have schedule trigger');
-      assert.ok(
-        Array.isArray(workflow.on.schedule),
-        'Schedule should be an array of cron entries'
-      );
-      assert.ok(
-        workflow.on.schedule.length > 0,
-        'Should have at least one schedule entry'
-      );
-      assert.ok(
-        workflow.on.schedule[0].cron,
-        'Schedule entry should have a cron expression'
-      );
+      expect(workflow.on.schedule).toBeTruthy();
+      expect(Array.isArray(workflow.on.schedule)).toBeTruthy();
+      expect(workflow.on.schedule.length > 0).toBeTruthy();
+      expect(workflow.on.schedule[0].cron).toBeTruthy();
     });
   });
 
   describe('Workflow Structure', () => {
     test('should have test, coverage, and e2e jobs', () => {
-      assert.ok(workflow.jobs.test, 'Test job should exist');
-      assert.ok(workflow.jobs.coverage, 'Coverage job should exist');
-      assert.ok(workflow.jobs.e2e, 'E2E job should exist');
+      expect(workflow.jobs.test).toBeTruthy();
+      expect(workflow.jobs.coverage).toBeTruthy();
+      expect(workflow.jobs.e2e).toBeTruthy();
     });
 
     test('test job should still run on multiple platforms', () => {
       const test = workflow.jobs.test;
-      assert.ok(test.strategy && test.strategy.matrix, 'Test job should have matrix');
-      assert.ok(test.strategy.matrix.os, 'Test job should test multiple OS');
-      assert.ok(test.strategy.matrix.os.includes('ubuntu-latest'), 'Should test on Ubuntu');
-      assert.ok(test.strategy.matrix.os.includes('windows-latest'), 'Should test on Windows');
-      assert.ok(test.strategy.matrix.os.includes('macos-latest'), 'Should test on macOS');
+      expect(test.strategy && test.strategy.matrix).toBeTruthy();
+      expect(test.strategy.matrix.os).toBeTruthy();
+      expect(test.strategy.matrix.os.includes('ubuntu-latest')).toBeTruthy();
+      expect(test.strategy.matrix.os.includes('windows-latest')).toBeTruthy();
+      expect(test.strategy.matrix.os.includes('macos-latest')).toBeTruthy();
     });
 
     test('coverage and e2e should run on single platform for speed', () => {
       const coverage = workflow.jobs.coverage;
       const e2e = workflow.jobs.e2e;
 
-      assert.ok(!coverage.strategy || !coverage.strategy.matrix, 'Coverage should not use matrix (single platform)');
-      assert.ok(!e2e.strategy || !e2e.strategy.matrix, 'E2E should not use matrix (single platform)');
+      expect(!coverage.strategy || !coverage.strategy.matrix).toBeTruthy();
+      expect(!e2e.strategy || !e2e.strategy.matrix).toBeTruthy();
     });
   });
 });

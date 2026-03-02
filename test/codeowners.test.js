@@ -1,14 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('.github/CODEOWNERS', () => {
   const codeownersPath = path.join(__dirname, '..', '.github', 'CODEOWNERS');
 
   describe('File existence', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(codeownersPath), 'CODEOWNERS file should exist');
+      expect(fs.existsSync(codeownersPath)).toBeTruthy();
     });
   });
 
@@ -17,7 +16,7 @@ describe('.github/CODEOWNERS', () => {
       const content = fs.readFileSync(codeownersPath, 'utf-8');
 
       // Should have comments or ownership rules
-      assert.ok(content.length > 0, 'CODEOWNERS should not be empty');
+      expect(content.length > 0).toBeTruthy();
 
       // Should not have syntax errors (basic validation)
       const lines = content.split('\n');
@@ -26,7 +25,7 @@ describe('.github/CODEOWNERS', () => {
         return trimmed.startsWith('#') || trimmed.includes('@') || trimmed === '';
       });
 
-      assert.ok(hasValidLines, 'CODEOWNERS should have comments or ownership rules');
+      expect(hasValidLines).toBeTruthy();
     });
   });
 
@@ -36,7 +35,7 @@ describe('.github/CODEOWNERS', () => {
 
       // Should have ownership rule for /bin/
       const hasBinOwner = content.includes('/bin/') && content.includes('@');
-      assert.ok(hasBinOwner, '/bin/ directory should have code owners');
+      expect(hasBinOwner).toBeTruthy();
     });
 
     test('should protect /lib/ directory', () => {
@@ -44,7 +43,7 @@ describe('.github/CODEOWNERS', () => {
 
       // Should have ownership rule for /lib/
       const hasLibOwner = content.includes('/lib/') && content.includes('@');
-      assert.ok(hasLibOwner, '/lib/ directory should have code owners');
+      expect(hasLibOwner).toBeTruthy();
     });
 
     test('should protect /.claude/ directory', () => {
@@ -52,7 +51,7 @@ describe('.github/CODEOWNERS', () => {
 
       // Should have ownership rule for /.claude/
       const hasClaudeOwner = content.includes('/.claude/') && content.includes('@');
-      assert.ok(hasClaudeOwner, '/.claude/ directory should have code owners');
+      expect(hasClaudeOwner).toBeTruthy();
     });
 
     test('should protect /docs/ directory', () => {
@@ -60,7 +59,7 @@ describe('.github/CODEOWNERS', () => {
 
       // Should have ownership rule for /docs/
       const hasDocsOwner = content.includes('/docs/') && content.includes('@');
-      assert.ok(hasDocsOwner, '/docs/ directory should have code owners');
+      expect(hasDocsOwner).toBeTruthy();
     });
   });
 
@@ -70,7 +69,7 @@ describe('.github/CODEOWNERS', () => {
 
       // Should use @org/team or @username format
       const hasTeamSyntax = content.match(/@[\w-]+\/[\w-]+/) || content.match(/@[\w-]+/);
-      assert.ok(hasTeamSyntax, 'Should use GitHub team syntax (@org/team or @username)');
+      expect(hasTeamSyntax).toBeTruthy();
     });
 
     test('should have distinct teams for different areas', () => {
@@ -80,7 +79,7 @@ describe('.github/CODEOWNERS', () => {
       const owners = content.match(/@[\w-]+\/[\w-]+/g) || content.match(/@[\w-]+/g);
       if (owners) {
         const uniqueOwners = [...new Set(owners)];
-        assert.ok(uniqueOwners.length >= 2, 'Should have at least 2 distinct code owner teams');
+        expect(uniqueOwners.length >= 2).toBeTruthy();
       }
     });
   });

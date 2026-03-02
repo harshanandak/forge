@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Modules under test
@@ -58,11 +57,11 @@ describe('E2E: Full setup workflow', () => {
 
       // Step 2: Verify setup not complete
       const complete = await isSetupComplete(tempDir);
-      assert.strictEqual(complete, false, 'Setup should not be complete initially');
+      expect(complete).toBe(false);
 
       // Step 3: Execute first step - detect project
       const metadata = await detectProjectMetadata(tempDir);
-      assert.ok(metadata, 'Should detect project metadata');
+      expect(metadata).toBeTruthy();
 
       await markStepComplete(tempDir, 'detect_project');
 
@@ -71,7 +70,7 @@ describe('E2E: Full setup workflow', () => {
 
       const agentsMdPath = path.join(tempDir, 'AGENTS.md');
       const agentsMdExists = fs.existsSync(agentsMdPath);
-      assert.ok(agentsMdExists, 'AGENTS.md should be created');
+      expect(agentsMdExists).toBeTruthy();
 
       await markStepComplete(tempDir, 'create_agents_md');
 
@@ -84,9 +83,9 @@ describe('E2E: Full setup workflow', () => {
       const configPath = path.join(tempDir, 'docs', 'CONFIGURATION.md');
       const mcpPath = path.join(tempDir, 'docs', 'MCP_SETUP.md');
 
-      assert.ok(fs.existsSync(archPath), 'ARCHITECTURE.md should be created');
-      assert.ok(fs.existsSync(configPath), 'CONFIGURATION.md should be created');
-      assert.ok(fs.existsSync(mcpPath), 'MCP_SETUP.md should be created');
+      expect(fs.existsSync(archPath)).toBeTruthy();
+      expect(fs.existsSync(configPath)).toBeTruthy();
+      expect(fs.existsSync(mcpPath)).toBeTruthy();
 
       await markStepComplete(tempDir, 'create_documentation');
 
@@ -96,11 +95,11 @@ describe('E2E: Full setup workflow', () => {
 
       // Step 7: Verify all steps complete
       const finalComplete = await isSetupComplete(tempDir);
-      assert.strictEqual(finalComplete, true, 'Setup should be complete');
+      expect(finalComplete).toBe(true);
 
       // Step 8: Verify no next step
       const nextStep = await getNextStep(tempDir);
-      assert.strictEqual(nextStep, null, 'Should have no next step');
+      expect(nextStep).toBe(null);
     });
   });
 
@@ -140,8 +139,8 @@ describe('E2E: Full setup workflow', () => {
       // Step 2: Detect project metadata
       const metadata = await detectProjectMetadata(tempDir);
 
-      assert.ok(metadata.hasTypeScript, 'Should detect TypeScript');
-      assert.strictEqual(metadata.testCommand, 'jest', 'Should detect test command');
+      expect(metadata.hasTypeScript).toBeTruthy();
+      expect(metadata.testCommand).toBe('jest');
 
       // Step 3: Generate TypeScript-aware configs
       await generateAgentsMd(tempDir, { projectMeta: metadata });
@@ -151,8 +150,8 @@ describe('E2E: Full setup workflow', () => {
         'utf-8'
       );
 
-      assert.ok(agentsMdContent.includes('TypeScript'), 'Should mention TypeScript');
-      assert.ok(agentsMdContent.includes('strict'), 'Should mention strict mode');
+      expect(agentsMdContent.includes('TypeScript')).toBeTruthy();
+      expect(agentsMdContent.includes('strict')).toBeTruthy();
     });
   });
 
@@ -176,9 +175,9 @@ describe('E2E: Full setup workflow', () => {
       // Step 2: Detect agents
       const agents = await detectInstalledAgents(tempDir);
 
-      assert.ok(agents.includes('claude'), 'Should detect Claude Code');
-      assert.ok(agents.includes('copilot'), 'Should detect GitHub Copilot');
-      assert.ok(agents.includes('cursor'), 'Should detect Cursor');
+      expect(agents.includes('claude')).toBeTruthy();
+      expect(agents.includes('copilot')).toBeTruthy();
+      expect(agents.includes('cursor')).toBeTruthy();
 
       // Step 3: Generate configs for detected agents
       await generateAgentsMd(tempDir); // Universal
@@ -196,24 +195,12 @@ describe('E2E: Full setup workflow', () => {
       await generateOpenCodeConfig(tempDir);
 
       // Step 4: Verify all configs created
-      assert.ok(fs.existsSync(path.join(tempDir, 'AGENTS.md')), 'AGENTS.md should exist');
-      assert.ok(
-        fs.existsSync(path.join(tempDir, '.github', 'copilot-instructions.md')),
-        'Copilot config should exist'
-      );
-      assert.ok(
-        fs.existsSync(path.join(tempDir, '.cursor', 'rules', 'forge-workflow.mdc')),
-        'Cursor config should exist'
-      );
-      assert.ok(fs.existsSync(path.join(tempDir, '.kilo.md')), 'Kilo config should exist');
-      assert.ok(
-        fs.existsSync(path.join(tempDir, '.aider.conf.yml')),
-        'Aider config should exist'
-      );
-      assert.ok(
-        fs.existsSync(path.join(tempDir, 'opencode.json')),
-        'OpenCode config should exist'
-      );
+      expect(fs.existsSync(path.join(tempDir, 'AGENTS.md'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.github', 'copilot-instructions.md'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.cursor', 'rules', 'forge-workflow.mdc'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.kilo.md'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.aider.conf.yml'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, 'opencode.json'))).toBeTruthy();
     });
   });
 
@@ -233,20 +220,12 @@ describe('E2E: Full setup workflow', () => {
       // Step 3: Resume setup
       const resumedState = await loadSetupState(tempDir);
 
-      assert.deepStrictEqual(
-        resumedState.completed_steps,
-        ['detect_project', 'create_agents_md'],
-        'Should preserve completed steps'
-      );
-      assert.deepStrictEqual(
-        resumedState.pending_steps,
-        ['create_documentation', 'setup_agent_configs'],
-        'Should preserve pending steps'
-      );
+      expect(resumedState.completed_steps).toEqual(['detect_project', 'create_agents_md']);
+      expect(resumedState.pending_steps).toEqual(['create_documentation', 'setup_agent_configs']);
 
       // Step 4: Get next step
       const nextStep = await getNextStep(tempDir);
-      assert.strictEqual(nextStep, 'create_documentation', 'Should resume from next step');
+      expect(nextStep).toBe('create_documentation');
 
       // Step 5: Complete remaining steps
       await markStepComplete(tempDir, 'create_documentation');
@@ -254,7 +233,7 @@ describe('E2E: Full setup workflow', () => {
 
       // Step 6: Verify complete
       const complete = await isSetupComplete(tempDir);
-      assert.strictEqual(complete, true, 'Setup should be complete after resume');
+      expect(complete).toBe(true);
     });
   });
 
@@ -276,7 +255,7 @@ describe('E2E: Full setup workflow', () => {
         'utf-8'
       );
 
-      assert.strictEqual(content, existingContent, 'Should not overwrite existing file');
+      expect(content).toBe(existingContent);
     });
 
     test('should overwrite when explicitly requested', async () => {
@@ -296,8 +275,8 @@ describe('E2E: Full setup workflow', () => {
         'utf-8'
       );
 
-      assert.notStrictEqual(content, existingContent, 'Should overwrite when requested');
-      assert.ok(content.includes('Forge 9-Stage TDD Workflow'), 'Should have new content');
+      expect(content).not.toBe(existingContent);
+      expect(content.includes('Forge 9-Stage TDD Workflow')).toBeTruthy();
     });
   });
 
@@ -370,11 +349,11 @@ describe('E2E: Full setup workflow', () => {
       steps.push('create_documentation');
 
       // Step 7: Verify all steps executed
-      assert.strictEqual(steps.length, 10, 'Should execute all 10 steps');
+      expect(steps.length).toBe(10);
 
       // Step 8: Verify setup complete
       const complete = await isSetupComplete(tempDir);
-      assert.strictEqual(complete, true, 'Setup should be complete');
+      expect(complete).toBe(true);
 
       // Step 9: Verify all files created
       const expectedFiles = [
@@ -399,7 +378,7 @@ describe('E2E: Full setup workflow', () => {
 
       for (const file of expectedFiles) {
         const filePath = path.join(tempDir, file);
-        assert.ok(fs.existsSync(filePath), `${file} should exist`);
+        expect(fs.existsSync(filePath)).toBeTruthy();
       }
     });
   });

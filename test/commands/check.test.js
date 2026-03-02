@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const {
 	runTypeCheck,
 	runLint,
@@ -12,31 +11,31 @@ describe('Check Command - Validation Orchestration', () => {
 	describe('Type checking', () => {
 		test.skip('should run type check successfully', async () => {
 			const result = await runTypeCheck();
-			assert.ok(result.success !== undefined);
-			assert.ok(result.duration);
+			expect(result.success !== undefined).toBeTruthy();
+			expect(result.duration).toBeTruthy();
 		});
 
 		test('should handle missing type checker gracefully', async () => {
 			// When no tsconfig.json or type checker available
 			const result = await runTypeCheck();
 			// Should skip or return success if TypeScript not configured
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 		});
 	});
 
 	describe('Linting', () => {
 		test.skip('should run ESLint successfully', async () => {
 			const result = await runLint();
-			assert.ok(result.success !== undefined);
-			assert.ok(result.warnings !== undefined || result.errors !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
+			expect(result.warnings !== undefined || result.errors !== undefined).toBeTruthy();
 		});
 
 		test('should handle ESLint errors', async () => {
 			// When there are lint errors
 			const result = await runLint();
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 			if (!result.success) {
-				assert.ok(result.errors > 0 || result.message);
+				expect(result.errors > 0 || result.message).toBeTruthy();
 			}
 		});
 	});
@@ -44,35 +43,35 @@ describe('Check Command - Validation Orchestration', () => {
 	describe('Security scanning', () => {
 		test.skip('should run security audit successfully', async () => {
 			const result = await runSecurityScan();
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 		});
 
 		test.skip('should handle missing package-lock.json', async () => {
 			// When using Bun (no package-lock.json)
 			const result = await runSecurityScan();
 			// Should use bun audit or skip gracefully
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 		});
 
 		test.skip('should detect vulnerabilities if present', async () => {
 			const result = await runSecurityScan();
-			assert.ok(result.vulnerabilities !== undefined || result.success !== undefined);
+			expect(result.vulnerabilities !== undefined || result.success !== undefined).toBeTruthy();
 		});
 	});
 
 	describe('Test execution', () => {
 		test.skip('should run all tests successfully', async () => {
 			const result = await runAllTests();
-			assert.ok(result.success !== undefined);
-			assert.ok(result.passed !== undefined);
-			assert.ok(result.failed !== undefined);
-			assert.ok(result.total !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
+			expect(result.passed !== undefined).toBeTruthy();
+			expect(result.failed !== undefined).toBeTruthy();
+			expect(result.total !== undefined).toBeTruthy();
 		});
 
 		test.skip('should report test failures', async () => {
 			const result = await runAllTests();
 			if (!result.success) {
-				assert.ok(result.failed > 0);
+				expect(result.failed > 0).toBeTruthy();
 			}
 		});
 	});
@@ -82,47 +81,47 @@ describe('Check Command - Validation Orchestration', () => {
 			// Skip heavy checks (lint/security/tests call real CLI tools)
 			// typeCheck gracefully skips if no tsconfig.json is present
 			const result = await executeCheck({ skip: ['lint', 'security', 'tests'] });
-			assert.ok(result.success !== undefined, 'result.success should be defined');
-			assert.ok(result.checks, 'result.checks should be present');
-			assert.ok('typeCheck' in result.checks, 'typeCheck key should exist');
-			assert.strictEqual(typeof result.summary, 'string', 'summary should be a string');
-			assert.strictEqual(typeof result.duration, 'number', 'duration should be a number');
+			expect(result.success !== undefined).toBeTruthy();
+			expect(result.checks).toBeTruthy();
+			expect('typeCheck' in result.checks).toBeTruthy();
+			expect(typeof result.summary).toBe('string');
+			expect(typeof result.duration).toBe('number');
 		});
 
 		test('should return summary of all checks', async () => {
 			const result = await executeCheck({ skip: ['lint', 'security', 'tests'] });
-			assert.ok(result.summary, 'summary should be truthy');
-			assert.strictEqual(typeof result.summary, 'string', 'summary should be a string');
-			assert.ok(result.summary.length > 0, 'summary should not be empty');
+			expect(result.summary).toBeTruthy();
+			expect(typeof result.summary).toBe('string');
+			expect(result.summary.length > 0).toBeTruthy();
 		});
 
 		test('should fail if any critical check fails', async () => {
 			const result = await executeCheck({ skip: ['lint', 'security', 'tests'] });
 			if (!result.success) {
-				assert.ok(Array.isArray(result.failedChecks), 'failedChecks should be an array');
-				assert.ok(result.failedChecks.length > 0, 'failedChecks should be non-empty');
+				expect(Array.isArray(result.failedChecks)).toBeTruthy();
+				expect(result.failedChecks.length > 0).toBeTruthy();
 			} else {
-				assert.strictEqual(result.success, true);
-				assert.ok(!result.failedChecks || result.failedChecks.length === 0);
+				expect(result.success).toBe(true);
+				expect(!result.failedChecks || result.failedChecks.length === 0).toBeTruthy();
 			}
 		});
 
 		test.skip('should allow skipping specific checks', async () => {
 			const result = await executeCheck({ skip: ['typeCheck'] });
-			assert.ok(result.checks);
+			expect(result.checks).toBeTruthy();
 			// typeCheck should be skipped
 			if (result.checks.typeCheck) {
-				assert.strictEqual(result.checks.typeCheck.skipped, true);
+				expect(result.checks.typeCheck.skipped).toBe(true);
 			}
 		});
 
 		test.skip('should handle verbose mode', async () => {
 			const result = await executeCheck({ verbose: true });
-			assert.ok(result.checks);
+			expect(result.checks).toBeTruthy();
 			// Verbose should provide detailed output
 			Object.values(result.checks).forEach(check => {
 				if (check && !check.skipped) {
-					assert.ok(check.output || check.message);
+					expect(check.output || check.message).toBeTruthy();
 				}
 			});
 		});
@@ -130,18 +129,18 @@ describe('Check Command - Validation Orchestration', () => {
 		test.skip('should validate options parameter', async () => {
 			// Invalid options should use defaults
 			const result1 = await executeCheck(null);
-			assert.ok(result1.success !== undefined);
+			expect(result1.success !== undefined).toBeTruthy();
 
 			const result2 = await executeCheck({});
-			assert.ok(result2.success !== undefined);
+			expect(result2.success !== undefined).toBeTruthy();
 		});
 
 		test.skip('should return execution time for each check', async () => {
 			const result = await executeCheck();
-			assert.ok(result.checks);
+			expect(result.checks).toBeTruthy();
 			Object.values(result.checks).forEach(check => {
 				if (check && !check.skipped) {
-					assert.ok(check.duration !== undefined);
+					expect(check.duration !== undefined).toBeTruthy();
 				}
 			});
 		});
@@ -151,20 +150,20 @@ describe('Check Command - Validation Orchestration', () => {
 		test.skip('should handle command not found errors', async () => {
 			// When bun test or eslint not available
 			const result = await executeCheck();
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 			// Should report which commands failed
 			if (!result.success && result.errors) {
-				assert.ok(Array.isArray(result.errors));
+				expect(Array.isArray(result.errors)).toBeTruthy();
 			}
 		});
 
 		test.skip('should continue checks even if one fails', async () => {
 			// If lint fails, should still run tests
 			const result = await executeCheck({ continueOnError: true });
-			assert.ok(result.checks);
+			expect(result.checks).toBeTruthy();
 			// Should have results for all checks attempted
 			const checkCount = Object.keys(result.checks).length;
-			assert.ok(checkCount >= 2); // At least 2 checks attempted
+			expect(checkCount >= 2).toBeTruthy(); // At least 2 checks attempted
 		});
 	});
 });

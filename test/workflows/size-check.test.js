@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const yaml = require('js-yaml');
 
 describe('.github/workflows/size-check.yml', () => {
@@ -9,14 +8,14 @@ describe('.github/workflows/size-check.yml', () => {
 
   describe('Workflow file existence', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(workflowPath), 'size-check.yml should exist');
+      expect(fs.existsSync(workflowPath)).toBeTruthy();
     });
 
     test('should be valid YAML', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
-      assert.doesNotThrow(() => {
+      expect(() => {
         yaml.load(content);
-      }, 'Should be valid YAML');
+      }).not.toThrow();
     });
   });
 
@@ -26,29 +25,26 @@ describe('.github/workflows/size-check.yml', () => {
     test('should load workflow configuration', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       workflow = yaml.load(content);
-      assert.ok(workflow, 'Workflow should load');
+      expect(workflow).toBeTruthy();
     });
 
     test('should have name', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       workflow = yaml.load(content);
-      assert.ok(workflow.name, 'Workflow should have name');
-      assert.ok(
-        workflow.name.toLowerCase().includes('size') || workflow.name.toLowerCase().includes('bundle'),
-        'Workflow name should mention size or bundle'
-      );
+      expect(workflow.name).toBeTruthy();
+      expect(workflow.name.toLowerCase().includes('size') || workflow.name.toLowerCase().includes('bundle')).toBeTruthy();
     });
 
     test('should trigger on push and pull_request', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       workflow = yaml.load(content);
-      assert.ok(workflow.on, 'Workflow should have triggers');
+      expect(workflow.on).toBeTruthy();
 
       // Should trigger on push or pull_request
       const hasPush = workflow.on.push || workflow.on === 'push' || (Array.isArray(workflow.on) && workflow.on.includes('push'));
       const hasPR = workflow.on.pull_request || workflow.on === 'pull_request' || (Array.isArray(workflow.on) && workflow.on.includes('pull_request'));
 
-      assert.ok(hasPush || hasPR, 'Workflow should trigger on push or pull_request');
+      expect(hasPush || hasPR).toBeTruthy();
     });
   });
 
@@ -58,8 +54,8 @@ describe('.github/workflows/size-check.yml', () => {
     test('should have at least one job', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       workflow = yaml.load(content);
-      assert.ok(workflow.jobs, 'Workflow should have jobs');
-      assert.ok(Object.keys(workflow.jobs).length > 0, 'Workflow should have at least one job');
+      expect(workflow.jobs).toBeTruthy();
+      expect(Object.keys(workflow.jobs).length > 0).toBeTruthy();
     });
 
     test('should use ubuntu-latest runner', () => {
@@ -72,7 +68,7 @@ describe('.github/workflows/size-check.yml', () => {
         (Array.isArray(job['runs-on']) && job['runs-on'].includes('ubuntu-latest'))
       );
 
-      assert.ok(hasUbuntu, 'At least one job should use ubuntu-latest');
+      expect(hasUbuntu).toBeTruthy();
     });
 
     test('should checkout code', () => {
@@ -86,7 +82,7 @@ describe('.github/workflows/size-check.yml', () => {
         )
       );
 
-      assert.ok(hasCheckout, 'Workflow should checkout code');
+      expect(hasCheckout).toBeTruthy();
     });
   });
 
@@ -109,7 +105,7 @@ describe('.github/workflows/size-check.yml', () => {
         )
       );
 
-      assert.ok(hasInstall, 'Workflow should install dependencies');
+      expect(hasInstall).toBeTruthy();
     });
 
     test('should measure package size', () => {
@@ -128,7 +124,7 @@ describe('.github/workflows/size-check.yml', () => {
         )
       );
 
-      assert.ok(hasSizeCheck, 'Workflow should measure package size');
+      expect(hasSizeCheck).toBeTruthy();
     });
   });
 
@@ -140,10 +136,7 @@ describe('.github/workflows/size-check.yml', () => {
       // Should have a badge for package size
       const hasSizeBadge = content.includes('size') && content.includes('badge');
 
-      assert.ok(
-        hasSizeBadge,
-        'README should have package size badge'
-      );
+      expect(hasSizeBadge).toBeTruthy();
     });
   });
 });
