@@ -8,6 +8,33 @@ Plan a feature from scratch: brainstorm design intent, research technical approa
 
 This command runs in **3 phases**. Each phase ends with a HARD-GATE. Do not skip phases.
 
+---
+
+```
+<HARD-GATE: /plan entry — worktree isolation>
+Before ANY planning work begins:
+
+1. Run: git branch --show-current
+2. If the current branch is NOT master/main:
+   - STOP. Do not begin Phase 1.
+   - Tell the user: "You are on '<branch>'. Planning must start from a clean worktree on master.
+     Run: git checkout master — then re-run /plan."
+3. If on master, create the worktree NOW before asking any questions:
+   a. git checkout -b feat/<slug>
+   b. git worktree add .worktrees/<slug> feat/<slug>
+   c. cd .worktrees/<slug>
+4. Confirm: "Working in isolated worktree: .worktrees/<slug> (branch: feat/<slug>)"
+5. ONLY THEN begin Phase 1.
+
+Rationale: Planning commits (design docs, task lists) belong only to this feature's branch.
+If planning runs in the main directory on a non-master branch, those commits contaminate
+whatever branch is currently checked out. The worktree ensures zero cross-contamination
+between parallel features or sessions.
+</HARD-GATE>
+```
+
+---
+
 ## Usage
 
 ```bash
