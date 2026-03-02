@@ -1,6 +1,5 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { describe, test, expect } = require('bun:test');
 

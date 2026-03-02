@@ -151,7 +151,7 @@ function convertAssertCalls(content) {
     const argsStr = content.slice(openParenAbsolute + 1, closeParenAbsolute);
 
     // Convert based on method
-    let converted = null;
+    let converted;
 
     switch (method) {
       case 'ok': {

@@ -103,7 +103,7 @@ describe('scripts/branch-protection.js', () => {
       ];
 
       // Check each pattern
-      for (const { pattern, name } of bashPatterns) {
+      for (const { pattern } of bashPatterns) {
         const match = content.match(pattern);
         expect(!match).toBeTruthy();
       }

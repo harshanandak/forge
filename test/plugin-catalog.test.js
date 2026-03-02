@@ -105,7 +105,7 @@ describe('plugin-catalog', () => {
     });
 
     test('every tool has required fields: name, type, tier, stage, detectWhen, install', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         expect(tool.name).toBeTruthy();
         expect(tool.type).toBeTruthy();
         expect(tool.tier).toBeTruthy();
@@ -116,37 +116,37 @@ describe('plugin-catalog', () => {
     });
 
     test('every tool tier is a valid TIERS value', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         expect(validTiers.includes(tool.tier)).toBeTruthy();
       }
     });
 
     test('every tool type is a valid TOOL_TYPES value', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         expect(validTypes.includes(tool.type)).toBeTruthy();
       }
     });
 
     test('every tool stage is a valid STAGES value', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         expect(validStages.includes(tool.stage)).toBeTruthy();
       }
     });
 
     test('every tool install has a valid method', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         expect(validInstallMethods.includes(tool.install.method)).toBeTruthy();
       }
     });
 
     test('every tool detectWhen is an array', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         expect(Array.isArray(tool.detectWhen)).toBeTruthy();
       }
     });
 
     test('every paid tool has >= 1 free alternative', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         if (tool.tier === 'paid') {
           expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
           const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free' || alt.tier === 'free-public');
@@ -156,7 +156,7 @@ describe('plugin-catalog', () => {
     });
 
     test('every free-limited tool has >= 1 free alternative', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         if (tool.tier === 'free-limited') {
           expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
           const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free');
@@ -166,7 +166,7 @@ describe('plugin-catalog', () => {
     });
 
     test('every MCP-type tool has mcpJustified boolean', () => {
-      for (const [id, tool] of Object.entries(CATALOG)) {
+      for (const [, tool] of Object.entries(CATALOG)) {
         if (tool.type === 'mcp') {
           expect(typeof tool.mcpJustified).toBe('boolean');
         }
@@ -220,7 +220,7 @@ describe('plugin-catalog', () => {
 
   describe('PREREQUISITES', () => {
     test('each prerequisite has check command and installUrl', () => {
-      for (const [id, prereq] of Object.entries(PREREQUISITES)) {
+      for (const [, prereq] of Object.entries(PREREQUISITES)) {
         expect(prereq.check).toBeTruthy();
         expect(typeof prereq.check).toBe('string');
         // installUrl can be null (e.g. curl is usually pre-installed)
