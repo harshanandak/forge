@@ -1,0 +1,12 @@
+# Aider project configuration — https://aider.chat/docs/config/aider_conf.html
+#
+# yes-always: true  = auto-confirm ALL prompts (no granular control, use cautiously)
+# yes-always: false = manual confirmation per prompt (safer default)
+yes-always: false
+
+# auto-accept-architect: true auto-accepts architect-mode file changes only
+# This is safer than yes-always — only applies when using architect mode
+auto-accept-architect: true
+
+# auto-commits: true lets Aider commit after each change
+auto-commits: true
