@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 // Module under test
 const {
@@ -14,225 +13,225 @@ const {
 describe('workflow-profiles', () => {
   describe('PROFILES definition', () => {
     test('should have all 6 internal profiles defined', () => {
-      assert.ok(PROFILES.critical, 'Critical profile missing');
-      assert.ok(PROFILES.standard, 'Standard profile missing');
-      assert.ok(PROFILES.simple, 'Simple profile missing');
-      assert.ok(PROFILES.hotfix, 'Hotfix profile missing');
-      assert.ok(PROFILES.docs, 'Docs profile missing');
-      assert.ok(PROFILES.refactor, 'Refactor profile missing');
+      expect(PROFILES.critical).toBeTruthy();
+      expect(PROFILES.standard).toBeTruthy();
+      expect(PROFILES.simple).toBeTruthy();
+      expect(PROFILES.hotfix).toBeTruthy();
+      expect(PROFILES.docs).toBeTruthy();
+      expect(PROFILES.refactor).toBeTruthy();
     });
 
     test('critical profile should have 9 stages', () => {
-      assert.strictEqual(PROFILES.critical.stages.length, 9);
-      assert.ok(PROFILES.critical.stages.includes('/status'));
-      assert.ok(PROFILES.critical.stages.includes('/research'));
-      assert.ok(PROFILES.critical.stages.includes('/verify'));
-      assert.strictEqual(PROFILES.critical.tdd, 'strict');
+      expect(PROFILES.critical.stages.length).toBe(9);
+      expect(PROFILES.critical.stages.includes('/status')).toBeTruthy();
+      expect(PROFILES.critical.stages.includes('/research')).toBeTruthy();
+      expect(PROFILES.critical.stages.includes('/verify')).toBeTruthy();
+      expect(PROFILES.critical.tdd).toBe('strict');
     });
 
     test('standard profile should have 6 stages', () => {
-      assert.strictEqual(PROFILES.standard.stages.length, 6);
-      assert.ok(PROFILES.standard.stages.includes('/status'));
-      assert.ok(PROFILES.standard.stages.includes('/plan'));
-      assert.ok(!PROFILES.standard.stages.includes('/research'));
-      assert.strictEqual(PROFILES.standard.tdd, 'required');
+      expect(PROFILES.standard.stages.length).toBe(6);
+      expect(PROFILES.standard.stages.includes('/status')).toBeTruthy();
+      expect(PROFILES.standard.stages.includes('/plan')).toBeTruthy();
+      expect(!PROFILES.standard.stages.includes('/research')).toBeTruthy();
+      expect(PROFILES.standard.tdd).toBe('required');
     });
 
     test('simple profile should have 4 stages', () => {
-      assert.strictEqual(PROFILES.simple.stages.length, 4);
-      assert.ok(PROFILES.simple.stages.includes('/dev'));
-      assert.ok(!PROFILES.simple.stages.includes('/research'));
-      assert.strictEqual(PROFILES.simple.tdd, 'recommended');
+      expect(PROFILES.simple.stages.length).toBe(4);
+      expect(PROFILES.simple.stages.includes('/dev')).toBeTruthy();
+      expect(!PROFILES.simple.stages.includes('/research')).toBeTruthy();
+      expect(PROFILES.simple.tdd).toBe('recommended');
     });
 
     test('hotfix profile should have 3 stages', () => {
-      assert.strictEqual(PROFILES.hotfix.stages.length, 3);
-      assert.ok(PROFILES.hotfix.stages.includes('/dev'));
-      assert.ok(PROFILES.hotfix.stages.includes('/check'));
-      assert.strictEqual(PROFILES.hotfix.tdd, 'required');
+      expect(PROFILES.hotfix.stages.length).toBe(3);
+      expect(PROFILES.hotfix.stages.includes('/dev')).toBeTruthy();
+      expect(PROFILES.hotfix.stages.includes('/check')).toBeTruthy();
+      expect(PROFILES.hotfix.tdd).toBe('required');
     });
 
     test('docs profile should have 3 stages', () => {
-      assert.strictEqual(PROFILES.docs.stages.length, 3);
-      assert.ok(PROFILES.docs.stages.includes('/verify'));
-      assert.strictEqual(PROFILES.docs.tdd, 'no');
+      expect(PROFILES.docs.stages.length).toBe(3);
+      expect(PROFILES.docs.stages.includes('/verify')).toBeTruthy();
+      expect(PROFILES.docs.tdd).toBe('no');
     });
 
     test('refactor profile should have 5 stages', () => {
-      assert.strictEqual(PROFILES.refactor.stages.length, 5);
-      assert.ok(PROFILES.refactor.stages.includes('/plan'));
-      assert.strictEqual(PROFILES.refactor.tdd, 'strict');
+      expect(PROFILES.refactor.stages.length).toBe(5);
+      expect(PROFILES.refactor.stages.includes('/plan')).toBeTruthy();
+      expect(PROFILES.refactor.tdd).toBe('strict');
     });
   });
 
   describe('containsCriticalKeywords', () => {
     test('should detect auth keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('feat/add-auth-system'), true);
+      expect(containsCriticalKeywords('feat/add-auth-system')).toBe(true);
     });
 
     test('should detect security keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('implement security middleware'), true);
+      expect(containsCriticalKeywords('implement security middleware')).toBe(true);
     });
 
     test('should detect payment keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('feat/payment-integration'), true);
+      expect(containsCriticalKeywords('feat/payment-integration')).toBe(true);
     });
 
     test('should detect crypto keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('fix crypto validation'), true);
+      expect(containsCriticalKeywords('fix crypto validation')).toBe(true);
     });
 
     test('should detect token keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('feat/token-refresh'), true);
+      expect(containsCriticalKeywords('feat/token-refresh')).toBe(true);
     });
 
     test('should detect session keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('session management update'), true);
+      expect(containsCriticalKeywords('session management update')).toBe(true);
     });
 
     test('should detect migration keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('data migration script'), true);
+      expect(containsCriticalKeywords('data migration script')).toBe(true);
     });
 
     test('should detect breaking keyword', () => {
-      assert.strictEqual(containsCriticalKeywords('breaking change to API'), true);
+      expect(containsCriticalKeywords('breaking change to API')).toBe(true);
     });
 
     test('should return false for non-critical keywords', () => {
-      assert.strictEqual(containsCriticalKeywords('feat/add-ui-button'), false);
+      expect(containsCriticalKeywords('feat/add-ui-button')).toBe(false);
     });
 
     test('should be case-insensitive', () => {
-      assert.strictEqual(containsCriticalKeywords('FEAT/ADD-AUTH'), true);
+      expect(containsCriticalKeywords('FEAT/ADD-AUTH')).toBe(true);
     });
   });
 
   describe('containsHotfixKeywords', () => {
     test('should detect urgent keyword', () => {
-      assert.strictEqual(containsHotfixKeywords('urgent fix needed'), true);
+      expect(containsHotfixKeywords('urgent fix needed')).toBe(true);
     });
 
     test('should detect production keyword', () => {
-      assert.strictEqual(containsHotfixKeywords('production bug'), true);
+      expect(containsHotfixKeywords('production bug')).toBe(true);
     });
 
     test('should detect emergency keyword', () => {
-      assert.strictEqual(containsHotfixKeywords('emergency patch'), true);
+      expect(containsHotfixKeywords('emergency patch')).toBe(true);
     });
 
     test('should detect hotfix keyword', () => {
-      assert.strictEqual(containsHotfixKeywords('hotfix/login-crash'), true);
+      expect(containsHotfixKeywords('hotfix/login-crash')).toBe(true);
     });
 
     test('should detect critical keyword', () => {
-      assert.strictEqual(containsHotfixKeywords('critical bug fix'), true);
+      expect(containsHotfixKeywords('critical bug fix')).toBe(true);
     });
 
     test('should return false for non-hotfix keywords', () => {
-      assert.strictEqual(containsHotfixKeywords('fix/minor-typo'), false);
+      expect(containsHotfixKeywords('fix/minor-typo')).toBe(false);
     });
 
     test('should be case-insensitive', () => {
-      assert.strictEqual(containsHotfixKeywords('URGENT FIX'), true);
+      expect(containsHotfixKeywords('URGENT FIX')).toBe(true);
     });
   });
 
   describe('getUserType', () => {
     test('should detect feature from feat/ branch', () => {
       const context = { branch: 'feat/add-dashboard' };
-      assert.strictEqual(getUserType(context), 'feature');
+      expect(getUserType(context)).toBe('feature');
     });
 
     test('should detect fix from fix/ branch', () => {
       const context = { branch: 'fix/login-bug' };
-      assert.strictEqual(getUserType(context), 'fix');
+      expect(getUserType(context)).toBe('fix');
     });
 
     test('should detect refactor from refactor/ branch', () => {
       const context = { branch: 'refactor/extract-service' };
-      assert.strictEqual(getUserType(context), 'refactor');
+      expect(getUserType(context)).toBe('refactor');
     });
 
     test('should detect chore from docs/ branch', () => {
       const context = { branch: 'docs/update-readme' };
-      assert.strictEqual(getUserType(context), 'chore');
+      expect(getUserType(context)).toBe('chore');
     });
 
     test('should detect chore from chore/ branch', () => {
       const context = { branch: 'chore/bump-deps' };
-      assert.strictEqual(getUserType(context), 'chore');
+      expect(getUserType(context)).toBe('chore');
     });
 
     test('should default to feature for unknown branch', () => {
       const context = { branch: 'main' };
-      assert.strictEqual(getUserType(context), 'feature');
+      expect(getUserType(context)).toBe('feature');
     });
 
     test('should default to feature for missing branch', () => {
       const context = {};
-      assert.strictEqual(getUserType(context), 'feature');
+      expect(getUserType(context)).toBe('feature');
     });
 
     test('should handle hotfix/ branch as fix', () => {
       const context = { branch: 'hotfix/production-crash' };
-      assert.strictEqual(getUserType(context), 'fix');
+      expect(getUserType(context)).toBe('fix');
     });
   });
 
   describe('getInternalProfile', () => {
     test('should map feature to critical with auth keyword', () => {
       const context = { keywords: ['auth', 'system'], files: [] };
-      assert.strictEqual(getInternalProfile('feature', context), 'critical');
+      expect(getInternalProfile('feature', context)).toBe('critical');
     });
 
     test('should map feature to critical with security keyword', () => {
       const context = { keywords: ['security', 'middleware'], files: [] };
-      assert.strictEqual(getInternalProfile('feature', context), 'critical');
+      expect(getInternalProfile('feature', context)).toBe('critical');
     });
 
     test('should map feature to critical with payment keyword', () => {
       const context = { keywords: ['payment', 'integration'], files: [] };
-      assert.strictEqual(getInternalProfile('feature', context), 'critical');
+      expect(getInternalProfile('feature', context)).toBe('critical');
     });
 
     test('should map feature to standard without keywords', () => {
       const context = { keywords: ['dashboard', 'ui'], files: [] };
-      assert.strictEqual(getInternalProfile('feature', context), 'standard');
+      expect(getInternalProfile('feature', context)).toBe('standard');
     });
 
     test('should map fix to hotfix with urgent keyword', () => {
       const context = { keywords: ['urgent', 'fix'], files: [] };
-      assert.strictEqual(getInternalProfile('fix', context), 'hotfix');
+      expect(getInternalProfile('fix', context)).toBe('hotfix');
     });
 
     test('should map fix to hotfix with production keyword', () => {
       const context = { keywords: ['production', 'bug'], files: [] };
-      assert.strictEqual(getInternalProfile('fix', context), 'hotfix');
+      expect(getInternalProfile('fix', context)).toBe('hotfix');
     });
 
     test('should map fix to simple without keywords', () => {
       const context = { keywords: ['typo', 'minor'], files: [] };
-      assert.strictEqual(getInternalProfile('fix', context), 'simple');
+      expect(getInternalProfile('fix', context)).toBe('simple');
     });
 
     test('should map refactor to refactor (1:1)', () => {
       const context = { keywords: [], files: [] };
-      assert.strictEqual(getInternalProfile('refactor', context), 'refactor');
+      expect(getInternalProfile('refactor', context)).toBe('refactor');
     });
 
     test('should map chore to docs for markdown files only', () => {
       const context = { keywords: [], files: ['README.md', 'DOCS.md'] };
-      assert.strictEqual(getInternalProfile('chore', context), 'docs');
+      expect(getInternalProfile('chore', context)).toBe('docs');
     });
 
     test('should map chore to simple for code files', () => {
       const context = { keywords: [], files: ['package.json', 'src/config.js'] };
-      assert.strictEqual(getInternalProfile('chore', context), 'simple');
+      expect(getInternalProfile('chore', context)).toBe('simple');
     });
 
     test('should map chore to simple for mixed files', () => {
       const context = { keywords: [], files: ['README.md', 'src/utils.js'] };
-      assert.strictEqual(getInternalProfile('chore', context), 'simple');
+      expect(getInternalProfile('chore', context)).toBe('simple');
     });
   });
 
@@ -243,8 +242,8 @@ describe('workflow-profiles', () => {
         branch: 'fix/minor-bug'
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.profile, 'critical');
-      assert.strictEqual(result.source, 'manual');
+      expect(result.profile).toBe('critical');
+      expect(result.source).toBe('manual');
     });
 
     test('should detect feature → standard (no keywords)', () => {
@@ -254,9 +253,9 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'feature');
-      assert.strictEqual(result.profile, 'standard');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('feature');
+      expect(result.profile).toBe('standard');
+      expect(result.source).toBe('auto');
     });
 
     test('should detect feature → critical (auth keyword)', () => {
@@ -266,9 +265,9 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'feature');
-      assert.strictEqual(result.profile, 'critical');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('feature');
+      expect(result.profile).toBe('critical');
+      expect(result.source).toBe('auto');
     });
 
     test('should detect fix → simple (no urgency)', () => {
@@ -278,9 +277,9 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'fix');
-      assert.strictEqual(result.profile, 'simple');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('fix');
+      expect(result.profile).toBe('simple');
+      expect(result.source).toBe('auto');
     });
 
     test('should detect fix → hotfix (production keyword)', () => {
@@ -290,9 +289,9 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'fix');
-      assert.strictEqual(result.profile, 'hotfix');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('fix');
+      expect(result.profile).toBe('hotfix');
+      expect(result.source).toBe('auto');
     });
 
     test('should detect refactor → refactor', () => {
@@ -302,9 +301,9 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'refactor');
-      assert.strictEqual(result.profile, 'refactor');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('refactor');
+      expect(result.profile).toBe('refactor');
+      expect(result.source).toBe('auto');
     });
 
     test('should detect chore → docs (markdown only)', () => {
@@ -314,9 +313,9 @@ describe('workflow-profiles', () => {
         files: ['README.md', 'CONTRIBUTING.md']
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'chore');
-      assert.strictEqual(result.profile, 'docs');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('chore');
+      expect(result.profile).toBe('docs');
+      expect(result.source).toBe('auto');
     });
 
     test('should default to feature → standard for unknown branch', () => {
@@ -326,9 +325,9 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'feature');
-      assert.strictEqual(result.profile, 'standard');
-      assert.strictEqual(result.source, 'auto');
+      expect(result.userType).toBe('feature');
+      expect(result.profile).toBe('standard');
+      expect(result.source).toBe('auto');
     });
   });
 
@@ -336,8 +335,8 @@ describe('workflow-profiles', () => {
     test('should handle empty context object', () => {
       const context = {};
       const result = detectWorkType(context);
-      assert.ok(result.profile);
-      assert.strictEqual(result.userType, 'feature');
+      expect(result.profile).toBeTruthy();
+      expect(result.userType).toBe('feature');
     });
 
     test('should handle null keywords', () => {
@@ -347,7 +346,7 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.ok(result.profile);
+      expect(result.profile).toBeTruthy();
     });
 
     test('should handle undefined files', () => {
@@ -356,7 +355,7 @@ describe('workflow-profiles', () => {
         keywords: []
       };
       const result = detectWorkType(context);
-      assert.ok(result.profile);
+      expect(result.profile).toBeTruthy();
     });
 
     test('should handle ambiguous branch feat/fix-bug', () => {
@@ -366,7 +365,7 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.userType, 'feature');
+      expect(result.userType).toBe('feature');
     });
 
     test('should handle multiple critical keywords', () => {
@@ -376,7 +375,7 @@ describe('workflow-profiles', () => {
         files: []
       };
       const result = detectWorkType(context);
-      assert.strictEqual(result.profile, 'critical');
+      expect(result.profile).toBe('critical');
     });
   });
 });

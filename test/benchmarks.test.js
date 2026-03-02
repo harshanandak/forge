@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const { execFileSync } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 
@@ -13,18 +12,15 @@ describe('Performance Benchmarks', () => {
 
   test('test:benchmark script exists in package.json', () => {
     const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-    assert.ok(pkg.scripts['test:benchmark'], 'test:benchmark script should exist');
+    expect(pkg.scripts['test:benchmark']).toBeTruthy();
   });
 
   test('scripts/benchmark.js exists and is valid JS', () => {
-    assert.ok(
-      fs.existsSync(benchmarkScriptPath),
-      'scripts/benchmark.js should exist'
-    );
+    expect(fs.existsSync(benchmarkScriptPath)).toBeTruthy();
     // Verify it can be required without throwing
-    assert.doesNotThrow(() => {
+    expect(() => {
       require(benchmarkScriptPath);
-    }, 'benchmark.js should be valid JavaScript');
+    }).not.toThrow();
   });
 
   test('benchmark script outputs JSON with required fields', () => {
@@ -34,12 +30,12 @@ describe('Performance Benchmarks', () => {
       timeout: 30000
     });
     const results = JSON.parse(output);
-    assert.ok(Array.isArray(results), 'output should be an array of benchmarks');
-    assert.ok(results.length > 0, 'should have at least one benchmark result');
+    expect(Array.isArray(results)).toBeTruthy();
+    expect(results.length > 0).toBeTruthy();
     for (const result of results) {
-      assert.ok(result.name, 'each result should have a name');
-      assert.ok(typeof result.mean === 'number', 'each result should have a numeric mean');
-      assert.ok(result.unit, 'each result should have a unit');
+      expect(result.name).toBeTruthy();
+      expect(typeof result.mean === 'number').toBeTruthy();
+      expect(result.unit).toBeTruthy();
     }
   });
 
@@ -51,7 +47,7 @@ describe('Performance Benchmarks', () => {
       timeout: 5000
     });
     const elapsed = performance.now() - start;
-    assert.ok(elapsed < 5000, `CLI startup took ${elapsed.toFixed(0)}ms, should be <5000ms`);
+    expect(elapsed < 5000).toBeTruthy();
   });
 
   test('autoDetect() completes in <2000ms', () => {
@@ -59,14 +55,11 @@ describe('Performance Benchmarks', () => {
     const start = performance.now();
     autoDetect(rootDir);
     const elapsed = performance.now() - start;
-    assert.ok(elapsed < 2000, `autoDetect took ${elapsed.toFixed(0)}ms, should be <2000ms`);
+    expect(elapsed < 2000).toBeTruthy();
   });
 
   test('benchmark-results.json is in .gitignore', () => {
     const gitignore = fs.readFileSync(gitignorePath, 'utf-8');
-    assert.ok(
-      gitignore.includes('benchmark-results.json'),
-      'benchmark-results.json should be in .gitignore'
-    );
+    expect(gitignore.includes('benchmark-results.json')).toBeTruthy();
   });
 });

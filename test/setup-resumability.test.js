@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -38,7 +37,7 @@ describe('Setup resumability', () => {
       await saveSetupState(tempDir, state);
 
       const exists = await fs.promises.access(setupStatePath).then(() => true).catch(() => false);
-      assert.ok(exists, '.forge/setup-state.json should be created');
+      expect(exists).toBeTruthy();
     });
 
     test('should save state as valid JSON', async () => {
@@ -54,19 +53,19 @@ describe('Setup resumability', () => {
       const content = await fs.promises.readFile(setupStatePath, 'utf-8');
       const parsed = JSON.parse(content);
 
-      assert.deepStrictEqual(parsed, state);
+      expect(parsed).toEqual(state);
     });
 
     test('should create .forge directory if it does not exist', async () => {
       // Ensure .forge doesn't exist
       const forgeDirExists = fs.existsSync(forgeDir);
-      assert.ok(!forgeDirExists, '.forge should not exist initially');
+      expect(!forgeDirExists).toBeTruthy();
 
       const state = { version: '1.6.0', completed_steps: [], pending_steps: [] };
       await saveSetupState(tempDir, state);
 
       // Check .forge was created
-      assert.ok(fs.existsSync(forgeDir), '.forge directory should be created');
+      expect(fs.existsSync(forgeDir)).toBeTruthy();
     });
 
     test('should overwrite existing state', async () => {
@@ -89,8 +88,8 @@ describe('Setup resumability', () => {
       const content = await fs.promises.readFile(setupStatePath, 'utf-8');
       const parsed = JSON.parse(content);
 
-      assert.strictEqual(parsed.completed_steps.length, 2);
-      assert.strictEqual(parsed.pending_steps.length, 1);
+      expect(parsed.completed_steps.length).toBe(2);
+      expect(parsed.pending_steps.length).toBe(1);
     });
   });
 
@@ -109,13 +108,13 @@ describe('Setup resumability', () => {
 
       const loaded = await loadSetupState(tempDir);
 
-      assert.deepStrictEqual(loaded, state);
+      expect(loaded).toEqual(state);
     });
 
     test('should return null if setup state does not exist', async () => {
       const loaded = await loadSetupState(tempDir);
 
-      assert.strictEqual(loaded, null);
+      expect(loaded).toBe(null);
     });
 
     test('should return null if setup state is invalid JSON', async () => {
@@ -125,17 +124,17 @@ describe('Setup resumability', () => {
 
       const loaded = await loadSetupState(tempDir);
 
-      assert.strictEqual(loaded, null);
+      expect(loaded).toBe(null);
     });
 
     test('should handle missing .forge directory gracefully', async () => {
       // Ensure .forge doesn't exist
       const forgeDirExists = fs.existsSync(forgeDir);
-      assert.ok(!forgeDirExists, '.forge should not exist');
+      expect(!forgeDirExists).toBeTruthy();
 
       const loaded = await loadSetupState(tempDir);
 
-      assert.strictEqual(loaded, null);
+      expect(loaded).toBe(null);
     });
   });
 
@@ -157,7 +156,7 @@ describe('Setup resumability', () => {
 
       const complete = await isSetupComplete(tempDir);
 
-      assert.strictEqual(complete, true);
+      expect(complete).toBe(true);
     });
 
     test('should return false when pending steps remain', async () => {
@@ -171,13 +170,13 @@ describe('Setup resumability', () => {
 
       const complete = await isSetupComplete(tempDir);
 
-      assert.strictEqual(complete, false);
+      expect(complete).toBe(false);
     });
 
     test('should return false when no state exists', async () => {
       const complete = await isSetupComplete(tempDir);
 
-      assert.strictEqual(complete, false);
+      expect(complete).toBe(false);
     });
 
     test('should return true when pending_steps is empty array', async () => {
@@ -191,7 +190,7 @@ describe('Setup resumability', () => {
 
       const complete = await isSetupComplete(tempDir);
 
-      assert.strictEqual(complete, true);
+      expect(complete).toBe(true);
     });
   });
 
@@ -207,7 +206,7 @@ describe('Setup resumability', () => {
 
       const nextStep = await getNextStep(tempDir);
 
-      assert.strictEqual(nextStep, 'create_agents_md');
+      expect(nextStep).toBe('create_agents_md');
     });
 
     test('should return null when no pending steps', async () => {
@@ -221,13 +220,13 @@ describe('Setup resumability', () => {
 
       const nextStep = await getNextStep(tempDir);
 
-      assert.strictEqual(nextStep, null);
+      expect(nextStep).toBe(null);
     });
 
     test('should return null when no state exists', async () => {
       const nextStep = await getNextStep(tempDir);
 
-      assert.strictEqual(nextStep, null);
+      expect(nextStep).toBe(null);
     });
 
     test('should handle empty pending_steps array', async () => {
@@ -241,7 +240,7 @@ describe('Setup resumability', () => {
 
       const nextStep = await getNextStep(tempDir);
 
-      assert.strictEqual(nextStep, null);
+      expect(nextStep).toBe(null);
     });
   });
 
@@ -259,10 +258,10 @@ describe('Setup resumability', () => {
 
       const updatedState = await loadSetupState(tempDir);
 
-      assert.ok(updatedState.completed_steps.includes('create_agents_md'));
-      assert.ok(!updatedState.pending_steps.includes('create_agents_md'));
-      assert.strictEqual(updatedState.completed_steps.length, 2);
-      assert.strictEqual(updatedState.pending_steps.length, 2);
+      expect(updatedState.completed_steps.includes('create_agents_md')).toBeTruthy();
+      expect(!updatedState.pending_steps.includes('create_agents_md')).toBeTruthy();
+      expect(updatedState.completed_steps.length).toBe(2);
+      expect(updatedState.pending_steps.length).toBe(2);
     });
 
     test('should update last_run timestamp', async () => {
@@ -282,7 +281,7 @@ describe('Setup resumability', () => {
 
       const updatedState = await loadSetupState(tempDir);
 
-      assert.notStrictEqual(updatedState.last_run, initialState.last_run);
+      expect(updatedState.last_run).not.toBe(initialState.last_run);
     });
 
     test('should handle marking step that is not in pending', async () => {
@@ -300,7 +299,7 @@ describe('Setup resumability', () => {
       const updatedState = await loadSetupState(tempDir);
 
       // Should add to completed even if not in pending
-      assert.ok(updatedState.completed_steps.includes('nonexistent_step'));
+      expect(updatedState.completed_steps.includes('nonexistent_step')).toBeTruthy();
     });
 
     test('should not duplicate step in completed', async () => {
@@ -320,19 +319,19 @@ describe('Setup resumability', () => {
 
       // Should only appear once in completed
       const count = updatedState.completed_steps.filter(s => s === 'create_agents_md').length;
-      assert.strictEqual(count, 1);
+      expect(count).toBe(1);
     });
 
     test('should create state file if it does not exist', async () => {
       // No state exists initially
       const exists = fs.existsSync(setupStatePath);
-      assert.ok(!exists);
+      expect(!exists).toBeTruthy();
 
       await markStepComplete(tempDir, 'detect_project');
 
       const updatedState = await loadSetupState(tempDir);
 
-      assert.ok(updatedState.completed_steps.includes('detect_project'));
+      expect(updatedState.completed_steps.includes('detect_project')).toBeTruthy();
     });
   });
 
@@ -351,23 +350,23 @@ describe('Setup resumability', () => {
 
       // Step 3: Verify state
       let state = await loadSetupState(tempDir);
-      assert.strictEqual(state.completed_steps.length, 1);
-      assert.strictEqual(state.pending_steps.length, 2);
+      expect(state.completed_steps.length).toBe(1);
+      expect(state.pending_steps.length).toBe(2);
 
       // Step 4: Mark second step complete
       await markStepComplete(tempDir, 'create_agents_md');
 
       // Step 5: Verify final state
       state = await loadSetupState(tempDir);
-      assert.strictEqual(state.completed_steps.length, 2);
-      assert.strictEqual(state.pending_steps.length, 1);
-      assert.ok(!await isSetupComplete(tempDir));
+      expect(state.completed_steps.length).toBe(2);
+      expect(state.pending_steps.length).toBe(1);
+      expect(!await isSetupComplete(tempDir)).toBeTruthy();
 
       // Step 6: Complete last step
       await markStepComplete(tempDir, 'setup_lefthook');
 
       // Step 7: Verify complete
-      assert.ok(await isSetupComplete(tempDir));
+      expect(await isSetupComplete(tempDir)).toBeTruthy();
     });
   });
 });

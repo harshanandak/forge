@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -28,7 +27,7 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('claude'), 'Should detect Claude Code');
+    expect(agents.includes('claude')).toBeTruthy();
   });
 
   test('should detect Cursor when .cursor directory exists', async () => {
@@ -37,7 +36,7 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('cursor'), 'Should detect Cursor');
+    expect(agents.includes('cursor')).toBeTruthy();
   });
 
   test('should detect GitHub Copilot when .github/copilot-instructions.md exists', async () => {
@@ -50,7 +49,7 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('copilot'), 'Should detect GitHub Copilot');
+    expect(agents.includes('copilot')).toBeTruthy();
   });
 
   test('should detect Kilo when .kilo.md exists', async () => {
@@ -62,7 +61,7 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('kilo'), 'Should detect Kilo Code');
+    expect(agents.includes('kilo')).toBeTruthy();
   });
 
   test('should detect Aider when .aider.conf.yml exists', async () => {
@@ -74,7 +73,7 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('aider'), 'Should detect Aider');
+    expect(agents.includes('aider')).toBeTruthy();
   });
 
   test('should detect OpenCode when opencode.json exists', async () => {
@@ -86,7 +85,7 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('opencode'), 'Should detect OpenCode');
+    expect(agents.includes('opencode')).toBeTruthy();
   });
 
   test('should detect multiple agents simultaneously', async () => {
@@ -97,18 +96,18 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('claude'), 'Should detect Claude Code');
-    assert.ok(agents.includes('cursor'), 'Should detect Cursor');
-    assert.ok(agents.includes('kilo'), 'Should detect Kilo Code');
-    assert.strictEqual(agents.length, 3, 'Should detect exactly 3 agents');
+    expect(agents.includes('claude')).toBeTruthy();
+    expect(agents.includes('cursor')).toBeTruthy();
+    expect(agents.includes('kilo')).toBeTruthy();
+    expect(agents.length).toBe(3);
   });
 
   test('should return empty array when no agents detected', async () => {
     // Empty directory - no agent files
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(Array.isArray(agents), 'Should return an array');
-    assert.strictEqual(agents.length, 0, 'Should detect no agents');
+    expect(Array.isArray(agents)).toBeTruthy();
+    expect(agents.length).toBe(0);
   });
 
   test('should return agents in consistent order (Tier 1 first)', async () => {
@@ -126,12 +125,12 @@ describe('Agent detection', () => {
     const agents = await detectInstalledAgents(tempDir);
 
     // All Tier 1 agents should be detected
-    assert.ok(agents.includes('claude'), 'Should include Claude Code');
-    assert.ok(agents.includes('copilot'), 'Should include GitHub Copilot');
-    assert.ok(agents.includes('kilo'), 'Should include Kilo Code');
-    assert.ok(agents.includes('cursor'), 'Should include Cursor');
-    assert.ok(agents.includes('aider'), 'Should include Aider');
-    assert.strictEqual(agents.length, 5, 'Should detect all 5 Tier 1 agents');
+    expect(agents.includes('claude')).toBeTruthy();
+    expect(agents.includes('copilot')).toBeTruthy();
+    expect(agents.includes('kilo')).toBeTruthy();
+    expect(agents.includes('cursor')).toBeTruthy();
+    expect(agents.includes('aider')).toBeTruthy();
+    expect(agents.length).toBe(5);
   });
 
   test('should handle permission errors gracefully', async () => {
@@ -139,7 +138,7 @@ describe('Agent detection', () => {
     // Just verify the function doesn't throw
     const agents = await detectInstalledAgents('/root/nonexistent-path-12345');
 
-    assert.ok(Array.isArray(agents), 'Should return an array even on error');
+    expect(Array.isArray(agents)).toBeTruthy();
   });
 
   test('should detect CLAUDE.md as legacy Claude Code indicator', async () => {
@@ -151,6 +150,6 @@ describe('Agent detection', () => {
 
     const agents = await detectInstalledAgents(tempDir);
 
-    assert.ok(agents.includes('claude'), 'Should detect Claude Code via CLAUDE.md');
+    expect(agents.includes('claude')).toBeTruthy();
   });
 });

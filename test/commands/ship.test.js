@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const {
 	extractKeyDecisions,
 	extractTestScenarios,
@@ -32,10 +31,10 @@ describe('Ship Command - PR Creation', () => {
 `;
 
 			const decisions = extractKeyDecisions(researchContent);
-			assert.ok(Array.isArray(decisions));
-			assert.ok(decisions.length >= 2);
-			assert.ok(decisions[0].includes('JWT'));
-			assert.ok(decisions[1].includes('httpOnly cookies'));
+			expect(Array.isArray(decisions)).toBeTruthy();
+			expect(decisions.length >= 2).toBeTruthy();
+			expect(decisions[0].includes('JWT')).toBeTruthy();
+			expect(decisions[1].includes('httpOnly cookies')).toBeTruthy();
 		});
 
 		test('should extract decisions from heading and reasoning format', () => {
@@ -57,11 +56,11 @@ describe('Ship Command - PR Creation', () => {
 `;
 
 			const decisions = extractKeyDecisions(researchContent);
-			assert.ok(Array.isArray(decisions));
-			assert.strictEqual(decisions.length, 2);
-			assert.ok(decisions[0].includes('Use JWT tokens'));
-			assert.ok(decisions[0].includes('Reasoning: Stateless auth scales better for APIs'));
-			assert.ok(decisions[1].includes('Use refresh token rotation'));
+			expect(Array.isArray(decisions)).toBeTruthy();
+			expect(decisions.length).toBe(2);
+			expect(decisions[0].includes('Use JWT tokens')).toBeTruthy();
+			expect(decisions[0].includes('Reasoning: Stateless auth scales better for APIs')).toBeTruthy();
+			expect(decisions[1].includes('Use refresh token rotation')).toBeTruthy();
 		});
 
 		test('should handle research doc with no decisions section', () => {
@@ -70,8 +69,8 @@ describe('Ship Command - PR Creation', () => {
 Some research content without decisions section.`;
 
 			const decisions = extractKeyDecisions(researchContent);
-			assert.ok(Array.isArray(decisions));
-			assert.strictEqual(decisions.length, 0);
+			expect(Array.isArray(decisions)).toBeTruthy();
+			expect(decisions.length).toBe(0);
 		});
 	});
 
@@ -87,8 +86,8 @@ Some research content without decisions section.`;
 `;
 
 			const scenarios = extractTestScenarios(researchContent);
-			assert.ok(Array.isArray(scenarios));
-			assert.ok(scenarios.length >= 3);
+			expect(Array.isArray(scenarios)).toBeTruthy();
+			expect(scenarios.length >= 3).toBeTruthy();
 		});
 
 		test('should extract scenarios from research.js heading format', () => {
@@ -106,8 +105,8 @@ Some research content without decisions section.`;
 `;
 
 			const scenarios = extractTestScenarios(researchContent);
-			assert.ok(Array.isArray(scenarios));
-			assert.deepStrictEqual(scenarios, ['Happy path test', 'Error handling']);
+			expect(Array.isArray(scenarios)).toBeTruthy();
+			expect(scenarios).toEqual(['Happy path test', 'Error handling']);
 		});
 
 		test('should handle research doc with no test scenarios', () => {
@@ -116,23 +115,23 @@ Some research content without decisions section.`;
 No test scenarios section.`;
 
 			const scenarios = extractTestScenarios(researchContent);
-			assert.ok(Array.isArray(scenarios));
-			assert.strictEqual(scenarios.length, 0);
+			expect(Array.isArray(scenarios)).toBeTruthy();
+			expect(scenarios.length).toBe(0);
 		});
 	});
 
 	describe('Get test coverage metrics', () => {
 		test.skip('should get coverage from c8 report', async () => {
 			const coverage = await getTestCoverage();
-			assert.ok(coverage.lines !== undefined);
-			assert.ok(coverage.branches !== undefined);
-			assert.ok(coverage.functions !== undefined);
-			assert.ok(coverage.statements !== undefined);
+			expect(coverage.lines !== undefined).toBeTruthy();
+			expect(coverage.branches !== undefined).toBeTruthy();
+			expect(coverage.functions !== undefined).toBeTruthy();
+			expect(coverage.statements !== undefined).toBeTruthy();
 		});
 
 		test('should handle missing coverage report gracefully', async () => {
 			const coverage = await getTestCoverage();
-			assert.ok(coverage);
+			expect(coverage).toBeTruthy();
 			// Should return default values or skip indicator
 		});
 	});
@@ -159,11 +158,11 @@ No test scenarios section.`;
 			};
 
 			const body = generatePRBody(context);
-			assert.ok(typeof body === 'string');
-			assert.ok(body.includes('Login Authentication'));
-			assert.ok(body.includes('JWT tokens'));
-			assert.ok(body.includes('85.5%')); // Coverage
-			assert.ok(body.includes('Research:')); // Research doc link
+			expect(typeof body === 'string').toBeTruthy();
+			expect(body.includes('Login Authentication')).toBeTruthy();
+			expect(body.includes('JWT tokens')).toBeTruthy();
+			expect(body.includes('85.5%')).toBeTruthy(); // Coverage
+			expect(body.includes('Research:')).toBeTruthy(); // Research doc link
 		});
 
 		test('should handle missing coverage data', () => {
@@ -175,9 +174,9 @@ No test scenarios section.`;
 			};
 
 			const body = generatePRBody(context);
-			assert.ok(typeof body === 'string');
-			assert.ok(body.includes('Simple Feature'));
-			assert.ok(!body.includes('Coverage:')); // Should skip coverage section
+			expect(typeof body === 'string').toBeTruthy();
+			expect(body.includes('Simple Feature')).toBeTruthy();
+			expect(!body.includes('Coverage:')).toBeTruthy(); // Should skip coverage section
 		});
 
 		test('should include all required PR sections', () => {
@@ -189,9 +188,9 @@ No test scenarios section.`;
 
 			const body = generatePRBody(context);
 			// Check for standard PR sections
-			assert.ok(body.includes('## Summary'));
-			assert.ok(body.includes('## Key Decisions'));
-			assert.ok(body.includes('## Test Scenarios'));
+			expect(body.includes('## Summary')).toBeTruthy();
+			expect(body.includes('## Key Decisions')).toBeTruthy();
+			expect(body.includes('## Test Scenarios')).toBeTruthy();
 		});
 	});
 
@@ -204,7 +203,7 @@ No test scenarios section.`;
 				dryRun: true, // Don't actually create PR
 			});
 
-			assert.ok(result.success);
+			expect(result.success).toBeTruthy();
 		});
 
 		test.skip('should handle gh CLI not found', async () => {
@@ -215,9 +214,9 @@ No test scenarios section.`;
 				dryRun: true,
 			});
 
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 			if (!result.success) {
-				assert.ok(result.error);
+				expect(result.error).toBeTruthy();
 			}
 		});
 
@@ -229,7 +228,7 @@ No test scenarios section.`;
 			});
 
 			// Should fail validation
-			assert.ok(result.success === false || result.error);
+			expect(result.success === false || result.error).toBeTruthy();
 		});
 	});
 
@@ -240,8 +239,8 @@ No test scenarios section.`;
 				title: 'feat: implement test feature',
 			});
 
-			assert.ok(result.success);
-			assert.ok(result.prUrl || result.prNumber);
+			expect(result.success).toBeTruthy();
+			expect(result.prUrl || result.prNumber).toBeTruthy();
 		});
 
 		test('should validate feature slug parameter', async () => {
@@ -250,9 +249,9 @@ No test scenarios section.`;
 				title: 'feat: test',
 			});
 
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
-			assert.match(result.error, /feature.*slug/i);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
+			expect(result.error).toMatch(/feature.*slug/i);
 		});
 
 		test('should validate PR title parameter', async () => {
@@ -261,9 +260,9 @@ No test scenarios section.`;
 				title: '', // Invalid
 			});
 
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
-			assert.match(result.error, /title/i);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
+			expect(result.error).toMatch(/title/i);
 		});
 
 		test('should handle missing research doc gracefully', async () => {
@@ -272,7 +271,7 @@ No test scenarios section.`;
 				title: 'feat: test',
 			});
 
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 			// Should either fail or warn about missing research
 		});
 
@@ -284,7 +283,7 @@ No test scenarios section.`;
 			});
 
 			if (result.success) {
-				assert.ok(result.prUrl || result.message);
+				expect(result.prUrl || result.message).toBeTruthy();
 			}
 		});
 	});
@@ -298,13 +297,13 @@ No test scenarios section.`;
 				dryRun: true,
 			});
 
-			assert.ok(result.success !== undefined);
+			expect(result.success !== undefined).toBeTruthy();
 		});
 
 		test('should handle file read errors', () => {
 			const decisions = extractKeyDecisions(null); // Invalid input
-			assert.ok(Array.isArray(decisions));
-			assert.strictEqual(decisions.length, 0);
+			expect(Array.isArray(decisions)).toBeTruthy();
+			expect(decisions.length).toBe(0);
 		});
 
 		test('should provide actionable error messages', async () => {
@@ -313,10 +312,10 @@ No test scenarios section.`;
 				title: 'test',
 			});
 
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
 			// Error should be actionable
-			assert.ok(result.error.length > 20); // Not just "error"
+			expect(result.error.length > 20).toBeTruthy(); // Not just "error"
 		});
 	});
 });

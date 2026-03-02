@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 // Module under test
 const {
@@ -39,23 +38,23 @@ Content for section 2.`;
 
       const sections = parseSemanticSections(markdown);
 
-      assert.ok(Array.isArray(sections));
-      assert.ok(sections.length > 0);
+      expect(Array.isArray(sections)).toBeTruthy();
+      expect(sections.length > 0).toBeTruthy();
 
       // Check structure of first section
-      assert.ok(sections[0].hasOwnProperty('level'));
-      assert.ok(sections[0].hasOwnProperty('header'));
-      assert.ok(sections[0].hasOwnProperty('content'));
-      assert.ok(sections[0].hasOwnProperty('raw'));
+      expect(sections[0].hasOwnProperty('level')).toBeTruthy();
+      expect(sections[0].hasOwnProperty('header')).toBeTruthy();
+      expect(sections[0].hasOwnProperty('content')).toBeTruthy();
+      expect(sections[0].hasOwnProperty('raw')).toBeTruthy();
     });
 
     test('should handle markdown without sections', () => {
       const markdown = 'Just plain text without headers.';
       const sections = parseSemanticSections(markdown);
 
-      assert.ok(Array.isArray(sections));
+      expect(Array.isArray(sections)).toBeTruthy();
       // Should return at least the root content
-      assert.ok(sections.length > 0);
+      expect(sections.length > 0).toBeTruthy();
     });
 
     test('should extract nested sections correctly', () => {
@@ -72,10 +71,10 @@ Child content`;
       const parent = sections.find(s => s.header === 'Parent');
       const child = sections.find(s => s.header === 'Child');
 
-      assert.ok(parent);
-      assert.ok(child);
-      assert.strictEqual(parent.level, 2);
-      assert.strictEqual(child.level, 3);
+      expect(parent).toBeTruthy();
+      expect(child).toBeTruthy();
+      expect(parent.level).toBe(2);
+      expect(child.level).toBe(3);
     });
   });
 
@@ -83,24 +82,24 @@ Child content`;
     test('should categorize project description as PRESERVE', () => {
       const result = detectCategory('Project Description');
 
-      assert.ok(result.hasOwnProperty('category'));
-      assert.ok(result.hasOwnProperty('confidence'));
-      assert.strictEqual(result.category, 'preserve');
-      assert.ok(result.confidence > 0.7);
+      expect(result.hasOwnProperty('category')).toBeTruthy();
+      expect(result.hasOwnProperty('confidence')).toBeTruthy();
+      expect(result.category).toBe('preserve');
+      expect(result.confidence > 0.7).toBeTruthy();
     });
 
     test('should categorize workflow as REPLACE', () => {
       const result = detectCategory('Workflow');
 
-      assert.strictEqual(result.category, 'replace');
-      assert.ok(result.confidence > 0.7);
+      expect(result.category).toBe('replace');
+      expect(result.confidence > 0.7).toBeTruthy();
     });
 
     test('should categorize toolchain as MERGE', () => {
       const result = detectCategory('Toolchain');
 
-      assert.strictEqual(result.category, 'merge');
-      assert.ok(result.confidence > 0.7);
+      expect(result.category).toBe('merge');
+      expect(result.confidence > 0.7).toBeTruthy();
     });
 
     test('should handle fuzzy matching for similar headers', () => {
@@ -112,25 +111,25 @@ Child content`;
 
       variations.forEach(header => {
         const result = detectCategory(header);
-        assert.strictEqual(result.category, 'replace');
+        expect(result.category).toBe('replace');
         // Fuzzy match should have slightly lower confidence
-        assert.ok(result.confidence > 0.5);
+        expect(result.confidence > 0.5).toBeTruthy();
       });
     });
 
     test('should return low confidence for unknown headers', () => {
       const result = detectCategory('Random Unknown Section');
 
-      assert.ok(result.hasOwnProperty('confidence'));
-      assert.ok(result.confidence < 0.5);
+      expect(result.hasOwnProperty('confidence')).toBeTruthy();
+      expect(result.confidence < 0.5).toBeTruthy();
     });
 
     test('should handle case-insensitive matching', () => {
       const result1 = detectCategory('PROJECT DESCRIPTION');
       const result2 = detectCategory('project description');
 
-      assert.strictEqual(result1.category, result2.category);
-      assert.strictEqual(result1.category, 'preserve');
+      expect(result1.category).toBe(result2.category);
+      expect(result1.category).toBe('preserve');
     });
   });
 
@@ -151,27 +150,27 @@ Use the 9-stage TDD workflow.
       const existing = loadFixture('simple-project-description.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(merged.includes('e-commerce platform'));
-      assert.ok(merged.includes('Stripe integration'));
-      assert.ok(merged.includes('Multi-tenant architecture'));
+      expect(merged.includes('e-commerce platform')).toBeTruthy();
+      expect(merged.includes('Stripe integration')).toBeTruthy();
+      expect(merged.includes('Multi-tenant architecture')).toBeTruthy();
     });
 
     test('should preserve user domain knowledge', () => {
       const existing = loadFixture('simple-project-description.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(merged.includes('Domain Knowledge'));
-      assert.ok(merged.includes('Stripe webhooks'));
-      assert.ok(merged.includes('JWT authentication'));
+      expect(merged.includes('Domain Knowledge')).toBeTruthy();
+      expect(merged.includes('Stripe webhooks')).toBeTruthy();
+      expect(merged.includes('JWT authentication')).toBeTruthy();
     });
 
     test('should preserve user coding standards', () => {
       const existing = loadFixture('simple-project-description.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(merged.includes('Coding Standards'));
-      assert.ok(merged.includes('TypeScript strict mode'));
-      assert.ok(merged.includes('Test coverage minimum 80%'));
+      expect(merged.includes('Coding Standards')).toBeTruthy();
+      expect(merged.includes('TypeScript strict mode')).toBeTruthy();
+      expect(merged.includes('Test coverage minimum 80%')).toBeTruthy();
     });
 
     test('should replace user workflow with Forge workflow', () => {
@@ -179,22 +178,22 @@ Use the 9-stage TDD workflow.
       const merged = semanticMerge(existing, forgeTemplate);
 
       // Forge workflow should be present
-      assert.ok(merged.includes('Forge Workflow'));
-      assert.ok(merged.includes('9-stage TDD workflow'));
+      expect(merged.includes('Forge Workflow')).toBeTruthy();
+      expect(merged.includes('9-stage TDD workflow')).toBeTruthy();
 
       // User's old workflow should be replaced
-      assert.ok(!merged.includes('simple 3-step workflow'));
+      expect(!merged.includes('simple 3-step workflow')).toBeTruthy();
     });
 
     test('should replace user TDD section with Forge principles', () => {
       const existing = loadFixture('workflow-replacement.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(merged.includes('Core Principles'));
-      assert.ok(merged.includes('TDD-First'));
+      expect(merged.includes('Core Principles')).toBeTruthy();
+      expect(merged.includes('TDD-First')).toBeTruthy();
 
       // User's old TDD approach should be replaced
-      assert.ok(!merged.includes('not strictly enforced'));
+      expect(!merged.includes('not strictly enforced')).toBeTruthy();
     });
 
     test('should merge toolchain sections (combine both)', () => {
@@ -202,8 +201,8 @@ Use the 9-stage TDD workflow.
       const merged = semanticMerge(existing, forgeTemplate);
 
       // User's toolchain should be preserved
-      assert.ok(merged.includes('Sentry'));
-      assert.ok(merged.includes('Datadog'));
+      expect(merged.includes('Sentry')).toBeTruthy();
+      expect(merged.includes('Datadog')).toBeTruthy();
 
       // But we don't add duplicate forge toolchain if it doesn't exist
       // (forge template doesn't have toolchain in this test)
@@ -214,19 +213,19 @@ Use the 9-stage TDD workflow.
       const merged = semanticMerge(existing, forgeTemplate);
 
       // "Development Workflow" should match "Workflow" category
-      assert.ok(merged.includes('Forge Workflow'));
+      expect(merged.includes('Forge Workflow')).toBeTruthy();
 
       // "Test-Driven Development" should match "TDD" category
-      assert.ok(merged.includes('Core Principles'));
-      assert.ok(merged.includes('TDD-First'));
+      expect(merged.includes('Core Principles')).toBeTruthy();
+      expect(merged.includes('TDD-First')).toBeTruthy();
     });
 
     test('should preserve project overview/description', () => {
       const existing = loadFixture('fuzzy-headers.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(merged.includes('Analytics dashboard'));
-      assert.ok(merged.includes('SaaS metrics'));
+      expect(merged.includes('Analytics dashboard')).toBeTruthy();
+      expect(merged.includes('SaaS metrics')).toBeTruthy();
     });
 
     test('should handle conflicting sections with detailed process', () => {
@@ -234,42 +233,42 @@ Use the 9-stage TDD workflow.
       const merged = semanticMerge(existing, forgeTemplate);
 
       // Project background should be preserved
-      assert.ok(merged.includes('Legacy monolith'));
-      assert.ok(merged.includes('millions of requests per day'));
+      expect(merged.includes('Legacy monolith')).toBeTruthy();
+      expect(merged.includes('millions of requests per day')).toBeTruthy();
 
       // Migration strategy should be preserved
-      assert.ok(merged.includes('Migration Strategy'));
-      assert.ok(merged.includes('Strangler fig pattern'));
+      expect(merged.includes('Migration Strategy')).toBeTruthy();
+      expect(merged.includes('Strangler fig pattern')).toBeTruthy();
 
       // Process section (workflow-like) should be replaced
-      assert.ok(merged.includes('Forge Workflow'));
+      expect(merged.includes('Forge Workflow')).toBeTruthy();
     });
 
     test('should not add markers by default', () => {
       const existing = loadFixture('simple-project-description.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(!merged.includes('<!-- USER:START -->'));
-      assert.ok(!merged.includes('<!-- FORGE:START -->'));
+      expect(!merged.includes('<!-- USER:START -->')).toBeTruthy();
+      expect(!merged.includes('<!-- FORGE:START -->')).toBeTruthy();
     });
 
     test('should add markers when option is enabled', () => {
       const existing = loadFixture('simple-project-description.md');
       const merged = semanticMerge(existing, forgeTemplate, { addMarkers: true });
 
-      assert.ok(merged.includes('<!-- USER:START -->'));
-      assert.ok(merged.includes('<!-- USER:END -->'));
-      assert.ok(merged.includes('<!-- FORGE:START -->'));
-      assert.ok(merged.includes('<!-- FORGE:END -->'));
+      expect(merged.includes('<!-- USER:START -->')).toBeTruthy();
+      expect(merged.includes('<!-- USER:END -->')).toBeTruthy();
+      expect(merged.includes('<!-- FORGE:START -->')).toBeTruthy();
+      expect(merged.includes('<!-- FORGE:END -->')).toBeTruthy();
     });
 
     test('should preserve user build commands', () => {
       const existing = loadFixture('simple-project-description.md');
       const merged = semanticMerge(existing, forgeTemplate);
 
-      assert.ok(merged.includes('npm install'));
-      assert.ok(merged.includes('npm run dev'));
-      assert.ok(merged.includes('npm test'));
+      expect(merged.includes('npm install')).toBeTruthy();
+      expect(merged.includes('npm run dev')).toBeTruthy();
+      expect(merged.includes('npm test')).toBeTruthy();
     });
 
     test('should handle empty existing content', () => {
@@ -277,8 +276,8 @@ Use the 9-stage TDD workflow.
       const merged = semanticMerge(existing, forgeTemplate);
 
       // Should return forge template when existing is empty
-      assert.ok(merged.includes('Forge Workflow'));
-      assert.ok(merged.includes('Core Principles'));
+      expect(merged.includes('Forge Workflow')).toBeTruthy();
+      expect(merged.includes('Core Principles')).toBeTruthy();
     });
 
     test('should handle empty forge content', () => {
@@ -288,7 +287,7 @@ Use the 9-stage TDD workflow.
       const merged = semanticMerge(existing, forge);
 
       // Should preserve existing when forge is empty
-      assert.ok(merged.includes('e-commerce platform'));
+      expect(merged.includes('e-commerce platform')).toBeTruthy();
     });
   });
 
@@ -299,26 +298,26 @@ Use the 9-stage TDD workflow.
 
       const wrapped = wrapWithMarkers({ user: userContent, forge: forgeContent });
 
-      assert.ok(wrapped.includes('<!-- USER:START -->'));
-      assert.ok(wrapped.includes('<!-- USER:END -->'));
-      assert.ok(wrapped.includes('<!-- FORGE:START -->'));
-      assert.ok(wrapped.includes('<!-- FORGE:END -->'));
-      assert.ok(wrapped.includes(userContent));
-      assert.ok(wrapped.includes(forgeContent));
+      expect(wrapped.includes('<!-- USER:START -->')).toBeTruthy();
+      expect(wrapped.includes('<!-- USER:END -->')).toBeTruthy();
+      expect(wrapped.includes('<!-- FORGE:START -->')).toBeTruthy();
+      expect(wrapped.includes('<!-- FORGE:END -->')).toBeTruthy();
+      expect(wrapped.includes(userContent)).toBeTruthy();
+      expect(wrapped.includes(forgeContent)).toBeTruthy();
     });
 
     test('should handle empty user content', () => {
       const wrapped = wrapWithMarkers({ user: '', forge: 'Forge content' });
 
-      assert.ok(wrapped.includes('<!-- FORGE:START -->'));
-      assert.ok(wrapped.includes('Forge content'));
+      expect(wrapped.includes('<!-- FORGE:START -->')).toBeTruthy();
+      expect(wrapped.includes('Forge content')).toBeTruthy();
     });
 
     test('should handle empty forge content', () => {
       const wrapped = wrapWithMarkers({ user: 'User content', forge: '' });
 
-      assert.ok(wrapped.includes('<!-- USER:START -->'));
-      assert.ok(wrapped.includes('User content'));
+      expect(wrapped.includes('<!-- USER:START -->')).toBeTruthy();
+      expect(wrapped.includes('User content')).toBeTruthy();
     });
   });
 
@@ -329,8 +328,8 @@ Use the 9-stage TDD workflow.
 
       const merged = semanticMerge(existing, forge);
 
-      assert.ok(merged);
-      assert.ok(merged.length > 0);
+      expect(merged).toBeTruthy();
+      expect(merged.length > 0).toBeTruthy();
     });
 
     test('should handle malformed markdown', () => {
@@ -339,7 +338,7 @@ Use the 9-stage TDD workflow.
 
       const merged = semanticMerge(existing, forge);
 
-      assert.ok(merged);
+      expect(merged).toBeTruthy();
     });
 
     test('should handle very long content', () => {
@@ -348,8 +347,8 @@ Use the 9-stage TDD workflow.
 
       const merged = semanticMerge(longContent, forge);
 
-      assert.ok(merged);
-      assert.ok(merged.length > 0);
+      expect(merged).toBeTruthy();
+      expect(merged.length > 0).toBeTruthy();
     });
 
     test('should handle special characters in headers', () => {
@@ -358,7 +357,7 @@ Use the 9-stage TDD workflow.
 
       const merged = semanticMerge(existing, forge);
 
-      assert.ok(merged.includes('Project [Beta]'));
+      expect(merged.includes('Project [Beta]')).toBeTruthy();
     });
 
     test('should handle unicode characters', () => {
@@ -367,8 +366,8 @@ Use the 9-stage TDD workflow.
 
       const merged = semanticMerge(existing, forge);
 
-      assert.ok(merged.includes('Проект'));
-      assert.ok(merged.includes('Содержание'));
+      expect(merged.includes('Проект')).toBeTruthy();
+      expect(merged.includes('Содержание')).toBeTruthy();
     });
   });
 });

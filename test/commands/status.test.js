@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const {
 	detectStage,
 	analyzeBranch,
@@ -23,9 +22,9 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 1);
-			assert.strictEqual(result.confidence, 'high');
-			assert.match(result.nextCommand, /research/i);
+			expect(result.stage).toBe(1);
+			expect(result.confidence).toBe('high');
+			expect(result.nextCommand).toMatch(/research/i);
 		});
 
 		test('should detect stage 2 (research in progress)', () => {
@@ -39,8 +38,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 2);
-			assert.strictEqual(result.confidence, 'medium');
+			expect(result.stage).toBe(2);
+			expect(result.confidence).toBe('medium');
 		});
 
 		test('should detect stage 3 (research exists, no plan)', () => {
@@ -54,9 +53,9 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 3);
-			assert.strictEqual(result.confidence, 'medium');
-			assert.match(result.nextCommand, /plan/i);
+			expect(result.stage).toBe(3);
+			expect(result.confidence).toBe('medium');
+			expect(result.nextCommand).toMatch(/plan/i);
 		});
 
 		test('should detect stage 4 (plan exists, no dev)', () => {
@@ -70,8 +69,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 4);
-			assert.match(result.nextCommand, /dev/i);
+			expect(result.stage).toBe(4);
+			expect(result.nextCommand).toMatch(/dev/i);
 		});
 
 		test('should detect stage 5 (dev in progress, tests failing)', () => {
@@ -86,8 +85,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 5);
-			assert.match(result.nextCommand, /check/i);
+			expect(result.stage).toBe(5);
+			expect(result.nextCommand).toMatch(/check/i);
 		});
 
 		test('should detect stage 6 (ready to ship)', () => {
@@ -103,9 +102,9 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 6);
-			assert.strictEqual(result.confidence, 'high');
-			assert.match(result.nextCommand, /ship/i);
+			expect(result.stage).toBe(6);
+			expect(result.confidence).toBe('high');
+			expect(result.nextCommand).toMatch(/ship/i);
 		});
 
 		test('should detect stage 7 (PR open, awaiting review)', () => {
@@ -120,8 +119,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 7);
-			assert.match(result.nextCommand, /review/i);
+			expect(result.stage).toBe(7);
+			expect(result.nextCommand).toMatch(/review/i);
 		});
 
 		test('should detect stage 8 (PR approved, ready to merge)', () => {
@@ -137,8 +136,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 8);
-			assert.match(result.nextCommand, /merge/i);
+			expect(result.stage).toBe(8);
+			expect(result.nextCommand).toMatch(/merge/i);
 		});
 
 		test('should detect stage 9 (PR merged, verify docs)', () => {
@@ -152,8 +151,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.stage, 9);
-			assert.match(result.nextCommand, /verify/i);
+			expect(result.stage).toBe(9);
+			expect(result.nextCommand).toMatch(/verify/i);
 		});
 	});
 
@@ -169,8 +168,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.confidence, 'high');
-			assert.ok(result.confidenceScore >= 90);
+			expect(result.confidence).toBe('high');
+			expect(result.confidenceScore >= 90).toBeTruthy();
 		});
 
 		test('should return low confidence (<70%) for mixed signals', () => {
@@ -184,8 +183,8 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.confidence, 'low');
-			assert.ok(result.confidenceScore < 70);
+			expect(result.confidence).toBe('low');
+			expect(result.confidenceScore < 70).toBeTruthy();
 		});
 
 		test('should return low confidence (<70%) for conflicting signals', () => {
@@ -199,16 +198,16 @@ describe('Status Command - Stage Detection', () => {
 			};
 
 			const result = detectStage(context);
-			assert.strictEqual(result.confidence, 'low');
-			assert.ok(result.confidenceScore < 70);
+			expect(result.confidence).toBe('low');
+			expect(result.confidenceScore < 70).toBeTruthy();
 		});
 	});
 
 	describe('Multi-factor analysis', () => {
 		test('should analyze branch state', () => {
 			const factors = analyzeBranch('feat/feature-name');
-			assert.strictEqual(factors.onFeatureBranch, true);
-			assert.strictEqual(factors.featureSlug, 'feature-name');
+			expect(factors.onFeatureBranch).toBe(true);
+			expect(factors.featureSlug).toBe('feature-name');
 		});
 
 		test('should analyze file existence', () => {
@@ -216,25 +215,25 @@ describe('Status Command - Stage Detection', () => {
 				researchDoc: 'docs/research/feature.md',
 				plan: '.claude/plans/feature.md',
 			});
-			assert.strictEqual(factors.hasResearch, true);
-			assert.strictEqual(factors.hasPlan, true);
+			expect(factors.hasResearch).toBe(true);
+			expect(factors.hasPlan).toBe(true);
 		});
 
 		test('should analyze PR state', () => {
 			const factors = analyzePR({ number: 123, state: 'open', approved: true });
-			assert.strictEqual(factors.hasPR, true);
-			assert.strictEqual(factors.prApproved, true);
+			expect(factors.hasPR).toBe(true);
+			expect(factors.prApproved).toBe(true);
 		});
 
 		test('should analyze check results', () => {
 			const factors = analyzeChecks({ testsPass: true, lintPass: true, checksPass: true });
-			assert.strictEqual(factors.allChecksPass, true);
+			expect(factors.allChecksPass).toBe(true);
 		});
 
 		test('should analyze Beads issue state', () => {
 			const factors = analyzeBeads({ status: 'in_progress', type: 'feature' });
-			assert.strictEqual(factors.hasActiveIssue, true);
-			assert.strictEqual(factors.issueStatus, 'in_progress');
+			expect(factors.hasActiveIssue).toBe(true);
+			expect(factors.issueStatus).toBe('in_progress');
 		});
 	});
 
@@ -254,9 +253,9 @@ describe('Status Command - Stage Detection', () => {
 					beads: {},
 				},
 			});
-			assert.match(output, /6/);
-			assert.match(output, /high/i);
-			assert.match(output, /ship/i);
+			expect(output).toMatch(/6/);
+			expect(output).toMatch(/high/i);
+			expect(output).toMatch(/ship/i);
 		});
 
 		test('should include completed checks in output', () => {
@@ -274,9 +273,9 @@ describe('Status Command - Stage Detection', () => {
 					beads: {},
 				},
 			});
-			assert.match(output, /research doc exists/i);
-			assert.match(output, /plan created/i);
-			assert.match(output, /tests passing/i);
+			expect(output).toMatch(/research doc exists/i);
+			expect(output).toMatch(/plan created/i);
+			expect(output).toMatch(/tests passing/i);
 		});
 
 		test('should suggest manual verification for low confidence', () => {
@@ -294,8 +293,8 @@ describe('Status Command - Stage Detection', () => {
 					beads: {},
 				},
 			});
-			assert.match(output, /manual verification suggested/i);
-			assert.match(output, /conflicting signals/i);
+			expect(output).toMatch(/manual verification suggested/i);
+			expect(output).toMatch(/conflicting signals/i);
 		});
 	});
 });

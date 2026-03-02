@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 
 // Integration tests for enhanced onboarding
 // Tests the complete flow from CLI to file generation
@@ -49,10 +48,10 @@ describe('Enhanced Onboarding Integration', () => {
       const projectDiscovery = require('../../lib/project-discovery');
       const detected = await projectDiscovery.autoDetect(projectPath);
 
-      assert.strictEqual(detected.framework, 'Next.js');
-      assert.strictEqual(detected.language, 'typescript');
-      assert.ok(detected.stage); // Should have a stage
-      assert.ok(detected.confidence >= 0.3); // Should have confidence score
+      expect(detected.framework).toBe('Next.js');
+      expect(detected.language).toBe('typescript');
+      expect(detected.stage).toBeTruthy(); // Should have a stage
+      expect(detected.confidence >= 0.3).toBeTruthy(); // Should have confidence score
     });
 
     test('should detect React project without TypeScript', async () => {
@@ -74,8 +73,8 @@ describe('Enhanced Onboarding Integration', () => {
       const projectDiscovery = require('../../lib/project-discovery');
       const detected = await projectDiscovery.autoDetect(projectPath);
 
-      assert.strictEqual(detected.framework, 'React');
-      assert.strictEqual(detected.language, 'javascript');
+      expect(detected.framework).toBe('React');
+      expect(detected.language).toBe('javascript');
     });
 
     test('should save context to .forge/context.json', async () => {
@@ -97,15 +96,15 @@ describe('Enhanced Onboarding Integration', () => {
 
       // Verify .forge/context.json exists
       const contextPath = path.join(projectPath, '.forge', 'context.json');
-      assert.ok(fs.existsSync(contextPath));
+      expect(fs.existsSync(contextPath)).toBeTruthy();
 
       // Verify content structure
       const contextData = JSON.parse(await fs.promises.readFile(contextPath, 'utf8'));
-      assert.ok(contextData.auto_detected);
-      assert.ok(contextData.auto_detected.framework);
-      assert.ok(contextData.auto_detected.language);
-      assert.ok(contextData.auto_detected.stage);
-      assert.ok(contextData.last_updated);
+      expect(contextData.auto_detected).toBeTruthy();
+      expect(contextData.auto_detected.framework).toBeTruthy();
+      expect(contextData.auto_detected.language).toBeTruthy();
+      expect(contextData.auto_detected.stage).toBeTruthy();
+      expect(contextData.last_updated).toBeTruthy();
     });
   });
 
@@ -119,8 +118,8 @@ describe('Enhanced Onboarding Integration', () => {
       };
 
       const result = workflowProfiles.detectWorkType(context);
-      assert.strictEqual(result.userType, 'feature');
-      assert.strictEqual(result.profile, 'standard');
+      expect(result.userType).toBe('feature');
+      expect(result.profile).toBe('standard');
     });
 
     test('should escalate feature → critical with auth keyword', () => {
@@ -132,8 +131,8 @@ describe('Enhanced Onboarding Integration', () => {
       };
 
       const result = workflowProfiles.detectWorkType(context);
-      assert.strictEqual(result.userType, 'feature');
-      assert.strictEqual(result.profile, 'critical');
+      expect(result.userType).toBe('feature');
+      expect(result.profile).toBe('critical');
     });
 
     test('should detect fix → simple workflow', () => {
@@ -145,8 +144,8 @@ describe('Enhanced Onboarding Integration', () => {
       };
 
       const result = workflowProfiles.detectWorkType(context);
-      assert.strictEqual(result.userType, 'fix');
-      assert.strictEqual(result.profile, 'simple');
+      expect(result.userType).toBe('fix');
+      expect(result.profile).toBe('simple');
     });
 
     test('should escalate fix → hotfix with production keyword', () => {
@@ -158,8 +157,8 @@ describe('Enhanced Onboarding Integration', () => {
       };
 
       const result = workflowProfiles.detectWorkType(context);
-      assert.strictEqual(result.userType, 'fix');
-      assert.strictEqual(result.profile, 'hotfix');
+      expect(result.userType).toBe('fix');
+      expect(result.profile).toBe('hotfix');
     });
 
     test('should detect chore → docs for markdown files', () => {
@@ -171,8 +170,8 @@ describe('Enhanced Onboarding Integration', () => {
       };
 
       const result = workflowProfiles.detectWorkType(context);
-      assert.strictEqual(result.userType, 'chore');
-      assert.strictEqual(result.profile, 'docs');
+      expect(result.userType).toBe('chore');
+      expect(result.profile).toBe('docs');
     });
   });
 
@@ -217,14 +216,14 @@ Run \`/status\` to begin.
       const merged = contextMerge.semanticMerge(existingContent, forgeContent);
 
       // Verify user content preserved
-      assert.ok(merged.includes('e-commerce platform'), 'Should preserve e-commerce platform');
-      assert.ok(merged.includes('Domain Knowledge'), 'Should preserve Domain Knowledge');
-      assert.ok(merged.includes('Stripe'), 'Should preserve Stripe');
-      assert.ok(merged.includes('TypeScript strict mode'), 'Should preserve TypeScript strict mode');
+      expect(merged.includes('e-commerce platform')).toBeTruthy();
+      expect(merged.includes('Domain Knowledge')).toBeTruthy();
+      expect(merged.includes('Stripe')).toBeTruthy();
+      expect(merged.includes('TypeScript strict mode')).toBeTruthy();
 
       // Verify merge was successful (contains content from both)
-      assert.ok(merged.length > existingContent.length, 'Merged content should be longer than original');
-      assert.ok(merged.includes('# My Custom AGENTS.md') || merged.includes('# AGENTS.md'), 'Should have header');
+      expect(merged.length > existingContent.length).toBeTruthy();
+      expect(merged.includes('# My Custom AGENTS.md') || merged.includes('# AGENTS.md')).toBeTruthy();
 
       // Main goal: User content is preserved (Forge workflow may be categorized differently)
       // The key test is that we didn't lose user content
@@ -247,8 +246,8 @@ Run \`/status\` to begin.
 `;
 
       const merged = contextMerge.semanticMerge(existingContent, forgeContent);
-      assert.ok(merged.includes('Project Overview'));
-      assert.ok(merged.includes('Workflow'));
+      expect(merged.includes('Project Overview')).toBeTruthy();
+      expect(merged.includes('Workflow')).toBeTruthy();
     });
   });
 
@@ -277,15 +276,15 @@ Run \`/status\` to begin.
       const projectDiscovery = require('../../lib/project-discovery');
       const detected = await projectDiscovery.autoDetect(projectPath);
 
-      assert.strictEqual(detected.framework, 'Next.js');
-      assert.strictEqual(detected.language, 'typescript');
+      expect(detected.framework).toBe('Next.js');
+      expect(detected.language).toBe('typescript');
 
       // 2. Save context
       await projectDiscovery.saveContext(detected, projectPath);
 
       // Verify context saved
       const contextPath = path.join(projectPath, '.forge', 'context.json');
-      assert.ok(fs.existsSync(contextPath));
+      expect(fs.existsSync(contextPath)).toBeTruthy();
 
       // 3. Detect workflow profile (simulated)
       const workflowProfiles = require('../../lib/workflow-profiles');
@@ -295,7 +294,7 @@ Run \`/status\` to begin.
         files: []
       });
 
-      assert.strictEqual(workType.profile, 'standard');
+      expect(workType.profile).toBe('standard');
     });
 
     test('should handle upgrade with existing AGENTS.md (no markers)', async () => {
@@ -326,13 +325,13 @@ This is a SaaS platform.
       const merged = contextMerge.semanticMerge(existingAgentsMd, forgeContent);
 
       // Verify merge preserved user content
-      assert.ok(merged.includes('Custom Instructions'));
-      assert.ok(merged.includes('special coding style'));
-      assert.ok(merged.includes('SaaS platform'));
+      expect(merged.includes('Custom Instructions')).toBeTruthy();
+      expect(merged.includes('special coding style')).toBeTruthy();
+      expect(merged.includes('SaaS platform')).toBeTruthy();
 
       // Verify workflow added
-      assert.ok(merged.includes('Workflow'));
-      assert.ok(merged.includes('9-stage'));
+      expect(merged.includes('Workflow')).toBeTruthy();
+      expect(merged.includes('9-stage')).toBeTruthy();
     });
   });
 
@@ -345,9 +344,9 @@ This is a SaaS platform.
       const detected = await projectDiscovery.autoDetect(projectPath);
 
       // Should not throw, should return defaults
-      assert.ok(detected);
-      assert.ok(detected.stage);
-      assert.strictEqual(detected.framework, null);
+      expect(detected).toBeTruthy();
+      expect(detected.stage).toBeTruthy();
+      expect(detected.framework).toBe(null);
     });
 
     test('should handle malformed package.json gracefully', async () => {
@@ -364,8 +363,8 @@ This is a SaaS platform.
       const detected = await projectDiscovery.autoDetect(projectPath);
 
       // Should handle error gracefully
-      assert.ok(detected);
-      assert.strictEqual(detected.framework, null);
+      expect(detected).toBeTruthy();
+      expect(detected.framework).toBe(null);
     });
 
     test('should handle empty context object in workflow detection', () => {
@@ -373,8 +372,8 @@ This is a SaaS platform.
       const result = workflowProfiles.detectWorkType({});
 
       // Should default to feature → standard
-      assert.strictEqual(result.userType, 'feature');
-      assert.strictEqual(result.profile, 'standard');
+      expect(result.userType).toBe('feature');
+      expect(result.profile).toBe('standard');
     });
   });
 
@@ -388,7 +387,7 @@ This is a SaaS platform.
       const inputWithNullByte = 'some/path\0/evil';
 
       // Validation should reject null bytes
-      assert.ok(inputWithNullByte.includes('\0'), 'Test input contains null byte');
+      expect(inputWithNullByte.includes('\0')).toBeTruthy();
 
       // The validation in forge.js blocks inputs with null bytes
       // This is enforced at runtime, tested here for documentation
@@ -406,7 +405,7 @@ This is a SaaS platform.
       // All these should be blocked by the shell metacharacter check
       // in validateUserInput (line 107: /[;|&$`()<>\r\n]/)
       dangerousInputs.forEach(input => {
-        assert.ok(/[;|&$`()<>\r\n]/.test(input), `Input "${input}" should contain shell metacharacters`);
+        expect(/[;|&$`()<>\r\n]/.test(input), `Input "${input}" should contain shell metacharacters`);
       });
     });
 
@@ -426,11 +425,11 @@ This is a SaaS platform.
             normalized.startsWith(String.raw`c:\windows`) ||
             normalized.startsWith(String.raw`c:\program files`);
 
-          assert.ok(isBlocked, `Path "${blockedPath}" should be blocked`);
+          expect(isBlocked).toBeTruthy();
         });
       } else {
         // Skip on non-Windows
-        assert.ok(true, 'Test skipped on non-Windows platform');
+        expect(true).toBeTruthy();
       }
     });
 
@@ -438,7 +437,7 @@ This is a SaaS platform.
       // Use positive condition instead of negation (S7735)
       if (process.platform === 'win32') {
         // Skip on Windows
-        assert.ok(true, 'Test skipped on Windows platform');
+        expect(true).toBeTruthy();
       } else {
         const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
 
@@ -450,7 +449,7 @@ This is a SaaS platform.
             normalized.startsWith(blocked)
           );
 
-          assert.ok(isBlocked, `Path "${blockedPath}" should be blocked`);
+          expect(isBlocked).toBeTruthy();
         });
       }
     });
@@ -468,8 +467,8 @@ This is a SaaS platform.
         const hasNullByte = safePath.includes('\0');
         const hasShellMeta = /[;|&$`()<>\r\n]/.test(safePath);
 
-        assert.strictEqual(hasNullByte, false, `Path "${safePath}" should not have null bytes`);
-        assert.strictEqual(hasShellMeta, false, `Path "${safePath}" should not have shell metacharacters`);
+        expect(hasNullByte).toBe(false);
+        expect(hasShellMeta).toBe(false);
       });
     });
   });

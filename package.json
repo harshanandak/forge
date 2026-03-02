@@ -10,7 +10,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "bun test test/context-merge.test.js test/project-discovery.test.js test/workflow-profiles.test.js test/integration/enhanced-onboarding.test.js test-env/**/*.test.js packages/skills/test/**/*.test.js",
+    "test": "bun test",
     "test:setup": "bash test-env/automation/setup-fixtures.sh",
     "test:all": "bun run test:setup && bun test",
     "test:coverage": "c8 --check-coverage bun test",

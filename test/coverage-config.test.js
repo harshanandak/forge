@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('Code Coverage Configuration', () => {
   const packagePath = path.join(__dirname, '..', 'package.json');
@@ -13,7 +12,7 @@ describe('Code Coverage Configuration', () => {
       const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
 
       const hasC8 = pkg.devDependencies?.c8 || pkg.dependencies?.c8;
-      assert.ok(hasC8, 'Should have c8 package for coverage');
+      expect(hasC8).toBeTruthy();
     });
   });
 
@@ -21,12 +20,9 @@ describe('Code Coverage Configuration', () => {
     test('should have test:coverage script', () => {
       const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
 
-      assert.ok(pkg.scripts['test:coverage'], 'Should have test:coverage script');
-      assert.ok(
-        pkg.scripts['test:coverage'].includes('--coverage') ||
-        pkg.scripts['test:coverage'].includes('c8'),
-        'test:coverage should run coverage reporting'
-      );
+      expect(pkg.scripts['test:coverage']).toBeTruthy();
+      expect(pkg.scripts['test:coverage'].includes('--coverage') ||
+        pkg.scripts['test:coverage'].includes('c8')).toBeTruthy();
     });
 
     test('should have coverage script with thresholds', () => {
@@ -36,10 +32,7 @@ describe('Code Coverage Configuration', () => {
       const hasC8Config = pkg.c8 !== undefined;
       const hasCoverageScript = pkg.scripts['test:coverage'] !== undefined;
 
-      assert.ok(
-        hasC8Config || hasCoverageScript,
-        'Should have c8 configuration or coverage script'
-      );
+      expect(hasC8Config || hasCoverageScript).toBeTruthy();
     });
   });
 
@@ -48,10 +41,10 @@ describe('Code Coverage Configuration', () => {
       const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
 
       if (pkg.c8) {
-        assert.ok(pkg.c8.lines >= 80, 'Should require 80% line coverage');
+        expect(pkg.c8.lines >= 80).toBeTruthy();
       } else {
         // If no c8 config yet, test will fail (RED phase)
-        assert.fail('c8 configuration not found in package.json');
+        throw new Error('c8 configuration not found in package.json');
       }
     });
 
@@ -59,9 +52,9 @@ describe('Code Coverage Configuration', () => {
       const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
 
       if (pkg.c8) {
-        assert.ok(pkg.c8.branches >= 80, 'Should require 80% branch coverage');
+        expect(pkg.c8.branches >= 80).toBeTruthy();
       } else {
-        assert.fail('c8 configuration not found in package.json');
+        throw new Error('c8 configuration not found in package.json');
       }
     });
 
@@ -69,9 +62,9 @@ describe('Code Coverage Configuration', () => {
       const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
 
       if (pkg.c8) {
-        assert.ok(pkg.c8.functions >= 80, 'Should require 80% function coverage');
+        expect(pkg.c8.functions >= 80).toBeTruthy();
       } else {
-        assert.fail('c8 configuration not found in package.json');
+        throw new Error('c8 configuration not found in package.json');
       }
     });
 
@@ -82,9 +75,9 @@ describe('Code Coverage Configuration', () => {
         const excludesTests = pkg.c8.exclude.some(pattern =>
           pattern.includes('test') || pattern.includes('*.test.js')
         );
-        assert.ok(excludesTests, 'Should exclude test files from coverage');
+        expect(excludesTests).toBeTruthy();
       } else {
-        assert.fail('c8 exclude configuration not found');
+        throw new Error('c8 exclude configuration not found');
       }
     });
   });
@@ -112,7 +105,7 @@ describe('Code Coverage Configuration', () => {
         }
       });
 
-      assert.ok(hasCoverageBadge, 'README should have coverage badge');
+      expect(hasCoverageBadge).toBeTruthy();
     });
   });
 
@@ -123,7 +116,7 @@ describe('Code Coverage Configuration', () => {
       const ignoresCoverage = gitignore.includes('coverage') ||
                               gitignore.includes('.nyc_output');
 
-      assert.ok(ignoresCoverage, '.gitignore should ignore coverage directories');
+      expect(ignoresCoverage).toBeTruthy();
     });
   });
 });

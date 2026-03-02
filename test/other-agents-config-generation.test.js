@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -26,22 +25,22 @@ describe('Kilo Code config generation', () => {
     const kiloMdPath = path.join(tempDir, '.kilo.md');
     const exists = await fs.promises.access(kiloMdPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, '.kilo.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
 
     // Should include Forge workflow
-    assert.ok(content.includes('Forge'), 'Should mention Forge');
-    assert.ok(content.includes('9-Stage') || content.includes('9 Stage'), 'Should mention 9-stage workflow');
+    expect(content.includes('Forge')).toBeTruthy();
+    expect(content.includes('9-Stage') || content.includes('9 Stage')).toBeTruthy();
 
     // Should include all workflow stages
-    assert.ok(content.includes('/status'), 'Should include /status');
-    assert.ok(content.includes('/plan'), 'Should include /plan');
-    assert.ok(content.includes('/dev'), 'Should include /dev');
-    assert.ok(content.includes('/check'), 'Should include /check');
+    expect(content.includes('/status')).toBeTruthy();
+    expect(content.includes('/plan')).toBeTruthy();
+    expect(content.includes('/dev')).toBeTruthy();
+    expect(content.includes('/check')).toBeTruthy();
 
     // Should include TDD guidance
-    assert.ok(content.includes('TDD'), 'Should include TDD');
+    expect(content.includes('TDD')).toBeTruthy();
   });
 
   test('should be plain markdown without frontmatter', async () => {
@@ -51,7 +50,7 @@ describe('Kilo Code config generation', () => {
     const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
 
     // Kilo uses plain markdown
-    assert.ok(content.startsWith('#'), 'Should start with markdown heading, not frontmatter');
+    expect(content.startsWith('#')).toBeTruthy();
   });
 
   test('should not overwrite existing .kilo.md by default', async () => {
@@ -62,7 +61,7 @@ describe('Kilo Code config generation', () => {
     await generateKiloConfig(tempDir, { overwrite: false });
 
     const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
-    assert.strictEqual(content, existingContent, 'Should not overwrite when overwrite=false');
+    expect(content).toBe(existingContent);
   });
 
   test('should include project metadata', async () => {
@@ -78,7 +77,7 @@ describe('Kilo Code config generation', () => {
     const kiloMdPath = path.join(tempDir, '.kilo.md');
     const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
 
-    assert.ok(content.includes('TypeScript') || content.includes('bun'), 'Should include project metadata');
+    expect(content.includes('TypeScript') || content.includes('bun')).toBeTruthy();
   });
 });
 
@@ -101,16 +100,15 @@ describe('Aider config generation', () => {
     const aiderConfPath = path.join(tempDir, '.aider.conf.yml');
     const exists = await fs.promises.access(aiderConfPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, '.aider.conf.yml should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(aiderConfPath, 'utf-8');
 
     // Should be YAML format
-    assert.ok(content.includes(':'), 'Should be YAML format with key:value pairs');
+    expect(content.includes(':')).toBeTruthy();
 
     // Should include system prompt or instructions
-    assert.ok(content.includes('system-prompt') || content.includes('instructions'),
-      'Should include system prompt or instructions field');
+    expect(content.includes('system-prompt') || content.includes('instructions')).toBeTruthy();
   });
 
   test('should include Forge workflow in system prompt', async () => {
@@ -120,8 +118,7 @@ describe('Aider config generation', () => {
     const content = await fs.promises.readFile(aiderConfPath, 'utf-8');
 
     // Should mention Forge workflow
-    assert.ok(content.includes('Forge') || content.includes('TDD'),
-      'Should include Forge workflow or TDD guidance');
+    expect(content.includes('Forge') || content.includes('TDD')).toBeTruthy();
   });
 
   test('should not overwrite existing .aider.conf.yml by default', async () => {
@@ -132,7 +129,7 @@ describe('Aider config generation', () => {
     await generateAiderConfig(tempDir, { overwrite: false });
 
     const content = await fs.promises.readFile(aiderConfPath, 'utf-8');
-    assert.strictEqual(content, existingContent, 'Should not overwrite when overwrite=false');
+    expect(content).toBe(existingContent);
   });
 });
 
@@ -155,13 +152,13 @@ describe('OpenCode config generation', () => {
     const opencodeJsonPath = path.join(tempDir, 'opencode.json');
     const exists = await fs.promises.access(opencodeJsonPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'opencode.json should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(opencodeJsonPath, 'utf-8');
 
     // Should be valid JSON
     const json = JSON.parse(content);
-    assert.ok(json, 'Should be valid JSON');
+    expect(json).toBeTruthy();
   });
 
   test('should include agent configuration', async () => {
@@ -172,7 +169,7 @@ describe('OpenCode config generation', () => {
     const json = JSON.parse(content);
 
     // Should have agent or agents configuration
-    assert.ok(json.agent || json.agents, 'Should include agent configuration');
+    expect(json.agent || json.agents).toBeTruthy();
   });
 
   test('should create .opencode/agents directory', async () => {
@@ -181,7 +178,7 @@ describe('OpenCode config generation', () => {
     const agentsDir = path.join(tempDir, '.opencode', 'agents');
     const exists = await fs.promises.access(agentsDir).then(() => true).catch(() => false);
 
-    assert.ok(exists, '.opencode/agents directory should be created');
+    expect(exists).toBeTruthy();
   });
 
   test('should create custom agent files', async () => {
@@ -190,11 +187,11 @@ describe('OpenCode config generation', () => {
     const agentsDir = path.join(tempDir, '.opencode', 'agents');
     const files = await fs.promises.readdir(agentsDir);
 
-    assert.ok(files.length > 0, 'Should create at least one custom agent file');
+    expect(files.length > 0).toBeTruthy();
 
     // Check for plan agent
     const planAgent = files.find(f => f.includes('plan'));
-    assert.ok(planAgent, 'Should include plan agent');
+    expect(planAgent).toBeTruthy();
   });
 
   test('should create plan-review.md agent', async () => {
@@ -203,16 +200,16 @@ describe('OpenCode config generation', () => {
     const planAgentPath = path.join(tempDir, '.opencode', 'agents', 'plan-review.md');
     const exists = await fs.promises.access(planAgentPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'plan-review.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(planAgentPath, 'utf-8');
 
     // Should have frontmatter
-    assert.ok(content.startsWith('---'), 'Should have YAML frontmatter');
-    assert.ok(content.includes('description:'), 'Should include description');
+    expect(content.startsWith('---')).toBeTruthy();
+    expect(content.includes('description:')).toBeTruthy();
 
     // Should mention planning
-    assert.ok(content.includes('plan') || content.includes('Plan'), 'Should mention planning');
+    expect(content.includes('plan') || content.includes('Plan')).toBeTruthy();
   });
 
   test('should not overwrite existing opencode.json by default', async () => {
@@ -223,7 +220,7 @@ describe('OpenCode config generation', () => {
     await generateOpenCodeConfig(tempDir, { overwrite: false });
 
     const content = await fs.promises.readFile(opencodeJsonPath, 'utf-8');
-    assert.strictEqual(content, existingContent, 'Should not overwrite when overwrite=false');
+    expect(content).toBe(existingContent);
   });
 
   test('should include MCP server configuration', async () => {
@@ -234,6 +231,6 @@ describe('OpenCode config generation', () => {
     const json = JSON.parse(content);
 
     // Should have mcp_servers configuration
-    assert.ok(json.mcp_servers, 'Should include mcp_servers configuration');
+    expect(json.mcp_servers).toBeTruthy();
   });
 });

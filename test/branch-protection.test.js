@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const { spawnSync } = require('node:child_process');
 
 describe('scripts/branch-protection.js', () => {
@@ -9,17 +8,14 @@ describe('scripts/branch-protection.js', () => {
 
   describe('Script existence and cross-platform compatibility', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(scriptPath), 'branch-protection.js should exist');
+      expect(fs.existsSync(scriptPath)).toBeTruthy();
     });
 
     test('should be a Node.js script (not shell script)', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
       const firstLine = content.split('\n')[0];
       // Should have Node.js shebang for cross-platform compatibility
-      assert.ok(
-        firstLine.includes('#!/usr/bin/env node') || !firstLine.startsWith('#!'),
-        'Should be a Node.js script for Windows compatibility'
-      );
+      expect(firstLine.includes('#!/usr/bin/env node') || !firstLine.startsWith('#!')).toBeTruthy();
     });
 
     test('should be executable via node command', () => {
@@ -30,10 +26,7 @@ describe('scripts/branch-protection.js', () => {
       });
 
       // Should either show help or handle --help flag gracefully
-      assert.ok(
-        result.status === 0 || result.status === 1,
-        'Script should be executable via node'
-      );
+      expect(result.status === 0 || result.status === 1).toBeTruthy();
     });
   });
 
@@ -42,34 +35,22 @@ describe('scripts/branch-protection.js', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
 
       // Should check for main and master branches
-      assert.ok(
-        content.includes('main') && content.includes('master'),
-        'Should protect both main and master branches'
-      );
+      expect(content.includes('main') && content.includes('master')).toBeTruthy();
     });
 
     test('should use environment variable for current branch', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
 
       // Lefthook provides LEFTHOOK_GIT_BRANCH or needs git command
-      assert.ok(
-        content.includes('process.env') || content.includes('git'),
-        'Should read current branch from environment or git'
-      );
+      expect(content.includes('process.env') || content.includes('git')).toBeTruthy();
     });
 
     test('should provide clear error message', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
 
       // Should have informative error message
-      assert.ok(
-        content.includes('console.error') || content.includes('stderr'),
-        'Should output error message'
-      );
-      assert.ok(
-        content.toLowerCase().includes('protected') || content.toLowerCase().includes('forbidden'),
-        'Should mention branch protection in message'
-      );
+      expect(content.includes('console.error') || content.includes('stderr')).toBeTruthy();
+      expect(content.toLowerCase().includes('protected') || content.toLowerCase().includes('forbidden')).toBeTruthy();
     });
   });
 
@@ -78,20 +59,14 @@ describe('scripts/branch-protection.js', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
 
       // Should call process.exit(1) for blocked pushes
-      assert.ok(
-        content.includes('process.exit(1)') || content.includes('exit(1)'),
-        'Should exit with code 1 when blocking push'
-      );
+      expect(content.includes('process.exit(1)') || content.includes('exit(1)')).toBeTruthy();
     });
 
     test('should exit with code 0 when allowing push', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
 
       // Should call process.exit(0) or have implicit success
-      assert.ok(
-        content.includes('process.exit(0)') || content.includes('exit(0)') || !content.includes('process.exit'),
-        'Should exit with code 0 when allowing push'
-      );
+      expect(content.includes('process.exit(0)') || content.includes('exit(0)') || !content.includes('process.exit')).toBeTruthy();
     });
   });
 
@@ -112,10 +87,7 @@ describe('scripts/branch-protection.js', () => {
       });
 
       // Should execute without shell syntax errors
-      assert.ok(
-        result.status === 0 || result.status === 1,
-        'Should execute on Windows without syntax errors'
-      );
+      expect(result.status === 0 || result.status === 1).toBeTruthy();
     });
 
     test('should not use shell-specific syntax', () => {
@@ -131,17 +103,14 @@ describe('scripts/branch-protection.js', () => {
       ];
 
       // Check each pattern
-      for (const { pattern, name } of bashPatterns) {
+      for (const { pattern } of bashPatterns) {
         const match = content.match(pattern);
-        assert.ok(
-          !match,
-          `Should not use ${name}: found "${match ? match[0] : ''}"`
-        );
+        expect(!match).toBeTruthy();
       }
 
       // Should use Node.js/JavaScript instead
-      assert.ok(content.includes('process.env'), 'Should use process.env for environment variables');
-      assert.ok(content.includes('require('), 'Should use require() for imports');
+      expect(content.includes('process.env')).toBeTruthy();
+      expect(content.includes('require(')).toBeTruthy();
     });
   });
 
@@ -151,11 +120,8 @@ describe('scripts/branch-protection.js', () => {
       const content = fs.readFileSync(lefthookPath, 'utf-8');
 
       // Should invoke script with 'node scripts/branch-protection.js'
-      assert.ok(
-        content.includes('node scripts/branch-protection.js') ||
-        content.includes('node ./scripts/branch-protection.js'),
-        'lefthook.yml should execute script with node'
-      );
+      expect(content.includes('node scripts/branch-protection.js') ||
+        content.includes('node ./scripts/branch-protection.js')).toBeTruthy();
     });
   });
 });

@@ -1,14 +1,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('SECURITY.md', () => {
   const securityPath = path.join(__dirname, '..', 'SECURITY.md');
 
   describe('File existence', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(securityPath), 'SECURITY.md should exist');
+      expect(fs.existsSync(securityPath)).toBeTruthy();
     });
   });
 
@@ -21,7 +20,7 @@ describe('SECURITY.md', () => {
                                    content.match(/##\s+Versions/i) ||
                                    content.includes('supported version');
 
-      assert.ok(hasSupportedVersions, 'SECURITY.md should document supported versions');
+      expect(hasSupportedVersions).toBeTruthy();
     });
 
     test('should have Reporting section', () => {
@@ -32,7 +31,7 @@ describe('SECURITY.md', () => {
                           content.match(/##\s+Report/i) ||
                           content.includes('report');
 
-      assert.ok(hasReporting, 'SECURITY.md should explain how to report vulnerabilities');
+      expect(hasReporting).toBeTruthy();
     });
 
     test('should have Security Policy section', () => {
@@ -42,7 +41,7 @@ describe('SECURITY.md', () => {
       const hasPolicy = content.match(/^#\s+Security/mi) ||
                        content.includes('Security Policy');
 
-      assert.ok(hasPolicy, 'SECURITY.md should have Security Policy heading');
+      expect(hasPolicy).toBeTruthy();
     });
   });
 
@@ -56,7 +55,7 @@ describe('SECURITY.md', () => {
                         content.includes('issue tracker') ||
                         content.match(/contact/i);
 
-      assert.ok(hasContact, 'SECURITY.md should provide contact method for reports');
+      expect(hasContact).toBeTruthy();
     });
 
     test('should discourage public disclosure of vulnerabilities', () => {
@@ -68,7 +67,7 @@ describe('SECURITY.md', () => {
                                 content.match(/confidential/i) ||
                                 content.match(/security\s+advisory/i);
 
-      assert.ok(hasPrivateGuidance, 'SECURITY.md should guide users to report privately');
+      expect(hasPrivateGuidance).toBeTruthy();
     });
   });
 
@@ -81,7 +80,7 @@ describe('SECURITY.md', () => {
                          content.match(/response/i) ||
                          content.match(/acknowledge/i);
 
-      assert.ok(hasTimeline, 'SECURITY.md should set response expectations');
+      expect(hasTimeline).toBeTruthy();
     });
   });
 
@@ -90,14 +89,14 @@ describe('SECURITY.md', () => {
       const content = fs.readFileSync(securityPath, 'utf-8');
 
       // Should have actual content (more than 200 chars)
-      assert.ok(content.length > 200, 'SECURITY.md should have substantial content');
+      expect(content.length > 200).toBeTruthy();
 
       // Should not contain common template placeholders
       const hasPlaceholders = content.includes('[TODO]') ||
                              content.includes('INSERT') ||
                              content.includes('FILL IN');
 
-      assert.ok(!hasPlaceholders, 'SECURITY.md should not have unfilled placeholders');
+      expect(!hasPlaceholders).toBeTruthy();
     });
 
     test('should be properly formatted markdown', () => {
@@ -105,7 +104,7 @@ describe('SECURITY.md', () => {
 
       // Should have markdown headers
       const hasHeaders = content.match(/^#{1,6}\s+/m);
-      assert.ok(hasHeaders, 'SECURITY.md should use markdown headers');
+      expect(hasHeaders).toBeTruthy();
     });
   });
 });

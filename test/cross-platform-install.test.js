@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -16,10 +15,7 @@ const lefthookSource = fs.readFileSync(lefthookPath, 'utf8');
 describe('forge-k6p: autoInstallLefthook cross-platform', () => {
   test('should NOT hardcode bun in autoInstallLefthook', () => {
     // The old broken code: execFileSync('bun', ['add', '-d', 'lefthook'])
-    assert.ok(
-      !forgeSource.includes("execFileSync('bun', ['add', '-d', 'lefthook']"),
-      'autoInstallLefthook must not hardcode bun — use PKG_MANAGER instead'
-    );
+    expect(!forgeSource.includes("execFileSync('bun', ['add', '-d', 'lefthook']")).toBeTruthy();
   });
 
   test('should use PKG_MANAGER in autoInstallLefthook', () => {
@@ -28,10 +24,7 @@ describe('forge-k6p: autoInstallLefthook cross-platform', () => {
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
-    assert.ok(
-      fnBody.includes('PKG_MANAGER'),
-      'autoInstallLefthook must use PKG_MANAGER for cross-platform support'
-    );
+    expect(fnBody.includes('PKG_MANAGER')).toBeTruthy();
   });
 
   test('should have correct install flags per package manager in autoInstallLefthook', () => {
@@ -40,14 +33,8 @@ describe('forge-k6p: autoInstallLefthook cross-platform', () => {
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     // Must handle bun/pnpm 'add' vs npm/yarn 'install'
-    assert.ok(
-      fnBody.includes("'add'") || fnBody.includes('"add"'),
-      'autoInstallLefthook must handle bun/pnpm add flag'
-    );
-    assert.ok(
-      fnBody.includes("'install'") || fnBody.includes('"install"'),
-      'autoInstallLefthook must handle npm/yarn install flag'
-    );
+    expect(fnBody.includes("'add'") || fnBody.includes('"add"')).toBeTruthy();
+    expect(fnBody.includes("'install'") || fnBody.includes('"install"')).toBeTruthy();
   });
 });
 
@@ -60,10 +47,7 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
-    assert.ok(
-      fnBody.includes("process.platform === 'win32'") || fnBody.includes('isWindows'),
-      'autoSetupBeadsInQuickMode must detect Windows platform'
-    );
+    expect(fnBody.includes("process.platform === 'win32'") || fnBody.includes('isWindows')).toBeTruthy();
   });
 
   test('autoSetupBeadsInQuickMode should use powershell for Windows beads install', () => {
@@ -73,10 +57,7 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
 
     // Accepts either direct powershell/install.ps1 reference OR delegation to installBeadsOnWindows()
     // (the latter is preferred as it centralises the URL via BEADS_INSTALL_PS1_URL constant)
-    assert.ok(
-      fnBody.includes('powershell') || fnBody.includes('install.ps1') || fnBody.includes('installBeadsOnWindows'),
-      'Windows beads install must use PowerShell installer (directly or via installBeadsOnWindows)'
-    );
+    expect(fnBody.includes('powershell') || fnBody.includes('install.ps1') || fnBody.includes('installBeadsOnWindows')).toBeTruthy();
   });
 
   test('installBeadsWithMethod should use PowerShell on Windows for global install', () => {
@@ -84,10 +65,7 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
-    assert.ok(
-      fnBody.includes('win32') || fnBody.includes('powershell') || fnBody.includes('install.ps1'),
-      'installBeadsWithMethod must have Windows-specific path using PowerShell'
-    );
+    expect(fnBody.includes('win32') || fnBody.includes('powershell') || fnBody.includes('install.ps1')).toBeTruthy();
   });
 });
 
@@ -96,24 +74,15 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-jxb: Error messages use PKG_MANAGER', () => {
   test('Beads install failure message should not hardcode bun add -g', () => {
-    assert.ok(
-      !forgeSource.includes("'  Run manually: bun add -g @beads/bd && bd init'"),
-      'Beads error message must not hardcode bun — use PKG_MANAGER'
-    );
+    expect(!forgeSource.includes("'  Run manually: bun add -g @beads/bd && bd init'")).toBeTruthy();
   });
 
   test('OpenSpec install message should not hardcode bun add -g', () => {
-    assert.ok(
-      !forgeSource.includes("'  Run manually: bun add -g @fission-ai/openspec && openspec init'"),
-      'OpenSpec error message must not hardcode bun — use PKG_MANAGER'
-    );
+    expect(!forgeSource.includes("'  Run manually: bun add -g @fission-ai/openspec && openspec init'")).toBeTruthy();
   });
 
   test('lefthook install message should not hardcode bun add -d', () => {
-    assert.ok(
-      !forgeSource.includes("'  Run manually: bun add -d lefthook'"),
-      'lefthook error message must not hardcode bun — use PKG_MANAGER'
-    );
+    expect(!forgeSource.includes("'  Run manually: bun add -d lefthook'")).toBeTruthy();
   });
 });
 
@@ -127,10 +96,7 @@ describe('forge-92t: OpenSpec/Skills show message when not installed', () => {
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     // Should have an else branch that logs when openspec not found
-    assert.ok(
-      fnBody.includes('openspec') && (fnBody.includes('not found') || fnBody.includes('not installed') || fnBody.includes('install')),
-      'autoSetupToolsInQuickMode must show message when OpenSpec is not installed'
-    );
+    expect(fnBody.includes('openspec') && (fnBody.includes('not found') || fnBody.includes('not installed') || fnBody.includes('install'))).toBeTruthy();
   });
 
   test('autoSetupToolsInQuickMode should log when Skills is not installed', () => {
@@ -138,10 +104,7 @@ describe('forge-92t: OpenSpec/Skills show message when not installed', () => {
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
     const fnBody = forgeSource.slice(fnStart, fnEnd);
 
-    assert.ok(
-      fnBody.includes('skills') || fnBody.includes('Skills'),
-      'autoSetupToolsInQuickMode must handle Skills not installed case'
-    );
+    expect(fnBody.includes('skills') || fnBody.includes('Skills')).toBeTruthy();
   });
 });
 
@@ -151,14 +114,11 @@ describe('forge-92t: OpenSpec/Skills show message when not installed', () => {
 describe('forge-4zz: Post-install verification', () => {
   test('should verify Beads after install by running bd version', () => {
     // After install, should call safeExec or secureExecFileSync with bd version
-    assert.ok(
-      forgeSource.includes("'bd', ['version']") ||
+    expect(forgeSource.includes("'bd', ['version']") ||
       forgeSource.includes('"bd", ["version"]') ||
       forgeSource.includes("safeExec('bd version')") ||
       forgeSource.includes('verifyBeadsInstall') ||
-      forgeSource.includes('bd version'),
-      'Beads post-install verification must call bd version'
-    );
+      forgeSource.includes('bd version')).toBeTruthy();
   });
 });
 
@@ -167,31 +127,19 @@ describe('forge-4zz: Post-install verification', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-0xb: lefthook.yml uses npx not bunx', () => {
   test('lefthook.yml commit-msg should not use bunx', () => {
-    assert.ok(
-      !lefthookSource.includes('bunx commitlint'),
-      'commit-msg hook must not use bunx — use npx for cross-platform support'
-    );
+    expect(!lefthookSource.includes('bunx commitlint')).toBeTruthy();
   });
 
   test('lefthook.yml pre-push lint should not use bunx', () => {
-    assert.ok(
-      !lefthookSource.includes('bunx eslint'),
-      'pre-push lint hook must not use bunx — use npx for cross-platform support'
-    );
+    expect(!lefthookSource.includes('bunx eslint')).toBeTruthy();
   });
 
   test('lefthook.yml commit-msg should delegate to scripts/commitlint.js', () => {
-    assert.ok(
-      lefthookSource.includes('node scripts/commitlint.js'),
-      'commit-msg hook must delegate to node scripts/commitlint.js (cross-platform)'
-    );
+    expect(lefthookSource.includes('node scripts/commitlint.js')).toBeTruthy();
   });
 
   test('lefthook.yml pre-push lint should delegate to scripts/lint.js', () => {
-    assert.ok(
-      lefthookSource.includes('node scripts/lint.js'),
-      'pre-push lint hook must delegate to node scripts/lint.js (cross-platform)'
-    );
+    expect(lefthookSource.includes('node scripts/lint.js')).toBeTruthy();
   });
 });
 
@@ -200,33 +148,21 @@ describe('forge-0xb: lefthook.yml uses npx not bunx', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-cvr: pre-push hooks cross-platform', () => {
   test('lefthook.yml pre-push lint should not use bash if [ $? syntax', () => {
-    assert.ok(
-      !lefthookSource.includes('if [ $?'),
-      'pre-push hooks must not use bash-only if [ $? ] syntax'
-    );
+    expect(!lefthookSource.includes('if [ $?')).toBeTruthy();
   });
 
   test('lefthook.yml test detection should not use bash command -v syntax', () => {
-    assert.ok(
-      !lefthookSource.includes('command -v bun'),
-      'pre-push test detection must not use bash-only command -v syntax'
-    );
+    expect(!lefthookSource.includes('command -v bun')).toBeTruthy();
   });
 
   test('scripts/lint.js should exist for cross-platform lint', () => {
     const lintScriptPath = path.join(__dirname, '..', 'scripts', 'lint.js');
-    assert.ok(
-      fs.existsSync(lintScriptPath),
-      'scripts/lint.js must exist for cross-platform ESLint execution'
-    );
+    expect(fs.existsSync(lintScriptPath)).toBeTruthy();
   });
 
   test('scripts/test.js should exist for cross-platform test runner', () => {
     const testScriptPath = path.join(__dirname, '..', 'scripts', 'test.js');
-    assert.ok(
-      fs.existsSync(testScriptPath),
-      'scripts/test.js must exist for cross-platform test execution'
-    );
+    expect(fs.existsSync(testScriptPath)).toBeTruthy();
   });
 });
 
@@ -236,17 +172,11 @@ describe('forge-cvr: pre-push hooks cross-platform', () => {
 describe('forge-6q4: MCP server versions pinned', () => {
   test('.mcp.json.example should not use @latest for context7', () => {
     const mcpSource = fs.readFileSync(mcpPath, 'utf8');
-    assert.ok(
-      !mcpSource.includes('@upstash/context7-mcp@latest'),
-      'context7 MCP must not use @latest — pin to specific version'
-    );
+    expect(!mcpSource.includes('@upstash/context7-mcp@latest')).toBeTruthy();
   });
 
   test('.mcp.json.example context7 should have pinned version', () => {
     const mcpSource = fs.readFileSync(mcpPath, 'utf8');
-    assert.ok(
-      mcpSource.includes('context7-mcp@') && !mcpSource.includes('@latest'),
-      'context7 MCP must have a pinned semver version'
-    );
+    expect(mcpSource.includes('context7-mcp@') && !mcpSource.includes('@latest')).toBeTruthy();
   });
 });

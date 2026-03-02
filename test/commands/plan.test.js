@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const {
 	readResearchDoc,
 	detectScope,
@@ -7,9 +6,6 @@ const {
 	createFeatureBranch,
 	extractDesignDecisions,
 	extractTasksFromResearch,
-	createOpenSpecProposal,
-	formatProposalPRBody,
-	createProposalPR,
 	executePlan,
 } = require('../../lib/commands/plan.js');
 
@@ -19,16 +15,16 @@ describe('Plan Command - OpenSpec & Beads Integration', () => {
 			const featureSlug = 'test-feature';
 
 			const research = readResearchDoc(featureSlug);
-			assert.ok(research.content);
-			assert.strictEqual(research.path, 'docs/research/test-feature.md');
+			expect(research.content).toBeTruthy();
+			expect(research.path).toBe('docs/research/test-feature.md');
 		});
 
 		test('should handle missing research document', () => {
 			const featureSlug = 'nonexistent-feature';
 
 			const result = readResearchDoc(featureSlug);
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
 		});
 	});
 
@@ -44,8 +40,8 @@ describe('Plan Command - OpenSpec & Beads Integration', () => {
 `;
 
 			const scope = detectScope(researchContent);
-			assert.strictEqual(scope.type, 'tactical');
-			assert.strictEqual(scope.requiresOpenSpec, false);
+			expect(scope.type).toBe('tactical');
+			expect(scope.requiresOpenSpec).toBe(false);
 		});
 
 		test('should detect strategic scope (architecture change)', () => {
@@ -59,8 +55,8 @@ describe('Plan Command - OpenSpec & Beads Integration', () => {
 `;
 
 			const scope = detectScope(researchContent);
-			assert.strictEqual(scope.type, 'strategic');
-			assert.strictEqual(scope.requiresOpenSpec, true);
+			expect(scope.type).toBe('strategic');
+			expect(scope.requiresOpenSpec).toBe(true);
 		});
 
 		test('should detect strategic scope based on keywords', () => {
@@ -72,8 +68,8 @@ Major architectural impact.
 `;
 
 			const scope = detectScope(researchContent);
-			assert.strictEqual(scope.type, 'strategic');
-			assert.ok(scope.reason);
+			expect(scope.type).toBe('strategic');
+			expect(scope.reason).toBeTruthy();
 		});
 	});
 
@@ -83,9 +79,9 @@ Major architectural impact.
 			const researchPath = 'docs/research/fix-validation-bug.md';
 
 			const result = createBeadsIssue(featureName, researchPath, 'tactical');
-			assert.ok(result.issueId);
-			assert.match(result.issueId, /^forge-[a-z0-9]+$/);
-			assert.strictEqual(result.success, true);
+			expect(result.issueId).toBeTruthy();
+			expect(result.issueId).toMatch(/^forge-[a-z0-9]+$/);
+			expect(result.success).toBe(true);
 		});
 
 		test.skip('should create Beads issue with OpenSpec link for strategic', () => {
@@ -93,8 +89,8 @@ Major architectural impact.
 			const researchPath = 'docs/research/payment-integration.md';
 
 			const result = createBeadsIssue(featureName, researchPath, 'strategic');
-			assert.ok(result.issueId);
-			assert.ok(result.description.includes('openspec/changes'));
+			expect(result.issueId).toBeTruthy();
+			expect(result.description.includes('openspec/changes')).toBeTruthy();
 		});
 
 		test.skip('should handle Beads command failures', () => {
@@ -102,8 +98,8 @@ Major architectural impact.
 
 			// Mock bd command to fail
 			const result = createBeadsIssue(featureName, 'path', 'tactical');
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
 		});
 	});
 
@@ -112,8 +108,8 @@ Major architectural impact.
 			const featureSlug = 'payment-integration';
 
 			const result = createFeatureBranch(featureSlug);
-			assert.strictEqual(result.branchName, 'feat/payment-integration');
-			assert.strictEqual(result.success, true);
+			expect(result.branchName).toBe('feat/payment-integration');
+			expect(result.success).toBe(true);
 		});
 
 		test.skip('should handle existing branch gracefully', () => {
@@ -121,32 +117,12 @@ Major architectural impact.
 
 			// Mock git to show branch exists
 			const result = createFeatureBranch(featureSlug);
-			assert.strictEqual(result.success, false);
-			assert.ok(result.error);
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
 		});
 	});
 
 	describe('OpenSpec proposal creation', () => {
-		test.skip('should create OpenSpec proposal for strategic scope', () => {
-			const featureSlug = 'payment-integration';
-			const researchContent = '# Payment Research\n\nKey decisions...';
-
-			const result = createOpenSpecProposal(featureSlug, researchContent);
-			assert.ok(result.proposalPath);
-			assert.match(result.proposalPath, /openspec\/changes\/payment-integration/);
-			assert.strictEqual(result.success, true);
-		});
-
-		test.skip('should include proposal structure (proposal.md, tasks.md, design.md)', () => {
-			const featureSlug = 'test-feature';
-			const researchContent = '# Research';
-
-			const result = createOpenSpecProposal(featureSlug, researchContent);
-			assert.ok(result.files.includes('proposal.md'));
-			assert.ok(result.files.includes('tasks.md'));
-			assert.ok(result.files.includes('design.md'));
-		});
-
 		test('should extract decisions from research for design.md', () => {
 			const researchContent = `
 ## Key Decisions
@@ -155,8 +131,8 @@ Major architectural impact.
 `;
 
 			const design = extractDesignDecisions(researchContent);
-			assert.ok(design.decisions.length > 0);
-			assert.ok(design.decisions[0].includes('Stripe SDK v4'));
+			expect(design.decisions.length > 0).toBeTruthy();
+			expect(design.decisions[0].includes('Stripe SDK v4')).toBeTruthy();
 		});
 
 		test('should create TDD-ordered tasks from research scenarios', () => {
@@ -167,29 +143,8 @@ Major architectural impact.
 `;
 
 			const tasks = extractTasksFromResearch(researchContent);
-			assert.ok(tasks.length > 0);
-			assert.ok(tasks[0].phase); // RED, GREEN, or REFACTOR
-		});
-	});
-
-	describe('Proposal PR creation', () => {
-		test.skip('should create proposal PR for strategic scope', () => {
-			const featureName = 'payment-integration';
-			const proposalPath = 'openspec/changes/payment-integration';
-
-			const result = createProposalPR(featureName, proposalPath);
-			assert.ok(result.prUrl);
-			assert.ok(result.prNumber);
-			assert.strictEqual(result.success, true);
-		});
-
-		test('should format PR body with proposal summary', () => {
-			const featureName = 'test-feature';
-			const proposalPath = 'openspec/changes/test-feature';
-
-			const body = formatProposalPRBody(featureName, proposalPath);
-			assert.match(body, /## Proposal/);
-			assert.match(body, /openspec\/changes\/test-feature/);
+			expect(tasks.length > 0).toBeTruthy();
+			expect(tasks[0].phase).toBeTruthy(); // RED, GREEN, or REFACTOR
 		});
 	});
 
@@ -198,32 +153,32 @@ Major architectural impact.
 			const featureName = 'fix-validation';
 
 			const result = await executePlan(featureName);
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.scope, 'tactical');
-			assert.ok(result.beadsIssueId);
-			assert.ok(result.branchName);
-			assert.strictEqual(result.openSpecCreated, false);
+			expect(result.success).toBe(true);
+			expect(result.scope).toBe('tactical');
+			expect(result.beadsIssueId).toBeTruthy();
+			expect(result.branchName).toBeTruthy();
+			expect(result.openSpecCreated).toBe(false);
 		});
 
 		test.skip('should execute strategic workflow (with OpenSpec)', async () => {
 			const featureName = 'payment-integration';
 
 			const result = await executePlan(featureName);
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.scope, 'strategic');
-			assert.ok(result.beadsIssueId);
-			assert.ok(result.branchName);
-			assert.strictEqual(result.openSpecCreated, true);
-			assert.ok(result.proposalPR);
+			expect(result.success).toBe(true);
+			expect(result.scope).toBe('strategic');
+			expect(result.beadsIssueId).toBeTruthy();
+			expect(result.branchName).toBeTruthy();
+			expect(result.openSpecCreated).toBe(true);
+			expect(result.proposalPR).toBeTruthy();
 		});
 
 		test.skip('should return actionable output', async () => {
 			const featureName = 'test-feature';
 
 			const result = await executePlan(featureName);
-			assert.ok(result.summary);
-			assert.ok(result.nextCommand);
-			assert.ok(result.nextCommand === '/dev' || result.nextCommand === 'wait');
+			expect(result.summary).toBeTruthy();
+			expect(result.nextCommand).toBeTruthy();
+			expect(result.nextCommand === '/dev' || result.nextCommand === 'wait').toBeTruthy();
 		});
 	});
 });

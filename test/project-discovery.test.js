@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 
 // Module under test
 const {
@@ -21,21 +20,21 @@ describe('project-discovery', () => {
       const projectPath = path.join(fixturesDir, 'new-project');
       const framework = await detectFramework(projectPath);
 
-      assert.strictEqual(framework, 'Next.js');
+      expect(framework).toBe('Next.js');
     });
 
     test('should detect Next.js from active project', async () => {
       const projectPath = path.join(fixturesDir, 'active-project');
       const framework = await detectFramework(projectPath);
 
-      assert.strictEqual(framework, 'Next.js');
+      expect(framework).toBe('Next.js');
     });
 
     test('should return null for unknown framework', async () => {
       const projectPath = path.join(__dirname, 'fixtures');
       const framework = await detectFramework(projectPath);
 
-      assert.ok(framework === null || framework === 'Unknown');
+      expect(framework === null || framework === 'Unknown').toBeTruthy();
     });
   });
 
@@ -44,7 +43,7 @@ describe('project-discovery', () => {
       const projectPath = path.join(fixturesDir, 'new-project');
       const language = await detectLanguage(projectPath);
 
-      assert.strictEqual(language, 'typescript');
+      expect(language).toBe('typescript');
     });
 
     test('should handle projects without package.json', async () => {
@@ -52,7 +51,7 @@ describe('project-discovery', () => {
       const language = await detectLanguage(projectPath);
 
       // Should default to something reasonable or null
-      assert.ok(language !== undefined);
+      expect(language !== undefined).toBeTruthy();
     });
   });
 
@@ -67,7 +66,7 @@ describe('project-discovery', () => {
 
       const stage = inferStage(stats);
 
-      assert.strictEqual(stage, 'new');
+      expect(stage).toBe('new');
     });
 
     test('should infer "active" stage for mid-development projects', async () => {
@@ -79,7 +78,7 @@ describe('project-discovery', () => {
 
       const stage = inferStage(stats);
 
-      assert.strictEqual(stage, 'active');
+      expect(stage).toBe('active');
     });
 
     test('should infer "stable" stage for mature projects', async () => {
@@ -92,7 +91,7 @@ describe('project-discovery', () => {
 
       const stage = inferStage(stats);
 
-      assert.strictEqual(stage, 'stable');
+      expect(stage).toBe('stable');
     });
 
     test('should handle edge case: no commits', async () => {
@@ -104,7 +103,7 @@ describe('project-discovery', () => {
 
       const stage = inferStage(stats);
 
-      assert.strictEqual(stage, 'new');
+      expect(stage).toBe('new');
     });
 
     test('should handle edge case: very high commits but low coverage', async () => {
@@ -117,7 +116,7 @@ describe('project-discovery', () => {
       const stage = inferStage(stats);
 
       // Should be active, not stable (low coverage)
-      assert.strictEqual(stage, 'active');
+      expect(stage).toBe('active');
     });
   });
 
@@ -126,28 +125,28 @@ describe('project-discovery', () => {
       const projectPath = path.join(fixturesDir, 'new-project');
       const context = await autoDetect(projectPath);
 
-      assert.ok(context);
-      assert.ok(context.hasOwnProperty('framework'));
-      assert.ok(context.hasOwnProperty('language'));
-      assert.ok(context.hasOwnProperty('stage'));
-      assert.ok(context.hasOwnProperty('confidence'));
+      expect(context).toBeTruthy();
+      expect(context.hasOwnProperty('framework')).toBeTruthy();
+      expect(context.hasOwnProperty('language')).toBeTruthy();
+      expect(context.hasOwnProperty('stage')).toBeTruthy();
+      expect(context.hasOwnProperty('confidence')).toBeTruthy();
 
-      assert.strictEqual(context.framework, 'Next.js');
-      assert.strictEqual(context.language, 'typescript');
+      expect(context.framework).toBe('Next.js');
+      expect(context.language).toBe('typescript');
     });
 
     test('should calculate confidence score', async () => {
       const projectPath = path.join(fixturesDir, 'active-project');
       const context = await autoDetect(projectPath);
 
-      assert.ok(context.confidence >= 0 && context.confidence <= 1);
+      expect(context.confidence >= 0 && context.confidence <= 1).toBeTruthy();
     });
 
     test('should detect CI/CD presence', async () => {
       const projectPath = path.join(fixturesDir, 'active-project');
       const context = await autoDetect(projectPath);
 
-      assert.ok(context.hasOwnProperty('hasCICD'));
+      expect(context.hasOwnProperty('hasCICD')).toBeTruthy();
     });
 
     test('should handle project without git', async () => {
@@ -155,8 +154,8 @@ describe('project-discovery', () => {
       const context = await autoDetect(projectPath);
 
       // Should not throw, should return defaults
-      assert.ok(context);
-      assert.ok(context.stage);
+      expect(context).toBeTruthy();
+      expect(context.stage).toBeTruthy();
     });
   });
 
@@ -190,12 +189,12 @@ describe('project-discovery', () => {
       await saveContext(context, testProjectPath);
 
       const contextPath = path.join(testProjectPath, '.forge', 'context.json');
-      assert.ok(fs.existsSync(contextPath));
+      expect(fs.existsSync(contextPath)).toBeTruthy();
 
       const saved = JSON.parse(await fs.promises.readFile(contextPath, 'utf8'));
-      assert.strictEqual(saved.auto_detected.framework, 'Next.js');
-      assert.strictEqual(saved.auto_detected.stage, 'active');
-      assert.ok(saved.last_updated);
+      expect(saved.auto_detected.framework).toBe('Next.js');
+      expect(saved.auto_detected.stage).toBe('active');
+      expect(saved.last_updated).toBeTruthy();
     });
 
     test('should load saved context', async () => {
@@ -210,17 +209,17 @@ describe('project-discovery', () => {
       await saveContext(original, testProjectPath);
       const loaded = await loadContext(testProjectPath);
 
-      assert.strictEqual(loaded.auto_detected.framework, 'Next.js');
-      assert.strictEqual(loaded.auto_detected.stage, 'active');
+      expect(loaded.auto_detected.framework).toBe('Next.js');
+      expect(loaded.auto_detected.stage).toBe('active');
       // user_provided is now always {} since saveContext only takes flat shape
-      assert.ok(loaded.user_provided);
+      expect(loaded.user_provided).toBeTruthy();
     });
 
     test('should return null for non-existent context', async () => {
       const nonExistentPath = path.join(testProjectPath, 'nonexistent');
       const loaded = await loadContext(nonExistentPath);
 
-      assert.strictEqual(loaded, null);
+      expect(loaded).toBe(null);
     });
 
     test('should handle malformed context.json gracefully', async () => {
@@ -230,7 +229,7 @@ describe('project-discovery', () => {
 
       const loaded = await loadContext(testProjectPath);
 
-      assert.strictEqual(loaded, null);
+      expect(loaded).toBe(null);
     });
   });
 
@@ -247,8 +246,8 @@ describe('project-discovery', () => {
       try {
         const context = await autoDetect(emptyProjectPath);
 
-        assert.ok(context);
-        assert.ok(context.stage);
+        expect(context).toBeTruthy();
+        expect(context.stage).toBeTruthy();
       } finally {
         await fs.promises.rm(emptyProjectPath, { recursive: true, force: true });
       }
@@ -259,9 +258,9 @@ describe('project-discovery', () => {
 
       const context = await autoDetect(noPackagePath);
 
-      assert.ok(context);
+      expect(context).toBeTruthy();
       // Should have defaults
-      assert.ok(context.stage);
+      expect(context.stage).toBeTruthy();
     });
   });
 });

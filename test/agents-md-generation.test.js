@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -28,32 +27,32 @@ describe('AGENTS.md generation', () => {
     const agentsMdPath = path.join(tempDir, 'AGENTS.md');
     const exists = await fs.promises.access(agentsMdPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'AGENTS.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
     // Verify it contains Forge 9-stage workflow
-    assert.ok(content.includes('Forge 9-Stage TDD Workflow'), 'Should document 9-stage workflow');
-    assert.ok(content.includes('/status'), 'Should include /status command');
-    assert.ok(content.includes('/research'), 'Should include /research command');
-    assert.ok(content.includes('/plan'), 'Should include /plan command');
-    assert.ok(content.includes('/dev'), 'Should include /dev command');
-    assert.ok(content.includes('/check'), 'Should include /check command');
-    assert.ok(content.includes('/ship'), 'Should include /ship command');
-    assert.ok(content.includes('/review'), 'Should include /review command');
-    assert.ok(content.includes('/merge'), 'Should include /merge command');
-    assert.ok(content.includes('/verify'), 'Should include /verify command');
+    expect(content.includes('Forge 9-Stage TDD Workflow')).toBeTruthy();
+    expect(content.includes('/status')).toBeTruthy();
+    expect(content.includes('/research')).toBeTruthy();
+    expect(content.includes('/plan')).toBeTruthy();
+    expect(content.includes('/dev')).toBeTruthy();
+    expect(content.includes('/check')).toBeTruthy();
+    expect(content.includes('/ship')).toBeTruthy();
+    expect(content.includes('/review')).toBeTruthy();
+    expect(content.includes('/merge')).toBeTruthy();
+    expect(content.includes('/verify')).toBeTruthy();
 
     // Verify it mentions all Tier 1 agents
-    assert.ok(content.includes('Claude Code'), 'Should mention Claude Code');
-    assert.ok(content.includes('GitHub Copilot'), 'Should mention GitHub Copilot');
-    assert.ok(content.includes('Kilo Code'), 'Should mention Kilo Code');
-    assert.ok(content.includes('Cursor'), 'Should mention Cursor');
-    assert.ok(content.includes('Aider'), 'Should mention Aider');
+    expect(content.includes('Claude Code')).toBeTruthy();
+    expect(content.includes('GitHub Copilot')).toBeTruthy();
+    expect(content.includes('Kilo Code')).toBeTruthy();
+    expect(content.includes('Cursor')).toBeTruthy();
+    expect(content.includes('Aider')).toBeTruthy();
 
     // Verify it contains TDD guidance
-    assert.ok(content.includes('TDD'), 'Should include TDD guidance');
-    assert.ok(content.includes('RED-GREEN-REFACTOR'), 'Should include RED-GREEN-REFACTOR cycle');
+    expect(content.includes('TDD')).toBeTruthy();
+    expect(content.includes('RED-GREEN-REFACTOR')).toBeTruthy();
   });
 
   test('should include project-specific metadata in AGENTS.md', async () => {
@@ -81,10 +80,10 @@ describe('AGENTS.md generation', () => {
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
     // Should detect TypeScript
-    assert.ok(content.includes('TypeScript'), 'Should mention TypeScript in stack');
+    expect(content.includes('TypeScript')).toBeTruthy();
 
     // Should include project commands
-    assert.ok(content.includes('bun test') || content.includes('test'), 'Should document test command');
+    expect(content.includes('bun test') || content.includes('test')).toBeTruthy();
   });
 
   test('should be plain markdown with no complex frontmatter', async () => {
@@ -96,10 +95,10 @@ describe('AGENTS.md generation', () => {
     // Should NOT start with YAML frontmatter (---) as that's agent-specific
     // Universal AGENTS.md is plain markdown
     const lines = content.split('\n');
-    assert.notEqual(lines[0], '---', 'Universal AGENTS.md should not have YAML frontmatter');
+    expect(lines[0]).not.toBe('---');
 
     // Should start with a heading
-    assert.ok(lines[0].startsWith('#'), 'Should start with a markdown heading');
+    expect(lines[0].startsWith('#')).toBeTruthy();
   });
 
   test('should include security guidance (OWASP Top 10)', async () => {
@@ -108,7 +107,7 @@ describe('AGENTS.md generation', () => {
     const agentsMdPath = path.join(tempDir, 'AGENTS.md');
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
-    assert.ok(content.includes('OWASP') || content.includes('security'), 'Should include security guidance');
+    expect(content.includes('OWASP') || content.includes('security')).toBeTruthy();
   });
 
   test('should document MCP server usage', async () => {
@@ -117,6 +116,6 @@ describe('AGENTS.md generation', () => {
     const agentsMdPath = path.join(tempDir, 'AGENTS.md');
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
-    assert.ok(content.includes('MCP') || content.includes('Model Context Protocol'), 'Should mention MCP servers');
+    expect(content.includes('MCP') || content.includes('Model Context Protocol')).toBeTruthy();
   });
 });

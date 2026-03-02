@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -28,27 +27,27 @@ describe('GitHub Copilot config generation', () => {
     const copilotInstructionsPath = path.join(tempDir, '.github', 'copilot-instructions.md');
     const exists = await fs.promises.access(copilotInstructionsPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, '.github/copilot-instructions.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(copilotInstructionsPath, 'utf-8');
 
     // Should include Forge workflow
-    assert.ok(content.includes('Forge'), 'Should mention Forge workflow');
-    assert.ok(content.includes('9-Stage') || content.includes('9 Stage'), 'Should mention 9-stage workflow');
+    expect(content.includes('Forge')).toBeTruthy();
+    expect(content.includes('9-Stage') || content.includes('9 Stage')).toBeTruthy();
 
     // Should include all workflow stages
-    assert.ok(content.includes('/status'), 'Should document /status');
-    assert.ok(content.includes('/research'), 'Should document /research');
-    assert.ok(content.includes('/plan'), 'Should document /plan');
-    assert.ok(content.includes('/dev'), 'Should document /dev');
-    assert.ok(content.includes('/check'), 'Should document /check');
-    assert.ok(content.includes('/ship'), 'Should document /ship');
-    assert.ok(content.includes('/review'), 'Should document /review');
-    assert.ok(content.includes('/merge'), 'Should document /merge');
-    assert.ok(content.includes('/verify'), 'Should document /verify');
+    expect(content.includes('/status')).toBeTruthy();
+    expect(content.includes('/research')).toBeTruthy();
+    expect(content.includes('/plan')).toBeTruthy();
+    expect(content.includes('/dev')).toBeTruthy();
+    expect(content.includes('/check')).toBeTruthy();
+    expect(content.includes('/ship')).toBeTruthy();
+    expect(content.includes('/review')).toBeTruthy();
+    expect(content.includes('/merge')).toBeTruthy();
+    expect(content.includes('/verify')).toBeTruthy();
 
     // Should include TDD guidance
-    assert.ok(content.includes('TDD'), 'Should include TDD guidance');
+    expect(content.includes('TDD')).toBeTruthy();
   });
 
   test('should create .github/instructions/typescript.instructions.md with frontmatter', async () => {
@@ -57,18 +56,18 @@ describe('GitHub Copilot config generation', () => {
     const tsInstructionsPath = path.join(tempDir, '.github', 'instructions', 'typescript.instructions.md');
     const exists = await fs.promises.access(tsInstructionsPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'typescript.instructions.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(tsInstructionsPath, 'utf-8');
 
     // Should have YAML frontmatter with applyTo
-    assert.ok(content.startsWith('---'), 'Should start with YAML frontmatter');
-    assert.ok(content.includes('applyTo:'), 'Should include applyTo field');
-    assert.ok(content.includes('**/*.ts'), 'Should apply to TypeScript files');
+    expect(content.startsWith('---')).toBeTruthy();
+    expect(content.includes('applyTo:')).toBeTruthy();
+    expect(content.includes('**/*.ts')).toBeTruthy();
 
     // Should include TypeScript guidelines
-    assert.ok(content.includes('TypeScript'), 'Should mention TypeScript');
-    assert.ok(content.includes('strict'), 'Should mention strict mode');
+    expect(content.includes('TypeScript')).toBeTruthy();
+    expect(content.includes('strict')).toBeTruthy();
   });
 
   test('should create .github/instructions/testing.instructions.md with frontmatter', async () => {
@@ -77,18 +76,18 @@ describe('GitHub Copilot config generation', () => {
     const testInstructionsPath = path.join(tempDir, '.github', 'instructions', 'testing.instructions.md');
     const exists = await fs.promises.access(testInstructionsPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'testing.instructions.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(testInstructionsPath, 'utf-8');
 
     // Should have YAML frontmatter
-    assert.ok(content.startsWith('---'), 'Should start with YAML frontmatter');
-    assert.ok(content.includes('applyTo:'), 'Should include applyTo field');
-    assert.ok(content.includes('**/*.test.'), 'Should apply to test files');
+    expect(content.startsWith('---')).toBeTruthy();
+    expect(content.includes('applyTo:')).toBeTruthy();
+    expect(content.includes('**/*.test.')).toBeTruthy();
 
     // Should include TDD guidelines
-    assert.ok(content.includes('TDD'), 'Should mention TDD');
-    assert.ok(content.includes('failing test'), 'Should mention writing failing test first');
+    expect(content.includes('TDD')).toBeTruthy();
+    expect(content.includes('failing test')).toBeTruthy();
   });
 
   test('should create .github/prompts/red.prompt.md for TDD RED phase', async () => {
@@ -97,13 +96,13 @@ describe('GitHub Copilot config generation', () => {
     const redPromptPath = path.join(tempDir, '.github', 'prompts', 'red.prompt.md');
     const exists = await fs.promises.access(redPromptPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'red.prompt.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(redPromptPath, 'utf-8');
 
     // Should guide RED phase
-    assert.ok(content.includes('failing test') || content.includes('RED'), 'Should mention failing test or RED phase');
-    assert.ok(content.includes('test'), 'Should mention test');
+    expect(content.includes('failing test') || content.includes('RED')).toBeTruthy();
+    expect(content.includes('test')).toBeTruthy();
   });
 
   test('should create .github/prompts/green.prompt.md for TDD GREEN phase', async () => {
@@ -112,13 +111,13 @@ describe('GitHub Copilot config generation', () => {
     const greenPromptPath = path.join(tempDir, '.github', 'prompts', 'green.prompt.md');
     const exists = await fs.promises.access(greenPromptPath).then(() => true).catch(() => false);
 
-    assert.ok(exists, 'green.prompt.md should be created');
+    expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(greenPromptPath, 'utf-8');
 
     // Should guide GREEN phase
-    assert.ok(content.includes('pass') || content.includes('GREEN'), 'Should mention passing test or GREEN phase');
-    assert.ok(content.includes('minimal') || content.includes('implementation'), 'Should mention implementation');
+    expect(content.includes('pass') || content.includes('GREEN')).toBeTruthy();
+    expect(content.includes('minimal') || content.includes('implementation')).toBeTruthy();
   });
 
   test('should create all directories recursively', async () => {
@@ -126,15 +125,15 @@ describe('GitHub Copilot config generation', () => {
 
     // Check .github directory
     const githubDir = path.join(tempDir, '.github');
-    assert.ok(fs.existsSync(githubDir), '.github directory should exist');
+    expect(fs.existsSync(githubDir)).toBeTruthy();
 
     // Check .github/instructions directory
     const instructionsDir = path.join(tempDir, '.github', 'instructions');
-    assert.ok(fs.existsSync(instructionsDir), '.github/instructions directory should exist');
+    expect(fs.existsSync(instructionsDir)).toBeTruthy();
 
     // Check .github/prompts directory
     const promptsDir = path.join(tempDir, '.github', 'prompts');
-    assert.ok(fs.existsSync(promptsDir), '.github/prompts directory should exist');
+    expect(fs.existsSync(promptsDir)).toBeTruthy();
   });
 
   test('should include project metadata in copilot-instructions.md', async () => {
@@ -162,10 +161,10 @@ describe('GitHub Copilot config generation', () => {
     const content = await fs.promises.readFile(copilotInstructionsPath, 'utf-8');
 
     // Should mention TypeScript (detected from package.json)
-    assert.ok(content.includes('TypeScript') || content.includes('typescript'), 'Should mention TypeScript');
+    expect(content.includes('TypeScript') || content.includes('typescript')).toBeTruthy();
 
     // Should mention Bun (from test script)
-    assert.ok(content.includes('bun'), 'Should mention Bun package manager');
+    expect(content.includes('bun')).toBeTruthy();
   });
 
   test('should not overwrite existing files by default', async () => {
@@ -183,7 +182,7 @@ describe('GitHub Copilot config generation', () => {
 
     const content = await fs.promises.readFile(copilotInstructionsPath, 'utf-8');
 
-    assert.strictEqual(content, existingContent, 'Should not overwrite existing file when overwrite=false');
+    expect(content).toBe(existingContent);
   });
 
   test('should overwrite existing files when overwrite=true', async () => {
@@ -200,8 +199,8 @@ describe('GitHub Copilot config generation', () => {
 
     const content = await fs.promises.readFile(copilotInstructionsPath, 'utf-8');
 
-    assert.notEqual(content, '# Old content', 'Should overwrite existing file when overwrite=true');
-    assert.ok(content.includes('Forge'), 'Should contain Forge workflow content');
+    expect(content).not.toBe('# Old content');
+    expect(content.includes('Forge')).toBeTruthy();
   });
 
   test('should include security guidance in copilot-instructions.md', async () => {
@@ -211,7 +210,6 @@ describe('GitHub Copilot config generation', () => {
     const content = await fs.promises.readFile(copilotInstructionsPath, 'utf-8');
 
     // Should mention OWASP or security
-    assert.ok(content.includes('OWASP') || content.includes('security') || content.includes('Security'),
-      'Should include security guidance');
+    expect(content.includes('OWASP') || content.includes('security') || content.includes('Security')).toBeTruthy();
   });
 });

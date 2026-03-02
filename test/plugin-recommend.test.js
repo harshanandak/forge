@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 const { formatRecommendations } = require('../lib/commands/recommend');
 
@@ -28,14 +27,8 @@ describe('formatRecommendations', () => {
 
       const output = formatRecommendations(recommendations);
 
-      assert.ok(
-        output.includes('parallel-web/parallel-agent-skills'),
-        'output should include the CLI install command'
-      );
-      assert.ok(
-        output.includes('harshanandak/forge'),
-        'output should include the curl fallback install command'
-      );
+      expect(output.includes('parallel-web/parallel-agent-skills')).toBeTruthy();
+      expect(output.includes('harshanandak/forge')).toBeTruthy();
     });
 
     test('tool without install.cmdCurl shows only single install command', () => {
@@ -60,17 +53,14 @@ describe('formatRecommendations', () => {
 
       const output = formatRecommendations(recommendations);
 
-      assert.ok(
-        output.includes('harshanandak/forge --skill sonarcloud-analysis'),
-        'output should include the skill install command'
-      );
+      expect(output.includes('harshanandak/forge --skill sonarcloud-analysis')).toBeTruthy();
     });
   });
 
   describe('basic formatting', () => {
     test('returns "No tools recommended" when list is empty', () => {
       const output = formatRecommendations({ recommended: [], skipped: [] });
-      assert.ok(output.includes('No tools recommended'));
+      expect(output.includes('No tools recommended')).toBeTruthy();
     });
 
     test('groups tools by workflow stage', () => {
@@ -97,8 +87,8 @@ describe('formatRecommendations', () => {
       };
 
       const output = formatRecommendations(recommendations);
-      assert.ok(output.includes('Research'), 'output should include Research stage header');
-      assert.ok(output.includes('Check'), 'output should include Check stage header');
+      expect(output.includes('Research')).toBeTruthy();
+      expect(output.includes('Check')).toBeTruthy();
     });
 
     test('shows free alternatives for tools that have them', () => {
@@ -118,8 +108,8 @@ describe('formatRecommendations', () => {
       };
 
       const output = formatRecommendations(recommendations);
-      assert.ok(output.includes('Free alternatives'), 'output should show free alternatives');
-      assert.ok(output.includes('free-tool'), 'output should show the free alternative name');
+      expect(output.includes('Free alternatives')).toBeTruthy();
+      expect(output.includes('free-tool')).toBeTruthy();
     });
 
     test('skipped tools section shows when budget excludes some tools', () => {
@@ -138,8 +128,8 @@ describe('formatRecommendations', () => {
       };
 
       const output = formatRecommendations(recommendations);
-      assert.ok(output.includes('Skipped'), 'output should show skipped section');
-      assert.ok(output.includes('Paid Tool'), 'output should mention skipped paid tool');
+      expect(output.includes('Skipped')).toBeTruthy();
+      expect(output.includes('Paid Tool')).toBeTruthy();
     });
   });
 });

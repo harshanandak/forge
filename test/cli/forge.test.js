@@ -1,5 +1,4 @@
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -21,10 +20,7 @@ describe('bin/forge.js structure', () => {
     ];
 
     for (const helper of expectedHelpers) {
-      assert.ok(
-        source.includes(`function ${helper}(`),
-        `Expected helper function ${helper} to exist`
-      );
+      expect(source.includes(`function ${helper}(`)).toBeTruthy();
     }
   });
 
@@ -40,29 +36,17 @@ describe('bin/forge.js structure', () => {
     ];
 
     for (const call of delegations) {
-      assert.ok(
-        source.includes(call),
-        `Expected interactiveSetupWithFlags to call ${call}`
-      );
+      expect(source.includes(call)).toBeTruthy();
     }
   });
 
   test('should wrap main() in IIFE with try-catch', () => {
-    assert.ok(
-      source.includes('(async () => {'),
-      'Expected IIFE wrapper for main()'
-    );
-    assert.ok(
-      source.includes('await main()'),
-      'Expected await main() inside IIFE'
-    );
+    expect(source.includes('(async () => {')).toBeTruthy();
+    expect(source.includes('await main()')).toBeTruthy();
   });
 
   test('should use require.main guard', () => {
-    assert.ok(
-      source.includes('require.main === module'),
-      'Expected require.main === module guard'
-    );
+    expect(source.includes('require.main === module')).toBeTruthy();
   });
 
   test('should have Phase 7A helper functions for complexity reduction', () => {
@@ -77,10 +61,7 @@ describe('bin/forge.js structure', () => {
     ];
 
     for (const helper of phase7aHelpers) {
-      assert.ok(
-        source.includes(`function ${helper}(`),
-        `Expected Phase 7A helper function ${helper} to exist`
-      );
+      expect(source.includes(`function ${helper}(`)).toBeTruthy();
     }
   });
 
@@ -95,10 +76,7 @@ describe('bin/forge.js structure', () => {
     ];
 
     for (const helper of phase7bHelpers) {
-      assert.ok(
-        source.includes(`function ${helper}(`),
-        `Expected Phase 7B helper function ${helper} to exist`
-      );
+      expect(source.includes(`function ${helper}(`)).toBeTruthy();
     }
   });
 
@@ -113,10 +91,7 @@ describe('bin/forge.js structure', () => {
     ];
 
     for (const call of quickSetupDelegations) {
-      assert.ok(
-        source.includes(call),
-        `Expected quickSetup to delegate to ${call}`
-      );
+      expect(source.includes(call)).toBeTruthy();
     }
   });
 
@@ -128,38 +103,20 @@ describe('bin/forge.js structure', () => {
     ];
 
     for (const call of delegations) {
-      assert.ok(
-        source.includes(call),
-        `Expected configureExternalServices to delegate to ${call}`
-      );
+      expect(source.includes(call)).toBeTruthy();
     }
   });
 
   test('should use installViaBunx in install methods', () => {
     // Verify installBeadsWithMethod and installOpenSpecWithMethod use the shared helper
-    assert.ok(
-      source.includes("installViaBunx('@beads/bd'"),
-      'Expected installBeadsWithMethod to use installViaBunx'
-    );
-    assert.ok(
-      source.includes("installViaBunx('@fission-ai/openspec'"),
-      'Expected installOpenSpecWithMethod to use installViaBunx'
-    );
-    assert.ok(
-      source.includes("installViaBunx('@forge/skills'"),
-      'Expected installSkillsWithMethod to use installViaBunx'
-    );
+    expect(source.includes("installViaBunx('@beads/bd'")).toBeTruthy();
+    expect(source.includes("installViaBunx('@fission-ai/openspec'")).toBeTruthy();
+    expect(source.includes("installViaBunx('@forge/skills'")).toBeTruthy();
   });
 
   test('should use data-driven detection in detectPackageManager', () => {
     // Verify detectPackageManager uses helper functions instead of repeated if-else
-    assert.ok(
-      source.includes("detectFromLockFile('bun'"),
-      'Expected detectPackageManager to use detectFromLockFile for bun'
-    );
-    assert.ok(
-      source.includes("detectFromCommand('npm'"),
-      'Expected detectPackageManager to use detectFromCommand for npm'
-    );
+    expect(source.includes("detectFromLockFile('bun'")).toBeTruthy();
+    expect(source.includes("detectFromCommand('npm'")).toBeTruthy();
   });
 });

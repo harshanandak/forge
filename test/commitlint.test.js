@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
+const { describe, test, expect } = require('bun:test');
 
 describe('Commitlint configuration', () => {
   const configPath = path.join(__dirname, '..', '.commitlintrc.json');
@@ -10,32 +9,29 @@ describe('Commitlint configuration', () => {
 
   describe('Configuration file', () => {
     test('should exist', () => {
-      assert.ok(fs.existsSync(configPath), '.commitlintrc.json should exist');
+      expect(fs.existsSync(configPath)).toBeTruthy();
     });
 
     test('should be valid JSON', () => {
       const content = fs.readFileSync(configPath, 'utf-8');
-      assert.doesNotThrow(() => {
+      expect(() => {
         JSON.parse(content);
-      }, 'Should be valid JSON');
+      }).not.toThrow();
     });
 
     test('should extend conventional config', () => {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 
       // Should extend @commitlint/config-conventional
-      assert.ok(config.extends, 'Should have extends field');
-      assert.ok(
-        Array.isArray(config.extends) ? config.extends.includes('@commitlint/config-conventional') : config.extends === '@commitlint/config-conventional',
-        'Should extend @commitlint/config-conventional'
-      );
+      expect(config.extends).toBeTruthy();
+      expect(Array.isArray(config.extends) ? config.extends.includes('@commitlint/config-conventional') : config.extends === '@commitlint/config-conventional').toBeTruthy();
     });
 
     test('should have rules configured', () => {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 
       // Should have rules object
-      assert.ok(config.rules || config.extends, 'Should have rules or extend a config');
+      expect(config.rules || config.extends).toBeTruthy();
     });
   });
 
@@ -47,8 +43,8 @@ describe('Commitlint configuration', () => {
       const hasCliDep = pkg.dependencies?.['@commitlint/cli'] || pkg.devDependencies?.['@commitlint/cli'];
       const hasConfigDep = pkg.dependencies?.['@commitlint/config-conventional'] || pkg.devDependencies?.['@commitlint/config-conventional'];
 
-      assert.ok(hasCliDep, 'Should have @commitlint/cli dependency');
-      assert.ok(hasConfigDep, 'Should have @commitlint/config-conventional dependency');
+      expect(hasCliDep).toBeTruthy();
+      expect(hasConfigDep).toBeTruthy();
     });
   });
 
@@ -57,7 +53,7 @@ describe('Commitlint configuration', () => {
       const content = fs.readFileSync(lefthookPath, 'utf-8');
 
       // Should have commit-msg hook configured
-      assert.ok(content.includes('commit-msg'), 'Should have commit-msg hook');
+      expect(content.includes('commit-msg')).toBeTruthy();
     });
 
     test('should run commitlint in commit-msg hook', () => {
@@ -65,7 +61,7 @@ describe('Commitlint configuration', () => {
 
       // Should invoke commitlint
       const hasCommitlint = content.includes('commitlint') || content.includes('@commitlint/cli');
-      assert.ok(hasCommitlint, 'commit-msg hook should run commitlint');
+      expect(hasCommitlint).toBeTruthy();
     });
 
     test('should use --edit flag for commit message file', () => {
@@ -74,7 +70,7 @@ describe('Commitlint configuration', () => {
       // Should use --edit to read from commit message file
       if (content.includes('commitlint')) {
         const hasEditFlag = content.includes('--edit') || content.includes('{1}');
-        assert.ok(hasEditFlag, 'Should use --edit flag or pass commit message file');
+        expect(hasEditFlag).toBeTruthy();
       } else {
         // Skip if commitlint not configured yet
         return;
@@ -94,7 +90,7 @@ describe('Commitlint configuration', () => {
         ? config.extends.includes('@commitlint/config-conventional')
         : config.extends === '@commitlint/config-conventional';
 
-      assert.ok(extendsConventional, 'Should extend conventional config which supports standard types');
+      expect(extendsConventional).toBeTruthy();
     });
   });
 });

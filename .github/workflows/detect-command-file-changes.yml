@@ -1,0 +1,17 @@
+name: detect-command-file-changes
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.claude/commands/**'
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Command files changed
+        run: echo "Command file changes detected — triggering behavioral test via workflow_run"
