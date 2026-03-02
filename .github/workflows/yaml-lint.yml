@@ -10,6 +10,9 @@ on:
       - '**/*.yml'
       - '**/*.yaml'
 
+permissions:
+  contents: read
+
 jobs:
   yaml-lint:
     name: Validate YAML Syntax
