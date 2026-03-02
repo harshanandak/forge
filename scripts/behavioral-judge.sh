@@ -25,8 +25,8 @@ set -e
 if [ "$1" = "check-lock-sync" ]; then
   MD_FILE="${2:-}"
   if [ -z "$MD_FILE" ] || [ ! -f "$MD_FILE" ]; then
-    echo "LOCK_OUT_OF_SYNC" >&2
-    echo '{"result":"LOCK_OUT_OF_SYNC","reason":"md_file_not_found"}'
+    echo "LOCK_OUT_OF_SYNC"
+    >&2 echo '{"result":"LOCK_OUT_OF_SYNC","reason":"md_file_not_found"}'
     exit 0
   fi
   LOCK_FILE="${MD_FILE%.md}.lock.yml"
@@ -73,7 +73,9 @@ if command -v python3 >/dev/null 2>&1; then
 import sys, json
 try:
     d = json.load(sys.stdin)
-    print(d.get('plan_output', sys.stdin.read() if hasattr(sys.stdin,'read') else ''))
+    val = d.get('plan_output', '')
+    if val:
+        print(val)
 except:
     pass
 " 2>/dev/null) || true
