@@ -67,7 +67,7 @@ bun run lint    # or: npm run lint, eslint ., etc.
 **Automated Security Scan**:
 ```bash
 # Run your project's security scan
-bunx npm audit    # or: npm audit, snyk test, etc.
+npm audit    # or: bun audit, snyk test, etc.
 ```
 
 **Manual Review**:
