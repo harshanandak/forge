@@ -610,11 +610,21 @@ describe('Plan Phase 3 — applyYAGNIFilter', () => {
 
 	test('should return allFlagged when all tasks fail YAGNI filter', () => {
 		const result = applyYAGNIFilter({
-			tasks: ['Task A', 'Task B'],
+			tasks: ['Task Alpha', 'Task Beta'],
 			designDoc: '## Purpose\nFoo',
 		});
 		expect(result.allFlagged).toBe(true);
+		expect(result.flaggedTasks).toEqual(['Task Alpha', 'Task Beta']);
 		expect(result.message).toBe("Design doc doesn't cover all tasks — needs amendment");
+	});
+
+	test('should return flaggedTasks for partial violations in multi-task mode', () => {
+		const result = applyYAGNIFilter({
+			tasks: ['validateSlug function', 'dark mode toggle'],
+			designDoc: '## Success Criteria\n- validateSlug validates slug format',
+		});
+		expect(result.allFlagged).toBe(false);
+		expect(result.flaggedTasks).toEqual(['dark mode toggle']);
 	});
 });
 
