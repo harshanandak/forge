@@ -56,7 +56,8 @@
       "openspec *": "allow",
       "git reset --hard *": "ask",
       "rm -rf *": "deny",
-      "git push --force *": "deny"
+      "git push --force *": "deny",
+      "git push -f *": "deny"
     },
     "edit": {
       "*": "allow"
