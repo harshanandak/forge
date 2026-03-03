@@ -28,7 +28,7 @@ Bash(git rebase *)
 ## Recommended Deny List (always block)
 
 ```
-Bash(rm -rf *), Bash(git push --force *), Bash(git reset --hard *)
+Bash(rm -rf *), Bash(git push --force *), Bash(git push -f *), Bash(git reset --hard *)
 ```
 
 See [docs/research/agent-permissions.md](../../docs/research/agent-permissions.md) for the full permission tier classification and rationale.
