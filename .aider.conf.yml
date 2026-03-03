@@ -10,3 +10,6 @@ auto-accept-architect: true
 
 # auto-commits: true lets Aider commit after each change
 auto-commits: true
+
+# Always load AGENTS.md so Aider has the project workflow context
+read: AGENTS.md
