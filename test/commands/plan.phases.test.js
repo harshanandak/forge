@@ -626,6 +626,12 @@ describe('Plan Phase 3 — applyYAGNIFilter', () => {
 		expect(result.allFlagged).toBe(false);
 		expect(result.flaggedTasks).toEqual(['dark mode toggle']);
 	});
+
+	test('should return allFlagged: false for empty tasks array', () => {
+		const result = applyYAGNIFilter({ tasks: [], designDoc: '## Purpose\nFoo' });
+		expect(result.allFlagged).toBe(false);
+		expect(result.flaggedTasks).toEqual([]);
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -202,25 +202,26 @@ bd update <id> --status=in_progress
 
 **ALWAYS branch from master, never from the current branch.** If the working directory is on any branch other than master, the new feature branch would inherit all unmerged changes from that branch — contaminating the new feature's history.
 
+**Note**: If the Entry HARD-GATE already created the branch and worktree (and you are already inside `.worktrees/<slug>`), skip Steps 2b–2d — they are already done.
+
 ```bash
-# Step 2a: Check the current branch — warn if not master
+# Step 2a: Check if branch and worktree were already created by Entry HARD-GATE
 CURRENT=$(git branch --show-current)
-if [ "$CURRENT" != "master" ] && [ "$CURRENT" != "main" ]; then
-  echo "WARNING: You are on '$CURRENT', not master."
-  echo "The new feature branch will be created from master regardless."
+if [ "$CURRENT" = "feat/<slug>" ]; then
+  echo "✓ Branch feat/<slug> already exists (Entry HARD-GATE created it) — skipping 2b–2d"
+else
+  # Step 2b: Create branch from master explicitly
+  git checkout master
+  git checkout -b feat/<slug>
+
+  # Step 2c: Verify .worktrees/ is gitignored — add if missing
+  git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
+
+  # Step 2d: Add worktree so /dev works in an isolated directory
+  # (leaves the main working directory available for other features/sessions)
+  git worktree add .worktrees/<slug> feat/<slug>
+  cd .worktrees/<slug>
 fi
-
-# Step 2b: Create branch from master explicitly
-git checkout master
-git checkout -b feat/<slug>
-
-# Step 2c: Verify .worktrees/ is gitignored — add if missing
-git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
-
-# Step 2d: Add worktree so /dev works in an isolated directory
-# (leaves the main working directory available for other features/sessions)
-git worktree add .worktrees/<slug> feat/<slug>
-cd .worktrees/<slug>
 ```
 
 **Why this matters**: Multiple parallel features or sessions each get their own isolated worktree. Changes to one feature never bleed into another. The main working directory can stay on any branch without affecting new feature branches.
