@@ -17,12 +17,12 @@ This command validates all code before creating a pull request.
 Or use the unified validation script:
 
 ```bash
-bun run check    # Runs all checks automatically
+bun run check    # Runs all validation steps automatically (check is the npm script name; /validate is the workflow command)
 ```
 
 ## What This Command Does
 
-**Quick Start**: The unified `bun run check` command (implemented in `scripts/validate.sh`) automatically runs all validation steps in sequence. See individual steps below for details.
+**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
 
 ### Step 1: Type Check
 ```bash

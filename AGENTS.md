@@ -23,22 +23,22 @@ When the user requests work, **you MUST automatically classify** the change type
 ### Critical (Full 7-stage workflow)
 **Triggers:** Security, authentication, payments, breaking changes, new architecture, data migrations
 **Example:** "Add OAuth login", "Migrate database schema", "Implement payment gateway"
-**Workflow:** plan → dev → check → ship → review → premerge → verify
+**Workflow:** plan → dev → validate → ship → review → premerge → verify
 
 ### Standard (6-stage workflow)
 **Triggers:** Normal features, enhancements, new components
 **Example:** "Add user profile page", "Create notification system"
-**Workflow:** plan → dev → check → ship → review → premerge
+**Workflow:** plan → dev → validate → ship → review → premerge
 
 ### Simple (3-stage workflow, skip plan)
 **Triggers:** Bug fixes, UI tweaks, small changes, minor refactors
 **Example:** "Fix button color", "Update validation message", "Adjust padding"
-**Workflow:** dev → check → ship
+**Workflow:** dev → validate → ship
 
 ### Hotfix (Emergency 3-stage workflow)
 **Triggers:** Production emergencies, critical bugs affecting users
 **Example:** "Production payment processing down", "Security vulnerability fix"
-**Workflow:** dev → check → ship (immediate merge allowed)
+**Workflow:** dev → validate → ship (immediate merge allowed)
 
 ### Docs (Documentation-only workflow)
 **Triggers:** Documentation updates, README changes, comment improvements
@@ -48,7 +48,7 @@ When the user requests work, **you MUST automatically classify** the change type
 ### Refactor (5-stage workflow for safe cleanup)
 **Triggers:** Code cleanup, performance optimization, technical debt reduction
 **Example:** "Refactor auth service", "Extract utility functions"
-**Workflow:** plan → dev → check → ship → premerge
+**Workflow:** plan → dev → validate → ship → premerge
 
 ## Enforcement Philosophy
 
