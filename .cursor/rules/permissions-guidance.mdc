@@ -31,4 +31,4 @@ Bash(git rebase *)
 Bash(rm -rf *), Bash(git push --force *), Bash(git reset --hard *)
 ```
 
-See [docs/SETUP.md](../../docs/SETUP.md) for complete permissions documentation.
+See [docs/research/agent-permissions.md](../../docs/research/agent-permissions.md) for the full permission tier classification and rationale.
