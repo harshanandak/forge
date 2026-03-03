@@ -1,4 +1,5 @@
 {
+  "$schema": "https://opencode.ai/config.json",
   "permission": {
     "*": "ask",
     "bash": {
@@ -22,7 +23,7 @@
       "git checkout *": "allow",
       "git switch *": "allow",
       "git merge *": "allow",
-      "git rebase *": "allow",
+      "git rebase *": "ask",
       "git cherry-pick *": "allow",
       "bd *": "allow",
       "gh *": "allow",

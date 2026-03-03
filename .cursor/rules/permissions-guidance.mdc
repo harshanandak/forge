@@ -11,12 +11,18 @@ Cursor's allow/deny lists are configured in the IDE, not project files.
 ```
 Bash(git status *), Bash(git log *), Bash(git diff *), Bash(git branch *)
 Bash(git add *), Bash(git commit *), Bash(git push *), Bash(git stash *)
-Bash(git checkout *), Bash(git switch *), Bash(git merge *), Bash(git rebase *)
+Bash(git checkout *), Bash(git switch *), Bash(git merge *)
 Bash(bun *), Bash(bunx *), Bash(npm *), Bash(npx *), Bash(node *)
 Bash(bd *), Bash(gh *), Bash(openspec *)
 Bash(ls *), Bash(cat *), Bash(grep *), Bash(find *), Bash(pwd *), Bash(which *)
 Bash(echo *), Bash(head *), Bash(tail *), Bash(sort *), Bash(wc *)
 Bash(mkdir *), Bash(touch *), Bash(cp *), Bash(mv *)
+```
+
+## Confirm Before Running (prompt each time)
+
+```
+Bash(git rebase *)
 ```
 
 ## Recommended Deny List (always block)
