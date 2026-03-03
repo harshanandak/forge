@@ -8,8 +8,9 @@ yes-always: false
 # This is safer than yes-always — only applies when using architect mode
 auto-accept-architect: true
 
-# auto-commits: true lets Aider commit after each change
-auto-commits: true
+# auto-commits: false requires manual commit after reviewing Aider's changes
+# (true would bypass commitlint hooks and skip human review)
+auto-commits: false
 
 # Always load AGENTS.md so Aider has the project workflow context
 read: AGENTS.md
