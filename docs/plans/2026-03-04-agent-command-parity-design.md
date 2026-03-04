@@ -20,18 +20,19 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 
 1. **Claude Code**: Already complete — verify stays correct after PR 50 merge
 2. **OpenCode**: `.opencode/commands/` — 7 stage command files
-3. **Cursor**: `.cursor/commands/` — 7 stage command files (beta v1.6+; distinct from `.cursor/rules/`)
-4. **Cline**: `.clinerules/workflows/` — 7 stage workflow files (v3.13+; distinct from `.clinerules` rules)
-5. **Windsurf**: `.windsurf/workflows/` — 7 stage workflow files
-6. **Kilo Code**: `.kilocode/commands/` — 7 stage command files
-7. **Roo Code**: `.roo/commands/` — 7 stage command files
-8. **Continue**: `.continue/prompts/` — 7 `.prompt` files with `invokable: true`
-9. **GitHub Copilot**: `.github/prompts/` — 7 `.prompt.md` files
-10. **Codex CLI**: `.agents/skills/forge-workflow/SKILL.md` — skills system (best available; no project-level `/` commands)
-11. **Aider**: `.aider.conf.yml` + AGENTS.md — natural language (no slash command support)
-12. **All configs consistent**: Same 7-stage workflow, same command names (post-PR-50 = `/validate` not `/check`)
-13. **Plugin catalog updated**: `lib/agents/*.plugin.json` — correct capabilities for all agents (Cursor `commands: true`, Cline `commands: true`, Codex `commands: false`)
-14. **`forge check-agents` CLI command**: Verifies all agent configs are complete and consistent; ships as part of Forge CLI.
+3. **Antigravity**: `.agents/workflows/` — 7 stage workflow files (triggered with `/workflow-name`)
+4. **Cursor**: `.cursor/commands/` — 7 stage command files (beta v1.6+)
+5. **Cline**: `.clinerules/workflows/` — 7 stage workflow files (v3.13+)
+6. **Windsurf**: `.windsurf/workflows/` — 7 stage workflow files
+7. **Kilo Code**: `.kilocode/commands/` — 7 stage command files
+8. **Roo Code**: `.roo/commands/` — 7 stage command files
+9. **Continue**: `.continue/prompts/` — 7 `.prompt` files with `invokable: true`
+10. **GitHub Copilot**: `.github/prompts/` — 7 `.prompt.md` files
+11. **Codex VS Code ext**: `.agents/skills/forge-workflow/SKILL.md` — shared dir with Antigravity; invoked `$forge-workflow` (no project-level `/` commands possible)
+12. **Aider**: `.aider.conf.yml` + AGENTS.md — natural language (no slash command support)
+13. **All configs consistent**: Same 7-stage workflow, same command names (post-PR-50 = `/validate` not `/check`)
+14. **Plugin catalog updated**: `lib/agents/*.plugin.json` — all capability flags correct
+15. **`forge check-agents` CLI command**: Verifies all agent configs are complete and consistent; ships as part of Forge CLI.
 
 ---
 
@@ -58,15 +59,16 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 **Agent priority order** (true slash commands first, then best-effort):
 1. Claude Code — already complete, verify after PR 50 merge
 2. OpenCode — `.opencode/commands/*.md`
-3. Cursor — `.cursor/commands/*.md` (beta since v1.6 — confirmed real slash commands)
-4. Cline — `.clinerules/workflows/*.md` (added v3.13 — confirmed real slash commands)
-5. Windsurf — `.windsurf/workflows/*.md`
-6. Kilo Code — `.kilocode/commands/*.md`
-7. Roo Code — `.roo/commands/*.md`
-8. Continue — `.continue/prompts/*.prompt` (with `invokable: true`)
-9. GitHub Copilot — `.github/prompts/*.prompt.md`
-10. Codex CLI — `.agents/skills/forge-workflow/SKILL.md` (no `/` commands; uses `$skillname` or implicit)
-11. Aider — `.aider.conf.yml` + AGENTS.md (natural language only)
+3. Antigravity — `.agents/workflows/*.md` (also has `.agents/skills/` shared with Codex)
+4. Cursor — `.cursor/commands/*.md` (beta v1.6+)
+5. Cline — `.clinerules/workflows/*.md` (v3.13+)
+6. Windsurf — `.windsurf/workflows/*.md`
+7. Kilo Code — `.kilocode/commands/*.md`
+8. Roo Code — `.roo/commands/*.md`
+9. Continue — `.continue/prompts/*.prompt` (with `invokable: true`)
+10. GitHub Copilot — `.github/prompts/*.prompt.md`
+11. Codex (VS Code ext) — `.agents/skills/forge-workflow/SKILL.md` (shared dir with Antigravity; no `/` commands; uses `$skill-name` or implicit)
+12. Aider — `.aider.conf.yml` + AGENTS.md (natural language only)
 
 **Build order**:
 1. Research: confirm exact file format for each agent (especially Codex CLI, Windsurf, Kilo, Roo, Continue, Copilot)
@@ -112,19 +114,20 @@ If any agent's native command format is discovered to differ from what was resea
 
 ### Agent Command/Workflow File Formats (Confirmed)
 
-| Agent | Command Dir | File Extension | Key Frontmatter | Hooks |
-|-------|------------|----------------|-----------------|-------|
-| Claude Code | `.claude/commands/` | `.md` | `description:` | `.claude/settings.json` PreToolUse/PostToolUse |
-| OpenCode | `.opencode/commands/` | `.md` | `description`, `agent`, `model`, `subtask` | Plugin JS/TS: 25+ events |
-| Windsurf | `.windsurf/workflows/` | `.md` | None required | `.windsurf/hooks.json`: 12 events |
-| Kilo Code | `.kilocode/workflows/` | `.md` | None | None |
-| Roo Code | `.roo/commands/` | `.md` | `description`, `argument-hint`, `mode` | None |
-| Continue | `.continue/prompts/` | `.prompt` | `name`, `description`, `invokable: true` | None |
-| Copilot | `.github/prompts/` | `.prompt.md` | `name`, `description`, `agent`, `model`, `tools` | `.github/hooks/*.json`: 8 events (Preview) |
-| Codex CLI | `.agents/skills/<name>/SKILL.md` | `SKILL.md` | `name`, `description` | None shipped |
-| Cursor | Via Claude Code extension (`.claude/commands/`) | — | — | — |
-| Cline | `.clinerules` context only | — | — | — |
-| Aider | `.aider.conf.yml` + AGENTS.md | — | — | — |
+| Agent | Command Dir | File Ext | Key Frontmatter | Trigger | Hooks |
+|-------|------------|----------|-----------------|---------|-------|
+| Claude Code | `.claude/commands/` | `.md` | `description:` | `/name` | `.claude/settings.json` |
+| OpenCode | `.opencode/commands/` | `.md` | `description`, `agent`, `model`, `subtask` | `/name` | Plugin JS/TS: 25+ events |
+| **Antigravity** | `.agents/workflows/` | `.md` | `description:` (optional) | `/name` | `.agents/hooks/` (TBD) |
+| Cursor | `.cursor/commands/` | `.md` | None required | `/name` | None |
+| Cline | `.clinerules/workflows/` | `.md` | None required | `/name` | None |
+| Windsurf | `.windsurf/workflows/` | `.md` | None required | `/name` | `.windsurf/hooks.json`: 12 events |
+| Kilo Code | `.kilocode/commands/` | `.md` | `description`, `mode` | `/name` | None |
+| Roo Code | `.roo/commands/` | `.md` | `description`, `argument-hint`, `mode` | `/name` | None |
+| Continue | `.continue/prompts/` | `.prompt` | `name`, `description`, `invokable: true` | `/name` | None |
+| Copilot | `.github/prompts/` | `.prompt.md` | `name`, `description`, `agent`, `model`, `tools` | `/name` | `.github/hooks/*.json`: 8 events |
+| Codex (ext) | `.agents/skills/<name>/` | `SKILL.md` | `name`, `description` | `$name` (implicit) | None shipped |
+| Aider | AGENTS.md (context) | — | — | natural language | None |
 
 ### OWASP Top 10 Analysis
 
