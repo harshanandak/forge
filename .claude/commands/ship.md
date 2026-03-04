@@ -17,7 +17,7 @@ This command creates a PR after validation passes.
 ```
 <HARD-GATE: /ship entry>
 Do NOT create PR until:
-1. /check was run in this session with all four outputs shown (type, lint, tests, security)
+1. /validate was run in this session with all four outputs shown (type, lint, tests, security)
 2. All checks confirmed passing — not assumed, not "was passing earlier"
 3. Beads issue is in_progress
 4. git branch --show-current output is NOT main or master
@@ -26,7 +26,7 @@ Do NOT create PR until:
 
 ## What This Command Does
 
-### Step 1: Verify /check Passed
+### Step 1: Verify /validate Passed
 Ensure all four validation checks completed successfully with fresh output in this session.
 
 ### Step 2: Update Beads
@@ -85,7 +85,7 @@ EOF
 ## Example Output
 
 ```
-✓ Validation: /check passed (all 4 checks — fresh output confirmed)
+✓ Validation: /validate passed (all 4 checks — fresh output confirmed)
 ✓ Beads: Marked done & synced (forge-xyz)
 ✓ Pushed: feat/stripe-billing
 ✓ PR created: https://github.com/.../pull/123
@@ -112,7 +112,7 @@ Next: /review <pr-number> (after automated checks complete)
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR (you are here)
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user

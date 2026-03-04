@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const {
@@ -51,7 +51,8 @@ describe('CLI Command Dispatcher', () => {
 				'status',
 				'plan',
 				'dev',
-				'check',
+				'validate',
+				'check', // backward-compat alias for validate
 				'ship',
 				'review',
 				'merge',

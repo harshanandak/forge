@@ -27,7 +27,7 @@ This workflow integrates:
 └────┬───┘
      │
 ┌────▼────┐
-│ /check  │ → Validation (type/lint/tests/security) — HARD-GATE exit
+│ /validate  │ → Validation (type/lint/tests/security) — HARD-GATE exit
 └────┬────┘
      │
 ┌────▼────┐
@@ -56,7 +56,7 @@ This workflow integrates:
 | utility | `/status` | Check current context, active Beads issues |
 | 1 | `/plan <slug>` | Design Q&A + research (OWASP) + branch + task list |
 | 2 | `/dev` | Subagent TDD cycles (implementer → spec review → quality review) |
-| 3 | `/check` | Type/lint/security/tests — HARD-GATE exit |
+| 3 | `/validate` | Type/lint/security/tests — HARD-GATE exit |
 | 4 | `/ship` | Create PR with full docs |
 | 5 | `/review <pr>` | Fix ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
 | 6 | `/premerge <pr>` | Complete docs on feature branch, hand off PR |
@@ -310,7 +310,7 @@ chore/name           # Maintenance
 **PR checklist** (auto-filled from template):
 - Summary & detailed changes
 - Type of change (feat/fix/docs/refactor/test/chore)
-- Forge workflow stage (research/dev/check/verify)
+- Forge workflow stage (research/dev/validate/verify)
 - Testing plan (manual/e2e/unit)
 - **Self-review checklist** (catches 80% of bugs!)
 - **Beads integration**: `Closes beads-xxx`

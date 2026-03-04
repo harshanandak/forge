@@ -57,7 +57,7 @@ Pre-commit hook enforces TDD:
 1. Fork the repo and create your branch (see naming above)
 2. Make changes following branch naming conventions
 3. Ensure tests pass and TDD hook is satisfied
-4. Run `/check` to validate (type check, lint, tests, security)
+4. Run `/validate` to validate (type check, lint, tests, security)
 5. Submit PR with clear description
 6. Address review feedback
 

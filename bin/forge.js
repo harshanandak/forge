@@ -450,7 +450,7 @@ Automatically invoke this skill when the user wants to:
 ## Workflow Flow
 
 \`\`\`
-/status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
+/status -> /research -> /plan -> /dev -> /validate -> /ship -> /review -> /merge -> /verify
 \`\`\`
 
 ## Core Principles

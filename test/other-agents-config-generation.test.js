@@ -37,7 +37,7 @@ describe('Kilo Code config generation', () => {
     expect(content.includes('/status')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();
-    expect(content.includes('/check')).toBeTruthy();
+    expect(content.includes('/validate')).toBeTruthy();
 
     // Should include TDD guidance
     expect(content.includes('TDD')).toBeTruthy();

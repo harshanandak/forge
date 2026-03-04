@@ -47,7 +47,7 @@ describe('workflow-profiles', () => {
     test('hotfix profile should have 3 stages', () => {
       expect(PROFILES.hotfix.stages.length).toBe(3);
       expect(PROFILES.hotfix.stages.includes('/dev')).toBeTruthy();
-      expect(PROFILES.hotfix.stages.includes('/check')).toBeTruthy();
+      expect(PROFILES.hotfix.stages.includes('/validate')).toBeTruthy();
       expect(PROFILES.hotfix.tdd).toBe('required');
     });
 

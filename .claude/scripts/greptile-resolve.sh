@@ -58,6 +58,7 @@ Usage: $(basename "$0") <command> <pr-number> [options]
 Commands:
     list <pr-number>                    List all review threads
     list <pr-number> --unresolved       List only unresolved threads
+    list-all <pr-number>                List inline threads + direct PR comments from Greptile
     reply <pr-number> <comment-id> <message>  Reply to a review comment
     resolve <pr-number> <thread-id>     Resolve a specific thread
     reply-and-resolve <pr-number> <comment-id> <thread-id> <message>  Reply and resolve in one step
@@ -67,6 +68,7 @@ Commands:
 Examples:
     $(basename "$0") list 24
     $(basename "$0") list 24 --unresolved
+    $(basename "$0") list-all 24
     $(basename "$0") reply 24 2787717459 "Fixed in commit abc123"
     $(basename "$0") resolve 24 PRRT_kwDORErEU85tuh6I
     $(basename "$0") reply-and-resolve 24 2787717459 PRRT_kwDORErEU85tuh6I "Fixed in commit abc123"
@@ -403,6 +405,36 @@ cmd_resolve_all() {
     echo -e "${YELLOW}═══════════════════════════════════════${NC}"
 }
 
+# List all Greptile feedback: inline review threads + direct PR issue comments
+cmd_list_all() {
+    local pr_number="$1"
+
+    echo -e "${BLUE}═══ Greptile Inline Review Threads ═══${NC}\n"
+    cmd_list "$pr_number"
+
+    echo -e "\n${BLUE}═══ Greptile Direct PR Comments ═══${NC}\n"
+
+    local comments
+    comments=$(gh api "repos/$OWNER/$REPO/issues/$pr_number/comments" \
+        --jq '[.[] | select(.user.login | startswith("greptile-apps"))]')
+
+    local count
+    count=$(echo "$comments" | jq 'length')
+
+    if [ "$count" -eq 0 ]; then
+        echo -e "${GREEN}No direct PR comments from Greptile.${NC}"
+    else
+        echo -e "Found ${YELLOW}$count${NC} direct comment(s) from Greptile:\n"
+        while IFS=$'\t' read -r comment_id created_at body_preview; do
+            echo -e "  ${BLUE}Comment ID:${NC} $comment_id"
+            echo -e "  ${BLUE}Posted:${NC}     $created_at"
+            echo -e "  ${BLUE}Preview:${NC}    $body_preview"
+            echo -e "  ${BLUE}Reply with:${NC} gh pr comment $pr_number --body \"...\""
+            echo ""
+        done < <(echo "$comments" | jq -r '.[] | [.id, .created_at, (.body | split("\n")[0:3] | join(" | ") | .[0:120])] | join("\t")')
+    fi
+}
+
 # Stats command
 cmd_stats() {
     local pr_number="$1"
@@ -465,6 +497,9 @@ main() {
     case "$command" in
         list)
             cmd_list "$pr_number" "$@"
+            ;;
+        list-all)
+            cmd_list_all "$pr_number"
             ;;
         reply)
             cmd_reply "$pr_number" "$@"

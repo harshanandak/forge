@@ -45,17 +45,30 @@
 
 When Greptile Quality Gate fails (score < 4/5) or when review comments exist:
 
-### Step 1: List All Unresolved Threads
+### Step 1: List ALL Greptile Feedback (Inline + Direct Comments)
+
+Greptile posts feedback in **two places**:
+1. **Inline review threads** — attached to specific code lines (resolvable via GraphQL)
+2. **Direct PR issue comments** — "Additional Comments (N)" posted as regular PR comments (reply with `gh pr comment`)
+
+Always run `list-all` to see both:
+
+```bash
+bash .claude/scripts/greptile-resolve.sh list-all <pr-number>
+```
+
+Or just inline threads (unresolved only):
 
 ```bash
 bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
 ```
 
 **Output shows:**
-- Thread ID (for resolving)
-- Comment ID (for replying)
+- Thread ID (for resolving inline threads)
+- Comment ID (for replying to inline threads)
 - File path and line number
 - Issue description
+- Direct PR comment IDs and previews (reply with `gh pr comment`)
 
 **Example:**
 ```

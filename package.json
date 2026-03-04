@@ -16,7 +16,7 @@
     "test:coverage": "c8 --check-coverage bun test",
     "typecheck": "echo 'No TypeScript in project - skipping type check'",
     "lint": "eslint .",
-    "check": "bash scripts/check.sh",
+    "check": "bash scripts/validate.sh",
     "postinstall": "node ./bin/forge.js",
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
     "setup": "node ./bin/forge.js setup",

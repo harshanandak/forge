@@ -191,7 +191,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 ### Stage 5: Check
 
 ```bash
-$ bunx forge /check
+$ bunx forge /validate
 ```
 
 **What runs**:
@@ -327,7 +327,7 @@ In **5 minutes**, you:
 
 **Simple feature** (like you just did):
 ```bash
-/research → /plan → /dev → /check → /ship
+/research → /plan → /dev → /validate → /ship
 ```
 
 **Bug fix with security**:
@@ -335,7 +335,7 @@ In **5 minutes**, you:
 /research sql-injection-fix
 /plan sql-injection-fix
 /dev  # Fix + tests
-/check  # Security scan critical
+/validate  # Security scan critical
 /ship
 ```
 
@@ -345,7 +345,7 @@ In **5 minutes**, you:
 /plan user-authentication  # Creates OpenSpec proposal
 # → Create PR for proposal approval first
 /dev
-/check
+/validate
 /ship
 /review
 /merge
@@ -397,7 +397,7 @@ openspec init
 /research X   # Research feature X
 /plan X       # Create plan for X
 /dev          # TDD development
-/check        # Validate everything
+/validate        # Validate everything
 /ship         # Create PR
 /review N     # Address PR #N feedback
 /merge N      # Merge PR #N

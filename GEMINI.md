@@ -11,7 +11,7 @@
 | utility | `/status` | Check current context, active work                      |
 | 1     | `/plan`     | Design intent → research → branch + worktree + task list |
 | 2     | `/dev`      | Subagent-driven TDD per task (spec + quality review)     |
-| 3     | `/check`    | Validation (type/lint/security/tests)                    |
+| 3     | `/validate`    | Validation (type/lint/security/tests)                    |
 | 4     | `/ship`     | Create PR with documentation                             |
 | 5     | `/review`   | Address ALL PR feedback                                  |
 | 6     | `/premerge` | Complete docs, hand off PR to user                       |

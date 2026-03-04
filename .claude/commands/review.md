@@ -57,7 +57,7 @@ gh run view <run-id> --log-failed
 
 **Common GitHub Actions Issues**:
 - Build failures: Missing dependencies, compilation errors
-- Test failures: Failing test cases (should not happen if /check passed)
+- Test failures: Failing test cases (should not happen if /validate passed)
 - Lint failures: Code style violations
 - Type failures: TypeScript type errors
 - Deployment failures: Env vars, configuration issues
@@ -373,7 +373,7 @@ Do NOT declare /review complete until:
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud (you are here)
 Stage 6: /premerge   → Update docs, hand off PR to user

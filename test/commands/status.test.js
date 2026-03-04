@@ -86,7 +86,7 @@ describe('Status Command - Stage Detection', () => {
 
 			const result = detectStage(context);
 			expect(result.stage).toBe(5);
-			expect(result.nextCommand).toMatch(/check/i);
+			expect(result.nextCommand).toMatch(/validate/i);
 		});
 
 		test('should detect stage 6 (ready to ship)', () => {
