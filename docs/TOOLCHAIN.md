@@ -635,7 +635,7 @@ Choose ONE code quality scanner based on your needs:
 ### Option 1: ESLint Only (FREE, Recommended)
 
 **Status**: Built-in
-**Used in**: `/check` stage
+**Used in**: `/validate` stage
 
 No external server required - uses your project's linting configuration.
 
@@ -647,7 +647,7 @@ bun run lint
 ### Option 2: SonarCloud (Cloud-Hosted)
 
 **Website**: [sonarcloud.io](https://sonarcloud.io)
-**Used in**: `/check` stage
+**Used in**: `/validate` stage
 **Free Tier**: 50,000 lines of code
 
 Static analysis for bugs, vulnerabilities, code smells.
@@ -673,7 +673,7 @@ bunx sonarqube-scanner
 ### Option 3: SonarQube Community (Self-Hosted, FREE)
 
 **Website**: [sonarqube.org](https://www.sonarsource.com/products/sonarqube/)
-**Used in**: `/check` stage
+**Used in**: `/validate` stage
 **Pricing**: FREE, unlimited lines of code
 
 Self-hosted code quality analysis - no cloud dependency.
@@ -755,7 +755,7 @@ gh issue create --title "..." --body "..."
 | `/research` | Parallel AI, Context7, grep.app, codebase exploration |
 | `/plan` | `bd create`, `openspec` (if strategic), `git checkout -b` |
 | `/dev` | Tests, code, `bd update`, `/tasks save` |
-| `/check` | Type check, lint, tests, SonarCloud |
+| `/validate` | Type check, lint, tests, SonarCloud |
 | `/ship` | `bd update --status done`, `gh pr create` |
 | `/review` | `gh pr view`, Greptile, SonarCloud |
 | `/merge` | `gh pr merge`, `openspec archive`, `bd sync` |

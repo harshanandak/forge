@@ -25,7 +25,7 @@
 <!-- Which stage does this PR correspond to? -->
 - [ ] Research (`/research`)
 - [ ] Implementation (`/dev`)
-- [ ] Validation (`/check`)
+- [ ] Validation (`/validate`)
 - [ ] Documentation (`/verify`)
 
 ## Testing

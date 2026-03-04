@@ -560,6 +560,109 @@ describe('Plan Phase 3 — createFeatureBranch slug validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 2: detectDRYViolation — DRY gate before finalizing approach
+// ---------------------------------------------------------------------------
+describe('Plan Phase 2 — detectDRYViolation', () => {
+	const { detectDRYViolation } = require('../../lib/commands/plan.js');
+
+	test('should detect DRY violation when existing implementation found', () => {
+		const result = detectDRYViolation({
+			searchTerm: 'validateSlug',
+			matches: [{ file: 'lib/utils.js', line: 42 }],
+		});
+		expect(result.violation).toBe(true);
+		expect(result.existingFile).toBe('lib/utils.js');
+		expect(result.existingLine).toBe(42);
+		expect(result.allMatches).toEqual([{ file: 'lib/utils.js', line: 42 }]);
+	});
+
+	test('should surface all matches when multiple existing implementations found', () => {
+		const matches = [
+			{ file: 'lib/utils.js', line: 42 },
+			{ file: 'lib/validators.js', line: 17 },
+		];
+		const result = detectDRYViolation({ searchTerm: 'validateSlug', matches });
+		expect(result.violation).toBe(true);
+		expect(result.existingFile).toBe('lib/utils.js');
+		expect(result.allMatches).toHaveLength(2);
+		expect(result.allMatches[1].file).toBe('lib/validators.js');
+	});
+
+	test('should return no violation when no matches found', () => {
+		const result = detectDRYViolation({ searchTerm: 'foo', matches: [] });
+		expect(result.violation).toBe(false);
+		expect(result.existingFile).toBeUndefined();
+		expect(result.existingLine).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: applyYAGNIFilter — YAGNI filter for task list creation
+// ---------------------------------------------------------------------------
+describe('Plan Phase 3 — applyYAGNIFilter', () => {
+	const { applyYAGNIFilter } = require('../../lib/commands/plan.js');
+
+	test('should pass YAGNI filter when task maps to design doc requirement', () => {
+		const result = applyYAGNIFilter({
+			task: 'Add validateSlug function',
+			designDoc: '## Success Criteria\n- validateSlug validates slug format',
+		});
+		expect(result.flagged).toBe(false);
+		expect(result.anchor).toEqual(expect.any(String));
+		expect(result.anchor.length).toBeGreaterThan(0);
+	});
+
+	test('should flag task with no design doc anchor', () => {
+		const result = applyYAGNIFilter({
+			task: 'Add dark mode toggle',
+			designDoc: '## Success Criteria\n- validateSlug validates slug format',
+		});
+		expect(result.flagged).toBe(true);
+		expect(result.reason).toBe('No matching requirement found in design doc');
+	});
+
+	test('should return allFlagged when all tasks fail YAGNI filter', () => {
+		const result = applyYAGNIFilter({
+			tasks: ['Task Alpha', 'Task Beta'],
+			designDoc: '## Purpose\nFoo',
+		});
+		expect(result.allFlagged).toBe(true);
+		expect(result.flaggedTasks).toEqual(['Task Alpha', 'Task Beta']);
+		expect(result.message).toBe("Design doc doesn't cover all tasks — needs amendment");
+	});
+
+	test('should return flaggedTasks for partial violations in multi-task mode', () => {
+		const result = applyYAGNIFilter({
+			tasks: ['validateSlug function', 'dark mode toggle'],
+			designDoc: '## Success Criteria\n- validateSlug validates slug format',
+		});
+		expect(result.allFlagged).toBe(false);
+		expect(result.flaggedTasks).toEqual(['dark mode toggle']);
+	});
+
+	test('should return allFlagged: false for empty tasks array', () => {
+		const result = applyYAGNIFilter({ tasks: [], designDoc: '## Purpose\nFoo' });
+		expect(result.allFlagged).toBe(false);
+		expect(result.flaggedTasks).toEqual([]);
+	});
+
+	test('should match task keywords wrapped in backticks or parentheses against plain-text design doc', () => {
+		const designDoc = '## Success Criteria\n- validateSlug validates slug format';
+		// Task uses backtick notation — should still match plain "validateSlug" in design doc
+		const result = applyYAGNIFilter({ task: 'Add `validateSlug` function', designDoc });
+		expect(result.flagged).toBe(false);
+		expect(result.anchor).toBe('validateslug');
+	});
+
+	test('should match task keywords with trailing punctuation against plain-text design doc', () => {
+		const designDoc = '## Success Criteria\n- validateSlug validates slug format';
+		const result = applyYAGNIFilter({ task: 'Implement validateSlug() helper', designDoc });
+		expect(result.flagged).toBe(false);
+		expect(result.anchor).toBe('validateslug');
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Phase 3: executePlan — featureName validation (early exit, no I/O)
 // ---------------------------------------------------------------------------
 describe('Plan Phase 3 — executePlan featureName validation', () => {

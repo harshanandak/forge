@@ -69,12 +69,16 @@ fi
 
 # Step 3: Security Audit
 print_header "3/4: Security Audit"
+AUDIT_OUTPUT=$(bun audit 2>&1 || true)
+if echo "$AUDIT_OUTPUT" | grep -qiE 'critical|high'; then
+  print_error "Security audit found critical/high vulnerabilities"
+  echo "$AUDIT_OUTPUT"
+  exit 1
+fi
 if bun audit; then
   print_success "Security audit passed"
 else
-  print_warning "Security audit found issues (non-blocking)"
-  # Don't exit on audit warnings in development
-  # In CI, this can be made stricter
+  print_warning "Security audit found issues (moderate/low — non-blocking)"
 fi
 
 # Step 4: Tests

@@ -9,7 +9,7 @@
 | utility | `/status` | Check current stage, active work, recent completions |
 | 1 | `/plan` | Design intent (brainstorm) → research → branch + worktree + task list |
 | 2 | `/dev` | Subagent-driven TDD per task: implementer → spec review → quality review |
-| 3 | `/check` | Type check, lint, code review, security, tests — all fresh output |
+| 3 | `/validate` | Type check, lint, code review, security, tests — all fresh output |
 | 4 | `/ship` | Push and create PR with design doc reference |
 | 5 | `/review` | Handle ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
 | 6 | `/premerge` | Complete docs on feature branch, hand off PR to user |
@@ -38,7 +38,7 @@
 ### Security Built-In
 - OWASP Top 10 analysis documented in design doc (Phase 2)
 - Security test scenarios identified before /dev
-- Automated scans + manual review at /check
+- Automated scans + manual review at /validate
 
 ## Issue Tracking
 
@@ -98,7 +98,7 @@ Skill("parallel-deep-research")  # Deep analysis, market reports
 ## Flow Visualization
 
 ```
-/plan → /dev → /check → /ship → /review → /premerge → /verify
+/plan → /dev → /validate → /ship → /review → /premerge → /verify
   ↓        ↓        ↓        ↓        ↓          ↓         ↓
 Design   Task-by  Validate   PR      Address    Merge    Verify
 +Research  task    +GATE    create   feedback    +docs    CI on

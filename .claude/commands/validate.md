@@ -4,25 +4,25 @@ description: Complete validation (type/lint/tests/security)
 
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
-# Check
+# Validate
 
 This command validates all code before creating a pull request.
 
 ## Usage
 
 ```bash
-/check
+/validate
 ```
 
 Or use the unified validation script:
 
 ```bash
-bun run check    # Runs all checks automatically
+bun run check    # Runs all validation steps automatically (check is the npm script name; /validate is the workflow command)
 ```
 
 ## What This Command Does
 
-**Quick Start**: The unified `bun run check` command (implemented in `scripts/check.sh`) automatically runs all validation steps in sequence. See individual steps below for details.
+**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
 
 ### Step 1: Type Check
 ```bash
@@ -67,7 +67,7 @@ bun run lint    # or: npm run lint, eslint ., etc.
 **Automated Security Scan**:
 ```bash
 # Run your project's security scan
-bunx npm audit    # or: npm audit, snyk test, etc.
+npm audit    # or: bun audit, snyk test, etc.
 ```
 
 **Manual Review**:
@@ -92,6 +92,69 @@ bun test    # or: npm run test, jest, vitest, etc.
 >
 > **If unsure**: Re-read the `## Technical Research` section in `docs/plans/YYYY-MM-DD-<slug>-design.md`
 
+## On Validation Failure: 4-Phase Debug Mode
+
+> **Iron Law: NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST**
+>
+> Every fix attempt without a diagnosed root cause wastes time and masks the real problem.
+
+### Phase D1: Reproduce
+
+Confirm the failure is deterministic. Capture the exact error.
+
+- Run the failing command fresh — do not rely on cached output
+- Record: exact command, exact error message, exact line number
+- If intermittent: run 3 times, document frequency
+
+### Phase D2: Root-Cause Trace
+
+Trace to the source, not the symptom. **Fix at source, not at symptom.**
+
+- Read the stack trace — where does it originate?
+- Is it a test bug, an implementation bug, or a config bug?
+- What changed recently that could have caused this?
+- Read the actual failing line and surrounding context
+
+### Phase D3: Fix
+
+ONE minimal fix. ONE change at a time.
+
+1. Write the failing test FIRST (if not already a test failure)
+2. Make the smallest possible change to fix the root cause
+3. Do not fix multiple things in one commit
+4. Do not "also improve" unrelated code while fixing
+
+### Phase D4: Verify
+
+Re-run full validation from the beginning.
+
+- Do not declare fixed until you have run the full validate suite
+- Show fresh output — not "it should be fine now"
+- All checks must pass, not just the one that was failing
+
+<HARD-GATE: 3+ fix attempts>
+STOP. Question architecture before Fix #4.
+
+If you have attempted 3+ fixes without resolution:
+1. Step back — is the approach fundamentally wrong?
+2. Read the original spec/design doc
+3. Ask: "Am I fixing symptoms or the real problem?"
+4. Consider: revert all changes and start fresh with better understanding
+
+"Quick fix for now" is not a valid fix strategy.
+</HARD-GATE>
+
+### Red Flags — STOP if you hear yourself saying:
+
+- "Quick fix for now"
+- "It's probably X"
+- "I don't fully understand but this might work"
+- "Should be fixed now"
+- "It was passing earlier"
+- "I'm confident this is right"
+
+**None of these are evidence. Run the command. Show the output.**
+
 ### Step 6: Handle Failures
 
 If any check fails:
@@ -108,7 +171,7 @@ bd update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
 If all pass:
 
 ```
-<HARD-GATE: /check exit>
+<HARD-GATE: /validate exit>
 Do NOT output any variation of "check complete", "ready to ship", or proceed to /ship
 until ALL FOUR show fresh output in this session:
 
@@ -147,7 +210,7 @@ Ready for /ship
 ✓ Beads issue created: bd-k8m3 "Fix validation test"
 ✓ Current issue marked: Blocked by bd-k8m3
 
-Fix issues then re-run /check
+Fix issues then re-run /validate
 ```
 
 ## Integration with Workflow
@@ -156,7 +219,7 @@ Fix issues then re-run /check
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /check      → Type check, lint, tests, security — all fresh output (you are here)
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output (you are here)
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user

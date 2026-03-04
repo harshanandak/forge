@@ -215,7 +215,7 @@ Detect before recommending. Expand `lib/project-discovery.js` to detect:
 | `clerk` | FL | `@clerk/nextjs` | clerk-mcp |
 | `convex` | FL | `convex` in deps | No |
 
-#### Stage 5: `/check`
+#### Stage 5: `/validate`
 
 **Linting & Formatting (all free):**
 
@@ -717,7 +717,7 @@ Run 'forge install --all' to install all recommended tools.
 **Applicable**: Yes — catalog may recommend tools with known CVEs
 **Mitigation**:
 - Catalog is a static data file — easy to audit and update
-- `npm audit` already runs as part of `/check`
+- `npm audit` already runs as part of `/validate`
 - SonarCloud detects vulnerable dependencies
 **Tests**: Existing CI/CD checks catch vulnerable dependencies
 

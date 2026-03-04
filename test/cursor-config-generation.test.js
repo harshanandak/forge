@@ -44,7 +44,7 @@ describe('Cursor config generation', () => {
     expect(content.includes('/research')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();
-    expect(content.includes('/check')).toBeTruthy();
+    expect(content.includes('/validate')).toBeTruthy();
     expect(content.includes('/ship')).toBeTruthy();
     expect(content.includes('/review')).toBeTruthy();
     expect(content.includes('/merge')).toBeTruthy();
