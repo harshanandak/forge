@@ -573,6 +573,19 @@ describe('Plan Phase 2 — detectDRYViolation', () => {
 		expect(result.violation).toBe(true);
 		expect(result.existingFile).toBe('lib/utils.js');
 		expect(result.existingLine).toBe(42);
+		expect(result.allMatches).toEqual([{ file: 'lib/utils.js', line: 42 }]);
+	});
+
+	test('should surface all matches when multiple existing implementations found', () => {
+		const matches = [
+			{ file: 'lib/utils.js', line: 42 },
+			{ file: 'lib/validators.js', line: 17 },
+		];
+		const result = detectDRYViolation({ searchTerm: 'validateSlug', matches });
+		expect(result.violation).toBe(true);
+		expect(result.existingFile).toBe('lib/utils.js');
+		expect(result.allMatches).toHaveLength(2);
+		expect(result.allMatches[1].file).toBe('lib/validators.js');
 	});
 
 	test('should return no violation when no matches found', () => {
