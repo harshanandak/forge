@@ -19,8 +19,8 @@ describe('Validate Command - Validation Orchestration', () => {
 		test('should handle missing type checker gracefully', async () => {
 			// When no tsconfig.json or type checker available
 			const result = await runTypeCheck();
-			// Should skip or return success if TypeScript not configured
-			expect(result.success !== undefined).toBeTruthy();
+			// Should skip or return a boolean success value
+			expect(typeof result.success).toBe('boolean');
 		});
 	});
 
@@ -32,11 +32,10 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('should handle ESLint errors', async () => {
-			// When there are lint errors
 			const result = await runLint();
-			expect(result.success !== undefined).toBeTruthy();
+			expect(typeof result.success).toBe('boolean');
 			if (!result.success) {
-				expect(result.errors > 0 || result.message).toBeTruthy();
+				expect(result.errors > 0 || typeof result.message === 'string').toBe(true);
 			}
 		});
 	});
@@ -82,7 +81,7 @@ describe('Validate Command - Validation Orchestration', () => {
 			// Skip heavy checks (lint/security/tests call real CLI tools)
 			// typeCheck gracefully skips if no tsconfig.json is present
 			const result = await executeValidate({ skip: ['lint', 'security', 'tests'] });
-			expect(result.success !== undefined).toBeTruthy();
+			expect(typeof result.success).toBe('boolean');
 			expect(result.checks).toBeTruthy();
 			expect('typeCheck' in result.checks).toBeTruthy();
 			expect(typeof result.summary).toBe('string');
@@ -191,24 +190,24 @@ describe('Validate Command - Validation Orchestration', () => {
 
 	describe('Debug mode', () => {
 		test('should enter debug mode at Phase D1 on first failure', () => {
-			const result = executeDebugMode({ error: 'Test failed', fixAttempts: 0 });
+			const result = executeDebugMode({ fixAttempts: 0 });
 			expect(result).toEqual({ escalate: false, phase: 'D1' });
 		});
 
 		test('should escalate when 3+ fix attempts', () => {
-			const result = executeDebugMode({ error: 'still failing', fixAttempts: 3 });
+			const result = executeDebugMode({ fixAttempts: 3 });
 			expect(result.escalate).toBe(true);
 			expect(result.message).toEqual(expect.stringContaining('STOP'));
 		});
 
 		test('should reject completion claim without fresh evidence', () => {
-			const result = executeDebugMode({ error: 'err', fixAttempts: 1, claim: 'looks good to me' });
+			const result = executeDebugMode({ fixAttempts: 1, claim: 'looks good to me' });
 			expect(result.valid).toBe(false);
 			expect(result.reason).toEqual(expect.stringContaining('fresh'));
 		});
 
 		test('should escalate when both fixAttempts>=3 and claim is weak (escalation takes priority)', () => {
-			const result = executeDebugMode({ error: 'err', fixAttempts: 3, claim: 'looks good probably' });
+			const result = executeDebugMode({ fixAttempts: 3, claim: 'looks good probably' });
 			expect(result.escalate).toBe(true);
 			expect(result.message).toEqual(expect.stringContaining('STOP'));
 		});
