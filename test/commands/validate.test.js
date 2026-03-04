@@ -212,5 +212,11 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.valid).toBe(false);
 			expect(result.reason).toEqual(expect.stringContaining('fresh'));
 		});
+
+		test('should escalate when both fixAttempts>=3 and claim is weak (escalation takes priority)', () => {
+			const result = executeDebugMode({ error: 'err', fixAttempts: 3, claim: 'looks good probably' });
+			expect(result.escalate).toBe(true);
+			expect(result.message).toEqual(expect.stringContaining('STOP'));
+		});
 	});
 });

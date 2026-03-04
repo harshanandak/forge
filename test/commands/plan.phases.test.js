@@ -632,6 +632,21 @@ describe('Plan Phase 3 — applyYAGNIFilter', () => {
 		expect(result.allFlagged).toBe(false);
 		expect(result.flaggedTasks).toEqual([]);
 	});
+
+	test('should match task keywords wrapped in backticks or parentheses against plain-text design doc', () => {
+		const designDoc = '## Success Criteria\n- validateSlug validates slug format';
+		// Task uses backtick notation — should still match plain "validateSlug" in design doc
+		const result = applyYAGNIFilter({ task: 'Add `validateSlug` function', designDoc });
+		expect(result.flagged).toBe(false);
+		expect(result.anchor).toBe('validateslug');
+	});
+
+	test('should match task keywords with trailing punctuation against plain-text design doc', () => {
+		const designDoc = '## Success Criteria\n- validateSlug validates slug format';
+		const result = applyYAGNIFilter({ task: 'Implement validateSlug() helper', designDoc });
+		expect(result.flagged).toBe(false);
+		expect(result.anchor).toBe('validateslug');
+	});
 });
 
 // ---------------------------------------------------------------------------
