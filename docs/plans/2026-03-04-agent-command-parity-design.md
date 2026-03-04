@@ -29,7 +29,7 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 9. **Continue**: `.continue/prompts/` — 7 `.prompt` files with `invokable: true`
 10. **GitHub Copilot**: `.github/prompts/` — 7 `.prompt.md` files
 11. **Codex VS Code ext**: `.agents/skills/forge-workflow/SKILL.md` — shared dir with Antigravity; invoked `$forge-workflow` (no project-level `/` commands possible)
-12. **Aider**: `.aider.conf.yml` + AGENTS.md — natural language (no slash command support)
+12. **Aider**: ~~dropped~~ — built-in `/commands` conflict with Forge commands, no custom slash command support, degraded UX. Use Claude Code or any other supported agent instead.
 13. **All configs consistent**: Same 7-stage workflow, same command names (post-PR-50 = `/validate` not `/check`)
 14. **Plugin catalog updated**: `lib/agents/*.plugin.json` — all capability flags correct
 15. **`forge check-agents` CLI command**: Verifies all agent configs are complete and consistent; ships as part of Forge CLI.
@@ -68,7 +68,7 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 9. Continue — `.continue/prompts/*.prompt` (with `invokable: true`)
 10. GitHub Copilot — `.github/prompts/*.prompt.md`
 11. Codex (VS Code ext) — `.agents/skills/forge-workflow/SKILL.md` (shared dir with Antigravity; no `/` commands; uses `$skill-name` or implicit)
-12. Aider — `.aider.conf.yml` + AGENTS.md (natural language only)
+12. Aider — **dropped** (built-in command conflicts, no slash command support)
 
 **Build order**:
 1. Research: confirm exact file format for each agent (especially Codex CLI, Windsurf, Kilo, Roo, Continue, Copilot)
@@ -128,7 +128,7 @@ If any agent's native command format is discovered to differ from what was resea
 | Continue | `.continue/prompts/` | `.prompt` | `name`, `description`, `invokable: true` | `/name` | None |
 | Copilot | `.github/prompts/` | `.prompt.md` | `name`, `description`, `agent`, `model`, `tools` | `/name` | `.github/hooks/*.json`: 8 events |
 | Codex (ext) | `.agents/skills/<name>/` | `SKILL.md` | `name`, `description` | `$name` (implicit) | None shipped |
-| Aider | AGENTS.md (context) | — | — | natural language | None |
+| Aider | **dropped** — command conflicts | — | — | — | — |
 
 ### OWASP Top 10 Analysis
 
