@@ -19,18 +19,19 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 ## Success Criteria
 
 1. **Claude Code**: Already complete — verify stays correct after PR 50 merge
-2. **Codex CLI**: Native `/commands` implemented for all 7 workflow stages
-3. **OpenCode**: `.opencode/commands/` populated with all 7 stage command files
-4. **Windsurf**: `.windsurf/workflows/` populated with all stage workflow files
-5. **Kilo Code**: `.kilocode/workflows/` populated
-6. **Cursor**: `.cursorrules` + `.cursor/rules/*.mdc` complete and accurate, `.cursor/skills/` populated
-7. **Cline/Roo**: `.clinerules` updated, `.cline/skills/` and `.roo/commands/` populated
-8. **Aider**: `.aider.conf.yml` + AGENTS.md sufficient
-9. **Continue**: `.continue/prompts/` populated
-10. **GitHub Copilot**: `.github/copilot-instructions.md` + `.github/prompts/` populated
-11. **All configs consistent**: Same 7-stage workflow, same command names (post-PR-50 = `/validate` not `/check`)
-12. **Plugin catalog updated**: `lib/agents/*.plugin.json` reflects actual capabilities (e.g., Codex CLI `commands: true`)
-13. **`forge check-agents` CLI command**: Runs automatically in any project using Forge; verifies all agent configs are complete, consistent, and match their plugin spec. Ships as part of `forge` CLI.
+2. **OpenCode**: `.opencode/commands/` — 7 stage command files
+3. **Cursor**: `.cursor/commands/` — 7 stage command files (beta v1.6+; distinct from `.cursor/rules/`)
+4. **Cline**: `.clinerules/workflows/` — 7 stage workflow files (v3.13+; distinct from `.clinerules` rules)
+5. **Windsurf**: `.windsurf/workflows/` — 7 stage workflow files
+6. **Kilo Code**: `.kilocode/commands/` — 7 stage command files
+7. **Roo Code**: `.roo/commands/` — 7 stage command files
+8. **Continue**: `.continue/prompts/` — 7 `.prompt` files with `invokable: true`
+9. **GitHub Copilot**: `.github/prompts/` — 7 `.prompt.md` files
+10. **Codex CLI**: `.agents/skills/forge-workflow/SKILL.md` — skills system (best available; no project-level `/` commands)
+11. **Aider**: `.aider.conf.yml` + AGENTS.md — natural language (no slash command support)
+12. **All configs consistent**: Same 7-stage workflow, same command names (post-PR-50 = `/validate` not `/check`)
+13. **Plugin catalog updated**: `lib/agents/*.plugin.json` — correct capabilities for all agents (Cursor `commands: true`, Cline `commands: true`, Codex `commands: false`)
+14. **`forge check-agents` CLI command**: Verifies all agent configs are complete and consistent; ships as part of Forge CLI.
 
 ---
 
@@ -54,18 +55,18 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 
 **Native mechanism per agent**: Each agent gets the files appropriate to its actual command system. The source of truth for command content is `.claude/commands/*.md` (which will have `validate.md` post-PR-50). All other agent files are adapters of this source.
 
-**Agent priority order** (most powerful native command support first):
+**Agent priority order** (true slash commands first, then best-effort):
 1. Claude Code — already complete, verify after PR 50 merge
-2. OpenCode — native commands (`commands: true`, `.opencode/commands/`)
-3. Codex CLI — native `/commands` (confirmed by UI screenshot; format TBD from research)
-4. Windsurf — workflow files (`.windsurf/workflows/`)
-5. Kilo Code — workflow files (`.kilocode/workflows/`)
-6. Roo Code — command files (`.roo/commands/`)
-7. Continue — prompt files (`.continue/prompts/`)
-8. GitHub Copilot — prompt files (`.github/prompts/`)
-9. Cursor — context injection only (`.cursorrules` + `.cursor/rules/*.mdc` + skills)
-10. Cline — context injection (`.clinerules` + skills)
-11. Aider — config + AGENTS.md context
+2. OpenCode — `.opencode/commands/*.md`
+3. Cursor — `.cursor/commands/*.md` (beta since v1.6 — confirmed real slash commands)
+4. Cline — `.clinerules/workflows/*.md` (added v3.13 — confirmed real slash commands)
+5. Windsurf — `.windsurf/workflows/*.md`
+6. Kilo Code — `.kilocode/commands/*.md`
+7. Roo Code — `.roo/commands/*.md`
+8. Continue — `.continue/prompts/*.prompt` (with `invokable: true`)
+9. GitHub Copilot — `.github/prompts/*.prompt.md`
+10. Codex CLI — `.agents/skills/forge-workflow/SKILL.md` (no `/` commands; uses `$skillname` or implicit)
+11. Aider — `.aider.conf.yml` + AGENTS.md (natural language only)
 
 **Build order**:
 1. Research: confirm exact file format for each agent (especially Codex CLI, Windsurf, Kilo, Roo, Continue, Copilot)
@@ -90,8 +91,9 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 
 ## Edge Cases
 
-- **Codex CLI `/commands` in UI = deprecated prompts (global only)**: Project-level support is via Skills at `.agents/skills/`. Use skills system, not deprecated prompts directory.
-- **Cursor commands are Claude Code extension commands**: Users running Claude Code extension inside Cursor already get all `.claude/commands/`. No separate Cursor command files needed — focus on `.cursorrules` + `.cursor/rules/*.mdc` for native Cursor AI users.
+- **Codex CLI `/commands` in UI = built-in system commands only**: No project-level custom slash commands. Use Skills at `.agents/skills/forge-workflow/SKILL.md` — invoked with `$forge-workflow` or implicitly. The `/` menu shown in UI is not extensible per-project.
+- **Cursor has TWO separate systems**: `.cursor/rules/*.mdc` = persistent context injected every prompt (NOT commands). `.cursor/commands/*.md` = true slash commands (beta v1.6+, triggered on-demand with `/`). We implement both.
+- **Cline has TWO separate systems**: `.clinerules/*.md` = persistent rules. `.clinerules/workflows/*.md` = true slash commands (v3.13+). We implement workflows for commands.
 - **Continue uses `.prompt` extension, not `.md`**: `invokable: true` frontmatter required to enable slash command.
 - **Copilot uses `.prompt.md` double extension**: File must be in `.github/prompts/`.
 - **Some agents don't support hooks**: Windsurf (`.windsurf/hooks.json`) and Copilot (`.github/hooks/*.json`, Preview) support hooks. Codex CLI, Roo, Kilo, Continue do not. Only implement hooks for agents confirmed above.
