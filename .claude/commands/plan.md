@@ -20,9 +20,8 @@ Before ANY planning work begins:
    - Tell the user: "You are on '<branch>'. Planning must start from a clean worktree on master.
      Run: git checkout master — then re-run /plan."
 3. If on master, create the worktree NOW before asking any questions:
-   a. git checkout -b feat/<slug>
-   b. git worktree add .worktrees/<slug> feat/<slug>
-   c. cd .worktrees/<slug>
+   a. git worktree add -b feat/<slug> .worktrees/<slug>
+   b. cd .worktrees/<slug>
 4. Confirm: "Working in isolated worktree: .worktrees/<slug> (branch: feat/<slug>)"
 5. ONLY THEN begin Phase 1.
 
@@ -210,16 +209,13 @@ CURRENT=$(git branch --show-current)
 if [ "$CURRENT" = "feat/<slug>" ]; then
   echo "✓ Branch feat/<slug> already exists (Entry HARD-GATE created it) — skipping 2b–2d"
 else
-  # Step 2b: Create branch from master explicitly
-  git checkout master
-  git checkout -b feat/<slug>
-
-  # Step 2c: Verify .worktrees/ is gitignored — add if missing
+  # Step 2b: Verify .worktrees/ is gitignored — add if missing
   git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
 
-  # Step 2d: Add worktree so /dev works in an isolated directory
-  # (leaves the main working directory available for other features/sessions)
-  git worktree add .worktrees/<slug> feat/<slug>
+  # Step 2c: Create branch + worktree in one command (from master)
+  # Using -b with worktree add avoids "branch already checked out" error
+  git checkout master
+  git worktree add -b feat/<slug> .worktrees/<slug>
   cd .worktrees/<slug>
 fi
 ```

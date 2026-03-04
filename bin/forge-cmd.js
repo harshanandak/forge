@@ -22,6 +22,7 @@ const VALID_COMMANDS = [
 	'plan',
 	'dev',
 	'validate',
+	'check', // backward-compat alias for validate
 	'ship',
 	'review',
 	'merge',
@@ -33,6 +34,7 @@ const COMMAND_DESCRIPTIONS = {
 	plan: 'Create branch + Beads + OpenSpec proposal',
 	dev: 'Implement with TDD (RED-GREEN-REFACTOR)',
 	validate: 'Run type check, lint, security, tests',
+	check: 'Alias for validate (deprecated — use validate)',
 	ship: 'Auto-generate PR body and create PR',
 	review: 'Aggregate all review feedback',
 	merge: 'Update docs, merge PR, cleanup',
@@ -48,6 +50,7 @@ const REQUIRED_ARGS = {
 	status: [],
 	dev: [],
 	validate: [],
+	check: [], // backward-compat alias
 	verify: [],
 };
 
@@ -253,7 +256,8 @@ async function main() { // NOSONAR S3776
 				process.exit(1);
 			}
 
-		} else if (command === 'validate') {
+		} else if (command === 'validate' || command === 'check') {
+			if (command === 'check') console.warn('⚠ "forge check" is deprecated — use "forge validate"');
 			result = await HANDLERS.validate.executeValidate();
 			if (result.success) {
 				console.log(`✓ ${result.summary}`);

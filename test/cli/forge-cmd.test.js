@@ -52,6 +52,7 @@ describe('CLI Command Dispatcher', () => {
 				'plan',
 				'dev',
 				'validate',
+				'check', // backward-compat alias for validate
 				'ship',
 				'review',
 				'merge',
