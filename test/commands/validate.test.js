@@ -116,15 +116,9 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test.skip('should handle verbose mode', async () => {
-			const result = await executeValidate({ verbose: true });
+		test.skip('should handle custom skip list', async () => {
+			const result = await executeValidate({ skip: ['typeCheck'] });
 			expect(result.checks).toBeTruthy();
-			// Verbose should provide detailed output
-			Object.values(result.checks).forEach(check => {
-				if (check && !check.skipped) {
-					expect(check.output || check.message).toBeTruthy();
-				}
-			});
 		});
 
 		test.skip('should validate options parameter', async () => {
@@ -208,7 +202,7 @@ describe('Validate Command - Validation Orchestration', () => {
 		});
 
 		test('should reject completion claim without fresh evidence', () => {
-			const result = executeDebugMode({ error: 'err', fixAttempts: 1, claim: 'should be fixed now' });
+			const result = executeDebugMode({ error: 'err', fixAttempts: 1, claim: 'looks good to me' });
 			expect(result.valid).toBe(false);
 			expect(result.reason).toEqual(expect.stringContaining('fresh'));
 		});
