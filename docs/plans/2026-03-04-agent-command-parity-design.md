@@ -79,10 +79,12 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 
 ## Constraints
 
+- **UX parity**: User types `/plan`, `/dev`, `/validate`, `/ship`, `/review`, `/premerge`, `/verify` — same command names in every agent, same resulting behavior. The agent handles it natively or via context, but the UX is identical.
+- **Context-injection agents must be actionable**: For Cursor native/Cline/Aider — config files must read as "when you see `/plan`, do X" not "here is documentation about X". Imperative, not descriptive.
 - Command content must be consistent across all agents (same steps, same HARD-GATEs)
 - No introducing new workflow logic — just adapting existing `.claude/commands/` content
 - File formats must match each agent's actual spec (confirmed via research, not assumed)
-- `ambiguity policy`: Pause and ask user if any agent's format is unexpected
+- Ambiguity policy: Pause and ask user if any agent's format is unexpected
 
 ---
 
