@@ -12,6 +12,8 @@ Every major AI coding agent (Claude Code, Cursor, Codex CLI, OpenCode, Cline, Wi
 
 Currently only Claude Code has complete command support. Cursor/Cline/Codex/OpenCode/Windsurf have partial or no implementation. Stage count is inconsistent across files (7 vs 9 stages). The `check → validate` rename exists only in feat/superpowers-gaps (PR 50).
 
+**Critically**: Since Forge is used as a framework across many projects, manually cross-checking every agent after each change is not viable. This feature also ships `forge check-agents` — a CLI command any project can run to automatically verify all agent configs are complete and consistent. This becomes part of every project's `/check` stage.
+
 ---
 
 ## Success Criteria
@@ -28,6 +30,7 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 10. **GitHub Copilot**: `.github/copilot-instructions.md` + `.github/prompts/` populated
 11. **All configs consistent**: Same 7-stage workflow, same command names (post-PR-50 = `/validate` not `/check`)
 12. **Plugin catalog updated**: `lib/agents/*.plugin.json` reflects actual capabilities (e.g., Codex CLI `commands: true`)
+13. **`forge check-agents` CLI command**: Runs automatically in any project using Forge; verifies all agent configs are complete, consistent, and match their plugin spec. Ships as part of `forge` CLI.
 
 ---
 
@@ -57,6 +60,7 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 3. Implement context-injection agents (Cursor, Cline, Aider) — update their rules/context files
 4. Update plugin catalog (`lib/agents/*.plugin.json`) to reflect actual capabilities
 5. Update AGENTS.md to be the consistent, authoritative cross-agent reference
+6. Build `forge check-agents` CLI command — validates all agent configs in any project using Forge
 
 ---
 
