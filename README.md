@@ -81,7 +81,7 @@ bunx forge setup
 | **utility** | `/status` | Check current context, active work |
 | **1. Plan** | `/plan` | Design Q&A → research → branch + task list |
 | **2. Dev** | `/dev` | Subagent TDD per task (spec + quality review) |
-| **3. Check** | `/validate` | Validate: types, lint, tests, security |
+| **3. Validate** | `/validate` | Validate: types, lint, tests, security |
 | **4. Ship** | `/ship` | Create PR with documentation |
 | **5. Review** | `/review` | Address ALL PR feedback (Greptile, reviewers, CI/CD) |
 | **6. Premerge** | `/premerge` | Complete docs on feature branch, hand off PR |
