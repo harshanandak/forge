@@ -132,8 +132,7 @@ Re-run full validation from the beginning.
 - Show fresh output — not "it should be fine now"
 - All checks must pass, not just the one that was failing
 
-```
-HARD-GATE: 3+ fix attempts
+<HARD-GATE: 3+ fix attempts>
 STOP. Question architecture before Fix #4.
 
 If you have attempted 3+ fixes without resolution:
@@ -143,8 +142,7 @@ If you have attempted 3+ fixes without resolution:
 4. Consider: revert all changes and start fresh with better understanding
 
 "Quick fix for now" is not a valid fix strategy.
-END-HARD-GATE
-```
+</HARD-GATE>
 
 ### Red Flags — STOP if you hear yourself saying:
 
