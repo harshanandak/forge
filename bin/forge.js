@@ -415,7 +415,7 @@ function checkPrerequisites() {
 // Universal SKILL.md content
 const SKILL_CONTENT = `---
 name: forge-workflow
-description: 9-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
+description: 7-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
 category: Development Workflow
 tags: [tdd, workflow, pr, git, testing]
 tools: [Bash, Read, Write, Edit, Grep, Glob]
@@ -805,10 +805,8 @@ async function detectProjectStatus() {
     claudeMdLines: 0,
     // Project tools status
     hasBeads: isBeadsInitialized(),
-    hasOpenSpec: isOpenSpecInitialized(),
     hasSkills: isSkillsInitialized(),
     beadsInstallType: checkForBeads(),
-    openspecInstallType: checkForOpenSpec(),
     skillsInstallType: checkForSkills(),
     // Enhanced: Auto-detected project context
     autoDetected: null
@@ -1934,23 +1932,6 @@ function setupCursorAgent() {
   console.log('  Created: .cursor/rules/forge-workflow.mdc');
 }
 
-// Helper: Setup Aider agent
-function setupAiderAgent() {
-  const aiderPath = path.join(projectRoot, '.aider.conf.yml');
-  if (fs.existsSync(aiderPath)) {
-    console.log('  Skipped: .aider.conf.yml already exists');
-    return;
-  }
-
-  writeFile('.aider.conf.yml', `# Aider configuration
-# Read AGENTS.md for workflow instructions
-read:
-  - AGENTS.md
-  - docs/WORKFLOW.md
-`);
-  console.log('  Created: .aider.conf.yml');
-}
-
 // Helper: Convert command to agent-specific format
 function convertCommandToAgentFormat(cmd, content, agent) {
   let targetContent = content;
@@ -2095,11 +2076,6 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
 
   if (agent.customSetup === 'cursor') {
     setupCursorAgent();
-  }
-
-  if (agent.customSetup === 'aider') {
-    setupAiderAgent();
-    return;
   }
 
   // Convert/copy commands
@@ -2480,15 +2456,6 @@ function displaySetupSummary(selectedAgents) {
     console.log('  ! Beads available - Run: bd init');
   } else {
     console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  }
-
-  // OpenSpec status
-  if (isOpenSpecInitialized()) {
-    console.log('  ✓ OpenSpec initialized - Specs in openspec/');
-  } else if (checkForOpenSpec()) {
-    console.log('  ! OpenSpec available - Run: openspec init');
-  } else {
-    console.log(`  - OpenSpec not installed - Run: ${PKG_MANAGER} install -g @fission-ai/openspec`);
   }
 
   // Skills status
@@ -2967,49 +2934,9 @@ function checkForBeads() {
     return null;
   }
 }
-
-// Check if OpenSpec is installed
-function checkForOpenSpec() {
-  // Try global install first
-  try {
-    secureExecFileSync('openspec', ['version'], { stdio: 'ignore' });
-    return 'global';
-  } catch (err) {
-    // Not global
-    console.warn('OpenSpec not found globally:', err.message);
-  }
-
-  // Check if bunx can run it
-  try {
-    secureExecFileSync('bunx', ['@fission-ai/openspec', 'version'], { stdio: 'ignore' });
-    return 'bunx';
-  } catch (err) {
-    // Not bunx-capable
-    console.warn('OpenSpec not available via bunx:', err.message);
-  }
-
-  // Check local project installation
-  const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return null;
-
-  try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    const isInstalled = pkg.devDependencies?.['@fission-ai/openspec'] || pkg.dependencies?.['@fission-ai/openspec'];
-    return isInstalled ? 'local' : null;
-  } catch (err) {
-    console.warn('Failed to check OpenSpec in package.json:', err.message);
-    return null;
-  }
-}
-
 // Check if Beads is initialized in project
 function isBeadsInitialized() {
   return fs.existsSync(path.join(projectRoot, '.beads'));
-}
-
-// Check if OpenSpec is initialized in project
-function isOpenSpecInitialized() {
-  return fs.existsSync(path.join(projectRoot, 'openspec'));
 }
 
 // Initialize Beads in the project
@@ -3030,28 +2957,6 @@ function initializeBeads(installType) {
   } catch (err) {
     console.log('  ⚠ Failed to initialize Beads:', err.message);
     console.log('  Run manually: bd init');
-    return false;
-  }
-}
-
-// Initialize OpenSpec in the project
-function initializeOpenSpec(installType) {
-  console.log('Initializing OpenSpec in project...');
-
-  try {
-    // SECURITY: execFileSync with hardcoded commands
-    if (installType === 'global') {
-      secureExecFileSync('openspec', ['init'], { stdio: 'inherit', cwd: projectRoot });
-    } else if (installType === 'bunx') {
-      secureExecFileSync('bunx', ['@fission-ai/openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
-    } else if (installType === 'local') {
-      secureExecFileSync('npx', ['openspec', 'init'], { stdio: 'inherit', cwd: projectRoot });
-    }
-    console.log('  ✓ OpenSpec initialized');
-    return true;
-  } catch (err) {
-    console.log('  ⚠ Failed to initialize OpenSpec:', err.message);
-    console.log('  Run manually: openspec init');
     return false;
   }
 }
@@ -3240,89 +3145,6 @@ function installBeadsWithMethod(method) {
   }
 }
 
-// Prompt for OpenSpec setup - extracted to reduce cognitive complexity
-async function promptOpenSpecSetup(question) {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('OpenSpec Setup (Optional)');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-
-  const openspecInitialized = isOpenSpecInitialized();
-  const openspecStatus = checkForOpenSpec();
-
-  if (openspecInitialized) {
-    console.log('✓ OpenSpec is already initialized in this project');
-    console.log('');
-    return;
-  }
-
-  if (openspecStatus) {
-    // Already installed, just need to initialize
-    console.log(`ℹ OpenSpec is installed (${openspecStatus}), but not initialized`);
-    const initOpenSpec = await question('Initialize OpenSpec in this project? (y/n): ');
-
-    if (initOpenSpec.toLowerCase() === 'y') {
-      initializeOpenSpec(openspecStatus);
-    } else {
-      console.log('Skipped OpenSpec initialization. Run manually: openspec init');
-    }
-    console.log('');
-    return;
-  }
-
-  // Not installed
-  console.log('ℹ OpenSpec is not installed');
-  const installOpenSpec = await question('Install OpenSpec? (y/n): ');
-
-  if (installOpenSpec.toLowerCase() !== 'y') {
-    console.log('Skipped OpenSpec installation');
-    console.log('');
-    return;
-  }
-
-  console.log('');
-  console.log('Choose installation method:');
-  console.log('  1. Global (recommended) - Available system-wide');
-  console.log('  2. Local - Project-specific devDependency');
-  console.log('  3. Bunx - Use via bunx (requires bun)');
-  console.log('');
-  const method = await question('Choose method (1-3): ');
-
-  console.log('');
-  installOpenSpecWithMethod(method);
-  console.log('');
-}
-
-// Helper: Install OpenSpec with chosen method - extracted to reduce cognitive complexity
-function installOpenSpecWithMethod(method) {
-  try {
-    // SECURITY: secureExecFileSync with hardcoded commands
-    if (method === '1') {
-      console.log('Installing OpenSpec globally...');
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
-      secureExecFileSync(pkgManager, [installCmd, '-g', '@fission-ai/openspec'], { stdio: 'inherit' });
-      console.log('  ✓ OpenSpec installed globally');
-      initializeOpenSpec('global');
-    } else if (method === '2') {
-      console.log('Installing OpenSpec locally...');
-      const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-      const installCmd = PKG_MANAGER === 'bun' ? 'add' : 'install';
-      secureExecFileSync(pkgManager, [installCmd, '-D', '@fission-ai/openspec'], { stdio: 'inherit', cwd: projectRoot });
-      console.log('  ✓ OpenSpec installed locally');
-      initializeOpenSpec('local');
-    } else if (method === '3') {
-      installViaBunx('@fission-ai/openspec', ['version'], initializeOpenSpec, 'OpenSpec');
-    } else {
-      console.log('Invalid choice. Skipping OpenSpec installation.');
-    }
-  } catch (err) {
-    console.warn('OpenSpec installation failed:', err.message);
-    console.log('  ⚠ Failed to install OpenSpec:', err.message);
-    console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @fission-ai/openspec && openspec init`);
-  }
-}
-
 // Helper: Get package-manager-specific install args for Skills
 function getSkillsInstallArgs(scope) {
   const globalFlag = scope === 'global' ? '-g' : '-D';
@@ -3424,10 +3246,6 @@ async function setupProjectTools(rl, question) {
   console.log('  Persists tasks across sessions, tracks dependencies.');
   console.log('  Command: bd ready, bd create, bd close');
   console.log('');
-  console.log('• OpenSpec - Spec-driven development');
-  console.log('  Structured specifications for complex features.');
-  console.log('  Command: openspec init, openspec status');
-  console.log('');
   console.log('• Skills - Universal SKILL.md management');
   console.log('  Manage AI agent skills across all agents.');
   console.log('  Command: skills create, skills list, skills sync');
@@ -3435,7 +3253,6 @@ async function setupProjectTools(rl, question) {
 
   // Use helper functions to reduce complexity
   await promptBeadsSetup(question);
-  await promptOpenSpecSetup(question);
   await promptSkillsSetup(question);
 }
 
@@ -3518,18 +3335,6 @@ function autoSetupToolsInQuickMode() {
   // Post-install verification for Beads
   if (isBeadsInitialized()) {
     verifyToolInstall('bd', ['version'], 'Beads');
-  }
-
-  // OpenSpec: only initialize if already installed (optional tool)
-  const openspecStatus = checkForOpenSpec();
-  if (openspecStatus && !isOpenSpecInitialized()) {
-    console.log('📦 Initializing OpenSpec...');
-    initializeOpenSpec(openspecStatus);
-    console.log('');
-  } else if (!openspecStatus) {
-    const installCmd = PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g';
-    console.log(`  ℹ OpenSpec not found — install with: ${installCmd} @fission-ai/openspec`);
-    console.log('');
   }
 
   // Skills: only initialize if already installed (recommended tool)
