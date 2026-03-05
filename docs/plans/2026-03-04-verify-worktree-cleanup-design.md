@@ -2,7 +2,7 @@
 
 - **Slug**: verify-worktree-cleanup
 - **Date**: 2026-03-04
-- **Status**: Draft
+- **Status**: Approved
 - **Beads**: forge-bmi
 
 ---

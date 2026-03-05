@@ -29,7 +29,8 @@ describe('verify.md — Step 6: Worktree and Branch Cleanup', () => {
 		expect(verifyMd.includes('Worktree removed (or confirmed already gone)')).toBe(true);
 	});
 
-	test('verify.md contains skip language for missing worktree or branch', () => {
-		expect(verifyMd.includes('skip')).toBe(true);
+	test('verify.md contains specific skip messages for missing worktree and branch', () => {
+		expect(verifyMd.includes('Worktree: not found (already removed or never created) — skipping')).toBe(true);
+		expect(verifyMd.includes('Branch: already deleted — skipping')).toBe(true);
 	});
 });
