@@ -91,7 +91,42 @@ If deployments exist:
   Next: Create hotfix branch or investigate root cause
 ```
 
-### Step 6: If Issues Found — Create Beads Issue
+### Step 6: Clean Up Worktree and Branch
+
+Only run this step after CI is confirmed healthy (Step 3 passed).
+
+Get the merged branch name:
+
+```bash
+gh pr view <number> --json headRefName --jq '.headRefName'
+```
+
+If the branch name cannot be determined (empty output or error), skip cleanup and tell the user to run `git worktree list` and clean up manually.
+
+Find and remove the matching worktree (if it exists):
+
+```bash
+git worktree list --porcelain | grep <branch>
+git worktree remove <path> --force
+```
+
+If no worktree is found for that branch, skip gracefully with a note: "Worktree: not found (already removed or never created)".
+
+Delete the local branch (safe delete only):
+
+```bash
+git branch -d <branch>
+```
+
+If the branch is already gone, skip gracefully with a note: "Branch: already deleted".
+
+Report cleanup in output:
+```
+Worktree: removed ✓
+Branch: <branch-name> deleted ✓
+```
+
+### Step 7: If Issues Found — Create Beads Issue
 
 **Never commit inline.** If something is wrong, create a tracking issue:
 
@@ -99,7 +134,7 @@ If deployments exist:
 bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
-### Step 7: Close Beads Issue (if healthy)
+### Step 8: Close Beads Issue (if healthy)
 
 If everything is clean, close the Beads issue:
 
@@ -113,6 +148,7 @@ Do NOT declare /verify complete until:
 1. gh run list --branch master --limit 3 shows actual CI output (not "should be fine")
 2. If healthy: Beads issue is closed (bd close <id> run and confirmed)
 3. If issues found: Beads tracking issue created for every problem
+4. Worktree removed (or confirmed already gone)
 "It should be fine" is not evidence. Run the command. Show the output.
 </HARD-GATE>
 ```
