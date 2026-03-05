@@ -87,9 +87,9 @@ describe('forge-jxb: Error messages use PKG_MANAGER', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// forge-92t: OpenSpec and Skills should show message when not installed
+// forge-92t: Skills should show message when not installed
 // ─────────────────────────────────────────────────────────────────────────────
-describe('forge-92t: OpenSpec/Skills show message when not installed', () => {
+describe('forge-92t: Skills should show message when not installed', () => {
   
 
   test('autoSetupToolsInQuickMode should log when Skills is not installed', () => {
