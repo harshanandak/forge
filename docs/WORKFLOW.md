@@ -43,7 +43,7 @@ This workflow integrates:
 └────┬─────┘
      │
 ┌────▼──────┐
-│  /verify  │ → Post-merge health check (CI on main, close Beads)
+│  /verify  │ → Post-merge health check (CI on main, close Beads, clean up worktree + branch)
 └───────────┘
      │
      ✓ Complete
@@ -60,7 +60,7 @@ This workflow integrates:
 | 4 | `/ship` | Create PR with full docs |
 | 5 | `/review <pr>` | Fix ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
 | 6 | `/premerge <pr>` | Complete docs on feature branch, hand off PR |
-| 7 | `/verify` | Post-merge health check (CI on main, close Beads) |
+| 7 | `/verify` | Post-merge health check (CI on main, close Beads, clean up worktree + branch) |
 
 For detailed information on each stage, see the individual command files in `.claude/commands/`.
 
