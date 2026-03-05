@@ -35,13 +35,12 @@ describe('AGENTS.md generation', () => {
     // Verify it contains Forge 7-stage workflow
     expect(content.includes('Forge 7-Stage TDD Workflow')).toBeTruthy();
     expect(content.includes('/status')).toBeTruthy();
-    expect(content.includes('/research')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();
     expect(content.includes('/validate')).toBeTruthy();
     expect(content.includes('/ship')).toBeTruthy();
     expect(content.includes('/review')).toBeTruthy();
-    expect(content.includes('/merge')).toBeTruthy();
+    expect(content.includes('/premerge')).toBeTruthy();
     expect(content.includes('/verify')).toBeTruthy();
 
     // Verify it mentions supported Tier 1 agents (Aider was removed)
