@@ -31,7 +31,7 @@ describe('Kilo Code config generation', () => {
 
     // Should include Forge workflow
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('9-Stage') || content.includes('9 Stage')).toBeTruthy();
+    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
 
     // Should include all workflow stages
     expect(content.includes('/status')).toBeTruthy();

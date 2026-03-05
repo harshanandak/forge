@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+
 const os = require('node:os');
 
 // Module under test
@@ -31,8 +32,8 @@ describe('AGENTS.md generation', () => {
 
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
-    // Verify it contains Forge 9-stage workflow
-    expect(content.includes('Forge 9-Stage TDD Workflow')).toBeTruthy();
+    // Verify it contains Forge 7-stage workflow
+    expect(content.includes('Forge 7-Stage TDD Workflow')).toBeTruthy();
     expect(content.includes('/status')).toBeTruthy();
     expect(content.includes('/research')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
@@ -43,12 +44,11 @@ describe('AGENTS.md generation', () => {
     expect(content.includes('/merge')).toBeTruthy();
     expect(content.includes('/verify')).toBeTruthy();
 
-    // Verify it mentions all Tier 1 agents
+    // Verify it mentions supported Tier 1 agents (Aider was removed)
     expect(content.includes('Claude Code')).toBeTruthy();
     expect(content.includes('GitHub Copilot')).toBeTruthy();
     expect(content.includes('Kilo Code')).toBeTruthy();
     expect(content.includes('Cursor')).toBeTruthy();
-    expect(content.includes('Aider')).toBeTruthy();
 
     // Verify it contains TDD guidance
     expect(content.includes('TDD')).toBeTruthy();

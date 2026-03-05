@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+
 const os = require('node:os');
 
 // Module under test
@@ -33,7 +34,7 @@ describe('GitHub Copilot config generation', () => {
 
     // Should include Forge workflow
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('9-Stage') || content.includes('9 Stage')).toBeTruthy();
+    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
 
     // Should include all workflow stages
     expect(content.includes('/status')).toBeTruthy();

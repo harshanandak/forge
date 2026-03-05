@@ -10,7 +10,7 @@
  *   bun install forge-workflow  -> Minimal install (AGENTS.md + docs)
  *   bunx forge setup            -> Interactive agent configuration
  *   bunx forge setup --all      -> Install for all agents
- *   bunx forge setup --agents claude,cursor,windsurf
+ *   bunx forge setup --agents claude,cursor
  *
  * CLI Flags:
  *   --path, -p <dir>     Target project directory (creates if needed)
@@ -433,24 +433,23 @@ Automatically invoke this skill when the user wants to:
 - Create a pull request
 - Run the development workflow
 
-## 9 Stages
+## 7 Stages
 
 | Stage | Command | Description |
 |-------|---------|-------------|
-| 1 | \`/status\` | Check current context, active work, recent completions |
-| 2 | \`/research\` | Deep research with web search, document to docs/research/ |
-| 3 | \`/plan\` | Create implementation plan, branch, OpenSpec if strategic |
-| 4 | \`/dev\` | TDD development (RED-GREEN-REFACTOR cycles) |
-| 5 | \`/check\` | Validation (type/lint/security/tests) |
-| 6 | \`/ship\` | Create PR with full documentation |
-| 7 | \`/review\` | Address ALL PR feedback |
-| 8 | \`/merge\` | Update docs, merge PR, cleanup |
-| 9 | \`/verify\` | Final documentation verification |
+| utility | \`/status\` | Check current context, active work, recent completions |
+| 1 | \`/plan\` | Design intent -> research -> branch + worktree + task list |
+| 2 | \`/dev\` | TDD development (implementer -> spec review -> quality review) |
+| 3 | \`/validate\` | Type check, lint, security, tests - all fresh output |
+| 4 | \`/ship\` | Push branch and create PR with full documentation |
+| 5 | \`/review\` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
+| 6 | \`/premerge\` | Update docs, hand off PR to user |
+| 7 | \`/verify\` | Post-merge health check (CI on main, close Beads) |
 
 ## Workflow Flow
 
 \`\`\`
-/status -> /research -> /plan -> /dev -> /validate -> /ship -> /review -> /merge -> /verify
+/status -> /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
 \`\`\`
 
 ## Core Principles
@@ -463,7 +462,7 @@ Automatically invoke this skill when the user wants to:
 
 // Cursor MDC rule content
 const CURSOR_RULE = `---
-description: Forge 9-Stage TDD Workflow
+description: Forge 7-Stage TDD Workflow
 alwaysApply: true
 ---
 
@@ -1684,7 +1683,6 @@ function displayMcpStatus(selectedAgents) {
   // Show manual setup instructions for GUI-based agents
   const manualMcpMap = {
     cursor: 'Cursor: Configure via Cursor Settings > MCP',
-    windsurf: 'Windsurf: Install via Plugin Store',
     cline: 'Cline: Install via MCP Marketplace',
   };
   const needsManualMcp = Object.entries(manualMcpMap)
@@ -1873,7 +1871,7 @@ function minimalInstall() {
   console.log('  bunx forge setup         # Interactive setup (agents + API tokens)');
   console.log('');
   console.log('Or specify agents directly:');
-  console.log('  bunx forge setup --agents claude,cursor,windsurf');
+  console.log('  bunx forge setup --agents claude,cursor');
   console.log('  bunx forge setup --all');
   console.log('');
 }
@@ -3207,7 +3205,7 @@ async function promptSkillsSetup(question) {
   console.log('');
 }
 
-// Interactive setup for Beads and OpenSpec
+// Interactive setup for Beads and Skills
 async function setupProjectTools(rl, question) {
   console.log('');
   console.log('═══════════════════════════════════════════════════════════');
@@ -3301,7 +3299,7 @@ function verifyToolInstall(command, args, toolName) {
   }
 }
 
-// Helper: Auto-setup tools (OpenSpec, Skills) in quick mode - extracted to reduce cognitive complexity
+// Helper: Auto-setup tools (Skills) in quick mode - extracted to reduce cognitive complexity
 function autoSetupToolsInQuickMode() {
   // Beads: auto-install or initialize
   autoSetupBeadsInQuickMode();
@@ -3375,7 +3373,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Auto-install lefthook if missing
   autoInstallLefthook();
 
-  // Auto-setup project tools (Beads, OpenSpec, Skills)
+  // Auto-setup project tools (Beads, Skills)
   autoSetupToolsInQuickMode();
 
   // Load Claude commands and setup agents (reuse existing helpers)
