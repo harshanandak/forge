@@ -14,6 +14,12 @@ describe('verify.md — Step 6: Worktree and Branch Cleanup', () => {
 		expect(verifyMd.includes('worktree remove')).toBe(true);
 	});
 
+	test('verify.md uses substr($0, 10) for space-safe path extraction', () => {
+		expect(verifyMd.includes('substr($0, 10)')).toBe(true);
+		// Ensures paths with spaces are not truncated (awk $2 would split on whitespace)
+		expect(verifyMd.includes('path=$2')).toBe(false);
+	});
+
 	test('verify.md uses safe branch delete (-d not -D)', () => {
 		expect(verifyMd.includes('branch -d')).toBe(true);
 		expect(verifyMd.includes('branch -D')).toBe(false);

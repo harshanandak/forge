@@ -109,7 +109,7 @@ Find and remove the matching worktree (if it exists):
 # Get the worktree path for this exact branch
 WORKTREE_PATH=$(git worktree list --porcelain \
   | awk -v branch="refs/heads/<branch>" '
-      /^worktree / { path=$2 }
+      /^worktree / { path=substr($0, 10) }
       $0 == "branch " branch { print path }
     ')
 
