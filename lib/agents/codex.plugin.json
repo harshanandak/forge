@@ -1,0 +1,20 @@
+{
+  "id": "codex",
+  "name": "OpenAI Codex CLI",
+  "version": "1.0.0",
+  "description": "OpenAI's terminal coding agent",
+  "homepage": "https://github.com/openai/codex",
+  "capabilities": {
+    "commands": false,
+    "skills": false,
+    "hooks": false
+  },
+  "directories": {},
+  "files": {
+    "rootConfig": "AGENTS.md"
+  },
+  "setup": {
+    "copyRules": false,
+    "createSkill": false
+  }
+}

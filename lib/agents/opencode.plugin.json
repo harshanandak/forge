@@ -3,7 +3,7 @@
   "name": "OpenCode",
   "version": "1.0.0",
   "description": "Open-source agent",
-  "homepage": "https://github.com/opencode",
+  "homepage": "https://opencode.ai",
   "capabilities": {
     "commands": true,
     "skills": true,
