@@ -153,17 +153,13 @@ Final documentation check:
 your-project/
 ├── AGENTS.md                    # This file (universal)
 ├── CLAUDE.md                    # Claude Code
-├── GEMINI.md                    # Google Antigravity
 ├── .cursorrules                 # Cursor
-├── .windsurfrules               # Windsurf
 ├── .clinerules                  # Cline/Roo Code
 ├── .github/
 │   └── copilot-instructions.md  # GitHub Copilot
 │
 ├── .claude/commands/            # Claude Code commands
-├── .agent/workflows/            # Antigravity workflows
 ├── .cursor/rules/               # Cursor rules
-├── .windsurf/workflows/         # Windsurf workflows
 ├── .kilocode/workflows/         # Kilo Code workflows
 ├── .opencode/commands/          # OpenCode commands
 ├── .continue/prompts/           # Continue prompts
@@ -182,9 +178,7 @@ your-project/
 The `forge-workflow` skill is installed to all supporting agents:
 
 - `.claude/skills/forge-workflow/SKILL.md`
-- `.agent/skills/forge-workflow/SKILL.md` (Antigravity)
 - `.cursor/skills/forge-workflow/SKILL.md`
-- `.windsurf/skills/forge-workflow/SKILL.md`
 - `.kilocode/skills/forge-workflow/SKILL.md`
 - `.cline/skills/forge-workflow/SKILL.md`
 - `.continue/skills/forge-workflow/SKILL.md`
@@ -197,16 +191,13 @@ This workflow works with ALL major AI coding agents:
 | Agent | Instructions | Commands | Skills |
 | ----- | ------------ | -------- | ------ |
 | Claude Code | CLAUDE.md | .claude/commands/ | .claude/skills/ |
-| Google Antigravity | GEMINI.md | .agent/workflows/ | .agent/skills/ |
 | Cursor | .cursorrules | .cursor/rules/ | .cursor/skills/ |
-| Windsurf | .windsurfrules | .windsurf/workflows/ | .windsurf/skills/ |
 | Kilo Code | AGENTS.md | .kilocode/workflows/ | .kilocode/skills/ |
 | OpenCode | AGENTS.md | .opencode/commands/ | .opencode/skills/ |
 | Cline | .clinerules | AGENTS.md | .cline/skills/ |
 | Roo Code | .clinerules | .roo/commands/ | - |
 | Continue | .continuerules | .continue/prompts/ | .continue/skills/ |
 | GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ | - |
-| Aider | AGENTS.md (via config) | In-chat | - |
 
 ## License
 
