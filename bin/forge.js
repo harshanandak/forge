@@ -1479,34 +1479,6 @@ async function _handleInstructionFiles(rl, question, selectedAgents, projectStat
   return handleNoFilesExist(hasClaude, hasOtherAgents);
 }
 
-// Create CLAUDE.md as a symlink pointing to AGENTS.md.
-// Falls back to a redirect stub on EPERM (Windows without Developer Mode).
-function createClaudeSymlink(destPath) {
-  try {
-    // Use a relative target so the symlink works from any clone location
-    fs.symlinkSync('AGENTS.md', destPath);
-    console.log('  ✓ CLAUDE.md created as symlink → AGENTS.md');
-    return true;
-  } catch (err) {
-    if (err.code === 'EPERM') {
-      console.warn('  ⚠ Symlink requires Developer Mode on Windows — writing redirect stub instead');
-      const stub = '# Claude Code Instructions
-
-See [AGENTS.md](AGENTS.md) for all project instructions.
-';
-      try {
-        fs.writeFileSync(destPath, stub, 'utf8');
-        return true;
-      } catch (writeErr) {
-        console.error(`  ✗ Failed to write CLAUDE.md: ${writeErr.message}`);
-        return false;
-      }
-    }
-    console.error(`  ✗ Failed to create CLAUDE.md symlink: ${err.message}`);
-    return false;
-  }
-}
-
 // Prompt for code review tool selection - extracted to reduce cognitive complexity
 async function promptForCodeReviewTool(question) {
   console.log('');

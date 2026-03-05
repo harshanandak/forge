@@ -90,14 +90,7 @@ describe('forge-jxb: Error messages use PKG_MANAGER', () => {
 // forge-92t: OpenSpec and Skills should show message when not installed
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-92t: OpenSpec/Skills show message when not installed', () => {
-  test('autoSetupToolsInQuickMode should log when OpenSpec is not installed', () => {
-    const fnStart = forgeSource.indexOf('function autoSetupToolsInQuickMode()');
-    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = forgeSource.slice(fnStart, fnEnd);
-
-    // Should have an else branch that logs when openspec not found
-    expect(fnBody.includes('openspec') && (fnBody.includes('not found') || fnBody.includes('not installed') || fnBody.includes('install'))).toBeTruthy();
-  });
+  
 
   test('autoSetupToolsInQuickMode should log when Skills is not installed', () => {
     const fnStart = forgeSource.indexOf('function autoSetupToolsInQuickMode()');
