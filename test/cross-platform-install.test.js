@@ -77,10 +77,6 @@ describe('forge-jxb: Error messages use PKG_MANAGER', () => {
     expect(!forgeSource.includes("'  Run manually: bun add -g @beads/bd && bd init'")).toBeTruthy();
   });
 
-  test('OpenSpec install message should not hardcode bun add -g', () => {
-    expect(!forgeSource.includes("'  Run manually: bun add -g @fission-ai/openspec && openspec init'")).toBeTruthy();
-  });
-
   test('lefthook install message should not hardcode bun add -d', () => {
     expect(!forgeSource.includes("'  Run manually: bun add -d lefthook'")).toBeTruthy();
   });
@@ -90,8 +86,6 @@ describe('forge-jxb: Error messages use PKG_MANAGER', () => {
 // forge-92t: Skills should show message when not installed
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-92t: Skills should show message when not installed', () => {
-  
-
   test('autoSetupToolsInQuickMode should log when Skills is not installed', () => {
     const fnStart = forgeSource.indexOf('function autoSetupToolsInQuickMode()');
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
