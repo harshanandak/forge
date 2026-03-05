@@ -106,8 +106,19 @@ If the branch name cannot be determined (empty output or error), skip cleanup an
 Find and remove the matching worktree (if it exists):
 
 ```bash
-git worktree list --porcelain | grep <branch>
-git worktree remove <path> --force
+# Get the worktree path for this exact branch
+WORKTREE_PATH=$(git worktree list --porcelain \
+  | awk -v branch="refs/heads/<branch>" '
+      /^worktree / { path=$2 }
+      $0 == "branch " branch { print path }
+    ')
+
+if [ -n "$WORKTREE_PATH" ]; then
+  git worktree remove "$WORKTREE_PATH" --force
+  echo "Worktree: removed ✓ ($WORKTREE_PATH)"
+else
+  echo "Worktree: not found (already removed or never created) — skipping"
+fi
 ```
 
 If no worktree is found for that branch, skip gracefully with a note: "Worktree: not found (already removed or never created)".
