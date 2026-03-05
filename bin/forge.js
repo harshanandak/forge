@@ -1479,28 +1479,30 @@ async function _handleInstructionFiles(rl, question, selectedAgents, projectStat
   return handleNoFilesExist(hasClaude, hasOtherAgents);
 }
 
-// Create minimal CLAUDE.md that references AGENTS.md
-// @private - Currently unused, reserved for future setup flow
-function _createClaudeReference(destPath) {
-  const content = `# Claude Code Instructions
-
-See [AGENTS.md](AGENTS.md) for all project instructions.
-
-This file exists to avoid Claude Code reading both CLAUDE.md and AGENTS.md (which doubles context usage). Keep project-level instructions in AGENTS.md.
-
----
-
-<!-- Add Claude Code-specific instructions below (if needed) -->
-<!-- Examples: MCP server setup, custom commands, Claude-only workflows -->
-
-💡 **Keep this minimal** - Main instructions are in AGENTS.md
-`;
-
+// Create CLAUDE.md as a symlink pointing to AGENTS.md.
+// Falls back to a redirect stub on EPERM (Windows without Developer Mode).
+function createClaudeSymlink(destPath) {
   try {
-    fs.writeFileSync(destPath, content, 'utf8');
+    // Use a relative target so the symlink works from any clone location
+    fs.symlinkSync('AGENTS.md', destPath);
+    console.log('  ✓ CLAUDE.md created as symlink → AGENTS.md');
     return true;
   } catch (err) {
-    console.error(`  ✗ Failed to write Claude reference: ${err.message}`);
+    if (err.code === 'EPERM') {
+      console.warn('  ⚠ Symlink requires Developer Mode on Windows — writing redirect stub instead');
+      const stub = '# Claude Code Instructions
+
+See [AGENTS.md](AGENTS.md) for all project instructions.
+';
+      try {
+        fs.writeFileSync(destPath, stub, 'utf8');
+        return true;
+      } catch (writeErr) {
+        console.error(`  ✗ Failed to write CLAUDE.md: ${writeErr.message}`);
+        return false;
+      }
+    }
+    console.error(`  ✗ Failed to create CLAUDE.md symlink: ${err.message}`);
     return false;
   }
 }
