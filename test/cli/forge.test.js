@@ -108,9 +108,8 @@ describe('bin/forge.js structure', () => {
   });
 
   test('should use installViaBunx in install methods', () => {
-    // Verify installBeadsWithMethod and installOpenSpecWithMethod use the shared helper
+    // Verify installBeadsWithMethod and installSkillsWithMethod use the shared helper
     expect(source.includes("installViaBunx('@beads/bd'")).toBeTruthy();
-    expect(source.includes("installViaBunx('@fission-ai/openspec'")).toBeTruthy();
     expect(source.includes("installViaBunx('@forge/skills'")).toBeTruthy();
   });
 

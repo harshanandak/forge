@@ -64,18 +64,6 @@ describe('Agent detection', () => {
     expect(agents.includes('kilo')).toBeTruthy();
   });
 
-  test('should detect Aider when .aider.conf.yml exists', async () => {
-    // Create .aider.conf.yml file
-    await fs.promises.writeFile(
-      path.join(tempDir, '.aider.conf.yml'),
-      'model: gpt-4'
-    );
-
-    const agents = await detectInstalledAgents(tempDir);
-
-    expect(agents.includes('aider')).toBeTruthy();
-  });
-
   test('should detect OpenCode when opencode.json exists', async () => {
     // Create opencode.json file
     await fs.promises.writeFile(
@@ -120,7 +108,6 @@ describe('Agent detection', () => {
       '# Copilot'
     );
     await fs.promises.writeFile(path.join(tempDir, '.kilo.md'), '# Kilo');
-    await fs.promises.writeFile(path.join(tempDir, '.aider.conf.yml'), 'model: gpt-4');
 
     const agents = await detectInstalledAgents(tempDir);
 
@@ -129,8 +116,7 @@ describe('Agent detection', () => {
     expect(agents.includes('copilot')).toBeTruthy();
     expect(agents.includes('kilo')).toBeTruthy();
     expect(agents.includes('cursor')).toBeTruthy();
-    expect(agents.includes('aider')).toBeTruthy();
-    expect(agents.length).toBe(5);
+    expect(agents.length).toBe(4);
   });
 
   test('should handle permission errors gracefully', async () => {
