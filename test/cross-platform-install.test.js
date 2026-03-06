@@ -77,28 +77,15 @@ describe('forge-jxb: Error messages use PKG_MANAGER', () => {
     expect(!forgeSource.includes("'  Run manually: bun add -g @beads/bd && bd init'")).toBeTruthy();
   });
 
-  test('OpenSpec install message should not hardcode bun add -g', () => {
-    expect(!forgeSource.includes("'  Run manually: bun add -g @fission-ai/openspec && openspec init'")).toBeTruthy();
-  });
-
   test('lefthook install message should not hardcode bun add -d', () => {
     expect(!forgeSource.includes("'  Run manually: bun add -d lefthook'")).toBeTruthy();
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// forge-92t: OpenSpec and Skills should show message when not installed
+// forge-92t: Skills should show message when not installed
 // ─────────────────────────────────────────────────────────────────────────────
-describe('forge-92t: OpenSpec/Skills show message when not installed', () => {
-  test('autoSetupToolsInQuickMode should log when OpenSpec is not installed', () => {
-    const fnStart = forgeSource.indexOf('function autoSetupToolsInQuickMode()');
-    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = forgeSource.slice(fnStart, fnEnd);
-
-    // Should have an else branch that logs when openspec not found
-    expect(fnBody.includes('openspec') && (fnBody.includes('not found') || fnBody.includes('not installed') || fnBody.includes('install'))).toBeTruthy();
-  });
-
+describe('forge-92t: Skills should show message when not installed', () => {
   test('autoSetupToolsInQuickMode should log when Skills is not installed', () => {
     const fnStart = forgeSource.indexOf('function autoSetupToolsInQuickMode()');
     const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;

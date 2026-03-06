@@ -113,24 +113,6 @@ Use Composer or Chat to reference stages:
 
 ---
 
-### Windsurf
-
-**Files created**:
-- `.windsurfrules` → Linked to `AGENTS.md`
-- `.windsurf/workflows/` → Workflow files
-- `.windsurf/skills/forge-workflow/` → Skill files
-
-**Usage**:
-```bash
-/status
-/research feature-name
-# ... etc
-```
-
-Windsurf has native slash command support similar to Claude Code.
-
----
-
 ### GitHub Copilot
 
 **Files created**:
@@ -147,23 +129,7 @@ Copilot reads instructions from `.github/copilot-instructions.md`.
 
 ---
 
-### Google Antigravity
-
-**Files created**:
-- `GEMINI.md` → Linked to `AGENTS.md`
-- `.agent/workflows/` → Workflow files
-- `.agent/skills/forge-workflow/` → Skill files
-
-**Usage**:
-```bash
-/status
-/research feature-name
-# ... etc
-```
-
----
-
-### Kilo Code, OpenCode, Continue, Cline, Roo Code, Aider
+### Kilo Code, OpenCode, Continue, Cline, Roo Code
 
 **Files created**:
 - Agent-specific config pointing to `AGENTS.md`
@@ -593,9 +559,7 @@ echo ".env.local" >> .gitignore
 your-project/
 ├── AGENTS.md                    # Universal (always created)
 ├── CLAUDE.md                    # If Claude selected
-├── GEMINI.md                    # If Antigravity selected
 ├── .cursorrules                 # If Cursor selected
-├── .windsurfrules               # If Windsurf selected
 ├── .clinerules                  # If Cline/Roo selected
 │
 ├── .claude/                     # Claude Code files

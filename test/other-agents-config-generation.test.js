@@ -4,7 +4,7 @@ const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
-const { generateKiloConfig, generateAiderConfig, generateOpenCodeConfig } = require('../lib/agents-config');
+const { generateKiloConfig, generateOpenCodeConfig } = require('../lib/agents-config');
 
 describe('Kilo Code config generation', () => {
   let tempDir;
@@ -31,7 +31,7 @@ describe('Kilo Code config generation', () => {
 
     // Should include Forge workflow
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('9-Stage') || content.includes('9 Stage')).toBeTruthy();
+    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
 
     // Should include all workflow stages
     expect(content.includes('/status')).toBeTruthy();
@@ -78,58 +78,6 @@ describe('Kilo Code config generation', () => {
     const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
 
     expect(content.includes('TypeScript') || content.includes('bun')).toBeTruthy();
-  });
-});
-
-describe('Aider config generation', () => {
-  let tempDir;
-
-  beforeEach(async () => {
-    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-test-'));
-  });
-
-  afterEach(async () => {
-    if (tempDir) {
-      await fs.promises.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('should create .aider.conf.yml file', async () => {
-    await generateAiderConfig(tempDir);
-
-    const aiderConfPath = path.join(tempDir, '.aider.conf.yml');
-    const exists = await fs.promises.access(aiderConfPath).then(() => true).catch(() => false);
-
-    expect(exists).toBeTruthy();
-
-    const content = await fs.promises.readFile(aiderConfPath, 'utf-8');
-
-    // Should be YAML format
-    expect(content.includes(':')).toBeTruthy();
-
-    // Should include system prompt or instructions
-    expect(content.includes('system-prompt') || content.includes('instructions')).toBeTruthy();
-  });
-
-  test('should include Forge workflow in system prompt', async () => {
-    await generateAiderConfig(tempDir);
-
-    const aiderConfPath = path.join(tempDir, '.aider.conf.yml');
-    const content = await fs.promises.readFile(aiderConfPath, 'utf-8');
-
-    // Should mention Forge workflow
-    expect(content.includes('Forge') || content.includes('TDD')).toBeTruthy();
-  });
-
-  test('should not overwrite existing .aider.conf.yml by default', async () => {
-    const aiderConfPath = path.join(tempDir, '.aider.conf.yml');
-    const existingContent = 'model: gpt-4\nsystem-prompt: "Custom prompt"';
-    await fs.promises.writeFile(aiderConfPath, existingContent);
-
-    await generateAiderConfig(tempDir, { overwrite: false });
-
-    const content = await fs.promises.readFile(aiderConfPath, 'utf-8');
-    expect(content).toBe(existingContent);
   });
 });
 
