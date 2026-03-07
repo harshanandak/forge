@@ -10,6 +10,7 @@ export default [
       'dist/',
       'build/',
       '*.min.js',
+      '.worktrees/',
       'test-env/fixtures/**',
       'packages/skills/test/fixtures/**',
       'test/e2e/fixtures/**',

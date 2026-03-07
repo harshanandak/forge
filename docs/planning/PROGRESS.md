@@ -2,7 +2,20 @@
 
 ## Current Focus
 <!-- What you're working on -->
-PR5.7 merged (skills sync fix for all 11 agents). Next: PR7 (Installation Orchestrator).
+PR#51 merged (agent configs + research docs chore). Superpowers PR #50 in review.
+
+### Chore: Agent Configs and Research Docs (2026-03-03)
+- **PR**: #51
+- **Branch**: chore/agent-configs-and-research-docs
+- **Description**: Committed agent permission configs for Aider, Codex CLI, OpenCode, and Cursor that were generated during prior sessions. Also committed research docs and a test suite v2 decision log.
+- **Deliverables**:
+  - **`.aider.conf.yml`**: Aider config — `yes-always: false`, `auto-accept-architect: true`, `auto-commits: false`, `read: AGENTS.md`
+  - **`.codex/config.toml`**: Codex CLI — `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`
+  - **`opencode.json`**: OpenCode permissions — allow/ask/deny tiers matching research doc classification
+  - **`.cursor/rules/permissions-guidance.mdc`**: Cursor YOLO mode allow/confirm/deny guidance
+  - **`docs/research/agent-permissions.md`**, **`agent-instructions-sync.md`**: Permission tier research and sync research
+  - **`docs/plans/2026-02-27-forge-test-suite-v2-decisions.md`**: Test suite v2 decision log
+- **Key Decisions**: `git rebase` → `ask`; `git push -f` added to deny; `auto-commits: false` to preserve commitlint hooks
 
 ## Completed
 
