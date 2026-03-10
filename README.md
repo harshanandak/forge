@@ -19,7 +19,7 @@ Ship features with confidence using a 7-stage TDD-first workflow for AI coding a
 
 ✅ **TDD-First**: Write tests before code
 ✅ **Design-First**: One-question-at-a-time Q&A captures intent upfront
-✅ **Multi-Agent**: Universal AGENTS.md works with 7+ agents
+✅ **Multi-Agent**: Universal AGENTS.md works with 7 agents
 
 ---
 
