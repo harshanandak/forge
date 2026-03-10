@@ -55,9 +55,9 @@ Recent Completions:
   - forge-uto: Sync AGENTS.md with agent cleanup (closed 2 days ago)
   - forge-abc: Auth refresh tokens (closed 5 days ago)
 
-Context: Ready for new feature
+Context: Continuing work
 
-Next: /plan <feature-name>
+Next: Resume with /dev or /validate (check issue status)
 ```
 
 ## Next Steps
