@@ -306,12 +306,12 @@ No changes made (dry run).
 
 ```bash
 # Standard workflow
-/status → /research → /plan → /dev → /validate → /ship → /review → /premerge → /verify
+/status → /plan → /dev → /validate → /ship → /review → /premerge → /verify
 
 # Recovery workflow
 /dev → (issues discovered) → bunx forge rollback → /dev (retry)
 /ship → (CI fails) → bunx forge rollback → /dev (fix) → /ship
-/premerge → (production issues) → bunx forge rollback → /plan (redesign)
+/verify → (production issues) → bunx forge rollback → /plan (redesign)
 ```
 
 ### Example: Failed Feature Implementation
@@ -331,7 +331,7 @@ bunx forge rollback
 # Select: 1. Rollback last commit
 
 # 4. Research better approach
-/research payment-integration
+/plan payment-integration
 
 # 5. Plan with security in mind
 /plan payment-integration
