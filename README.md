@@ -30,7 +30,7 @@ Ship features with confidence using a 7-stage TDD-first workflow for AI coding a
 ```bash
 /plan login-button        # Design Q&A → research → branch + task list
 /dev                      # TDD: RED → GREEN → REFACTOR cycles
-/validate                    # Type check + lint + tests + security scan
+/validate                 # Type check + lint + tests + security scan
 /ship                     # Create PR with full documentation
 ```
 

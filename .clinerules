@@ -178,11 +178,9 @@ This workflow works with ALL major AI coding agents:
 | Cursor | .cursorrules | .cursor/rules/ | .cursor/skills/ |
 | Kilo Code | AGENTS.md | .kilocode/workflows/ | .kilocode/skills/ |
 | OpenCode | AGENTS.md | .opencode/commands/ | .opencode/skills/ |
-| Cline | .clinerules | AGENTS.md | .cline/skills/ |
-| Roo Code | .clinerules | .roo/commands/ | - |
-| Continue | .continuerules | .continue/prompts/ | .continue/skills/ |
 | GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ | - |
 | Codex CLI | AGENTS.md | - | - |
+| Goose | AGENTS.md | - | - |
 
 ## License
 
