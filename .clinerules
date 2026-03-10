@@ -182,6 +182,7 @@ This workflow works with ALL major AI coding agents:
 | Roo Code | .clinerules | .roo/commands/ | - |
 | Continue | .continuerules | .continue/prompts/ | .continue/skills/ |
 | GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ | - |
+| Codex CLI | AGENTS.md | - | - |
 
 ## License
 
