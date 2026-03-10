@@ -174,6 +174,7 @@ If agnix is not useful (too many false positives, doesn't cover Forge-specific c
 **Expected output**: Decision documented. If integrated, `bun test` includes agnix validation.
 
 ---
+### Task 8: Add blast-radius search to /plan command (prevention)**File(s)**: `.claude/commands/plan.md`**What to implement**: Add a "Blast-radius search" subsection after the existing DRY check in Phase 2. Fires when a feature involves removing, renaming, or replacing something. Directly prevents the gap that caused PR #54 incomplete Antigravity removal.Add after DRY check section:- Title: `### Blast-radius search (mandatory for remove/rename/replace features)`- Steps: grep the entire codebase for the thing being removed, add cleanup tasks for every match- Flag matches in unexpected packages explicitlyAlso add condition 4 to Phase 2 exit HARD-GATE:- `4. If feature involves removal/rename: blast-radius search completed, all references in task list`**TDD steps**:1. Write test: extend `test/structural/command-files.test.js` — assert plan.md contains "blast-radius"2. Run test: confirm fails3. Implement: edit `.claude/commands/plan.md`4. Run test: confirm passes5. Commit: `feat: add blast-radius search to /plan Phase 2`**Expected output**: /plan now requires blast-radius grep for removal/rename features.---
 
 ## PR-B: Command Behavioral Eval + Improvement Loop (forge-agp)
 
@@ -181,7 +182,7 @@ Ship order: **SECOND** (depends on PR-A)
 
 ---
 
-### Task 8: Grader agent for command evaluation
+### Task 9: Grader agent for command evaluation
 
 **File(s)**: `.claude/agents/command-grader.md` (new)
 
@@ -208,7 +209,7 @@ Key differences from skill-creator grader:
 
 ---
 
-### Task 9: Eval set definitions for /status and /validate
+### Task 10: Eval set definitions for /status and /validate
 
 **File(s)**: `eval/commands/status.eval.json`, `eval/commands/validate.eval.json` (new)
 
@@ -256,7 +257,7 @@ Key differences from skill-creator grader:
 
 ---
 
-### Task 10: Eval runner script
+### Task 11: Eval runner script
 
 **File(s)**: `scripts/run-command-eval.js` (new)
 
@@ -284,7 +285,7 @@ Key differences from skill-creator grader:
 
 ---
 
-### Task 11: Command improvement script (Scope C)
+### Task 12: Command improvement script (Scope C)
 
 **File(s)**: `scripts/improve-command.js` (new)
 
@@ -314,7 +315,7 @@ Ship order: **PARALLEL with PR-A** (no dependencies)
 
 ---
 
-### Task 12: Skill eval set definitions
+### Task 13: Skill eval set definitions
 
 **File(s)**: `eval/skills/*.eval.json` (6 new files, one per skill)
 
@@ -335,7 +336,7 @@ Skills: `parallel-web-search`, `parallel-deep-research`, `parallel-web-extract`,
 
 ---
 
-### Task 13: Skill eval runner (adapt skill-creator pattern)
+### Task 14: Skill eval runner (adapt skill-creator pattern)
 
 **File(s)**: `scripts/run-skill-eval.js` (new)
 
@@ -360,7 +361,7 @@ Skills: `parallel-web-search`, `parallel-deep-research`, `parallel-web-extract`,
 
 ---
 
-### Task 14: Skill improvement loop with train/test split
+### Task 15: Skill improvement loop with train/test split
 
 **File(s)**: `scripts/improve-skill.js` (new)
 
@@ -398,23 +399,26 @@ Skills: `parallel-web-search`, `parallel-deep-research`, `parallel-web-extract`,
 6. Task 6 (sync drift test) — integrates Task 5 into CI
 7. Task 7 (agnix eval) — independent evaluation
 
+**PR-A (continued):**
+8. Task 8 (blast-radius /plan update)
+
 **PR-B (after PR-A ships):**
-8. Task 8 (grader agent)
-9. Task 9 (eval definitions)
-10. Task 10 (eval runner)
-11. Task 11 (improvement script)
+9. Task 9 (grader agent)
+10. Task 10 (eval definitions)
+11. Task 11 (eval runner)
+12. Task 12 (improvement script)
 
 **PR-C (parallel):**
-12. Task 12 (skill eval defs)
-13. Task 13 (skill eval runner)
-14. Task 14 (skill improvement loop)
+13. Task 13 (skill eval defs)
+14. Task 14 (skill eval runner)
+15. Task 15 (skill improvement loop)
 
 ---
 
 ## Notes
 
-- Tasks 1-7 = PR-A (forge-jfw) — ship first
-- Tasks 8-11 = PR-B (forge-agp) — ship after PR-A
-- Tasks 12-14 = PR-C (forge-1jx) — ship in parallel with PR-A
+- Tasks 1-8 = PR-A (forge-jfw) — ship first
+- Tasks 9-12 = PR-B (forge-agp) — ship after PR-A
+- Tasks 13-15 = PR-C (forge-1jx) — ship in parallel with PR-A
 - Baseline failures (5 chalk errors in skills package) are pre-existing and unrelated
 - Task 7 (agnix) is exploratory — may be skipped if not useful
