@@ -146,8 +146,6 @@ your-project/
 ├── .cursor/rules/               # Cursor rules
 ├── .kilocode/workflows/         # Kilo Code workflows
 ├── .opencode/commands/          # OpenCode commands
-├── .continue/prompts/           # Continue prompts
-├── .roo/commands/               # Roo Code commands
 │
 └── docs/
     ├── planning/
@@ -164,8 +162,6 @@ The `forge-workflow` skill is installed to all supporting agents:
 - `.claude/skills/forge-workflow/SKILL.md`
 - `.cursor/skills/forge-workflow/SKILL.md`
 - `.kilocode/skills/forge-workflow/SKILL.md`
-- `.cline/skills/forge-workflow/SKILL.md`
-- `.continue/skills/forge-workflow/SKILL.md`
 - `.opencode/skills/forge-workflow/SKILL.md`
 
 ## Supported Agents

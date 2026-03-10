@@ -142,7 +142,7 @@ codex "Let's follow the Forge workflow. Start with /plan login-button."
 
 ---
 
-### Kilo Code, OpenCode, Continue, Cline, Roo Code
+### Kilo Code, OpenCode, Goose
 
 **Files created**:
 - Agent-specific config pointing to `AGENTS.md`
@@ -522,7 +522,6 @@ your-project/
 ├── AGENTS.md                    # Universal (always created)
 ├── CLAUDE.md                    # If Claude selected
 ├── .cursorrules                 # If Cursor selected
-├── .clinerules                  # If Cline/Roo selected
 │
 ├── .claude/                     # Claude Code files
 │   ├── commands/                # 7 workflow commands
