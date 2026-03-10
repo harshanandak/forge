@@ -83,7 +83,7 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 ## Constraints
 
 - **UX parity**: User types `/plan`, `/dev`, `/validate`, `/ship`, `/review`, `/premerge`, `/verify` — same command names in every agent, same resulting behavior. The agent handles it natively or via context, but the UX is identical.
-- **Context-injection agents must be actionable**: For Cursor native/Cline/Aider — config files must read as "when you see `/plan`, do X" not "here is documentation about X". Imperative, not descriptive.
+- **Context-injection agents must be actionable**: For Cursor native/Cline — config files must read as "when you see `/plan`, do X" not "here is documentation about X". Imperative, not descriptive.
 - **AGENTS.md stays small**: It is always-loaded context (Aider, Codex skills, etc.). Keep it as a concise imperative command reference — not a documentation dump. Full step-by-step detail lives only in per-agent command files, loaded on demand.
 - Command content must be consistent across all agents (same steps, same HARD-GATEs)
 - No introducing new workflow logic — just adapting existing `.claude/commands/` content
@@ -94,7 +94,7 @@ Currently only Claude Code has complete command support. Cursor/Cline/Codex/Open
 
 ## Edge Cases
 
-- **Codex CLI `/commands` in UI = built-in system commands only**: No project-level custom slash commands. Use Skills at `.agents/skills/forge-workflow/SKILL.md` — invoked with `$forge-workflow` or implicitly. The `/` menu shown in UI is not extensible per-project.
+- **Codex VS Code extension `/commands` in UI = built-in system commands only**: No project-level custom slash commands. Use Skills at `.agents/skills/forge-workflow/SKILL.md` — invoked with `$forge-workflow` or implicitly. The `/` menu shown in UI is not extensible per-project.
 - **Cursor has TWO separate systems**: `.cursor/rules/*.mdc` = persistent context injected every prompt (NOT commands). `.cursor/commands/*.md` = true slash commands (beta v1.6+, triggered on-demand with `/`). We implement both.
 - **Cline has TWO separate systems**: `.clinerules/*.md` = persistent rules. `.clinerules/workflows/*.md` = true slash commands (v3.13+). We implement workflows for commands.
 - **Continue uses `.prompt` extension, not `.md`**: `invokable: true` frontmatter required to enable slash command.
@@ -160,3 +160,4 @@ This feature writes config/instruction files — no user input processing, no au
 - [Continue Prompt Files](https://docs.continue.dev/customize/deep-dives/prompts)
 - [GitHub Copilot Prompts](https://code.visualstudio.com/docs/copilot/customization/prompt-files)
 - [GitHub Copilot Hooks](https://code.visualstudio.com/docs/copilot/customization/hooks)
+- [Antigravity Workflows](https://docs.antigravity.dev/workflows) <!-- agent-command-parity research; verify URL when implementing -->

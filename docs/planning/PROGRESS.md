@@ -2,7 +2,7 @@
 
 ## Current Focus
 <!-- What you're working on -->
-PR#51 merged (agent configs + research docs chore). Superpowers PR #50 in review.
+PR#52: Agent command parity design doc + ESLint worktrees fix. PR #50 (superpowers-gaps) and PR #51 (agent configs) both merged.
 
 ### Chore: Agent Configs and Research Docs (2026-03-03)
 - **PR**: #51
