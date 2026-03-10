@@ -77,7 +77,7 @@ Check each of the following and update if the feature affects it. Be selective �
 ...update only between these markers...
 <!-- USER:END -->
 ```
-⚠️  NEVER touch `<!-- OPENSPEC:START/END -->` or other managed blocks.
+⚠️  NEVER touch other managed blocks (e.g., `<!-- AGENT:START/END -->`).
 
 **F. `AGENTS.md`** (if agent config, skills, or cross-agent workflow changed):
 - Update relevant sections describing agent capabilities or workflow
@@ -160,7 +160,7 @@ After you merge, run /verify
 ## Rules
 
 - **NEVER run `gh pr merge`** — blocked by PreToolUse hook in `.claude/settings.json`
-- **CLAUDE.md USER section only** — never touch managed blocks (`OPENSPEC:START/END`)
+- **CLAUDE.md USER section only** — never touch other managed blocks
 - **Warn if branch is behind** — tell user to rebase before doc updates
 - **Re-check CI after doc push** — doc commits re-trigger full CI pipeline
 - **One PR, complete** — code + tests + docs merged together, no follow-up doc PRs
