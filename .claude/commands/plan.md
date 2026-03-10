@@ -8,6 +8,32 @@ Plan a feature from scratch: brainstorm design intent, research technical approa
 
 This command runs in **3 phases**. Each phase ends with a HARD-GATE. Do not skip phases.
 
+---
+
+```
+<HARD-GATE: /plan entry — worktree isolation>
+Before ANY planning work begins:
+
+1. Run: git branch --show-current
+2. If the current branch is NOT master/main:
+   - STOP. Do not begin Phase 1.
+   - Tell the user: "You are on '<branch>'. Planning must start from a clean worktree on master.
+     Run: git checkout master — then re-run /plan."
+3. If on master, create the worktree NOW before asking any questions:
+   a. git worktree add -b feat/<slug> .worktrees/<slug>
+   b. cd .worktrees/<slug>
+4. Confirm: "Working in isolated worktree: .worktrees/<slug> (branch: feat/<slug>)"
+5. ONLY THEN begin Phase 1.
+
+Rationale: Planning commits (design docs, task lists) belong only to this feature's branch.
+If planning runs in the main directory on a non-master branch, those commits contaminate
+whatever branch is currently checked out. The worktree ensures zero cross-contamination
+between parallel features or sessions.
+</HARD-GATE>
+```
+
+---
+
 ## Usage
 
 ```bash
@@ -122,6 +148,22 @@ For this feature's risk surface, document each relevant OWASP category:
 - Files this feature will affect
 - Existing test infrastructure to leverage
 
+### DRY check (mandatory — use actual search tools)
+
+Before finalizing the approach, run Grep/Glob/Read searches for existing implementations of the planned function or pattern. Do not rely on memory or assumptions — execute the searches.
+
+```
+Grep(searchTerm)   # e.g., the function or concept name
+Glob("**/*.js")    # narrow to affected file types if needed
+Read(matchedFile)  # inspect any match in context
+```
+
+If a match is found:
+- Update the design doc's "Approach selected" section to say "extend existing [file/function]" — not "create new".
+- Note the existing file path and line number in the design doc.
+
+If no match is found: proceed. The DRY gate is cleared.
+
 ### TDD test scenarios
 
 Identify at minimum 3 test scenarios:
@@ -157,15 +199,28 @@ bd update <id> --status=in_progress
 
 ### Step 2: Branch + worktree
 
+**ALWAYS branch from master, never from the current branch.** If the working directory is on any branch other than master, the new feature branch would inherit all unmerged changes from that branch — contaminating the new feature's history.
+
+**Note**: If the Entry HARD-GATE already created the branch and worktree (and you are already inside `.worktrees/<slug>`), skip Steps 2b–2d — they are already done.
+
 ```bash
-git checkout -b feat/<slug>
+# Step 2a: Check if branch and worktree were already created by Entry HARD-GATE
+CURRENT=$(git branch --show-current)
+if [ "$CURRENT" = "feat/<slug>" ]; then
+  echo "✓ Branch feat/<slug> already exists (Entry HARD-GATE created it) — skipping 2b–2d"
+else
+  # Step 2b: Verify .worktrees/ is gitignored — add if missing
+  git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
 
-# Verify .worktrees/ is gitignored — add if missing
-git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
-
-git worktree add .worktrees/<slug> feat/<slug>
-cd .worktrees/<slug>
+  # Step 2c: Create branch + worktree in one command (from master)
+  # Using -b with worktree add avoids "branch already checked out" error
+  git checkout master
+  git worktree add -b feat/<slug> .worktrees/<slug>
+  cd .worktrees/<slug>
+fi
 ```
+
+**Why this matters**: Multiple parallel features or sessions each get their own isolated worktree. Changes to one feature never bleed into another. The main working directory can stay on any branch without affecting new feature branches.
 
 ### Step 3: Project setup in worktree
 
@@ -206,6 +261,14 @@ Expected output: <what running the test/code produces when done>
 - Feature logic SECOND
 - Integration/wiring THIRD
 - Uncertain/ambiguous tasks LAST (so they can be deferred if blocked)
+
+**YAGNI filter** (after initial task draft, before saving):
+
+For each task, confirm it maps to a specific requirement, success criterion, or edge case in the design doc. Run `applyYAGNIFilter({ task, designDoc })` for each task.
+
+- Tasks that match → keep as-is.
+- Tasks with no anchor → flagged as "potential scope creep". Present flagged tasks to the user: "These tasks have no anchor in the design doc. Keep (specify which requirement it serves) or remove?"
+- If ALL tasks are flagged → return `allFlagged: true` and tell the user: "Design doc doesn't cover all tasks — needs amendment." Do not save the task list until the design doc is updated or tasks are removed.
 
 **Before finalizing**: flag any tasks that touch areas not fully specified in the design doc. Present flagged tasks to user for quick clarification before saving.
 
@@ -261,7 +324,7 @@ After confirming, run: /dev
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list (you are here)
 Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user

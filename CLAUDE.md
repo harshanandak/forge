@@ -92,8 +92,8 @@ See [.github/pull_request_template.md](.github/pull_request_template.md) for PR 
 As you work, when you give the same instruction twice, add it here:
 
 - **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
-- Coding style preferences
-- Architecture decisions
-- Domain concepts unique to this project
+- **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
+- **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
+- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state; `LEFTHOOK=0 git push` is the bypass when manual `bun test` confirms 0 fail.
 
 <!-- USER:END -->

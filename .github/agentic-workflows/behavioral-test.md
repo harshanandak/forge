@@ -137,7 +137,7 @@ Using the selected prompt from Step 3, simulate what a well-behaved forge agent 
 running `/plan`. Produce the output yourself, following `plan.md` exactly.
 
 **Scope constraint (Loophole Fix 16):** The behavioral test covers `/plan` phase compliance only.
-Do not evaluate /dev, /check, /ship, or any other stage. Score only what `/plan` is responsible for.
+Do not evaluate /dev, /validate, /ship, or any other stage. Score only what `/plan` is responsible for.
 
 You must produce:
 1. A Phase 1 Q&A exchange (at minimum 3 questions and 3 answers)

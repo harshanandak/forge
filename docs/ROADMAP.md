@@ -50,7 +50,7 @@ Quick Wins (Week 1) → Testing Foundation (Week 2) → Automation (Week 2-3) �
 - **Timeline**: 2-3 days
 
 **Phase 1: Foundation & Quick Wins (Week 1)**
-- PR1: Critical fixes (Greptile, /check, Windows compatibility)
+- PR1: Critical fixes (Greptile, /validate, Windows compatibility)
 - PR2: Security enhancements (CODEOWNERS, signing, semantic commits)
 - PR3: Testing infrastructure (coverage, E2E, snapshots)
 
@@ -121,7 +121,7 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 **Impact**: High
 
 #### Key Deliverables
-1. Unified /check script - Orchestrate all validation steps
+1. Unified /validate script - Orchestrate all validation steps
 2. Lefthook Windows compatibility fixes
 3. Package size monitoring workflow
 4. Manual review guidance - Best practices for achieving high quality scores
@@ -300,7 +300,7 @@ All PRs tracked in Beads with proper dependencies:
 Each PR follows the Forge workflow:
 
 ```
-/status → /research → /plan → /dev → /check → /ship → /review → /merge → /verify
+/status → /research → /plan → /dev → /validate → /ship → /review → /merge → /verify
 ```
 
 **Current branch**: `master` (ready for next feature branch)

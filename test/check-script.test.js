@@ -2,8 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
-describe('scripts/check.sh', () => {
-  const checkScriptPath = path.join(__dirname, '..', 'scripts', 'check.sh');
+describe('scripts/validate.sh', () => {
+  const checkScriptPath = path.join(__dirname, '..', 'scripts', 'validate.sh');
 
   describe('Script existence and permissions', () => {
     test('should exist', () => {
@@ -94,7 +94,7 @@ describe('scripts/check.sh', () => {
       );
 
       expect(packageJson.scripts.check).toBeTruthy();
-      expect(packageJson.scripts.check.includes('scripts/check.sh')).toBeTruthy();
+      expect(packageJson.scripts.check.includes('scripts/validate.sh')).toBeTruthy();
     });
   });
 });

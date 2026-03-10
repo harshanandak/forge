@@ -176,11 +176,20 @@ If quality issues found: implementer fixes → re-review → repeat until ✅
 
 ```
 <HARD-GATE: task completion>
+NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
+
 Do NOT mark task complete or move to next task until ALL confirmed in this session:
 1. Spec compliance reviewer returned ✅
 2. Code quality reviewer returned ✅
-3. Tests run fresh — output shows passing (not "should pass" or "was passing earlier")
-4. Implementer has committed (git log shows the commit)
+3. Identify what command proves this task is done (e.g. `bun test`, a CLI invocation, a script run).
+4. Run it fresh — show the actual output. "Last run was fine" is not evidence.
+5. Tests run fresh — actual output shows passing.
+6. Implementer has committed (git log shows the commit).
+
+Forbidden phrases (these are not evidence):
+- "should pass"
+- "looks good"
+- "seems to work"
 </HARD-GATE>
 ```
 
@@ -279,7 +288,7 @@ Document the gate count in the final commit message.
 
 ✓ Beads updated: forge-xyz → implementation complete
 
-Ready for /check
+Ready for /validate
 ```
 
 ## Integration with Workflow
@@ -288,7 +297,7 @@ Ready for /check
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD (you are here)
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user

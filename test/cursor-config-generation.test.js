@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+
 const os = require('node:os');
 
 // Module under test
@@ -37,17 +38,16 @@ describe('Cursor config generation', () => {
     expect(content.includes('alwaysApply:')).toBeTruthy();
     expect(content.includes('alwaysApply: true')).toBeTruthy();
 
-    // Should include 9-stage workflow
+    // Should include 7-stage workflow
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('9-Stage') || content.includes('9 Stage')).toBeTruthy();
+    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
     expect(content.includes('/status')).toBeTruthy();
-    expect(content.includes('/research')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();
-    expect(content.includes('/check')).toBeTruthy();
+    expect(content.includes('/validate')).toBeTruthy();
     expect(content.includes('/ship')).toBeTruthy();
     expect(content.includes('/review')).toBeTruthy();
-    expect(content.includes('/merge')).toBeTruthy();
+    expect(content.includes('/premerge')).toBeTruthy();
     expect(content.includes('/verify')).toBeTruthy();
   });
 

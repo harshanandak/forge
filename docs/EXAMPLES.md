@@ -85,7 +85,7 @@ git commit -m "feat: add health check endpoint"
 # ═══════════════════════════════════════════════════════════
 # STAGE 5: CHECK
 # ═══════════════════════════════════════════════════════════
-/check
+/validate
 
 # ✓ Type check passed
 # ✓ Linter passed
@@ -200,7 +200,7 @@ OWASP A03:2021 Injection"
 # ═══════════════════════════════════════════════════════════
 # STAGE 5: CHECK
 # ═══════════════════════════════════════════════════════════
-/check
+/validate
 
 # ✓ Type check passed
 # ✓ Linter passed
@@ -336,7 +336,7 @@ git commit -m "refactor: extract login to AuthService"
 # ═══════════════════════════════════════════════════════════
 # STAGE 5: CHECK
 # ═══════════════════════════════════════════════════════════
-/check
+/validate
 
 # ✓ Type check passed
 # ✓ Linter passed
@@ -521,7 +521,7 @@ bd update PROJ-90 --status in_progress --comment "8/12 tasks complete"
 # ═══════════════════════════════════════════════════════════
 # STAGE 5: CHECK
 # ═══════════════════════════════════════════════════════════
-/check
+/validate
 
 # ✓ Type check passed
 # ✓ Linter passed

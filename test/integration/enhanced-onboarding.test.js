@@ -203,7 +203,7 @@ Use the 9-stage TDD workflow:
 2. /research - Research with web search
 3. /plan - Create formal plan
 4. /dev - TDD development
-5. /check - Validation
+5. /validate - Validation
 6. /ship - Create PR
 7. /review - Address feedback
 8. /merge - Merge and cleanup

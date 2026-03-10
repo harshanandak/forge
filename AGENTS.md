@@ -8,7 +8,7 @@ This project enforces a **strict TDD-first development workflow** with 7 stages:
 |-------|-------------|-----------------------------------------------------------|--------------|
 | 1     | `/plan`     | Design intent → research → branch + worktree + task list | Critical, Standard, Refactor |
 | 2     | `/dev`      | Subagent-driven TDD per task (spec + quality review)     | All types    |
-| 3     | `/check`    | Validation (type/lint/security/tests)                    | All types    |
+| 3     | `/validate`    | Validate + 4-phase debug mode on failure                    | All types    |
 | 4     | `/ship`     | Create PR with documentation                             | All types    |
 | 5     | `/review`   | Address ALL PR feedback                                  | Critical, Standard |
 | 6     | `/premerge` | Complete docs on feature branch, hand off PR             | All types    |
@@ -23,22 +23,22 @@ When the user requests work, **you MUST automatically classify** the change type
 ### Critical (Full 7-stage workflow)
 **Triggers:** Security, authentication, payments, breaking changes, new architecture, data migrations
 **Example:** "Add OAuth login", "Migrate database schema", "Implement payment gateway"
-**Workflow:** plan → dev → check → ship → review → premerge → verify
+**Workflow:** plan → dev → validate → ship → review → premerge → verify
 
 ### Standard (6-stage workflow)
 **Triggers:** Normal features, enhancements, new components
 **Example:** "Add user profile page", "Create notification system"
-**Workflow:** plan → dev → check → ship → review → premerge
+**Workflow:** plan → dev → validate → ship → review → premerge
 
 ### Simple (3-stage workflow, skip plan)
 **Triggers:** Bug fixes, UI tweaks, small changes, minor refactors
 **Example:** "Fix button color", "Update validation message", "Adjust padding"
-**Workflow:** dev → check → ship
+**Workflow:** dev → validate → ship
 
 ### Hotfix (Emergency 3-stage workflow)
 **Triggers:** Production emergencies, critical bugs affecting users
 **Example:** "Production payment processing down", "Security vulnerability fix"
-**Workflow:** dev → check → ship (immediate merge allowed)
+**Workflow:** dev → validate → ship (immediate merge allowed)
 
 ### Docs (Documentation-only workflow)
 **Triggers:** Documentation updates, README changes, comment improvements
@@ -48,7 +48,7 @@ When the user requests work, **you MUST automatically classify** the change type
 ### Refactor (5-stage workflow for safe cleanup)
 **Triggers:** Code cleanup, performance optimization, technical debt reduction
 **Example:** "Refactor auth service", "Extract utility functions"
-**Workflow:** plan → dev → check → ship → premerge
+**Workflow:** plan → dev → validate → ship → premerge
 
 ## Enforcement Philosophy
 
@@ -150,7 +150,7 @@ Task 2: Validation logic
 - [.claude/commands/status.md](.claude/commands/status.md) - How to check current context (utility)
 - [.claude/commands/plan.md](.claude/commands/plan.md) - How to plan features (3 phases: design intent + research + branch/worktree/tasks)
 - [.claude/commands/dev.md](.claude/commands/dev.md) - How to implement with subagent-driven TDD and decision gate
-- [.claude/commands/check.md](.claude/commands/check.md) - How to run validation (with HARD-GATE exit)
+- [.claude/commands/validate.md](.claude/commands/validate.md) - How to run validation (with HARD-GATE exit)
 - [.claude/commands/ship.md](.claude/commands/ship.md) - How to create PRs
 - [.claude/commands/review.md](.claude/commands/review.md) - How to address PR feedback (with HARD-GATE exit)
 - [.claude/commands/premerge.md](.claude/commands/premerge.md) - How to complete docs and hand off PR for merge

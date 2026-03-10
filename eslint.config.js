@@ -16,9 +16,9 @@ export default [
       'test/e2e/fixtures/**',
     ],
   },
-  // ES Modules (packages/skills and eslint.config.js)
+  // ES Modules (packages/skills, test/forge-uto, and eslint.config.js)
   {
-    files: ['packages/skills/**/*.js', 'eslint.config.js'],
+    files: ['packages/skills/**/*.js', 'test/forge-uto/**/*.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'module',
@@ -39,7 +39,7 @@ export default [
   // CommonJS (everything else)
   {
     files: ['**/*.js'],
-    ignores: ['packages/skills/**/*.js', 'eslint.config.js'],
+    ignores: ['packages/skills/**/*.js', 'test/forge-uto/**/*.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'commonjs',

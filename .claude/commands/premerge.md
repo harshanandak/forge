@@ -161,7 +161,7 @@ After you merge, run /verify
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user (you are here)

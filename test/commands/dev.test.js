@@ -241,6 +241,31 @@ describe('Dev Command - TDD Cycle Management', () => {
 		});
 	});
 
+	describe('dev.md task completion HARD-GATE', () => {
+		test('task completion gate should require fresh verification evidence', () => {
+			const fs = require('fs');
+			const path = require('path');
+			const devMdPath = path.join(__dirname, '../../.claude/commands/dev.md');
+			const content = fs.readFileSync(devMdPath, 'utf8');
+
+			// Find the section between <HARD-GATE: task completion> and </HARD-GATE>
+			const gateStart = content.indexOf('<HARD-GATE: task completion>');
+			const gateEnd = content.indexOf('</HARD-GATE>', gateStart);
+			expect(gateStart).not.toBe(-1);
+			expect(gateEnd).not.toBe(-1);
+			const gateText = content.slice(gateStart, gateEnd + '</HARD-GATE>'.length);
+
+			// Must require fresh verification
+			expect(gateText).toMatch(/fresh/i);
+			// Must require actual output
+			expect(gateText).toMatch(/actual output/i);
+			// Must list forbidden phrases
+			expect(gateText).toMatch(/should pass/i);
+			expect(gateText).toMatch(/looks good/i);
+			expect(gateText).toMatch(/seems to work/i);
+		});
+	});
+
 	describe('Decision gate scoring and routing', () => {
 		describe('DECISION_ROUTES constants', () => {
 			test('should export PROCEED route constant', () => {

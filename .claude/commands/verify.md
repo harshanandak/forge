@@ -91,7 +91,53 @@ If deployments exist:
   Next: Create hotfix branch or investigate root cause
 ```
 
-### Step 6: If Issues Found — Create Beads Issue
+### Step 6: Clean Up Worktree and Branch
+
+Only run this step after CI is confirmed healthy (Step 3 passed).
+
+Get the merged branch name:
+
+```bash
+gh pr view <number> --json headRefName --jq '.headRefName'
+```
+
+If the branch name cannot be determined (empty output or error), skip cleanup and tell the user to run `git worktree list` and clean up manually.
+
+Find and remove the matching worktree (if it exists):
+
+```bash
+# Get the worktree path for this exact branch
+WORKTREE_PATH=$(git worktree list --porcelain \
+  | awk -v branch="refs/heads/<branch>" '
+      /^worktree / { path=substr($0, 10) }
+      $0 == "branch " branch { print path }
+    ')
+
+if [ -n "$WORKTREE_PATH" ]; then
+  git worktree remove "$WORKTREE_PATH" --force
+  echo "Worktree: removed ✓ ($WORKTREE_PATH)"
+else
+  echo "Worktree: not found (already removed or never created) — skipping"
+fi
+```
+
+If no worktree is found for that branch, skip gracefully with a note: "Worktree: not found (already removed or never created)".
+
+Delete the local branch (safe delete only):
+
+```bash
+git branch -d <branch> 2>/dev/null || echo "Branch: already deleted — skipping"
+```
+
+The `|| echo` fallback handles the case where the branch is already gone (e.g., deleted by a previous run or the remote), so the command never fails the verify step.
+
+Report cleanup in output:
+```
+Worktree: removed ✓
+Branch: <branch-name> deleted ✓
+```
+
+### Step 7: If Issues Found — Create Beads Issue
 
 **Never commit inline.** If something is wrong, create a tracking issue:
 
@@ -99,7 +145,7 @@ If deployments exist:
 bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
-### Step 7: Close Beads Issue (if healthy)
+### Step 8: Close Beads Issue (if healthy)
 
 If everything is clean, close the Beads issue:
 
@@ -113,6 +159,7 @@ Do NOT declare /verify complete until:
 1. gh run list --branch master --limit 3 shows actual CI output (not "should be fine")
 2. If healthy: Beads issue is closed (bd close <id> run and confirmed)
 3. If issues found: Beads tracking issue created for every problem
+4. Worktree removed (or confirmed already gone) — OR Step 6 was intentionally skipped because CI was unhealthy; if skipped, state explicitly: "cleanup deferred, CI was not healthy"
 "It should be fine" is not evidence. Run the command. Show the output.
 </HARD-GATE>
 ```
@@ -166,7 +213,7 @@ Do NOT declare /verify complete until:
 Utility: /status     → Understand current context before starting
 Stage 1: /plan       → Design intent → research → branch + worktree + task list
 Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /check      → Type check, lint, tests, security — all fresh output
+Stage 3: /validate      → Type check, lint, tests, security — all fresh output
 Stage 4: /ship       → Push + create PR
 Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
 Stage 6: /premerge   → Update docs, hand off PR to user

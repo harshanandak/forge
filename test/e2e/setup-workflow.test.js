@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+
 const os = require('node:os');
 
 // Modules under test
@@ -11,7 +12,6 @@ const {
   generateCopilotConfig,
   generateCursorConfig,
   generateKiloConfig,
-  generateAiderConfig,
   generateOpenCodeConfig,
   generateArchitectureDoc,
   generateConfigurationDoc,
@@ -191,7 +191,6 @@ describe('E2E: Full setup workflow', () => {
       }
 
       await generateKiloConfig(tempDir);
-      await generateAiderConfig(tempDir);
       await generateOpenCodeConfig(tempDir);
 
       // Step 4: Verify all configs created
@@ -199,7 +198,6 @@ describe('E2E: Full setup workflow', () => {
       expect(fs.existsSync(path.join(tempDir, '.github', 'copilot-instructions.md'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, '.cursor', 'rules', 'forge-workflow.mdc'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, '.kilo.md'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, '.aider.conf.yml'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, 'opencode.json'))).toBeTruthy();
     });
   });
@@ -276,7 +274,7 @@ describe('E2E: Full setup workflow', () => {
       );
 
       expect(content).not.toBe(existingContent);
-      expect(content.includes('Forge 9-Stage TDD Workflow')).toBeTruthy();
+      expect(content.includes('Forge 7-Stage TDD Workflow')).toBeTruthy();
     });
   });
 
@@ -297,7 +295,6 @@ describe('E2E: Full setup workflow', () => {
           'create_copilot_config',
           'create_cursor_config',
           'create_kilo_config',
-          'create_aider_config',
           'create_opencode_config',
           'create_documentation'
         ]
@@ -333,9 +330,6 @@ describe('E2E: Full setup workflow', () => {
       await markStepComplete(tempDir, 'create_kilo_config');
       steps.push('create_kilo_config');
 
-      await generateAiderConfig(tempDir);
-      await markStepComplete(tempDir, 'create_aider_config');
-      steps.push('create_aider_config');
 
       await generateOpenCodeConfig(tempDir);
       await markStepComplete(tempDir, 'create_opencode_config');
@@ -349,7 +343,7 @@ describe('E2E: Full setup workflow', () => {
       steps.push('create_documentation');
 
       // Step 7: Verify all steps executed
-      expect(steps.length).toBe(10);
+      expect(steps.length).toBe(9);
 
       // Step 8: Verify setup complete
       const complete = await isSetupComplete(tempDir);
@@ -368,7 +362,6 @@ describe('E2E: Full setup workflow', () => {
         '.cursor/rules/security-scanning.mdc',
         '.cursor/rules/documentation.mdc',
         '.kilo.md',
-        '.aider.conf.yml',
         'opencode.json',
         'docs/ARCHITECTURE.md',
         'docs/CONFIGURATION.md',

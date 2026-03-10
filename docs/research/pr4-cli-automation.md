@@ -99,7 +99,7 @@ if (!config.includes('expected-repo')) {
 ### A04: Insecure Design
 
 **Stage Prerequisites**:
-- Don't run `/ship` before `/check` passes
+- Don't run `/ship` before `/validate` passes
 - Validate workflow order
 - Provide clear error messages
 
