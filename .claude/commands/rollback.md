@@ -330,17 +330,14 @@ git commit -m "feat: add payment integration"
 bunx forge rollback
 # Select: 1. Rollback last commit
 
-# 4. Research better approach
+# 4. Plan with security in mind
 /plan payment-integration
 
-# 5. Plan with security in mind
-/plan payment-integration
-
-# 6. Implement correctly
+# 5. Implement correctly
 /dev
 # ... proper implementation with security ...
 
-# 7. Verify and ship
+# 6. Verify and ship
 /validate → /ship
 ```
 
