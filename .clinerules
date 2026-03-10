@@ -138,7 +138,6 @@ your-project/
 ├── AGENTS.md                    # This file (universal)
 ├── CLAUDE.md                    # Claude Code
 ├── .cursorrules                 # Cursor
-├── .clinerules                  # Cline/Roo Code
 ├── .github/
 │   └── copilot-instructions.md  # GitHub Copilot
 │
