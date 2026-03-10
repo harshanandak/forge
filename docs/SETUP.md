@@ -30,8 +30,7 @@ bunx forge setup
 **Interactive prompts**:
 1. Which agents do you use?
 2. Install Beads? (y/n) - Git-backed issue tracking
-3. Install OpenSpec? (y/n) - Spec-driven development
-4. Configure external services? (optional)
+3. Configure external services? (optional)
 
 **What gets created**:
 - `AGENTS.md` - Universal instructions (always)
@@ -42,7 +41,7 @@ bunx forge setup
 
 ```bash
 # Install for specific agents
-bunx forge setup --agents claude,cursor,windsurf
+bunx forge setup --agents claude,cursor,codex
 
 # Install for all agents
 bunx forge setup --all
@@ -57,7 +56,6 @@ curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh 
 **Interactive prompts**:
 1. Which agents do you use?
 2. Install Beads? (y/n)
-3. Install OpenSpec? (y/n)
 
 ### Option 4: bun
 
@@ -74,21 +72,21 @@ bunx forge setup
 
 **Files created**:
 - `CLAUDE.md` → Linked to `AGENTS.md`
-- `.claude/commands/` → 9 slash commands
+- `.claude/commands/` → 7 slash commands
 - `.claude/rules/workflow.md` → Workflow rules
 - `.claude/skills/forge-workflow/` → Skill files
 
 **Usage**:
 ```bash
 /status
-/research feature-name
 /plan feature-name
 /dev
+/validate
 # ... etc
 ```
 
 **Skills available**:
-- `forge-workflow` - All 9 stages
+- `forge-workflow` - All 7 stages
 - `parallel-web-search` - Quick web research (if PARALLEL_API_KEY configured)
 - `parallel-deep-research` - Deep analysis (if PARALLEL_API_KEY configured)
 - `sonarcloud-analysis` - Code quality (if SONARCLOUD_TOKEN configured)
@@ -103,7 +101,7 @@ bunx forge setup
 - `.cursor/skills/forge-workflow/` → Skill files
 
 **Usage**:
-Cursor reads `.cursorrules` and follows the 9-stage workflow.
+Cursor reads `.cursorrules` and follows the 7-stage workflow.
 
 **Commands**:
 Use Composer or Chat to reference stages:
@@ -124,7 +122,7 @@ Copilot reads instructions from `.github/copilot-instructions.md`.
 
 **In Copilot Chat**:
 ```
-@workspace I'm starting a new feature, help me with the /research stage
+@workspace I'm starting a new feature, help me with the /plan stage
 ```
 
 ---
@@ -141,7 +139,7 @@ All agents read `AGENTS.md` and follow the documented workflow.
 **Example (any agent)**:
 ```
 "Let's follow the Forge workflow. I want to add a login button.
-Start with the /research stage."
+Start with the /plan stage."
 ```
 
 ---
@@ -164,7 +162,7 @@ git --version
 
 #### GitHub CLI
 
-**Required for** `/ship`, `/review`, `/merge` commands.
+**Required for** `/ship`, `/review`, `/premerge` commands.
 
 ```bash
 # macOS
@@ -221,38 +219,6 @@ bd list
 
 ---
 
-### Optional
-
-#### OpenSpec - Spec-Driven Development
-
-**Use for**: Architecture changes, breaking changes, multi-session features
-
-**Requirements**: Node.js 20.19+
-
-```bash
-# Check Node version
-node --version
-
-# Install globally
-bun install -g @fission-ai/openspec
-
-# Initialize in project
-cd your-project
-openspec init
-
-# Verify
-openspec list
-```
-
-**What it does**:
-- Proposal system for architecture changes
-- Generates planning docs automatically
-- Task tracking with delta specs
-
-[Full OpenSpec guide in TOOLCHAIN.md](TOOLCHAIN.md#openspec---spec-driven-development)
-
----
-
 ## Toolchain Setup
 
 ### Beads Configuration
@@ -293,25 +259,6 @@ bd init --prefix MYPROJ
 **Stealth mode** (local only, don't commit):
 ```bash
 bd init --stealth
-```
-
----
-
-### OpenSpec Configuration
-
-After `openspec init`, customize `openspec.config.json`:
-
-```json
-{
-  "specsDir": "openspec/specs",
-  "changesDir": "openspec/changes",
-  "archiveDir": "openspec/archive",
-  "templates": {
-    "proposal": "default",
-    "design": "default",
-    "tasks": "default"
-  }
-}
 ```
 
 ---
@@ -477,7 +424,7 @@ bunx sonarqube-scanner
 
 #### Parallel AI (Optional - Paid)
 
-**Used in** `/research` stage for deep web research.
+**Used in** `/plan` stage for deep web research.
 
 ```bash
 # 1. Get API key from https://platform.parallel.ai
@@ -563,17 +510,13 @@ your-project/
 ├── .clinerules                  # If Cline/Roo selected
 │
 ├── .claude/                     # Claude Code files
-│   ├── commands/                # 9 workflow commands
+│   ├── commands/                # 7 workflow commands
 │   ├── rules/workflow.md
 │   ├── skills/forge-workflow/
 │   └── scripts/load-env.sh
 │
 ├── .cursor/                     # Cursor files
 │   ├── rules/forge-workflow.mdc
-│   └── skills/forge-workflow/
-│
-├── .windsurf/                   # Windsurf files
-│   ├── workflows/
 │   └── skills/forge-workflow/
 │
 ├── docs/
@@ -588,11 +531,6 @@ your-project/
 │   ├── issues.jsonl
 │   ├── config.yaml
 │   └── .gitignore
-│
-├── openspec/                    # If OpenSpec installed
-│   ├── specs/
-│   ├── changes/
-│   └── archive/
 │
 └── .env.local                   # Your configuration (add to .gitignore!)
 ```
@@ -629,18 +567,6 @@ bun install -g @beads/bd
 
 # Verify
 bd --version
-```
-
-### "OpenSpec requires Node.js 20.19+"
-
-```bash
-# Check version
-node --version
-
-# Upgrade Node.js
-# macOS: brew upgrade node
-# Windows: Download from nodejs.org
-# Linux: Use nvm
 ```
 
 ### "SonarQube connection refused"

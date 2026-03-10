@@ -19,7 +19,7 @@ Ship features with confidence using a 7-stage TDD-first workflow for AI coding a
 
 ✅ **TDD-First**: Write tests before code
 ✅ **Design-First**: One-question-at-a-time Q&A captures intent upfront
-✅ **Multi-Agent**: Universal AGENTS.md works with 11 agents
+✅ **Multi-Agent**: Universal AGENTS.md works with 7+ agents
 
 ---
 
@@ -93,7 +93,7 @@ bunx forge setup
 
 ## Supported AI Agents
 
-Works with **8 AI coding agents** via universal AGENTS.md:
+Works with **7 AI coding agents** via universal AGENTS.md:
 
 ### Tier 1 (Primary Support)
 
@@ -103,7 +103,7 @@ Works with **8 AI coding agents** via universal AGENTS.md:
 | **GitHub Copilot** | Enterprise support, .github/copilot-instructions.md | 30 seconds |
 | **Kilo Code** | Auto failure recovery, .kilo.md | 30 seconds |
 | **Cursor** | Native modes (Plan/Ask/Debug), .cursor/rules/ | 30 seconds |
-| **Aider** | Git-integrated, terminal-native, .aider.conf.yml | 30 seconds |
+| **Codex CLI** | OpenAI terminal agent, AGENTS.md | 30 seconds |
 
 ### Tier 2 (Optional Support)
 
@@ -111,7 +111,6 @@ Works with **8 AI coding agents** via universal AGENTS.md:
 |-------|----------|------------|
 | **OpenCode** | Flexible, opencode.json | 30 seconds |
 | **Goose** | Model flexibility, open-source | 30 seconds |
-| **Antigravity** | Google-backed, early preview | 30 seconds |
 
 **Quick setup** (auto-detects agents):
 ```bash
@@ -123,7 +122,7 @@ bunx forge setup
 bunx forge setup --agent=copilot     # GitHub Copilot
 bunx forge setup --agent=cursor      # Cursor IDE
 bunx forge setup --agent=kilo        # Kilo Code
-bunx forge setup --agent=aider       # Aider
+bunx forge setup --agent=codex       # Codex CLI
 ```
 
 **Setup for all Tier 1 agents**:
