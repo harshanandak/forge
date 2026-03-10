@@ -16,21 +16,17 @@ This command helps you understand the current state of the project before starti
 
 ## What This Command Does
 
-### Step 1: Read Current Progress
+### Step 1: Check Project Health
 ```bash
-cat docs/planning/PROGRESS.md
+bd stats
 ```
-- What's completed?
-- What's the next priority?
-- Which week/milestone are we in?
+- How many open / in-progress / completed issues?
+- Any blocked issues?
 
 ### Step 2: Check Active Work
 ```bash
 # Active Beads issues
 bd list --status in_progress
-
-# Active OpenSpec proposals
-openspec list --active
 ```
 
 ### Step 3: Review Recent Work
@@ -40,9 +36,6 @@ git log --oneline -10
 
 # Recently completed Beads
 bd list --status completed --limit 5
-
-# Archived OpenSpec proposals
-openspec list --archived --limit 3
 ```
 
 ### Step 4: Determine Context
@@ -53,24 +46,22 @@ openspec list --archived --limit 3
 ## Example Output
 
 ```
-✓ Current Stage: Week 7, AI Integration 100% complete
-✓ Next Priority: Week 8 - Billing & Testing
+✓ Project Health: 3 open, 1 in-progress, 12 completed
 
 Active Work:
-  - No in-progress Beads issues
-  - No active OpenSpec proposals
+  - forge-ctc: Clean up stale workflow refs (in_progress)
 
 Recent Completions:
-  - bd-a3f8: BlockSuite simplification (merged 2 days ago)
-  - bd-k2m5: Auth RLS policies (merged 5 days ago)
+  - forge-uto: Sync AGENTS.md with agent cleanup (closed 2 days ago)
+  - forge-abc: Auth refresh tokens (closed 5 days ago)
 
 Context: Ready for new feature
 
-Next: /research <feature-name>
+Next: /plan <feature-name>
 ```
 
 ## Next Steps
 
-- **If starting new work**: Run `/research <feature-name>`
+- **If starting new work**: Run `/plan <feature-name>`
 - **If continuing work**: Resume with appropriate phase command
 - **If reviewing**: Run `/review <pr-number>` or `/premerge <pr-number>`
