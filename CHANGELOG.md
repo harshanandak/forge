@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Stale workflow refs**: Cleaned up references to removed tools and orphaned files in agent commands (PR #56, forge-ctc)
+  - `status.md`: Replaced openspec/PROGRESS.md commands with Beads equivalents, fixed /research → /plan
+  - `rollback.md`: Updated workflow diagrams to correct 7-stage pipeline (removed /research)
+  - `premerge.md`: Replaced PROGRESS.md reference with CHANGELOG.md maintenance step
+  - Fixed inconsistent example output in status.md (in-progress work vs "Ready for new feature")
+
 ## [1.5.0] - 2026-02-03
 
 ### Added
