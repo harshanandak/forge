@@ -127,6 +127,21 @@ Copilot reads instructions from `.github/copilot-instructions.md`.
 
 ---
 
+### Codex CLI
+
+**Files created**:
+- `AGENTS.md` → Primary instructions
+
+**Usage**:
+Codex CLI reads `AGENTS.md` and follows the documented workflow.
+
+**Example**:
+```
+codex "Let's follow the Forge workflow. Start with /plan login-button."
+```
+
+---
+
 ### Kilo Code, OpenCode, Continue, Cline, Roo Code
 
 **Files created**:
