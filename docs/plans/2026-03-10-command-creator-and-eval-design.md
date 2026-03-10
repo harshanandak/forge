@@ -105,8 +105,9 @@ Why `.claude/commands/` stays canonical (not a new `commands/` dir):
 | Roo Code | `.roo/commands/` | `.md` | Keep `description:`, add `mode: code` |
 | Continue | `.continue/prompts/` | `.prompt` | Add `name:`, `invokable: true` |
 | GitHub Copilot | `.github/prompts/` | `.prompt.md` | Add `name:`, `description:`, `tools:` |
-| Antigravity | `.agents/workflows/` | `.md` | Keep `description:` |
 | Codex (ext) | `.agents/skills/forge-workflow/` | `SKILL.md` | Single combined file (special case) |
+
+**Note**: Antigravity (Google) dropped from adapter support — not in AGENTS.md, not actively maintained.
 
 ### Static Validator: grep-based, no AI runtime
 
@@ -128,6 +129,31 @@ New for commands:
 - **Disposable worktree execution**: Each eval runs `claude -p "/command-name" --output-format stream-json` inside a temp worktree
 - **HARD-GATE assertion type**: "Did the command stop when the gate condition was unmet?"
 - **Contract assertions**: "Does /plan's output contain a task list file that /dev would find?"
+
+### Claude CLI Eval Execution (Research Findings)
+
+**Invocation**: `claude -p "/command" --output-format stream-json --verbose --no-session-persistence --max-turns N`
+
+**Stream-json output**: NDJSON (one JSON object per line). Key event types:
+- `assistant` — complete message with `content[]` array (text + tool_use blocks)
+- `stream_event` — incremental events (content_block_start/delta/stop)
+- `result` — final result when agent finishes
+
+**Detecting tool calls**: Parse `assistant` events → `content[].type == "tool_use"` → `name` + `input`
+
+**Windows compatibility**: skill-creator uses `select.select()` (Unix-only). **Fix**: Use threading-based reader with `queue.Queue` for portable pipe reading.
+
+**Critical env var**: Must strip `CLAUDECODE` from subprocess env to allow nested `claude -p` calls.
+
+**Built-in worktree**: `claude --worktree <name>` creates disposable worktree automatically. Auto-cleaned if no changes. Alternative to manual `git worktree add`.
+
+**Eval set format** (adapted from skill-creator):
+```json
+[
+  {"command": "/status", "scenario": "clean_repo", "assertions": ["lists beads", "shows branch"]},
+  {"command": "/validate", "scenario": "failing_tests", "assertions": ["reports test failures", "does NOT declare success"]}
+]
+```
 
 ### Improvement Loop (Scope C)
 
@@ -177,9 +203,9 @@ For implementation decisions:
 
 | ID | Title | Type | Priority | Depends On |
 |----|-------|------|----------|------------|
-| TBD | PR-A: Static command validator + sync infrastructure | feature | P1 | None |
-| TBD | PR-B: Command behavioral eval + improvement loop | feature | P2 | PR-A |
-| TBD | PR-C: Skill optimization via eval loop | feature | P2 | None |
+| forge-jfw | PR-A: Static command validator + sync infrastructure | feature | P1 | None |
+| forge-agp | PR-B: Command behavioral eval + improvement loop | feature | P2 | forge-jfw |
+| forge-1jx | PR-C: Skill optimization via eval loop | feature | P2 | None |
 
 ### Existing Issues Affected
 
@@ -193,33 +219,84 @@ For implementation decisions:
 
 ## Technical Research
 
-*(To be completed in Phase 2)*
+### Confirmed Agent Command Formats
 
-### Web Research Topics
-- Agent command file format specs (confirm from official docs)
-- Claude CLI `--output-format stream-json` behavior for command evaluation
-- Existing command linting tools in AI agent ecosystem
+| Agent | Directory | Extension | Required Frontmatter | Optional Frontmatter | Source |
+|-------|-----------|-----------|---------------------|---------------------|--------|
+| Claude Code | `.claude/commands/` | `.md` | `description` | — | Official docs |
+| OpenCode | `.opencode/commands/` | `.md` | `description` | `agent`, `model`, `subtask` | [opencode.ai/docs/commands](https://opencode.ai/docs/commands/) |
+| Cursor | `.cursor/commands/` | `.md` | **None** (no frontmatter support) | — | [cursor.com/docs/context/commands](https://cursor.com/docs/context/commands) |
+| Cline | `.clinerules/workflows/` | `.md` | None | `description`, `author`, `version`, `globs`, `tags` | [docs.cline.bot/features/slash-commands/workflows](https://docs.cline.bot/features/slash-commands/workflows) |
+| Windsurf | `.windsurf/workflows/` | `.md` | `description` | — | [docs.windsurf.com/windsurf/cascade/workflows](https://docs.windsurf.com/windsurf/cascade/workflows) |
+| Kilo Code | `.kilocode/commands/` | `.md` | `description` | `arguments`, `mode`, `model` | [kilo.ai/docs/cli](https://kilo.ai/docs/cli) |
+| Roo Code | `.roo/commands/` | `.md` | `description` | `argument-hint`, `mode` | [docs.roocode.com/features/slash-commands](https://docs.roocode.com/features/slash-commands) |
+| Continue | `.continue/prompts/` | `.prompt` | `name`, `description`, `invokable: true` | Input variables | [docs.continue.dev/customize/deep-dives/prompts](https://docs.continue.dev/customize/deep-dives/prompts) |
+| GitHub Copilot | `.github/prompts/` | `.prompt.md` | None strictly | `name`, `description`, `agent`, `tools`, `model` | [code.visualstudio.com/docs/copilot/customization/prompt-files](https://code.visualstudio.com/docs/copilot/customization/prompt-files) |
+| Codex (ext) | `.agents/skills/<name>/` | `SKILL.md` | `name`, `description` | — | [developers.openai.com/codex/skills](https://developers.openai.com/codex/skills/) |
+
+**Key findings:**
+- Cursor is the only agent with NO frontmatter support — sync strips everything
+- `description` is the universal common field across all agents that support frontmatter
+- Antigravity dropped from support (not in AGENTS.md) — 9 agents total
+- No documented content length limits for any agent
+
+### Existing Linting Tools (Critical Discovery)
+
+| Tool | Scope | Install | Rules |
+|------|-------|---------|-------|
+| **agnix** | Multi-agent (10+ formats) | `npx agnix .` or `cargo install agnix-cli` | 231 rules from official specs. CLAUDE.md, AGENTS.md, SKILL.md, hooks, MCP, Cursor rules, Copilot prompts, Cline rules, Windsurf rules. Supports `--fix`, `--strict`, watch mode, JSON/SARIF output. |
+| **cclint** | Claude Code only | `npx @carlrannaberg/cclint` | Agent frontmatter, command definitions, tool permissions, hooks, CLAUDE.md best practices. Custom Zod schemas. |
+
+**Impact on PR-A**: Instead of building `forge check-agents` from scratch, evaluate using **agnix** as the base validator and adding Forge-specific checks on top (cross-command contracts, sync drift, dead Forge-specific references like `openspec`, stage count consistency).
+
+### DRY Check Results — Existing Reusable Code
+
+| File | What It Does | Reuse For |
+|------|-------------|-----------|
+| `test/structural/command-files.test.js` | Validates command files (existence, truncation, HARD-GATE counts, balanced code blocks) | **Extend** with frontmatter validation, dead ref checks, sync drift |
+| `lib/plugin-manager.js` | Loads/validates `lib/agents/*.plugin.json` with schema validation | Agent capability detection for sync script |
+| `scripts/behavioral-judge.sh` | Frontmatter extraction via grep, `check-lock-sync` subcommand | Pattern for YAML parsing in sync script |
+| `lib/agents-config.js` | Agent metadata generation | Template for sync script structure |
+| `.github/workflows/detect-command-file-changes.yml` | CI trigger on `.claude/commands/**` changes | Trigger sync validation in CI |
+| `.github/workflows/check-agentic-workflow-sync.yml` | MD ↔ LOCK.yml sync validation | Model for cross-file validation |
+
+**DRY conclusion**: PR-A's static validator should extend `test/structural/command-files.test.js`, not create a new file. The sync script and cross-reference checker are genuinely new.
 
 ### OWASP Top 10 Analysis
-*(To be completed in Phase 2)*
 
-### TDD Test Scenarios (Preliminary)
+| Category | Risk | Applies? | Mitigation |
+|----------|------|----------|------------|
+| A01 Broken Access Control | Sync overwrites user customizations | Low | Warn before overwriting modified files; `--force` flag required |
+| A02 Cryptographic Failures | — | N/A | — |
+| A03 Injection | `run_eval.sh` passes command names to shell | **Medium** | Validate names against `[a-z-]+` regex; quote all variables |
+| A04 Insecure Design | Improvement loop could propose bad content | Low | User approval gate; diff shown for review |
+| A05 Security Misconfiguration | Sync generates agent permission configs | **Medium** | Follow existing deny/ask/allow patterns; never auto-allow dangerous ops |
+| A06-A07 | — | N/A | — |
+| A08 Data Integrity | Generated files committed to git | Low | Git provides integrity; sync includes content hash verification |
+| A09 Logging | Eval transcripts contain full conversations | Low | Store in `.forge/eval-logs/` (gitignored); warn on env var detection |
+| A10 SSRF | — | N/A | — |
 
-**PR-A Static Validator:**
-1. Happy path: clean repo with all commands → `forge check-agents` exits 0
-2. Dead reference: `/status` contains `openspec list` → validator catches it, exits non-zero
-3. Sync drift: `.cursor/commands/plan.md` differs from canonical → `--sync-check` flags it
-4. Missing HARD-GATE: command claims gate but has no closing block → validator warns
+### TDD Test Scenarios
+
+**PR-A Static Validator (extend `test/structural/command-files.test.js`):**
+1. Happy path: clean repo with all commands → all checks pass
+2. Dead reference: `/status` contains `openspec list` → test catches it
+3. Sync drift: `.cursor/commands/plan.md` content differs from canonical → `sync-check` test flags it
+4. Missing HARD-GATE: command claims gate but has no closing block → test warns
+5. Stage count: all files agree on 7 stages → pass; file says 9 → fail
+6. Cross-command contract: /plan output mentions task file → /dev input expects same file → pass
 
 **PR-B Behavioral Eval:**
 1. Happy path: `/status` in clean worktree → grader confirms expected output sections
 2. HARD-GATE enforcement: `/plan` on non-master branch → grader confirms it stopped
 3. Cross-command contract: /plan creates task file → /dev finds it
+4. Error path: `/validate` with failing tests → grader confirms it reports failures
 
 **PR-C Skill Optimization:**
-1. Trigger accuracy: `parallel-web-search` triggers on "search for X" query
-2. Non-trigger: `parallel-web-search` does NOT trigger on "read this file" query
-3. Improvement: description rewrite improves trigger accuracy on test set
+1. Trigger accuracy: `parallel-web-search` triggers on "search for recent news about X"
+2. Non-trigger: `parallel-web-search` does NOT trigger on "read this file"
+3. Improvement: description rewrite improves trigger accuracy on test set (60/40 split)
+4. No regression: improved description doesn't trigger on previously-correct non-trigger queries
 
 ---
 
@@ -229,3 +306,16 @@ For implementation decisions:
 - [Agent command parity design doc](docs/plans/2026-03-04-agent-command-parity-design.md)
 - [Agent instructions sync research](docs/research/agent-instructions-sync.md)
 - [skills.sh portable runner pattern](skills/)
+- [agnix — multi-agent linter](https://github.com/agent-sh/agnix)
+- [cclint — Claude Code linter](https://github.com/carlrannaberg/cclint)
+- [OpenCode commands docs](https://opencode.ai/docs/commands/)
+- [Cursor commands docs](https://cursor.com/docs/context/commands)
+- [Cline workflows docs](https://docs.cline.bot/features/slash-commands/workflows)
+- [Windsurf workflows docs](https://docs.windsurf.com/windsurf/cascade/workflows)
+- [Kilo Code CLI docs](https://kilo.ai/docs/cli)
+- [Roo Code slash commands](https://docs.roocode.com/features/slash-commands)
+- [Continue prompts docs](https://docs.continue.dev/customize/deep-dives/prompts)
+- [GitHub Copilot prompt files](https://code.visualstudio.com/docs/copilot/customization/prompt-files)
+- [Codex skills](https://developers.openai.com/codex/skills/)
+- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [Claude Code headless mode](https://code.claude.com/docs/en/headless)
