@@ -54,6 +54,7 @@
       "npx *": "allow",
       "node *": "allow",
       "openspec *": "allow",
+      "git worktree *": "allow",
       "git reset --hard *": "ask",
       "rm -rf *": "deny",
       "git push --force *": "deny",
