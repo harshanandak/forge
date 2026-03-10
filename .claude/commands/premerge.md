@@ -46,11 +46,21 @@ If the feature branch is behind `master`, tell the user to rebase first:
 
 Check each of the following and update if the feature affects it. Be selective — only update what genuinely changed.
 
-**A. `docs/planning/PROGRESS.md`** (always):
-- Add feature entry to completed section:
-  - Feature name, completion date, Beads ID, PR number, design doc link
-  - Key deliverables and files changed
-- Note: `docs/planning/` is gitignored — update locally only, no commit needed
+**A. `CHANGELOG.md`** (always):
+- Add entry under `## [Unreleased]` heading (create heading if not present)
+- Use [Keep a Changelog](https://keepachangelog.com/) categories:
+  - **Added**: New features
+  - **Changed**: Changes to existing functionality
+  - **Fixed**: Bug fixes
+  - **Removed**: Removed features
+- Include: feature name, PR number, Beads ID
+- Example:
+  ```markdown
+  ## [Unreleased]
+
+  ### Added
+  - Authentication refresh tokens (PR #89, forge-a3f8)
+  ```
 
 **B. `README.md`** (if user-facing changes):
 - Features list, configuration options, usage examples
@@ -67,7 +77,7 @@ Check each of the following and update if the feature affects it. Be selective �
 ...update only between these markers...
 <!-- USER:END -->
 ```
-⚠️  NEVER touch `<!-- OPENSPEC:START/END -->` or other managed blocks.
+⚠️  NEVER touch other managed blocks (e.g., `<!-- AGENT:START/END -->`).
 
 **F. `AGENTS.md`** (if agent config, skills, or cross-agent workflow changed):
 - Update relevant sections describing agent capabilities or workflow
@@ -78,7 +88,7 @@ Check each of the following and update if the feature affects it. Be selective �
 **Commit doc updates to feature branch**:
 
 ```bash
-git add README.md docs/ AGENTS.md CLAUDE.md
+git add CHANGELOG.md README.md docs/ AGENTS.md CLAUDE.md
 git commit -m "docs: update documentation for <feature-name>
 
 - Updated: [list files changed]
@@ -132,7 +142,7 @@ Do NOT suggest merging.
 ✓ CI checks: All passing
 ✓ Branch: Up to date with master
 ✓ Documentation updated:
-  - PROGRESS.md: Feature entry added (local only)
+  - CHANGELOG.md: Entry added under [Unreleased]
   - README.md: Features list updated
   - CLAUDE.md: USER section updated with new pattern
   - Committed: docs: update documentation for auth-refresh
@@ -150,7 +160,7 @@ After you merge, run /verify
 ## Rules
 
 - **NEVER run `gh pr merge`** — blocked by PreToolUse hook in `.claude/settings.json`
-- **CLAUDE.md USER section only** — never touch managed blocks (`OPENSPEC:START/END`)
+- **CLAUDE.md USER section only** — never touch other managed blocks
 - **Warn if branch is behind** — tell user to rebase before doc updates
 - **Re-check CI after doc push** — doc commits re-trigger full CI pipeline
 - **One PR, complete** — code + tests + docs merged together, no follow-up doc PRs
