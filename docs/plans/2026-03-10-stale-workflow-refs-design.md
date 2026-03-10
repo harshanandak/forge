@@ -45,6 +45,36 @@ Rationale: This is a docs cleanup task. Link checker infrastructure is a separat
 
 Fix inline and document in commit. Low-risk for docs-only changes.
 
+## Technical Research
+
+### Stale Reference Inventory
+
+| File | Line | Stale Reference | Replacement |
+|------|------|----------------|-------------|
+| status.md | 21 | `cat docs/planning/PROGRESS.md` | `bd list --status completed --limit 5` |
+| status.md | 33 | `openspec list --active` | Remove (no replacement needed) |
+| status.md | 45 | `openspec list --archived --limit 3` | Remove |
+| status.md | 69 | `Next: /research <feature-name>` | `Next: /plan <feature-name>` |
+| status.md | 74 | `Run /research <feature-name>` | `Run /plan <feature-name>` |
+| rollback.md | 309 | `/status → /research → /plan → ...` | `/status → /plan → /dev → ...` |
+| rollback.md | 334 | `/research payment-integration` | `/plan payment-integration` |
+| premerge.md | 49 | `docs/planning/PROGRESS.md` | Replace with CHANGELOG.md step |
+| premerge.md | 135 | `PROGRESS.md: Feature entry added` | `CHANGELOG.md: Entry added` |
+
+### OWASP Top 10 Analysis
+
+Not applicable — docs-only changes with no code, no user input, no authentication, no data storage.
+
+### TDD Test Scenarios
+
+1. **Happy path**: All 3 files updated, grep for stale terms returns 0 matches (excluding research.md legacy alias)
+2. **Workflow consistency**: All workflow diagrams in touched files show identical 7-stage flow
+3. **CHANGELOG format**: New premerge step references Keep a Changelog format consistent with existing CHANGELOG.md
+
+### DRY Check
+
+No existing "replace stale workflow refs" logic exists. This is a manual docs edit — no abstraction needed.
+
 ## Related Work
 
 - **Link checker** (new Beads issue): Local Lefthook pre-push hook preferred over GitHub Action, to catch broken internal markdown links before they hit PRs. Reference workflow from user's other repo saved in issue description.
