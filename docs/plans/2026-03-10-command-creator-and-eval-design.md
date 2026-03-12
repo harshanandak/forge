@@ -13,7 +13,7 @@
 Forge ships 11 slash commands (`.claude/commands/*.md`) and 6 skills (`skills/*/SKILL.md`). Currently there is:
 - **No way to test commands** — HARD-GATE enforcement, dead references, cross-command contracts are unchecked
 - **No way to test skills** — trigger accuracy and output quality are unmeasured
-- **No automated sync** — 11 agents each need adapted command files, but changes to canonical commands require manual propagation
+- **No automated sync** — 8 agents each need adapted command files, but changes to canonical commands require manual propagation
 - **No improvement loop** — when a command or skill has issues, fixing is ad-hoc with no before/after measurement
 
 Real bugs exist today: `/status` references `openspec list` (removed), `/rollback` still says 9 stages, `GEMINI.md` has `/merge` instead of `/premerge`. These are caught by humans reading files, not by any automated check.
@@ -28,7 +28,7 @@ Real bugs exist today: `/status` references `openspec list` (removed), `/rollbac
 1. `forge check-agents` CLI command exists and passes on clean repo
 2. Static validator catches: dead references (e.g., `openspec list`), stale stage names (`/check` vs `/validate`), missing HARD-GATE blocks, inconsistent stage counts
 3. Cross-command contract tests verify: /plan output matches /dev input expectations, /dev output matches /validate expectations, etc.
-4. `scripts/sync-commands.sh` reads canonical `.claude/commands/*.md` → generates agent-specific adapter files for all 11 supported agents
+4. `scripts/sync-commands.sh` reads canonical `.claude/commands/*.md` → generates agent-specific adapter files for all 8 supported agents
 5. `forge check-agents --sync-check` verifies all agent files are in sync with canonical source
 6. Works on Windows (bash/Git Bash compatible)
 
@@ -94,20 +94,25 @@ Why `.claude/commands/` stays canonical (not a new `commands/` dir):
 
 **Adapter transforms per agent**:
 
-| Agent | Directory | Extension | Frontmatter Transform |
-|-------|-----------|-----------|----------------------|
-| Claude Code | `.claude/commands/` | `.md` | None (canonical) |
-| OpenCode | `.opencode/commands/` | `.md` | Keep `description:` |
-| Cursor | `.cursor/commands/` | `.md` | Strip all frontmatter |
-| Cline | `.clinerules/workflows/` | `.md` | Strip all frontmatter |
-| Windsurf | `.windsurf/workflows/` | `.md` | Strip all frontmatter |
-| Kilo Code | `.kilocode/commands/` | `.md` | Keep `description:`, add `mode: code` |
-| Roo Code | `.roo/commands/` | `.md` | Keep `description:`, add `mode: code` |
-| Continue | `.continue/prompts/` | `.prompt` | Add `name:`, `invokable: true` |
-| GitHub Copilot | `.github/prompts/` | `.prompt.md` | Add `name:`, `description:`, `tools:` |
-| Codex (ext) | `.agents/skills/forge-workflow/` | `SKILL.md` | Single combined file (special case) |
+| Agent | Directory | Extension | Frontmatter Transform | Tier |
+|-------|-----------|-----------|----------------------|------|
+| Claude Code | `.claude/commands/` | `.md` | None (canonical) | 1 |
+| Cursor | `.cursor/skills/<name>/` | `.md` | Strip all frontmatter (migrated from commands to skills in v2.4+) | 1 |
+| Cline | `.clinerules/workflows/` | `.md` | Strip all frontmatter | 1 |
+| OpenCode | `.opencode/commands/` | `.md` | Keep `description:` | 1 |
+| GitHub Copilot | `.github/prompts/` | `.prompt.md` | Add `name:`, `description:`, `tools:` | 1 |
+| Kilo Code | `.kilocode/workflows/` | `.md` | Keep `description:`, add `mode: code` | 2 |
+| Roo Code | `.roo/commands/` | `.md` | Keep `description:`, add `mode: code` | 2 |
+| Codex | `.codex/skills/<name>/` | `SKILL.md` | Single combined file (special case) | 2 |
 
-**Note**: Antigravity (Google) dropped from adapter support — not in AGENTS.md, not actively maintained.
+**Tier 1** (5 agents): Full workflow — commands + PreToolUse hooks + MCP + subagents. Can enforce HARD-GATEs.
+**Tier 2** (3 agents): Partial — commands + MCP + subagents, but no PreToolUse hooks. Commands work as prompts but can't enforce gates.
+
+**Dropped agents** (with rationale):
+- Antigravity (Google): Not in AGENTS.md, not actively maintained (PR #54)
+- Windsurf: Dropped in PR #54
+- Continue: CLI still in alpha, no hooks, no in-conversation subagents
+- Blackbox AI: No custom command directory, no hooks, no third-party MCP support
 
 ### Static Validator: grep-based, no AI runtime
 
@@ -183,7 +188,7 @@ Adapted from skill-creator's `improve_description.py`:
 3. **Agent doesn't support all 7 commands**: Some agents may only get a subset — sync script reads agent capabilities from `lib/agents/*.plugin.json`
 4. **Frontmatter extraction fails**: Canonical command has non-standard frontmatter — sync script should error clearly, not silently produce broken files
 5. **Worktree already exists during eval**: Eval creates temp worktrees — must handle cleanup on failure and concurrent runs
-6. **Command too long for some agents**: Continue has ~4000 token limit for .prompt files — sync script should warn if adapted content exceeds known limits
+6. **Cursor skills migration**: Cursor v2.4+ uses `.cursor/skills/` not `.cursor/commands/` — sync script must generate skills directory structure, not flat files
 
 ---
 
@@ -219,26 +224,44 @@ For implementation decisions:
 
 ## Technical Research
 
-### Confirmed Agent Command Formats
+### Confirmed Agent Command Formats (8 agents)
 
 | Agent | Directory | Extension | Required Frontmatter | Optional Frontmatter | Source |
 |-------|-----------|-----------|---------------------|---------------------|--------|
 | Claude Code | `.claude/commands/` | `.md` | `description` | — | Official docs |
-| OpenCode | `.opencode/commands/` | `.md` | `description` | `agent`, `model`, `subtask` | [opencode.ai/docs/commands](https://opencode.ai/docs/commands/) |
-| Cursor | `.cursor/commands/` | `.md` | **None** (no frontmatter support) | — | [cursor.com/docs/context/commands](https://cursor.com/docs/context/commands) |
+| Cursor | `.cursor/skills/<name>/` | `.md` | **None** (skills are plain markdown) | — | [cursor.com/docs/context/commands](https://cursor.com/docs/context/commands) |
 | Cline | `.clinerules/workflows/` | `.md` | None | `description`, `author`, `version`, `globs`, `tags` | [docs.cline.bot/features/slash-commands/workflows](https://docs.cline.bot/features/slash-commands/workflows) |
-| Windsurf | `.windsurf/workflows/` | `.md` | `description` | — | [docs.windsurf.com/windsurf/cascade/workflows](https://docs.windsurf.com/windsurf/cascade/workflows) |
-| Kilo Code | `.kilocode/commands/` | `.md` | `description` | `arguments`, `mode`, `model` | [kilo.ai/docs/cli](https://kilo.ai/docs/cli) |
-| Roo Code | `.roo/commands/` | `.md` | `description` | `argument-hint`, `mode` | [docs.roocode.com/features/slash-commands](https://docs.roocode.com/features/slash-commands) |
-| Continue | `.continue/prompts/` | `.prompt` | `name`, `description`, `invokable: true` | Input variables | [docs.continue.dev/customize/deep-dives/prompts](https://docs.continue.dev/customize/deep-dives/prompts) |
+| OpenCode | `.opencode/commands/` | `.md` | `description` | `agent`, `model`, `subtask` | [opencode.ai/docs/commands](https://opencode.ai/docs/commands/) |
 | GitHub Copilot | `.github/prompts/` | `.prompt.md` | None strictly | `name`, `description`, `agent`, `tools`, `model` | [code.visualstudio.com/docs/copilot/customization/prompt-files](https://code.visualstudio.com/docs/copilot/customization/prompt-files) |
-| Codex (ext) | `.agents/skills/<name>/` | `SKILL.md` | `name`, `description` | — | [developers.openai.com/codex/skills](https://developers.openai.com/codex/skills/) |
+| Kilo Code | `.kilocode/workflows/` | `.md` | `description` | `arguments`, `mode`, `model` | [kilo.ai/docs/features/slash-commands/workflows](https://kilo.ai/docs/features/slash-commands/workflows) |
+| Roo Code | `.roo/commands/` | `.md` | `description` | `argument-hint`, `mode` | [docs.roocode.com/features/slash-commands](https://docs.roocode.com/features/slash-commands) |
+| Codex | `.codex/skills/<name>/` | `SKILL.md` | `name`, `description` | — | [developers.openai.com/codex/skills](https://developers.openai.com/codex/skills/) |
 
 **Key findings:**
+- Cursor migrated from `.cursor/commands/` to `.cursor/skills/` in v2.4+ (use `/migrate-to-skills`)
 - Cursor is the only agent with NO frontmatter support — sync strips everything
 - `description` is the universal common field across all agents that support frontmatter
-- Antigravity dropped from support (not in AGENTS.md) — 9 agents total
+- 8 agents total (dropped: Antigravity, Windsurf, Continue, Blackbox AI)
 - No documented content length limits for any agent
+
+### Agent Capability Tiers (New Research)
+
+Full capability matrix verified from official documentation (March 2026):
+
+| Capability | Claude Code | Cursor | Cline | OpenCode | Copilot | Kilo Code | Roo Code | Codex |
+|---|---|---|---|---|---|---|---|---|
+| **Custom commands** | `.claude/commands/` | `.cursor/skills/` | `.clinerules/workflows/` | `.opencode/commands/` | `.github/prompts/` | `.kilocode/workflows/` | `.roo/commands/` | Skills (`SKILL.md`) |
+| **PreToolUse hooks** | Yes | Yes (can deny) | Yes (can cancel) | Yes (plugin system) | Yes (`.github/hooks/`) | No (permission config only) | No (file-event hooks only) | No (approval modes only) |
+| **Subagents** | Yes (full) | Yes (8 parallel) | Yes (read-only) | Yes (`@general`, `@explore`) | Yes (sequential IDE, parallel `/fleet`) | Yes (Orchestrator + 4 parallel) | Yes (Orchestrator, sequential) | Yes (worktree-based, experimental) |
+| **MCP (3rd party)** | Yes | Yes | Yes + Marketplace | Yes (local + remote + OAuth) | Yes | Yes + Marketplace | Yes + Marketplace | Yes |
+| **Always-on rules** | `.claude/rules/` | `.cursor/rules/*.mdc` | `.clinerules/*.md` | `AGENTS.md` | `.github/instructions/` | `.kilocode/rules/` + `AGENTS.md` | `.roo/rules/` | `AGENTS.md` |
+| **Custom modes** | No | No | No | Yes (plan, build) | No | Yes (5 built-in + custom) | Yes (5 built-in + custom) | No |
+| **Skills** | Yes | Yes | No | Yes (`SKILL.md`) | No | Yes (`SKILL.md`) | Yes | Yes (`SKILL.md`) |
+
+**Tier 1 — Full workflow enforcement** (commands + hooks + MCP): Claude Code, Cursor, Cline, OpenCode, GitHub Copilot
+**Tier 2 — Partial workflow** (commands + MCP, no hook enforcement): Kilo Code, Roo Code, Codex
+
+**Sources**: cursor.com/docs, docs.cline.bot, opencode.ai/docs, docs.github.com, kilo.ai/docs, docs.roocode.com, developers.openai.com/codex
 
 ### Existing Linting Tools (Critical Discovery)
 
@@ -311,11 +334,17 @@ For implementation decisions:
 - [OpenCode commands docs](https://opencode.ai/docs/commands/)
 - [Cursor commands docs](https://cursor.com/docs/context/commands)
 - [Cline workflows docs](https://docs.cline.bot/features/slash-commands/workflows)
-- [Windsurf workflows docs](https://docs.windsurf.com/windsurf/cascade/workflows)
-- [Kilo Code CLI docs](https://kilo.ai/docs/cli)
+- [Kilo Code workflows](https://kilo.ai/docs/features/slash-commands/workflows)
+- [Kilo Code skills](https://kilo.ai/docs/customize/skills)
 - [Roo Code slash commands](https://docs.roocode.com/features/slash-commands)
-- [Continue prompts docs](https://docs.continue.dev/customize/deep-dives/prompts)
+- [Roo Code hooks](https://github.com/RooCodeInc/Roo-Code/discussions/6147)
 - [GitHub Copilot prompt files](https://code.visualstudio.com/docs/copilot/customization/prompt-files)
+- [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/coding-agent/about-hooks)
 - [Codex skills](https://developers.openai.com/codex/skills/)
+- [Codex MCP](https://developers.openai.com/codex/mcp/)
+- [Cursor skills (migrated from commands)](https://cursor.com/docs/context/commands)
+- [Cursor hooks](https://cursor.com/docs/hooks)
+- [Cline hooks](https://docs.cline.bot/features/hooks)
+- [OpenCode plugins/hooks](https://opencode.ai/docs/plugins)
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
 - [Claude Code headless mode](https://code.claude.com/docs/en/headless)
