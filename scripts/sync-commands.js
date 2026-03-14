@@ -117,7 +117,8 @@ function buildFile(frontmatter, body) {
 
 /**
  * @typedef {Object} AgentAdapter
- * @property {(commandName: string) => string} dir - Target directory path
+ * @property {(commandName: string) => string} dir - Target directory path for a specific command
+ * @property {string} baseDir - Base output directory for this agent (no sentinel needed)
  * @property {string} extension - File extension (e.g. '.md', '.prompt.md')
  * @property {(fm: Record<string, unknown>, commandName: string) => Record<string, unknown>} transformFrontmatter
  * @property {boolean} [skip] - If true, agent is canonical source (no sync needed)
@@ -196,42 +197,50 @@ function copilotTransform(fm, commandName) {
 const AGENT_ADAPTERS = {
   'claude-code': {
     dir: () => '.claude/commands/',
+    baseDir: '.claude/commands/',
     extension: '.md',
     transformFrontmatter: (fm) => ({ ...fm }),
     skip: true,
   },
   cursor: {
     dir: () => '.cursor/commands/',
+    baseDir: '.cursor/commands/',
     extension: '.md',
     transformFrontmatter: stripAllFrontmatter,
   },
   cline: {
     dir: () => '.clinerules/workflows/',
+    baseDir: '.clinerules/workflows/',
     extension: '.md',
     transformFrontmatter: stripAllFrontmatter,
   },
   opencode: {
     dir: () => '.opencode/commands/',
+    baseDir: '.opencode/commands/',
     extension: '.md',
     transformFrontmatter: keepDescription,
   },
   'github-copilot': {
     dir: () => '.github/prompts/',
+    baseDir: '.github/prompts/',
     extension: '.prompt.md',
     transformFrontmatter: copilotTransform,
   },
   'kilo-code': {
     dir: () => '.kilocode/workflows/',
+    baseDir: '.kilocode/workflows/',
     extension: '.md',
     transformFrontmatter: keepDescriptionAddMode,
   },
   'roo-code': {
     dir: () => '.roo/commands/',
+    baseDir: '.roo/commands/',
     extension: '.md',
     transformFrontmatter: keepDescriptionAddMode,
   },
   codex: {
     dir: (commandName) => `.codex/skills/${commandName}/`,
+    baseDir: '.codex/skills/',
     extension: '.md',
     transformFrontmatter: keepDescription,
   },
@@ -417,8 +426,8 @@ function syncCommands({ dryRun, check, repoRoot }) {
       const adapter = AGENT_ADAPTERS[agentName];
       if (adapter.skip) continue;
 
-      // Get the base output directory for this agent
-      const baseDir = path.join(repoRoot, adapter.dir('_').replace(/\/_\/?$/, '').replace(/\\_\\?$/, ''));
+      // Get the base output directory for this agent (explicit property, no sentinel)
+      const baseDir = path.join(repoRoot, adapter.baseDir);
       if (!fs.existsSync(baseDir) || !fs.statSync(baseDir).isDirectory()) continue;
 
       // Scan recursively for files with the agent's extension
@@ -453,7 +462,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
     const content = fs.readFileSync(clinerules, 'utf8');
     // Atomic migration: write backup first, then remove original, then create dir.
     // If interrupted after backup but before dir creation, backup file preserves data.
-    const backupPath = path.join(repoRoot, '.clinerules.bak');
+    const backupPath = path.join(repoRoot, `.clinerules.sync-backup-${Date.now()}`);
     fs.writeFileSync(backupPath, content);
     fs.unlinkSync(clinerules);
     fs.mkdirSync(clinerules, { recursive: true });

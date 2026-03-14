@@ -11,6 +11,10 @@ describe('command sync drift detection', () => {
   test('all agent command files are in sync with canonical source', () => {
     const result = syncCommands({ dryRun: false, check: true, repoRoot });
 
+    if (result.empty) {
+      throw new Error('No command files found in .claude/commands/ — cannot verify sync.');
+    }
+
     const issues = [];
 
     if (result.outOfSync.length > 0) {
