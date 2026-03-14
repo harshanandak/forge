@@ -57,6 +57,11 @@ describe('.claude/commands/plan.md structural checks', () => {
     const count = (content.match(/```/g) || []).length;
     expect(count % 2).toBe(0);
   });
+
+  test('plan.md contains blast-radius search section', () => {
+    const planContent = fs.readFileSync(planPath, 'utf8');
+    expect(planContent).toContain('blast-radius');
+  });
 });
 
 // ─── dev.md ──────────────────────────────────────────────────────────────────
