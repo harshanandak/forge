@@ -497,6 +497,7 @@ describe('syncCommands — check mode', () => {
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
       expect(result.inSync).toBe(true);
       expect(result.outOfSync.length).toBe(0);
+      expect(result.manifestMissing).toBe(false);
     } finally {
       cleanupTempRepo(tmpDir);
     }
