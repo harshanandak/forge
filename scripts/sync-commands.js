@@ -402,29 +402,50 @@ function syncCommands({ dryRun, check, repoRoot }) {
     // Only checks files that the sync script would produce — not arbitrary files
     // in agent directories (e.g., custom prompts in .github/prompts/ are safe).
     const expectedPaths = new Set(entries.map((e) => e.filePath));
+    const expectedDirs = new Set(entries.map((e) => path.dirname(e.filePath)));
     /** @type {string[]} */
     const staleFiles = [];
-    // Build the set of all possible output paths for each agent using every
-    // known command name pattern (extension + directory naming).
+
     for (const agentName of Object.keys(AGENT_ADAPTERS)) {
       const adapter = AGENT_ADAPTERS[agentName];
       if (adapter.skip) continue;
-      // For each command that COULD have existed, check if its output file
-      // is on disk but not in expected set. We scan each agent's output dirs
-      // for files matching the agent's extension pattern.
-      const dirsChecked = new Set();
+
+      // Collect all output dirs for this agent (from current entries)
+      const agentDirs = new Set();
       for (const entry of entries) {
-        const dirPath = path.dirname(entry.filePath);
-        if (entry.agent !== agentName) continue;
-        dirsChecked.add(dirPath);
+        if (entry.agent === agentName) {
+          agentDirs.add(path.dirname(entry.filePath));
+        }
       }
-      for (const dir of dirsChecked) {
+
+      // For per-command subdir agents (cursor, codex), also scan the parent
+      // directory for stale subdirectories from deleted commands.
+      const sampleDir = adapter.dir('__sample__');
+      const isSubdirAgent = sampleDir.includes('__sample__/') || sampleDir.includes('__sample__\\');
+      if (isSubdirAgent) {
+        const parentDir = path.join(repoRoot, sampleDir.replace(/__sample__[/\\]?$/, ''));
+        if (fs.existsSync(parentDir)) {
+          for (const subdir of fs.readdirSync(parentDir)) {
+            const subdirPath = path.join(parentDir, subdir);
+            if (fs.statSync(subdirPath).isDirectory() && !expectedDirs.has(subdirPath)) {
+              // Stale subdir — scan for managed files
+              for (const f of fs.readdirSync(subdirPath)) {
+                const fullPath = path.join(subdirPath, f);
+                if (fs.statSync(fullPath).isFile() && f.endsWith(adapter.extension)) {
+                  staleFiles.push(fullPath);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Scan known output dirs for stale files
+      for (const dir of agentDirs) {
         if (!fs.existsSync(dir)) continue;
-        const files = fs.readdirSync(dir);
-        for (const f of files) {
+        for (const f of fs.readdirSync(dir)) {
           const fullPath = path.join(dir, f);
           if (fs.statSync(fullPath).isFile() && !expectedPaths.has(fullPath)) {
-            // Only flag files with the agent's extension (scoped to managed outputs)
             if (f.endsWith(adapter.extension)) {
               staleFiles.push(fullPath);
             }
