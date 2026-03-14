@@ -11,7 +11,7 @@
 **Gap**: Skills in `skills/` directory not discoverable by `claude -p`
 **Score**: 0/14
 **Route**: PROCEED
-**Choice made**: Moved skills to `.claude/skills/` via symlinks. Created Windows-compatible eval script (`scripts/eval_win.py`) since `run_eval.py` uses `select.select()` which fails on Windows pipes.
+**Choice made**: Recreated `.claude/skills/` symlinks in the worktree (normally created by `bunx skills sync`, but gitignored so not present in worktrees). Also created Windows-compatible eval script (`scripts/eval_win.py`) since `run_eval.py` uses `select.select()` which fails on Windows pipes.
 **Status**: RESOLVED
 
 ## Decision 2
