@@ -113,4 +113,173 @@ function buildFile(frontmatter, body) {
   return `---\n${yamlBlock}---\n${body}`;
 }
 
-module.exports = { parseFrontmatter, buildFile };
+// ---- Agent adapters -------------------------------------------------------------
+
+/**
+ * @typedef {Object} AgentAdapter
+ * @property {(commandName: string) => string} dir - Target directory path
+ * @property {string} extension - File extension (e.g. '.md', '.prompt.md')
+ * @property {(fm: Record<string, unknown>, commandName: string) => Record<string, unknown>} transformFrontmatter
+ * @property {boolean} [skip] - If true, agent is canonical source (no sync needed)
+ */
+
+/**
+ * Strip all frontmatter — return empty object.
+ *
+ * @param {Record<string, unknown>} _fm
+ * @param {string} _commandName
+ * @returns {Record<string, unknown>}
+ */
+function stripAllFrontmatter(_fm, _commandName) {
+  return {};
+}
+
+/**
+ * Keep only `description` from frontmatter.
+ *
+ * @param {Record<string, unknown>} fm
+ * @param {string} _commandName
+ * @returns {Record<string, unknown>}
+ */
+function keepDescription(fm, _commandName) {
+  /** @type {Record<string, unknown>} */
+  const result = {};
+  if (fm.description !== undefined) {
+    result.description = fm.description;
+  }
+  return result;
+}
+
+/**
+ * Keep `description`, add `mode: code`.
+ *
+ * @param {Record<string, unknown>} fm
+ * @param {string} _commandName
+ * @returns {Record<string, unknown>}
+ */
+function keepDescriptionAddMode(fm, _commandName) {
+  /** @type {Record<string, unknown>} */
+  const result = {};
+  if (fm.description !== undefined) {
+    result.description = fm.description;
+  }
+  result.mode = 'code';
+  return result;
+}
+
+/**
+ * GitHub Copilot transform: add `name`, keep `description`, add `tools`.
+ *
+ * @param {Record<string, unknown>} fm
+ * @param {string} commandName
+ * @returns {Record<string, unknown>}
+ */
+function copilotTransform(fm, commandName) {
+  /** @type {Record<string, unknown>} */
+  const result = {};
+  result.name = commandName;
+  if (fm.description !== undefined) {
+    result.description = fm.description;
+  }
+  result.tools = [];
+  return result;
+}
+
+/**
+ * Agent adapter configuration for command sync.
+ *
+ * Each entry maps an agent slug to its target directory, file extension,
+ * and frontmatter transform function.
+ *
+ * @type {Record<string, AgentAdapter>}
+ */
+const AGENT_ADAPTERS = {
+  'claude-code': {
+    dir: () => '.claude/commands/',
+    extension: '.md',
+    transformFrontmatter: (fm) => ({ ...fm }),
+    skip: true,
+  },
+  cursor: {
+    dir: (commandName) => `.cursor/skills/${commandName}/`,
+    extension: '.md',
+    transformFrontmatter: stripAllFrontmatter,
+  },
+  cline: {
+    dir: () => '.clinerules/workflows/',
+    extension: '.md',
+    transformFrontmatter: stripAllFrontmatter,
+  },
+  opencode: {
+    dir: () => '.opencode/commands/',
+    extension: '.md',
+    transformFrontmatter: keepDescription,
+  },
+  'github-copilot': {
+    dir: () => '.github/prompts/',
+    extension: '.prompt.md',
+    transformFrontmatter: copilotTransform,
+  },
+  'kilo-code': {
+    dir: () => '.kilocode/workflows/',
+    extension: '.md',
+    transformFrontmatter: keepDescriptionAddMode,
+  },
+  'roo-code': {
+    dir: () => '.roo/commands/',
+    extension: '.md',
+    transformFrontmatter: keepDescriptionAddMode,
+  },
+  codex: {
+    dir: (commandName) => `.codex/skills/${commandName}/`,
+    extension: '.md',
+    transformFrontmatter: keepDescription,
+  },
+};
+
+/**
+ * Adapt a command file for a specific agent.
+ *
+ * Applies the agent's frontmatter transform and returns the target
+ * filename, directory, and rebuilt file content.
+ *
+ * @param {string} agentName - Agent slug (e.g. 'cursor', 'claude-code')
+ * @param {Record<string, unknown>} frontmatter - Parsed frontmatter object
+ * @param {string} body - Markdown body content (after frontmatter)
+ * @param {string} commandName - Command name (e.g. 'plan', 'dev', 'status')
+ * @returns {{ content: string, filename: string, dir: string } | null}
+ *   null if the agent is skipped (canonical source)
+ * @throws {Error} If agentName is not a known agent
+ */
+function adaptForAgent(agentName, frontmatter, body, commandName) {
+  const adapter = AGENT_ADAPTERS[agentName];
+  if (!adapter) {
+    throw new Error(`Unknown agent: "${agentName}". Known agents: ${Object.keys(AGENT_ADAPTERS).join(', ')}`);
+  }
+
+  if (adapter.skip) {
+    return null;
+  }
+
+  const transformed = adapter.transformFrontmatter(frontmatter, commandName);
+  const hasKeys = Object.keys(transformed).length > 0;
+
+  // Build content: if frontmatter is empty, output body only (no --- markers)
+  const content = hasKeys ? buildFile(transformed, body) : body;
+
+  // Determine filename — Codex uses SKILL.md, others use <commandName>.<ext>
+  let filename;
+  if (agentName === 'codex') {
+    filename = `SKILL${adapter.extension}`;
+  } else {
+    filename = `${commandName}${adapter.extension}`;
+  }
+
+  return {
+    content,
+    filename,
+    dir: adapter.dir(commandName),
+  };
+}
+
+module.exports = { parseFrontmatter, buildFile, AGENT_ADAPTERS, adaptForAgent };
