@@ -396,6 +396,18 @@ function syncCommands({ dryRun, check, repoRoot }) {
   }
 
   // ---- write mode (default) ----
+
+  // Migrate flat files to directories where needed.
+  // Cline: .clinerules (flat file) → .clinerules/default-rules.md
+  // This follows Cline's own migration pattern (ensureLocalClineDirExists).
+  const clinerules = path.join(repoRoot, '.clinerules');
+  if (fs.existsSync(clinerules) && fs.statSync(clinerules).isFile()) {
+    const content = fs.readFileSync(clinerules, 'utf8');
+    fs.unlinkSync(clinerules);
+    fs.mkdirSync(clinerules, { recursive: true });
+    fs.writeFileSync(path.join(clinerules, 'default-rules.md'), content);
+  }
+
   /** @type {SyncEntry[]} */
   const written = [];
   /** @type {SyncEntry[]} */

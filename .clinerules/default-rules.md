@@ -1,0 +1,186 @@
+# Forge Development Context
+
+> **IMPORTANT:** This project IS the Forge workflow. You are developing Forge itself.
+
+## Meta-Mode Detection
+
+Check branch name for context:
+- `meta/*` or `workflow/*` → Developing the workflow
+- `plugin/*` → Adding agent support
+- `feat/*`, `fix/*` → Standard Forge development
+
+## Key References
+
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Contributor quick start
+- [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) - Detailed guidelines (GitHub standard)
+- [lib/agents/README.md](lib/agents/README.md) - Plugin development
+
+---
+
+# Forge - 7-Stage TDD Workflow
+
+A TDD-first workflow for AI coding agents. Ship features with confidence.
+
+## Commands (7 Stages)
+
+| Stage | Command | Description |
+| ----- | ------- | ----------- |
+| utility | `/status` | Check current context, active work, recent completions |
+| 1 | `/plan` | Design intent → research → branch + worktree + task list |
+| 2 | `/dev` | Subagent-driven TDD per task (spec + quality review) |
+| 3 | `/validate` | Type check, lint, code review, security, tests |
+| 4 | `/ship` | Create PR with documentation |
+| 5 | `/review` | Address ALL PR feedback |
+| 6 | `/premerge` | Complete docs on feature branch, hand off PR |
+| 7 | `/verify` | Post-merge health check (CI on main) |
+
+## Workflow Flow
+
+```text
+/plan → /dev → /validate → /ship → /review → /premerge → /verify
+```
+
+## Core Principles
+
+- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
+- **Research-First**: Understand before building, document decisions
+- **Security Built-In**: OWASP Top 10 analysis for every feature
+- **Documentation Progressive**: Update at each stage, verify at end
+
+## Prerequisites
+
+- Git, GitHub CLI (`gh`)
+- Beads (recommended): `bun add -g @beads/bd && bd init`
+
+## Quick Start
+
+1. `/status` - Check where you are
+2. `/plan <feature-slug>` - Design Q&A → research → branch + task list
+3. `/dev` - Implement with TDD
+4. `/validate` - Validate everything
+5. `/ship` - Create PR
+
+## Stage Details
+
+### Status (`/status`) — Utility
+
+Check current context before starting work:
+
+- Active issues (via Beads if installed)
+- Recent completions
+- Current branch state
+
+### 1. Plan (`/plan <feature-slug>`)
+
+Design intent → research → branch + worktree + task list:
+
+- One-question-at-a-time Q&A captures design intent
+- Research best practices, OWASP Top 10
+- Create feature branch and task list
+
+### 2. Development (`/dev`)
+
+TDD implementation:
+
+- RED: Write failing test
+- GREEN: Make it pass
+- REFACTOR: Clean up
+- Commit after each GREEN cycle
+
+### 3. Validate (`/validate`)
+
+Validate everything:
+
+- Type checking
+- Linting
+- Unit tests
+- Integration tests
+- Security scan
+
+### 4. Ship (`/ship`)
+
+Create pull request:
+
+- Push branch
+- Create PR with documentation
+- Link to design doc
+- List test coverage
+
+### 5. Review (`/review`)
+
+Address ALL feedback:
+
+- GitHub Actions failures
+- Code review comments
+- Security scan issues
+- Automated tool feedback
+
+### 6. Premerge (`/premerge`)
+
+Complete docs on feature branch:
+
+- Update documentation
+- Hand off PR to user for merge
+- Never auto-merges
+
+### 7. Verify (`/verify`)
+
+Post-merge health check:
+
+- CI passing on main
+- Deployments healthy
+- Close tracking issues
+
+## Directory Structure
+
+```text
+your-project/
+├── AGENTS.md                    # This file (universal)
+├── CLAUDE.md                    # Claude Code
+├── .cursorrules                 # Cursor
+├── .github/
+│   └── copilot-instructions.md  # GitHub Copilot
+│
+├── .claude/commands/            # Claude Code commands
+├── .cursor/rules/               # Cursor rules
+├── .kilocode/workflows/         # Kilo Code workflows
+├── .opencode/commands/          # OpenCode commands
+│
+└── docs/
+    ├── planning/
+    │   └── PROGRESS.md
+    ├── research/
+    │   └── TEMPLATE.md
+    └── WORKFLOW.md
+```
+
+## Skills (Universal SKILL.md Format)
+
+The `forge-workflow` skill is installed to all supporting agents:
+
+- `.claude/skills/forge-workflow/SKILL.md`
+- `.cursor/skills/forge-workflow/SKILL.md`
+- `.kilocode/skills/forge-workflow/SKILL.md`
+- `.opencode/skills/forge-workflow/SKILL.md`
+
+## Supported Agents
+
+This workflow works with ALL major AI coding agents:
+
+| Agent | Instructions | Commands | Skills |
+| ----- | ------------ | -------- | ------ |
+| Claude Code | CLAUDE.md | .claude/commands/ | .claude/skills/ |
+| Cursor | .cursorrules | .cursor/rules/ | .cursor/skills/ |
+| Kilo Code | AGENTS.md | .kilocode/workflows/ | .kilocode/skills/ |
+| OpenCode | AGENTS.md | .opencode/commands/ | .opencode/skills/ |
+| GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ | - |
+| Codex CLI | AGENTS.md | - | - |
+| Goose | AGENTS.md | - | - |
+
+## License
+
+MIT
+
+---
+
+See `docs/WORKFLOW.md` for the complete workflow guide.
