@@ -77,7 +77,7 @@ def run_single_query(
     skill_name: str,
     timeout: int,
     project_root: str,
-    model: str | None = None,
+    model=None,
 ) -> bool:
     """Run a single query and return whether the REAL skill was triggered.
 
