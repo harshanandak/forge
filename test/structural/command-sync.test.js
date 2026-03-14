@@ -15,6 +15,13 @@ describe('command sync drift detection', () => {
       throw new Error('No command files found in .claude/commands/ — cannot verify sync.');
     }
 
+    if (result.manifestMissing) {
+      throw new Error(
+        'Sync manifest (.forge/sync-manifest.json) not found — stale file detection skipped.\n' +
+        'Run "node scripts/sync-commands.js" to generate the manifest and commit it.'
+      );
+    }
+
     const issues = [];
 
     if (result.outOfSync.length > 0) {

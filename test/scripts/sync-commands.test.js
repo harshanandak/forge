@@ -256,6 +256,20 @@ describe('adaptForAgent — Tier 1', () => {
     expect(result.filename).toBe('plan.prompt.md');
     expect(result.dir).toBe('.github/prompts/');
   });
+
+  test('copilot preserves canonical tools field when present', () => {
+    const fmWithTools = { description: 'Plan', tools: ['githubRepo', 'codebase'] };
+    const result = adaptForAgent('github-copilot', fmWithTools, body, 'plan');
+    const parsed = parseFrontmatter(result.content);
+    expect(parsed.frontmatter.tools).toEqual(['githubRepo', 'codebase']);
+  });
+
+  test('copilot defaults tools to empty array when not in canonical', () => {
+    const fmNoTools = { description: 'Plan' };
+    const result = adaptForAgent('github-copilot', fmNoTools, body, 'plan');
+    const parsed = parseFrontmatter(result.content);
+    expect(parsed.frontmatter.tools).toEqual([]);
+  });
 });
 
 // ---- adaptForAgent — Tier 2 agents -----------------------------------------------
