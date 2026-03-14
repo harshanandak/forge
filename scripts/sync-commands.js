@@ -182,7 +182,7 @@ function copilotTransform(fm, commandName) {
   if (fm.description !== undefined) {
     result.description = fm.description;
   }
-  result.tools = [];
+  result.tools = Array.isArray(fm.tools) ? fm.tools : [];
   return result;
 }
 
