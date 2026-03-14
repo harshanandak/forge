@@ -91,17 +91,19 @@ Ship order: **FIRST** (no dependencies, highest ROI)
 
 Read agent capabilities from `lib/agents/*.plugin.json` to determine which agents to sync.
 
-Agents (9 total):
+Agents (8 total, 2 tiers):
+
+**Tier 1 — Full workflow (commands + hooks + MCP):**
 - Claude Code: no-op (canonical)
-- OpenCode: keep `description`
-- Cursor: strip all frontmatter
-- Cline: strip all frontmatter
-- Windsurf: keep `description`
-- Kilo Code: keep `description`, add `mode: code`
-- Roo Code: keep `description`, add `mode: code`
-- Continue: add `name`, `description`, `invokable: true`; change ext to `.prompt`
-- GitHub Copilot: add `name`, `description`; change ext to `.prompt.md`
-- Codex: special case (combined SKILL.md file)
+- Cursor: strip all frontmatter, output to `.cursor/skills/<name>/`
+- Cline: strip all frontmatter, output to `.clinerules/workflows/`
+- OpenCode: keep `description`, output to `.opencode/commands/`
+- GitHub Copilot: add `name`, `description`, `tools:`; change ext to `.prompt.md`, output to `.github/prompts/`
+
+**Tier 2 — Partial (commands + MCP, no hooks):**
+- Kilo Code: keep `description`, add `mode: code`, output to `.kilocode/workflows/`
+- Roo Code: keep `description`, add `mode: code`, output to `.roo/commands/`
+- Codex: special case (combined SKILL.md file), output to `.codex/skills/<name>/`
 
 **TDD steps**:
 1. Write test: `test/scripts/sync-commands.test.js` — for each agent, assert transform produces correct frontmatter and extension
