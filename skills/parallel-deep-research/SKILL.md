@@ -71,7 +71,7 @@ for i in $(seq 1 $MAX_POLLS); do
   sleep 10
 done
 
-if [ "$i" = "$MAX_POLLS" ] && [ "$STATUS" != "completed" ]; then
+if [ "$i" = "$MAX_POLLS" ] && [ "$STATUS" != "completed" ] && [ "$STATUS" != "failed" ]; then
   echo "Timeout: task did not complete within 30 minutes"
 fi
 ```
@@ -88,8 +88,7 @@ fi
 ```json
 {
   "input": "Analyze the AI chip market in 2024. Include market size, growth rate, key players (NVIDIA, AMD, Intel), emerging competitors, and 2025 outlook.",
-  "processor": "pro",
-  "output_schema": "text"
+  "processor": "pro"
 }
 ```
 

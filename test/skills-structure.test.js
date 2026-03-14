@@ -95,13 +95,11 @@ describe('skills/ directory structure', () => {
     });
   });
 
-  describe('legacy .claude/skills/ removal', () => {
-    test('.claude/skills/parallel-ai/ directory no longer exists', () => {
-      expect(!fs.existsSync(path.join(ROOT, '.claude', 'skills', 'parallel-ai'))).toBeTruthy();
-    });
-
-    test('.claude/skills/sonarcloud/ directory no longer exists', () => {
-      expect(!fs.existsSync(path.join(ROOT, '.claude', 'skills', 'sonarcloud'))).toBeTruthy();
+  describe('skills/ contains only expected directories', () => {
+    test('skills/ contains exactly the expected skill directories', () => {
+      const dirs = fs.readdirSync(path.join(ROOT, 'skills'))
+        .filter(d => fs.statSync(path.join(ROOT, 'skills', d)).isDirectory());
+      expect(dirs.sort()).toEqual(['parallel-deep-research', 'sonarcloud-analysis'].sort());
     });
   });
 });

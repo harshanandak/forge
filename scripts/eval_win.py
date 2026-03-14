@@ -107,7 +107,12 @@ def run_single_query(
     except subprocess.TimeoutExpired:
         return False
 
-    # Parse output for skill triggering — check first assistant tool call only
+    # Known alias pairs: legacy command name → current skill name
+    KNOWN_ALIASES = {
+        "sonarcloud-analysis": "sonarcloud",
+    }
+
+    # Parse output for skill triggering — scan all tool calls in first assistant message
     for line in output.split("\n"):
         line = line.strip()
         if not line:
@@ -117,7 +122,7 @@ def run_single_query(
         except (json.JSONDecodeError, UnicodeDecodeError):
             continue
 
-        # Check assistant message for Skill tool calls
+        # Check first assistant message for any Skill tool call matching our skill
         if event.get("type") == "assistant":
             message = event.get("message", {})
             for content_item in message.get("content", []):
@@ -129,14 +134,10 @@ def run_single_query(
                     invoked_skill = tool_input.get("skill", "")
                     if skill_name == invoked_skill:
                         return True
-                    # Allow alias match only for known pairs
-                    # (e.g., "sonarcloud" command triggers for "sonarcloud-analysis")
-                    if (invoked_skill
-                            and len(invoked_skill) >= 4
-                            and invoked_skill == skill_name.split("-")[0]):
+                    if invoked_skill == KNOWN_ALIASES.get(skill_name):
                         return True
-                # First tool call that isn't our skill = not triggered
-                return False
+            # Scanned all tool calls in this message — no match
+            return False
 
     return False
 
