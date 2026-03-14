@@ -2,7 +2,7 @@
 
 **Feature**: beads-plan-context
 **Date**: 2026-03-14
-**Status**: Phase 1 complete — pending research
+**Status**: Phase 2 complete — ready for task list
 **Branch**: feat/beads-plan-context
 **Beads**: forge-bmy (open)
 
@@ -112,3 +112,53 @@ bash scripts/beads-context.sh update-progress <issue-id> <task-num> <total> "<ti
 bash scripts/beads-context.sh parse-progress <issue-id>
 # → "3/7 tasks done | Last: <title> (<commit-sha>)"
 ```
+
+---
+
+## Technical Research
+
+### Beads Field Verification (2026-03-14)
+
+Verified against Beads v0.49.1:
+
+| Flag | Works? | Behavior | Persists in JSONL? |
+|------|--------|----------|-------------------|
+| `--design "text"` | Yes | Overwrites | Yes — `DESIGN` section in `bd show` |
+| `--acceptance "text"` | Yes | Overwrites | Yes — `ACCEPTANCE CRITERIA` section |
+| `--append-notes "text"` | Yes | Appends with `\n` separator | Yes — `NOTES` section |
+| `--notes "text"` | Yes | Overwrites all notes | Yes |
+| `--design ""` | Yes | Clears the field | Yes |
+
+No character/length limits documented. Real-world issues have multi-paragraph notes with no truncation.
+
+### DRY Check
+
+No existing Beads field population infrastructure exists in the codebase:
+- No scripts format or parse Beads fields
+- No progress tracking via `--append-notes` in any command
+- `/status` uses only `bd list` — no field inspection
+- This is greenfield work — no duplication risk
+
+### OWASP Top 10 Analysis
+
+| Category | Applies? | Mitigation |
+|----------|----------|------------|
+| A03: Injection | Yes — task titles passed as shell args to `bd update` | Script quotes all variables, sanitizes special chars |
+| A01-A02, A04-A10 | No | No auth, network, data exposure, or crypto |
+
+### TDD Test Scenarios
+
+1. **Happy path — update-progress**: Run with valid args → exit 0, `bd show` contains formatted line
+2. **Error path — invalid ID**: Run with bad issue ID → exit non-zero, clear error message
+3. **Edge case — special characters**: Task title with quotes → properly escaped, no injection
+4. **Edge case — parse empty notes**: `parse-progress` when no notes → "No progress data"
+5. **Happy path — set-design + set-acceptance**: Both populate, `bd show` displays correctly
+
+### Codebase Integration Points
+
+| File | Current Beads usage | Change needed |
+|------|-------------------|---------------|
+| `.claude/commands/plan.md` L196-197 | `bd create` + `bd update --status` | Add `beads-context.sh set-design` + `set-acceptance` after task list |
+| `.claude/commands/dev.md` L251 | `bd update --comment` at completion | Add `beads-context.sh update-progress` in Step E HARD-GATE |
+| `.claude/commands/status.md` L28-30 | `bd list --status in_progress` | Add `beads-context.sh parse-progress` for compact display |
+| `scripts/` | No Beads scripts | New `beads-context.sh` |
