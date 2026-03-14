@@ -28,7 +28,7 @@ Real bugs exist today: `/status` references `openspec list` (removed), `/rollbac
 1. `forge check-agents` CLI command exists and passes on clean repo
 2. Static validator catches: dead references (e.g., `openspec list`), stale stage names (`/check` vs `/validate`), missing HARD-GATE blocks, inconsistent stage counts
 3. Cross-command contract tests verify: /plan output matches /dev input expectations, /dev output matches /validate expectations, etc.
-4. `scripts/sync-commands.sh` reads canonical `.claude/commands/*.md` → generates agent-specific adapter files for all 8 supported agents
+4. `scripts/sync-commands.js` reads canonical `.claude/commands/*.md` → generates agent-specific adapter files for all 8 supported agents
 5. `forge check-agents --sync-check` verifies all agent files are in sync with canonical source
 6. Works on Windows (bash/Git Bash compatible)
 
@@ -85,7 +85,7 @@ PR-C ← no blockers, parallel with everything
 
 **Canonical source**: `.claude/commands/*.md` (already exists, 11 files)
 
-**Sync mechanism**: `scripts/sync-commands.sh` — reads each canonical command and generates agent-specific files with correct frontmatter, extension, and directory path.
+**Sync mechanism**: `scripts/sync-commands.js` — reads each canonical command and generates agent-specific files with correct frontmatter, extension, and directory path.
 
 Why `.claude/commands/` stays canonical (not a new `commands/` dir):
 - Already exists with full content
