@@ -176,6 +176,7 @@ describe('AGENT_ADAPTERS', () => {
       expect(typeof adapter.dir).toBe('function');
       expect(typeof adapter.extension).toBe('string');
       expect(typeof adapter.transformFrontmatter).toBe('function');
+      expect(typeof adapter.baseDir).toBe('string');
     }
   });
 
