@@ -52,23 +52,27 @@ function setupGitRepo(directory) {
 // Helper: Create a merge conflict scenario
 // SECURITY: All git commands are hardcoded strings (no user input)
 function createMergeConflict(directory) {
+  const execOpts = { cwd: directory, stdio: 'pipe', timeout: 10000 };
   try {
+    // Get current branch name (main or master depending on git config)
+    const currentBranch = execSync('git branch --show-current', { ...execOpts, encoding: 'utf8' }).trim();
+
     // Create a branch with conflicting changes
-    execSync('git checkout -b feature-branch', { cwd: directory, stdio: 'pipe' });
+    execSync('git checkout -b feature-branch', execOpts);
     const testFile = path.join(directory, 'README.md');
     fs.writeFileSync(testFile, '# Feature Branch');
-    execSync('git add README.md', { cwd: directory, stdio: 'pipe' });
-    execSync('git commit -m "Feature change"', { cwd: directory, stdio: 'pipe' });
+    execSync('git add README.md', execOpts);
+    execSync('git commit -m "Feature change"', execOpts);
 
-    // Switch back to main/master and make conflicting change
-    execSync('git checkout -', { cwd: directory, stdio: 'pipe' });
+    // Switch back to the original branch (explicit name, not `git checkout -`)
+    execSync(`git checkout ${currentBranch}`, execOpts);
     fs.writeFileSync(testFile, '# Main Branch');
-    execSync('git add README.md', { cwd: directory, stdio: 'pipe' });
-    execSync('git commit -m "Main change"', { cwd: directory, stdio: 'pipe' });
+    execSync('git add README.md', execOpts);
+    execSync('git commit -m "Main change"', execOpts);
 
     // Try to merge - this will create a conflict
     try {
-      execSync('git merge feature-branch', { cwd: directory, stdio: 'pipe' });
+      execSync('git merge feature-branch --no-edit', execOpts);
     } catch (_error) {
       // Expected - merge conflict
     }
