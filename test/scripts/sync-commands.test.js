@@ -340,3 +340,268 @@ describe('adaptForAgent — edge cases', () => {
     }
   });
 });
+
+// ---- syncCommands — CLI sync logic ------------------------------------------------
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { syncCommands } = require('../../scripts/sync-commands.js');
+
+/**
+ * Create a temp directory with a .claude/commands/ structure containing
+ * the given command files. Returns the temp dir path.
+ *
+ * @param {Record<string, string>} commands - Map of command name to file content
+ * @returns {string} Absolute path to the temp repo root
+ */
+function createTempRepo(commands) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-sync-test-'));
+  const cmdDir = path.join(tmpDir, '.claude', 'commands');
+  fs.mkdirSync(cmdDir, { recursive: true });
+  for (const [name, content] of Object.entries(commands)) {
+    fs.writeFileSync(path.join(cmdDir, `${name}.md`), content);
+  }
+  return tmpDir;
+}
+
+/**
+ * Clean up a temp directory created by createTempRepo.
+ *
+ * @param {string} tmpDir
+ */
+function cleanupTempRepo(tmpDir) {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}
+
+describe('syncCommands — dry-run mode', () => {
+  test('prints planned writes without creating any files', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan a feature\n---\n\nPlan body.',
+    });
+    try {
+      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+      // Should report planned writes
+      expect(result.planned.length).toBeGreaterThan(0);
+      // Should NOT have written any agent directories
+      const cursorDir = path.join(tmpDir, '.cursor', 'skills', 'plan');
+      expect(fs.existsSync(cursorDir)).toBe(false);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('planned entries contain agent, dir, filename, and content', () => {
+    const tmpDir = createTempRepo({
+      status: '---\ndescription: Check status\n---\n\nStatus body.',
+    });
+    try {
+      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+      for (const entry of result.planned) {
+        expect(typeof entry.agent).toBe('string');
+        expect(typeof entry.dir).toBe('string');
+        expect(typeof entry.filename).toBe('string');
+        expect(typeof entry.content).toBe('string');
+      }
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('skips claude-code agent (canonical source)', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nBody.',
+    });
+    try {
+      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+      const agentNames = result.planned.map((e) => e.agent);
+      expect(agentNames).not.toContain('claude-code');
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+});
+
+describe('syncCommands — default write mode', () => {
+  test('creates agent directories and writes adapted files', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan a feature\n---\n\nPlan body.',
+    });
+    try {
+      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      expect(result.written.length).toBeGreaterThan(0);
+      // Check that at least one agent file was actually written
+      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      expect(fs.existsSync(clineFile)).toBe(true);
+      const content = fs.readFileSync(clineFile, 'utf8');
+      expect(content).toContain('Plan body.');
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('creates nested directories for cursor and codex', () => {
+    const tmpDir = createTempRepo({
+      dev: '---\ndescription: Develop\n---\n\nDev body.',
+    });
+    try {
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      const cursorFile = path.join(tmpDir, '.cursor', 'skills', 'dev', 'dev.md');
+      const codexFile = path.join(tmpDir, '.codex', 'skills', 'dev', 'SKILL.md');
+      expect(fs.existsSync(cursorFile)).toBe(true);
+      expect(fs.existsSync(codexFile)).toBe(true);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('handles multiple command files', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+      dev: '---\ndescription: Dev\n---\n\nDev body.',
+    });
+    try {
+      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // 7 non-skip agents x 2 commands = 14 files
+      expect(result.written.length).toBe(14);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+});
+
+describe('syncCommands — check mode', () => {
+  test('returns inSync=true when all files match', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // First, write files
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Then, check — should be in sync
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.inSync).toBe(true);
+      expect(result.outOfSync.length).toBe(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('returns inSync=false when a file has been manually modified', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // Write files
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Manually modify one file
+      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      fs.writeFileSync(clineFile, 'Manually modified content');
+      // Check — should detect out of sync
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.inSync).toBe(false);
+      expect(result.outOfSync.length).toBeGreaterThan(0);
+      const outPaths = result.outOfSync.map((e) => e.filePath);
+      expect(outPaths.some((p) => p.includes('cline'))).toBe(true);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('returns inSync=false when agent file is missing', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // Do NOT write files first — agent dirs don't exist
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.inSync).toBe(false);
+      expect(result.outOfSync.length).toBeGreaterThan(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('one agent in sync and one out of sync', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // Write all files
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Modify only the opencode file
+      const opencodeFile = path.join(tmpDir, '.opencode', 'commands', 'plan.md');
+      fs.writeFileSync(opencodeFile, 'Modified opencode content');
+      // Check
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.inSync).toBe(false);
+      // Only the modified file should be out of sync
+      const outPaths = result.outOfSync.map((e) => e.filePath);
+      expect(outPaths.some((p) => p.includes('opencode'))).toBe(true);
+      // Other agents should still be in sync (verify count is small)
+      expect(result.outOfSync.length).toBe(1);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+});
+
+describe('syncCommands — overwrite warning', () => {
+  test('reports files that would be overwritten with different content', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // Write files initially
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Manually modify a file
+      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      fs.writeFileSync(clineFile, 'Manually modified content');
+      // Write again — should report overwrite warnings
+      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      expect(result.overwritten.length).toBeGreaterThan(0);
+      expect(result.overwritten.some((e) => e.filePath.includes('cline'))).toBe(true);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('no overwrite warnings when files match expected content', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // Write files
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Write again — no modifications, so no warnings
+      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      expect(result.overwritten.length).toBe(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+});
+
+describe('syncCommands — edge cases', () => {
+  test('handles empty commands directory', () => {
+    const tmpDir = createTempRepo({});
+    try {
+      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+      expect(result.planned.length).toBe(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('handles command file with no frontmatter', () => {
+    const tmpDir = createTempRepo({
+      simple: 'Just a body with no frontmatter.',
+    });
+    try {
+      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      expect(result.written.length).toBeGreaterThan(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+});
