@@ -433,7 +433,8 @@ function syncCommands({ dryRun, check, repoRoot }) {
           }
         }
       } catch (_err) {
-        // Corrupt manifest — skip stale detection, don't fail
+        // Corrupt manifest — flag as missing so CLI warns
+        manifestMissing = true;
       }
     }
 
