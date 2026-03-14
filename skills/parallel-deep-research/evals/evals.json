@@ -1,0 +1,70 @@
+[
+  {
+    "query": "Do a deep market analysis of the AI chatbot industry including market size, growth projections, and key players",
+    "should_trigger": true
+  },
+  {
+    "query": "Generate a comprehensive research report on the electric vehicle battery supply chain with multi-source citations",
+    "should_trigger": true
+  },
+  {
+    "query": "Analyze the competitive landscape of cloud infrastructure providers — AWS, Azure, GCP — with strategic positioning and market share trends",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a strategic report on the fintech lending space covering regulatory trends, emerging players, and 5-year outlook",
+    "should_trigger": true
+  },
+  {
+    "query": "Synthesize research from multiple sources on the impact of generative AI on software development productivity",
+    "should_trigger": true
+  },
+  {
+    "query": "Produce an industry trend analysis of the cybersecurity market including M&A activity, funding rounds, and technology shifts",
+    "should_trigger": true
+  },
+  {
+    "query": "Write a deep-dive research report comparing RISC-V adoption versus ARM across embedded, mobile, and data center segments",
+    "should_trigger": true
+  },
+  {
+    "query": "What's the current price of Bitcoin?",
+    "should_trigger": false
+  },
+  {
+    "query": "Find me the URL for Stripe's API documentation",
+    "should_trigger": false
+  },
+  {
+    "query": "Look up who won the Super Bowl last weekend",
+    "should_trigger": false
+  },
+  {
+    "query": "Scrape this URL https://openai.com/pricing and extract the pricing tiers",
+    "should_trigger": false
+  },
+  {
+    "query": "Extract the feature comparison table from this page: https://cloud.google.com/products",
+    "should_trigger": false
+  },
+  {
+    "query": "Get structured company data for Stripe including founding year, employee count, and headquarters",
+    "should_trigger": false
+  },
+  {
+    "query": "Enrich this lead's profile with company info: Jane Smith at Databricks",
+    "should_trigger": false
+  },
+  {
+    "query": "Refactor the authentication middleware to use async/await instead of callbacks",
+    "should_trigger": false
+  },
+  {
+    "query": "Run the test suite and fix any failing tests",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a new React component for the user settings page",
+    "should_trigger": false
+  }
+]

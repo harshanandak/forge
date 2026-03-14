@@ -1,0 +1,62 @@
+[
+  {
+    "query": "Search the web for the latest Node.js LTS release version",
+    "should_trigger": true
+  },
+  {
+    "query": "Find recent news articles about the OpenAI and Microsoft partnership",
+    "should_trigger": true
+  },
+  {
+    "query": "Look up the current price of Bitcoin today",
+    "should_trigger": true
+  },
+  {
+    "query": "Find the official documentation URL for the Bun test runner",
+    "should_trigger": true
+  },
+  {
+    "query": "What are the top GitHub repos for React state management libraries right now?",
+    "should_trigger": true
+  },
+  {
+    "query": "Quick search: who acquired Figma and for how much?",
+    "should_trigger": true
+  },
+  {
+    "query": "Find sources about OWASP Top 10 changes in 2025",
+    "should_trigger": true
+  },
+  {
+    "query": "Search for announcements about the next ESLint major version",
+    "should_trigger": true
+  },
+  {
+    "query": "Write a comprehensive market analysis report on the AI chatbot industry with competitive landscape, market sizing, and strategic recommendations",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a deep research report synthesizing multiple sources on the future of edge computing with full citations",
+    "should_trigger": false
+  },
+  {
+    "query": "Scrape the pricing page at https://vercel.com/pricing and extract all plan details",
+    "should_trigger": false
+  },
+  {
+    "query": "Extract the full content and headings from https://docs.bun.sh/cli/test",
+    "should_trigger": false
+  },
+  {
+    "query": "Enrich this company list with structured JSON: founded year, employee count, headquarters, and key products for Stripe, Square, and Adyen",
+    "should_trigger": false
+  },
+  {
+    "query": "Fix the failing unit test in src/utils/parser.test.ts",
+    "should_trigger": false
+  },
+  {
+    "query": "Deploy the staging branch to production on Vercel",
+    "should_trigger": false
+  }
+]

@@ -1,0 +1,74 @@
+[
+  {
+    "query": "scrape https://stripe.com/pricing and extract their plan details",
+    "should_trigger": true
+  },
+  {
+    "query": "extract the product specs from https://developer.nvidia.com/cuda-toolkit",
+    "should_trigger": true
+  },
+  {
+    "query": "get structured content from https://docs.anthropic.com/en/docs/about-claude/models",
+    "should_trigger": true
+  },
+  {
+    "query": "pull the documentation from https://react.dev/reference/react/useState and summarize it",
+    "should_trigger": true
+  },
+  {
+    "query": "scrape https://openai.com/api/pricing/ and compare their model costs",
+    "should_trigger": true
+  },
+  {
+    "query": "extract the feature list from https://vercel.com/products/observability",
+    "should_trigger": true
+  },
+  {
+    "query": "get the pricing tiers from https://supabase.com/pricing",
+    "should_trigger": true
+  },
+  {
+    "query": "read https://tailwindcss.com/docs/installation and extract the setup steps",
+    "should_trigger": true
+  },
+  {
+    "query": "search the web for the latest AI trends in 2026",
+    "should_trigger": false
+  },
+  {
+    "query": "find sources about climate change impact on agriculture",
+    "should_trigger": false
+  },
+  {
+    "query": "what's the latest news on SpaceX Starship launches",
+    "should_trigger": false
+  },
+  {
+    "query": "write a comprehensive analysis of the SaaS market landscape",
+    "should_trigger": false
+  },
+  {
+    "query": "create a strategic report on AI adoption in healthcare",
+    "should_trigger": false
+  },
+  {
+    "query": "get structured company data about Microsoft including financials and leadership",
+    "should_trigger": false
+  },
+  {
+    "query": "enrich the company profile for Anthropic with funding rounds and headcount",
+    "should_trigger": false
+  },
+  {
+    "query": "debug this TypeScript error about incompatible type assignments",
+    "should_trigger": false
+  },
+  {
+    "query": "optimize this SQL query that's doing a full table scan",
+    "should_trigger": false
+  },
+  {
+    "query": "set up a CI/CD pipeline with GitHub Actions for our Node.js app",
+    "should_trigger": false
+  }
+]

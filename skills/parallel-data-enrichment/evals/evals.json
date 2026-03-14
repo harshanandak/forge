@@ -1,0 +1,62 @@
+[
+  {
+    "query": "Enrich company data for OpenAI — get founding year, headcount, valuation, and key executives",
+    "should_trigger": true
+  },
+  {
+    "query": "Get a structured company profile for Stripe including funding rounds, revenue estimate, and headquarters location",
+    "should_trigger": true
+  },
+  {
+    "query": "CRM lead enrichment for Databricks — fill in industry, employee count, tech stack, and decision makers",
+    "should_trigger": true
+  },
+  {
+    "query": "Entity data lookup for Shopify with typed JSON schema: domain, founded, CEO, public/private status, market cap",
+    "should_trigger": true
+  },
+  {
+    "query": "Get company size, total funding, and headquarters address for Anthropic as structured data",
+    "should_trigger": true
+  },
+  {
+    "query": "Qualify this sales lead: Datadog — return structured fields for industry vertical, ARR range, employee band, and ICP fit score",
+    "should_trigger": true
+  },
+  {
+    "query": "Enrich this prospect list entry for Confluent with firmographic data: sector, sub-industry, funding stage, and competitor set",
+    "should_trigger": true
+  },
+  {
+    "query": "Search for recent news about Tesla's quarterly earnings and stock performance",
+    "should_trigger": false
+  },
+  {
+    "query": "Find blog posts and tutorials about React 19 server components",
+    "should_trigger": false
+  },
+  {
+    "query": "What's trending in AI this week? Search for the latest announcements",
+    "should_trigger": false
+  },
+  {
+    "query": "Write a comprehensive market analysis of the fintech industry covering growth drivers, key players, and five-year outlook",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a strategic report on cloud computing trends with competitive landscape and adoption forecasts",
+    "should_trigger": false
+  },
+  {
+    "query": "Scrape https://stripe.com/pricing and extract the plan names, prices, and feature lists",
+    "should_trigger": false
+  },
+  {
+    "query": "Write a Python script to parse CSV files and output summary statistics",
+    "should_trigger": false
+  },
+  {
+    "query": "Fix the failing test in auth.test.ts that's timing out on the token refresh flow",
+    "should_trigger": false
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "query": "check SonarCloud quality gate status for our PR",
+    "should_trigger": true
+  },
+  {
+    "query": "what are the open security vulnerabilities in SonarCloud",
+    "should_trigger": true
+  },
+  {
+    "query": "show me the code coverage metrics from SonarCloud",
+    "should_trigger": true
+  },
+  {
+    "query": "analyze technical debt in our project using SonarCloud",
+    "should_trigger": true
+  },
+  {
+    "query": "what does SonarCloud say about our latest analysis",
+    "should_trigger": true
+  },
+  {
+    "query": "check if our PR passes the SonarCloud quality gate",
+    "should_trigger": true
+  },
+  {
+    "query": "write a new API endpoint for user registration",
+    "should_trigger": false
+  },
+  {
+    "query": "search the web for Node.js security best practices",
+    "should_trigger": false
+  },
+  {
+    "query": "create a comprehensive market research report",
+    "should_trigger": false
+  },
+  {
+    "query": "format citations in the research document",
+    "should_trigger": false
+  },
+  {
+    "query": "extract data from https://example.com",
+    "should_trigger": false
+  },
+  {
+    "query": "enrich company data for Anthropic",
+    "should_trigger": false
+  }
+]

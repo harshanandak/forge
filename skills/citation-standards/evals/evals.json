@@ -1,0 +1,50 @@
+[
+  {
+    "query": "write a research document about microservice architecture patterns",
+    "should_trigger": true
+  },
+  {
+    "query": "add proper citations to this research doc",
+    "should_trigger": true
+  },
+  {
+    "query": "format the sources section in docs/research/findings.md",
+    "should_trigger": true
+  },
+  {
+    "query": "reference external sources in a research writeup",
+    "should_trigger": true
+  },
+  {
+    "query": "create a research summary with proper source attribution",
+    "should_trigger": true
+  },
+  {
+    "query": "document findings with inline citations",
+    "should_trigger": true
+  },
+  {
+    "query": "write unit tests for the auth module",
+    "should_trigger": false
+  },
+  {
+    "query": "fix the ESLint warning in utils.ts",
+    "should_trigger": false
+  },
+  {
+    "query": "search the web for React best practices",
+    "should_trigger": false
+  },
+  {
+    "query": "scrape https://example.com for pricing data",
+    "should_trigger": false
+  },
+  {
+    "query": "deploy the application to production",
+    "should_trigger": false
+  },
+  {
+    "query": "refactor the database connection pool",
+    "should_trigger": false
+  }
+]
