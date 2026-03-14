@@ -328,6 +328,7 @@ function contentHash(content) {
  * @property {SyncEntry[]} [outOfSync] - (check mode) entries that differ from expected
  * @property {string[]} [staleFiles] - (check mode) files on disk that are no longer generated
  * @property {boolean} [empty] - (check mode) true when no commands found in canonical source
+ * @property {boolean} [manifestMissing] - (check mode) true when sync manifest not found
  */
 
 /**
@@ -417,6 +418,10 @@ function syncCommands({ dryRun, check, repoRoot }) {
     const staleFiles = [];
 
     const manifestPath = path.join(repoRoot, '.forge', 'sync-manifest.json');
+    let manifestMissing = false;
+    if (!fs.existsSync(manifestPath)) {
+      manifestMissing = true;
+    }
     if (fs.existsSync(manifestPath)) {
       try {
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -436,6 +441,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
       inSync: outOfSync.length === 0 && staleFiles.length === 0,
       outOfSync,
       staleFiles,
+      manifestMissing,
     };
   }
 
@@ -527,6 +533,10 @@ if (require.main === module) {
     if (result.empty) {
       console.error('Error: no command files found in .claude/commands/ — cannot verify sync.');
       process.exit(1);
+    }
+    if (result.manifestMissing) {
+      console.warn('Warning: .forge/sync-manifest.json not found — stale file detection skipped.');
+      console.warn('Run "node scripts/sync-commands.js" to generate the manifest.\n');
     }
     if (result.inSync) {
       console.log('All agent command files are in sync.');
