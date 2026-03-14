@@ -2,7 +2,7 @@
 
 **Feature**: beads-plan-context
 **Date**: 2026-03-14
-**Status**: Phase 2 complete — ready for task list
+**Status**: Phase 3 complete — ready for /dev
 **Branch**: feat/beads-plan-context
 **Beads**: forge-bmy (open)
 
@@ -26,6 +26,7 @@ When resuming work across sessions, agents must read the Beads issue AND separat
 6. `bd update` failure in `/dev` Step E is a HARD-GATE — blocks progression to next task
 7. All existing tests pass after changes
 8. Command sync (`scripts/sync-commands.js`) still works — no adapter changes needed (body-only modifications)
+9. Stage transitions are recorded via `scripts/beads-context.sh stage-transition` using `--comment` at each stage exit — enables agents to determine current workflow stage on resume
 
 ---
 
@@ -90,6 +91,7 @@ When resuming work across sessions, agents must read the Beads issue AND separat
 | 5 | `bd update` failure handling | HARD-GATE — blocks next task | User wants strict enforcement |
 | 6 | Ambiguity policy | Pause and ask | User preference for control over speed |
 | 7 | Agent-agnostic approach | Helper script (`scripts/beads-context.sh`) | Shell script callable from any agent, enforces consistent format |
+| 8 | Stage tracking | `--comment` with standardized format at stage exits | Enables agents to determine current workflow stage on resume |
 
 ---
 
@@ -111,6 +113,10 @@ bash scripts/beads-context.sh update-progress <issue-id> <task-num> <total> "<ti
 # Parse progress for /status display
 bash scripts/beads-context.sh parse-progress <issue-id>
 # → "3/7 tasks done | Last: <title> (<commit-sha>)"
+
+# Record stage transition (called at each stage exit)
+bash scripts/beads-context.sh stage-transition <issue-id> <completed-stage> <next-stage>
+# → bd update <id> --comment "Stage: <completed-stage> complete → ready for <next-stage>"
 ```
 
 ---
@@ -153,6 +159,7 @@ No existing Beads field population infrastructure exists in the codebase:
 3. **Edge case — special characters**: Task title with quotes → properly escaped, no injection
 4. **Edge case — parse empty notes**: `parse-progress` when no notes → "No progress data"
 5. **Happy path — set-design + set-acceptance**: Both populate, `bd show` displays correctly
+6. **Happy path — stage-transition**: Records comment with standardized format, `bd show` displays it
 
 ### Codebase Integration Points
 
