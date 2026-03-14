@@ -127,10 +127,13 @@ def run_single_query(
                 tool_input = content_item.get("input", {})
                 if tool_name == "Skill":
                     invoked_skill = tool_input.get("skill", "")
-                    # Match exact, substring either direction, or shared root
-                    if (skill_name == invoked_skill
-                            or skill_name in invoked_skill
-                            or invoked_skill in skill_name):
+                    if skill_name == invoked_skill:
+                        return True
+                    # Allow alias match only for known pairs
+                    # (e.g., "sonarcloud" command triggers for "sonarcloud-analysis")
+                    if (invoked_skill
+                            and len(invoked_skill) >= 4
+                            and invoked_skill == skill_name.split("-")[0]):
                         return True
                 # First tool call that isn't our skill = not triggered
                 return False

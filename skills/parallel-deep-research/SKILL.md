@@ -51,8 +51,9 @@ The result endpoint returns both status and output in one call. Poll until `stat
 
 ```bash
 RUN_ID="trun_abc123..."
+MAX_POLLS=180  # 30 min max (180 × 10s)
 
-while true; do
+for i in $(seq 1 $MAX_POLLS); do
   RESULT=$(curl -s "https://api.parallel.ai/v1/tasks/runs/$RUN_ID/result" \
     -H "x-api-key: $API_KEY")
 
@@ -66,9 +67,13 @@ while true; do
     break
   fi
 
-  echo "Status: $STATUS — waiting..."
+  echo "Poll $i/$MAX_POLLS — Status: $STATUS"
   sleep 10
 done
+
+if [ "$i" = "$MAX_POLLS" ] && [ "$STATUS" != "completed" ]; then
+  echo "Timeout: task did not complete within 30 minutes"
+fi
 ```
 
 ## Processors
