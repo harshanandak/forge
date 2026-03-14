@@ -201,7 +201,7 @@ const AGENT_ADAPTERS = {
     skip: true,
   },
   cursor: {
-    dir: (commandName) => `.cursor/skills/${commandName}/`,
+    dir: () => '.cursor/commands/',
     extension: '.md',
     transformFrontmatter: stripAllFrontmatter,
   },

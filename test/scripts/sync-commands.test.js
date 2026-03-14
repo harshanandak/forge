@@ -202,9 +202,9 @@ describe('adaptForAgent — Tier 1', () => {
     expect(Object.keys(parsed.frontmatter)).toHaveLength(0);
   });
 
-  test('cursor outputs to .cursor/skills/<name>/ with <name>.md', () => {
+  test('cursor outputs to .cursor/commands/ with <name>.md', () => {
     const result = adaptForAgent('cursor', fm, body, 'plan');
-    expect(result.dir).toBe('.cursor/skills/plan/');
+    expect(result.dir).toBe('.cursor/commands/');
     expect(result.filename).toBe('plan.md');
   });
 
@@ -384,7 +384,7 @@ describe('syncCommands — dry-run mode', () => {
       // Should report planned writes
       expect(result.planned.length).toBeGreaterThan(0);
       // Should NOT have written any agent directories
-      const cursorDir = path.join(tmpDir, '.cursor', 'skills', 'plan');
+      const cursorDir = path.join(tmpDir, '.cursor', 'commands');
       expect(fs.existsSync(cursorDir)).toBe(false);
     } finally {
       cleanupTempRepo(tmpDir);
@@ -446,7 +446,7 @@ describe('syncCommands — default write mode', () => {
     });
     try {
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      const cursorFile = path.join(tmpDir, '.cursor', 'skills', 'dev', 'dev.md');
+      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'dev.md');
       const codexFile = path.join(tmpDir, '.codex', 'skills', 'dev', 'SKILL.md');
       expect(fs.existsSync(cursorFile)).toBe(true);
       expect(fs.existsSync(codexFile)).toBe(true);
