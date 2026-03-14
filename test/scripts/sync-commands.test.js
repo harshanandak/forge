@@ -463,8 +463,8 @@ describe('syncCommands — default write mode', () => {
     });
     try {
       const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // 7 non-skip agents x 2 commands = 14 files
-      expect(result.written.length).toBe(14);
+      const nonSkipCount = Object.values(AGENT_ADAPTERS).filter((a) => !a.skip).length;
+      expect(result.written.length).toBe(nonSkipCount * 2);
     } finally {
       cleanupTempRepo(tmpDir);
     }

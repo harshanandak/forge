@@ -70,7 +70,7 @@ function checkGitState(directory) {
       path: directory,
       reason: 'Repository has active merge conflict'
     });
-    checksPassed++; // We detected it, so check passed
+    // Do NOT increment checksPassed — this is a genuine failure
   } else {
     checksPassed++;
   }
