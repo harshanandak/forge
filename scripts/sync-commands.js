@@ -290,12 +290,15 @@ const crypto = require('crypto');
 
 /**
  * Compute a content hash for change detection.
+ * Normalizes line endings to LF before hashing to avoid CRLF/LF mismatches
+ * on Windows (git checkout converts LF to CRLF on Windows).
  *
  * @param {string} content
  * @returns {string} hex digest
  */
 function contentHash(content) {
-  return crypto.createHash('sha256').update(content).digest('hex');
+  const normalized = content.replace(/\r\n/g, '\n');
+  return crypto.createHash('sha256').update(normalized).digest('hex');
 }
 
 /**
