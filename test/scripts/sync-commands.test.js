@@ -702,6 +702,17 @@ describe('syncCommands — edge cases', () => {
     }
   });
 
+  test('check mode returns empty=true when commands directory is empty', () => {
+    const tmpDir = createTempRepo({});
+    try {
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.empty).toBe(true);
+      expect(result.inSync).toBe(false);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
   test('handles command file with no frontmatter', () => {
     const tmpDir = createTempRepo({
       simple: 'Just a body with no frontmatter.',
