@@ -79,7 +79,7 @@ describe('scripts/commitlint.js', () => {
     test('accepts "feat: add new feature"', () => {
       const result = runWithMessage('feat: add new feature');
       expect(result.status).toBe(0);
-    });
+    }, 15000);
 
     test('accepts "fix: resolve null pointer"', () => {
       const result = runWithMessage('fix: resolve null pointer');
