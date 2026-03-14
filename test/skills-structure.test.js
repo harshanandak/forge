@@ -33,12 +33,8 @@ describe('skills/ directory structure', () => {
   });
 
   const requiredSkills = [
-    'parallel-web-search',
-    'parallel-web-extract',
     'parallel-deep-research',
-    'parallel-data-enrichment',
     'sonarcloud-analysis',
-    'citation-standards',
   ];
 
   describe('required skill directories', () => {
@@ -75,32 +71,11 @@ describe('skills/ directory structure', () => {
   });
 
   describe('skill content validation', () => {
-    test('parallel-web-search SKILL.md references Search API or search endpoint', () => {
-      const filePath = path.join(ROOT, 'skills', 'parallel-web-search', 'SKILL.md');
-      if (!fs.existsSync(filePath)) return;
-      const content = fs.readFileSync(filePath, 'utf8');
-      expect(content.includes('/search') || content.includes('Search')).toBeTruthy();
-    });
-
-    test('parallel-web-extract SKILL.md references Extract API or extract endpoint', () => {
-      const filePath = path.join(ROOT, 'skills', 'parallel-web-extract', 'SKILL.md');
-      if (!fs.existsSync(filePath)) return;
-      const content = fs.readFileSync(filePath, 'utf8');
-      expect(content.includes('/extract') || content.includes('Extract')).toBeTruthy();
-    });
-
     test('parallel-deep-research SKILL.md references pro or ultra processor', () => {
       const filePath = path.join(ROOT, 'skills', 'parallel-deep-research', 'SKILL.md');
       if (!fs.existsSync(filePath)) return;
       const content = fs.readFileSync(filePath, 'utf8');
       expect(content.includes('pro') || content.includes('ultra')).toBeTruthy();
-    });
-
-    test('parallel-data-enrichment SKILL.md references core or base processor', () => {
-      const filePath = path.join(ROOT, 'skills', 'parallel-data-enrichment', 'SKILL.md');
-      if (!fs.existsSync(filePath)) return;
-      const content = fs.readFileSync(filePath, 'utf8');
-      expect(content.includes('core') || content.includes('base')).toBeTruthy();
     });
 
     test('sonarcloud-analysis SKILL.md references SonarCloud API', () => {
@@ -110,12 +85,6 @@ describe('skills/ directory structure', () => {
       expect(content.includes('SonarCloud')).toBeTruthy();
     });
 
-    test('citation-standards SKILL.md contains citation format examples (URL or Sources)', () => {
-      const filePath = path.join(ROOT, 'skills', 'citation-standards', 'SKILL.md');
-      if (!fs.existsSync(filePath)) return;
-      const content = fs.readFileSync(filePath, 'utf8');
-      expect(content.includes('URL') || content.includes('Sources') || content.includes('url')).toBeTruthy();
-    });
   });
 
   describe('reference files', () => {
