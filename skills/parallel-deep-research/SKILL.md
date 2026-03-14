@@ -57,10 +57,10 @@ for i in $(seq 1 $MAX_POLLS); do
   RESULT=$(curl -s "https://api.parallel.ai/v1/tasks/runs/$RUN_ID/result" \
     -H "x-api-key: $API_KEY")
 
-  STATUS=$(echo $RESULT | python3 -c "import sys,json; print(json.load(sys.stdin)['run']['status'])" 2>/dev/null)
+  STATUS=$(echo "$RESULT" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
 
   if [ "$STATUS" = "completed" ]; then
-    echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['output'], indent=2))"
+    echo "$RESULT"
     break
   elif [ "$STATUS" = "failed" ]; then
     echo "Task failed: $RESULT"

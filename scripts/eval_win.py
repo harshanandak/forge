@@ -72,6 +72,12 @@ def find_project_root() -> Path:
     return current
 
 
+# Known alias pairs: legacy command name → current skill name
+_KNOWN_ALIASES = {
+    "sonarcloud-analysis": "sonarcloud",
+}
+
+
 def run_single_query(
     query: str,
     skill_name: str,
@@ -107,11 +113,6 @@ def run_single_query(
     except subprocess.TimeoutExpired:
         return False
 
-    # Known alias pairs: legacy command name → current skill name
-    KNOWN_ALIASES = {
-        "sonarcloud-analysis": "sonarcloud",
-    }
-
     # Parse output for skill triggering — scan all tool calls in first assistant message
     for line in output.split("\n"):
         line = line.strip()
@@ -134,7 +135,7 @@ def run_single_query(
                     invoked_skill = tool_input.get("skill", "")
                     if skill_name == invoked_skill:
                         return True
-                    if invoked_skill == KNOWN_ALIASES.get(skill_name):
+                    if invoked_skill == _KNOWN_ALIASES.get(skill_name):
                         return True
             # Scanned all tool calls in this message — no match
             return False
