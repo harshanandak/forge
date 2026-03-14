@@ -95,5 +95,6 @@ As you work, when you give the same instruction twice, add it here:
 - **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state; `LEFTHOOK=0 git push` is the bypass when manual `bun test` confirms 0 fail.
+- **Command sync**: After editing `.claude/commands/*.md`, run `node scripts/sync-commands.js` to update all 7 agent directories. Use `--check` in CI to detect drift. Use `--dry-run` to preview.
 
 <!-- USER:END -->
