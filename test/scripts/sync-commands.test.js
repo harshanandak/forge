@@ -569,19 +569,19 @@ describe('syncCommands — stale file detection', () => {
     }
   });
 
-  test('does not flag non-command files as stale', () => {
+  test('does not flag custom files as stale even with managed extension', () => {
     const tmpDir = createTempRepo({
       plan: '---\ndescription: Plan\n---\n\nPlan body.',
     });
     try {
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Add a custom non-command file in an agent dir
-      const customFile = path.join(tmpDir, '.github', 'prompts', 'custom-prompt.txt');
-      fs.writeFileSync(customFile, 'Custom prompt');
-      // Check should NOT flag .txt file as stale (only .prompt.md is managed)
+      // Add a custom file with the SAME managed extension (.prompt.md) in an agent dir
+      // This is the key test: manifest-based detection should NOT flag it
+      const customFile = path.join(tmpDir, '.github', 'prompts', 'my-custom-guidelines.prompt.md');
+      fs.writeFileSync(customFile, 'Custom prompt guidelines');
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
       const stalePaths = result.staleFiles || [];
-      expect(stalePaths.some((f) => f.includes('custom-prompt'))).toBe(false);
+      expect(stalePaths.some((f) => f.includes('my-custom-guidelines'))).toBe(false);
     } finally {
       cleanupTempRepo(tmpDir);
     }

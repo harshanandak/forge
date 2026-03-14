@@ -408,66 +408,27 @@ function syncCommands({ dryRun, check, repoRoot }) {
       }
     }
 
-    // Detect stale files: command outputs that exist on disk but are no longer
-    // generated (e.g., a command was renamed or deleted from .claude/commands/).
-    // Only checks files whose path is in a directory the sync script writes to
-    // AND whose filename matches a generated output name. Custom files (even
-    // with the same extension) are never flagged.
+    // Detect stale files using the sync manifest (.forge/sync-manifest.json).
+    // The manifest records every file path the sync script generated on the last
+    // write run. Stale = in manifest but NOT in current expected set.
+    // This avoids false positives on custom files — only files sync created are tracked.
     const expectedPaths = new Set(entries.map((e) => e.filePath));
-    // Build map: agentName → Set of directories that have expected entries
-    /** @type {Map<string, Set<string>>} */
-    const agentExpectedDirs = new Map();
-    for (const entry of entries) {
-      if (!agentExpectedDirs.has(entry.agent)) {
-        agentExpectedDirs.set(entry.agent, new Set());
-      }
-      agentExpectedDirs.get(entry.agent).add(path.dirname(entry.filePath));
-    }
     /** @type {string[]} */
     const staleFiles = [];
 
-    for (const agentName of Object.keys(AGENT_ADAPTERS)) {
-      const adapter = AGENT_ADAPTERS[agentName];
-      if (adapter.skip) continue;
-
-      const baseDir = path.join(repoRoot, adapter.baseDir);
-      if (!fs.existsSync(baseDir) || !fs.statSync(baseDir).isDirectory()) continue;
-
-      // Only scan directories where we have expected entries (not arbitrary subdirs).
-      // For flat-dir agents, this is just the baseDir. For per-command subdir agents
-      // (codex), we also scan sibling subdirs at the same level.
-      const dirsToScan = agentExpectedDirs.get(agentName) || new Set();
-
-      // Also scan baseDir itself for flat-dir agents
-      dirsToScan.add(baseDir);
-
-      for (const dir of dirsToScan) {
-        if (!fs.existsSync(dir)) continue;
-        for (const item of fs.readdirSync(dir)) {
-          const fullPath = path.join(dir, item);
-          // Use lstatSync to avoid following symlinks (prevents infinite recursion)
-          const stat = fs.lstatSync(fullPath);
-          if (stat.isFile() && !expectedPaths.has(fullPath) && item.endsWith(adapter.extension)) {
-            staleFiles.push(fullPath);
+    const manifestPath = path.join(repoRoot, '.forge', 'sync-manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        const previousPaths = manifest.files || [];
+        for (const prevPath of previousPaths) {
+          const absPath = path.resolve(repoRoot, prevPath);
+          if (!expectedPaths.has(absPath) && fs.existsSync(absPath)) {
+            staleFiles.push(absPath);
           }
         }
-      }
-
-      // For per-command subdir agents (codex), check for stale subdirectories
-      // that no longer have any expected entries
-      const allSubdirs = fs.readdirSync(baseDir);
-      for (const subdir of allSubdirs) {
-        const subdirPath = path.join(baseDir, subdir);
-        const stat = fs.lstatSync(subdirPath);
-        if (stat.isDirectory() && !dirsToScan.has(subdirPath)) {
-          // Stale subdir — check for files with managed extension
-          for (const f of fs.readdirSync(subdirPath)) {
-            const fullPath = path.join(subdirPath, f);
-            if (fs.lstatSync(fullPath).isFile() && f.endsWith(adapter.extension)) {
-              staleFiles.push(fullPath);
-            }
-          }
-        }
+      } catch (_err) {
+        // Corrupt manifest — skip stale detection, don't fail
       }
     }
 
@@ -519,6 +480,19 @@ function syncCommands({ dryRun, check, repoRoot }) {
     fs.writeFileSync(entry.filePath, entry.content);
     written.push(entry);
   }
+
+  // Write sync manifest — records every file generated so stale detection
+  // can identify orphaned files without false-flagging custom files.
+  const manifestDir = path.join(repoRoot, '.forge');
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestData = {
+    generatedAt: new Date().toISOString(),
+    files: written.map((e) => path.relative(repoRoot, e.filePath)),
+  };
+  fs.writeFileSync(
+    path.join(manifestDir, 'sync-manifest.json'),
+    JSON.stringify(manifestData, null, 2) + '\n'
+  );
 
   return { written, overwritten };
 }
