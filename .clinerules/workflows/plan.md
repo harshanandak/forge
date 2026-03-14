@@ -161,6 +161,32 @@ If a match is found:
 
 If no match is found: proceed. The DRY gate is cleared.
 
+### Blast-radius search (mandatory for remove/rename/replace features)
+
+If this feature involves **removing**, **renaming**, or **replacing** a concept, tool, or dependency:
+
+1. Grep the ENTIRE codebase for the thing being removed/renamed:
+   ```
+   Grep("<thing-being-removed>")     # exact name
+   Grep("<thing-being-removed>", -i)  # case-insensitive variant
+   Glob("**/*<thing>*")              # files named after it
+   ```
+
+2. For EVERY match found:
+   - Note the file path and line number in the design doc
+   - Add a cleanup task to the task list (Phase 3)
+   - Flag matches in unexpected packages or config files explicitly
+
+3. Common hiding spots to check:
+   - `package.json` (scripts, dependencies, description)
+   - `install.sh` / setup scripts
+   - CI/CD workflows (`.github/workflows/`)
+   - Agent config files (`lib/agents/`, `.cursorrules`, etc.)
+   - Documentation (`docs/`, `README.md`, `AGENTS.md`)
+   - Import statements and require() calls
+
+If no removal/rename is involved, this section is skipped.
+
 ### TDD test scenarios
 
 Identify at minimum 3 test scenarios:
@@ -178,6 +204,7 @@ Do NOT begin Phase 3 (setup) until:
 1. OWASP analysis is documented in design doc
 2. At least 3 TDD test scenarios are identified
 3. Approach selection is confirmed (which library/pattern to use)
+4. If feature involves removal/rename: blast-radius search completed, all references added to task list
 </HARD-GATE>
 ```
 
