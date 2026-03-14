@@ -11,13 +11,25 @@ describe('command sync drift detection', () => {
   test('all agent command files are in sync with canonical source', () => {
     const result = syncCommands({ dryRun: false, check: true, repoRoot });
 
+    const issues = [];
+
     if (result.outOfSync.length > 0) {
       const listing = result.outOfSync
         .map((e) => `  [${e.agent}] ${path.join(e.dir, e.filename)}`)
         .join('\n');
+      issues.push(`${result.outOfSync.length} file(s) out of sync:\n${listing}`);
+    }
 
+    if (result.staleFiles && result.staleFiles.length > 0) {
+      const listing = result.staleFiles
+        .map((f) => `  ${path.relative(repoRoot, f)}`)
+        .join('\n');
+      issues.push(`${result.staleFiles.length} stale file(s) should be removed:\n${listing}`);
+    }
+
+    if (issues.length > 0) {
       throw new Error(
-        `${result.outOfSync.length} file(s) out of sync. Run "node scripts/sync-commands.js" and commit the results.\n${listing}`
+        `Sync drift detected. Run "node scripts/sync-commands.js" and commit the results.\n${issues.join('\n')}`
       );
     }
 

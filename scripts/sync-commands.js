@@ -378,6 +378,11 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
   // ---- check mode ----
   if (check) {
+    // Warn when no commands exist (could mask a misconfigured path)
+    if (commandFiles.length === 0) {
+      return { inSync: false, outOfSync: [], empty: true };
+    }
+
     /** @type {SyncEntry[]} */
     const outOfSync = [];
 
@@ -392,9 +397,30 @@ function syncCommands({ dryRun, check, repoRoot }) {
       }
     }
 
+    // Detect stale files: agent files that exist on disk but are no longer
+    // generated (e.g., a command was renamed or deleted from .claude/commands/).
+    const expectedPaths = new Set(entries.map((e) => e.filePath));
+    /** @type {string[]} */
+    const staleFiles = [];
+    for (const agentName of Object.keys(AGENT_ADAPTERS)) {
+      const adapter = AGENT_ADAPTERS[agentName];
+      if (adapter.skip) continue;
+      // Check base dir for each agent (use a dummy name to get the base)
+      const baseDir = path.join(repoRoot, adapter.dir('__probe__').replace('__probe__/', '').replace('__probe__\\', ''));
+      if (!fs.existsSync(baseDir)) continue;
+      const files = fs.readdirSync(baseDir, { recursive: true });
+      for (const f of files) {
+        const fullPath = path.join(baseDir, String(f));
+        if (fs.statSync(fullPath).isFile() && !expectedPaths.has(fullPath)) {
+          staleFiles.push(fullPath);
+        }
+      }
+    }
+
     return {
-      inSync: outOfSync.length === 0,
+      inSync: outOfSync.length === 0 && staleFiles.length === 0,
       outOfSync,
+      staleFiles,
     };
   }
 
@@ -406,9 +432,14 @@ function syncCommands({ dryRun, check, repoRoot }) {
   const clinerules = path.join(repoRoot, '.clinerules');
   if (fs.existsSync(clinerules) && fs.statSync(clinerules).isFile()) {
     const content = fs.readFileSync(clinerules, 'utf8');
+    // Atomic migration: write backup first, then remove original, then create dir.
+    // If interrupted after backup but before dir creation, backup file preserves data.
+    const backupPath = path.join(repoRoot, '.clinerules.bak');
+    fs.writeFileSync(backupPath, content);
     fs.unlinkSync(clinerules);
     fs.mkdirSync(clinerules, { recursive: true });
     fs.writeFileSync(path.join(clinerules, 'default-rules.md'), content);
+    fs.unlinkSync(backupPath);
   }
 
   /** @type {SyncEntry[]} */
@@ -445,6 +476,11 @@ if (require.main === module) {
   const dryRun = args.includes('--dry-run');
   const check = args.includes('--check');
 
+  if (dryRun && check) {
+    console.error('Error: --dry-run and --check cannot be used together.');
+    process.exit(1);
+  }
+
   const repoRoot = path.resolve(__dirname, '..');
 
   const result = syncCommands({ dryRun, check, repoRoot });
@@ -460,17 +496,30 @@ if (require.main === module) {
       console.log(`\nTotal: ${result.planned.length} files`);
     }
   } else if (check) {
+    if (result.empty) {
+      console.error('Error: no command files found in .claude/commands/ — cannot verify sync.');
+      process.exit(1);
+    }
     if (result.inSync) {
       console.log('All agent command files are in sync.');
       process.exit(0);
     } else {
-      console.log('Out of sync — the following files differ from expected:\n');
-      for (const entry of result.outOfSync) {
-        const exists = fs.existsSync(entry.filePath);
-        const status = exists ? 'modified' : 'missing';
-        console.log(`  [${entry.agent}] ${path.join(entry.dir, entry.filename)} (${status})`);
+      if (result.outOfSync.length > 0) {
+        console.log('Out of sync — the following files differ from expected:\n');
+        for (const entry of result.outOfSync) {
+          const exists = fs.existsSync(entry.filePath);
+          const status = exists ? 'modified' : 'missing';
+          console.log(`  [${entry.agent}] ${path.join(entry.dir, entry.filename)} (${status})`);
+        }
       }
-      console.log(`\n${result.outOfSync.length} file(s) out of sync.`);
+      if (result.staleFiles && result.staleFiles.length > 0) {
+        console.log('\nStale files (no longer generated, should be removed):\n');
+        for (const f of result.staleFiles) {
+          console.log(`  ${path.relative(repoRoot, f)}`);
+        }
+      }
+      const total = result.outOfSync.length + (result.staleFiles ? result.staleFiles.length : 0);
+      console.log(`\n${total} issue(s) found.`);
       process.exit(1);
     }
   } else {
