@@ -1,6 +1,13 @@
 ---
 name: citation-standards
-description: "Citation format rules for research outputs. Enforces consistent source attribution in docs/research/ files. Apply when writing research documents or referencing external sources."
+description: >
+  Citation format rules for research outputs. Enforces consistent source attribution
+  in docs/research/ files. ALWAYS use this skill when writing or editing files in
+  docs/research/, adding citations to documents, formatting bibliographies, or when
+  the user asks about source attribution standards. Also trigger when creating any
+  research content that references external sources, URLs, papers, or articles.
+  Trigger on phrases like "add citations", "format sources", "research document",
+  "reference this source", "bibliography", "cite this", "docs/research".
 metadata:
   internal: true
   author: harshanandak

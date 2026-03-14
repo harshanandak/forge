@@ -1,62 +1,62 @@
 [
   {
-    "query": "Search the web for the latest Node.js LTS release version",
+    "query": "I'm writing a design doc for our new auth system and need to find the latest OWASP session management guidelines and any recent CVEs related to JWT token validation — search for those and give me the URLs so I can cite them",
     "should_trigger": true
   },
   {
-    "query": "Find recent news articles about the OpenAI and Microsoft partnership",
+    "query": "We're evaluating Bun vs Deno for our next microservice. Search for recent benchmark comparisons from 2025/2026, community adoption stats, and any blog posts about production usage at scale",
     "should_trigger": true
   },
   {
-    "query": "Look up the current price of Bitcoin today",
+    "query": "I need to find the official ESLint flat config migration guide and any community articles about common pitfalls when migrating from .eslintrc to eslint.config.js",
     "should_trigger": true
   },
   {
-    "query": "Find the official documentation URL for the Bun test runner",
+    "query": "Search for recent news about Anthropic's latest model releases and any developer blog posts about Claude Code features released in the last month",
     "should_trigger": true
   },
   {
-    "query": "What are the top GitHub repos for React state management libraries right now?",
+    "query": "Find sources comparing Turborepo vs Nx for monorepo management — I want articles from 2025+ that cover build caching, CI integration, and developer experience",
     "should_trigger": true
   },
   {
-    "query": "Quick search: who acquired Figma and for how much?",
+    "query": "Look up what happened with the Redis license change and find articles about the community forks like Valkey — I need this for our infrastructure decision doc",
     "should_trigger": true
   },
   {
-    "query": "Find sources about OWASP Top 10 changes in 2025",
+    "query": "I'm preparing a /plan research phase — search for the latest best practices around database connection pooling in serverless environments, particularly with PostgreSQL and Prisma",
     "should_trigger": true
   },
   {
-    "query": "Search for announcements about the next ESLint major version",
+    "query": "Find the official documentation URLs for Vitest's workspace feature and any GitHub discussions about known issues with multi-project test configurations",
     "should_trigger": true
   },
   {
-    "query": "Write a comprehensive market analysis report on the AI chatbot industry with competitive landscape, market sizing, and strategic recommendations",
+    "query": "Write a comprehensive 15-page market analysis report on the AI chatbot industry covering market size, growth projections, competitive landscape with SWOT analysis for top 10 players, and strategic recommendations for a startup entering the space",
     "should_trigger": false
   },
   {
-    "query": "Create a deep research report synthesizing multiple sources on the future of edge computing with full citations",
+    "query": "Create a deep research report synthesizing academic papers, industry reports, and government data on the future of edge computing — include full bibliography with DOI links and a trend analysis spanning 2020-2026",
     "should_trigger": false
   },
   {
-    "query": "Scrape the pricing page at https://vercel.com/pricing and extract all plan details",
+    "query": "Scrape the pricing page at https://vercel.com/pricing and extract all plan names, monthly costs, included features, and usage limits into a structured comparison table",
     "should_trigger": false
   },
   {
-    "query": "Extract the full content and headings from https://docs.bun.sh/cli/test",
+    "query": "Go to https://docs.bun.sh/cli/test and extract the full API reference for Bun's test runner including all configuration options and CLI flags",
     "should_trigger": false
   },
   {
-    "query": "Enrich this company list with structured JSON: founded year, employee count, headquarters, and key products for Stripe, Square, and Adyen",
+    "query": "Build me a structured company profile for Stripe with founding year, total funding, current valuation, employee headcount, key executives, tech stack, and major product lines — return as typed JSON",
     "should_trigger": false
   },
   {
-    "query": "Fix the failing unit test in src/utils/parser.test.ts",
+    "query": "Fix the failing unit test in src/utils/parser.test.ts — it's timing out on the async token refresh mock",
     "should_trigger": false
   },
   {
-    "query": "Deploy the staging branch to production on Vercel",
+    "query": "Refactor the database connection module to use connection pooling and add retry logic with exponential backoff",
     "should_trigger": false
   }
 ]

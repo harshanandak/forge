@@ -1,50 +1,50 @@
 [
   {
-    "query": "write a research document about microservice architecture patterns",
+    "query": "I'm writing a research document in docs/research/edge-computing-analysis.md and need to add proper citations for the 5 external sources I referenced — format them according to our project's citation standards",
     "should_trigger": true
   },
   {
-    "query": "add proper citations to this research doc",
+    "query": "Create a new research document in docs/research/ summarizing our findings on database connection pooling strategies — include properly formatted citations for the PostgreSQL docs, PgBouncer GitHub, and the Prisma blog post I found",
     "should_trigger": true
   },
   {
-    "query": "format the sources section in docs/research/findings.md",
+    "query": "The sources section in docs/research/auth-patterns.md is inconsistently formatted — some use inline links, others use footnotes. Reformat all citations to follow our citation standards",
     "should_trigger": true
   },
   {
-    "query": "reference external sources in a research writeup",
+    "query": "I need to add a bibliography to docs/research/api-design-findings.md — I have 8 sources (mix of blog posts, RFC documents, and academic papers) that need proper attribution with URLs and access dates",
     "should_trigger": true
   },
   {
-    "query": "create a research summary with proper source attribution",
+    "query": "Write a research summary in docs/research/ about WebAssembly adoption trends and make sure all external references follow our citation format — I'll be referencing MDN, the W3C spec, and several Bytecode Alliance blog posts",
     "should_trigger": true
   },
   {
-    "query": "document findings with inline citations",
+    "query": "Review docs/research/observability-report.md and fix the inline citations — some are missing URLs, others have broken links, and the format doesn't match our project standards",
     "should_trigger": true
   },
   {
-    "query": "write unit tests for the auth module",
+    "query": "Fix the failing unit test in src/utils/parser.test.ts — it's timing out on the async mock",
     "should_trigger": false
   },
   {
-    "query": "fix the ESLint warning in utils.ts",
+    "query": "Run the ESLint check and fix all warnings in the src/components/ directory",
     "should_trigger": false
   },
   {
-    "query": "search the web for React best practices",
+    "query": "Search the web for the latest React 19 server components documentation and find tutorial URLs",
     "should_trigger": false
   },
   {
-    "query": "scrape https://example.com for pricing data",
+    "query": "Scrape https://stripe.com/docs/api and extract the authentication section",
     "should_trigger": false
   },
   {
-    "query": "deploy the application to production",
+    "query": "Deploy the staging branch to production using our CI/CD pipeline",
     "should_trigger": false
   },
   {
-    "query": "refactor the database connection pool",
+    "query": "Refactor the database connection module in src/db/ to use connection pooling with pg-pool",
     "should_trigger": false
   }
 ]

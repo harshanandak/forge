@@ -1,6 +1,14 @@
 ---
 name: parallel-web-search
-description: "Web search using Parallel AI REST API (curl). Fast fact lookups, news, sources. No binary install — requires PARALLEL_API_KEY in .env.local."
+description: >
+  Web search using Parallel AI REST API (curl). Fast fact lookups, news, sources.
+  No binary install — requires PARALLEL_API_KEY in .env.local. Use this skill
+  whenever the user needs to search the web for current information, find URLs,
+  look up recent news, or gather source materials for research. ALWAYS use this
+  when the /plan or /research workflow calls for web search, when the user wants
+  multiple ranked results with relevance scores, or when domain-specific source
+  filtering is needed. Trigger on phrases like "search for", "find sources",
+  "look up", "what's the latest on", "find articles about".
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl.
 metadata:
   author: harshanandak

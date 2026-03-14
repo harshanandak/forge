@@ -1,70 +1,62 @@
 [
   {
-    "query": "Do a deep market analysis of the AI chatbot industry including market size, growth projections, and key players",
+    "query": "I need a comprehensive market analysis of the developer tools space — cover the top 20 players, their funding, market positioning, and where the industry is heading over the next 3-5 years. Include data from Gartner, Forrester, and any recent VC investment reports",
     "should_trigger": true
   },
   {
-    "query": "Generate a comprehensive research report on the electric vehicle battery supply chain with multi-source citations",
+    "query": "Write a deep research report on the state of WebAssembly adoption in production — synthesize case studies from companies using WASM, performance benchmarks vs native code, ecosystem maturity analysis, and strategic recommendations for when to adopt it",
     "should_trigger": true
   },
   {
-    "query": "Analyze the competitive landscape of cloud infrastructure providers — AWS, Azure, GCP — with strategic positioning and market share trends",
+    "query": "Our CTO wants a competitive landscape analysis comparing Convex, Supabase, Firebase, and PlanetScale for our backend rewrite. Need comprehensive feature comparison, pricing analysis at our scale (50K DAU), community health metrics, and risk assessment for each",
     "should_trigger": true
   },
   {
-    "query": "Create a strategic report on the fintech lending space covering regulatory trends, emerging players, and 5-year outlook",
+    "query": "Create a strategic report on the AI code generation market — analyze GitHub Copilot, Cursor, Claude Code, and emerging competitors. Cover adoption rates, developer satisfaction surveys, enterprise pricing trends, and predictions for 2027",
     "should_trigger": true
   },
   {
-    "query": "Synthesize research from multiple sources on the impact of generative AI on software development productivity",
+    "query": "I'm doing /plan Phase 2 research — produce a comprehensive analysis of event-driven architecture patterns in microservices, covering Kafka vs RabbitMQ vs NATS, with production case studies, failure mode analysis, and recommendations for our 100K events/sec throughput requirement",
     "should_trigger": true
   },
   {
-    "query": "Produce an industry trend analysis of the cybersecurity market including M&A activity, funding rounds, and technology shifts",
+    "query": "Write an industry deep-dive into the observability market — compare Datadog, Grafana Cloud, and New Relic across features, pricing, scalability, and OpenTelemetry support. Include customer migration stories and TCO analysis for a 500-node cluster",
     "should_trigger": true
   },
   {
-    "query": "Write a deep-dive research report comparing RISC-V adoption versus ARM across embedded, mobile, and data center segments",
+    "query": "Research and synthesize the current state of edge computing for real-time AI inference — cover hardware options, cloud provider edge offerings, latency benchmarks, and case studies from autonomous vehicles and IoT deployments",
     "should_trigger": true
   },
   {
-    "query": "What's the current price of Bitcoin?",
+    "query": "Quick search: what's the current price of Bitcoin and what were Anthropic's latest announcements?",
     "should_trigger": false
   },
   {
-    "query": "Find me the URL for Stripe's API documentation",
+    "query": "Find the official migration guide URL for ESLint's new flat config format",
     "should_trigger": false
   },
   {
-    "query": "Look up who won the Super Bowl last weekend",
+    "query": "Search for recent blog posts about Bun 2.0 features and release date",
     "should_trigger": false
   },
   {
-    "query": "Scrape this URL https://openai.com/pricing and extract the pricing tiers",
+    "query": "Go to https://stripe.com/docs/api and extract the authentication section with all the code examples",
     "should_trigger": false
   },
   {
-    "query": "Extract the feature comparison table from this page: https://cloud.google.com/products",
+    "query": "Scrape https://openai.com/pricing and extract the per-token costs for each model tier",
     "should_trigger": false
   },
   {
-    "query": "Get structured company data for Stripe including founding year, employee count, and headquarters",
+    "query": "Build a structured company profile for Databricks — return JSON with founding year, funding rounds, valuation, employee count, and tech stack",
     "should_trigger": false
   },
   {
-    "query": "Enrich this lead's profile with company info: Jane Smith at Databricks",
+    "query": "Fix the TypeScript compilation error in src/services/auth.ts — it's complaining about missing type for the session token",
     "should_trigger": false
   },
   {
-    "query": "Refactor the authentication middleware to use async/await instead of callbacks",
-    "should_trigger": false
-  },
-  {
-    "query": "Run the test suite and fix any failing tests",
-    "should_trigger": false
-  },
-  {
-    "query": "Create a new React component for the user settings page",
+    "query": "Add unit tests for the rate limiter middleware in src/middleware/rateLimit.ts",
     "should_trigger": false
   }
 ]

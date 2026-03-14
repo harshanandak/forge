@@ -1,6 +1,14 @@
 ---
 name: parallel-web-extract
-description: "Scrape and extract structured content from URLs using Parallel AI REST API (curl). Use for pricing pages, docs, product info. No binary install — requires PARALLEL_API_KEY in .env.local."
+description: >
+  Scrape and extract structured content from URLs using Parallel AI REST API (curl).
+  Use for pricing pages, docs, product info. No binary install — requires
+  PARALLEL_API_KEY in .env.local. Use this skill whenever the user provides a
+  specific URL and wants to extract content, scrape pricing tables, pull API
+  documentation, or get structured data from a webpage. ALWAYS use this when a URL
+  is mentioned and the user wants its content extracted, summarized, or parsed into
+  structured format. Trigger on phrases like "scrape", "extract from URL",
+  "get content from https://", "pull the pricing from", "what does this page say".
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl.
 metadata:
   author: harshanandak

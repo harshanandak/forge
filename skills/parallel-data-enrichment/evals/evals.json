@@ -1,62 +1,62 @@
 [
   {
-    "query": "Enrich company data for OpenAI — get founding year, headcount, valuation, and key executives",
+    "query": "I'm building a prospect list for our sales team — enrich these companies with structured firmographic data: Stripe, Datadog, and HashiCorp. For each, I need founding year, total funding, current valuation, employee headcount, headquarters, key decision makers, and tech stack as typed JSON",
     "should_trigger": true
   },
   {
-    "query": "Get a structured company profile for Stripe including funding rounds, revenue estimate, and headquarters location",
+    "query": "We have a CRM lead for Anthropic — qualify this lead by enriching it with company size, industry vertical, recent funding rounds, key executives, competitive landscape, and estimated annual revenue. Return structured JSON matching our CRM schema",
     "should_trigger": true
   },
   {
-    "query": "CRM lead enrichment for Databricks — fill in industry, employee count, tech stack, and decision makers",
+    "query": "Build company profiles for our competitive analysis — get structured data for Vercel, Netlify, and Cloudflare Pages including their product offerings, pricing tiers, customer counts, tech stack, and recent product launches",
     "should_trigger": true
   },
   {
-    "query": "Entity data lookup for Shopify with typed JSON schema: domain, founded, CEO, public/private status, market cap",
+    "query": "Enrich this sales prospect: Confluent (the Kafka company). I need firmographic data — founded, HQ, funding total, IPO details, employee count by department, key products, enterprise customers, and market share estimates in the event streaming space",
     "should_trigger": true
   },
   {
-    "query": "Get company size, total funding, and headquarters address for Anthropic as structured data",
+    "query": "Our BD team needs entity data for partnership evaluation — get structured profiles for MongoDB, CockroachDB, and PlanetScale with founding info, funding history, leadership team, developer community size, and GitHub stars",
     "should_trigger": true
   },
   {
-    "query": "Qualify this sales lead: Datadog — return structured fields for industry vertical, ARR range, employee band, and ICP fit score",
+    "query": "Qualify these inbound leads for our enterprise tier: Shopify, Squarespace, and BigCommerce. Return structured JSON with company size, annual revenue, tech stack, primary use cases, and likelihood to need our product based on their infrastructure choices",
     "should_trigger": true
   },
   {
-    "query": "Enrich this prospect list entry for Confluent with firmographic data: sector, sub-industry, funding stage, and competitor set",
+    "query": "Build a structured entity lookup for OpenAI — get founding year, founders, all funding rounds with amounts and investors, current valuation, total headcount, office locations, and organizational structure as nested JSON",
     "should_trigger": true
   },
   {
-    "query": "Search for recent news about Tesla's quarterly earnings and stock performance",
+    "query": "Search for recent news articles about Tesla's quarterly earnings and analyst predictions for next quarter",
     "should_trigger": false
   },
   {
-    "query": "Find blog posts and tutorials about React 19 server components",
+    "query": "Find the official Bun documentation URL for their HTTP server API",
     "should_trigger": false
   },
   {
-    "query": "What's trending in AI this week? Search for the latest announcements",
+    "query": "Write a comprehensive market analysis of the fintech industry covering payment processing, neobanking, and embedded finance with 5-year growth projections",
     "should_trigger": false
   },
   {
-    "query": "Write a comprehensive market analysis of the fintech industry covering growth drivers, key players, and five-year outlook",
+    "query": "Go to https://stripe.com/pricing and extract all the plan names, costs, and feature comparisons into a table",
     "should_trigger": false
   },
   {
-    "query": "Create a strategic report on cloud computing trends with competitive landscape and adoption forecasts",
+    "query": "Scrape https://docs.convex.dev/api and extract the full API reference for Convex queries and mutations",
     "should_trigger": false
   },
   {
-    "query": "Scrape https://stripe.com/pricing and extract the plan names, prices, and feature lists",
+    "query": "Write a Python script to parse our CSV export and generate summary statistics for each column",
     "should_trigger": false
   },
   {
-    "query": "Write a Python script to parse CSV files and output summary statistics",
+    "query": "Fix the failing integration test in src/services/billing.test.ts — the Stripe webhook handler is returning 400",
     "should_trigger": false
   },
   {
-    "query": "Fix the failing test in auth.test.ts that's timing out on the token refresh flow",
+    "query": "Create a strategic report on cloud computing trends with competitive analysis of major providers and recommendations for our infrastructure migration",
     "should_trigger": false
   }
 ]

@@ -1,6 +1,15 @@
 ---
 name: parallel-deep-research
-description: "Deep market analysis and comprehensive research reports using Parallel AI Task API with pro/ultra processors. Multi-source synthesis with citations. No binary install — requires PARALLEL_API_KEY in .env.local."
+description: >
+  Deep market analysis and comprehensive research reports using Parallel AI Task
+  API with pro/ultra processors. Multi-source synthesis with citations. No binary
+  install — requires PARALLEL_API_KEY in .env.local. Use this skill whenever the
+  user requests a comprehensive analysis, market research report, competitive
+  landscape study, industry deep-dive, or multi-source synthesis that requires
+  thorough investigation. ALWAYS prefer this for tasks needing substantial research
+  documents with multiple perspectives, trend analysis, or strategic recommendations.
+  Trigger on phrases like "research report", "market analysis", "competitive
+  landscape", "deep dive into", "comprehensive analysis of", "industry trends".
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
 metadata:
   author: harshanandak

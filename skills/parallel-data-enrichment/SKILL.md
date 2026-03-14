@@ -1,6 +1,15 @@
 ---
 name: parallel-data-enrichment
-description: "Structured company and entity data enrichment using Parallel AI Task API with core/base processors. Returns typed JSON output. No binary install — requires PARALLEL_API_KEY in .env.local."
+description: >
+  Structured company and entity data enrichment using Parallel AI Task API with
+  core/base processors. Returns typed JSON output. No binary install — requires
+  PARALLEL_API_KEY in .env.local. Use this skill whenever the user needs company
+  profiles, CRM lead enrichment, firmographic data, entity lookups, or structured
+  information about organizations. ALWAYS use this for company research, sales lead
+  qualification, prospect enrichment, or getting structured business data like
+  funding rounds, employee count, tech stack, or key executives. Trigger on phrases
+  like "enrich company", "company profile", "lead enrichment", "firmographic data",
+  "get structured data about [company]", "qualify this lead".
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 15s-5min.
 metadata:
   author: harshanandak
