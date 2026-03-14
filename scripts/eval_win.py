@@ -20,7 +20,7 @@ from pathlib import Path
 
 def parse_skill_md(skill_path: Path) -> tuple:
     """Parse a SKILL.md file, returning (name, description, full_content)."""
-    content = (skill_path / "SKILL.md").read_text()
+    content = (skill_path / "SKILL.md").read_text(encoding="utf-8")
     lines = content.split("\n")
 
     if lines[0].strip() != "---":
@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print progress")
     args = parser.parse_args()
 
-    eval_set = json.loads(Path(args.eval_set).read_text())
+    eval_set = json.loads(Path(args.eval_set).read_text(encoding="utf-8"))
     skill_path = Path(args.skill_path)
 
     if not (skill_path / "SKILL.md").exists():
