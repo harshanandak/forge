@@ -1,5 +1,5 @@
 ---
-description: Deep research with parallel-web-search, document findings
+description: Deep research with parallel-deep-research, document findings
 ---
 
 > **Note**: `/research` is now Phase 2 of `/plan`.
@@ -20,7 +20,7 @@ This command previously ran a standalone research phase. It is now embedded in `
 Jump to Phase 2 of `/plan` manually:
 
 1. Read or create the design doc at `docs/plans/YYYY-MM-DD-<slug>-design.md`
-2. Run parallel web search using the `parallel-web-search` skill
+2. Run parallel web search using the `parallel-deep-research` skill
 3. Run OWASP Top 10 analysis for the feature
 4. Use the Explore agent for codebase exploration
 5. Identify at least 3 TDD test scenarios

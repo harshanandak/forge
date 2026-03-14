@@ -86,8 +86,7 @@ SECURITY_SCAN="bunx npm audit"            # or: npm audit, snyk test, etc.
 ### Parallel AI (MANDATORY for Phase 2 web research)
 Use focused skills from `skills/` directory:
 ```bash
-Skill("parallel-web-search")     # Quick web lookups, news, sources
-Skill("parallel-deep-research")  # Deep analysis, market reports
+Skill("parallel-deep-research")  # Deep analysis, market reports, web research
 ```
 
 ### sonarcloud (Code quality)
