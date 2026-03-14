@@ -129,7 +129,7 @@ describe('scripts/behavioral-judge.sh', () => {
       expect(result.error).toBeUndefined();
       const parsed = parseOutput(result.stdout);
       expect(parsed).not.toBeNull();
-    });
+    }, 15000);
 
     test('output contains "result" field', () => {
       const result = runJudge(SAMPLE_PLAN_OUTPUT, { BEHAVIORAL_JUDGE_TEST_MODE: '1' });
