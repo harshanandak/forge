@@ -487,7 +487,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
   fs.mkdirSync(manifestDir, { recursive: true });
   const manifestData = {
     generatedAt: new Date().toISOString(),
-    files: written.map((e) => path.relative(repoRoot, e.filePath)),
+    files: written.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
   };
   fs.writeFileSync(
     path.join(manifestDir, 'sync-manifest.json'),
