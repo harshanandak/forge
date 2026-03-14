@@ -546,6 +546,47 @@ describe('syncCommands — check mode', () => {
   });
 });
 
+describe('syncCommands — stale file detection', () => {
+  test('returns staleFiles when a command is deleted from canonical source', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+      dev: '---\ndescription: Dev\n---\n\nDev body.',
+    });
+    try {
+      // Sync both commands
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Delete 'dev' from canonical source
+      fs.unlinkSync(path.join(tmpDir, '.claude', 'commands', 'dev.md'));
+      // Check should detect stale dev files
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.staleFiles.length).toBeGreaterThan(0);
+      expect(result.inSync).toBe(false);
+      // At least one stale file should reference 'dev'
+      expect(result.staleFiles.some((f) => f.includes('dev'))).toBe(true);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('does not flag non-command files as stale', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      // Add a custom non-command file in an agent dir
+      const customFile = path.join(tmpDir, '.github', 'prompts', 'custom-prompt.txt');
+      fs.writeFileSync(customFile, 'Custom prompt');
+      // Check should NOT flag .txt file as stale (only .prompt.md is managed)
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      const stalePaths = result.staleFiles || [];
+      expect(stalePaths.some((f) => f.includes('custom-prompt'))).toBe(false);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+});
+
 describe('syncCommands — overwrite warning', () => {
   test('reports files that would be overwritten with different content', () => {
     const tmpDir = createTempRepo({

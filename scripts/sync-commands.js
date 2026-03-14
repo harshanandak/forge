@@ -397,22 +397,38 @@ function syncCommands({ dryRun, check, repoRoot }) {
       }
     }
 
-    // Detect stale files: agent files that exist on disk but are no longer
+    // Detect stale files: command outputs that exist on disk but are no longer
     // generated (e.g., a command was renamed or deleted from .claude/commands/).
+    // Only checks files that the sync script would produce — not arbitrary files
+    // in agent directories (e.g., custom prompts in .github/prompts/ are safe).
     const expectedPaths = new Set(entries.map((e) => e.filePath));
     /** @type {string[]} */
     const staleFiles = [];
+    // Build the set of all possible output paths for each agent using every
+    // known command name pattern (extension + directory naming).
     for (const agentName of Object.keys(AGENT_ADAPTERS)) {
       const adapter = AGENT_ADAPTERS[agentName];
       if (adapter.skip) continue;
-      // Check base dir for each agent (use a dummy name to get the base)
-      const baseDir = path.join(repoRoot, adapter.dir('__probe__').replace('__probe__/', '').replace('__probe__\\', ''));
-      if (!fs.existsSync(baseDir)) continue;
-      const files = fs.readdirSync(baseDir, { recursive: true });
-      for (const f of files) {
-        const fullPath = path.join(baseDir, String(f));
-        if (fs.statSync(fullPath).isFile() && !expectedPaths.has(fullPath)) {
-          staleFiles.push(fullPath);
+      // For each command that COULD have existed, check if its output file
+      // is on disk but not in expected set. We scan each agent's output dirs
+      // for files matching the agent's extension pattern.
+      const dirsChecked = new Set();
+      for (const entry of entries) {
+        const dirPath = path.dirname(entry.filePath);
+        if (entry.agent !== agentName) continue;
+        dirsChecked.add(dirPath);
+      }
+      for (const dir of dirsChecked) {
+        if (!fs.existsSync(dir)) continue;
+        const files = fs.readdirSync(dir);
+        for (const f of files) {
+          const fullPath = path.join(dir, f);
+          if (fs.statSync(fullPath).isFile() && !expectedPaths.has(fullPath)) {
+            // Only flag files with the agent's extension (scoped to managed outputs)
+            if (f.endsWith(adapter.extension)) {
+              staleFiles.push(fullPath);
+            }
+          }
         }
       }
     }
