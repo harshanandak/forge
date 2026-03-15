@@ -9,8 +9,7 @@ Real-world examples showing how to use Forge for different scenarios.
 - [Example 1: Simple Feature](#example-1-simple-feature)
 - [Example 2: Bug Fix with Security](#example-2-bug-fix-with-security)
 - [Example 3: Multi-File Refactor](#example-3-multi-file-refactor)
-- [Example 4: Architecture Change](#example-4-architecture-change)
-- [Example 5: Team Collaboration](#example-5-team-collaboration)
+- [Example 4: Team Collaboration](#example-4-team-collaboration)
 
 ---
 
@@ -20,7 +19,7 @@ Real-world examples showing how to use Forge for different scenarios.
 
 **Estimated Time**: 15 minutes
 
-**Workflow**: Tactical (no OpenSpec needed)
+**Workflow**: Tactical
 
 ### Step-by-Step
 
@@ -36,19 +35,7 @@ Real-world examples showing how to use Forge for different scenarios.
 # ✓ No active work
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 2: RESEARCH
-# ═══════════════════════════════════════════════════════════
-/research health-check-endpoint
-
-# Creates: docs/research/health-check-endpoint.md
-# Contains:
-# - REST health check conventions
-# - HTTP 200 vs 503 debate
-# - Security: avoid exposing internal details
-# - TDD scenarios: 200 OK test, optional dependencies
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 3: PLAN
+# STAGE 2: PLAN (includes design + research in Phase 2)
 # ═══════════════════════════════════════════════════════════
 /plan health-check-endpoint
 
@@ -128,18 +115,7 @@ bd create "SQL injection in search endpoint" \
   --label "security,critical"
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 2: RESEARCH
-# ═══════════════════════════════════════════════════════════
-/research sql-injection-fix-search
-
-# Research includes:
-# - OWASP A03:2021 Injection analysis
-# - Parameterized queries vs prepared statements
-# - Input validation best practices
-# - Testing for SQL injection (sqlmap patterns)
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 3: PLAN
+# STAGE 2: PLAN (includes research in Phase 2)
 # ═══════════════════════════════════════════════════════════
 /plan sql-injection-fix-search
 
@@ -253,23 +229,7 @@ bd create "Extract auth logic to service" \
   --priority 2
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 2: RESEARCH
-# ═══════════════════════════════════════════════════════════
-/research auth-service-extraction
-
-# Research covers:
-# - Service layer patterns
-# - Dependency injection
-# - Testing strategies for services
-# - File organization
-
-# Codebase analysis finds:
-# - Auth logic scattered across 3 route handlers
-# - 15 references to inline JWT code
-# - No service layer exists yet
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 3: PLAN
+# STAGE 2: PLAN (includes research in Phase 2)
 # ═══════════════════════════════════════════════════════════
 /plan auth-service-extraction
 
@@ -359,225 +319,7 @@ git commit -m "refactor: extract login to AuthService"
 
 ---
 
-## Example 4: Architecture Change
-
-**Task**: Add user authentication system (strategic)
-
-**Estimated Time**: 2-3 days
-
-**Approach**: OpenSpec proposal first
-
-### Step-by-Step
-
-```bash
-# ═══════════════════════════════════════════════════════════
-# STAGE 1: STATUS
-# ═══════════════════════════════════════════════════════════
-/status
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 2: RESEARCH
-# ═══════════════════════════════════════════════════════════
-/research user-authentication
-
-# Comprehensive research:
-# - JWT vs session-based auth
-# - Password hashing (bcrypt vs argon2)
-# - OWASP A07:2021 Authentication Failures
-# - OAuth 2.0 for social login
-# - Rate limiting for login attempts
-# - Database schema for users table
-# - Migration strategy
-
-# Research doc: 500+ lines
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 3: PLAN (with OpenSpec)
-# ═══════════════════════════════════════════════════════════
-/plan user-authentication
-
-# Because this is strategic (architecture change):
-# OpenSpec proposal created
-
-# In AI assistant (Claude, Cursor, etc.):
-/opsx:new
-# Describe: "Add user authentication with JWT"
-
-/opsx:ff
-# Generates:
-# - openspec/changes/user-authentication/proposal.md
-# - openspec/changes/user-authentication/design.md
-# - openspec/changes/user-authentication/tasks.md
-# - openspec/changes/user-authentication/specs/ (delta specs)
-
-# Review proposal.md:
-## Proposal: User Authentication
-
-**Intent**: Add secure authentication system
-
-**Scope**:
-- User registration (email + password)
-- Login with JWT tokens
-- Password reset flow
-- Rate limiting
-- Email verification
-
-**Rationale**:
-- Users need private accounts
-- Security: bcrypt, JWT, rate limiting
-- Follows OWASP guidelines
-
-**Alternatives Considered**:
-1. Session-based (rejected: scalability)
-2. OAuth only (rejected: want email/password too)
-
-# Create PR for PROPOSAL APPROVAL first
-git checkout -b proposal/user-authentication
-git add openspec/
-git commit -m "proposal: user authentication system"
-git push
-gh pr create --title "Proposal: User Authentication"
-
-# Wait for approval before implementation
-
-# ═══════════════════════════════════════════════════════════
-# AFTER PROPOSAL APPROVED
-# ═══════════════════════════════════════════════════════════
-
-# Create implementation branch
-git checkout -b feat/user-authentication
-
-bd create "User authentication (see openspec/changes/user-authentication)" \
-  --type feature \
-  --priority 1
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 4: DEV (TDD for each task in tasks.md)
-# ═══════════════════════════════════════════════════════════
-/dev
-
-# OpenSpec tasks.md has 12 tasks:
-# 1. Create users table migration
-# 2. Create User model
-# 3. Hash passwords with bcrypt
-# 4. POST /auth/signup endpoint
-# 5. POST /auth/login endpoint
-# 6. JWT middleware
-# 7. POST /auth/refresh endpoint
-# 8. POST /auth/forgot-password endpoint
-# 9. POST /auth/reset-password endpoint
-# 10. Rate limiting middleware
-# 11. Email verification
-# 12. Update all protected routes
-
-# Each task: RED → GREEN → REFACTOR → COMMIT
-
-# Example for task 4 (signup):
-
-# RED:
-describe('POST /auth/signup', () => {
-  it('creates user with hashed password', async () => {
-    const response = await request(app)
-      .post('/auth/signup')
-      .send({ email: 'test@example.com', password: 'secure123' });
-
-    expect(response.status).toBe(201);
-    expect(response.body.token).toBeDefined();
-
-    const user = await db.findUserByEmail('test@example.com');
-    expect(user.password).not.toBe('secure123'); // hashed
-  });
-});
-# Run → ❌ Fails
-
-# GREEN:
-app.post('/auth/signup', async (req, res) => {
-  const { email, password } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const user = await db.createUser(email, hashedPassword);
-  const token = jwt.sign({ userId: user.id }, SECRET, { expiresIn: '24h' });
-  res.status(201).json({ token });
-});
-# Run → ✅ Passes
-
-# REFACTOR: Extract to AuthService, add validation
-git commit -m "feat: add user signup endpoint
-
-- Bcrypt password hashing
-- JWT token generation
-- Input validation
-- Rate limiting
-
-Task 4/12 in openspec/changes/user-authentication/tasks.md"
-
-# Repeat for all 12 tasks
-# ~1-2 days
-
-# Update OpenSpec progress:
-/opsx:apply
-
-bd update PROJ-90 --status in_progress --comment "8/12 tasks complete"
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 5: CHECK
-# ═══════════════════════════════════════════════════════════
-/validate
-
-# ✓ Type check passed
-# ✓ Linter passed
-# ✓ Tests passed (45 new tests)
-# ✓ Security scan passed
-# ✓ Migration runs successfully
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 6: SHIP
-# ═══════════════════════════════════════════════════════════
-/ship
-
-# PR #90 includes:
-# - Link to OpenSpec proposal
-# - All 12 tasks completed
-# - 45 tests
-# - Security scan results
-# - Migration instructions
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 7: REVIEW
-# ═══════════════════════════════════════════════════════════
-/review 90
-
-# Address feedback from:
-# - Security team
-# - Architecture review
-# - CI/CD failures
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 8: MERGE
-# ═══════════════════════════════════════════════════════════
-/merge 90
-
-# After merge:
-/opsx:sync  # Merge delta specs into main specs
-/opsx:archive user-authentication
-
-bd close PROJ-90
-
-# ═══════════════════════════════════════════════════════════
-# STAGE 9: VERIFY
-# ═══════════════════════════════════════════════════════════
-/verify
-
-# Check:
-# - API docs updated
-# - README has auth examples
-# - Migration in changelog
-```
-
-**Result**: Complete authentication system with proposal approval, TDD, and documentation in 2-3 days.
-
----
-
-## Example 5: Team Collaboration
+## Example 4: Team Collaboration
 
 **Task**: Multiple developers working on same project with Beads
 
@@ -610,7 +352,6 @@ bd ready
 # Claim work
 bd update SHOP-1 --status in_progress
 /status
-/research stripe-payment-integration
 /plan stripe-payment-integration
 /dev
 
@@ -641,7 +382,6 @@ bd ready
 
 # Claim different feature
 bd update SHOP-2 --status in_progress
-/research sendgrid-email-notifications
 /plan email-notifications
 /dev
 
@@ -672,7 +412,6 @@ bd comments SHOP-3 "Need Bob's email service for user notifications"
 bd dep add SHOP-3 SHOP-2  # SHOP-3 depends on SHOP-2
 
 # Bob's work already merged, so can proceed
-/research admin-dashboard
 /plan admin-dashboard
 /dev
 
@@ -711,12 +450,11 @@ bd sync
 ## Key Takeaways
 
 ### 1. Simple Features (15-30 min)
-- Use `/research` even for small features
+- `/plan` includes design intent + research (Phase 2)
 - TDD keeps scope focused
-- No OpenSpec needed
 
 ### 2. Bug Fixes with Security (30-60 min)
-- OWASP research in `/research` stage
+- OWASP research happens in `/plan` Phase 2
 - Security tests are mandatory
 - Priority 0 for critical vulnerabilities
 
@@ -725,13 +463,7 @@ bd sync
 - Commit after each GREEN cycle
 - All existing tests must pass
 
-### 4. Architecture Changes (2-5 days)
-- Always use OpenSpec proposal
-- Get approval BEFORE implementation
-- Tasks.md breaks down work
-- Frequent progress updates
-
-### 5. Team Collaboration
+### 4. Team Collaboration
 - Beads tracks dependencies
 - `bd ready` finds available work
 - `bd sync` at end of every session

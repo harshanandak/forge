@@ -20,14 +20,13 @@ First, determine which AI agent you are by checking for these directories:
 
 ```bash
 # Check for agent-specific directories
-ls -la | grep -E "\.claude|\.cursor|\.cline|\.continue"
+ls -la | grep -E "\.claude|\.cursor|\.cline"
 ```
 
 **Agent Detection:**
 - `.claude/` exists → You are **Claude Code**
 - `.cursor/` exists → You are **Cursor**
 - `.cline/` exists → You are **Cline**
-- `.continue/` exists → You are **Continue**
 - None exist → Generic agent
 
 Store this for later: `DETECTED_AGENT=<name>`
@@ -193,14 +192,13 @@ Summarize what was completed for the user:
 1. Review AGENTS.md to understand the workflow
 2. Run `/status` to see current project state
 3. Start your first task:
-   - Feature: `/research <feature-name>` → `/plan` → `/dev`
+   - Feature: `/plan <feature-name>` → `/dev`
    - Bug fix: `/dev` (write failing test first)
    - Docs: `/verify` → `/ship`
 
 **Quick Start Commands:**
 - `/status` - Check current context
-- `/research <topic>` - Research with web search
-- `/plan <feature-slug>` - Create implementation plan
+- `/plan <feature-slug>` - Design + research + implementation plan
 - `/dev` - Start TDD development
 
 **Need help?** Check docs/WORKFLOW.md for full guide
@@ -332,7 +330,6 @@ EOF
 - Claude Code (via CLI)
 - Cursor (via chat)
 - Cline (via VSCode extension)
-- Continue (via VSCode extension)
 - Any AI coding assistant with file system access
 
 ---

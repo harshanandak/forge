@@ -146,7 +146,7 @@ Mode 3: Quick Mode
 
 Realistic sampling strategy:
 - Single agent: 11 tests
-- Popular pairs: Claude+Cursor, Claude+Continue, Cursor+Windsurf (3 tests)
+- Popular pairs: Claude+Cursor, Claude+Cline, Cursor+Kilo (3 tests)
 - All agents: 1 test
 - No agents: 1 test (error handling)
 
@@ -208,7 +208,6 @@ Realistic sampling strategy:
 
 4. **Context7 MCP**:
    - Auto-installed for Claude Code (.mcp.json)
-   - Auto-installed for Continue (.continue/config.yaml)
    - Manual setup for others
 
 **Edge cases**:
