@@ -303,6 +303,20 @@ For each task, confirm it maps to a specific requirement, success criterion, or 
 
 Save to `docs/plans/YYYY-MM-DD-<slug>-tasks.md`.
 
+### Step 5b: Beads context
+
+After saving the task list, attach design context and acceptance criteria to the Beads issue so downstream stages (`/dev`, `/validate`, `/review`) can retrieve it without re-reading the design doc.
+
+```bash
+# Link design metadata (task count + task file path) to the Beads issue
+bash scripts/beads-context.sh set-design <id> <task-count> docs/plans/YYYY-MM-DD-<slug>-tasks.md
+
+# Record the success criteria from the design doc on the issue
+bash scripts/beads-context.sh set-acceptance <id> "<success-criteria from design doc>"
+```
+
+Both commands must exit with code 0. If either fails, investigate (wrong issue ID? missing script?) before continuing.
+
 ### Step 6: User review
 
 Present the full task list. Allow the user to reorder, split, or remove tasks.
@@ -318,7 +332,15 @@ Do NOT proceed to /dev until ALL are confirmed:
 4. Beads issue is created with status=in_progress
 5. Task list exists at docs/plans/YYYY-MM-DD-<slug>-tasks.md
 6. User has confirmed task list is correct
+7. `beads-context.sh set-design` ran successfully (exit code 0)
+8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
 </HARD-GATE>
+```
+
+After all HARD-GATE items pass, record the stage transition on the Beads issue:
+
+```bash
+bash scripts/beads-context.sh stage-transition <id> plan dev
 ```
 
 ---

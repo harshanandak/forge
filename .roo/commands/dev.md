@@ -186,6 +186,7 @@ Do NOT mark task complete or move to next task until ALL confirmed in this sessi
 4. Run it fresh — show the actual output. "Last run was fine" is not evidence.
 5. Tests run fresh — actual output shows passing.
 6. Implementer has committed (git log shows the commit).
+7. `bash scripts/beads-context.sh update-progress <id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>` ran successfully (exit code 0). If it fails: STOP. Show error. Do not proceed to next task.
 
 Forbidden phrases (these are not evidence):
 - "should pass"
@@ -249,7 +250,7 @@ Do NOT declare /dev complete until:
 ### Beads update
 
 ```bash
-bd update <id> --comment "Implementation complete: N tasks done, M decisions logged"
+bash scripts/beads-context.sh stage-transition <id> dev validate
 ```
 
 ---

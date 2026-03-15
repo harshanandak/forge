@@ -79,6 +79,11 @@ EOF
 )"
 ```
 
+### Step 5: Record Stage Transition
+```bash
+bash scripts/beads-context.sh stage-transition <id> ship review
+```
+
 ## Example Output
 
 ```
