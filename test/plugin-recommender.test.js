@@ -194,10 +194,10 @@ describe('plugin-recommender', () => {
   });
 
   describe('specific tools appear', () => {
-    test('parallel-web-search appears in recommendations', () => {
+    test('parallel-web-search removed from recommendations', () => {
       const result = recommend(emptyStack(), 'startup');
       const parallelWebSearch = result.recommended.find((t) => t.id === 'parallel-web-search');
-      expect(parallelWebSearch).toBeTruthy();
+      expect(!parallelWebSearch).toBeTruthy();
     });
 
     test('sonarcloud-analysis appears for open-source projects', () => {

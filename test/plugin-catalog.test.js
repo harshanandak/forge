@@ -93,9 +93,9 @@ describe('plugin-catalog', () => {
     const validStages = Object.values(STAGES);
     const validInstallMethods = ['npm', 'skills', 'add-mcp', 'config', 'lsp', 'go', 'binary'];
 
-    test('at least 30 tools in the catalog', () => {
+    test('catalog has exactly 30 tools', () => {
       const toolCount = Object.keys(CATALOG).length;
-      expect(toolCount >= 30).toBeTruthy();
+      expect(toolCount).toBe(30);
     });
 
     test('no duplicate tool IDs', () => {
@@ -184,22 +184,9 @@ describe('plugin-catalog', () => {
   });
 
   describe('skills restructure (PR5.5)', () => {
-    test("catalog has 'parallel-web-search' entry (not 'parallel-ai')", () => {
-      expect(CATALOG['parallel-web-search']).toBeTruthy();
+    test("parallel-web-search removed from catalog (replaced by built-in WebSearch)", () => {
+      expect(!CATALOG['parallel-web-search']).toBeTruthy();
       expect(!CATALOG['parallel-ai']).toBeTruthy();
-    });
-
-    test("parallel-web-search install.cmd references parallel-web/parallel-agent-skills", () => {
-      const entry = CATALOG['parallel-web-search'];
-      if (!entry) return;
-      expect(entry.install.cmd.includes('parallel-web/parallel-agent-skills')).toBeTruthy();
-    });
-
-    test("parallel-web-search has install.cmdCurl referencing harshanandak/forge", () => {
-      const entry = CATALOG['parallel-web-search'];
-      if (!entry) return;
-      expect(entry.install.cmdCurl).toBeTruthy();
-      expect(entry.install.cmdCurl.includes('harshanandak/forge')).toBeTruthy();
     });
 
     test("catalog has 'sonarcloud-analysis' entry (not 'sonarcloud')", () => {

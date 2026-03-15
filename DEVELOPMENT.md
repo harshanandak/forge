@@ -47,7 +47,7 @@ forge/
 │   ├── commands/           # Workflow commands (/status, /plan, etc.)
 │   ├── rules/              # Workflow rules
 │   └── scripts/            # Helper scripts
-├── skills/                 # Skills (parallel-web-search, sonarcloud-analysis, etc.)
+├── skills/                 # Skills (parallel-deep-research, sonarcloud-analysis)
 ├── .forge/
 │   └── hooks/              # Git hooks (TDD enforcement)
 ├── docs/                   # Documentation

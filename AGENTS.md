@@ -56,7 +56,7 @@ When the user requests work, **you MUST automatically classify** the change type
 
 ❌ **Don't:** "ERROR: Research required for critical features"
 ✅ **Do:** "Before implementation, I should research OAuth best practices. I can:
-   1. Auto-research now with parallel-web-search (~5 min)
+   1. Auto-research now with parallel-deep-research (~5 min)
    2. Use your research if you have it
    3. Skip (not recommended for security features)
 

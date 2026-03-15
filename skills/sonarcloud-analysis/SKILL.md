@@ -1,6 +1,13 @@
 ---
 name: sonarcloud-analysis
-description: Pull issues, metrics, quality gates, and analysis data from SonarCloud. Use when checking code quality, security vulnerabilities, test coverage, technical debt, or CI/CD quality gates.
+description: >
+  Pull issues, metrics, quality gates, and analysis data from SonarCloud. ALWAYS
+  use this skill when the user mentions SonarCloud, asks about code quality metrics,
+  wants to check PR quality gates, or needs to review security vulnerabilities and
+  technical debt from static analysis. Also trigger during /review workflow when
+  SonarCloud issues need addressing. Trigger on phrases like "SonarCloud",
+  "quality gate", "code quality metrics", "technical debt", "coverage report",
+  "static analysis issues", "security vulnerabilities from scan".
 category: Code Quality
 tags: [sonarcloud, code-quality, issues, metrics, security]
 context: fork

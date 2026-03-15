@@ -144,7 +144,7 @@ export function validateEmail(email: string): boolean {
 
 ### Parallel AI Integration
 
-**MANDATORY for /plan Phase 2 web research**: Use parallel-web-search (or parallel-deep-research) skill
+**MANDATORY for /plan Phase 2 web research**: Use parallel-deep-research skill
 
 **Research Queries**:
 ```
@@ -389,7 +389,7 @@ After implementing this workflow:
 ## Tips & Best Practices
 
 1. **Always TDD**: Write tests BEFORE implementation
-2. **Research in /plan Phase 2**: Use parallel-web-search / parallel-deep-research before implementing
+2. **Research in /plan Phase 2**: Use parallel-deep-research before implementing
 3. **Security first**: OWASP Top 10 analysis mandatory
 4. **Document decisions**: Evidence and reasoning in research docs
 5. **Update Beads regularly**: Keep status current for handoffs

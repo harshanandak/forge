@@ -1,6 +1,17 @@
 ---
 name: parallel-deep-research
-description: "Deep market analysis and comprehensive research reports using Parallel AI Task API with pro/ultra processors. Multi-source synthesis with citations. No binary install — requires PARALLEL_API_KEY in .env.local."
+description: >
+  Produces comprehensive research reports that go far beyond what built-in web
+  search can achieve. Sends research tasks to Parallel AI's pro/ultra processors
+  which spend 3-25 minutes autonomously crawling, reading, and synthesizing dozens
+  of sources — returning structured reports with citations. Built-in WebSearch
+  can only run a few queries; this skill runs an entire research pipeline externally.
+  No binary install — requires PARALLEL_API_KEY in .env.local. ALWAYS use this
+  skill instead of doing multiple WebSearch calls when the user needs a comprehensive
+  report, market analysis, competitive landscape, industry deep-dive, strategic
+  recommendations, or multi-source synthesis. This is the RIGHT tool for any
+  research task that would require more than 3-4 web searches to answer properly.
+  Also trigger during /plan Phase 2 research and /research workflows.
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
 metadata:
   author: harshanandak
@@ -23,28 +34,30 @@ API_KEY=$(grep "^PARALLEL_API_KEY=" .env.local | cut -d= -f2)
 ## Create Research Task
 
 ```bash
-curl -s -X POST "https://api.parallel.ai/v1beta/tasks/runs" \
+curl -s -X POST "https://api.parallel.ai/v1/tasks/runs" \
   -H "x-api-key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "input": "Analyze the AI chatbot market. Include: size, growth, key players, trends, competitive threats",
-    "processor": "pro",
-    "output_schema": "text"
+    "processor": "pro"
   }'
 ```
 
-Response: `{"id": "task_abc123", "status": "queued"}`
+Response: `{"run_id": "trun_abc123...", "status": "queued"}`
 
-## Polling Loop
+## Get Result (polling)
+
+The result endpoint returns both status and output in one call. Poll until `status` is `completed`.
 
 ```bash
-TASK_ID="task_abc123"
+RUN_ID="trun_abc123..."
+MAX_POLLS=180  # 30 min max (180 × 10s)
 
-while true; do
-  RESULT=$(curl -s "https://api.parallel.ai/v1beta/tasks/runs/$TASK_ID" \
+for i in $(seq 1 $MAX_POLLS); do
+  RESULT=$(curl -s "https://api.parallel.ai/v1/tasks/runs/$RUN_ID/result" \
     -H "x-api-key: $API_KEY")
 
-  STATUS=$(echo $RESULT | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+  STATUS=$(echo "$RESULT" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
 
   if [ "$STATUS" = "completed" ]; then
     echo "$RESULT"
@@ -54,8 +67,13 @@ while true; do
     break
   fi
 
-  sleep 5
+  echo "Poll $i/$MAX_POLLS — Status: $STATUS"
+  sleep 10
 done
+
+if [ "$i" = "$MAX_POLLS" ] && [ "$STATUS" != "completed" ] && [ "$STATUS" != "failed" ]; then
+  echo "Timeout: task did not complete within 30 minutes"
+fi
 ```
 
 ## Processors
@@ -70,8 +88,7 @@ done
 ```json
 {
   "input": "Analyze the AI chip market in 2024. Include market size, growth rate, key players (NVIDIA, AMD, Intel), emerging competitors, and 2025 outlook.",
-  "processor": "pro",
-  "output_schema": "text"
+  "processor": "pro"
 }
 ```
 
@@ -82,8 +99,9 @@ Result: Markdown report with citations.
 - Market research and competitive analysis
 - Strategic reports requiring multiple sources
 - Research that needs synthesis across many documents
+- Any task that would need more than 3-4 web searches to answer properly
 
-For quick facts, use `parallel-web-search`. For structured data extraction, use `parallel-data-enrichment`.
+For quick facts or single-source lookups, use built-in WebSearch instead.
 
 ## Timeout
 
