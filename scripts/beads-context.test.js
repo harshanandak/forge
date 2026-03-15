@@ -361,3 +361,45 @@ describe('scripts/beads-context.sh', () => {
 		});
 	});
 });
+
+describe('/plan command integration with beads-context.sh', () => {
+	const PLAN_MD_PATH = path.join(
+		__dirname,
+		'..',
+		'.claude',
+		'commands',
+		'plan.md',
+	);
+	let planContent;
+
+	beforeAll(() => {
+		planContent = fs.readFileSync(PLAN_MD_PATH, 'utf-8');
+	});
+
+	test('plan.md should reference beads-context.sh set-design after task list creation', () => {
+		expect(planContent).toContain('beads-context.sh set-design');
+	});
+
+	test('plan.md should reference beads-context.sh set-acceptance after task list creation', () => {
+		expect(planContent).toContain('beads-context.sh set-acceptance');
+	});
+
+	test('plan.md should reference beads-context.sh stage-transition for plan to dev', () => {
+		expect(planContent).toContain('beads-context.sh stage-transition');
+		expect(planContent).toContain('plan dev');
+	});
+
+	test('plan.md HARD-GATE should include set-design success check', () => {
+		// The exit HARD-GATE should mention set-design ran successfully
+		expect(planContent).toMatch(
+			/HARD-GATE.*plan exit[\s\S]*?set-design.*ran successfully/i,
+		);
+	});
+
+	test('plan.md HARD-GATE should include set-acceptance success check', () => {
+		// The exit HARD-GATE should mention set-acceptance ran successfully
+		expect(planContent).toMatch(
+			/HARD-GATE.*plan exit[\s\S]*?set-acceptance.*ran successfully/i,
+		);
+	});
+});
