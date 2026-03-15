@@ -1,10 +1,20 @@
 /* eslint-disable no-undef -- Bun global is provided by the Bun runtime */
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 
 const SCRIPT_PATH = path.join(__dirname, 'beads-context.sh');
 const WORKTREE_ROOT = path.resolve(__dirname, '..');
+
+// Check if bd CLI is available (not installed in CI)
+let BD_AVAILABLE = false;
+try {
+	execFileSync('bd', ['--version'], { stdio: 'ignore' });
+	BD_AVAILABLE = true;
+} catch {
+	BD_AVAILABLE = false;
+}
 
 /**
  * Helper: run the beads-context.sh script with given args.
@@ -39,7 +49,7 @@ async function bd(...args) {
 	return { exitCode, stdout, stderr };
 }
 
-describe('scripts/beads-context.sh', () => {
+describe.skipIf(!BD_AVAILABLE)('scripts/beads-context.sh', () => {
 	let testIssueId;
 
 	// Create a temporary test issue for isolation
