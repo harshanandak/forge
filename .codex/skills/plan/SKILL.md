@@ -127,9 +127,9 @@ Do NOT begin Phase 2 (web research) until:
 
 Run these in parallel:
 
-### Web research (parallel-web-search skill)
+### Web research (parallel-deep-research skill)
 ```
-Skill("parallel-web-search")
+Skill("parallel-deep-research")
 ```
 Search for:
 - "[tech stack] [feature] best practices [year]"
