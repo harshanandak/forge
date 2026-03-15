@@ -124,7 +124,8 @@ cmd_set_acceptance() {
   fi
 
   local issue_id="$1"
-  local criteria="$2"
+  local criteria
+  criteria="$(sanitize "$2")"
 
   if ! bd_update "$issue_id" --acceptance "$criteria" > /dev/null; then
     die "Failed to set acceptance on issue ${issue_id}"
@@ -140,16 +141,18 @@ cmd_update_progress() {
   fi
 
   local issue_id="$1"
-  local task_num="$2"
-  local total="$3"
-  local raw_title="$4"
-  local commit_sha="$5"
-  local test_count="$6"
-  local gate_count="$7"
-
-  # Sanitize the title (OWASP A03)
+  local task_num
+  task_num="$(sanitize "$2")"
+  local total
+  total="$(sanitize "$3")"
   local title
-  title="$(sanitize "$raw_title")"
+  title="$(sanitize "$4")"
+  local commit_sha
+  commit_sha="$(sanitize "$5")"
+  local test_count
+  test_count="$(sanitize "$6")"
+  local gate_count
+  gate_count="$(sanitize "$7")"
 
   local note="Task ${task_num}/${total} done: ${title} | ${test_count} tests | ${commit_sha} | ${gate_count} gates"
 
