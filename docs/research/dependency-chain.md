@@ -119,8 +119,8 @@ quickSetup()
 - **Context7 own deps**: Unknown — uses `@latest`, no version pinned
 - **Grep.app own deps**: Unknown — no version pinned
 - **Version pinning gap**: Both use `@latest` — breaking changes can silently break research workflow
-- **Auto-configured for**: Claude Code (`.mcp.json`), Continue (`.continue/config.yaml`)
-- **Manual setup required for**: Cursor, Windsurf, Cline
+- **Auto-configured for**: Claude Code (`.mcp.json`)
+- **Manual setup required for**: Cursor, Cline
 
 ---
 

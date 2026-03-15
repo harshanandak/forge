@@ -20,29 +20,23 @@ Every AI agent supported by Forge has its own permission/auto-approval system fo
 
 | File | Agent | Status |
 | ---- | ----- | ------ |
-| `GEMINI.md` | Antigravity | ✅ Exists — instructions only, no permissions |
 | `AGENTS.md` | Universal | ✅ Exists — workflow instructions only |
 | `docs/SETUP.md` | All agents | ✅ Exists (635 lines) — no permissions section |
 | `lib/agents/*.plugin.json` | 11 agents | ✅ All 11 plugin definitions exist |
 | `.claude/settings.json` | Claude Code | ✅ Exists — project-level permissions present |
 | `opencode.json` | Kilo/OpenCode | ❌ Missing |
-| `.aider.conf.yml` | Aider | ❌ Missing |
 | `.codex/config.toml` | Codex CLI | ❌ Missing |
 | `.cursor/rules/permissions-guidance.mdc` | Cursor | ❌ Missing |
-| `.agent/rules/permissions-guidance.md` | Antigravity | ❌ Missing |
 
 ### Affected files
 
 - `docs/SETUP.md` — add permissions section
 - `opencode.json` — new file at project root
-- `.aider.conf.yml` — new file at project root
 - `.codex/config.toml` — new file (directory must be created)
 - `.cursor/rules/permissions-guidance.mdc` — new file (directory must be created)
-- `.agent/rules/permissions-guidance.md` — new file (directory must be created)
 
 ### Integration points
 
-- `lib/agents/` plugin files reference directory names — `.agent/rules/` is already referenced in `antigravity.plugin.json`
 - `docs/SETUP.md` has per-agent sections — permissions guidance slots naturally into each agent's section
 - `.cursor/rules/` is referenced in `cursor.plugin.json` — adding a `.mdc` file there fits the existing pattern
 - The `forge setup` command will need to be updated separately to copy these files to new projects (separate issue)
@@ -70,15 +64,6 @@ Every AI agent supported by Forge has its own permission/auto-approval system fo
 - **States**: `"allow"`, `"ask"`, `"deny"`
 - **Sources**: [Kilo Code docs](https://kilo.ai/docs/features/auto-approving-actions), [OpenCode docs](https://opencode.ai/docs/permissions/)
 
-#### Aider — `.aider.conf.yml`
-- **Format**: YAML
-- **Syntax**: `yes-always: true/false` + `auto-accept-architect: true`
-- **Scope**: Project root OR `~` OR current directory
-- **Granularity**: Binary only — no per-command control
-- **States**: yes-always (all) or no (manual per prompt)
-- **Note**: `auto-accept-architect: true` is safer — only auto-accepts architect-mode file changes
-- **Sources**: [Aider config docs](https://aider.chat/docs/config/aider_conf.html)
-
 #### OpenAI Codex CLI — `.codex/config.toml`
 - **Format**: TOML
 - **Syntax**: `approval_policy = "on-request"` + `sandbox_mode = "workspace-write"`
@@ -96,15 +81,6 @@ Every AI agent supported by Forge has its own permission/auto-approval system fo
 - **Granularity**: Fine-grained per-command allow/deny lists
 - **Approach for Forge**: Document recommended settings in `.cursor/rules/permissions-guidance.mdc`
 - **Sources**: Cursor Settings UI
-
-#### Antigravity — IDE Settings (Off/Auto/Turbo)
-- **Format**: UI-only — configured in Settings > Agent > Terminal Command Auto Execution
-- **Modes**: Off (whitelist), Auto (risk-based), Turbo (blacklist)
-- **Scope**: IDE-level, not version-controlled — cannot be shipped as project file
-- **Granularity**: Mode-based with allow/deny lists
-- **Best default**: Auto — uses built-in risk detection
-- **Approach for Forge**: Document recommended settings in `.agent/rules/permissions-guidance.md`
-- **Sources**: Antigravity Settings UI, [Antigravity docs](https://antigravity.google)
 
 ### Risk-Based Command Classification
 
@@ -128,14 +104,9 @@ Every AI agent supported by Forge has its own permission/auto-approval system fo
 - Evidence: Codex docs recommend `on-request` for interactive development
 - Alternative: `never` for power users (can be documented as option)
 
-**Decision 3: `yes-always: false` for Aider**
-- Reasoning: Aider has no granular control — `yes-always: true` would skip ALL prompts including potentially destructive operations. Conservative default is safer.
-- Evidence: Aider docs recommend manual confirmation for important actions
-- Alternative: `yes-always: true` for trusted environments (comment in config explains)
-
-**Decision 4: Documentation-only for Cursor + Antigravity**
-- Reasoning: Their permissions are IDE-level settings, not project files — nothing to commit
-- Evidence: No `settings.json`-like project file exists for either agent
+**Decision 3: Documentation-only for Cursor**
+- Reasoning: Cursor permissions are IDE-level settings, not project files — nothing to commit
+- Evidence: No `settings.json`-like project file exists for Cursor
 - Alternative: None — this is a platform limitation
 
 ---
@@ -145,11 +116,9 @@ Every AI agent supported by Forge has its own permission/auto-approval system fo
 Since these are config files (not code), traditional unit tests don't apply. Verification is manual:
 
 1. **opencode.json validity** — JSON parses without errors; `git status` and `bd list` run without prompt in Kilo Code or OpenCode
-2. **.aider.conf.yml validity** — YAML parses correctly; `aider --show-settings` confirms `auto-accept-architect: true`
-3. **.codex/config.toml validity** — TOML parses correctly; Codex CLI reads file at startup
-4. **.cursor/rules/ presence** — File appears in Cursor's Rules panel; content is accurate
-5. **.agent/rules/ presence** — File appears in Antigravity's rules view; content is accurate
-6. **docs/SETUP.md section** — Section is readable, links work, global config snippet is copy-pasteable and correct
+2. **.codex/config.toml validity** — TOML parses correctly; Codex CLI reads file at startup
+3. **.cursor/rules/ presence** — File appears in Cursor's Rules panel; content is accurate
+4. **docs/SETUP.md section** — Section is readable, links work, global config snippet is copy-pasteable and correct
 
 ---
 
@@ -160,14 +129,13 @@ Since these are config files (not code), traditional unit tests don't apply. Ver
 | Risk | Relevance | Mitigation |
 | ---- | --------- | ---------- |
 | **A01 Broken Access Control** | Medium — overly broad allow lists could let agents run unintended commands | Explicit deny rules for `rm -rf`, `git push --force`, `git reset --hard` |
-| **A05 Security Misconfiguration** | Medium — shipping `yes-always: true` or `never` would be misconfigured defaults | Conservative defaults: `yes-always: false`, `approval_policy = "on-request"` |
+| **A05 Security Misconfiguration** | Medium — shipping overly permissive defaults would be misconfigured | Conservative defaults: `approval_policy = "on-request"` |
 | **A09 Security Logging** | Low — agent commands aren't logged by these configs | Mitigated by git history and Beads tracking |
 
 ### Agent-Specific Security Notes
 
 - **opencode.json**: Deny rules must be at the bottom (last match wins) — putting them first would be ineffective
 - **Codex CLI**: `sandbox_mode = "workspace-write"` prevents file access outside project root — keep this
-- **Aider**: `yes-always: false` prevents auto-confirm of destructive operations — keep conservative
 - **Never ship**: `--dangerously-bypass-approvals-and-sandbox` (Codex) or global `"*": "allow"` (opencode.json)
 
 ---
@@ -176,8 +144,8 @@ Since these are config files (not code), traditional unit tests don't apply. Ver
 
 **Type**: Tactical (config files + docs update, no business logic)
 **Complexity**: Low — all config formats researched, no code changes needed
-**Parallelization**: All 5 config files can be created simultaneously; docs/SETUP.md update is sequential after
-**Estimated files**: 6 new files, 1 modified
+**Parallelization**: All 3 config files can be created simultaneously; docs/SETUP.md update is sequential after
+**Estimated files**: 4 new files, 1 modified
 
 **Branch**: `feat/agent-permissions`
 
@@ -187,9 +155,7 @@ Since these are config files (not code), traditional unit tests don't apply. Ver
 
 - [Kilo Code - Auto-Approving Actions](https://kilo.ai/docs/features/auto-approving-actions)
 - [OpenCode - Permissions](https://opencode.ai/docs/permissions/)
-- [Aider - YAML Config](https://aider.chat/docs/config/aider_conf.html)
 - [Codex CLI - Config Reference](https://developers.openai.com/codex/config-reference/)
-- [Antigravity - Agent Modes](https://antigravity.google/docs/agent-modes-settings)
 - Forge project codebase analysis (2026-02-24)
 
 ---

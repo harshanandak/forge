@@ -281,9 +281,6 @@ openspec/
 │   └── default.yaml          # Workflow schema
 │
 └── config.yaml               # Project configuration
-
-.agent/
-└── AGENTS.md                 # AI instructions
 ```
 
 ### CLI Commands
@@ -314,7 +311,7 @@ openspec schema validate      # Validate schema
 openspec schemas              # List available schemas
 ```
 
-### AI Slash Commands (Claude Code, Cursor, Windsurf)
+### AI Slash Commands (Claude Code, Cursor)
 
 ```bash
 /opsx:explore     # Think through ideas, investigate
@@ -422,7 +419,7 @@ The system SHALL support optional 2FA
 
 **Package**: `@upstash/context7-mcp@2` (pin to major version, not `@latest`)
 **Purpose**: Up-to-date documentation and code examples for any programming library
-**Used in**: `/research` stage, any library lookup
+**Used in**: `/plan` stage (Phase 2 research); any library lookup
 
 Context7 provides current documentation that may be more recent than the AI's training data.
 
@@ -447,19 +444,6 @@ Context7 provides current documentation that may be more recent than the AI's tr
 2. Search for "Cline MCP"
 3. Add Context7 server configuration
 
-**Continue**: Add to `.continue/config.json`:
-
-```json
-{
-  "mcpServers": {
-    "context7": {
-      "command": "bunx",
-      "args": ["--bun", "@upstash/context7-mcp@latest"]
-    }
-  }
-}
-```
-
 **Cursor**: Check Cursor Settings → MCP Servers for configuration options
 
 **Other agents**: If your agent supports MCP, configure using the JSON format above
@@ -483,7 +467,7 @@ Context7 provides current documentation that may be more recent than the AI's tr
 **Package**: `@ai-tools-all/grep_app_mcp` (recommended) or `@galprz/grep-mcp`
 **Website**: [grep.app](https://grep.app)
 **Purpose**: Search across 1M+ public GitHub repositories for real-world code examples
-**Used in**: `/research` stage, finding implementation patterns
+**Used in**: `/plan` stage (Phase 2 research); finding implementation patterns
 
 grep.app provides code search across public GitHub repositories to find real-world examples and patterns.
 
@@ -535,7 +519,7 @@ Add to `.mcp.json` in your project root:
 ### Parallel AI - Web Research
 
 **Website**: [platform.parallel.ai](https://platform.parallel.ai)
-**Used in**: `/research` stage
+**Used in**: `/plan` stage (Phase 2 research)
 
 4 APIs for research:
 - **Search** - Web search with AI analysis
@@ -752,7 +736,7 @@ gh issue create --title "..." --body "..."
 | Stage | Tools Used |
 |-------|------------|
 | `/status` | `bd ready`, `bd list`, `git status`, `openspec list` |
-| `/research` | Parallel AI, Context7, grep.app, codebase exploration |
+| `/plan` (Phase 2) | Parallel AI, Context7, grep.app, codebase exploration |
 | `/plan` | `bd create`, `openspec` (if strategic), `git checkout -b` |
 | `/dev` | Tests, code, `bd update`, `/tasks save` |
 | `/validate` | Type check, lint, tests, SonarCloud |
