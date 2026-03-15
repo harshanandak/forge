@@ -403,3 +403,41 @@ describe('/plan command integration with beads-context.sh', () => {
 		);
 	});
 });
+
+describe('/dev command integration with beads-context.sh', () => {
+	const DEV_MD_PATH = path.join(
+		__dirname,
+		'..',
+		'.claude',
+		'commands',
+		'dev.md',
+	);
+	let devContent;
+
+	beforeAll(() => {
+		devContent = fs.readFileSync(DEV_MD_PATH, 'utf-8');
+	});
+
+	test('dev.md Step E HARD-GATE should reference beads-context.sh update-progress', () => {
+		expect(devContent).toContain('beads-context.sh update-progress');
+	});
+
+	test('dev.md should reference beads-context.sh stage-transition for dev to validate', () => {
+		expect(devContent).toContain('beads-context.sh stage-transition');
+		expect(devContent).toContain('dev validate');
+	});
+
+	test('dev.md Step E HARD-GATE should include update-progress as a gate item', () => {
+		// The task completion HARD-GATE should mention update-progress ran successfully
+		expect(devContent).toMatch(
+			/HARD-GATE.*task completion[\s\S]*?beads-context\.sh update-progress[\s\S]*?ran successfully/i,
+		);
+	});
+
+	test('dev.md Beads update section should use stage-transition instead of bd update', () => {
+		// The Beads update section should use stage-transition, not bd update --comment
+		expect(devContent).toMatch(
+			/Beads update[\s\S]*?beads-context\.sh stage-transition/i,
+		);
+	});
+});
