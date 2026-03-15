@@ -70,7 +70,7 @@ function checkGitState(directory) {
       path: directory,
       reason: 'Repository has active merge conflict'
     });
-    checksPassed++; // We detected it, so check passed
+    // Do NOT increment checksPassed — this is a genuine failure
   } else {
     checksPassed++;
   }
@@ -151,7 +151,8 @@ function hasMergeConflict(directory) {
     execSync('git diff --check', {
       cwd: directory,
       stdio: 'pipe',
-      encoding: 'utf8'
+      encoding: 'utf8',
+      timeout: 10000,
     });
     // No conflict markers found
     return { hasConflict: false, conflictedFiles: [] };
@@ -162,7 +163,8 @@ function hasMergeConflict(directory) {
       const output = execSync('git diff --name-only --diff-filter=U', {
         cwd: directory,
         stdio: 'pipe',
-        encoding: 'utf8'
+        encoding: 'utf8',
+        timeout: 10000,
       });
       const conflictedFiles = output.trim().split('\n').filter(f => f.length > 0);
       return { hasConflict: true, conflictedFiles };

@@ -1,6 +1,3 @@
----
-description: Design intent → research → branch + worktree + task list
----
 
 Plan a feature from scratch: brainstorm design intent, research technical approach, then set up branch, worktree, and a complete task list ready for /dev.
 

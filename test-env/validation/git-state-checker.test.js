@@ -51,26 +51,31 @@ function setupGitRepo(directory) {
 
 // Helper: Create a merge conflict scenario
 // SECURITY: All git commands are hardcoded strings (no user input)
+// SECURITY: All git commands below are hardcoded strings — no user input or
+// runtime-derived values are interpolated into any command.
 function createMergeConflict(directory) {
+  const execOpts = { cwd: directory, stdio: 'pipe', timeout: 10000 };
   try {
-    // Create a branch with conflicting changes
-    execSync('git checkout -b feature-branch', { cwd: directory, stdio: 'pipe' });
+    // Create a named branch so we can switch back with a hardcoded name
+    // SECURITY: Hardcoded branch names only
+    execSync('git branch initial-branch', execOpts);
+    execSync('git checkout -b feature-branch', execOpts);
     const testFile = path.join(directory, 'README.md');
     fs.writeFileSync(testFile, '# Feature Branch');
-    execSync('git add README.md', { cwd: directory, stdio: 'pipe' });
-    execSync('git commit -m "Feature change"', { cwd: directory, stdio: 'pipe' });
+    execSync('git add README.md', execOpts);
+    execSync('git commit -m "Feature change"', execOpts);
 
-    // Switch back to main/master and make conflicting change
-    execSync('git checkout -', { cwd: directory, stdio: 'pipe' });
+    // Switch back using hardcoded branch name (no dynamic variables)
+    execSync('git checkout initial-branch', execOpts);
     fs.writeFileSync(testFile, '# Main Branch');
-    execSync('git add README.md', { cwd: directory, stdio: 'pipe' });
-    execSync('git commit -m "Main change"', { cwd: directory, stdio: 'pipe' });
+    execSync('git add README.md', execOpts);
+    execSync('git commit -m "Main change"', execOpts);
 
-    // Try to merge - this will create a conflict
+    // Try to merge — this will create a conflict
     try {
-      execSync('git merge feature-branch', { cwd: directory, stdio: 'pipe' });
+      execSync('git merge feature-branch --no-edit', execOpts);
     } catch (_error) {
-      // Expected - merge conflict
+      // Expected — merge conflict
     }
   } catch (error) {
     throw new Error(`Failed to create merge conflict: ${error.message}`);
