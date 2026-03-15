@@ -15,11 +15,22 @@ function parseFrontmatter(filePath) {
   if (end === -1) return null;
   const yaml = content.slice(4, end);
   const result = {};
-  for (const line of yaml.split('\n')) {
+  const lines = yaml.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) continue;
     const key = line.slice(0, colonIdx).trim();
-    const val = line.slice(colonIdx + 1).trim().replace(/^["']|["']$/g, '');
+    let val = line.slice(colonIdx + 1).trim().replace(/^["']|["']$/g, '');
+    // Handle YAML block scalars (>, |, >-, |-)
+    if (['>', '|', '>-', '|-'].includes(val)) {
+      const continuation = [];
+      while (i + 1 < lines.length && (lines[i + 1].startsWith('  ') || lines[i + 1].startsWith('\t'))) {
+        i++;
+        continuation.push(lines[i].trim());
+      }
+      val = continuation.join(' ');
+    }
     if (key && val) result[key] = val;
   }
   return result;

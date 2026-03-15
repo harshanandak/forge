@@ -165,6 +165,16 @@ def main():
     name, description, _ = parse_skill_md(skill_path)
     project_root = find_project_root()
 
+    # Warn if .claude/skills/ symlink is absent — skills won't be discoverable
+    skill_link = project_root / ".claude" / "skills" / name
+    if not skill_link.exists():
+        print(
+            f"Warning: .claude/skills/{name} not found — "
+            "skills not symlinked. Trigger rates will be 0%.\n"
+            "Run 'bunx skills sync' or create the symlink manually.",
+            file=sys.stderr,
+        )
+
     if args.verbose:
         print(f"Skill: {name}", file=sys.stderr)
         print(f"Description: {description[:100]}...", file=sys.stderr)

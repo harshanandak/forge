@@ -12,4 +12,16 @@ This is **not** compatible with the skill-creator plugin's `run_loop.py` which e
 {"skill_name": "...", "evals": [{"id": "...", "prompt": "...", "should_trigger": true}]}
 ```
 
-To use with `run_loop.py`, convert `query` → `prompt` and wrap in the plugin schema.
+To convert for `run_loop.py`:
+
+```bash
+python3 -c "
+import json, pathlib, uuid
+data = json.loads(pathlib.Path('evals.json').read_text())
+out = {'skill_name': 'SKILL-NAME-HERE', 'evals': [
+    {'id': str(uuid.uuid4()), 'prompt': item['query'], 'should_trigger': item['should_trigger']}
+    for item in data
+]}
+print(json.dumps(out, indent=2))
+" > evals_skill_creator.json
+```

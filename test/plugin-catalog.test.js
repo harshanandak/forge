@@ -93,9 +93,9 @@ describe('plugin-catalog', () => {
     const validStages = Object.values(STAGES);
     const validInstallMethods = ['npm', 'skills', 'add-mcp', 'config', 'lsp', 'go', 'binary'];
 
-    test('at least 29 tools in the catalog', () => {
+    test('catalog has exactly 30 tools', () => {
       const toolCount = Object.keys(CATALOG).length;
-      expect(toolCount >= 29).toBeTruthy();
+      expect(toolCount).toBe(30);
     });
 
     test('no duplicate tool IDs', () => {
