@@ -319,6 +319,8 @@ describe.skipIf(!isBdAvailable())('scripts/beads-context.sh', () => {
 			expect(result.exitCode).toBe(0);
 			// Should contain task count and last task info
 			expect(result.stdout).toMatch(/\d+\/\d+ tasks done/);
+			// Should contain the commit SHA in the last-task parenthetical
+			expect(result.stdout).toMatch(/\([a-z0-9]+\)/);
 		});
 
 		test('should output "No progress data" for issue with no notes', async () => {

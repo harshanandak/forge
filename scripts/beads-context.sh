@@ -230,7 +230,8 @@ cmd_parse_progress() {
   # Extract commit sha — 4th pipe-separated field
   # Format: "Task N/M done: <title> | <test_count> tests | <sha> | <gate_count> gates"
   local last_sha
-  last_sha="$(echo "$last_line" | awk -F ' \\| ' '{print $3}' | sed 's/^ *//;s/ *$//')"
+  # Use [|] character class for portable literal pipe matching across gawk and BSD awk
+  last_sha="$(echo "$last_line" | awk -F ' [|] ' '{print $3}' | sed 's/^ *//;s/ *$//')"
 
   echo "${task_lines}/${total} tasks done | Last: ${last_title} (${last_sha})"
 }
