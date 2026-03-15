@@ -41,8 +41,8 @@ sanitize() {
   local val="$1"
   # Remove double quotes
   val="${val//\"/}"
-  # Remove $(...) command substitution patterns
-  val="$(printf '%s' "$val" | sed 's/\$([^)]*)//g')"
+  # Remove $(...) command substitution patterns (loop handles nested)
+  val="$(printf '%s' "$val" | sed ':loop; s/\$([^()]*)//g; t loop')"
   # Remove backtick command substitution
   val="${val//\`/}"
   # Remove semicolons (command chaining)
@@ -64,8 +64,9 @@ bd_update() {
     return 1
   fi
 
-  # bd prints "Error resolving ..." to stdout for non-existent issues
-  if printf '%s' "$output" | grep -qi 'error'; then
+  # bd prints "Error resolving/updating ..." to stdout for non-existent issues
+  # Use specific patterns to avoid false positives from data containing "error"
+  if printf '%s' "$output" | grep -qi '^Error\|Error resolving\|Error updating'; then
     echo "$output" >&2
     return 1
   fi
@@ -85,7 +86,8 @@ bd_comment() {
     return 1
   fi
 
-  if printf '%s' "$output" | grep -qi 'error'; then
+  # Use specific error patterns to avoid false positives from data containing "error"
+  if printf '%s' "$output" | grep -qi '^Error\|Error resolving\|Error adding'; then
     echo "$output" >&2
     return 1
   fi
@@ -181,10 +183,13 @@ cmd_parse_progress() {
     die "Issue not found: ${issue_id}"
   fi
 
-  # Extract notes field from JSON (handle both compact and pretty-printed)
-  # The JSON notes field contains literal \n between entries
+  # Extract notes field from JSON — prefer jq if available, fall back to grep/sed
   local notes
-  notes="$(printf '%s' "$json" | grep -o '"notes": *"[^"]*"' | head -1 | sed 's/^"notes": *"//;s/"$//' || true)"
+  if command -v jq &>/dev/null; then
+    notes="$(printf '%s' "$json" | jq -r '.[0].notes // empty' 2>/dev/null || true)"
+  else
+    notes="$(printf '%s' "$json" | grep -o '"notes": *"[^"]*"' | head -1 | sed 's/^"notes": *"//;s/"$//' || true)"
+  fi
 
   if [[ -z "$notes" ]]; then
     echo "No progress data"
