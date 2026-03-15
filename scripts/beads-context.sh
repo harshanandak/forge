@@ -35,11 +35,18 @@ die() {
   exit 1
 }
 
-# Sanitize a string: strip double quotes and replace newlines with spaces
+# Sanitize a string: strip shell-injection patterns (OWASP A03)
+# Removes: double quotes, $(...), backticks, semicolons, and newlines
 sanitize() {
   local val="$1"
   # Remove double quotes
   val="${val//\"/}"
+  # Remove $(...) command substitution patterns
+  val="$(printf '%s' "$val" | sed 's/\$([^)]*)//g')"
+  # Remove backtick command substitution
+  val="${val//\`/}"
+  # Remove semicolons (command chaining)
+  val="${val//;/}"
   # Replace newlines with spaces
   val="$(printf '%s' "$val" | tr '\n' ' ')"
   printf '%s' "$val"
@@ -159,9 +166,19 @@ cmd_parse_progress() {
 
   local issue_id="$1"
 
-  # Get the issue JSON
+  # Get the issue JSON — detect non-existent issues
   local json
   json="$(bd show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
+
+  # bd show may exit 0 but print an error for non-existent issues
+  if printf '%s' "$json" | grep -qi 'error'; then
+    die "Issue not found: ${issue_id}"
+  fi
+
+  # bd show returns "[]" or empty for non-existent issues
+  if [[ -z "$json" || "$json" == "[]" || "$json" == "null" ]]; then
+    die "Issue not found: ${issue_id}"
+  fi
 
   # Extract notes field from JSON (handle both compact and pretty-printed)
   # The JSON notes field contains literal \n between entries

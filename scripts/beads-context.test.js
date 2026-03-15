@@ -194,6 +194,16 @@ describe('scripts/beads-context.sh', () => {
 			);
 			expect(result.exitCode).toBe(0);
 		});
+
+		test('should fail with non-existent issue ID', async () => {
+			const result = await run(
+				'set-acceptance',
+				'bd-nonexistent-999',
+				'Some criteria',
+			);
+			expect(result.exitCode).not.toBe(0);
+			expect(result.stderr).toMatch(/error|fail|not found/i);
+		});
 	});
 
 	describe('update-progress', () => {
@@ -230,6 +240,46 @@ describe('scripts/beads-context.sh', () => {
 				'2',
 			);
 			expect(result.exitCode).toBe(0);
+		});
+
+		test('should fail with non-existent issue ID', async () => {
+			const result = await run(
+				'update-progress',
+				'bd-nonexistent-999',
+				'1',
+				'5',
+				'Some task',
+				'abc1234',
+				'3',
+				'1',
+			);
+			expect(result.exitCode).not.toBe(0);
+			expect(result.stderr).toMatch(/error|fail|not found/i);
+		});
+
+		test('should not execute shell injection in task title (OWASP A03)', async () => {
+			// Attempt shell injection via $() and backticks
+			const maliciousTitle = '$(echo PWNED) `echo PWNED2` ; rm -rf /';
+			const result = await run(
+				'update-progress',
+				testIssueId,
+				'4',
+				'7',
+				maliciousTitle,
+				'bad1234',
+				'0',
+				'0',
+			);
+			expect(result.exitCode).toBe(0);
+
+			// Verify dangerous shell metacharacters were stripped from stored note
+			const show = await bd('show', testIssueId, '--json');
+			// $(...) should be removed entirely
+			expect(show.stdout).not.toContain('$(');
+			// Backticks should be removed
+			expect(show.stdout).not.toContain('`');
+			// Semicolons should be removed
+			expect(show.stdout).not.toMatch(/Task 4\/7.*[;]/);
 		});
 
 		test('should handle multiple progress updates (append, not overwrite)', async () => {
@@ -274,6 +324,12 @@ describe('scripts/beads-context.sh', () => {
 
 			// Clean up
 			await bd('delete', freshId, '--force');
+		});
+
+		test('should fail with non-existent issue ID', async () => {
+			const result = await run('parse-progress', 'bd-nonexistent-999');
+			expect(result.exitCode).not.toBe(0);
+			expect(result.stderr).toMatch(/error|fail|not found/i);
 		});
 	});
 
