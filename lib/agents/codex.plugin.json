@@ -5,11 +5,13 @@
   "description": "OpenAI's terminal coding agent",
   "homepage": "https://github.com/openai/codex",
   "capabilities": {
-    "commands": false,
-    "skills": false,
+    "commands": true,
+    "skills": true,
     "hooks": false
   },
-  "directories": {},
+  "directories": {
+    "skills": ".codex/skills"
+  },
   "setup": {
     "copyRules": false,
     "createSkill": false
