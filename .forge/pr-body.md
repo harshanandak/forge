@@ -18,8 +18,8 @@ See: [.claude/plans/enumerated-watching-chipmunk.md](.claude/plans/enumerated-wa
 - **Impact**: Developers can switch agents anytime without reconfiguration
 
 ### 2. **Tier 1 vs Tier 2 Agent Support**
-- **Tier 1** (Primary): Claude Code, GitHub Copilot, Kilo Code, Cursor, Aider
-- **Tier 2** (Optional): OpenCode, Goose, Antigravity
+- **Tier 1** (Primary): Claude Code, GitHub Copilot, Kilo Code, Cursor, Cline
+- **Tier 2** (Optional): OpenCode, Roo Code, Codex
 - **Rationale**: Focus maintenance on widely-adopted agents with strong ecosystems
 - **Research-backed**: 67% reduction in coordination issues with this approach
 
@@ -43,12 +43,11 @@ See: [.claude/plans/enumerated-watching-chipmunk.md](.claude/plans/enumerated-wa
 ### New Modules (2,346 lines)
 
 #### lib/agents-config.js (2,228 lines)
-**6 Main Generators**:
+**5 Main Generators**:
 - generateAgentsMd() - Universal workflow (all agents)
 - generateCopilotConfig() - GitHub Copilot (.github/copilot-instructions.md + instructions/ + prompts/)
 - generateCursorConfig() - Cursor IDE (.cursor/rules/*.mdc)
 - generateKiloConfig() - Kilo Code (.kilo.md)
-- generateAiderConfig() - Aider (.aider.conf.yml)
 - generateOpenCodeConfig() - OpenCode (opencode.json + .opencode/agents/)
 
 **3 Documentation Generators**:
@@ -91,7 +90,6 @@ See: [.claude/plans/enumerated-watching-chipmunk.md](.claude/plans/enumerated-wa
   - GitHub Copilot: .github/copilot-instructions.md
   - Cursor: .cursor/ directory
   - Kilo: .kilo.md
-  - Aider: .aider.conf.yml
   - OpenCode: opencode.json
 
 ### Documentation Updates
@@ -143,7 +141,6 @@ See: [.claude/plans/enumerated-watching-chipmunk.md](.claude/plans/enumerated-wa
 
 5. **test/other-agents-config-generation.test.js** (14 tests)
    - Kilo: .kilo.md generation
-   - Aider: .aider.conf.yml generation
    - OpenCode: opencode.json + .opencode/agents/ generation
    - Overwrite protection for all
 
@@ -274,7 +271,6 @@ bunx forge setup --all
 bunx forge setup --agent=copilot    # GitHub Copilot
 bunx forge setup --agent=cursor     # Cursor IDE
 bunx forge setup --agent=kilo       # Kilo Code
-bunx forge setup --agent=aider      # Aider
 ```
 
 ### For New Users

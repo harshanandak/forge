@@ -2,7 +2,7 @@
 
 - **Slug**: agent-command-parity
 - **Date**: 2026-03-04
-- **Status**: Draft
+- **Status**: Superseded by 2026-03-15-agent-command-parity-v2-design.md
 
 ---
 

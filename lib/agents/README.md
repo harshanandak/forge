@@ -27,14 +27,14 @@ Each plugin file must follow this structure:
     "hooks": false            // Supports git hooks
   },
   "directories": {            // REQUIRED: Directory structure (at least one)
-    "commands": ".agent/commands",
-    "rules": ".agent/rules",
-    "skills": ".agent/skills/forge-workflow",
-    "scripts": ".agent/scripts"
+    "commands": ".your-agent/commands",
+    "rules": ".your-agent/rules",
+    "skills": ".your-agent/skills/forge-workflow",
+    "scripts": ".your-agent/scripts"
   },
   "files": {                  // OPTIONAL: Important file paths
-    "rootConfig": "AGENT.md",
-    "skillDefinition": ".agent/skills/forge-workflow/SKILL.md"
+    "rootConfig": "YOUR-AGENT.md",
+    "skillDefinition": ".your-agent/skills/forge-workflow/SKILL.md"
   },
   "setup": {                  // OPTIONAL: Setup instructions
     "copyCommands": true,
@@ -69,15 +69,11 @@ Currently supported AI coding agents:
 |-------|----|-----------|
 | Claude Code | `claude` | Anthropic's CLI agent |
 | Cursor | `cursor` | AI-first code editor |
-| Windsurf | `windsurf` | Codeium's agentic IDE |
 | Kilo Code | `kilocode` | VS Code extension |
-| Google Antigravity | `antigravity` | Google's agent IDE |
 | GitHub Copilot | `copilot` | GitHub's AI assistant |
-| Continue | `continue` | Open-source AI assistant |
 | OpenCode | `opencode` | Open-source agent |
 | Cline | `cline` | VS Code agent extension |
 | Roo Code | `roo` | Cline fork with modes |
-| Aider | `aider` | Terminal-based agent |
 
 ## Adding a New Agent
 
