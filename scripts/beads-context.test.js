@@ -324,13 +324,14 @@ describe.skipIf(!isBdAvailable())('scripts/beads-context.sh', () => {
 		});
 
 		test('should output "No progress data" for issue with no notes', async () => {
-			// Create a fresh issue with no progress
+			// Create a fresh issue with no progress (use bd create, not bd q)
 			const fresh = await bd(
-				'q',
-				'beads-context-fresh-test',
+				'create',
+				'--title=beads-context-fresh-test',
 				'--type=task',
 			);
-			const freshId = fresh.stdout.trim();
+			const match = fresh.stdout.match(/([a-zA-Z]+-[a-zA-Z0-9]+)/);
+			const freshId = match ? match[1] : '';
 
 			const result = await run('parse-progress', freshId);
 			expect(result.exitCode).toBe(0);

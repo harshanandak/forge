@@ -48,6 +48,8 @@ sanitize() {
   val="${val//\`/}"
   # Remove semicolons (command chaining)
   val="${val//;/}"
+  # Remove backslashes (prevents printf '%b' expansion in parse-progress)
+  val="${val//\\/}"
   # Replace newlines with spaces
   val="$(printf '%s' "$val" | tr '\n' ' ')"
   printf '%s' "$val"
