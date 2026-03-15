@@ -113,7 +113,7 @@ def run_single_query(
     except subprocess.TimeoutExpired:
         return False
 
-    # Parse output for skill triggering — scan all tool calls in first assistant message
+    # Parse output for skill triggering — scan ALL assistant messages
     for line in output.split("\n"):
         line = line.strip()
         if not line:
@@ -123,7 +123,6 @@ def run_single_query(
         except (json.JSONDecodeError, UnicodeDecodeError):
             continue
 
-        # Check first assistant message for any Skill tool call matching our skill
         if event.get("type") == "assistant":
             message = event.get("message", {})
             for content_item in message.get("content", []):
@@ -137,8 +136,6 @@ def run_single_query(
                         return True
                     if invoked_skill == _KNOWN_ALIASES.get(skill_name):
                         return True
-            # Scanned all tool calls in this message — no match
-            return False
 
     return False
 
