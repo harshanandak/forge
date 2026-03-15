@@ -8,12 +8,13 @@ const SCRIPT_PATH = path.join(__dirname, 'beads-context.sh');
 const WORKTREE_ROOT = path.resolve(__dirname, '..');
 
 // Check if bd CLI is available (not installed in CI)
-let BD_AVAILABLE = false;
-try {
-	execFileSync('bd', ['--version'], { stdio: 'ignore' });
-	BD_AVAILABLE = true;
-} catch {
-	BD_AVAILABLE = false;
+function isBdAvailable() {
+	try {
+		execFileSync('bd', ['--version'], { stdio: 'ignore' });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -49,7 +50,7 @@ async function bd(...args) {
 	return { exitCode, stdout, stderr };
 }
 
-describe.skipIf(!BD_AVAILABLE)('scripts/beads-context.sh', () => {
+describe.skipIf(!isBdAvailable())('scripts/beads-context.sh', () => {
 	let testIssueId;
 
 	// Create a temporary test issue for isolation
