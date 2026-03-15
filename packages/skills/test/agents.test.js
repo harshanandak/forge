@@ -69,17 +69,6 @@ describe('Agent Detection', () => {
     expect(agents[0].enabled).toBe(true);
   });
 
-  test('detectAgents finds Continue agent', () => {
-    mkdirSync('.continue', { recursive: true });
-
-    const agents = detectAgents();
-
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('continue');
-    expect(agents[0].path).toBe('.continue/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
-
   test('detectAgents finds multiple agents', () => {
     mkdirSync('.cursor', { recursive: true });
     mkdirSync('.github', { recursive: true });
@@ -96,7 +85,6 @@ describe('Agent Detection', () => {
   });
 
   test('detectAgents returns agents in consistent order', () => {
-    mkdirSync('.continue', { recursive: true });
     mkdirSync('.cursor', { recursive: true });
     mkdirSync('.github', { recursive: true });
     mkdirSync('.cline', { recursive: true });
@@ -105,9 +93,8 @@ describe('Agent Detection', () => {
 
     // Should be in alphabetical order for consistency
     expect(agents[0].name).toBe('cline');
-    expect(agents[1].name).toBe('continue');
-    expect(agents[2].name).toBe('cursor');
-    expect(agents[3].name).toBe('github');
+    expect(agents[1].name).toBe('cursor');
+    expect(agents[2].name).toBe('github');
   });
 
   test('detectAgents marks primary agents as enabled', () => {
@@ -125,29 +112,27 @@ describe('Agent Detection', () => {
 
   test('detectAgents marks all agents as enabled', () => {
     mkdirSync('.cline', { recursive: true });
-    mkdirSync('.continue', { recursive: true });
+    mkdirSync('.roo', { recursive: true });
 
     const agents = detectAgents();
 
     const cline = agents.find(a => a.name === 'cline');
-    const continueAgent = agents.find(a => a.name === 'continue');
+    const roo = agents.find(a => a.name === 'roo');
 
     expect(cline.enabled).toBe(true);
-    expect(continueAgent.enabled).toBe(true);
+    expect(roo.enabled).toBe(true);
   });
 
   test('detectAgents includes correct skills path for each agent', () => {
     mkdirSync('.cursor', { recursive: true });
     mkdirSync('.github', { recursive: true });
     mkdirSync('.cline', { recursive: true });
-    mkdirSync('.continue', { recursive: true });
 
     const agents = detectAgents();
 
     expect(agents.find(a => a.name === 'cursor').path).toBe('.cursor/skills');
     expect(agents.find(a => a.name === 'github').path).toBe('.github/skills');
     expect(agents.find(a => a.name === 'cline').path).toBe('.cline/skills');
-    expect(agents.find(a => a.name === 'continue').path).toBe('.continue/skills');
   });
 
   test('detectAgents includes description for each agent', () => {
@@ -193,31 +178,12 @@ describe('Agent Detection', () => {
     expect(agents[0].enabled).toBe(true);
   });
 
-  test('detectAgents finds Aider agent', () => {
-    mkdirSync('.aider', { recursive: true });
-    const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('aider');
-    expect(agents[0].path).toBe('.aider/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
-
-  // New agents: previously disabled
   test('detectAgents finds Roo Code agent', () => {
     mkdirSync('.roo', { recursive: true });
     const agents = detectAgents();
     expect(agents.length).toBe(1);
     expect(agents[0].name).toBe('roo');
     expect(agents[0].path).toBe('.roo/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
-
-  test('detectAgents finds Windsurf agent', () => {
-    mkdirSync('.windsurf', { recursive: true });
-    const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('windsurf');
-    expect(agents[0].path).toBe('.windsurf/skills');
     expect(agents[0].enabled).toBe(true);
   });
 
@@ -230,12 +196,4 @@ describe('Agent Detection', () => {
     expect(agents[0].enabled).toBe(true);
   });
 
-  test('detectAgents finds Antigravity agent', () => {
-    mkdirSync('.agent', { recursive: true });
-    const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('antigravity');
-    expect(agents[0].path).toBe('.agent/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
 });
