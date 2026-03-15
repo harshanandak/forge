@@ -439,7 +439,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
     }
 
     return {
-      inSync: outOfSync.length === 0 && staleFiles.length === 0,
+      inSync: manifestMissing ? false : outOfSync.length === 0 && staleFiles.length === 0,
       outOfSync,
       staleFiles,
       manifestMissing,
