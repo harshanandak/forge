@@ -121,7 +121,7 @@ describe('Sync Command', () => {
     mkdirSync('.cursor', { recursive: true });
     mkdirSync('.github', { recursive: true });
     mkdirSync('.cline', { recursive: true });
-    mkdirSync('.continue', { recursive: true });
+    mkdirSync('.roo', { recursive: true });
 
     await syncCommand({});
 
@@ -129,7 +129,7 @@ describe('Sync Command', () => {
     expect(existsSync('.cursor/skills/test-skill/SKILL.md')).toBe(true);
     expect(existsSync('.github/skills/test-skill/SKILL.md')).toBe(true);
     expect(existsSync('.cline/skills/test-skill/SKILL.md')).toBe(true);
-    expect(existsSync('.continue/skills/test-skill/SKILL.md')).toBe(true);
+    expect(existsSync('.roo/skills/test-skill/SKILL.md')).toBe(true);
   });
 
   test('syncCommand handles no agents gracefully', async () => {
@@ -251,12 +251,6 @@ describe('Sync Command', () => {
     mkdirSync('.kilocode', { recursive: true });
     await syncCommand({});
     expect(existsSync('.kilocode/skills/test-skill/SKILL.md')).toBe(true);
-  });
-
-  test('syncCommand syncs skills to Aider directory', async () => {
-    mkdirSync('.aider', { recursive: true });
-    await syncCommand({});
-    expect(existsSync('.aider/skills/test-skill/SKILL.md')).toBe(true);
   });
 
   test('syncCommand reads skills from root skills/ directory', async () => {
