@@ -179,6 +179,8 @@ until ALL FOUR show fresh output in this session:
 
 "Should pass", "was passing earlier", and "I'm confident" are not evidence.
 Run the commands. Show the output. THEN declare done.
+
+5. Stage transition: Run `bash scripts/beads-context.sh stage-transition <id> validate ship` → exit 0 confirmed
 </HARD-GATE>
 ```
 

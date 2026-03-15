@@ -171,7 +171,8 @@ cmd_parse_progress() {
   json="$(bd show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
 
   # bd show may exit 0 but print an error for non-existent issues
-  if printf '%s' "$json" | grep -qi 'error'; then
+  # Match specific bd error patterns, not the word "error" in data fields
+  if printf '%s' "$json" | grep -qi '^Error \(fetching\|resolving\)'; then
     die "Issue not found: ${issue_id}"
   fi
 
