@@ -36,7 +36,6 @@ See [.mcp.json.example](.mcp.json.example) for configuration. Setup varies by ag
 
 - **Claude Code**: Copy `.mcp.json.example` to `.mcp.json` in project root
 - **Cline**: Add MCP servers in VSCode settings (Extensions > Cline > MCP Servers)
-- **Continue**: Add to `.continue/config.json` under `mcpServers`
 - **Cursor**: Check Cursor Settings > MCP for setup
 - **Your agent**: If MCP-capable, configure using the example file
 
