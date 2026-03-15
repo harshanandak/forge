@@ -730,6 +730,24 @@ describe('syncCommands — edge cases', () => {
     }
   });
 
+  test('check mode returns manifestMissing when files in sync but no manifest', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    });
+    try {
+      // Write files (creates manifest), then delete manifest
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      fs.unlinkSync(path.join(tmpDir, '.forge', 'sync-manifest.json'));
+      // Check: files are in sync but manifest is missing
+      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+      expect(result.manifestMissing).toBe(true);
+      expect(result.inSync).toBe(false);
+      expect(result.outOfSync.length).toBe(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
   test('handles command file with no frontmatter', () => {
     const tmpDir = createTempRepo({
       simple: 'Just a body with no frontmatter.',

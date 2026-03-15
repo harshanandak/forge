@@ -45,5 +45,6 @@ describe('command sync drift detection', () => {
     }
 
     expect(result.outOfSync).toHaveLength(0);
+    expect(result.staleFiles).toHaveLength(0);
   });
 });

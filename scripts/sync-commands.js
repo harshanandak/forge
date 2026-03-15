@@ -418,11 +418,8 @@ function syncCommands({ dryRun, check, repoRoot }) {
     const staleFiles = [];
 
     const manifestPath = path.join(repoRoot, '.forge', 'sync-manifest.json');
-    let manifestMissing = false;
-    if (!fs.existsSync(manifestPath)) {
-      manifestMissing = true;
-    }
-    if (fs.existsSync(manifestPath)) {
+    let manifestMissing = !fs.existsSync(manifestPath);
+    if (!manifestMissing) {
       try {
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
         const previousPaths = manifest.files || [];
