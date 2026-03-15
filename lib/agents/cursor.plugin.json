@@ -5,11 +5,12 @@
   "description": "AI-first code editor",
   "homepage": "https://cursor.sh",
   "capabilities": {
-    "commands": false,
+    "commands": true,
     "skills": true,
     "hooks": false
   },
   "directories": {
+    "commands": ".cursor/commands",
     "rules": ".cursor/rules",
     "skills": ".cursor/skills/forge-workflow"
   },
