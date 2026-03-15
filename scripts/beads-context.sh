@@ -42,7 +42,8 @@ sanitize() {
   # Remove double quotes
   val="${val//\"/}"
   # Remove $(...) command substitution patterns (loop handles nested)
-  val="$(printf '%s' "$val" | sed ':loop; s/\$([^()]*)//g; t loop')"
+  # Use newline-separated commands for BSD sed compatibility (macOS)
+  val="$(printf '%s' "$val" | sed -e ':loop' -e 's/\$([^()]*)//g' -e 't loop')"
   # Remove backtick command substitution
   val="${val//\`/}"
   # Remove semicolons (command chaining)
@@ -105,8 +106,10 @@ cmd_set_design() {
   fi
 
   local issue_id="$1"
-  local task_count="$2"
-  local task_file="$3"
+  local task_count
+  task_count="$(sanitize "$2")"
+  local task_file
+  task_file="$(sanitize "$3")"
 
   local design_text="${task_count} tasks | ${task_file}"
 
@@ -239,8 +242,10 @@ cmd_stage_transition() {
   fi
 
   local issue_id="$1"
-  local completed="$2"
-  local next="$3"
+  local completed
+  completed="$(sanitize "$2")"
+  local next
+  next="$(sanitize "$3")"
 
   local comment="Stage: ${completed} complete → ready for ${next}"
 
