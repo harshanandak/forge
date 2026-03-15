@@ -66,7 +66,7 @@ bd_update() {
 
   # bd prints "Error resolving/updating ..." to stdout for non-existent issues
   # Use specific patterns to avoid false positives from data containing "error"
-  if printf '%s' "$output" | grep -qi '^Error\|Error resolving\|Error updating'; then
+  if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error updating'; then
     echo "$output" >&2
     return 1
   fi
@@ -87,7 +87,7 @@ bd_comment() {
   fi
 
   # Use specific error patterns to avoid false positives from data containing "error"
-  if printf '%s' "$output" | grep -qi '^Error\|Error resolving\|Error adding'; then
+  if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error adding'; then
     echo "$output" >&2
     return 1
   fi
@@ -174,7 +174,7 @@ cmd_parse_progress() {
 
   # bd show may exit 0 but print an error for non-existent issues
   # Match specific bd error patterns, not the word "error" in data fields
-  if printf '%s' "$json" | grep -qi '^Error \(fetching\|resolving\)'; then
+  if printf '%s' "$json" | grep -Eqi '^Error (fetching|resolving)'; then
     die "Issue not found: ${issue_id}"
   fi
 
