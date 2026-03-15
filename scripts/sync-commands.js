@@ -542,6 +542,11 @@ if (require.main === module) {
     if (result.inSync) {
       console.log('All agent command files are in sync.');
       process.exit(0);
+    } else if (result.manifestMissing && result.outOfSync.length === 0) {
+      // Files are content-sync'd but manifest is missing — not a content error,
+      // just needs a write run to generate the manifest.
+      console.error('Run "node scripts/sync-commands.js" to generate the manifest, then commit .forge/sync-manifest.json.');
+      process.exit(1);
     } else {
       if (result.outOfSync.length > 0) {
         console.log('Out of sync — the following files differ from expected:\n');
