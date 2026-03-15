@@ -1,3 +1,4 @@
+/* eslint-disable no-undef -- Bun global is provided by the Bun runtime */
 const fs = require('node:fs');
 const path = require('node:path');
 const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
