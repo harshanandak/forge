@@ -323,8 +323,8 @@ describe('scripts/beads-context.sh', () => {
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toMatch(/no progress data/i);
 
-			// Clean up
-			await bd('delete', freshId, '--force');
+			// Clean up (guard against empty ID)
+			if (freshId) await bd('delete', freshId, '--force');
 		});
 
 		test('should fail with non-existent issue ID', async () => {

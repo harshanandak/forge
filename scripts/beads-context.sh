@@ -197,9 +197,9 @@ cmd_parse_progress() {
   fi
 
   # Split on literal \n (two chars: backslash + n) and count task lines
-  # Use echo -e to expand the \n into actual newlines for grep
+  # Use printf to expand the \n into actual newlines for grep (POSIX-compliant)
   local expanded
-  expanded="$(echo -e "$notes")"
+  expanded="$(printf '%b' "$notes")"
 
   local task_lines
   task_lines="$(echo "$expanded" | grep -c 'Task [0-9]*/[0-9]* done:' || true)"
