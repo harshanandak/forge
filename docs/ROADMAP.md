@@ -24,7 +24,7 @@
 
 Transform Forge from a documentation-driven workflow into a fully automated, orchestrated workflow system with:
 
-- ✅ **Enhanced Multi-Agent Support**: Universal AGENTS.md + 5 Tier 1 agents (Claude Code, GitHub Copilot, Kilo Code, Cursor, Aider)
+- ✅ **Enhanced Multi-Agent Support**: Universal AGENTS.md + 8 supported agents (Claude Code, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)
 - ✅ **Comprehensive Testing**: 80%+ code coverage, E2E tests, mutation testing
 - ✅ **Advanced Security**: CODEOWNERS, commit signing, extended OWASP checks
 - ✅ **CLI Automation**: Automated `/research`, `/plan`, `/ship`, `/review` commands
@@ -105,7 +105,7 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 #### Key Deliverables
 1. Universal AGENTS.md (works with ALL agents)
-2. Agent-specific configs (GitHub Copilot, Cursor, Kilo, Aider)
+2. Agent-specific configs (Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)
 3. Smart setup with auto-detection
 4. Documentation: ARCHITECTURE.md, CONFIGURATION.md, MCP_SETUP.md
 5. Zero coordination complexity

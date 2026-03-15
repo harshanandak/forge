@@ -2,7 +2,7 @@
 
 - **Slug**: agent-command-parity-v2
 - **Date**: 2026-03-15
-- **Status**: Active
+- **Status**: Complete
 - **Beads**: forge-2w3
 - **Supersedes**: docs/plans/2026-03-04-agent-command-parity-design.md (original, partially completed across PRs #52-#58)
 
