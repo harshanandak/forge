@@ -469,3 +469,72 @@ describe('/status command integration with beads-context.sh', () => {
 		expect(statusContent).toMatch(/\d+\/\d+ tasks done/);
 	});
 });
+
+describe('/validate command integration with beads-context.sh', () => {
+	const VALIDATE_MD_PATH = path.join(
+		__dirname,
+		'..',
+		'.claude',
+		'commands',
+		'validate.md',
+	);
+	let validateContent;
+
+	beforeAll(() => {
+		validateContent = fs.readFileSync(VALIDATE_MD_PATH, 'utf-8');
+	});
+
+	test('validate.md should reference beads-context.sh stage-transition', () => {
+		expect(validateContent).toContain('beads-context.sh stage-transition');
+	});
+
+	test('validate.md should reference stage-transition from validate to ship', () => {
+		expect(validateContent).toContain('validate ship');
+	});
+});
+
+describe('/ship command integration with beads-context.sh', () => {
+	const SHIP_MD_PATH = path.join(
+		__dirname,
+		'..',
+		'.claude',
+		'commands',
+		'ship.md',
+	);
+	let shipContent;
+
+	beforeAll(() => {
+		shipContent = fs.readFileSync(SHIP_MD_PATH, 'utf-8');
+	});
+
+	test('ship.md should reference beads-context.sh stage-transition', () => {
+		expect(shipContent).toContain('beads-context.sh stage-transition');
+	});
+
+	test('ship.md should reference stage-transition from ship to review', () => {
+		expect(shipContent).toContain('ship review');
+	});
+});
+
+describe('/review command integration with beads-context.sh', () => {
+	const REVIEW_MD_PATH = path.join(
+		__dirname,
+		'..',
+		'.claude',
+		'commands',
+		'review.md',
+	);
+	let reviewContent;
+
+	beforeAll(() => {
+		reviewContent = fs.readFileSync(REVIEW_MD_PATH, 'utf-8');
+	});
+
+	test('review.md should reference beads-context.sh stage-transition', () => {
+		expect(reviewContent).toContain('beads-context.sh stage-transition');
+	});
+
+	test('review.md should reference stage-transition from review to premerge', () => {
+		expect(reviewContent).toContain('review premerge');
+	});
+});
