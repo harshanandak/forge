@@ -63,22 +63,6 @@ describe('agent-validator', () => {
       assert.ok(Array.isArray(result.failures));
     });
 
-    test('should validate Continue installation', () => {
-      const continueDir = path.join(testDir, 'continue-install');
-      fs.mkdirSync(continueDir, { recursive: true });
-
-      // Create expected Continue files
-      fs.writeFileSync(path.join(continueDir, 'CONTINUE.md'), '# Continue Project');
-      const continueConfigDir = path.join(continueDir, '.continue');
-      fs.mkdirSync(continueConfigDir, { recursive: true });
-      fs.writeFileSync(path.join(continueConfigDir, 'config.json'), '{}');
-
-      const result = validateAgent('continue', continueDir);
-
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-    });
-
     test('should detect missing agent files', () => {
       const missingDir = path.join(testDir, 'missing-files');
       fs.mkdirSync(missingDir, { recursive: true });
@@ -144,10 +128,10 @@ describe('agent-validator', () => {
       assert.ok(hasCursorRules);
     });
 
-    test('should return expected files for all 11 agents', () => {
+    test('should return expected files for all 8 agents', () => {
       const agents = [
-        'claude', 'cursor', 'continue', 'windsurf', 'cline',
-        'roo-cline', 'void', 'pear', 'aider', 'aide', 'aws-q'
+        'claude', 'cursor', 'cline', 'opencode', 'copilot',
+        'kilo-code', 'roo-code', 'codex'
       ];
 
       for (const agent of agents) {

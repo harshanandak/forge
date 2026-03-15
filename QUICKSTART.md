@@ -48,14 +48,13 @@ bunx forge setup
 ? Which AI agents are you using?
   ◉ Claude Code
   ◯ Cursor
-  ◯ Windsurf
   ◯ GitHub Copilot
   (use space to select, enter to confirm)
 ```
 
 **Or specify directly**:
 ```bash
-bunx forge setup --agents claude,cursor,windsurf
+bunx forge setup --agents claude,cursor,cline
 ```
 
 **What this creates**:
