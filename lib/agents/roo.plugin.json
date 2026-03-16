@@ -14,7 +14,7 @@
     "skills": ".roo/skills/forge-workflow"
   },
   "files": {
-    "rootConfig": ".clinerules"
+    "rootConfig": ".roorules"
   },
   "setup": {
     "copyCommands": true,
