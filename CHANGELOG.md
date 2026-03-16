@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Roo Code rootConfig conflict**: Changed from `.clinerules` to `.roorules` — was conflicting with Cline during setup (PR #61)
+- **Cline workflows directory clash**: Moved from `.clinerules/workflows/` to `.cline/workflows/` — `.clinerules` was being created as a directory, blocking the root config symlink (PR #61)
+- **Symlink safety**: `createSymlinkOrCopy` now uses `lstatSync` to avoid false positives on symlinks to directories, with actionable warning for users (PR #61)
+- **Cross-codepath sync**: Updated `sync-commands.js`, `install.sh`, tests, and sync manifest to match new Cline/Roo paths (PR #61)
+
+### Changed
+
+- **Version reset to 0.0.1**: All prior npm versions (1.0.0–1.5.0) unpublished; clean alpha start (PR #61)
+- **Removed `.clinerules` flat-file migration**: No longer needed since Cline workflows moved to `.cline/workflows/` (PR #61)
+
 ### Added
 
 - **Beads-embedded plan context**: Auto-populate design/notes/acceptance in Beads issues from `/plan` and `/dev` (PR #59, forge-bmy)

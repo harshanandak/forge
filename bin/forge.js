@@ -576,6 +576,12 @@ function createSymlinkOrCopy(source, target) {
 
   try {
     if (fs.existsSync(fullTarget)) {
+      const stat = fs.lstatSync(fullTarget);
+      if (stat.isDirectory()) {
+        // Target is an actual directory — cannot replace with a file/symlink
+        console.warn(`  ⚠ Skipped ${target} (a directory exists at this path). Remove it manually and re-run setup to create the symlink.`);
+        return '';
+      }
       fs.unlinkSync(fullTarget);
     }
     const targetDir = path.dirname(fullTarget);
@@ -586,10 +592,8 @@ function createSymlinkOrCopy(source, target) {
       const relPath = path.relative(targetDir, fullSource);
       fs.symlinkSync(relPath, fullTarget);
       return 'linked';
-    } catch (error_) {
-      // Symlink creation may fail due to permissions or OS limitations (e.g., Windows without admin)
-      // Fall back to copying the file instead to ensure operation succeeds
-      console.warn('Symlink creation failed, falling back to copy:', error_.message);
+    } catch (_error) {
+      // Symlink may fail on Windows without admin — silent fallback to copy
       fs.copyFileSync(fullSource, fullTarget);
       return 'copied';
     }

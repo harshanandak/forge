@@ -209,8 +209,8 @@ const AGENT_ADAPTERS = {
     transformFrontmatter: stripAllFrontmatter,
   },
   cline: {
-    dir: () => '.clinerules/workflows/',
-    baseDir: '.clinerules/workflows/',
+    dir: () => '.cline/workflows/',
+    baseDir: '.cline/workflows/',
     extension: '.md',
     transformFrontmatter: stripAllFrontmatter,
   },
@@ -445,21 +445,8 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
   // ---- write mode (default) ----
 
-  // Migrate flat files to directories where needed.
-  // Cline: .clinerules (flat file) → .clinerules/default-rules.md
-  // This follows Cline's own migration pattern (ensureLocalClineDirExists).
-  const clinerules = path.join(repoRoot, '.clinerules');
-  if (fs.existsSync(clinerules) && fs.statSync(clinerules).isFile()) {
-    const content = fs.readFileSync(clinerules, 'utf8');
-    // Atomic migration: write backup first, then remove original, then create dir.
-    // If interrupted after backup but before dir creation, backup file preserves data.
-    const backupPath = path.join(repoRoot, `.clinerules.sync-backup-${Date.now()}`);
-    fs.writeFileSync(backupPath, content);
-    fs.unlinkSync(clinerules);
-    fs.mkdirSync(clinerules, { recursive: true });
-    fs.writeFileSync(path.join(clinerules, 'default-rules.md'), content);
-    fs.unlinkSync(backupPath);
-  }
+  // Note: .clinerules flat-file migration was removed — Cline workflows
+  // now go to .cline/workflows/, so .clinerules stays as Cline's root config file.
 
   /** @type {SyncEntry[]} */
   const written = [];

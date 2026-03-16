@@ -704,9 +704,9 @@ if [ "$INSTALL_ROO" = true ]; then
         echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
     fi
 
-    # Link .clinerules -> AGENTS.md (Roo uses same as Cline)
-    if [ ! -f ".clinerules" ]; then
-        create_link "AGENTS.md" ".clinerules"
+    # Link .roorules -> AGENTS.md
+    if [ ! -f ".roorules" ]; then
+        create_link "AGENTS.md" ".roorules"
     fi
 fi
 
