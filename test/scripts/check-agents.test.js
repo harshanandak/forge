@@ -98,7 +98,7 @@ describe('checkAgents — sync check', () => {
       // Write synced files
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Modify one file to create drift
-      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
       fs.writeFileSync(clineFile, 'Manually modified content');
 
       const result = checkAgents(tmpDir);

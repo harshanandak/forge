@@ -446,7 +446,7 @@ describe('syncCommands — default write mode', () => {
       const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       expect(result.written.length).toBeGreaterThan(0);
       // Check that at least one agent file was actually written
-      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
       expect(fs.existsSync(clineFile)).toBe(true);
       const content = fs.readFileSync(clineFile, 'utf8');
       expect(content).toContain('Plan body.');
@@ -512,7 +512,7 @@ describe('syncCommands — check mode', () => {
       // Write files
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Manually modify one file
-      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
       fs.writeFileSync(clineFile, 'Manually modified content');
       // Check — should detect out of sync
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
@@ -613,7 +613,7 @@ describe('syncCommands — overwrite warning', () => {
       // Write files initially
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Manually modify a file
-      const clineFile = path.join(tmpDir, '.clinerules', 'workflows', 'plan.md');
+      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
       fs.writeFileSync(clineFile, 'Manually modified content');
       // Write again — should report overwrite warnings
       const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
@@ -640,73 +640,8 @@ describe('syncCommands — overwrite warning', () => {
   });
 });
 
-describe('syncCommands — flat file migration', () => {
-  test('migrates .clinerules flat file to .clinerules/default-rules.md', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    });
-    try {
-      // Create a flat .clinerules file (as it exists on master)
-      const clinerules = path.join(tmpDir, '.clinerules');
-      fs.writeFileSync(clinerules, '# Forge Context\nSome rules here.');
-
-      // Run sync — should migrate the flat file before creating workflows/
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-
-      // .clinerules should now be a directory
-      expect(fs.statSync(clinerules).isDirectory()).toBe(true);
-
-      // Original content preserved as default-rules.md
-      const defaultRules = path.join(clinerules, 'default-rules.md');
-      expect(fs.existsSync(defaultRules)).toBe(true);
-      expect(fs.readFileSync(defaultRules, 'utf8')).toBe('# Forge Context\nSome rules here.');
-
-      // Workflow files should also exist
-      const workflowFile = path.join(clinerules, 'workflows', 'plan.md');
-      expect(fs.existsSync(workflowFile)).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('does not migrate when .clinerules is already a directory', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    });
-    try {
-      // Create .clinerules as a directory with existing content
-      const clinerules = path.join(tmpDir, '.clinerules');
-      fs.mkdirSync(clinerules, { recursive: true });
-      fs.writeFileSync(path.join(clinerules, 'custom-rule.md'), '# Custom');
-
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-
-      // custom-rule.md should be untouched
-      expect(fs.readFileSync(path.join(clinerules, 'custom-rule.md'), 'utf8')).toBe('# Custom');
-      // No default-rules.md created (wasn't a flat file)
-      expect(fs.existsSync(path.join(clinerules, 'default-rules.md'))).toBe(false);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('dry-run does NOT migrate flat files', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    });
-    try {
-      const clinerules = path.join(tmpDir, '.clinerules');
-      fs.writeFileSync(clinerules, '# Forge Context');
-
-      syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
-
-      // .clinerules should still be a flat file
-      expect(fs.statSync(clinerules).isFile()).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-});
+// Note: .clinerules flat-file migration tests removed — Cline workflows
+// now go to .cline/workflows/, so migration is no longer needed.
 
 describe('syncCommands — edge cases', () => {
   test('handles empty commands directory', () => {
