@@ -35,7 +35,13 @@ function checkAgents(repoRoot) {
   const warnings = [];
 
   // ---- 1. Run sync check ----
-  const syncResult = syncCommands({ check: true, dryRun: false, repoRoot });
+  let syncResult;
+  try {
+    syncResult = syncCommands({ check: true, dryRun: false, repoRoot });
+  } catch (err) {
+    errors.push(`Sync check failed: ${err.message}`);
+    return { errors, warnings };
+  }
 
   if (syncResult.empty) {
     errors.push('No command files found in .claude/commands/ — cannot verify sync.');

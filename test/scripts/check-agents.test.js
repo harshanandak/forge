@@ -79,11 +79,9 @@ describe('checkAgents — happy path', () => {
     }
   });
 
-  test('returns empty errors array with current repo root', () => {
+  test('returns correct shape with current repo root', () => {
     const repoRoot = path.resolve(__dirname, '..', '..');
     const result = checkAgents(repoRoot);
-    // The current repo should be in a clean state since sync-commands was run
-    // during prior tasks. We only check the shape — actual sync state may vary.
     expect(Array.isArray(result.errors)).toBe(true);
     expect(Array.isArray(result.warnings)).toBe(true);
   });
