@@ -9,11 +9,6 @@ const root = path.resolve(__dirname, '../../');
 function readIfExists(filePath) {
   const full = path.join(root, filePath);
   if (!fs.existsSync(full)) return '';
-  // Handle .clinerules being a directory (migrated from flat file)
-  if (fs.statSync(full).isDirectory()) {
-    const defaultRules = path.join(full, 'default-rules.md');
-    return fs.existsSync(defaultRules) ? fs.readFileSync(defaultRules, 'utf8') : '';
-  }
   return fs.readFileSync(full, 'utf8');
 }
 

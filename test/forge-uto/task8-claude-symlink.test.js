@@ -30,4 +30,11 @@ describe('Task 8: CLAUDE.md symlink via createAgentLinkFile', () => {
   test('no redundant createClaudeSymlink function', () => {
     expect(src).not.toContain('function createClaudeSymlink(');
   });
+
+  test('directory guard uses lstatSync and warns user', () => {
+    expect(src).toContain('fs.lstatSync(fullTarget)');
+    expect(src).toContain('stat.isDirectory()');
+    expect(src).toContain('console.warn');
+    expect(src).toContain('Remove it manually and re-run setup');
+  });
 });
