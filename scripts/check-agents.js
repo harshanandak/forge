@@ -100,10 +100,9 @@ function checkAgents(repoRoot) {
 
       if (!commandDir) {
         // Plugin declares commands: true but has no command directory configured
-        // This could be by design (e.g., codex uses skills directory)
-        // Check if it's the codex pattern: skills directory used for commands
-        if (dirs.skills) {
-          // Codex-style: commands live in skills subdirectories — skip this check
+        // Codex is the only agent that uses skills as its command mechanism
+        if (plugin.id === 'codex' && dirs.skills) {
+          // Codex CLI: commands live in .codex/skills/<name>/SKILL.md — skip standard check
           continue;
         }
         warnings.push(

@@ -30,7 +30,7 @@ const VALID_COMMANDS = [
 ];
 
 const COMMAND_DESCRIPTIONS = {
-	status: 'Detect current workflow stage (1-9)',
+	status: 'Detect current workflow stage (1-7)',
 	plan: 'Create branch + Beads + design doc',
 	dev: 'Implement with TDD (RED-GREEN-REFACTOR)',
 	validate: 'Run type check, lint, security, tests',
