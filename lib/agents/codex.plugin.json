@@ -6,7 +6,7 @@
   "homepage": "https://github.com/openai/codex",
   "capabilities": {
     "commands": true,
-    "skills": true,
+    "skills": false,
     "hooks": false
   },
   "directories": {

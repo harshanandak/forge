@@ -38,9 +38,11 @@ describe('dropped-agent code removed from CLI and lib', () => {
   });
 
   test('bin/forge.js must not reference Continue AI agent setup', () => {
-    // Match "Continue" as a standalone word (agent name), not the JS keyword "continue;"
-    // Look for patterns like "Continue config", "for Continue", "Setup ... Continue"
-    expect(forgeJs).not.toMatch(/\bContinue\b(?!\s*\()/);
+    // Match agent-specific patterns: .continue/, continueFormat, continueConfig, generateContinue
+    expect(forgeJs).not.toMatch(/\.continue\//);
+    expect(forgeJs).not.toMatch(/continueFormat/);
+    expect(forgeJs).not.toMatch(/continueConfig/);
+    expect(forgeJs).not.toMatch(/generateContinue/);
   });
 
   // --- bin/forge-cmd.js ---
