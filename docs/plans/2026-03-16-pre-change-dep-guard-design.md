@@ -161,3 +161,72 @@ If a spec gap is found mid-dev: **default to HIGH (conservative)**, document the
 | A02: Crypto Failures | No — no secrets handled | N/A |
 | A04: Insecure Design | Low — advisory system, no destructive actions | Defaults to conservative (HIGH) |
 | A05-A10 | No | N/A |
+
+---
+
+## Technical Research
+
+### DRY Check
+
+Searched the entire codebase for: `dep-guard`, `dep_guard`, `depguard`, `conflict detect`, `ripple`, `impact analysis`, `check-ripple`, `find-consumers`, `extract-contracts`, `store-contracts`, `affected-files`. **No matches found.** All dep-guard code will be built from scratch.
+
+### Template: `scripts/beads-context.sh`
+
+The existing beads-context.sh (292 lines) provides the exact structural pattern:
+- **Input sanitization** (lines 40-54): removes `"`, `$()`, backticks, semicolons, newlines via `printf '%s' | sed`
+- **Bd wrapper functions** (lines 56-98): `bd_update()` checks both exit code AND stdout for errors (bd exits 0 even for non-existent issues)
+- **JSON querying** (line 190): `bd show <id> --json` with jq fallback to grep/sed
+- **Subcommand dispatcher** (lines 273-291): case statement routing to `cmd_*` functions
+- **Metadata storage**: `bd update <id> --append-notes` for structured data
+
+`dep-guard.sh` will replicate this pattern exactly.
+
+### Integration Points (exact locations)
+
+| Where | File | Lines | What to add |
+|-------|------|-------|-------------|
+| `/plan` Phase 1 | `.claude/commands/plan.md` | 58-77 | Ripple check between Q&A start and design doc write |
+| `/plan` Phase 3 | `.claude/commands/plan.md` | 310-314 | `extract-contracts` + `store-contracts` after task list saved |
+| `/plan` Phase 3 HARD-GATE | `.claude/commands/plan.md` | 324-335 | Add exit condition: dep-guard exit code 0 |
+| `/dev` pre-flight (optional) | `.claude/commands/dev.md` | 54-62 | Advisory ripple check, non-blocking |
+
+### Consumer Discovery Pattern
+
+No existing cross-reference infrastructure. Will implement via grep:
+```bash
+grep -rn "$function_name" --include="*.js" --include="*.sh" --include="*.md" lib/ scripts/ .claude/ bin/
+```
+
+This covers: JS imports/requires, bash function calls, command references in markdown.
+
+### Related Open Issues
+
+- `forge-9zv` (P2): "Logic-level dependency detection in /plan Phase 3" — overlaps with v2 contract extraction. Could be merged or sequenced.
+- `forge-puh` (P2): "Multi-developer workflow" — blocked by forge-mze. Will consume dep-guard output for merge ordering and conflict zone detection.
+
+### TDD Test Scenarios
+
+**Scenario 1 — Happy path: No conflicts detected**
+- Input: New issue "add logging to bin/forge.js". No open issues touch bin/forge.js.
+- Expected: `check-ripple` returns NONE, no warnings displayed.
+- Test: Mock `bd list` with 3 open issues (none touching forge.js), run check-ripple, assert exit 0 + "no conflicts" output.
+
+**Scenario 2 — HIGH ripple: Logic change affects consumer in another issue**
+- Input: Issue A changes `parse-progress` output format in beads-context.sh. Issue B (in_progress) calls `parse-progress` in status.js and parses its output with regex.
+- Expected: `find-consumers` returns status.js:34. Ripple Analyst agent returns HIGH with break scenario: "regex parsing will fail on new output format."
+- Test: Mock task list with parse-progress change, mock grep results showing status.js consumer, assert HIGH level + actionable options in output.
+
+**Scenario 3 — Edge case: Issue predates dep-guard (no contract metadata)**
+- Input: Old issue forge-3na has no `contracts:` in notes. New issue touches payment area.
+- Expected: Falls back to keyword matching on title/description. Labels result as "low confidence."
+- Test: Mock `bd show forge-3na --json` with empty notes, run check-ripple, assert "low confidence" label in output.
+
+**Scenario 4 — CRITICAL ripple: Active in_progress issue builds on changed contract**
+- Input: Issue A modifies `bd_update()` in beads-context.sh. Issue B (in_progress) has task list that adds new subcommand using `bd_update()`.
+- Expected: CRITICAL level. "forge-B is actively building on bd_update(). Recommend resolving merge order."
+- Test: Mock both issues with overlapping contracts, assert CRITICAL + merge order recommendation.
+
+**Scenario 5 — Error path: Invalid issue ID**
+- Input: `dep-guard.sh check-ripple nonexistent-id`
+- Expected: Exit code 1, error message "Issue not found: nonexistent-id"
+- Test: Run with bad ID, assert exit 1 + error message.
