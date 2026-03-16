@@ -576,10 +576,10 @@ function createSymlinkOrCopy(source, target) {
 
   try {
     if (fs.existsSync(fullTarget)) {
-      const stat = fs.statSync(fullTarget);
+      const stat = fs.lstatSync(fullTarget);
       if (stat.isDirectory()) {
-        // Target is a directory — cannot replace with a file/symlink, skip
-        console.log(`  ℹ Skipped ${target} (directory exists)`);
+        // Target is an actual directory — cannot replace with a file/symlink
+        console.warn(`  ⚠ Skipped ${target} (a directory exists at this path). Remove it manually and re-run setup to create the symlink.`);
         return '';
       }
       fs.unlinkSync(fullTarget);
