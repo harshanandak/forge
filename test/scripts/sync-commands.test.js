@@ -221,9 +221,9 @@ describe('adaptForAgent — Tier 1', () => {
     expect(Object.keys(parsed.frontmatter)).toHaveLength(0);
   });
 
-  test('cline outputs to .clinerules/workflows/', () => {
+  test('cline outputs to .cline/workflows/', () => {
     const result = adaptForAgent('cline', fm, body, 'dev');
-    expect(result.dir).toBe('.clinerules/workflows/');
+    expect(result.dir).toBe('.cline/workflows/');
     expect(result.filename).toBe('dev.md');
   });
 

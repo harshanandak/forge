@@ -209,8 +209,8 @@ const AGENT_ADAPTERS = {
     transformFrontmatter: stripAllFrontmatter,
   },
   cline: {
-    dir: () => '.clinerules/workflows/',
-    baseDir: '.clinerules/workflows/',
+    dir: () => '.cline/workflows/',
+    baseDir: '.cline/workflows/',
     extension: '.md',
     transformFrontmatter: stripAllFrontmatter,
   },
