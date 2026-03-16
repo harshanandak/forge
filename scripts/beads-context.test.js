@@ -339,12 +339,14 @@ describe.skipIf(!isBdAvailable())('scripts/beads-context.sh', () => {
 				return;
 			}
 
-			const result = await run('parse-progress', freshId);
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toMatch(/no progress data/i);
-
-			// Clean up (guard against empty ID)
-			if (freshId) await bd('delete', freshId, '--force');
+			try {
+				const result = await run('parse-progress', freshId);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toMatch(/no progress data/i);
+			} finally {
+				// Clean up regardless of test outcome
+				if (freshId) await bd('delete', freshId, '--force');
+			}
 		});
 
 		test('should fail with non-existent issue ID', async () => {

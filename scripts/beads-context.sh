@@ -229,7 +229,7 @@ cmd_parse_progress() {
 
   # Get the last task line
   local last_line
-  last_line="$(echo "$expanded" | grep 'Task [0-9]*/[0-9]* done:' | tail -1)"
+  last_line="$(echo "$expanded" | grep 'Task [0-9]*/[0-9]* done:' | tail -1 || true)"
 
   # Extract total (N/M) from last line
   local total
