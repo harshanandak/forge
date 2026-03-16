@@ -333,6 +333,12 @@ describe.skipIf(!isBdAvailable())('scripts/beads-context.sh', () => {
 			const match = fresh.stdout.match(/([a-zA-Z]+-[a-zA-Z0-9]+)/);
 			const freshId = match ? match[1] : '';
 
+			// Guard: skip if bd create didn't return a parseable ID
+			if (!freshId) {
+				console.warn('Could not parse fresh issue ID; skipping');
+				return;
+			}
+
 			const result = await run('parse-progress', freshId);
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toMatch(/no progress data/i);

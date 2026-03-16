@@ -48,8 +48,6 @@ sanitize() {
   val="${val//\`/}"
   # Remove semicolons (command chaining)
   val="${val//;/}"
-  # Remove backslashes (prevents printf '%b' expansion in parse-progress)
-  val="${val//\\/}"
   # Replace newlines with spaces
   val="$(printf '%s' "$val" | tr '\n' ' ')"
   printf '%s' "$val"
@@ -159,6 +157,17 @@ cmd_update_progress() {
   local gate_count
   gate_count="$(sanitize "$7")"
 
+  # Strip backslashes from progress fields only — these are read back via
+  # printf '%b' in parse-progress, where \n/\t would expand into real escapes.
+  # Other commands (set-design, set-acceptance, stage-transition) keep backslashes
+  # intact to preserve Windows-style paths like docs\plans\tasks.md.
+  task_num="${task_num//\\/}"
+  total="${total//\\/}"
+  title="${title//\\/}"
+  commit_sha="${commit_sha//\\/}"
+  test_count="${test_count//\\/}"
+  gate_count="${gate_count//\\/}"
+
   local note="Task ${task_num}/${total} done: ${title} | ${test_count} tests | ${commit_sha} | ${gate_count} gates"
 
   if ! bd_update "$issue_id" --append-notes "$note" > /dev/null; then
@@ -194,7 +203,8 @@ cmd_parse_progress() {
   # Extract notes field from JSON — prefer jq if available, fall back to grep/sed
   local notes
   if command -v jq &>/dev/null; then
-    notes="$(printf '%s' "$json" | jq -r '.[0].notes // empty' 2>/dev/null || true)"
+    # Handle both array ([{...}]) and object ({...}) responses from bd show
+    notes="$(printf '%s' "$json" | jq -r 'if type == "array" then .[0].notes else .notes end // empty' 2>/dev/null || true)"
   else
     notes="$(printf '%s' "$json" | grep -o '"notes": *"[^"]*"' | head -1 | sed 's/^"notes": *"//;s/"$//' || true)"
   fi
