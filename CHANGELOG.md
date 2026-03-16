@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Beads-embedded plan context**: Auto-populate design/notes/acceptance in Beads issues from `/plan` and `/dev` (PR #59, forge-bmy)
+  - `scripts/beads-context.sh`: Agent-agnostic helper with 5 commands (`set-design`, `set-acceptance`, `update-progress`, `parse-progress`, `stage-transition`)
+  - `/plan` Phase 3: Embeds task count + file path in `--design`, success criteria in `--acceptance`
+  - `/dev` Step E: Appends per-task progress (title, tests, commit, gates) to `--notes` as HARD-GATE
+  - `/status`: Shows compact progress ("3/7 tasks done | Last: title (sha)") with `bd show` hint
+  - Stage transitions recorded via `--comment` at `/plan`, `/dev`, `/validate`, `/ship`, `/review` exits
+  - `scripts/**` added to CI test workflow path filters
+
 ### Fixed
 
 - **Stale workflow refs**: Cleaned up references to removed tools and orphaned files in agent commands (PR #56, forge-ctc)
