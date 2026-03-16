@@ -43,7 +43,7 @@ describe('AGENTS.md generation', () => {
     expect(content.includes('/premerge')).toBeTruthy();
     expect(content.includes('/verify')).toBeTruthy();
 
-    // Verify it mentions supported Tier 1 agents (Aider was removed)
+    // Verify it mentions supported Tier 1 agents
     expect(content.includes('Claude Code')).toBeTruthy();
     expect(content.includes('GitHub Copilot')).toBeTruthy();
     expect(content.includes('Kilo Code')).toBeTruthy();

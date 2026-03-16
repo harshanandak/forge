@@ -113,8 +113,7 @@ function loadAgentsFromPlugins() {
       customSetup: plugin.setup?.customSetup || '',
       needsConversion: plugin.setup?.needsConversion || false,
       copyCommands: plugin.setup?.copyCommands || false,
-      promptFormat: plugin.setup?.promptFormat || false,
-      continueFormat: plugin.setup?.continueFormat || false
+      promptFormat: plugin.setup?.promptFormat || false
     };
   });
 
@@ -1676,10 +1675,6 @@ function displayMcpStatus(selectedAgents) {
   if (selectedAgents.includes('claude')) {
     console.log('  ✓ Auto-installed for Claude Code (.mcp.json)');
   }
-  if (selectedAgents.includes('continue')) {
-    console.log('  ✓ Auto-installed for Continue (.continue/config.yaml)');
-  }
-
   // Show manual setup instructions for GUI-based agents
   const manualMcpMap = {
     cursor: 'Cursor: Configure via Cursor Settings > MCP',
@@ -1918,25 +1913,13 @@ function convertCommandToAgentFormat(cmd, content, agent) {
     targetContent = stripFrontmatter(content);
   }
 
-  if (agent.continueFormat) {
-    const baseName = cmd.replace('.md', '');
-    targetFile = `${baseName}.prompt`;
-    targetContent = `---
-name: ${baseName}
-description: Forge workflow command - ${baseName}
-invokable: true
----
-
-${stripFrontmatter(content)}`;
-  }
-
   return { targetFile, targetContent };
 }
 
 // Helper: Copy commands for agent
 function copyAgentCommands(agent, claudeCommands) {
   if (!claudeCommands) return;
-  if (!agent.needsConversion && !agent.copyCommands && !agent.promptFormat && !agent.continueFormat) return;
+  if (!agent.needsConversion && !agent.copyCommands && !agent.promptFormat) return;
 
   Object.entries(claudeCommands).forEach(([cmd, content]) => {
     const { targetFile, targetContent } = convertCommandToAgentFormat(cmd, content, agent);
@@ -1993,34 +1976,6 @@ function setupClaudeMcpConfig() {
   console.log('  Created: .mcp.json with Context7 MCP');
 }
 
-// Helper: Setup MCP config for Continue
-function setupContinueMcpConfig() {
-  const configPath = path.join(projectRoot, '.continue/config.yaml');
-  if (fs.existsSync(configPath)) {
-    console.log('  Skipped: config.yaml already exists');
-    return;
-  }
-
-  const continueConfig = `# Continue Configuration
-# https://docs.continue.dev/customize/deep-dives/configuration
-
-name: Forge Workflow
-version: "1.0"
-
-# MCP Servers for enhanced capabilities
-mcpServers:
-  - name: context7
-    command: npx
-    args:
-      - "-y"
-      - "@upstash/context7-mcp@latest"
-
-# Rules loaded from .continuerules
-`;
-  writeFile('.continue/config.yaml', continueConfig);
-  console.log('  Created: config.yaml with Context7 MCP');
-}
-
 // Helper: Create agent link file
 function createAgentLinkFile(agent) {
   if (!agent.linkFile) return;
@@ -2062,10 +2017,6 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
   // Setup MCP configs
   if (agentKey === 'claude') {
     setupClaudeMcpConfig();
-  }
-
-  if (agentKey === 'continue') {
-    setupContinueMcpConfig();
   }
 
   // Create link file

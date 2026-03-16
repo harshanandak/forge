@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `/status`: Shows compact progress ("3/7 tasks done | Last: title (sha)") with `bd show` hint
   - Stage transitions recorded via `--comment` at `/plan`, `/dev`, `/validate`, `/ship`, `/review` exits
   - `scripts/**` added to CI test workflow path filters
+- **`forge check-agents` CLI**: Validates all agent command files are in sync and plugin catalog matches reality (`node scripts/check-agents.js`) (PR #60, forge-2w3)
+
+### Changed
+
+- **Plugin catalog**: Updated capability flags for 6 agents — Cursor, Cline, Copilot, Kilo Code, Codex now correctly report `commands: true`; Claude Code reports `hooks: true` (PR #60, forge-2w3)
+
+### Removed
+
+- **Dropped agent cleanup**: Removed all code, config, docs, and files for 4 dropped agents — Antigravity, Windsurf, Aider, Continue (PR #60, forge-2w3)
+  - Deleted: `.aider.conf.yml`, `lib/agents/continue.plugin.json`, `docs/README-v1.3.md`, `docs/research/agent-instructions-sync.md`
+  - Cleaned: `bin/forge.js` (Continue setup), `packages/skills/` (agent entries), `package.json` (keywords), `.gitignore` (dropped dirs)
+  - Fixed: `package.json` description from "9-stage" to "7-stage"
 
 ### Fixed
 

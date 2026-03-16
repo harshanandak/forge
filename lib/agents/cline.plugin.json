@@ -5,11 +5,12 @@
   "description": "VS Code agent extension",
   "homepage": "https://github.com/cline/cline",
   "capabilities": {
-    "commands": false,
+    "commands": true,
     "skills": true,
     "hooks": false
   },
   "directories": {
+    "workflows": ".clinerules/workflows",
     "skills": ".cline/skills/forge-workflow"
   },
   "files": {
