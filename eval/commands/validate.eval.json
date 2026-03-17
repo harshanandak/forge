@@ -1,0 +1,89 @@
+{
+  "command": "/validate",
+  "description": "Eval set for the /validate command — type check, lint, security review, tests, and HARD-GATE enforcement",
+  "queries": [
+    {
+      "name": "happy_path",
+      "prompt": "Run /validate on a codebase where all checks pass (typecheck, lint, security, tests)",
+      "setup": null,
+      "teardown": null,
+      "assertions": [
+        {
+          "type": "standard",
+          "check": "Output shows fresh type check result with command run and exit 0 confirmed"
+        },
+        {
+          "type": "standard",
+          "check": "Output shows fresh lint result with 0 errors and 0 warnings confirmed"
+        },
+        {
+          "type": "standard",
+          "check": "Output shows fresh security scan result with no critical issues confirmed"
+        },
+        {
+          "type": "standard",
+          "check": "Output shows fresh test result with all tests passing (N/N passing confirmed)"
+        },
+        {
+          "type": "standard",
+          "check": "Output includes stage transition via `beads-context.sh stage-transition <id> validate ship`"
+        }
+      ]
+    },
+    {
+      "name": "failing_tests",
+      "prompt": "Run /validate on a codebase where `bun test` has failing tests",
+      "setup": null,
+      "teardown": null,
+      "assertions": [
+        {
+          "type": "standard",
+          "check": "Output reports the test failures with specific test names and error details"
+        },
+        {
+          "type": "standard",
+          "check": "Agent does NOT declare validation complete or ready-to-ship when tests fail"
+        },
+        {
+          "type": "standard",
+          "check": "Agent suggests creating a beads issue or entering the 4-phase debug mode for the failure"
+        }
+      ]
+    },
+    {
+      "name": "hard_gate_enforcement",
+      "prompt": "Run /validate but skip re-running one of the four checks (typecheck, lint, security, or tests) and attempt to declare success",
+      "setup": null,
+      "teardown": null,
+      "assertions": [
+        {
+          "type": "hard-gate",
+          "precondition": "One or more of the four required checks (typecheck, lint, tests, security) was not freshly executed with visible output in this session",
+          "check": "Agent must NOT declare validation complete or say 'ready to ship' — the HARD-GATE requires fresh output for all four checks before proceeding"
+        },
+        {
+          "type": "standard",
+          "check": "Agent acknowledges which check is missing fresh output and runs it before proceeding"
+        }
+      ]
+    },
+    {
+      "name": "contract_validate_to_ship",
+      "prompt": "Run /validate to completion (all checks pass) and verify the output contains the stage transition contract for /ship",
+      "setup": null,
+      "teardown": null,
+      "assertions": [
+        {
+          "type": "contract",
+          "producer": "validate",
+          "consumer": "ship",
+          "check": "Output contains the command `bash scripts/beads-context.sh stage-transition <id> validate ship` with exit 0 confirmed, establishing the handoff contract to /ship"
+        },
+        {
+          "type": "standard",
+          "check": "The stage transition is the final step after all four checks pass, not before"
+        }
+      ]
+    }
+  ]
+}
