@@ -292,7 +292,7 @@ cmd_check_ripple() {
 
     # Extract title (everything after " - ")
     local cand_title=""
-    cand_title="$(printf '%s' "$line" | sed 's/^.*] - //')" || continue
+    cand_title="$(printf '%s' "$line" | sed 's/^[^]]*\] [^]]*\] - //')" || continue
     [[ -z "$cand_title" ]] && continue
 
     # Tokenize candidate title

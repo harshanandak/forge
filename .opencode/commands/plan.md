@@ -383,7 +383,7 @@ else
   echo "No contracts found — skipping store-contracts"
 fi
 
-# Re-run ripple check with precise contract data (advisory only)
+# Re-run ripple check (still keyword-only in v1 — contract-aware analysis is v2)
 bash scripts/dep-guard.sh check-ripple <id>
 ```
 

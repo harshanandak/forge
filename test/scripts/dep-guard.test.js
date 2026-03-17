@@ -188,6 +188,21 @@ describe('scripts/dep-guard.sh', () => {
       expect(result.stderr).toContain('could not extract title');
     });
 
+    test('warns and skips when bd list returns empty', () => {
+      const mock = createMockBd(`
+        if [[ "\$1" == "show" ]]; then
+          echo '{"id":"forge-xyz","title":"Pre-change dep guard","status":"open"}'
+          exit 0
+        fi
+        # list returns nothing (simulates auth failure or empty project)
+        exit 0
+      `);
+      mockFiles.push(mock);
+      const result = runDepGuard(['check-ripple', 'forge-xyz'], { BD_CMD: mock });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('could not fetch active issue list');
+    });
+
     test('no conflicts when source is the only active issue', () => {
       // Mock bd: show returns JSON for the source, list returns only the source
       const mock = createMockBd(`
