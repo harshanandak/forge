@@ -1,0 +1,70 @@
+{
+  "command": "/status",
+  "description": "Eval set for the /status command — checks project health, active work, recent completions, and context determination",
+  "queries": [
+    {
+      "name": "happy_path",
+      "prompt": "Run /status on a clean repo with beads configured and some completed issues",
+      "setup": null,
+      "teardown": null,
+      "assertions": [
+        {
+          "type": "standard",
+          "check": "Output includes beads stats (open, in-progress, completed counts) from `bd stats`"
+        },
+        {
+          "type": "standard",
+          "check": "Output includes current branch name from git"
+        },
+        {
+          "type": "standard",
+          "check": "Output includes recent commits from `git log --oneline -10`"
+        },
+        {
+          "type": "standard",
+          "check": "Output determines a context category (new feature, continuing work, or review needed)"
+        }
+      ]
+    },
+    {
+      "name": "in_progress_work",
+      "prompt": "Run /status when there is an in-progress beads issue",
+      "setup": "bd create --title='Test in-progress issue' --type=feature && bd update <new-issue-id> --status=in_progress",
+      "teardown": "bd close <test-issue-id>",
+      "assertions": [
+        {
+          "type": "standard",
+          "check": "Output shows the in-progress issue with its title and status"
+        },
+        {
+          "type": "standard",
+          "check": "Output includes progress data from `beads-context.sh parse-progress` for the in-progress issue"
+        },
+        {
+          "type": "standard",
+          "check": "Context is determined as 'Continuing work' since there is active in-progress work"
+        }
+      ]
+    },
+    {
+      "name": "no_active_work",
+      "prompt": "Run /status when there are no in-progress beads issues",
+      "setup": null,
+      "teardown": null,
+      "assertions": [
+        {
+          "type": "standard",
+          "check": "Output handles absence of in-progress issues gracefully (no crash or error)"
+        },
+        {
+          "type": "standard",
+          "check": "Context is determined as 'New feature' or suggests starting new work with /plan"
+        },
+        {
+          "type": "standard",
+          "check": "Output still shows beads stats and recent commits even with no active work"
+        }
+      ]
+    }
+  ]
+}
