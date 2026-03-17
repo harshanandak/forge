@@ -364,12 +364,16 @@ cmd_store_contracts() {
   # Validate issue exists
   bd_show_json "$issue_id" > /dev/null
 
-  # Store contracts metadata
-  if ! bd_update "$issue_id" --append-notes "contracts: ${contracts}" > /dev/null; then
+  # Store contracts metadata with timestamp for deduplication.
+  # bd only supports --append-notes (no replace), so we prefix with a timestamp.
+  # Consumers (check-ripple) should use the LATEST contracts: line and ignore older ones.
+  local ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ! bd_update "$issue_id" --append-notes "contracts@${ts}: ${contracts}" > /dev/null; then
     die "Failed to store contracts on issue ${issue_id}"
   fi
 
-  echo "Contracts stored on ${issue_id}"
+  echo "Contracts stored on ${issue_id} (${ts})"
 }
 
 cmd_extract_contracts() {
