@@ -376,17 +376,18 @@ Both commands must exit with code 0. If either fails, investigate (wrong issue I
 After saving the task list and Beads context, extract and store contract metadata for dependency ripple analysis:
 
 ```bash
-# Extract contracts from task list
-bash scripts/dep-guard.sh extract-contracts docs/plans/YYYY-MM-DD-<slug>-tasks.md
+# Extract contracts — only call store-contracts if extract succeeds (exit 0)
+if bash scripts/dep-guard.sh extract-contracts docs/plans/YYYY-MM-DD-<slug>-tasks.md > /tmp/contracts.txt; then
+  bash scripts/dep-guard.sh store-contracts <id> "$(cat /tmp/contracts.txt)"
+else
+  echo "No contracts found — skipping store-contracts"
+fi
 
-# Store contracts on the Beads issue
-bash scripts/dep-guard.sh store-contracts <id> "<extracted-contracts-output>"
-
-# Re-run ripple check with precise contract data
+# Re-run ripple check with precise contract data (advisory only)
 bash scripts/dep-guard.sh check-ripple <id>
 ```
 
-The extract-contracts and store-contracts commands must exit with code 0. The final check-ripple is advisory (informational only).
+`extract-contracts` exits 1 when no contracts are found (not an error — just nothing to store). `store-contracts` must exit 0 if called. The final `check-ripple` is advisory.
 
 ### Step 6: User review
 

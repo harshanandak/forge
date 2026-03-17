@@ -236,6 +236,11 @@ cmd_check_ripple() {
     list_output="$(printf '%s\n' "$combined" | awk '!seen[$0]++')"
   fi
 
+  if [[ -z "$list_output" ]]; then
+    echo "⚠️  Warning: could not fetch active issue list — ripple check skipped" >&2
+    return 0
+  fi
+
   # ── Step 4: Parse each active issue (excluding source) ─────────────────
   # Format: ○ forge-xxx [● P2] [feature] - Title of the issue
   #         ◐ forge-yyy [● P1] [task] - Another issue title
