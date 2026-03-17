@@ -4,8 +4,8 @@
 # Subcommands:
 #   find-consumers     <file-path>                Find files that import/require a given module
 #   check-ripple       <issue-id>                  Check ripple impact via keyword matching
-#   store-contracts    <issue-id> <file-path>      Store public API contracts for a file
-#   extract-contracts  <file-path>                 Extract public API contracts from a file
+#   store-contracts    <issue-id> <contracts-string> Store contract metadata on a Beads issue
+#   extract-contracts  <file-path>                  Extract public API contracts from a file
 #
 # Cross-platform: works on Windows (Git Bash), macOS, and Linux.
 # OWASP A03: All variables properly quoted to prevent shell injection.
@@ -21,8 +21,8 @@ Usage: dep-guard.sh <subcommand> [args...]
 Subcommands:
   find-consumers     <file-path>                Find files that import/require a given module
   check-ripple       <issue-id>                  Check ripple impact via keyword matching
-  store-contracts    <issue-id> <file-path>      Store public API contracts for a file
-  extract-contracts  <file-path>                 Extract public API contracts from a file
+  store-contracts    <issue-id> <contracts-string> Store contract metadata on a Beads issue
+  extract-contracts  <file-path>                  Extract public API contracts from a file
 EOF
   exit 1
 }
@@ -304,12 +304,28 @@ cmd_check_ripple() {
 
 cmd_store_contracts() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: dep-guard.sh store-contracts <issue-id> <file-path>" >&2
+    echo "Usage: dep-guard.sh store-contracts <issue-id> <contracts-string>" >&2
     exit 1
   fi
 
-  echo "Not implemented: store-contracts" >&2
-  exit 1
+  local issue_id="$1"
+  local contracts="$2"
+
+  if [[ -z "$contracts" ]]; then
+    die "Contracts string cannot be empty"
+  fi
+
+  contracts="$(sanitize "$contracts")"
+
+  # Validate issue exists
+  bd_show_json "$issue_id" > /dev/null
+
+  # Store contracts metadata
+  if ! bd_update "$issue_id" --append-notes "contracts: ${contracts}" > /dev/null; then
+    die "Failed to store contracts on issue ${issue_id}"
+  fi
+
+  echo "Contracts stored on ${issue_id}"
 }
 
 cmd_extract_contracts() {

@@ -257,4 +257,68 @@ ENDJSON
       expect(result.stdout).toContain('No conflicts detected');
     });
   });
+
+  describe('store-contracts', () => {
+    /** @type {string[]} */
+    const mockFiles = [];
+
+    afterAll(() => {
+      for (const f of mockFiles) {
+        try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+    });
+
+    test('empty contracts string exits 1', () => {
+      const result = runDepGuard(['store-contracts', 'some-id', '']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('empty');
+    });
+
+    test('missing args exits 1', () => {
+      const result = runDepGuard(['store-contracts', 'only-one-arg']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Usage:');
+    });
+
+    test('successful storage prints confirmation', () => {
+      const mock = createMockBd(`
+        if [[ "\$1" == "show" && "\$2" == "test-1" ]]; then
+          echo '{"id":"test-1","title":"Test issue","status":"open"}'
+          exit 0
+        fi
+        if [[ "\$1" == "update" ]]; then
+          echo "Updated issue: test-1"
+          exit 0
+        fi
+        echo "Unknown command: \$*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(
+        ['store-contracts', 'test-1', 'lib/foo.js:bar(modified)'],
+        { BD_CMD: mock },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Contracts stored on test-1');
+    });
+
+    test('invalid issue exits 1', () => {
+      const mock = createMockBd(`
+        if [[ "\$1" == "show" ]]; then
+          echo "Error resolving issue: bad-id" >&2
+          exit 1
+        fi
+        echo ""
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(
+        ['store-contracts', 'bad-id', 'lib/foo.js:bar(modified)'],
+        { BD_CMD: mock },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/not found|Failed|Error/i);
+    });
+  });
 });
