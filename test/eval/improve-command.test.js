@@ -485,6 +485,33 @@ describe('runImprovementLoop', () => {
 
     expect(capturedPrompt).toContain('0.4');
   });
+
+  test('restores the last safe command content if eval throws after a rewrite', async () => {
+    const originalContent = fs.readFileSync(commandPath, 'utf8');
+    let evalCallCount = 0;
+
+    const fakeRunEval = async () => {
+      evalCallCount++;
+      if (evalCallCount === 1) {
+        return fakeEvalResult(0.5, [{ check: 'shows branch', reasoning: 'Missing' }]);
+      }
+      throw new Error('eval runner crashed');
+    };
+
+    const fakeRewriter = async () => '# /status\nBroken in-progress rewrite';
+
+    await expect(
+      runImprovementLoop(commandPath, evalSetPath, {
+        maxIterations: 1,
+        _runEval: fakeRunEval,
+        _rewriteCommand: fakeRewriter,
+        _basePath: logsDir,
+      })
+    ).rejects.toThrow('eval runner crashed');
+
+    const restoredContent = fs.readFileSync(commandPath, 'utf8');
+    expect(restoredContent).toBe(originalContent);
+  });
 });
 
 describe('defaultRewriteCommand', () => {

@@ -1,5 +1,5 @@
 /**
- * Semi-autonomous improvement loop — analyze eval failures, rewrite command,
+ * Semi-autonomous improvement loop: analyze eval failures, rewrite command,
  * re-evaluate, and stop on regression or plateau.
  *
  * Usage:
@@ -17,7 +17,7 @@ const { DEFAULT_BASE_PATH, loadEvalHistory } = require('./lib/eval-storage');
 /**
  * Extract failing assertions with their query context from an eval result.
  *
- * @param {object} evalResult — result from runEvalPipeline
+ * @param {object} evalResult - result from runEvalPipeline
  * @returns {Array<{ query: string, assertion: string, reasoning: string }>}
  */
 function analyzeFailures(evalResult) {
@@ -45,9 +45,9 @@ function analyzeFailures(evalResult) {
 /**
  * Build a prompt asking for a command rewrite that fixes the identified failures.
  *
- * @param {string} commandContent — current command markdown content
+ * @param {string} commandContent - current command markdown content
  * @param {Array<{ query: string, assertion: string, reasoning: string }>} failures
- * @param {object[]} history — array of prior eval results (from loadEvalHistory)
+ * @param {object[]} history - array of prior eval results (from loadEvalHistory)
  * @returns {string}
  */
 function buildRewritePrompt(commandContent, failures, history) {
@@ -59,36 +59,36 @@ function buildRewritePrompt(commandContent, failures, history) {
   prompt += commandContent + '\n\n';
 
   prompt += '## Failing Assertions\n\n';
-  for (const f of failures) {
-    prompt += `- Query: "${f.query}"\n`;
-    prompt += `  Assertion: "${f.assertion}"\n`;
-    prompt += `  Reasoning: "${f.reasoning}"\n\n`;
+  for (const failure of failures) {
+    prompt += `- Query: "${failure.query}"\n`;
+    prompt += `  Assertion: "${failure.assertion}"\n`;
+    prompt += `  Reasoning: "${failure.reasoning}"\n\n`;
   }
 
   if (history && history.length > 0) {
     prompt += '## Prior Eval Attempts\n\n';
     prompt += 'Avoid repeating approaches that have already been tried. Here is a summary of prior attempts:\n\n';
     for (let i = 0; i < history.length; i++) {
-      const h = history[i];
-      const failCount = h.results
-        ? h.results.filter((r) => r.assertions && r.assertions.some((a) => !a.pass)).length
+      const attempt = history[i];
+      const failCount = attempt.results
+        ? attempt.results.filter((result) => result.assertions && result.assertions.some((assertion) => !assertion.pass)).length
         : 0;
-      prompt += `- Attempt ${i + 1}: score ${h.overall_score}, ${failCount} failing queries\n`;
+      prompt += `- Attempt ${i + 1}: score ${attempt.overall_score}, ${failCount} failing queries\n`;
     }
     prompt += '\n';
 
-    // Detect flaky assertions: same check string has both pass and fail across sessions
-    const assertionOutcomes = new Map(); // check string → { pass: number, fail: number }
-    for (const h of history) {
-      if (!h.results) continue;
-      for (const r of h.results) {
-        if (!r.assertions) continue;
-        for (const a of r.assertions) {
-          if (!assertionOutcomes.has(a.check)) {
-            assertionOutcomes.set(a.check, { pass: 0, fail: 0 });
+    // Detect flaky assertions: the same check both passed and failed across sessions.
+    const assertionOutcomes = new Map();
+    for (const attempt of history) {
+      if (!attempt.results) continue;
+      for (const result of attempt.results) {
+        if (!result.assertions) continue;
+        for (const assertion of result.assertions) {
+          if (!assertionOutcomes.has(assertion.check)) {
+            assertionOutcomes.set(assertion.check, { pass: 0, fail: 0 });
           }
-          const entry = assertionOutcomes.get(a.check);
-          if (a.pass) {
+          const entry = assertionOutcomes.get(assertion.check);
+          if (assertion.pass) {
             entry.pass++;
           } else {
             entry.fail++;
@@ -106,10 +106,10 @@ function buildRewritePrompt(commandContent, failures, history) {
 
     if (flakyAssertions.length > 0) {
       prompt += '## Flaky/Inconsistent Assertions\n\n';
-      prompt += 'These assertions are flaky — they pass in some sessions and fail in others. ';
+      prompt += 'These assertions are flaky - they pass in some sessions and fail in others. ';
       prompt += 'Do not waste iterations on these; they may depend on environment rather than command quality.\n\n';
-      for (const fa of flakyAssertions) {
-        prompt += `- "${fa.check}" — passed ${fa.pass}x, failed ${fa.fail}x across sessions\n`;
+      for (const flakyAssertion of flakyAssertions) {
+        prompt += `- "${flakyAssertion.check}" - passed ${flakyAssertion.pass}x, failed ${flakyAssertion.fail}x across sessions\n`;
       }
       prompt += '\n';
     }
@@ -133,45 +133,40 @@ function buildRewritePrompt(commandContent, failures, history) {
  * @returns {string}
  */
 function generateDiff(original, modified) {
-  const origLines = original.split('\n');
-  const modLines = modified.split('\n');
+  const originalLines = original.split('\n');
+  const modifiedLines = modified.split('\n');
 
   if (original === modified) {
     return '';
   }
 
   const lines = [];
-
-  // Walk through both arrays using two pointers
   let i = 0;
   let j = 0;
 
-  while (i < origLines.length || j < modLines.length) {
-    if (i < origLines.length && j < modLines.length && origLines[i] === modLines[j]) {
-      // Same line — context
-      lines.push(' ' + origLines[i]);
+  while (i < originalLines.length || j < modifiedLines.length) {
+    if (i < originalLines.length && j < modifiedLines.length && originalLines[i] === modifiedLines[j]) {
+      lines.push(' ' + originalLines[i]);
       i++;
       j++;
     } else {
-      // Check if the original line appears later in modified (it was moved/kept)
-      const origLineInMod = j < modLines.length ? modLines.indexOf(origLines[i], j) : -1;
-      const modLineInOrig = i < origLines.length ? origLines.indexOf(modLines[j], i) : -1;
+      const originalLineInModified = j < modifiedLines.length ? modifiedLines.indexOf(originalLines[i], j) : -1;
+      const modifiedLineInOriginal = i < originalLines.length ? originalLines.indexOf(modifiedLines[j], i) : -1;
 
-      if (i >= origLines.length) {
-        // Only modified lines left — additions
-        lines.push('+' + modLines[j]);
+      if (i >= originalLines.length) {
+        lines.push('+' + modifiedLines[j]);
         j++;
-      } else if (j >= modLines.length) {
-        // Only original lines left — removals
-        lines.push('-' + origLines[i]);
+      } else if (j >= modifiedLines.length) {
+        lines.push('-' + originalLines[i]);
         i++;
-      } else if (origLineInMod !== -1 && (modLineInOrig === -1 || origLineInMod - j <= modLineInOrig - i)) {
-        // Modified line was added before a matching original line
-        lines.push('+' + modLines[j]);
+      } else if (
+        originalLineInModified !== -1 &&
+        (modifiedLineInOriginal === -1 || originalLineInModified - j <= modifiedLineInOriginal - i)
+      ) {
+        lines.push('+' + modifiedLines[j]);
         j++;
       } else {
-        // Original line was removed
-        lines.push('-' + origLines[i]);
+        lines.push('-' + originalLines[i]);
         i++;
       }
     }
@@ -209,13 +204,13 @@ async function defaultRewriteCommand(prompt, options = {}) {
 /**
  * Main improvement loop orchestrator.
  *
- * @param {string} commandPath — path to the command markdown file
- * @param {string} evalSetPath — path to the .eval.json file
+ * @param {string} commandPath - path to the command markdown file
+ * @param {string} evalSetPath - path to the .eval.json file
  * @param {object} [options]
  * @param {number} [options.maxIterations=3]
- * @param {Function} [options._runEval] — injectable eval function for testing
- * @param {Function} [options._rewriteCommand] — injectable rewriter for testing
- * @param {string} [options._basePath] — eval-logs base path for testing
+ * @param {Function} [options._runEval] - injectable eval function for testing
+ * @param {Function} [options._rewriteCommand] - injectable rewriter for testing
+ * @param {string} [options._basePath] - eval-logs base path for testing
  * @returns {Promise<{ original: string, best: string, originalScore: number, bestScore: number, iterations: number, reason: string, diff: string }>}
  */
 async function runImprovementLoop(commandPath, evalSetPath, options = {}) {
@@ -224,95 +219,84 @@ async function runImprovementLoop(commandPath, evalSetPath, options = {}) {
   const rewriteCommand = options._rewriteCommand || ((prompt) => defaultRewriteCommand(prompt, options));
   const basePath = options._basePath || DEFAULT_BASE_PATH;
 
-  // 1. Read original command content (backup in memory)
   const originalContent = fs.readFileSync(commandPath, 'utf8');
-
-  // 2. Run eval → baseline score
-  const baselineResult = await runEval(evalSetPath);
-  const originalScore = baselineResult.overall_score;
-
-  // 3. Load prior eval history
-  const history = loadEvalHistory(baselineResult.command, basePath);
-
-  // Track best version
   let bestContent = originalContent;
-  let bestScore = originalScore;
-  let latestResult = baselineResult;
-  let previousScore = originalScore;
-  let iterations = 0;
-  let reason = 'max_iterations';
 
-  // 4. Iteration loop
-  for (let iter = 1; iter <= maxIterations; iter++) {
-    iterations = iter;
+  try {
+    const baselineResult = await runEval(evalSetPath);
+    const originalScore = baselineResult.overall_score;
+    const history = loadEvalHistory(baselineResult.command, basePath);
 
-    // a. Analyze failures from latest eval result
-    const failures = analyzeFailures(latestResult);
+    let bestScore = originalScore;
+    let latestResult = baselineResult;
+    let previousScore = originalScore;
+    let iterations = 0;
+    let reason = 'max_iterations';
 
-    // b. Build rewrite prompt (including history)
-    const prompt = buildRewritePrompt(
-      fs.readFileSync(commandPath, 'utf8'),
-      failures,
-      history
-    );
+    for (let iter = 1; iter <= maxIterations; iter++) {
+      iterations = iter;
 
-    // c. Call rewriter to get new command content
-    const newContent = await rewriteCommand(prompt);
+      const failures = analyzeFailures(latestResult);
+      const prompt = buildRewritePrompt(
+        fs.readFileSync(commandPath, 'utf8'),
+        failures,
+        history
+      );
 
-    // d. Write new content to command file
-    fs.writeFileSync(commandPath, newContent, 'utf8');
+      const newContent = await rewriteCommand(prompt);
+      fs.writeFileSync(commandPath, newContent, 'utf8');
 
-    // e. Re-run eval → new score
-    const newResult = await runEval(evalSetPath);
-    const newScore = newResult.overall_score;
+      const newResult = await runEval(evalSetPath);
+      const newScore = newResult.overall_score;
 
-    // f. If score dropped: restore best version, STOP
-    if (newScore < bestScore) {
-      fs.writeFileSync(commandPath, bestContent, 'utf8');
-      reason = 'regression';
-      break;
-    }
+      if (newScore < bestScore) {
+        fs.writeFileSync(commandPath, bestContent, 'utf8');
+        reason = 'regression';
+        break;
+      }
 
-    // g. If plateaued (same score 2 consecutive times): STOP
-    if (newScore === previousScore) {
-      // Update best if this is at least as good
-      if (newScore >= bestScore) {
+      if (newScore === previousScore) {
+        if (newScore >= bestScore) {
+          bestContent = newContent;
+          bestScore = newScore;
+        }
+        fs.writeFileSync(commandPath, bestContent, 'utf8');
+        reason = 'plateau';
+        break;
+      }
+
+      if (newScore > bestScore) {
         bestContent = newContent;
         bestScore = newScore;
       }
+
+      previousScore = newScore;
+      latestResult = newResult;
+
+      if (iter === maxIterations) {
+        reason = 'max_iterations';
+      }
+    }
+
+    fs.writeFileSync(commandPath, bestContent, 'utf8');
+
+    return {
+      original: originalContent,
+      best: bestContent,
+      originalScore,
+      bestScore,
+      iterations,
+      reason,
+      diff: generateDiff(originalContent, bestContent),
+    };
+  } catch (err) {
+    try {
       fs.writeFileSync(commandPath, bestContent, 'utf8');
-      reason = 'plateau';
-      break;
+    } catch (_restoreErr) {
+      // Preserve the original failure if restoring also fails.
     }
-
-    // h. If improved: update best version, continue
-    if (newScore > bestScore) {
-      bestContent = newContent;
-      bestScore = newScore;
-    }
-
-    previousScore = newScore;
-    latestResult = newResult;
-
-    // If this is the last iteration, set reason
-    if (iter === maxIterations) {
-      reason = 'max_iterations';
-    }
+    throw err;
   }
-
-  // 5. After loop: restore best version
-  fs.writeFileSync(commandPath, bestContent, 'utf8');
-
-  // 6. Return summary
-  return {
-    original: originalContent,
-    best: bestContent,
-    originalScore,
-    bestScore,
-    iterations,
-    reason,
-    diff: generateDiff(originalContent, bestContent),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +306,7 @@ async function runImprovementLoop(commandPath, evalSetPath, options = {}) {
 /**
  * Parse CLI arguments.
  *
- * @param {string[]} argv — process.argv.slice(2)
+ * @param {string[]} argv - process.argv.slice(2)
  * @returns {{ commandPath: string, evalSetPath: string, maxIterations: number }}
  */
 function parseCliArgs(argv) {
@@ -368,7 +352,7 @@ if (require.main === module) {
       console.log(`Reason:         ${result.reason}`);
 
       if (result.diff) {
-        console.log('\n=== Diff (original → best) ===');
+        console.log('\n=== Diff (original -> best) ===');
         console.log(result.diff);
       } else {
         console.log('\nNo changes made.');
