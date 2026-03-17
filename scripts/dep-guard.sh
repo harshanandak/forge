@@ -3,7 +3,7 @@
 #
 # Subcommands:
 #   find-consumers     <file-path>                Find files that import/require a given module
-#   check-ripple       <issue-id> <file-path>     Check ripple impact of changes to a file
+#   check-ripple       <issue-id>                  Check ripple impact via keyword matching
 #   store-contracts    <issue-id> <file-path>      Store public API contracts for a file
 #   extract-contracts  <file-path>                 Extract public API contracts from a file
 #
@@ -20,7 +20,7 @@ Usage: dep-guard.sh <subcommand> [args...]
 
 Subcommands:
   find-consumers     <file-path>                Find files that import/require a given module
-  check-ripple       <issue-id> <file-path>     Check ripple impact of changes to a file
+  check-ripple       <issue-id>                  Check ripple impact via keyword matching
   store-contracts    <issue-id> <file-path>      Store public API contracts for a file
   extract-contracts  <file-path>                 Extract public API contracts from a file
 EOF
@@ -54,7 +54,7 @@ sanitize() {
 # bd update exits 0 even for non-existent issues, so we check stdout too.
 bd_update() {
   local output
-  output="$(bd update "$@" 2>&1)"
+  output="$(${BD_CMD:-bd} update "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -79,7 +79,7 @@ bd_show_json() {
   local issue_id="$1"
 
   local json
-  json="$(bd show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
+  json="$(${BD_CMD:-bd} show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
 
   # bd show may exit 0 but print an error for non-existent issues
   if printf '%s' "$json" | grep -Eqi '^Error (fetching|resolving)'; then
@@ -139,13 +139,167 @@ cmd_find_consumers() {
 }
 
 cmd_check_ripple() {
-  if [[ $# -lt 2 ]]; then
-    echo "Usage: dep-guard.sh check-ripple <issue-id> <file-path>" >&2
+  if [[ $# -lt 1 || -z "$1" ]]; then
+    echo "Usage: dep-guard.sh check-ripple <issue-id>" >&2
     exit 1
   fi
 
-  echo "Not implemented: check-ripple" >&2
-  exit 1
+  local issue_id
+  issue_id="$(sanitize "$1")"
+
+  # ── Step 1: Validate issue exists ──────────────────────────────────────
+  local src_json
+  src_json="$(bd_show_json "$issue_id")"
+
+  # ── Step 2: Extract source title ───────────────────────────────────────
+  local src_title=""
+  if command -v jq &>/dev/null; then
+    src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
+  fi
+  # Fallback: grep for title in JSON
+  if [[ -z "$src_title" ]]; then
+    src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
+  fi
+
+  echo ""
+  printf '%s\n' "📋 Ripple check for ${issue_id}..."
+  echo ""
+
+  # ── Step 3: Collect active issues ──────────────────────────────────────
+  # Run bd list for open and in_progress separately, combine results
+  local list_output=""
+  local open_list=""
+  local ip_list=""
+  open_list="$(${BD_CMD:-bd} list --status=open 2>/dev/null)" || true
+  ip_list="$(${BD_CMD:-bd} list --status=in_progress 2>/dev/null)" || true
+
+  # Combine and deduplicate (in case bd list returns overlapping results)
+  local combined=""
+  if [[ -n "$open_list" && -n "$ip_list" ]]; then
+    combined="${open_list}"$'\n'"${ip_list}"
+  elif [[ -n "$open_list" ]]; then
+    combined="$open_list"
+  elif [[ -n "$ip_list" ]]; then
+    combined="$ip_list"
+  fi
+
+  # Deduplicate by unique lines (preserves order via awk)
+  if [[ -n "$combined" ]]; then
+    list_output="$(printf '%s\n' "$combined" | awk '!seen[$0]++')"
+  fi
+
+  # ── Step 4: Parse each active issue (excluding source) ─────────────────
+  # Format: ○ forge-xxx [● P2] [feature] - Title of the issue
+  #         ◐ forge-yyy [● P1] [task] - Another issue title
+  local overlap_count=0
+  local overlap_report=""
+
+  # Stop words to exclude from keyword matching
+  local stop_words=" the a an and or is in to for of with on at by from add fix update implement create remove delete make use get set run test check all this that it be as not no but if do we they are was were been have has had will would could should may can each every both also into than then when where which what how why who its new first last same other "
+
+  # Tokenize source title: lowercase, split on non-alpha, filter stop words + short terms
+  local src_terms=""
+  src_terms="$(printf '%s' "$src_title" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alpha:]' '\n' | sort -u)"
+
+  # Filter source terms
+  local filtered_src_terms=""
+  while IFS= read -r term; do
+    [[ -z "$term" ]] && continue
+    # Skip terms < 3 characters
+    [[ ${#term} -lt 3 ]] && continue
+    # Skip stop words
+    if [[ "$stop_words" == *" ${term} "* ]]; then
+      continue
+    fi
+    filtered_src_terms="${filtered_src_terms} ${term}"
+  done <<< "$src_terms"
+
+  # Process each line in list_output
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+
+    # Extract issue ID (forge-xxx pattern)
+    local cand_id=""
+    cand_id="$(printf '%s' "$line" | grep -oE 'forge-[a-z0-9]+' | head -1)" || continue
+    [[ -z "$cand_id" ]] && continue
+
+    # Skip the source issue itself
+    [[ "$cand_id" == "$issue_id" ]] && continue
+
+    # Extract status symbol and map to label
+    local cand_status="open"
+    if printf '%s' "$line" | grep -q '◐'; then
+      cand_status="in_progress"
+    fi
+
+    # Extract priority (P1, P2, P3, etc.)
+    local cand_priority=""
+    cand_priority="$(printf '%s' "$line" | grep -oE 'P[0-9]+' | head -1)" || true
+    [[ -z "$cand_priority" ]] && cand_priority="P2"
+
+    # Extract title (everything after " - ")
+    local cand_title=""
+    cand_title="$(printf '%s' "$line" | sed 's/^.*] - //')" || continue
+    [[ -z "$cand_title" ]] && continue
+
+    # Tokenize candidate title
+    local cand_terms=""
+    cand_terms="$(printf '%s' "$cand_title" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alpha:]' '\n' | sort -u)"
+
+    # Filter candidate terms
+    local filtered_cand_terms=""
+    while IFS= read -r term; do
+      [[ -z "$term" ]] && continue
+      [[ ${#term} -lt 3 ]] && continue
+      if [[ "$stop_words" == *" ${term} "* ]]; then
+        continue
+      fi
+      filtered_cand_terms="${filtered_cand_terms} ${term}"
+    done <<< "$cand_terms"
+
+    # ── Step 6: Find shared meaningful terms ───────────────────────────────
+    local shared_terms=""
+    local shared_count=0
+    for src_t in $filtered_src_terms; do
+      for cand_t in $filtered_cand_terms; do
+        if [[ "$src_t" == "$cand_t" ]]; then
+          if [[ -z "$shared_terms" ]]; then
+            shared_terms="\"${src_t}\""
+          else
+            shared_terms="${shared_terms}, \"${src_t}\""
+          fi
+          shared_count=$((shared_count + 1))
+          break
+        fi
+      done
+    done
+
+    # ── Step 7: Report if >= 2 shared terms ────────────────────────────────
+    if [[ $shared_count -ge 2 ]]; then
+      overlap_count=$((overlap_count + 1))
+      overlap_report="${overlap_report}  ${cand_id} (${cand_status}, ${cand_priority}): \"${cand_title}\""$'\n'
+      overlap_report="${overlap_report}  Overlap: keyword match — ${shared_terms}"$'\n'
+      overlap_report="${overlap_report}  Confidence: LOW (keyword only, no contract data)"$'\n'
+      overlap_report="${overlap_report}"$'\n'
+      overlap_report="${overlap_report}  Options:"$'\n'
+      overlap_report="${overlap_report}  (a) Add dependency: bd dep add ${issue_id} ${cand_id}"$'\n'
+      overlap_report="${overlap_report}  (b) Proceed — no real conflict"$'\n'
+      overlap_report="${overlap_report}  (c) Investigate: bd show ${cand_id}"$'\n'
+      overlap_report="${overlap_report}"$'\n'
+    fi
+
+  done <<< "$list_output"
+
+  # ── Step 8: Output final report ──────────────────────────────────────
+  if [[ $overlap_count -gt 0 ]]; then
+    printf '%s\n' "⚠️  Potential overlap with ${overlap_count} issue(s):"
+    echo ""
+    printf '%s' "$overlap_report"
+  else
+    printf '%s\n' "✅ No conflicts detected"
+  fi
+
+  return 0
 }
 
 cmd_store_contracts() {
