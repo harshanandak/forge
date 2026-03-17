@@ -58,8 +58,12 @@ function loadEvalHistory(command, _basePath) {
   const results = [];
   for (const file of files) {
     const filePath = path.join(basePath, file);
-    const content = fs.readFileSync(filePath, 'utf8');
-    results.push(JSON.parse(content));
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      results.push(JSON.parse(content));
+    } catch (_err) {
+      // History is best-effort context only; skip corrupted entries.
+    }
   }
 
   results.sort((a, b) => {
@@ -71,4 +75,4 @@ function loadEvalHistory(command, _basePath) {
   return results;
 }
 
-module.exports = { saveEvalResult, loadEvalHistory };
+module.exports = { DEFAULT_BASE_PATH, saveEvalResult, loadEvalHistory };

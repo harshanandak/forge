@@ -39,7 +39,9 @@ function buildGraderPrompt(transcript, assertions) {
   return [
     '## Transcript',
     '',
+    '<transcript>',
     transcriptText,
+    '</transcript>',
     '',
     '## Assertions',
     '',

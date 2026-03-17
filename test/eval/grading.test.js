@@ -151,6 +151,8 @@ describe('buildGraderPrompt', () => {
     expect(prompt).toContain('shows beads');
     expect(prompt).toContain('hard-gate');
     expect(prompt).toContain('agent stopped');
+    expect(prompt).toContain('<transcript>');
+    expect(prompt).toContain('</transcript>');
 
     // Must mention JSON somewhere (asking the grader to return JSON)
     expect(prompt).toMatch(/json/i);

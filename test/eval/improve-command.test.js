@@ -6,6 +6,7 @@ const os = require('os');
 const {
   analyzeFailures,
   buildRewritePrompt,
+  defaultRewriteCommand,
   generateDiff,
   runImprovementLoop,
 } = require('../../scripts/improve-command');
@@ -193,9 +194,11 @@ describe('runImprovementLoop', () => {
   let commandPath;
   let evalSetPath;
   let logsDir;
+  let originalCwd;
 
   beforeEach(() => {
     tmpDir = makeTmpDir('improve-loop-');
+    originalCwd = process.cwd();
     commandDir = path.join(tmpDir, 'commands');
     fs.mkdirSync(commandDir, { recursive: true });
 
@@ -223,6 +226,7 @@ describe('runImprovementLoop', () => {
   });
 
   afterEach(() => {
+    process.chdir(originalCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -439,5 +443,77 @@ describe('runImprovementLoop', () => {
     // The file should contain the best version (version 1, which scored 0.8)
     const fileContent = fs.readFileSync(commandPath, 'utf8');
     expect(fileContent).toBe(rewriteVersions[0]); // version 1 was the best
+  });
+
+  test('uses the default eval log path when _basePath is not provided', async () => {
+    const defaultLogsDir = path.join(tmpDir, '.forge', 'eval-logs');
+    fs.mkdirSync(defaultLogsDir, { recursive: true });
+    process.chdir(tmpDir);
+
+    fs.writeFileSync(
+      path.join(defaultLogsDir, '2026-03-16-14-30-status.json'),
+      JSON.stringify({
+        command: '/status',
+        timestamp: '2026-03-16T14:30:00Z',
+        overall_score: 0.4,
+        results: [],
+      }),
+      'utf8'
+    );
+
+    let capturedPrompt = '';
+    let evalCallCount = 0;
+
+    const fakeRunEval = async () => {
+      evalCallCount++;
+      if (evalCallCount === 1) {
+        return fakeEvalResult(0.5, [{ check: 'shows branch', reasoning: 'Missing' }]);
+      }
+      return fakeEvalResult(0.8, []);
+    };
+
+    const fakeRewriter = async (prompt) => {
+      capturedPrompt = prompt;
+      return '# /status\nImproved command';
+    };
+
+    await runImprovementLoop(commandPath, evalSetPath, {
+      maxIterations: 1,
+      _runEval: fakeRunEval,
+      _rewriteCommand: fakeRewriter,
+    });
+
+    expect(capturedPrompt).toContain('0.4');
+  });
+});
+
+describe('defaultRewriteCommand', () => {
+  test('invokes claude with non-interactive text output flags', async () => {
+    let receivedCommand = null;
+    let receivedArgs = null;
+    let receivedOptions = null;
+
+    const result = await defaultRewriteCommand('Rewrite this command', {
+      timeout: 42_000,
+      _execFileSync: (command, args, options) => {
+        receivedCommand = command;
+        receivedArgs = args;
+        receivedOptions = options;
+        return '# rewritten command';
+      },
+    });
+
+    expect(result).toBe('# rewritten command');
+    expect(receivedCommand).toBe('claude');
+    expect(receivedArgs).toEqual([
+      '-p',
+      'Rewrite this command',
+      '--output-format',
+      'text',
+      '--no-session-persistence',
+    ]);
+    expect(receivedOptions.encoding).toBe('utf-8');
+    expect(receivedOptions.timeout).toBe(42_000);
+    expect(receivedOptions.maxBuffer).toBe(10 * 1024 * 1024);
   });
 });

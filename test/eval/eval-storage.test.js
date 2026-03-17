@@ -188,5 +188,25 @@ describe('eval-storage', () => {
       expect(withSlash).toHaveLength(1);
       expect(withoutSlash).toHaveLength(1);
     });
+
+    test('skips corrupted history files and returns valid entries', () => {
+      saveEvalResult({
+        command: '/status',
+        timestamp: '2026-03-16T14:30:00Z',
+        overall_score: 0.85,
+        results: [],
+      }, tmpDir);
+
+      fs.writeFileSync(
+        path.join(tmpDir, '2026-03-16-14-31-status.json'),
+        '{"command":"/status","timestamp":"broken"',
+        'utf8'
+      );
+
+      const history = loadEvalHistory('/status', tmpDir);
+
+      expect(history).toHaveLength(1);
+      expect(history[0].overall_score).toBe(0.85);
+    });
   });
 });

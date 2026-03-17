@@ -6,8 +6,9 @@
  *   bun scripts/improve-command.js <command-path> --eval-set <path> [--max-iterations <N>]
  */
 
+const { execFileSync } = require('child_process');
 const fs = require('fs');
-const { loadEvalHistory } = require('./lib/eval-storage');
+const { DEFAULT_BASE_PATH, loadEvalHistory } = require('./lib/eval-storage');
 
 // ---------------------------------------------------------------------------
 // analyzeFailures
@@ -179,6 +180,28 @@ function generateDiff(original, modified) {
   return lines.join('\n');
 }
 
+/**
+ * Default rewrite invocation via `claude -p`.
+ *
+ * @param {string} prompt
+ * @param {{ timeout?: number, _execFileSync?: Function }} [options]
+ * @returns {Promise<string>}
+ */
+async function defaultRewriteCommand(prompt, options = {}) {
+  const timeout = options.timeout || 120_000;
+  const execFile = options._execFileSync || execFileSync;
+
+  return execFile(
+    'claude',
+    ['-p', prompt, '--output-format', 'text', '--no-session-persistence'],
+    {
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+    }
+  );
+}
+
 // ---------------------------------------------------------------------------
 // runImprovementLoop
 // ---------------------------------------------------------------------------
@@ -198,8 +221,8 @@ function generateDiff(original, modified) {
 async function runImprovementLoop(commandPath, evalSetPath, options = {}) {
   const maxIterations = options.maxIterations || 3;
   const runEval = options._runEval;
-  const rewriteCommand = options._rewriteCommand;
-  const basePath = options._basePath || '.forge/eval-logs';
+  const rewriteCommand = options._rewriteCommand || ((prompt) => defaultRewriteCommand(prompt, options));
+  const basePath = options._basePath || DEFAULT_BASE_PATH;
 
   // 1. Read original command content (backup in memory)
   const originalContent = fs.readFileSync(commandPath, 'utf8');
@@ -209,7 +232,7 @@ async function runImprovementLoop(commandPath, evalSetPath, options = {}) {
   const originalScore = baselineResult.overall_score;
 
   // 3. Load prior eval history
-  const history = basePath ? loadEvalHistory(baselineResult.command, basePath) : [];
+  const history = loadEvalHistory(baselineResult.command, basePath);
 
   // Track best version
   let bestContent = originalContent;
@@ -336,10 +359,6 @@ if (require.main === module) {
   runImprovementLoop(args.commandPath, args.evalSetPath, {
     maxIterations: args.maxIterations,
     _runEval: (evalPath) => runEvalPipeline(evalPath),
-    _rewriteCommand: async (_prompt) => {
-      // In a real scenario this would call Claude; for now placeholder
-      throw new Error('Real LLM rewriter not yet implemented. Use --dry-run or inject _rewriteCommand.');
-    },
   })
     .then((result) => {
       console.log('\n=== Improvement Summary ===');
@@ -366,6 +385,7 @@ if (require.main === module) {
 module.exports = {
   analyzeFailures,
   buildRewritePrompt,
+  defaultRewriteCommand,
   generateDiff,
   runImprovementLoop,
 };
