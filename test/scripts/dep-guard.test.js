@@ -445,4 +445,14 @@ describe('plan.md integration', () => {
     const afterHardGate = content.substring(hardGateIdx);
     expect(afterHardGate).toContain('dep-guard');
   });
+
+  test('plan.md contains Ripple Analyst agent prompt section', () => {
+    const content = fs.readFileSync(planMdPath, 'utf-8');
+    expect(content).toContain('Ripple Analyst');
+    expect(content).toContain('break scenarios');
+    expect(content).toContain('NONE');
+    expect(content).toContain('CRITICAL');
+    expect(content).toContain('default to HIGH');
+    expect(content).toContain('Recommendation');
+  });
 });

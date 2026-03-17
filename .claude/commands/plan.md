@@ -65,6 +65,45 @@ Review the output. If overlaps are detected:
 - Note any shared areas for the design Q&A
 - This check is **advisory only** — always proceed to Step 1 regardless of findings
 
+#### Ripple Analyst Agent (spawned when contract overlaps found)
+
+When `check-ripple` detects overlapping issues AND contract metadata is available, spawn a Ripple Analyst subagent with this prompt:
+
+**Input to agent**:
+- Current issue's contract changes (from `extract-contracts` output)
+- Consumer code snippets (from `find-consumers` output for each changed contract)
+- Overlapping issue's title, description, and contract metadata
+
+**Agent instructions**:
+1. For each overlapping contract, imagine 2-3 concrete break scenarios:
+   - "If [contract X] changes [specific behavior], then [consumer Y] will [specific failure]"
+2. Rate overall impact as one of:
+   - **NONE**: No real conflict despite keyword overlap
+   - **LOW**: Consumers need trivial adjustment (add parameter, rename call)
+   - **HIGH**: Consumer needs significant rework (parsing logic, data handling changes)
+   - **CRITICAL**: Consumer is in an active in_progress issue's task list
+3. **When uncertain, default to HIGH** — conservative over permissive
+4. Recommend one action:
+   - Add dependency (`bd dep add <source> <target>`)
+   - Coordinate with other issue's developer
+   - Scope down current feature to avoid overlap
+   - Proceed as-is (no real conflict)
+
+**Output format**:
+```
+Impact: [NONE|LOW|HIGH|CRITICAL]
+Confidence: [high|medium|low]
+
+Break scenarios:
+1. [scenario description]
+2. [scenario description]
+
+Recommendation: [action]
+Reason: [why this action]
+```
+
+This agent is advisory only. The developer always makes the final decision.
+
 ### Step 1: Explore project context
 
 Before asking any questions, read relevant files:
