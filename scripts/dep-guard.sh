@@ -166,7 +166,7 @@ cmd_find_consumers() {
 
   # Grep across key directories, excluding noise
   local results
-  results="$(grep -rn "$pattern" \
+  results="$(grep -rn -e "$pattern" \
     --include='*.js' --include='*.sh' --include='*.md' --include='*.ts' --include='*.json' \
     --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=test --exclude-dir=test-env \
     --exclude='dep-guard.sh' \
@@ -202,6 +202,11 @@ cmd_check_ripple() {
   # Fallback: grep for title in JSON
   if [[ -z "$src_title" ]]; then
     src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
+  fi
+
+  if [[ -z "$src_title" ]]; then
+    echo "⚠️  Warning: could not extract title for ${issue_id} — ripple check skipped" >&2
+    return 0
   fi
 
   echo ""
@@ -450,8 +455,8 @@ cmd_extract_contracts() {
   contracts="$(printf '%s' "$all_contracts" | grep -v '^$' | sort -u)"
 
   if [[ -z "$contracts" ]]; then
-    echo "No contracts found"
-    exit 0
+    echo "No contracts found" >&2
+    exit 1
   fi
 
   printf '%s\n' "$contracts"

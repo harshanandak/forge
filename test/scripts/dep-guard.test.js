@@ -120,6 +120,12 @@ describe('scripts/dep-guard.sh', () => {
       expect(result.status).toBe(1);
     });
 
+    test('leading-hyphen pattern is not interpreted as grep flag', () => {
+      const result = runDepGuard(['find-consumers', '--version']);
+      // Should NOT return grep version info — -e flag prevents option injection
+      expect(result.stdout).not.toMatch(/grep|GNU|ripgrep/i);
+    });
+
     test('self-exclusion: dep-guard.sh is not a matched file', () => {
       const result = runDepGuard(['find-consumers', 'dep-guard']);
       // The script excludes itself from grep results. Verify no line has
@@ -164,6 +170,22 @@ describe('scripts/dep-guard.sh', () => {
       const result = runDepGuard(['check-ripple', 'forge-nonexistent'], { BD_CMD: mock });
       expect(result.status).toBe(1);
       expect(result.stderr).toMatch(/not found|Failed|Error/i);
+    });
+
+    test('warns and skips when title extraction fails', () => {
+      // Mock bd: show returns JSON with no title field
+      const mock = createMockBd(`
+        if [[ "\$1" == "show" ]]; then
+          echo '{"id":"forge-xyz","status":"open"}'
+          exit 0
+        fi
+        echo ""
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(['check-ripple', 'forge-xyz'], { BD_CMD: mock });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('could not extract title');
     });
 
     test('no conflicts when source is the only active issue', () => {
