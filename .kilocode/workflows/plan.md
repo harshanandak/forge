@@ -49,6 +49,62 @@ between parallel features or sessions.
 
 **Goal**: Capture WHAT to build — purpose, constraints, success criteria, edge cases, approach.
 
+### Step 0: Dependency ripple check (advisory)
+
+Before exploring context or asking questions, check for potential conflicts with in-flight work:
+
+```bash
+# If a Beads issue ID is known (e.g., from /status or bd ready):
+bash scripts/dep-guard.sh check-ripple <beads-issue-id>
+
+# If no issue exists yet (first-time plan):
+bd list --status=open,in_progress
+```
+
+Review the output. If overlaps are detected:
+- Consider whether the overlapping issue should be a dependency
+- Note any shared areas for the design Q&A
+- This check is **advisory only** — always proceed to Step 1 regardless of findings
+
+#### Ripple Analyst Agent (spawned when contract overlaps found)
+
+When `check-ripple` detects overlapping issues AND contract metadata is available, spawn a Ripple Analyst subagent with this prompt:
+
+**Input to agent**:
+- Current issue's contract changes (from `extract-contracts` output)
+- Consumer code snippets (from `find-consumers` output for each changed contract)
+- Overlapping issue's title, description, and contract metadata
+
+**Agent instructions**:
+1. For each overlapping contract, imagine 2-3 concrete break scenarios:
+   - "If [contract X] changes [specific behavior], then [consumer Y] will [specific failure]"
+2. Rate overall impact as one of:
+   - **NONE**: No real conflict despite keyword overlap
+   - **LOW**: Consumers need trivial adjustment (add parameter, rename call)
+   - **HIGH**: Consumer needs significant rework (parsing logic, data handling changes)
+   - **CRITICAL**: Consumer is in an active in_progress issue's task list
+3. **When uncertain, default to HIGH** — conservative over permissive
+4. Recommend one action:
+   - Add dependency (`bd dep add <source> <target>`)
+   - Coordinate with other issue's developer
+   - Scope down current feature to avoid overlap
+   - Proceed as-is (no real conflict)
+
+**Output format**:
+```
+Impact: [NONE|LOW|HIGH|CRITICAL]
+Confidence: [high|medium|low]
+
+Break scenarios:
+1. [scenario description]
+2. [scenario description]
+
+Recommendation: [action]
+Reason: [why this action]
+```
+
+This agent is advisory only. The developer always makes the final decision.
+
 ### Step 1: Explore project context
 
 Before asking any questions, read relevant files:
@@ -316,6 +372,23 @@ bash scripts/beads-context.sh set-acceptance <id> "<success-criteria from design
 
 Both commands must exit with code 0. If either fails, investigate (wrong issue ID? missing script?) before continuing.
 
+### Step 5c: Contract extraction and storage
+
+After saving the task list and Beads context, extract and store contract metadata for dependency ripple analysis:
+
+```bash
+# Extract contracts from task list
+bash scripts/dep-guard.sh extract-contracts docs/plans/YYYY-MM-DD-<slug>-tasks.md
+
+# Store contracts on the Beads issue
+bash scripts/dep-guard.sh store-contracts <id> "<extracted-contracts-output>"
+
+# Re-run ripple check with precise contract data
+bash scripts/dep-guard.sh check-ripple <id>
+```
+
+The extract-contracts and store-contracts commands must exit with code 0. The final check-ripple is advisory (informational only).
+
 ### Step 6: User review
 
 Present the full task list. Allow the user to reorder, split, or remove tasks.
@@ -333,6 +406,7 @@ Do NOT proceed to /dev until ALL are confirmed:
 6. User has confirmed task list is correct
 7. `beads-context.sh set-design` ran successfully (exit code 0)
 8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
+9. `dep-guard.sh store-contracts` ran successfully (exit code 0) — or skipped if no contracts found
 </HARD-GATE>
 ```
 
