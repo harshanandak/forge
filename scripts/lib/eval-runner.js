@@ -157,7 +157,7 @@ async function executeCommand(_command, prompt, worktreePath, timeout = 120000, 
   env.FORGE_EVAL = '1';
 
   // Spawn with Bun.spawn (array form, no shell interpolation)
-  const proc = Bun.spawn(cmd, {
+  const proc = Bun.spawn(cmd, { // eslint-disable-line no-undef -- Bun global provided by runtime
     cwd: worktreePath,
     env,
     stdout: 'pipe',

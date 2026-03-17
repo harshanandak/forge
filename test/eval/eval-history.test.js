@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 
 const {
-  buildRewritePrompt,
+  buildRewritePrompt: _buildRewritePrompt,
   runImprovementLoop,
 } = require('../../scripts/improve-command');
 const { saveEvalResult } = require('../../scripts/lib/eval-storage');

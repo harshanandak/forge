@@ -140,7 +140,7 @@ function generateDiff(original, modified) {
   }
 
   const lines = [];
-  const maxLen = Math.max(origLines.length, modLines.length);
+  const _maxLen = Math.max(origLines.length, modLines.length);
 
   // Simple LCS-based diff using a set approach:
   // Mark lines present in original but not modified as removed,
