@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pre-change dependency guard**: Contract-aware ripple analysis that detects logic conflicts between in-flight issues before work begins (PR #62, forge-mze)
+  - `scripts/dep-guard.sh`: 4 subcommands — `find-consumers`, `check-ripple`, `store-contracts`, `extract-contracts`
+  - `/plan` Phase 1: Advisory ripple check before design Q&A surfaces overlapping open issues
+  - `/plan` Phase 3: Auto-extract contracts from task list and store on Beads issue
+  - Ripple Analyst agent prompt: LLM-judged impact analysis (NONE/LOW/HIGH/CRITICAL)
+  - Keyword matching with stop-word filtering, timestamp-based contract dedup
+  - 29 tests covering all subcommands with mock-based `BD_CMD` testing pattern
+
 ### Fixed
 
 - **Roo Code rootConfig conflict**: Changed from `.clinerules` to `.roorules` — was conflicting with Cline during setup (PR #61)
