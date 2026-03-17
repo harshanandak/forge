@@ -82,4 +82,28 @@ describe('scripts/dep-guard.sh', () => {
       expect(result.status).toBe(1);
     });
   });
+
+  describe('find-consumers', () => {
+    test('known function found: sanitize appears in beads-context.sh', () => {
+      const result = runDepGuard(['find-consumers', 'sanitize']);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('scripts/beads-context.sh');
+    });
+
+    test('nonexistent name prints "No consumers found" and exits 0', () => {
+      const result = runDepGuard(['find-consumers', 'zzz_nonexistent_xyz_12345']);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('No consumers found');
+    });
+
+    test('empty input (no args) exits 1', () => {
+      const result = runDepGuard(['find-consumers']);
+      expect(result.status).toBe(1);
+    });
+
+    test('self-exclusion: output does not contain dep-guard.sh', () => {
+      const result = runDepGuard(['find-consumers', 'dep-guard']);
+      expect(result.stdout).not.toContain('scripts/dep-guard.sh');
+    });
+  });
 });

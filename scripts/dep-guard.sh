@@ -102,13 +102,40 @@ bd_show_json() {
 # ── Subcommands ──────────────────────────────────────────────────────────
 
 cmd_find_consumers() {
-  if [[ $# -lt 1 ]]; then
-    echo "Usage: dep-guard.sh find-consumers <file-path>" >&2
+  if [[ $# -lt 1 || -z "$1" ]]; then
+    echo "Usage: dep-guard.sh find-consumers <function-or-pattern>" >&2
     exit 1
   fi
 
-  echo "Not implemented: find-consumers" >&2
-  exit 1
+  local pattern
+  pattern="$(sanitize "$1")"
+
+  # Build list of directories that actually exist
+  local dirs=()
+  for d in lib/ scripts/ bin/ .claude/commands/ .forge/hooks/; do
+    [[ -d "$d" ]] && dirs+=("$d")
+  done
+
+  if [[ ${#dirs[@]} -eq 0 ]]; then
+    echo "No consumers found"
+    return 0
+  fi
+
+  # Grep across key directories, excluding noise
+  local results
+  results="$(grep -rn "$pattern" \
+    --include='*.js' --include='*.sh' --include='*.md' --include='*.ts' --include='*.json' \
+    --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=test --exclude-dir=test-env \
+    --exclude='dep-guard.sh' \
+    "${dirs[@]}" 2>/dev/null || true)"
+
+  if [[ -z "$results" ]]; then
+    echo "No consumers found"
+    return 0
+  fi
+
+  echo "$results"
+  return 0
 }
 
 cmd_check_ripple() {
