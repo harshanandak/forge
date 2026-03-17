@@ -334,8 +334,109 @@ cmd_extract_contracts() {
     exit 1
   fi
 
-  echo "Not implemented: extract-contracts" >&2
-  exit 1
+  local task_file="$1"
+
+  # Validate file exists
+  if [[ ! -f "$task_file" ]]; then
+    die "File does not exist: ${task_file}"
+  fi
+
+  # Check that file contains at least one ## Task header
+  if ! grep -q '^## Task' "$task_file"; then
+    die "No tasks found in ${task_file}"
+  fi
+
+  # Parse task blocks using line-by-line bash processing.
+  # For each task: collect File(s) paths and function names from "What to implement".
+  local current_files=""
+  local current_what=""
+  local in_what=0
+  local all_contracts=""
+
+  # Helper: emit contracts from current_files + current_what
+  _emit_contracts() {
+    if [[ -z "$current_files" || -z "$current_what" ]]; then
+      return
+    fi
+
+    # Extract word() patterns from the what section
+    local funcs
+    funcs="$(printf '%s' "$current_what" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\(\)' || true)"
+
+    if [[ -z "$funcs" ]]; then
+      return
+    fi
+
+    # Parse comma-separated file paths, strip backticks and whitespace
+    local IFS=','
+    local file_list
+    read -ra file_list <<< "$current_files"
+
+    local fp fn
+    for fp in "${file_list[@]}"; do
+      # Strip leading/trailing whitespace and backticks
+      fp="$(printf '%s' "$fp" | sed 's/^[[:space:]`]*//;s/[[:space:]`]*$//')"
+      [[ -z "$fp" ]] && continue
+
+      while IFS= read -r fn; do
+        [[ -z "$fn" ]] && continue
+        # Strip the trailing () from the function name
+        fn="${fn%()}"
+        all_contracts="${all_contracts}${fp}:${fn}(modified)"$'\n'
+      done <<< "$funcs"
+    done
+  }
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # New task block — flush previous
+    if [[ "$line" =~ ^##\ Task ]]; then
+      _emit_contracts
+      current_files=""
+      current_what=""
+      in_what=0
+      continue
+    fi
+
+    # File(s): line
+    if [[ "$line" =~ ^File\(s\): ]]; then
+      current_files="${line#File(s):}"
+      current_files="$(printf '%s' "$current_files" | sed 's/^[[:space:]]*//')"
+      in_what=0
+      continue
+    fi
+
+    # What to implement: line
+    if [[ "$line" =~ ^What\ to\ implement: ]]; then
+      current_what="${line#What to implement:}"
+      current_what="$(printf '%s' "$current_what" | sed 's/^[[:space:]]*//')"
+      in_what=1
+      continue
+    fi
+
+    # Continue what section (stop at section boundaries)
+    if [[ $in_what -eq 1 ]]; then
+      if [[ "$line" =~ ^(##\ Task|File\(s\):|What\ to\ implement:|TDD\ |Expected\ output|---) ]]; then
+        in_what=0
+        continue
+      fi
+      current_what="${current_what} ${line}"
+      continue
+    fi
+  done < "$task_file"
+
+  # Flush the last task block
+  _emit_contracts
+
+  # Deduplicate and sort
+  local contracts
+  contracts="$(printf '%s' "$all_contracts" | grep -v '^$' | sort -u)"
+
+  if [[ -z "$contracts" ]]; then
+    echo "No contracts found"
+    exit 0
+  fi
+
+  printf '%s\n' "$contracts"
 }
 
 # ── Main dispatcher ──────────────────────────────────────────────────────

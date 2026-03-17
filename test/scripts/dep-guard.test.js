@@ -258,6 +258,90 @@ ENDJSON
     });
   });
 
+  describe('extract-contracts', () => {
+    const tmpDir = path.join(os.tmpdir(), `dep-guard-extract-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+    beforeAll(() => {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterAll(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('nonexistent file exits 1', () => {
+      const result = runDepGuard(['extract-contracts', '/tmp/nonexistent-file-xyz-99999.md']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('does not exist');
+    });
+
+    test('file with no tasks exits 1', () => {
+      const noTaskFile = path.join(tmpDir, 'no-tasks.md');
+      fs.writeFileSync(noTaskFile, '# Just a header\n\nSome random content without task blocks.\n');
+      const result = runDepGuard(['extract-contracts', noTaskFile]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('No tasks found');
+    });
+
+    test('extracts function names from task file', () => {
+      const taskFile = path.join(tmpDir, 'tasks.md');
+      fs.writeFileSync(taskFile, [
+        '# Task List',
+        '',
+        '## Task 1: Create scaffold',
+        '',
+        'File(s): `scripts/dep-guard.sh`',
+        '',
+        'What to implement: Create `usage()` function and `die()` helper. Also add `sanitize()` for input cleaning.',
+        '',
+        '## Task 2: Add consumers',
+        '',
+        'File(s): `lib/commands/plan.js`',
+        '',
+        'What to implement: Add `findConsumers()` method that calls `parseTokens()` internally.',
+        '',
+      ].join('\n'));
+
+      const result = runDepGuard(['extract-contracts', taskFile]);
+      expect(result.status).toBe(0);
+      const lines = result.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
+      expect(lines).toContain('scripts/dep-guard.sh:usage(modified)');
+      expect(lines).toContain('scripts/dep-guard.sh:die(modified)');
+      expect(lines).toContain('scripts/dep-guard.sh:sanitize(modified)');
+      expect(lines).toContain('lib/commands/plan.js:findConsumers(modified)');
+      expect(lines).toContain('lib/commands/plan.js:parseTokens(modified)');
+    });
+
+    test('deduplication: same function in multiple tasks for same file appears once', () => {
+      const dedupFile = path.join(tmpDir, 'dedup.md');
+      fs.writeFileSync(dedupFile, [
+        '# Tasks',
+        '',
+        '## Task 1: First pass',
+        '',
+        'File(s): `lib/utils.js`',
+        '',
+        'What to implement: Create `helper()` and `transform()` utilities.',
+        '',
+        '## Task 2: Second pass',
+        '',
+        'File(s): `lib/utils.js`',
+        '',
+        'What to implement: Refactor `helper()` to support async.',
+        '',
+      ].join('\n'));
+
+      const result = runDepGuard(['extract-contracts', dedupFile]);
+      expect(result.status).toBe(0);
+      const lines = result.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
+      // helper should appear only once despite being in two tasks
+      const helperLines = lines.filter(l => l === 'lib/utils.js:helper(modified)');
+      expect(helperLines).toHaveLength(1);
+      // transform should also be present
+      expect(lines).toContain('lib/utils.js:transform(modified)');
+    });
+  });
+
   describe('store-contracts', () => {
     /** @type {string[]} */
     const mockFiles = [];
