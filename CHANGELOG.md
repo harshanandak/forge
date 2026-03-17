@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Command behavioral eval + improvement loop**: Automated testing infrastructure for slash commands with LLM-based grading (PR #63, forge-agp)
+  - `scripts/run-command-eval.js`: E2E eval pipeline — runs commands in isolated worktrees, grades transcripts against assertions
+  - `scripts/improve-command.js`: Semi-autonomous improvement loop with pause-on-regression and cross-session eval history
+  - Three assertion types: standard (output correctness), HARD-GATE (gate enforcement), contract (cross-command pipeline integrity)
+  - `.claude/agents/command-grader.md`: LLM grader agent with strict grading guidelines
+  - Eval sets for `/status` and `/validate` as first targets
+  - 110 new tests across 10 test files, all passing
+
 - **Pre-change dependency guard**: Contract-aware ripple analysis that detects logic conflicts between in-flight issues before work begins (PR #62, forge-mze)
   - `scripts/dep-guard.sh`: 4 subcommands — `find-consumers`, `check-ripple`, `store-contracts`, `extract-contracts`
   - `/plan` Phase 1: Advisory ripple check before design Q&A surfaces overlapping open issues
