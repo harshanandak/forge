@@ -117,9 +117,16 @@ describe('scripts/dep-guard.sh', () => {
       expect(result.status).toBe(1);
     });
 
-    test('self-exclusion: output does not contain dep-guard.sh', () => {
+    test('self-exclusion: dep-guard.sh is not a matched file', () => {
       const result = runDepGuard(['find-consumers', 'dep-guard']);
-      expect(result.stdout).not.toContain('scripts/dep-guard.sh');
+      // The script excludes itself from grep results. Verify no line has
+      // dep-guard.sh as the *file path* (before the first colon). Other files
+      // may legitimately reference dep-guard.sh in their content.
+      const lines = result.stdout.split('\n').filter(Boolean);
+      for (const line of lines) {
+        const filePath = line.split(':')[0];
+        expect(filePath).not.toContain('dep-guard.sh');
+      }
     });
   });
 
@@ -404,5 +411,20 @@ ENDJSON
       expect(result.status).toBe(1);
       expect(result.stderr).toMatch(/not found|Failed|Error/i);
     });
+  });
+});
+
+describe('plan.md integration', () => {
+  const planMdPath = path.join(__dirname, '..', '..', '.claude', 'commands', 'plan.md');
+
+  test('Phase 1 includes dep-guard ripple check step', () => {
+    const content = fs.readFileSync(planMdPath, 'utf-8');
+    expect(content).toContain('dep-guard.sh check-ripple');
+    expect(content).toContain('Dependency ripple check');
+    // Must appear before "Step 1: Explore project context"
+    const rippleIdx = content.indexOf('Dependency ripple check');
+    const step1Idx = content.indexOf('Step 1: Explore project context');
+    expect(rippleIdx).toBeLessThan(step1Idx);
+    expect(rippleIdx).toBeGreaterThan(0);
   });
 });

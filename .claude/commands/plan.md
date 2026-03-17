@@ -48,6 +48,23 @@ between parallel features or sessions.
 
 **Goal**: Capture WHAT to build — purpose, constraints, success criteria, edge cases, approach.
 
+### Step 0: Dependency ripple check (advisory)
+
+Before exploring context or asking questions, check for potential conflicts with in-flight work:
+
+```bash
+# If a Beads issue ID is known (e.g., from /status or bd ready):
+bash scripts/dep-guard.sh check-ripple <beads-issue-id>
+
+# If no issue exists yet (first-time plan):
+bd list --status=open,in_progress
+```
+
+Review the output. If overlaps are detected:
+- Consider whether the overlapping issue should be a dependency
+- Note any shared areas for the design Q&A
+- This check is **advisory only** — always proceed to Step 1 regardless of findings
+
 ### Step 1: Explore project context
 
 Before asking any questions, read relevant files:
