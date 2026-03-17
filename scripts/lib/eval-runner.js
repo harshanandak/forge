@@ -71,8 +71,18 @@ async function createEvalWorktree() {
 async function destroyEvalWorktree(worktreePath) {
   const repoRoot = getRepoRoot();
 
-  // Extract branch name from the worktree directory name
-  const dirName = path.basename(worktreePath);
+  // Query actual branch for this worktree (more reliable than inferring from dir name)
+  let branch;
+  try {
+    branch = execSync('git branch --show-current', {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch (_err) {
+    // Worktree may be corrupted — fall back to directory name
+    branch = path.basename(worktreePath);
+  }
 
   // Remove the worktree (--force handles dirty state)
   execSync(`git worktree remove --force "${worktreePath}"`, {
@@ -89,14 +99,16 @@ async function destroyEvalWorktree(worktreePath) {
   });
 
   // Delete the temporary branch (force in case it's not fully merged)
-  try {
-    execSync(`git branch -D "${dirName}"`, {
-      cwd: repoRoot,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-  } catch (_err) {
-    // Branch may already be gone — ignore
+  if (branch && branch.startsWith('eval-')) {
+    try {
+      execSync(`git branch -D "${branch}"`, {
+        cwd: repoRoot,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (_err) {
+      // Branch may already be gone — ignore
+    }
   }
 }
 
@@ -116,8 +128,8 @@ async function resetWorktree(worktreePath) {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  // Remove untracked files and directories
-  execSync('git clean -fd', {
+  // Remove untracked files, directories, and ignored files (full reset between runs)
+  execSync('git clean -fdx', {
     cwd: worktreePath,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],

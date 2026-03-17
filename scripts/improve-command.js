@@ -140,23 +140,6 @@ function generateDiff(original, modified) {
   }
 
   const lines = [];
-  const _maxLen = Math.max(origLines.length, modLines.length);
-
-  // Simple LCS-based diff using a set approach:
-  // Mark lines present in original but not modified as removed,
-  // and lines present in modified but not original as added.
-  // For identical lines, output them as context.
-
-  // Build a more accurate line-by-line diff using edit distance approach
-  const origSet = new Map();
-  for (const line of origLines) {
-    origSet.set(line, (origSet.get(line) || 0) + 1);
-  }
-
-  const modSet = new Map();
-  for (const line of modLines) {
-    modSet.set(line, (modSet.get(line) || 0) + 1);
-  }
 
   // Walk through both arrays using two pointers
   let i = 0;
@@ -216,7 +199,7 @@ async function runImprovementLoop(commandPath, evalSetPath, options = {}) {
   const maxIterations = options.maxIterations || 3;
   const runEval = options._runEval;
   const rewriteCommand = options._rewriteCommand;
-  const basePath = options._basePath;
+  const basePath = options._basePath || '.forge/eval-logs';
 
   // 1. Read original command content (backup in memory)
   const originalContent = fs.readFileSync(commandPath, 'utf8');

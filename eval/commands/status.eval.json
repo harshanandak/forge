@@ -29,8 +29,8 @@
     {
       "name": "in_progress_work",
       "prompt": "Run /status when there is an in-progress beads issue",
-      "setup": "bd create --title='Test in-progress issue' --type=feature && bd update <new-issue-id> --status=in_progress",
-      "teardown": "bd close <test-issue-id>",
+      "setup": "ISSUE_ID=$(bd create --title='eval-status-test' --type=task 2>&1 | grep -oE '[a-zA-Z]+-[a-zA-Z0-9]+' | head -1) && bd update $ISSUE_ID --status=in_progress && echo $ISSUE_ID > /tmp/eval-status-issue-id",
+      "teardown": "bd close $(cat /tmp/eval-status-issue-id 2>/dev/null) 2>/dev/null; rm -f /tmp/eval-status-issue-id",
       "assertions": [
         {
           "type": "standard",

@@ -112,9 +112,8 @@ async function defaultInvokeGrader(prompt, options = {}) {
   const timeout = options.timeout || 120_000;
   const result = execFileSync(
     'claude',
-    ['-p', '--agent', 'command-grader', '--output-format', 'text'],
+    ['-p', prompt, '--agent', 'command-grader', '--output-format', 'text', '--no-session-persistence'],
     {
-      input: prompt,
       encoding: 'utf-8',
       timeout,
       maxBuffer: 10 * 1024 * 1024,
