@@ -75,6 +75,43 @@ function buildRewritePrompt(commandContent, failures, history) {
       prompt += `- Attempt ${i + 1}: score ${h.overall_score}, ${failCount} failing queries\n`;
     }
     prompt += '\n';
+
+    // Detect flaky assertions: same check string has both pass and fail across sessions
+    const assertionOutcomes = new Map(); // check string → { pass: number, fail: number }
+    for (const h of history) {
+      if (!h.results) continue;
+      for (const r of h.results) {
+        if (!r.assertions) continue;
+        for (const a of r.assertions) {
+          if (!assertionOutcomes.has(a.check)) {
+            assertionOutcomes.set(a.check, { pass: 0, fail: 0 });
+          }
+          const entry = assertionOutcomes.get(a.check);
+          if (a.pass) {
+            entry.pass++;
+          } else {
+            entry.fail++;
+          }
+        }
+      }
+    }
+
+    const flakyAssertions = [];
+    for (const [check, outcomes] of assertionOutcomes) {
+      if (outcomes.pass > 0 && outcomes.fail > 0) {
+        flakyAssertions.push({ check, pass: outcomes.pass, fail: outcomes.fail });
+      }
+    }
+
+    if (flakyAssertions.length > 0) {
+      prompt += '## Flaky/Inconsistent Assertions\n\n';
+      prompt += 'These assertions are flaky — they pass in some sessions and fail in others. ';
+      prompt += 'Do not waste iterations on these; they may depend on environment rather than command quality.\n\n';
+      for (const fa of flakyAssertions) {
+        prompt += `- "${fa.check}" — passed ${fa.pass}x, failed ${fa.fail}x across sessions\n`;
+      }
+      prompt += '\n';
+    }
   }
 
   prompt += '## Instructions\n\n';
