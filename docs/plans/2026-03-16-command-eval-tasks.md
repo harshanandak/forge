@@ -288,10 +288,40 @@
 
 **Total: 10 tasks, ~56 tests**
 
-**Ordering rationale**:
-- Tasks 1-2: Foundation (schema + parser — no external deps)
-- Tasks 3-4: Core infrastructure (worktree execution + grader agent)
-- Tasks 5-6: Glue (grading logic + storage)
-- Task 7: Data (eval set definitions — needs schema from Task 1)
-- Task 8: Integration (wires everything together)
-- Tasks 9-10: Improvement loop (built on top of working eval pipeline)
+---
+
+## Parallel Execution Plan
+
+```
+Wave 1 — no dependencies (run 4 subagents in parallel):
+  ├── Task 1: Eval set schema + loader
+  ├── Task 2: Stream-JSON transcript parser
+  ├── Task 4: Grader agent definition
+  └── Task 6: Eval result storage + history reader
+
+Wave 2 — depends on Wave 1 (run 3 subagents in parallel):
+  ├── Task 3: Eval runner core          ← needs Task 1 (schema) + Task 2 (parser)
+  ├── Task 5: Grading orchestrator      ← needs Task 2 (parser) + Task 4 (grader)
+  └── Task 7: Eval set definitions      ← needs Task 1 (schema for validation)
+
+Wave 3 — integration (sequential):
+  └── Task 8: E2E pipeline wiring       ← needs Tasks 3 + 5 + 6 + 7
+
+Wave 4 — improvement loop (sequential):
+  └── Task 9: Improvement loop          ← needs Task 8
+
+Wave 5 — enhancement (sequential):
+  └── Task 10: Cross-session history    ← needs Task 9
+```
+
+**Dependency graph**:
+```
+1 ──→ 3 ──→ 8 ──→ 9 ──→ 10
+2 ──↗   ↗        ↑
+2 ──→ 5 ────────↗
+4 ──↗
+6 ──────────────↗
+1 ──→ 7 ───────↗
+```
+
+**Critical path**: 1 → 3 → 8 → 9 → 10 (5 steps instead of 10 sequential)
