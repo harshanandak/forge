@@ -93,10 +93,53 @@ bd_show_json() {
 
   # Normalize: if the response is an array, extract the first element
   if command -v jq &>/dev/null; then
-    json="$(printf '%s' "$json" | jq 'if type == "array" then .[0] else . end' 2>/dev/null)" || true
+    local normalized
+    normalized="$(printf '%s' "$json" | jq 'if type == "array" then .[0] else . end' 2>/dev/null)" || true
+    if [[ -n "$normalized" && "$normalized" != "null" ]]; then
+      json="$normalized"
+    fi
   fi
 
   printf '%s' "$json"
+}
+
+# Emit contract lines from files and description text.
+# Args: $1 = comma-separated file paths, $2 = "What to implement" text
+# Output: lines of "<file>:<function>(modified)" to stdout
+emit_contracts() {
+  local files_str="$1"
+  local what_str="$2"
+
+  if [[ -z "$files_str" || -z "$what_str" ]]; then
+    return
+  fi
+
+  # Extract word() patterns from the what section
+  local funcs
+  funcs="$(printf '%s' "$what_str" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\(\)' || true)"
+
+  if [[ -z "$funcs" ]]; then
+    return
+  fi
+
+  # Parse comma-separated file paths, strip backticks and whitespace
+  local IFS=','
+  local file_list
+  read -ra file_list <<< "$files_str"
+
+  local fp fn
+  for fp in "${file_list[@]}"; do
+    # Strip leading/trailing whitespace and backticks
+    fp="$(printf '%s' "$fp" | sed 's/^[[:space:]`]*//;s/[[:space:]`]*$//')"
+    [[ -z "$fp" ]] && continue
+
+    while IFS= read -r fn; do
+      [[ -z "$fn" ]] && continue
+      # Strip the trailing () from the function name
+      fn="${fn%()}"
+      printf '%s\n' "${fp}:${fn}(modified)"
+    done <<< "$funcs"
+  done
 }
 
 # ── Subcommands ──────────────────────────────────────────────────────────
@@ -308,7 +351,8 @@ cmd_store_contracts() {
     exit 1
   fi
 
-  local issue_id="$1"
+  local issue_id
+  issue_id="$(sanitize "$1")"
   local contracts="$2"
 
   if [[ -z "$contracts" ]]; then
@@ -353,44 +397,12 @@ cmd_extract_contracts() {
   local in_what=0
   local all_contracts=""
 
-  # Helper: emit contracts from current_files + current_what
-  _emit_contracts() {
-    if [[ -z "$current_files" || -z "$current_what" ]]; then
-      return
-    fi
-
-    # Extract word() patterns from the what section
-    local funcs
-    funcs="$(printf '%s' "$current_what" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\(\)' || true)"
-
-    if [[ -z "$funcs" ]]; then
-      return
-    fi
-
-    # Parse comma-separated file paths, strip backticks and whitespace
-    local IFS=','
-    local file_list
-    read -ra file_list <<< "$current_files"
-
-    local fp fn
-    for fp in "${file_list[@]}"; do
-      # Strip leading/trailing whitespace and backticks
-      fp="$(printf '%s' "$fp" | sed 's/^[[:space:]`]*//;s/[[:space:]`]*$//')"
-      [[ -z "$fp" ]] && continue
-
-      while IFS= read -r fn; do
-        [[ -z "$fn" ]] && continue
-        # Strip the trailing () from the function name
-        fn="${fn%()}"
-        all_contracts="${all_contracts}${fp}:${fn}(modified)"$'\n'
-      done <<< "$funcs"
-    done
-  }
-
   while IFS= read -r line || [[ -n "$line" ]]; do
     # New task block — flush previous
     if [[ "$line" =~ ^##\ Task ]]; then
-      _emit_contracts
+      local _emitted
+      _emitted="$(emit_contracts "$current_files" "$current_what")"
+      [[ -n "$_emitted" ]] && all_contracts="${all_contracts}${_emitted}"$'\n'
       current_files=""
       current_what=""
       in_what=0
@@ -425,7 +437,9 @@ cmd_extract_contracts() {
   done < "$task_file"
 
   # Flush the last task block
-  _emit_contracts
+  local _emitted
+  _emitted="$(emit_contracts "$current_files" "$current_what")"
+  [[ -n "$_emitted" ]] && all_contracts="${all_contracts}${_emitted}"$'\n'
 
   # Deduplicate and sort
   local contracts

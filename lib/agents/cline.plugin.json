@@ -10,7 +10,7 @@
     "hooks": false
   },
   "directories": {
-    "workflows": ".clinerules/workflows",
+    "workflows": ".cline/workflows",
     "skills": ".cline/skills/forge-workflow"
   },
   "files": {
