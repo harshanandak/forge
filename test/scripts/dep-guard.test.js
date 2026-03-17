@@ -427,4 +427,22 @@ describe('plan.md integration', () => {
     expect(rippleIdx).toBeLessThan(step1Idx);
     expect(rippleIdx).toBeGreaterThan(0);
   });
+
+  test('Phase 3 includes contract extraction and storage steps', () => {
+    const content = fs.readFileSync(planMdPath, 'utf-8');
+    expect(content).toContain('dep-guard.sh extract-contracts');
+    expect(content).toContain('dep-guard.sh store-contracts');
+    // Must appear after "Step 5b: Beads context"
+    const step5bIdx = content.indexOf('Step 5b: Beads context');
+    const step5cIdx = content.indexOf('Step 5c: Contract extraction');
+    expect(step5cIdx).toBeGreaterThan(step5bIdx);
+  });
+
+  test('Phase 3 HARD-GATE includes dep-guard store-contracts check', () => {
+    const content = fs.readFileSync(planMdPath, 'utf-8');
+    // The HARD-GATE exit section should mention dep-guard
+    const hardGateIdx = content.indexOf('HARD-GATE: /plan exit');
+    const afterHardGate = content.substring(hardGateIdx);
+    expect(afterHardGate).toContain('dep-guard');
+  });
 });

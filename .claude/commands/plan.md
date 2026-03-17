@@ -332,6 +332,23 @@ bash scripts/beads-context.sh set-acceptance <id> "<success-criteria from design
 
 Both commands must exit with code 0. If either fails, investigate (wrong issue ID? missing script?) before continuing.
 
+### Step 5c: Contract extraction and storage
+
+After saving the task list and Beads context, extract and store contract metadata for dependency ripple analysis:
+
+```bash
+# Extract contracts from task list
+bash scripts/dep-guard.sh extract-contracts docs/plans/YYYY-MM-DD-<slug>-tasks.md
+
+# Store contracts on the Beads issue
+bash scripts/dep-guard.sh store-contracts <id> "<extracted-contracts-output>"
+
+# Re-run ripple check with precise contract data
+bash scripts/dep-guard.sh check-ripple <id>
+```
+
+The extract-contracts and store-contracts commands must exit with code 0. The final check-ripple is advisory (informational only).
+
 ### Step 6: User review
 
 Present the full task list. Allow the user to reorder, split, or remove tasks.
@@ -349,6 +366,7 @@ Do NOT proceed to /dev until ALL are confirmed:
 6. User has confirmed task list is correct
 7. `beads-context.sh set-design` ran successfully (exit code 0)
 8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
+9. `dep-guard.sh store-contracts` ran successfully (exit code 0) — or skipped if no contracts found
 </HARD-GATE>
 ```
 
