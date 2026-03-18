@@ -18,14 +18,6 @@ afterEach(() => {
 	}
 });
 
-function createTaskFile(contents) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-contract-detector-'));
-	const filePath = path.join(dir, 'tasks.md');
-	fs.writeFileSync(filePath, contents, 'utf8');
-	tempDirs.push(dir);
-	return filePath;
-}
-
 function createContractFixture(taskContents, files) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-contract-fixture-'));
 	for (const [relativePath, contents] of Object.entries(files)) {

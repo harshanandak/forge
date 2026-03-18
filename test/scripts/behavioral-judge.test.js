@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { describe, test, expect } = require('bun:test');
+const { resolveBashCommand } = require('../helpers/bash.js');
 
 /**
  * Tests for scripts/behavioral-judge.sh
@@ -22,7 +23,7 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
  */
 function runJudge(input, env = {}) {
   const result = spawnSync(
-    'bash',
+    resolveBashCommand(),
     [SCRIPT],
     {
       cwd: PROJECT_ROOT,
