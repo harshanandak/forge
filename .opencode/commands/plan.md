@@ -20,7 +20,7 @@ Before ANY planning work begins:
    - Tell the user: "You are on '<branch>'. Planning must start from a clean worktree on master.
      Run: git checkout master — then re-run /plan."
 3. If on master, create the worktree NOW before asking any questions:
-   a. git worktree add -b feat/<slug> .worktrees/<slug>
+   a. bd worktree create .worktrees/<slug> --branch feat/<slug>
    b. cd .worktrees/<slug>
 4. Confirm: "Working in isolated worktree: .worktrees/<slug> (branch: feat/<slug>)"
 5. ONLY THEN begin Phase 1.
@@ -295,10 +295,9 @@ else
   # Step 2b: Verify .worktrees/ is gitignored — add if missing
   git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
 
-  # Step 2c: Create branch + worktree in one command (from master)
-  # Using -b with worktree add avoids "branch already checked out" error
+  # Step 2c: Create a Beads-aware worktree rooted on master
   git checkout master
-  git worktree add -b feat/<slug> .worktrees/<slug>
+  bd worktree create .worktrees/<slug> --branch feat/<slug>
   cd .worktrees/<slug>
 fi
 ```
@@ -371,9 +370,9 @@ bash scripts/beads-context.sh set-acceptance <id> "<success-criteria from design
 
 Both commands must exit with code 0. If either fails, investigate (wrong issue ID? missing script?) before continuing.
 
-### Step 5c: Contract extraction and storage
+### Step 5c: Contract extraction and logic-level dependency review
 
-After saving the task list and Beads context, extract and store contract metadata for dependency ripple analysis:
+After saving the task list and Beads context, extract and store contract metadata, then run the logic-level Phase 3 dependency review:
 
 ```bash
 # Extract contracts — only call store-contracts if extract succeeds (exit 0)
@@ -383,11 +382,25 @@ else
   echo "No contracts found — skipping store-contracts"
 fi
 
-# Re-run ripple check (still keyword-only in v1 — contract-aware analysis is v2)
+# Re-run ripple check using Beads JSON + logic-level analysis
 bash scripts/dep-guard.sh check-ripple <id>
 ```
 
-`extract-contracts` exits 1 when no contracts are found (not an error — just nothing to store). `store-contracts` must exit 0 if called. The final `check-ripple` is advisory.
+`extract-contracts` exits 1 when no contracts are found (not an error — just nothing to store). `store-contracts` must exit 0 if called.
+
+`check-ripple` is now advisory but logic-aware. It should:
+- read Beads issue data via JSON
+- analyze import/call-chain, contract, and behavioral dependency signals
+- show rubric score, confidence, issue pairs, and proposed dependency updates with pros/cons
+- stop for user approval whenever a dependency mutation is proposed
+
+If the user approves a dependency mutation, apply it explicitly:
+
+```bash
+bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
+```
+
+That approval step must validate with `bd dep cycles`, show `bd graph`, summarize `bd ready`, and persist the decision via `bd set-state` plus `bd comments`. Beads remains the canonical machine-readable decision record; the plan docs hold only the concise summary.
 
 ### Step 6: User review
 
@@ -407,6 +420,7 @@ Do NOT proceed to /dev until ALL are confirmed:
 7. `beads-context.sh set-design` ran successfully (exit code 0)
 8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
 9. `dep-guard.sh store-contracts` ran successfully (exit code 0) — or skipped if no contracts found
+10. `dep-guard.sh check-ripple` ran successfully and any proposed dependency mutation was reviewed with the user before calling `apply-decision`
 </HARD-GATE>
 ```
 
