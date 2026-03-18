@@ -13,6 +13,20 @@ YAGNI check:
 - No tasks were flagged as scope creep.
 - Every task maps to a design-doc success criterion, Beads integration requirement, or day-one edge case.
 
+Parallelization plan:
+- **Serial foundation**: Task 1 must complete first because it defines the analyzer contract and file layout used by later tasks.
+- **Detector implementation window**: Tasks 2 and 3 can be prepared in parallel only if ownership is split by detector module, but their final integration into `lib/dep-guard/analyzer.js` must be serialized because they share core wiring and test surfaces.
+- **Behavior/rubric dependency**: Task 4 depends on outputs from Tasks 2 and 3 because rubric aggregation needs the import and contract detectors in place.
+- **Shell integration choke point**: Tasks 5 and 6 are serial because both modify `scripts/dep-guard.sh` and its primary integration tests.
+- **Docs and sync tail**: Task 7 depends on the final command behavior being settled; Task 8 comes last because it syncs and validates the finished workflow text.
+- **Safe `/dev` execution tracks**:
+  - Track A: Task 1
+  - Track B: Tasks 2 and 3 after Task 1, but only with disjoint detector-module ownership and deferred integration wiring
+  - Track C: Task 4 after Tasks 2 and 3
+  - Track D: Tasks 5 and 6 in sequence after Task 4
+  - Track E: Tasks 7 and 8 in sequence after Task 6
+- **Not safe to parallelize as written**: Tasks 2 through 6 should not be assigned to separate workers without explicit file ownership because they currently converge on `lib/dep-guard/analyzer.js`, `scripts/dep-guard.sh`, and shared tests.
+
 ---
 
 ## Task 1: Scaffold the Phase 3 analyzer and structured result contract
@@ -148,4 +162,3 @@ TDD steps:
   5. Commit: `chore: sync logic dependency plan changes`
 
 Expected output: synced command files are up to date, targeted logic-dependency tests pass, and any remaining failures are clearly identified as pre-existing baseline issues rather than feature regressions.
-
