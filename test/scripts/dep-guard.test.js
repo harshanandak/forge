@@ -775,4 +775,14 @@ describe('plan.md integration', () => {
     expect(content).toContain('default to HIGH');
     expect(content).toContain('Recommendation');
   });
+
+  test('plan.md documents the Beads-aware Phase 3 approval flow', () => {
+    const content = fs.readFileSync(planMdPath, 'utf-8');
+    expect(content).toContain('bd worktree create');
+    expect(content).toContain('logic-level analysis');
+    expect(content).toContain('user approval');
+    expect(content).toContain('bd dep cycles');
+    expect(content).toContain('bd set-state');
+    expect(content).toContain('bd comments');
+  });
 });
