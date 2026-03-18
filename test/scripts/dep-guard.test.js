@@ -17,6 +17,19 @@ const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'dep-guard.sh');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
+const GIT_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe';
+
+function resolveBashCommand() {
+  if (process.env.BASH_CMD) {
+    return process.env.BASH_CMD;
+  }
+
+  if (process.platform === 'win32' && fs.existsSync(GIT_BASH_PATH)) {
+    return GIT_BASH_PATH;
+  }
+
+  return 'bash';
+}
 
 /**
  * Run the dep-guard script with given arguments.
@@ -25,7 +38,7 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
  * @returns {{ status: number|null, stdout: string, stderr: string }}
  */
 function runDepGuard(args = [], env = {}) {
-  const result = spawnSync('bash', [SCRIPT, ...args], {
+  const result = spawnSync(resolveBashCommand(), [SCRIPT, ...args], {
     cwd: PROJECT_ROOT,
     encoding: 'utf-8',
     timeout: 15000,
@@ -54,6 +67,16 @@ function createMockBd(scriptContent) {
   // Ensure executable on all platforms
   spawnSync('chmod', ['+x', mockPath]);
   return mockPath;
+}
+
+function createTempRepo(files) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-script-'));
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const absolutePath = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, contents, 'utf8');
+  }
+  return root;
 }
 
 describe('scripts/dep-guard.sh', () => {
@@ -142,11 +165,16 @@ describe('scripts/dep-guard.sh', () => {
   describe('check-ripple', () => {
     /** @type {string[]} */
     const mockFiles = [];
+    /** @type {string[]} */
+    const tempDirs = [];
 
     afterAll(() => {
       // Clean up all mock files created during these tests
       for (const f of mockFiles) {
         try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+      for (const dir of tempDirs) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
       }
     });
 
@@ -302,6 +330,134 @@ ENDJSON
       const result = runDepGuard(['check-ripple', 'forge-aaa'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('No conflicts detected');
+    });
+
+    test('prints structured analyzer output from Beads JSON and task-file context', () => {
+      const repositoryRoot = createTempRepo({
+        'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+        'features/dashboard.js': `const { parseProgress } = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+        'tasks.md': `# Task List: logic-level-dependency-detection
+
+## Task 1: Tighten review policy
+
+File(s): \`lib/progress.js\`, \`docs/workflow.md\`
+
+What to implement: Update parseProgress() and tighten approval rules, confidence threshold handling, and manual review behavior for planning decisions.
+
+Expected output: behavior detection finds downstream consumers.
+`,
+      });
+      tempDirs.push(repositoryRoot);
+      const taskFile = path.join(repositoryRoot, 'tasks.md').replace(/\\/g, '/');
+      const mock = createMockBd(`
+        if [[ "$1" == "show" && "$2" == "forge-src" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+{"id":"forge-src","title":"Logic-level dependency detection in /plan Phase 3","description":"Plan-time dependency review","status":"open","design":"8 tasks | ${taskFile}"}
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=open" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+[{"id":"forge-other","title":"Multi-developer workflow review policy","description":"Manual review rules and confidence threshold handling for coordinated work.","status":"open","files":["features/dashboard.js"]}]
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=in_progress" && "$3" == "--json" ]]; then
+          echo "[]"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(['check-ripple', 'forge-src'], {
+        BD_CMD: mock,
+        DEP_GUARD_REPOSITORY_ROOT: repositoryRoot,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Structured dependency review');
+      expect(result.stdout).toContain('Issue pair: forge-src -> forge-other');
+      expect(result.stdout).toContain('Rubric score:');
+      expect(result.stdout).toContain('Confidence:');
+      expect(result.stdout).toContain('Detector categories:');
+      expect(result.stdout).toContain('Proposed dependency updates:');
+      expect(result.stdout).toContain('forge-other depends on forge-src');
+      expect(result.stdout).toContain('Pros:');
+      expect(result.stdout).toContain('Cons:');
+    });
+
+    test('falls back to keyword-only report when the analyzer cannot run', () => {
+      const repositoryRoot = createTempRepo({
+        'tasks.md': `# Task List
+
+## Task 1: Dependency plan workflow
+
+File(s): \`docs/workflow.md\`
+
+What to implement: Update dependency plan workflow review rules.
+`,
+      });
+      tempDirs.push(repositoryRoot);
+      const taskFile = path.join(repositoryRoot, 'tasks.md').replace(/\\/g, '/');
+      const mock = createMockBd(`
+        if [[ "$1" == "show" && "$2" == "forge-src" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+{"id":"forge-src","title":"Pre-change dependency guard for plan workflow","description":"Guard dependency conflicts in plan workflow","status":"open","design":"1 tasks | ${taskFile}"}
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=open" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+[{"id":"forge-other","title":"Logic-level dependency detection in plan Phase 3","description":"Dependency review in plan workflow","status":"open","files":["features/dashboard.js"]}]
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=in_progress" && "$3" == "--json" ]]; then
+          echo "[]"
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=open" ]]; then
+          echo "○ forge-src [● P2] [feature] - Pre-change dependency guard for plan workflow"
+          echo "○ forge-other [● P2] [feature] - Logic-level dependency detection in plan Phase 3"
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=in_progress" ]]; then
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(['check-ripple', 'forge-src'], {
+        BD_CMD: mock,
+        DEP_GUARD_REPOSITORY_ROOT: repositoryRoot,
+        DEP_GUARD_ANALYZE_SCRIPT: path.join(repositoryRoot, 'missing-analyzer.js'),
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('falling back to keyword-only ripple check');
+      expect(result.stdout).toContain('Potential overlap');
+      expect(result.stdout).toContain('Confidence: LOW');
+      expect(result.stdout).toContain('bd dep add forge-src forge-other');
     });
   });
 
