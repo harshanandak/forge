@@ -77,9 +77,9 @@ describe('lib/dep-guard/analyzer.js', () => {
 				score: 0,
 				summary: 'No detector findings yet.',
 				weights: {
-					importCallChain: 0,
-					contractDependencies: 0,
-					behavioralDependencies: 0,
+					importCallChain: 3,
+					contractDependencies: 3,
+					behavioralDependencies: 2,
 				},
 			},
 			confidence: {
@@ -347,5 +347,75 @@ Expected output: contract detection finds downstream consumers.
 			evidence: [],
 			findings: [],
 		});
+	});
+
+	test('analyzePhase3Dependencies escalates uncertain behavioral overlap and detector disagreement', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+			'features/dashboard.js': `const { parseProgress } = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Tighten review policy
+
+File(s): \`lib/progress.js\`, \`docs/workflow.md\`
+
+What to implement: Update parseProgress() and tighten approval rules, confidence threshold handling, and manual review behavior for planning decisions.
+
+Expected output: behavior detection finds downstream consumers.
+`);
+
+		const result = await analyzePhase3Dependencies({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow review policy',
+					description: 'Manual review rules and confidence threshold handling for coordinated work.',
+					files: ['features/dashboard.js'],
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		});
+
+		expect(result.scores.importCallChain).toBeGreaterThan(0);
+		expect(result.scores.behavioralDependencies).toBeGreaterThan(0);
+		expect(result.detectorConflicts.length).toBeGreaterThan(0);
+		expect(result.detectorConflicts).toEqual(expect.arrayContaining([
+			expect.stringMatching(/detector|behavioral|manual review|uncertain/i),
+		]));
+		expect(result.needsUserDecision).toBe(true);
+		expect(result.confidence.belowThreshold).toBe(true);
+		expect(result.proposals).toEqual([
+			expect.objectContaining({
+				action: 'add-dependency',
+				dependentIssueId: 'forge-puh',
+				dependsOnIssueId: 'forge-9zv',
+				requiresApproval: true,
+				pros: expect.arrayContaining([expect.stringMatching(/independence|sequence/i)]),
+				cons: expect.arrayContaining([expect.stringMatching(/coordination|delay|noise/i)]),
+			}),
+		]);
+		expect(result.rubric.summary).toMatch(/conflict|confidence|behavior/i);
 	});
 });
