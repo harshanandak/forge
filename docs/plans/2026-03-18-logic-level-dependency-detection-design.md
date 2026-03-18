@@ -221,6 +221,70 @@ Regex-only parsing is not sufficient for the day-one scope because the first ver
 - Reason: the repo mixes CommonJS and ESM, and the parser's `unambiguous` / `commonjs` modes plus `errorRecovery` reduce analysis brittleness.
 - Inference from sources: this is the best balance of resilience and implementation effort for the current codebase.
 
+### Broader External Tooling Research
+
+I expanded the research beyond parsers into dependency-analysis tooling and known integration issues.
+
+**`dependency-cruiser`**
+- Official README positions it as a validator and visualizer for JavaScript, TypeScript, CoffeeScript, ES6, CommonJS, and AMD.
+- It can emit multiple formats including `dot`, `json`, `csv`, `html`, and text.
+- It supports rule-based validation, including built-in starter rules for circular dependencies, missing dependencies, and orphans.
+- This makes it strong for module/file dependency graphing and policy checks.
+
+Tradeoffs:
+- Best at module dependency graphs, not behavioral reasoning.
+- More useful as a graph/rules engine than as the full Phase 3 decision system.
+- Configuration is another moving part to maintain for a relatively small repo if we only need a narrow slice of its capability.
+
+**`madge`**
+- Official README positions it as a graph tool for CommonJS, AMD, and ES6 module dependencies.
+- It can show circular dependencies, dependents, orphans, leaves, and emit JSON / DOT / SVG.
+- It explicitly documents mixed-import caveats and the need for extra configuration when a project mixes JS/TS or import styles.
+- It also documents cases where files can be skipped because of resolution or parse errors, with `--warning` / `--debug` recommended to diagnose missing dependencies.
+
+Tradeoffs:
+- Useful for graph generation and circular checks.
+- More limited than `dependency-cruiser` for rule-based validation.
+- Its own FAQ documents resolution and mixed-syntax caveats, which is a risk for this repo because it mixes CommonJS and ESM-style imports.
+
+**`ts-morph`**
+- Official docs show strong support for import inspection and call-expression traversal.
+- It would be powerful if the repo were TypeScript-heavy or if type-aware analysis were the dominant requirement.
+
+Tradeoffs:
+- This repo is primarily JavaScript, not TypeScript-first.
+- Using `ts-morph` would pull in compiler-project complexity that is likely heavier than needed for the first version.
+
+### Selected Broader Research Outcome
+
+The most practical solution remains a custom Node analyzer using `@babel/parser`, with the option to borrow ideas from graph tools rather than adopting them wholesale.
+
+Reasoning:
+- We need three detector classes, and only one of them is really a module graph problem.
+- File/module graph tools help with import/call-chain evidence, but not enough for contract and behavioral scoring on their own.
+- `@babel/parser` gives us direct control over mixed CommonJS/ESM parsing and error recovery.
+- If we later need richer graph export or rule validation, `dependency-cruiser` is the stronger follow-on candidate than `madge`.
+
+### Known Failure Modes and Mitigations
+
+Based on official tool docs and the current repo shape, the likely external-tool failure modes are:
+
+1. **Mixed module syntax**
+   - Babel docs warn that `unambiguous` can produce false matches because valid modules can omit `import` / `export`.
+   - Mitigation: prefer explicit `commonjs` or `module` mode when file type or package context is known, and use `unambiguous` only as a fallback.
+
+2. **Skipped or unresolved files in graph tooling**
+   - Madge docs note that files may be skipped due to resolution or parsing errors and recommend `--warning` / `--debug`.
+   - Mitigation: keep the first implementation's graphing logic local and deterministic, using repo-specific path resolution instead of outsourcing the full analysis to a generic graph CLI.
+
+3. **Type-only and async import noise**
+   - Madge docs explicitly call out configuration needed to skip type imports and async imports.
+   - Mitigation: separate type/contract scoring from import/call-chain scoring rather than blending them into one generic dependency pass.
+
+4. **Rule-engine overhead**
+   - Dependency-cruiser offers powerful rule config, but that introduces another config surface that may be unnecessary for the first shipped version.
+   - Mitigation: keep rubric rules in code first, then consider external rule configuration only if the policy surface becomes large.
+
 ### Beads Research
 
 External Beads docs and the local installed CLI show an important distinction:
