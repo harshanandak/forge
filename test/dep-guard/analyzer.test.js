@@ -33,6 +33,14 @@ function createTempRepo(files) {
 }
 
 function createTaskFile(root, contents) {
+	if (contents === undefined) {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-analyzer-'));
+		tempDirs.push(dir);
+		const filePath = path.join(dir, 'tasks.md');
+		fs.writeFileSync(filePath, root, 'utf8');
+		return filePath;
+	}
+
 	const taskFile = path.join(root, 'tasks.md');
 	fs.writeFileSync(taskFile, contents, 'utf8');
 	return taskFile;
@@ -119,6 +127,7 @@ describe('lib/dep-guard/analyzer.js', () => {
 				status: '',
 				contracts: ['scripts/dep-guard.sh:checkRipple(modified)'],
 				files: [],
+				notes: '',
 			},
 		]);
 		expect(normalized.repositoryRoot).toBe('C:\\repo-root');
@@ -218,5 +227,125 @@ Expected output: import detection finds downstream consumers.
 				targetIssueId: 'forge-puh',
 			}),
 		]);
+	});
+
+	test('analyzePhase3Dependencies surfaces contract dependency findings from stored notes', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/summary.js': 'function formatPlanSummary() { return "summary"; }\n',
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update plan summary formatting
+
+File(s): \`lib/summary.js\`
+
+What to implement: Update formatPlanSummary() for the new dashboard wording.
+
+Expected output: contract detection finds downstream consumers.
+`);
+
+		const result = await analyzePhase3Dependencies({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					notes: 'contracts@2026-03-18T10:43:07Z: lib/summary.js:formatPlanSummary(modified)',
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		});
+
+		expect(result.scores.contractDependencies).toBeGreaterThan(0);
+		expect(result.contractDependencies).toEqual(
+			expect.objectContaining({
+				score: expect.any(Number),
+				evidence: expect.arrayContaining([
+					expect.objectContaining({
+						type: 'contract',
+						symbol: 'formatPlanSummary',
+					}),
+				]),
+				findings: expect.arrayContaining([
+					expect.objectContaining({
+						targetIssueId: 'forge-puh',
+					}),
+				]),
+			}),
+		);
+	});
+
+	test('analyzePhase3Dependencies surfaces data-format and command-contract evidence and no-match stays clean', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/summary.js': 'const planSummaryFormat = { version: 2 };\n',
+			'bin/forge-status.js': 'const statusCommandContract = { output: "json" };\n',
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update summary and CLI contracts
+
+File(s): \`lib/summary.js\`, \`bin/forge-status.js\`
+
+What to implement: Update planSummaryFormat and statusCommandContract for the new dashboard wording.
+
+Expected output: contract detection finds downstream consumers.
+`);
+
+		const positiveResult = await analyzePhase3Dependencies({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					contracts: ['lib/summary.js:legacyContract(modified)'],
+					notes: 'contracts@2026-03-18T10:43:07Z: lib/summary.js:planSummaryFormat(data-format) bin/forge-status.js:statusCommandContract(command-contract)',
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		});
+
+		expect(positiveResult.contractDependencies.evidence).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					contractType: 'data-format',
+					symbol: 'planSummaryFormat',
+				}),
+				expect.objectContaining({
+					contractType: 'command-contract',
+					symbol: 'statusCommandContract',
+				}),
+			]),
+		);
+
+		const negativeResult = await analyzePhase3Dependencies({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-other',
+					title: 'Documentation automation',
+					notes: 'contracts@2026-03-18T10:43:07Z: lib/summary.js:releaseNotesFormat(data-format)',
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		});
+
+		expect(negativeResult.scores.contractDependencies).toBe(0);
+		expect(negativeResult.contractDependencies).toEqual({
+			score: 0,
+			evidence: [],
+			findings: [],
+		});
 	});
 });

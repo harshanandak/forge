@@ -3,7 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { afterEach, describe, expect, test } = require('bun:test');
 
-const { parseTaskFile } = require('../../lib/dep-guard/task-parser.js');
+const { extractTaskContracts, parseTaskFile } = require('../../lib/dep-guard/task-parser.js');
 
 const tempDirs = [];
 
@@ -23,6 +23,23 @@ function createTaskFile(contents) {
 	fs.writeFileSync(filePath, contents, 'utf8');
 	tempDirs.push(dir);
 	return filePath;
+}
+
+function createTaskFixture(taskContents, files) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-task-parser-fixture-'));
+	for (const [relativePath, contents] of Object.entries(files)) {
+		const absolutePath = path.join(dir, relativePath);
+		fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+		fs.writeFileSync(absolutePath, contents, 'utf8');
+	}
+
+	const taskPath = path.join(dir, 'tasks.md');
+	fs.writeFileSync(taskPath, taskContents, 'utf8');
+	tempDirs.push(dir);
+	return {
+		dir,
+		taskPath,
+	};
 }
 
 describe('lib/dep-guard/task-parser.js', () => {
@@ -102,5 +119,49 @@ Expected output: normalized tasks.
 				},
 			],
 		});
+	});
+
+	test('extractTaskContracts emits exact file-symbol contract tokens from task context', () => {
+		const fixture = createTaskFixture(`# Task List: logic-level-dependency-detection
+
+## Task 1: Update summary and CLI schema
+
+File(s): \`lib/summary.js\`, \`bin/forge.js\`
+
+What to implement: Update formatPlanSummary() and renderCliSchema() for the new dashboard wording.
+
+Expected output: normalized tasks.
+`, {
+			'lib/summary.js': 'function formatPlanSummary() { return "summary"; }\n',
+			'bin/forge.js': 'function renderCliSchema() { return "schema"; }\n',
+		});
+		const taskContext = parseTaskFile(fixture.taskPath);
+
+		expect(extractTaskContracts(taskContext, { repositoryRoot: fixture.dir })).toEqual([
+			'bin/forge.js:renderCliSchema(modified)',
+			'lib/summary.js:formatPlanSummary(modified)',
+		]);
+	});
+
+	test('extractTaskContracts captures data-format and command-contract identifiers without false file expansion', () => {
+		const fixture = createTaskFixture(`# Task List: logic-level-dependency-detection
+
+## Task 1: Update summary and CLI schema
+
+File(s): \`lib/summary.js\`, \`bin/forge-status.js\`
+
+What to implement: Update planSummaryFormat and statusCommandContract for the new dashboard wording.
+
+Expected output: normalized tasks.
+`, {
+			'lib/summary.js': 'const planSummaryFormat = { version: 2 };\n',
+			'bin/forge-status.js': 'const statusCommandContract = { output: "json" };\n',
+		});
+		const taskContext = parseTaskFile(fixture.taskPath);
+
+		expect(extractTaskContracts(taskContext, { repositoryRoot: fixture.dir })).toEqual([
+			'bin/forge-status.js:statusCommandContract(command-contract)',
+			'lib/summary.js:planSummaryFormat(data-format)',
+		]);
 	});
 });
