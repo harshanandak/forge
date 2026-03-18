@@ -21,6 +21,7 @@ Usage: dep-guard.sh <subcommand> [args...]
 Subcommands:
   find-consumers     <file-path>                Find files that import/require a given module
   check-ripple       <issue-id>                  Check ripple impact via keyword matching
+  apply-decision     <issue-id> <dependent-id> <depends-on-id> "<rationale>" Apply approved dependency decision via Beads
   store-contracts    <issue-id> <contracts-string> Store contract metadata on a Beads issue
   extract-contracts  <file-path>                  Extract public API contracts from a file
 EOF
@@ -65,6 +66,44 @@ bd_update() {
   # bd prints "Error resolving/updating ..." to stdout for non-existent issues
   # Use specific patterns to avoid false positives from data containing "error"
   if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error updating'; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  echo "$output"
+  return 0
+}
+
+bd_comment_add() {
+  local output
+  output="$(${BD_CMD:-bd} comments add "$@" 2>&1)"
+  local rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error adding'; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  echo "$output"
+  return 0
+}
+
+bd_set_state() {
+  local output
+  output="$(${BD_CMD:-bd} set-state "$@" 2>&1)"
+  local rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error setting'; then
     echo "$output" >&2
     return 1
   fi
@@ -535,6 +574,62 @@ cmd_check_ripple() {
   cmd_check_ripple_keyword_v1 "$issue_id"
 }
 
+cmd_apply_decision() {
+  if [[ $# -lt 4 ]]; then
+    echo "Usage: dep-guard.sh apply-decision <issue-id> <dependent-id> <depends-on-id> \"<rationale>\"" >&2
+    exit 1
+  fi
+
+  local issue_id
+  issue_id="$(sanitize "$1")"
+  local dependent_issue
+  dependent_issue="$(sanitize "$2")"
+  local depends_on_issue
+  depends_on_issue="$(sanitize "$3")"
+  local rationale
+  rationale="$(sanitize "$4")"
+
+  local dep_add_output
+  dep_add_output="$(${BD_CMD:-bd} dep add "$dependent_issue" "$depends_on_issue" 2>&1)" || {
+    echo "$dep_add_output" >&2
+    die "Failed to add dependency ${dependent_issue} -> ${depends_on_issue}"
+  }
+
+  local cycles_output
+  cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || {
+    ${BD_CMD:-bd} dep remove "$dependent_issue" "$depends_on_issue" > /dev/null 2>&1 || true
+    echo "$cycles_output" >&2
+    die "Failed to validate dependency cycles"
+  }
+
+  if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
+    && ! printf '%s' "$cycles_output" | grep -Eqi 'no cycles? detected|no dependency cycles'; then
+    ${BD_CMD:-bd} dep remove "$dependent_issue" "$depends_on_issue" > /dev/null 2>&1 || true
+    echo "$cycles_output" >&2
+    die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
+  fi
+
+  local graph_output
+  graph_output="$(${BD_CMD:-bd} graph "$issue_id" 2>&1)" || die "Failed to render dependency graph for ${issue_id}"
+
+  local ready_output
+  ready_output="$(${BD_CMD:-bd} ready 2>&1)" || die "Failed to summarize ready work"
+
+  if ! bd_set_state "$issue_id" "logicdep=approved" --reason "$rationale" > /dev/null; then
+    die "Failed to persist approved decision state on ${issue_id}"
+  fi
+
+  if ! bd_comment_add "$issue_id" "Approved dependency: ${dependent_issue} depends on ${depends_on_issue}. ${rationale}" > /dev/null; then
+    die "Failed to record approval rationale on ${issue_id}"
+  fi
+
+  echo "Approved dependency applied: ${dependent_issue} depends on ${depends_on_issue}"
+  echo "Graph:"
+  printf '%s\n' "$graph_output"
+  echo "Ready impact:"
+  printf '%s\n' "$ready_output"
+}
+
 cmd_store_contracts() {
   if [[ $# -lt 2 ]]; then
     echo "Usage: dep-guard.sh store-contracts <issue-id> <contracts-string>" >&2
@@ -659,6 +754,7 @@ shift
 case "$subcommand" in
   find-consumers)     cmd_find_consumers "$@" ;;
   check-ripple)       cmd_check_ripple "$@" ;;
+  apply-decision)     cmd_apply_decision "$@" ;;
   store-contracts)    cmd_store_contracts "$@" ;;
   extract-contracts)  cmd_extract_contracts "$@" ;;
   *)

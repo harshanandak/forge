@@ -28,3 +28,12 @@ This file records `/dev` decision gates for `forge-9zv`.
 **Route**: PROCEED
 **Choice made**: Updated the test harness to prefer the installed Git Bash executable on Windows, while still honoring `BASH_CMD` overrides and falling back to `bash` elsewhere. That keeps the tests cross-platform and makes the Task 5 RED/GREEN cycle about `check-ripple` behavior instead of the local shell launcher.
 **Status**: RESOLVED
+
+## Decision 4
+**Date**: 2026-03-18
+**Task**: Task 6 â€” Add approval-aware Beads mutation and decision persistence
+**Gap**: The plan required an approval-focused subcommand such as `cmd_apply_decision()`, but it did not specify the CLI argument contract or whether the decision status and approval rationale should be recorded on the planning issue or the dependent issue.
+**Score**: 2 / 14
+**Route**: PROCEED
+**Choice made**: Implemented `apply-decision <issue-id> <dependent-id> <depends-on-id> "<rationale>"`, where `<issue-id>` is the planning issue that receives `logicdep=approved` state plus the approval comment, and the dependency edge is applied as `<dependent-id> depends on <depends-on-id>`. This keeps the canonical decision trail on the issue being planned while still mutating the actual dependency pair.
+**Status**: RESOLVED

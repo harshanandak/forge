@@ -608,6 +608,130 @@ ENDJSON
       expect(result.stderr).toMatch(/not found|Failed|Error/i);
     });
   });
+
+  describe('apply-decision', () => {
+    /** @type {string[]} */
+    const mockFiles = [];
+    /** @type {string[]} */
+    const logFiles = [];
+
+    afterAll(() => {
+      for (const f of mockFiles) {
+        try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+      for (const f of logFiles) {
+        try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+    });
+
+    test('approved decision adds dependency, records state/comment, and prints graph/ready summary', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-apply-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "No cycles detected"
+          exit 0
+        fi
+        if [[ "$1" == "graph" ]]; then
+          echo "forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "ready" ]]; then
+          echo "forge-jvc"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" ]]; then
+          echo "Set state"
+          exit 0
+        fi
+        if [[ "$1" == "comments" && "$2" == "add" ]]; then
+          echo "Added comment"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Approved dependency applied');
+      expect(result.stdout).toContain('forge-other depends on forge-src');
+      expect(result.stdout).toContain('Graph:');
+      expect(result.stdout).toContain('forge-src -> forge-other');
+      expect(result.stdout).toContain('Ready impact:');
+      expect(result.stdout).toContain('forge-jvc');
+
+      const log = fs.readFileSync(logPath, 'utf8');
+      expect(log).toContain('dep add forge-other forge-src');
+      expect(log).toContain('dep cycles');
+      expect(log).toContain('set-state forge-src logicdep=approved --reason Approved because shared logic changes affect the dashboard flow.');
+      expect(log).toContain('comments add forge-src');
+    });
+
+    test('cycle-creating update is rejected before state/comment persistence', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-cycle-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "Cycle detected: forge-other -> forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "remove" ]]; then
+          echo "Removed dependency"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" || "$1" == "comments" ]]; then
+          echo "Should not persist after cycle" >&2
+          exit 1
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/cycle/i);
+
+      const log = fs.readFileSync(logPath, 'utf8');
+      expect(log).toContain('dep add forge-other forge-src');
+      expect(log).toContain('dep cycles');
+      expect(log).toContain('dep remove forge-other forge-src');
+      expect(log).not.toContain('set-state forge-src');
+      expect(log).not.toContain('comments add forge-src');
+    });
+  });
 });
 
 describe('plan.md integration', () => {
