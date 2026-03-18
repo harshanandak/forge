@@ -92,17 +92,93 @@ Expected output: import detection finds downstream consumers.
 				score: expect.any(Number),
 				evidence: expect.arrayContaining([
 					expect.objectContaining({
+						consumerFile: 'features/dashboard.js',
 						sourceFile: 'features/dashboard.js',
+						scoreContribution: 1,
 						symbol: 'parseProgress',
 						type: 'import',
 					}),
 					expect.objectContaining({
+						consumerFile: 'features/dashboard.js',
 						sourceFile: 'features/dashboard.js',
+						scoreContribution: 1,
 						symbol: 'parseProgress',
 						type: 'call',
 					}),
 				]),
 			}),
 		]);
+	});
+
+	test('scoreImportDependencies handles default require and default import direct calls', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = parseProgress;
+`,
+			'features/commonjs-dashboard.js': `const parseProgress = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+			'features/esm-dashboard.mjs': `import parseProgress from '../lib/progress.js';
+
+export function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+`,
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update progress parsing
+
+File(s): \`lib/progress.js\`
+
+What to implement: Update parseProgress() for the new plan status format.
+
+Expected output: import detection finds downstream consumers.
+`);
+		const input = {
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					files: ['features/commonjs-dashboard.js', 'features/esm-dashboard.mjs'],
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		};
+
+		const detectorResult = await scoreImportDependencies(normalizePhase3Input(input));
+		expect(detectorResult.evidence).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: 'call',
+					consumerFile: 'features/commonjs-dashboard.js',
+					sourceFile: 'features/commonjs-dashboard.js',
+					targetFile: 'lib/progress.js',
+					symbol: 'parseProgress',
+				}),
+				expect.objectContaining({
+					type: 'call',
+					consumerFile: 'features/esm-dashboard.mjs',
+					sourceFile: 'features/esm-dashboard.mjs',
+					targetFile: 'lib/progress.js',
+					symbol: 'parseProgress',
+				}),
+			]),
+		);
 	});
 });
