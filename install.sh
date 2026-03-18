@@ -342,7 +342,7 @@ create_link() {
 # Universal SKILL.md content
 SKILL_CONTENT='---
 name: forge-workflow
-description: 9-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
+description: 7-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
 category: Development Workflow
 tags: [tdd, workflow, pr, git, testing]
 tools: [Bash, Read, Write, Edit, Grep, Glob]
@@ -360,24 +360,23 @@ Automatically invoke this skill when the user wants to:
 - Create a pull request
 - Run the development workflow
 
-## 9 Stages
+## 7 Stages
 
 | Stage | Command | Description |
 |-------|---------|-------------|
-| 1 | `/status` | Check current context, active work, recent completions |
-| 2 | `/research` | Deep research with web search, document to docs/research/ |
-| 3 | `/plan` | Create implementation plan, branch, OpenSpec if strategic |
-| 4 | `/dev` | TDD development (RED-GREEN-REFACTOR cycles) |
-| 5 | `/check` | Validation (type/lint/security/tests) |
-| 6 | `/ship` | Create PR with full documentation |
-| 7 | `/review` | Address ALL PR feedback |
-| 8 | `/merge` | Update docs, merge PR, cleanup |
-| 9 | `/verify` | Final documentation verification |
+| utility | `/status` | Check current context, active work, recent completions |
+| 1 | `/plan` | Design intent -> research -> branch + worktree + task list |
+| 2 | `/dev` | TDD development (implementer -> spec review -> quality review) |
+| 3 | `/validate` | Type check, lint, security, tests - all fresh output |
+| 4 | `/ship` | Push branch and create PR with full documentation |
+| 5 | `/review` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
+| 6 | `/premerge` | Update docs, hand off PR to user |
+| 7 | `/verify` | Post-merge health check (CI on main, close Beads) |
 
 ## Workflow Flow
 
 ```
-/status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
+/status -> /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
 ```
 
 ## Core Principles
@@ -1056,7 +1055,6 @@ echo "  Full guide: docs/WORKFLOW.md"
 echo ""
 echo "Optional tools:"
 echo "  - Beads: $PKG_MANAGER install -g @beads/bd && bd init"
-echo "  - OpenSpec: $PKG_MANAGER install -g @fission-ai/openspec"
 echo ""
 echo -e "${CYAN}Package manager detected: $PKG_MANAGER${NC}"
 echo ""
