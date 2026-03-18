@@ -152,3 +152,128 @@ If `/dev` encounters a spec gap that affects dependency safety or drops confiden
 If the gap does not affect dependency safety, use weighted rubric scoring. Proceed only when the result still meets or exceeds the 70% threshold, and document the choice in the decisions log.
 
 ---
+
+## OWASP Top 10 Analysis
+
+| Category | Applies? | Mitigation |
+|----------|----------|------------|
+| A03: Injection | Yes | Keep shell orchestration sanitized, prefer `bd ... --json` over human-output parsing, and pass file paths / issue IDs as structured args |
+| A04: Insecure Design | Yes | No automatic dependency mutation without user approval; detector conflicts and sub-70% confidence escalate to the user |
+| A05: Security Misconfiguration | Low | Use only Beads commands available in the installed CLI, avoid assuming doc-only features such as `bd pin` when absent locally |
+| A08: Software and Data Integrity Failures | Yes | Validate dependency updates with `bd dep cycles`, keep Beads as canonical state, and record human-approved rationale in comments |
+| A09: Security Logging and Monitoring Failures | Low | Record state transitions and user-approved rationale in Beads comments / state for auditability |
+| A01, A02, A06, A07, A10 | No material feature-specific risk | N/A |
+
+---
+
+## Technical Research
+
+### DRY Check
+
+I searched the checked-out codebase for the planned analyzer terms and existing integration points.
+
+No existing implementation was found for:
+- logic-level dependency analysis
+- import/call-chain dependency scoring
+- behavioral dependency scoring
+- rubric-based dependency proposals
+- `bd worktree create` integration
+- `bd set-state` integration in the current workflow docs
+
+Relevant existing code to extend was found in:
+- `scripts/dep-guard.sh:184` - `cmd_check_ripple()` is the current keyword-only detector
+- `scripts/dep-guard.sh:358` - `cmd_store_contracts()` already persists contract metadata
+- `scripts/dep-guard.sh:389` - `cmd_extract_contracts()` already derives contract hints from task lists
+- `scripts/beads-context.sh:56` - `bd_update()` wrapper pattern for safe Beads writes
+- `scripts/beads-context.sh:79` - `bd_comment()` wrapper pattern for safe comment writes
+- `.claude/commands/plan.md:374` - current Phase 3 contract extraction and re-check step
+- `.claude/commands/plan.md:386` - current Phase 3 note that the re-check is still keyword-only in v1
+
+Conclusion: the correct implementation is to extend the existing `dep-guard` and Beads integration path rather than create a second planning-analysis pipeline.
+
+### Codebase Exploration
+
+The repo currently has:
+- a shell-based dependency guard entry point in `scripts/dep-guard.sh`
+- shell-based Beads context helpers in `scripts/beads-context.sh`
+- workflow docs that mention contract extraction/storage but do not yet implement logic-level Phase 3 dependency decisions
+- no dedicated AST parser dependency in `package.json`
+
+This means the import/call-chain and contract analysis layer will need either:
+- a new parser dependency, or
+- brittle regex-only parsing
+
+Regex-only parsing is not sufficient for the day-one scope because the first version must support all three detector types and must be robust enough to drive Beads dependency proposals.
+
+### Parser / Analysis Options
+
+**Option A - `@babel/parser`**
+- Official docs confirm support for `sourceType: "commonjs"` and `sourceType: "unambiguous"`.
+- Official docs also confirm `errorRecovery`, which is useful when scanning a mixed repository during planning.
+- This is a good fit because the repo includes both CommonJS (`require`) and some ESM-style `import` usage.
+
+**Option B - Acorn**
+- Official docs describe Acorn as a small, fast JavaScript parser and note companion packages `acorn-loose` and `acorn-walk`.
+- This is appealing for minimal footprint, but mixed module handling and error recovery would require more assembly work.
+
+**Selected research outcome**
+- Use `@babel/parser` for the Node analyzer.
+- Reason: the repo mixes CommonJS and ESM, and the parser's `unambiguous` / `commonjs` modes plus `errorRecovery` reduce analysis brittleness.
+- Inference from sources: this is the best balance of resilience and implementation effort for the current codebase.
+
+### Beads Research
+
+External Beads docs and the local installed CLI show an important distinction:
+- the Beads documentation describes a broader multi-agent feature surface
+- the local installed CLI is the real compatibility boundary for this repo
+
+Key findings:
+- The local CLI supports `dep`, `graph`, `ready`, `comments`, `state`, `gate`, `prime`, `stale`, and `worktree`
+- The local CLI explicitly supports `bd worktree create`, which is more appropriate than raw `git worktree add` for Beads-aware parallel work because it keeps worktrees on the shared Beads database
+- The local CLI does not expose some commands referenced in broader docs, such as `bd pin`, so this feature must not assume them
+
+Implication:
+- `forge-9zv` should use the real installed Beads surface aggressively, but only where it exists locally
+- the best immediate additions are `bd worktree create`, JSON-first reads, `bd dep add`, `bd dep cycles`, `bd graph`, `bd ready`, `bd set-state` / `bd state`, and `bd comments`
+- `bd gate` is still deferred because it is more orchestration-heavy and fits better in `forge-puh`
+
+### Blast Radius
+
+This feature does not remove or rename an existing public tool or dependency, so the formal remove/rename blast-radius search is not required.
+
+The direct change surface is still clear:
+- `scripts/dep-guard.sh`
+- likely a new Node analyzer under `lib/` or `scripts/`
+- Beads-aware workflow docs in `.claude/commands/plan.md`
+- tests covering dep-guard and Phase 3 planning behavior
+
+### TDD Test Scenarios
+
+**Scenario 1 - Happy path: clear import/call-chain dependency**
+- Input: Phase 3 task list changes a shared helper used by another open issue's task list.
+- Expected: analyzer scores import/call-chain risk above threshold, proposes a dependency, and shows pros/cons before mutation.
+
+**Scenario 2 - Contract dependency with cycle prevention**
+- Input: approved dependency proposal would create a cycle.
+- Expected: `bd dep cycles` catches the cycle, mutation is not finalized, and the user is asked to choose an alternative path.
+
+**Scenario 3 - Behavioral dependency without explicit symbols**
+- Input: task list describes a rule/output change but does not name a function.
+- Expected: behavioral detector still scores the issue pair, proposes a dependency if warranted, and asks for approval.
+
+**Scenario 4 - Detector disagreement**
+- Input: import/call-chain detector is LOW, type/contract detector is HIGH, behavioral detector is uncertain.
+- Expected: weighted rubric is shown, conflict is surfaced, and the user is asked to decide before Phase 3 completes.
+
+**Scenario 5 - No dependency impact**
+- Input: analyzer finds no strong coupling and confidence remains at or above the threshold.
+- Expected: no dependency mutation is proposed, Beads state is updated accordingly, and `bd ready` still shows the issue as independent.
+
+### Sources
+
+- Beads docs: https://steveyegge.github.io/beads/
+- Beads multi-agent docs: https://steveyegge.github.io/beads/multi-agent
+- Babel parser docs: https://babeljs.io/docs/babel-parser
+- Acorn repository README: https://github.com/acornjs/acorn
+
+---
