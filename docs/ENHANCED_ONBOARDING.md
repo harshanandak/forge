@@ -336,7 +336,7 @@ bunx forge setup --type=critical
 # - 9-stage workflow
 # - Research required
 # - OWASP analysis
-# - OpenSpec for strategic changes
+# - Design docs for strategic changes
 ```
 
 ### Scenario 4: Production Hotfix

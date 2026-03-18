@@ -9,16 +9,16 @@ Complete reference for all tools integrated with the Forge workflow.
 │                        FORGE TOOLCHAIN                          │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────┐   │
-│  │   BEADS     │   │  OPENSPEC   │   │  EXTERNAL SERVICES  │   │
-│  │   (bd)      │   │  (opsx)     │   │                     │   │
-│  │             │   │             │   │  Parallel AI        │   │
-│  │ Git-backed  │   │ Spec-driven │   │  Greptile           │   │
-│  │ Issue       │   │ Development │   │  SonarCloud         │   │
-│  │ Tracking    │   │             │   │  GitHub CLI         │   │
-│  └─────────────┘   └─────────────┘   └─────────────────────┘   │
-│        │                 │                     │                │
-│        └─────────────────┴─────────────────────┘                │
+│  ┌─────────────┐   ┌─────────────────────┐                     │
+│  │   BEADS     │   │  EXTERNAL SERVICES  │                     │
+│  │   (bd)      │   │                     │                     │
+│  │             │   │  Parallel AI        │                     │
+│  │ Git-backed  │   │  Greptile           │                     │
+│  │ Issue       │   │  SonarCloud         │                     │
+│  │ Tracking    │   │  GitHub CLI         │                     │
+│  └─────────────┘   └─────────────────────┘                     │
+│        │                     │                                 │
+│        └─────────────────────┘                                 │
 │                          │                                      │
 │                    ┌─────▼─────┐                                │
 │                    │   FORGE   │                                │
@@ -215,200 +215,6 @@ bd update <id> --notes "Found edge case"
 bd close <id>               # If done, or:
 bd update <id> --status blocked --comment "Needs API response"
 bd sync                     # Always sync at end!
-```
-
----
-
-## OpenSpec - Spec-Driven Development
-
-**Package**: `@fission-ai/openspec`
-**Repository**: [github.com/Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec)
-**Website**: [openspec.dev](https://openspec.dev)
-**Purpose**: Structured specifications for AI-assisted development
-
-### Why OpenSpec?
-
-- **Specs before code** - AI reads requirements, not just vibes
-- **Non-linear workflow** - Commands execute in any order
-- **Git-native** - Specs versioned like code
-- **Multi-agent** - Works with 21+ AI tools
-- **Zero dependencies** - No API keys, no external services
-
-### Installation
-
-**Auto-installation** (Recommended):
-```bash
-bunx forge setup
-# Prompts: "Install OpenSpec? (y/n)"
-# Automatically installs and initializes (if selected)
-```
-
-**Manual installation**:
-```bash
-# bun (global - requires Node.js 20.19+)
-bun add -g @fission-ai/openspec
-openspec init
-
-# bun (local)
-bun add -d @fission-ai/openspec
-bunx openspec init
-
-# Or with bunx (no install needed)
-bunx @fission-ai/openspec init
-```
-
-### File Structure
-
-After `openspec init`:
-
-```
-openspec/
-├── specs/
-│   └── [domain]/
-│       └── spec.md           # Source of truth for each domain
-│
-├── changes/
-│   ├── [change-name]/
-│   │   ├── proposal.md       # Intent, scope, rationale
-│   │   ├── design.md         # Technical approach
-│   │   ├── tasks.md          # Implementation checklist
-│   │   └── specs/
-│   │       └── [domain]/
-│   │           └── spec.md   # Delta specifications
-│   └── archive/              # Completed changes
-│
-├── schemas/
-│   └── default.yaml          # Workflow schema
-│
-└── config.yaml               # Project configuration
-```
-
-### CLI Commands
-
-```bash
-# Setup
-openspec init [path]          # Initialize OpenSpec
-openspec update               # Update after CLI upgrade
-
-# Browse
-openspec list                 # Display changes/specs
-openspec view                 # Interactive terminal dashboard
-openspec show [name]          # Show detailed content
-openspec status               # Artifact completion progress
-
-# Validation
-openspec validate [name]      # Check structural integrity
-openspec validate --strict    # Strict validation
-
-# Lifecycle
-openspec sync                 # Merge delta specs into main specs
-openspec archive [name]       # Finalize completed changes
-
-# Schema
-openspec schema init          # Create new schema
-openspec schema fork          # Fork existing schema
-openspec schema validate      # Validate schema
-openspec schemas              # List available schemas
-```
-
-### AI Slash Commands (Claude Code, Cursor)
-
-```bash
-/opsx:explore     # Think through ideas, investigate
-/opsx:new         # Start a new change initiative
-/opsx:continue    # Create next artifact (incremental)
-/opsx:ff          # Fast-forward: generate all planning artifacts
-/opsx:apply       # Implement tasks
-/opsx:sync        # Merge delta specs into main specs
-/opsx:archive     # Mark change complete
-/opsx:verify      # Validate implementation matches specs
-/opsx:onboard     # Interactive tutorial
-```
-
-### Spec Format
-
-OpenSpec uses structured markdown with normative language:
-
-```markdown
-# Authentication Specification
-
-## Purpose
-Enable secure user identity verification and session management
-
-## Requirements
-
-### Requirement: Session Token Validation
-The system SHALL validate session tokens on every request
-
-#### Scenario: Valid Session
-- **GIVEN** user has authenticated
-- **WHEN** request includes valid session token
-- **THEN** process the request
-- **AND** update token expiration time
-
-#### Scenario: Expired Session
-- **GIVEN** user had authenticated but 24 hours have passed
-- **WHEN** request includes expired session token
-- **THEN** invalidate the token
-- **AND** redirect to login
-```
-
-### Delta Format
-
-Changes use ADDED/MODIFIED/REMOVED notation:
-
-```markdown
-# Delta for Authentication
-
-## ADDED Requirements
-### Requirement: Two-Factor Authentication
-The system SHALL support optional 2FA
-
-#### Scenario: 2FA Enrollment
-- **GIVEN** user enables 2FA in settings
-- **WHEN** they scan QR code with authenticator app
-- **THEN** 2FA is activated for their account
-
-## MODIFIED Requirements
-### Requirement: Session Token Validation
-[Updated content here]
-
-## REMOVED Requirements
-### Requirement: Remember Me Cookie
-```
-
-### When to Use OpenSpec
-
-| Scope | Use OpenSpec? | Example |
-|-------|---------------|---------|
-| **Tactical** (< 1 day) | No | Bug fix, small feature |
-| **Strategic** (architecture) | Yes | New service, API redesign |
-| **Breaking changes** | Yes | Schema migrations |
-| **Multi-session work** | Yes | Large features |
-
-### Workflow Example
-
-```bash
-# 1. Start new change
-/opsx:new
-# Describe: "Add payment processing with Stripe"
-# Select schema: default
-
-# 2. Generate all planning docs
-/opsx:ff
-# Creates: proposal.md, design.md, tasks.md, specs/
-
-# 3. Implement
-/opsx:apply
-# AI writes code following tasks.md
-
-# 4. Verify
-/opsx:verify
-# Confirms implementation matches specs
-
-# 5. Finalize
-/opsx:sync     # Merge deltas into main specs
-/opsx:archive  # Move to archive
 ```
 
 ---
@@ -735,14 +541,14 @@ gh issue create --title "..." --body "..."
 
 | Stage | Tools Used |
 |-------|------------|
-| `/status` | `bd ready`, `bd list`, `git status`, `openspec list` |
+| `/status` | `bd ready`, `bd list`, `git status` |
 | `/plan` (Phase 2) | Parallel AI, Context7, grep.app, codebase exploration |
-| `/plan` | `bd create`, `openspec` (if strategic), `git checkout -b` |
+| `/plan` | `bd create`, `git checkout -b` |
 | `/dev` | Tests, code, `bd update`, `/tasks save` |
 | `/validate` | Type check, lint, tests, SonarCloud |
 | `/ship` | `bd update --status done`, `gh pr create` |
 | `/review` | `gh pr view`, Greptile, SonarCloud |
-| `/merge` | `gh pr merge`, `openspec archive`, `bd sync` |
+| `/merge` | `gh pr merge`, `bd sync` |
 | `/verify` | Documentation cross-check |
 
 ---
@@ -760,17 +566,6 @@ bd update <id> --status X   # Update status
 bd dep add <a> <b>          # a depends on b
 bd close <id>               # Complete
 bd sync                     # Git sync
-```
-
-### OpenSpec (Specifications)
-
-```bash
-openspec init               # Initialize
-/opsx:new                   # Start change (AI)
-/opsx:ff                    # Generate all docs (AI)
-/opsx:apply                 # Implement (AI)
-openspec validate <name>    # Validate
-openspec archive <name>     # Complete
 ```
 
 ### GitHub CLI
@@ -816,19 +611,6 @@ bd sync --force
 bd sync  # Re-imports from JSONL
 ```
 
-### OpenSpec
-
-**"openspec: command not found"**
-```bash
-bun add -g @fission-ai/openspec
-# Or use bunx @fission-ai/openspec <command>
-```
-
-**Validation errors**
-```bash
-openspec validate <name> --verbose
-```
-
 ### GitHub CLI
 
 **"gh: not authenticated"**
@@ -842,7 +624,6 @@ gh auth status
 ## Resources
 
 - **Beads**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
-- **OpenSpec**: [openspec.dev](https://openspec.dev) | [github.com/Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec)
 - **Parallel AI**: [platform.parallel.ai](https://platform.parallel.ai)
 - **Greptile**: [greptile.com](https://greptile.com)
 - **SonarCloud**: [sonarcloud.io](https://sonarcloud.io)

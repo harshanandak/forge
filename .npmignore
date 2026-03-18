@@ -31,3 +31,17 @@ Thumbs.db
 DEVELOPMENT.md
 .github/CONTRIBUTING.md
 .clinerules
+
+# Internal development docs
+docs/plans/
+docs/research/
+docs/planning/
+
+# Workspace packages
+packages/
+
+# Internal tracking
+.beads/
+
+# Legacy
+openspec/

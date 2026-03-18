@@ -338,11 +338,10 @@ In **5 minutes**, you:
 /ship
 ```
 
-**Architecture change** (uses OpenSpec):
+**Architecture change** (uses design doc):
 ```bash
 /research user-authentication
-/plan user-authentication  # Creates OpenSpec proposal
-# → Create PR for proposal approval first
+/plan user-authentication  # Creates design doc + branch
 /dev
 /validate
 /ship
@@ -360,12 +359,6 @@ In **5 minutes**, you:
 bun add -g @beads/bd
 bd init
 bd ready  # Find work to do
-```
-
-**OpenSpec** - Spec-driven development for architecture:
-```bash
-bun add -g @fission-ai/openspec
-openspec init
 ```
 
 ---
@@ -419,7 +412,7 @@ Tests written after code are half as effective.
 **4. Use Beads for multi-session work**
 Don't rely on memory - track issues in git.
 
-**5. OpenSpec for architecture changes**
+**5. Design docs for architecture changes**
 Get approval on design before implementing.
 
 ---
