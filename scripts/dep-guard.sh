@@ -589,10 +589,12 @@ cmd_check_ripple() {
     "$task_file" \
     "$repository_root" \
     > "${tmp_dir}/analysis.json" 2> "${tmp_dir}/analysis.err"; then
-    render_phase3_review "${tmp_dir}/analysis.json"
-    trap - RETURN
-    rm -rf "$tmp_dir"
-    return 0
+    if render_phase3_review "${tmp_dir}/analysis.json"; then
+      trap - RETURN
+      rm -rf "$tmp_dir"
+      return 0
+    fi
+    echo "⚠️  Phase 3 review rendering failed — falling back to keyword-only ripple check." >&2
   fi
 
   echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
