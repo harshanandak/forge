@@ -55,10 +55,10 @@ describe('plugin-catalog', () => {
       expect(values.includes('research')).toBeTruthy();
       expect(values.includes('plan')).toBeTruthy();
       expect(values.includes('dev')).toBeTruthy();
-      expect(values.includes('check')).toBeTruthy();
+      expect(values.includes('validate')).toBeTruthy();
       expect(values.includes('ship')).toBeTruthy();
       expect(values.includes('review')).toBeTruthy();
-      expect(values.includes('merge')).toBeTruthy();
+      expect(values.includes('premerge')).toBeTruthy();
     });
   });
 
