@@ -32,7 +32,7 @@ function normalizeSingleIssuePayload(payload) {
 	return {};
 }
 
-async function main() {
+function main() {
   const [
     currentIssueFile,
     openIssuesFile,
@@ -53,7 +53,7 @@ async function main() {
     ...normalizeListPayload(readJsonFile(inProgressIssuesFile)),
   ].filter((issue) => issue && issue.id && issue.id !== currentIssue.id);
 
-  const result = await analyzePhase3Dependencies({
+  const result = analyzePhase3Dependencies({
     currentIssue,
     openIssues,
     taskFile,
@@ -63,7 +63,9 @@ async function main() {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-main().catch((error) => {
+try {
+  main();
+} catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exit(1);
-});
+}
