@@ -51,24 +51,7 @@ jobs:
           exit_code=$?
 
           if [ ! -f eslint-results.sarif ]; then
-            cat <<'EOF' > eslint-results.sarif
-            {
-              "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-              "version": "2.1.0",
-              "runs": [
-                {
-                  "tool": {
-                    "driver": {
-                      "name": "ESLint",
-                      "informationUri": "https://eslint.org",
-                      "rules": []
-                    }
-                  },
-                  "results": []
-                }
-              ]
-            }
-            EOF
+            printf '%s\n' '{"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"ESLint","informationUri":"https://eslint.org","rules":[]}},"results":[]}]}' > eslint-results.sarif
           fi
 
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
