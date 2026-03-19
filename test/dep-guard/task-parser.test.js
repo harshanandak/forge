@@ -164,4 +164,30 @@ Expected output: normalized tasks.
 			'lib/summary.js:planSummaryFormat(data-format)',
 		]);
 	});
+
+	test('extractTaskContracts rejects traversal paths and single-file mentions without a matching symbol', () => {
+		const fixture = createTaskFixture(`# Task List: logic-level-dependency-detection
+
+## Task 1: Ignore unsafe path references
+
+File(s): \`..\\outside.js\`
+
+What to implement: Update unsafeSymbol() for the new dashboard wording.
+
+Expected output: normalized tasks.
+
+## Task 2: Ignore unmatched single-file mentions
+
+File(s): \`lib/summary.js\`
+
+What to implement: Update missingSymbol() for the new dashboard wording.
+
+Expected output: normalized tasks.
+`, {
+			'lib/summary.js': 'function formatPlanSummary() { return "summary"; }\n',
+		});
+		const taskContext = parseTaskFile(fixture.taskPath);
+
+		expect(extractTaskContracts(taskContext, { repositoryRoot: fixture.dir })).toEqual([]);
+	});
 });

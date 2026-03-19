@@ -108,7 +108,8 @@ describe('lib/dep-guard/analyzer.js', () => {
 				{
 					id: 'forge-puh',
 					title: 'Multi-developer workflow',
-					contracts: ['scripts/dep-guard.sh:checkRipple(modified)'],
+					contracts: ['scripts\\dep-guard.sh:checkRipple(modified)'],
+					files: ['features\\dashboard.js'],
 				},
 			],
 			taskContext: {
@@ -126,11 +127,34 @@ describe('lib/dep-guard/analyzer.js', () => {
 				description: '',
 				status: '',
 				contracts: ['scripts/dep-guard.sh:checkRipple(modified)'],
-				files: [],
+				files: ['features/dashboard.js'],
 				notes: '',
 			},
 		]);
 		expect(normalized.repositoryRoot).toBe('C:\\repo-root');
+	});
+
+	test('normalizePhase3Input normalizes contract paths embedded in notes', () => {
+		const normalized = normalizePhase3Input({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					notes: 'contracts@2026-03-18T10:43:07Z: lib\\summary.js:formatPlanSummary(modified)',
+				},
+			],
+			taskContext: {
+				path: 'docs/plans/sample-tasks.md',
+				taskCount: 0,
+				tasks: [],
+			},
+		});
+
+		expect(normalized.openIssues[0].notes).toContain('lib/summary.js:formatPlanSummary(modified)');
 	});
 
 	test('detector sections stay aligned on the same detector keys', async () => {

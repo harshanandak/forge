@@ -16,7 +16,11 @@ afterEach(() => {
 			// Ignore temp-dir cleanup errors in tests.
 		}
 	}
+
+	fs.readFileSync = originalReadFileSync;
 });
+
+const originalReadFileSync = fs.readFileSync;
 
 function createTempRepo(files) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-import-detector-'));
@@ -177,6 +181,200 @@ Expected output: import detection finds downstream consumers.
 					sourceFile: 'features/esm-dashboard.mjs',
 					targetFile: 'lib/progress.js',
 					symbol: 'parseProgress',
+				}),
+			]),
+		);
+	});
+
+	test('scoreImportDependencies detects member calls through CommonJS module bindings', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+			'features/dashboard.js': `const progress = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return progress.parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update progress parsing
+
+File(s): \`lib/progress.js\`
+
+What to implement: Update parseProgress() for the new plan status format.
+
+Expected output: import detection finds downstream consumers.
+`);
+
+		const detectorResult = await scoreImportDependencies(normalizePhase3Input({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					files: ['features/dashboard.js'],
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		}));
+
+		expect(detectorResult.evidence).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: 'call',
+					consumerFile: 'features/dashboard.js',
+					targetFile: 'lib/progress.js',
+					symbol: 'parseProgress',
+				}),
+			]),
+		);
+	});
+
+	test('scoreImportDependencies skips default-excluded directories during repo scans', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+			'test/dashboard.test.js': `const { parseProgress } = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+`,
+			'docs/example.js': `const { parseProgress } = require('../lib/progress');
+
+function renderExample(raw) {
+  return parseProgress(raw);
+}
+`,
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update progress parsing
+
+File(s): \`lib/progress.js\`
+
+What to implement: Update parseProgress() for the new plan status format.
+
+Expected output: import detection finds downstream consumers.
+`);
+
+		const detectorResult = await scoreImportDependencies(normalizePhase3Input({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					files: ['test/dashboard.test.js', 'docs/example.js'],
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		}));
+
+		expect(detectorResult.score).toBe(0);
+		expect(detectorResult.findings).toEqual([]);
+		expect(detectorResult.evidence).toEqual([]);
+	});
+
+	test('scoreImportDependencies skips unreadable files instead of aborting the analysis', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+			'features/dashboard.js': `const { parseProgress } = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+			'features/broken.js': `const { parseProgress } = require('../lib/progress');
+
+function renderBroken(raw) {
+  return parseProgress(raw);
+}
+`,
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update progress parsing
+
+File(s): \`lib/progress.js\`
+
+What to implement: Update parseProgress() for the new plan status format.
+
+Expected output: import detection finds downstream consumers.
+`);
+		const brokenFile = path.join(repositoryRoot, 'features', 'broken.js');
+		fs.readFileSync = ((filePath, ...args) => {
+			if (path.resolve(filePath) === brokenFile) {
+				throw new Error('synthetic read failure');
+			}
+
+			return originalReadFileSync.call(fs, filePath, ...args);
+		});
+
+		const detectorResult = await scoreImportDependencies(normalizePhase3Input({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					files: ['features/dashboard.js', 'features/broken.js'],
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		}));
+
+		expect(detectorResult.evidence).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					consumerFile: 'features/dashboard.js',
+					symbol: 'parseProgress',
+				}),
+			]),
+		);
+		expect(detectorResult.evidence).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					consumerFile: 'features/broken.js',
 				}),
 			]),
 		);

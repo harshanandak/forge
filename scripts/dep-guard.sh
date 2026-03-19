@@ -33,6 +33,24 @@ die() {
   exit 1
 }
 
+cycles_output_is_safe() {
+  local output="$1"
+  printf '%s' "$output" | grep -Eqi 'no cycles? found|no cycles? detected|no dependency cycles|0 dependency cycles|0 cycles'
+}
+
+rollback_dependency() {
+  local dependent_issue="$1"
+  local depends_on_issue="$2"
+
+  local rollback_output
+  rollback_output="$(${BD_CMD:-bd} dep remove "$dependent_issue" "$depends_on_issue" 2>&1)" || {
+    echo "$rollback_output" >&2
+    die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}; rollback failed and requires manual intervention"
+  }
+
+  printf '%s\n' "$rollback_output" > /dev/null
+}
+
 # Sanitize a string: strip shell-injection patterns (OWASP A03)
 # Removes: double quotes, $(...), backticks, semicolons, and newlines
 sanitize() {
@@ -597,14 +615,14 @@ cmd_apply_decision() {
 
   local cycles_output
   cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || {
-    ${BD_CMD:-bd} dep remove "$dependent_issue" "$depends_on_issue" > /dev/null 2>&1 || true
+    rollback_dependency "$dependent_issue" "$depends_on_issue"
     echo "$cycles_output" >&2
     die "Failed to validate dependency cycles"
   }
 
   if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
-    && ! printf '%s' "$cycles_output" | grep -Eqi 'no cycles? detected|no dependency cycles'; then
-    ${BD_CMD:-bd} dep remove "$dependent_issue" "$depends_on_issue" > /dev/null 2>&1 || true
+    && ! cycles_output_is_safe "$cycles_output"; then
+    rollback_dependency "$dependent_issue" "$depends_on_issue"
     echo "$cycles_output" >&2
     die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
   fi

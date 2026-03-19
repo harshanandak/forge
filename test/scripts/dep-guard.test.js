@@ -731,6 +731,93 @@ ENDJSON
       expect(log).not.toContain('set-state forge-src');
       expect(log).not.toContain('comments add forge-src');
     });
+
+    test('successful cycle validation accepts alternate no-cycle messages', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-no-cycle-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "No cycle found"
+          exit 0
+        fi
+        if [[ "$1" == "graph" ]]; then
+          echo "forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "ready" ]]; then
+          echo "forge-jvc"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" ]]; then
+          echo "Set state"
+          exit 0
+        fi
+        if [[ "$1" == "comments" && "$2" == "add" ]]; then
+          echo "Added comment"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Approved dependency applied');
+      expect(fs.readFileSync(logPath, 'utf8')).not.toContain('dep remove forge-other forge-src');
+    });
+
+    test('failed rollback after cycle validation surfaces a manual intervention error', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-rollback-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "Cycle detected: forge-other -> forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "remove" ]]; then
+          echo "Rollback failed" >&2
+          exit 1
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/rollback|manual intervention/i);
+    });
   });
 });
 
