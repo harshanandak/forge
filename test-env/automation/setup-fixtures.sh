@@ -35,6 +35,12 @@ CREATED_FIXTURES=()
 SKIPPED_FIXTURES=()
 FAILED_FIXTURES=()
 
+# When this script runs under a git hook, inherited GIT_* variables can point
+# temp fixture commands back at the parent repository. Clear them so each
+# fixture repo uses its own git metadata.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+
 # Parse command line arguments
 for arg in "$@"; do
   case $arg in

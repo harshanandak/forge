@@ -20,10 +20,13 @@ const {
 } = require('./git-state-checker.js');
 
 let testDir;
+const sanitizedGitEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
+);
 const gitExecOptions = {
   stdio: 'pipe',
   env: {
-    ...process.env,
+    ...sanitizedGitEnv,
     LEFTHOOK: '0',
   },
 };
