@@ -7,6 +7,17 @@ const path = require('node:path');
 // Follows pattern from bin/forge.js:2381
 const { execSync } = require('node:child_process');
 
+const gitExecEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
+);
+
+function runGit(command, options = {}) {
+  return execSync(command, {
+    env: gitExecEnv,
+    ...options,
+  });
+}
+
 /**
  * Check overall git state of a directory
  * @param {string} directory - Directory to check
@@ -94,7 +105,7 @@ function checkGitState(directory) {
 function isDetachedHead(directory) {
   try {
     // SECURITY: Hardcoded command, no user input
-    execSync('git symbolic-ref -q HEAD', {
+    runGit('git symbolic-ref -q HEAD', {
       cwd: directory,
       stdio: 'pipe',
       encoding: 'utf8'
@@ -115,7 +126,7 @@ function isDetachedHead(directory) {
 function hasUncommittedChanges(directory) {
   try {
     // SECURITY: Hardcoded command, no user input
-    const output = execSync('git status --porcelain', {
+    const output = runGit('git status --porcelain', {
       cwd: directory,
       stdio: 'pipe',
       encoding: 'utf8'
@@ -148,7 +159,7 @@ function hasMergeConflict(directory) {
   try {
     // SECURITY: Hardcoded command, no user input
     // git diff --check exits non-zero if there are conflicts
-    execSync('git diff --check', {
+    runGit('git diff --check', {
       cwd: directory,
       stdio: 'pipe',
       encoding: 'utf8',
@@ -160,7 +171,7 @@ function hasMergeConflict(directory) {
     // Conflict markers detected or merge in progress
     // Get list of conflicted files
     try {
-      const output = execSync('git diff --name-only --diff-filter=U', {
+      const output = runGit('git diff --name-only --diff-filter=U', {
         cwd: directory,
         stdio: 'pipe',
         encoding: 'utf8',

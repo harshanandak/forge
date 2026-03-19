@@ -20,6 +20,16 @@ const {
 } = require('./git-state-checker.js');
 
 let testDir;
+const sanitizedGitEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
+);
+const gitExecOptions = {
+  stdio: 'pipe',
+  env: {
+    ...sanitizedGitEnv,
+    LEFTHOOK: '0',
+  },
+};
 
 before(() => {
   // Create temp directory for tests
@@ -35,15 +45,17 @@ after(() => {
 // SECURITY: All git commands are hardcoded strings (no user input)
 function setupGitRepo(directory) {
   try {
-    execSync('git init', { cwd: directory, stdio: 'pipe' });
-    execSync('git config user.email "test@example.com"', { cwd: directory, stdio: 'pipe' });
-    execSync('git config user.name "Test User"', { cwd: directory, stdio: 'pipe' });
+    execSync('git init', { cwd: directory, ...gitExecOptions });
+    execSync('git config user.email "test@example.com"', { cwd: directory, ...gitExecOptions });
+    execSync('git config user.name "Test User"', { cwd: directory, ...gitExecOptions });
+    fs.mkdirSync(path.join(directory, '.git', 'hooks-empty'), { recursive: true });
+    execSync('git config core.hooksPath .git/hooks-empty', { cwd: directory, ...gitExecOptions });
 
     // Create initial commit
     const testFile = path.join(directory, 'README.md');
     fs.writeFileSync(testFile, '# Test Repository');
-    execSync('git add README.md', { cwd: directory, stdio: 'pipe' });
-    execSync('git commit -m "Initial commit"', { cwd: directory, stdio: 'pipe' });
+    execSync('git add README.md', { cwd: directory, ...gitExecOptions });
+    execSync('git commit -m "Initial commit"', { cwd: directory, ...gitExecOptions });
   } catch (error) {
     throw new Error(`Failed to setup git repo: ${error.message}`);
   }
@@ -54,7 +66,7 @@ function setupGitRepo(directory) {
 // SECURITY: All git commands below are hardcoded strings — no user input or
 // runtime-derived values are interpolated into any command.
 function createMergeConflict(directory) {
-  const execOpts = { cwd: directory, stdio: 'pipe', timeout: 10000 };
+  const execOpts = { cwd: directory, timeout: 10000, ...gitExecOptions };
   try {
     // Create a named branch so we can switch back with a hardcoded name
     // SECURITY: Hardcoded branch names only
@@ -113,7 +125,7 @@ describe('git-state-checker', () => {
       setupGitRepo(detachedDir);
 
       // Create detached HEAD
-      execSync('git checkout --detach', { cwd: detachedDir, stdio: 'pipe' });
+      execSync('git checkout --detach', { cwd: detachedDir, ...gitExecOptions });
 
       const result = checkGitState(detachedDir);
 
@@ -181,7 +193,7 @@ describe('git-state-checker', () => {
       const detachedDir = path.join(testDir, 'detached-check');
       fs.mkdirSync(detachedDir, { recursive: true });
       setupGitRepo(detachedDir);
-      execSync('git checkout --detach', { cwd: detachedDir, stdio: 'pipe' });
+      execSync('git checkout --detach', { cwd: detachedDir, ...gitExecOptions });
 
       const result = isDetachedHead(detachedDir);
 

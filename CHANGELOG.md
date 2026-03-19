@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Logic-level dependency detection**: Upgrades dep-guard `check-ripple` from keyword-only matching to structured code-aware analysis (PR #65, forge-9zv)
+  - `lib/dep-guard/analyzer.js`: Phase 3 structured analyzer — scores dependencies across import, contract, and behavioral dimensions
+  - `lib/dep-guard/import-detector.js`: Traces actual `require`/`import` statements between task files using `@babel/parser`
+  - `lib/dep-guard/task-parser.js`: Extracts file-to-function mappings from task list markdown
+  - `scripts/dep-guard-analyze.js`: CLI entry point for the structured analyzer
+  - `apply-decision` subcommand: Beads approval flow with cycle detection, rollback, and state persistence
+  - Graceful fallback: structured analyzer failure falls through to keyword-only check
+  - 107+ new tests covering analyzer, import detector, and approval flow
+
 - **Command behavioral eval + improvement loop**: Automated testing infrastructure for slash commands with LLM-based grading (PR #63, forge-agp)
   - `scripts/run-command-eval.js`: E2E eval pipeline — runs commands in isolated worktrees, grades transcripts against assertions
   - `scripts/improve-command.js`: Semi-autonomous improvement loop with pause-on-regression and cross-session eval history

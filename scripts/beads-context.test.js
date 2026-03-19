@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
+const { resolveBashCommand } = require('../test/helpers/bash.js');
 
 const SCRIPT_PATH = path.join(__dirname, 'beads-context.sh');
 const WORKTREE_ROOT = path.resolve(__dirname, '..');
@@ -22,7 +23,7 @@ function isBdAvailable() {
  * Returns { exitCode, stdout, stderr }.
  */
 async function run(...args) {
-	const proc = Bun.spawn(['bash', SCRIPT_PATH, ...args], {
+	const proc = Bun.spawn([resolveBashCommand(), SCRIPT_PATH, ...args], {
 		cwd: WORKTREE_ROOT,
 		stdout: 'pipe',
 		stderr: 'pipe',

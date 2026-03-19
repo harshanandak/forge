@@ -1,12 +1,13 @@
 // Test: setup-fixtures.sh
 // Validates that all 15 test fixtures are created correctly
 
-const { describe, test, before } = require('node:test');
+const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 // SECURITY: Using execSync with HARDCODED script path only (no user input)
-const { execSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
+const { resolveBashCommand } = require('../../test/helpers/bash.js');
 
 // Import validation helpers from Phase 1
 const { checkGitState, isDetachedHead, hasUncommittedChanges, hasMergeConflict } = require('../validation/git-state-checker.js');
@@ -23,15 +24,19 @@ const EXPECTED_FIXTURES = [
   'large-agents-md', 'missing-prerequisites'
 ];
 
-before(() => {
+function ensureFixtures() {
   try { fs.chmodSync(SETUP_SCRIPT, 0o755); } catch (_error) { }
   try {
     // SECURITY: Hardcoded command (no user input)
-    // Note: Don't use --force to avoid race conditions with other tests
-    // The workflow runs setup-fixtures.sh before tests
-    execSync('bash setup-fixtures.sh', { cwd: __dirname, stdio: 'pipe' });
+    // Note: Don't use --force to avoid race conditions with other tests.
+    execFileSync(resolveBashCommand(), [SETUP_SCRIPT, '--no-validate'], {
+      cwd: __dirname,
+      stdio: 'pipe',
+    });
   } catch (error) { console.error('Failed to run setup-fixtures.sh:', error.message); }
-});
+}
+
+ensureFixtures();
 
 describe('setup-fixtures.sh', () => {
   test('should create all 15 fixtures', () => {
@@ -98,7 +103,7 @@ describe('setup-fixtures.sh', () => {
   });
 
   test('Idempotency: should be safe to run multiple times', () => {
-    const result = execSync('bash setup-fixtures.sh', {
+    const result = execFileSync(resolveBashCommand(), [SETUP_SCRIPT], {
       cwd: __dirname, stdio: 'pipe', encoding: 'utf8'
     });
     assert.match(result, /Fixture already exists|Skipped/i);

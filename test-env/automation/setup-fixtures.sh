@@ -35,6 +35,12 @@ CREATED_FIXTURES=()
 SKIPPED_FIXTURES=()
 FAILED_FIXTURES=()
 
+# When this script runs under a git hook, inherited GIT_* variables can point
+# temp fixture commands back at the parent repository. Clear them so each
+# fixture repo uses its own git metadata.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+
 # Parse command line arguments
 for arg in "$@"; do
   case $arg in
@@ -109,6 +115,8 @@ init_git_repo() {
   # Set local config only (avoids polluting global git config)
   git config user.email "test@example.com" || true
   git config user.name "Test User" || true
+  mkdir -p .git/hooks-empty
+  git config core.hooksPath .git/hooks-empty || true
 
   # Create initial commit
   echo "# Test Repository" > README.md
@@ -118,7 +126,7 @@ init_git_repo() {
     return 1
   fi
 
-  if ! git commit -m "Initial commit" > /dev/null 2>&1; then
+  if ! LEFTHOOK=0 git commit -m "Initial commit" > /dev/null 2>&1; then
     log_error "git commit failed in $dir"
     cd - > /dev/null 2>&1
     return 1
@@ -511,13 +519,13 @@ create_merge_conflict() {
   git checkout -b feature-branch > /dev/null 2>&1
   echo "# Feature Branch" > README.md
   git add README.md > /dev/null 2>&1
-  git commit -m "Feature change" > /dev/null 2>&1
+  LEFTHOOK=0 git commit -m "Feature change" > /dev/null 2>&1
 
   # Switch back and make conflicting change
   git checkout - > /dev/null 2>&1
   echo "# Main Branch" > README.md
   git add README.md > /dev/null 2>&1
-  git commit -m "Main change" > /dev/null 2>&1
+  LEFTHOOK=0 git commit -m "Main change" > /dev/null 2>&1
 
   # Attempt merge (will fail and leave conflict state)
   git merge feature-branch > /dev/null 2>&1 || true

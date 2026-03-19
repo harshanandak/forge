@@ -17,6 +17,19 @@ const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'dep-guard.sh');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
+const GIT_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe';
+
+function resolveBashCommand() {
+  if (process.env.BASH_CMD) {
+    return process.env.BASH_CMD;
+  }
+
+  if (process.platform === 'win32' && fs.existsSync(GIT_BASH_PATH)) {
+    return GIT_BASH_PATH;
+  }
+
+  return 'bash';
+}
 
 /**
  * Run the dep-guard script with given arguments.
@@ -25,7 +38,7 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
  * @returns {{ status: number|null, stdout: string, stderr: string }}
  */
 function runDepGuard(args = [], env = {}) {
-  const result = spawnSync('bash', [SCRIPT, ...args], {
+  const result = spawnSync(resolveBashCommand(), [SCRIPT, ...args], {
     cwd: PROJECT_ROOT,
     encoding: 'utf-8',
     timeout: 15000,
@@ -54,6 +67,16 @@ function createMockBd(scriptContent) {
   // Ensure executable on all platforms
   spawnSync('chmod', ['+x', mockPath]);
   return mockPath;
+}
+
+function createTempRepo(files) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-script-'));
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const absolutePath = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, contents, 'utf8');
+  }
+  return root;
 }
 
 describe('scripts/dep-guard.sh', () => {
@@ -142,11 +165,16 @@ describe('scripts/dep-guard.sh', () => {
   describe('check-ripple', () => {
     /** @type {string[]} */
     const mockFiles = [];
+    /** @type {string[]} */
+    const tempDirs = [];
 
     afterAll(() => {
       // Clean up all mock files created during these tests
       for (const f of mockFiles) {
         try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+      for (const dir of tempDirs) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
       }
     });
 
@@ -186,7 +214,7 @@ describe('scripts/dep-guard.sh', () => {
       const result = runDepGuard(['check-ripple', 'forge-xyz'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stderr).toContain('could not extract title');
-    });
+    }, 15000);
 
     test('warns and skips when bd list returns empty', () => {
       const mock = createMockBd(`
@@ -302,6 +330,134 @@ ENDJSON
       const result = runDepGuard(['check-ripple', 'forge-aaa'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('No conflicts detected');
+    });
+
+    test('prints structured analyzer output from Beads JSON and task-file context', () => {
+      const repositoryRoot = createTempRepo({
+        'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+        'features/dashboard.js': `const { parseProgress } = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+        'tasks.md': `# Task List: logic-level-dependency-detection
+
+## Task 1: Tighten review policy
+
+File(s): \`lib/progress.js\`, \`docs/workflow.md\`
+
+What to implement: Update parseProgress() and tighten approval rules, confidence threshold handling, and manual review behavior for planning decisions.
+
+Expected output: behavior detection finds downstream consumers.
+`,
+      });
+      tempDirs.push(repositoryRoot);
+      const taskFile = path.join(repositoryRoot, 'tasks.md').replace(/\\/g, '/');
+      const mock = createMockBd(`
+        if [[ "$1" == "show" && "$2" == "forge-src" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+{"id":"forge-src","title":"Logic-level dependency detection in /plan Phase 3","description":"Plan-time dependency review","status":"open","design":"8 tasks | ${taskFile}"}
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=open" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+[{"id":"forge-other","title":"Multi-developer workflow review policy","description":"Manual review rules and confidence threshold handling for coordinated work.","status":"open","files":["features/dashboard.js"]}]
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=in_progress" && "$3" == "--json" ]]; then
+          echo "[]"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(['check-ripple', 'forge-src'], {
+        BD_CMD: mock,
+        DEP_GUARD_REPOSITORY_ROOT: repositoryRoot,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Structured dependency review');
+      expect(result.stdout).toContain('Issue pair: forge-src -> forge-other');
+      expect(result.stdout).toContain('Rubric score:');
+      expect(result.stdout).toContain('Confidence:');
+      expect(result.stdout).toContain('Detector categories:');
+      expect(result.stdout).toContain('Proposed dependency updates:');
+      expect(result.stdout).toContain('forge-other depends on forge-src');
+      expect(result.stdout).toContain('Pros:');
+      expect(result.stdout).toContain('Cons:');
+    });
+
+    test('falls back to keyword-only report when the analyzer cannot run', () => {
+      const repositoryRoot = createTempRepo({
+        'tasks.md': `# Task List
+
+## Task 1: Dependency plan workflow
+
+File(s): \`docs/workflow.md\`
+
+What to implement: Update dependency plan workflow review rules.
+`,
+      });
+      tempDirs.push(repositoryRoot);
+      const taskFile = path.join(repositoryRoot, 'tasks.md').replace(/\\/g, '/');
+      const mock = createMockBd(`
+        if [[ "$1" == "show" && "$2" == "forge-src" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+{"id":"forge-src","title":"Pre-change dependency guard for plan workflow","description":"Guard dependency conflicts in plan workflow","status":"open","design":"1 tasks | ${taskFile}"}
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=open" && "$3" == "--json" ]]; then
+          cat <<'ENDJSON'
+[{"id":"forge-other","title":"Logic-level dependency detection in plan Phase 3","description":"Dependency review in plan workflow","status":"open","files":["features/dashboard.js"]}]
+ENDJSON
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=in_progress" && "$3" == "--json" ]]; then
+          echo "[]"
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=open" ]]; then
+          echo "○ forge-src [● P2] [feature] - Pre-change dependency guard for plan workflow"
+          echo "○ forge-other [● P2] [feature] - Logic-level dependency detection in plan Phase 3"
+          exit 0
+        fi
+        if [[ "$1" == "list" && "$2" == "--status=in_progress" ]]; then
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard(['check-ripple', 'forge-src'], {
+        BD_CMD: mock,
+        DEP_GUARD_REPOSITORY_ROOT: repositoryRoot,
+        DEP_GUARD_ANALYZE_SCRIPT: path.join(repositoryRoot, 'missing-analyzer.js'),
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('falling back to keyword-only ripple check');
+      expect(result.stdout).toContain('Potential overlap');
+      expect(result.stdout).toContain('Confidence: LOW');
+      expect(result.stdout).toContain('bd dep add forge-src forge-other');
     });
   });
 
@@ -452,6 +608,273 @@ ENDJSON
       expect(result.stderr).toMatch(/not found|Failed|Error/i);
     });
   });
+
+  describe('apply-decision', () => {
+    /** @type {string[]} */
+    const mockFiles = [];
+    /** @type {string[]} */
+    const logFiles = [];
+
+    afterAll(() => {
+      for (const f of mockFiles) {
+        try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+      for (const f of logFiles) {
+        try { fs.unlinkSync(f); } catch (_e) { /* ignore */ }
+      }
+    });
+
+    test('approved decision adds dependency, records state/comment, and prints graph/ready summary', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-apply-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "No cycles detected"
+          exit 0
+        fi
+        if [[ "$1" == "graph" ]]; then
+          echo "forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "ready" ]]; then
+          echo "forge-jvc"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" ]]; then
+          echo "Set state"
+          exit 0
+        fi
+        if [[ "$1" == "comments" && "$2" == "add" ]]; then
+          echo "Added comment"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Approved dependency applied');
+      expect(result.stdout).toContain('forge-other depends on forge-src');
+      expect(result.stdout).toContain('Graph:');
+      expect(result.stdout).toContain('forge-src -> forge-other');
+      expect(result.stdout).toContain('Ready impact:');
+      expect(result.stdout).toContain('forge-jvc');
+
+      const log = fs.readFileSync(logPath, 'utf8');
+      expect(log).toContain('dep add forge-other forge-src');
+      expect(log).toContain('dep cycles');
+      expect(log).toContain('set-state forge-src logicdep=approved --reason Approved because shared logic changes affect the dashboard flow.');
+      expect(log).toContain('comments add forge-src');
+    });
+
+    test('cycle-creating update is rejected before state/comment persistence', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-cycle-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "Cycle detected: forge-other -> forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "remove" ]]; then
+          echo "Removed dependency"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" || "$1" == "comments" ]]; then
+          echo "Should not persist after cycle" >&2
+          exit 1
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/cycle/i);
+
+      const log = fs.readFileSync(logPath, 'utf8');
+      expect(log).toContain('dep add forge-other forge-src');
+      expect(log).toContain('dep cycles');
+      expect(log).toContain('dep remove forge-other forge-src');
+      expect(log).not.toContain('set-state forge-src');
+      expect(log).not.toContain('comments add forge-src');
+    });
+
+    test('successful cycle validation accepts alternate no-cycle messages', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-no-cycle-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "No cycle found"
+          exit 0
+        fi
+        if [[ "$1" == "graph" ]]; then
+          echo "forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "ready" ]]; then
+          echo "forge-jvc"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" ]]; then
+          echo "Set state"
+          exit 0
+        fi
+        if [[ "$1" == "comments" && "$2" == "add" ]]; then
+          echo "Added comment"
+          exit 0
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Approved dependency applied');
+      expect(fs.readFileSync(logPath, 'utf8')).not.toContain('dep remove forge-other forge-src');
+    });
+
+    test('failed rollback after cycle validation surfaces a manual intervention error', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-rollback-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "Cycle detected: forge-other -> forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "remove" ]]; then
+          echo "Rollback failed" >&2
+          exit 1
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/rollback|manual intervention/i);
+    });
+
+    test('failed ready/state persistence rolls back the dependency edge before exiting', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-ready-failure-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "No cycles detected"
+          exit 0
+        fi
+        if [[ "$1" == "graph" ]]; then
+          echo "forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "ready" ]]; then
+          echo "ready failed" >&2
+          exit 1
+        fi
+        if [[ "$1" == "dep" && "$2" == "remove" ]]; then
+          echo "Removed dependency"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" || "$1" == "comments" ]]; then
+          echo "Should not persist after ready failure" >&2
+          exit 1
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/ready work|rollback|manual intervention/i);
+
+      const log = fs.readFileSync(logPath, 'utf8');
+      expect(log).toContain('dep add forge-other forge-src');
+      expect(log).toContain('ready');
+      expect(log).toContain('dep remove forge-other forge-src');
+      expect(log).not.toContain('set-state forge-src');
+      expect(log).not.toContain('comments add forge-src');
+    });
+  });
 });
 
 describe('plan.md integration', () => {
@@ -494,5 +917,15 @@ describe('plan.md integration', () => {
     expect(content).toContain('CRITICAL');
     expect(content).toContain('default to HIGH');
     expect(content).toContain('Recommendation');
+  });
+
+  test('plan.md documents the Beads-aware Phase 3 approval flow', () => {
+    const content = fs.readFileSync(planMdPath, 'utf-8');
+    expect(content).toContain('bd worktree create');
+    expect(content).toContain('logic-level analysis');
+    expect(content).toContain('user approval');
+    expect(content).toContain('bd dep cycles');
+    expect(content).toContain('bd set-state');
+    expect(content).toContain('bd comments');
   });
 });

@@ -21,6 +21,7 @@ Usage: dep-guard.sh <subcommand> [args...]
 Subcommands:
   find-consumers     <file-path>                Find files that import/require a given module
   check-ripple       <issue-id>                  Check ripple impact via keyword matching
+  apply-decision     <issue-id> <dependent-id> <depends-on-id> "<rationale>" Apply approved dependency decision via Beads
   store-contracts    <issue-id> <contracts-string> Store contract metadata on a Beads issue
   extract-contracts  <file-path>                  Extract public API contracts from a file
 EOF
@@ -30,6 +31,37 @@ EOF
 die() {
   echo "Error: $1" >&2
   exit 1
+}
+
+cycles_output_is_safe() {
+  local output="$1"
+  printf '%s' "$output" | grep -Eqi 'no cycles? found|no cycles? detected|no dependency cycles|0 dependency cycles|0 cycles'
+}
+
+rollback_dependency() {
+  local dependent_issue="$1"
+  local depends_on_issue="$2"
+
+  local rollback_output
+  rollback_output="$(${BD_CMD:-bd} dep remove "$dependent_issue" "$depends_on_issue" 2>&1)" || {
+    echo "$rollback_output" >&2
+    die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}; rollback failed and requires manual intervention"
+  }
+
+  printf '%s\n' "$rollback_output" > /dev/null
+}
+
+rollback_and_die() {
+  local dependent_issue="$1"
+  local depends_on_issue="$2"
+  local message="$3"
+  local command_output="${4:-}"
+
+  rollback_dependency "$dependent_issue" "$depends_on_issue"
+  if [[ -n "$command_output" ]]; then
+    echo "$command_output" >&2
+  fi
+  die "$message"
 }
 
 # Sanitize a string: strip shell-injection patterns (OWASP A03)
@@ -65,6 +97,44 @@ bd_update() {
   # bd prints "Error resolving/updating ..." to stdout for non-existent issues
   # Use specific patterns to avoid false positives from data containing "error"
   if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error updating'; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  echo "$output"
+  return 0
+}
+
+bd_comment_add() {
+  local output
+  output="$(${BD_CMD:-bd} comments add "$@" 2>&1)"
+  local rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error adding'; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  echo "$output"
+  return 0
+}
+
+bd_set_state() {
+  local output
+  output="$(${BD_CMD:-bd} set-state "$@" 2>&1)"
+  local rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    echo "$output" >&2
+    return 1
+  fi
+
+  if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error setting'; then
     echo "$output" >&2
     return 1
   fi
@@ -142,6 +212,103 @@ emit_contracts() {
   done
 }
 
+extract_task_file_from_design() {
+  local design_text="$1"
+
+  if [[ -z "$design_text" || "$design_text" != *"|"* ]]; then
+    return 1
+  fi
+
+  local task_file="${design_text#*|}"
+  task_file="$(printf '%s' "$task_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ -n "$task_file" ]] || return 1
+  printf '%s' "$task_file"
+}
+
+run_phase3_analyzer() {
+  local current_json_file="$1"
+  local open_json_file="$2"
+  local in_progress_json_file="$3"
+  local task_file="$4"
+  local repository_root="$5"
+  local analyzer_script="${DEP_GUARD_ANALYZE_SCRIPT:-scripts/dep-guard-analyze.js}"
+
+  node "$analyzer_script" \
+    "$current_json_file" \
+    "$open_json_file" \
+    "$in_progress_json_file" \
+    "$task_file" \
+    "$repository_root"
+}
+
+render_phase3_review() {
+  local analysis_file="$1"
+
+  node - "$analysis_file" <<'NODE'
+const fs = require('node:fs');
+
+const analysisPath = process.argv[2];
+const analysis = JSON.parse(fs.readFileSync(analysisPath, 'utf8'));
+const detectorCategories = Object.entries(analysis.scores ?? {})
+  .filter(([name, score]) => name !== 'rubric' && Number(score) > 0)
+  .map(([name]) => name);
+
+const lines = [
+  '',
+  `Structured dependency review for ${analysis.currentIssue.id}...`,
+  '',
+];
+
+if (!Array.isArray(analysis.issues) || analysis.issues.length === 0) {
+  lines.push('No conflicts detected');
+  process.stdout.write(`${lines.join('\n')}\n`);
+  process.exit(0);
+}
+
+const seenPairs = new Set();
+for (const finding of analysis.issues) {
+  const key = `${analysis.currentIssue.id}->${finding.targetIssueId}`;
+  if (seenPairs.has(key)) {
+    continue;
+  }
+  seenPairs.add(key);
+  lines.push(`Issue pair: ${analysis.currentIssue.id} -> ${finding.targetIssueId}`);
+}
+
+lines.push(`Rubric score: ${analysis.scores?.rubric ?? 0}`);
+lines.push(
+  `Confidence: ${(analysis.confidence?.score ?? 0).toFixed(2)}${
+    analysis.confidence?.belowThreshold ? ' (below 70% threshold)' : ''
+  }`,
+);
+lines.push(`Detector categories: ${detectorCategories.join(', ') || 'none'}`);
+lines.push(`Needs user decision: ${analysis.needsUserDecision ? 'yes' : 'no'}`);
+
+if (Array.isArray(analysis.detectorConflicts) && analysis.detectorConflicts.length > 0) {
+  lines.push('Conflicts:');
+  for (const conflict of analysis.detectorConflicts) {
+    lines.push(`  - ${conflict}`);
+  }
+}
+
+if (Array.isArray(analysis.proposals) && analysis.proposals.length > 0) {
+  lines.push('');
+  lines.push('Proposed dependency updates:');
+  for (const proposal of analysis.proposals) {
+    lines.push(`  - ${proposal.dependentIssueId} depends on ${proposal.dependsOnIssueId}`);
+    if (Array.isArray(proposal.pros) && proposal.pros.length > 0) {
+      lines.push(`    Pros: ${proposal.pros.join('; ')}`);
+    }
+    if (Array.isArray(proposal.cons) && proposal.cons.length > 0) {
+      lines.push(`    Cons: ${proposal.cons.join('; ')}`);
+    }
+  }
+}
+
+process.stdout.write(`${lines.join('\n')}\n`);
+NODE
+}
+
 # ── Subcommands ──────────────────────────────────────────────────────────
 
 cmd_find_consumers() {
@@ -181,7 +348,7 @@ cmd_find_consumers() {
   return 0
 }
 
-cmd_check_ripple() {
+cmd_check_ripple_keyword_v1() {
   if [[ $# -lt 1 || -z "$1" ]]; then
     echo "Usage: dep-guard.sh check-ripple <issue-id>" >&2
     exit 1
@@ -355,6 +522,161 @@ cmd_check_ripple() {
   return 0
 }
 
+cmd_check_ripple() {
+  if [[ $# -lt 1 || -z "$1" ]]; then
+    echo "Usage: dep-guard.sh check-ripple <issue-id>" >&2
+    exit 1
+  fi
+
+  local issue_id
+  issue_id="$(sanitize "$1")"
+
+  local src_json
+  src_json="$(bd_show_json "$issue_id")"
+
+  local src_title=""
+  if command -v jq &>/dev/null; then
+    src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
+  fi
+  if [[ -z "$src_title" ]]; then
+    src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
+  fi
+
+  if [[ -z "$src_title" ]]; then
+    echo "⚠️  Warning: could not extract title for ${issue_id} — ripple check skipped" >&2
+    return 0
+  fi
+
+  local design_text=""
+  if command -v jq &>/dev/null; then
+    design_text="$(printf '%s' "$src_json" | jq -r '.design // ""' 2>/dev/null)" || true
+  fi
+  if [[ -z "$design_text" ]]; then
+    design_text="$(printf '%s' "$src_json" | grep -oE '"design"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"design"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
+  fi
+
+  local task_file=""
+  task_file="$(extract_task_file_from_design "$design_text" || true)"
+  if [[ -z "$task_file" || ! -f "$task_file" ]]; then
+    echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+    cmd_check_ripple_keyword_v1 "$issue_id"
+    return 0
+  fi
+
+  local open_json=""
+  local in_progress_json=""
+  open_json="$(${BD_CMD:-bd} list --status=open --json 2>/dev/null)" || true
+  in_progress_json="$(${BD_CMD:-bd} list --status=in_progress --json 2>/dev/null)" || true
+
+  if [[ -z "$open_json" && -z "$in_progress_json" ]]; then
+    echo "⚠️  Warning: could not fetch active issue list — ripple check skipped" >&2
+    return 0
+  fi
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
+  printf '%s' "$src_json" > "${tmp_dir}/current.json"
+  printf '%s' "${open_json:-[]}" > "${tmp_dir}/open.json"
+  printf '%s' "${in_progress_json:-[]}" > "${tmp_dir}/in-progress.json"
+
+  local repository_root="${DEP_GUARD_REPOSITORY_ROOT:-$PWD}"
+  if run_phase3_analyzer \
+    "${tmp_dir}/current.json" \
+    "${tmp_dir}/open.json" \
+    "${tmp_dir}/in-progress.json" \
+    "$task_file" \
+    "$repository_root" \
+    > "${tmp_dir}/analysis.json" 2> "${tmp_dir}/analysis.err"; then
+    if render_phase3_review "${tmp_dir}/analysis.json"; then
+      trap - RETURN
+      rm -rf "$tmp_dir"
+      return 0
+    fi
+    echo "⚠️  Phase 3 review rendering failed — falling back to keyword-only ripple check." >&2
+  else
+    echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+    if [[ -s "${tmp_dir}/analysis.err" ]]; then
+      cat "${tmp_dir}/analysis.err" >&2
+    fi
+  fi
+
+  trap - RETURN
+  rm -rf "$tmp_dir"
+  cmd_check_ripple_keyword_v1 "$issue_id"
+}
+
+cmd_apply_decision() {
+  if [[ $# -lt 4 ]]; then
+    echo "Usage: dep-guard.sh apply-decision <issue-id> <dependent-id> <depends-on-id> \"<rationale>\"" >&2
+    exit 1
+  fi
+
+  local issue_id
+  issue_id="$(sanitize "$1")"
+  local dependent_issue
+  dependent_issue="$(sanitize "$2")"
+  local depends_on_issue
+  depends_on_issue="$(sanitize "$3")"
+  local rationale
+  rationale="$(sanitize "$4")"
+
+  local dep_add_output
+  dep_add_output="$(${BD_CMD:-bd} dep add "$dependent_issue" "$depends_on_issue" 2>&1)" || {
+    echo "$dep_add_output" >&2
+    die "Failed to add dependency ${dependent_issue} -> ${depends_on_issue}"
+  }
+
+  local cycles_output
+  cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || {
+    rollback_dependency "$dependent_issue" "$depends_on_issue"
+    echo "$cycles_output" >&2
+    die "Failed to validate dependency cycles"
+  }
+
+  if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
+    && ! cycles_output_is_safe "$cycles_output"; then
+    rollback_dependency "$dependent_issue" "$depends_on_issue"
+    echo "$cycles_output" >&2
+    die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
+  fi
+
+  local graph_output
+  graph_output="$(${BD_CMD:-bd} graph "$issue_id" 2>&1)" || rollback_and_die \
+    "$dependent_issue" \
+    "$depends_on_issue" \
+    "Failed to render dependency graph for ${issue_id}" \
+    "$graph_output"
+
+  local ready_output
+  ready_output="$(${BD_CMD:-bd} ready 2>&1)" || rollback_and_die \
+    "$dependent_issue" \
+    "$depends_on_issue" \
+    "Failed to summarize ready work" \
+    "$ready_output"
+
+  if ! bd_set_state "$issue_id" "logicdep=approved" --reason "$rationale" > /dev/null; then
+    rollback_and_die \
+      "$dependent_issue" \
+      "$depends_on_issue" \
+      "Failed to persist approved decision state on ${issue_id}"
+  fi
+
+  if ! bd_comment_add "$issue_id" "Approved dependency: ${dependent_issue} depends on ${depends_on_issue}. ${rationale}" > /dev/null; then
+    rollback_and_die \
+      "$dependent_issue" \
+      "$depends_on_issue" \
+      "Failed to record approval rationale on ${issue_id}"
+  fi
+
+  echo "Approved dependency applied: ${dependent_issue} depends on ${depends_on_issue}"
+  echo "Graph:"
+  printf '%s\n' "$graph_output"
+  echo "Ready impact:"
+  printf '%s\n' "$ready_output"
+}
+
 cmd_store_contracts() {
   if [[ $# -lt 2 ]]; then
     echo "Usage: dep-guard.sh store-contracts <issue-id> <contracts-string>" >&2
@@ -479,6 +801,7 @@ shift
 case "$subcommand" in
   find-consumers)     cmd_find_consumers "$@" ;;
   check-ripple)       cmd_check_ripple "$@" ;;
+  apply-decision)     cmd_apply_decision "$@" ;;
   store-contracts)    cmd_store_contracts "$@" ;;
   extract-contracts)  cmd_extract_contracts "$@" ;;
   *)
