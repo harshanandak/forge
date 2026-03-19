@@ -595,11 +595,11 @@ cmd_check_ripple() {
       return 0
     fi
     echo "⚠️  Phase 3 review rendering failed — falling back to keyword-only ripple check." >&2
-  fi
-
-  echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
-  if [[ -s "${tmp_dir}/analysis.err" ]]; then
-    cat "${tmp_dir}/analysis.err" >&2
+  else
+    echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+    if [[ -s "${tmp_dir}/analysis.err" ]]; then
+      cat "${tmp_dir}/analysis.err" >&2
+    fi
   fi
 
   trap - RETURN
