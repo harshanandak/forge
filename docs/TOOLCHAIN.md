@@ -22,7 +22,7 @@ Complete reference for all tools integrated with the Forge workflow.
 │                          │                                      │
 │                    ┌─────▼─────┐                                │
 │                    │   FORGE   │                                │
-│                    │  9-Stage  │                                │
+│                    │  7-Stage  │                                │
 │                    │  Workflow │                                │
 │                    └───────────┘                                │
 │                                                                 │
@@ -516,7 +516,7 @@ volumes:
 ### GitHub CLI - PR Workflow
 
 **Installation**: [cli.github.com](https://cli.github.com)
-**Used in**: `/ship`, `/review`, `/merge` stages
+**Used in**: `/ship`, `/review`, `/premerge` stages
 
 ```bash
 # Install
@@ -548,7 +548,7 @@ gh issue create --title "..." --body "..."
 | `/validate` | Type check, lint, tests, SonarCloud |
 | `/ship` | `bd update --status done`, `gh pr create` |
 | `/review` | `gh pr view`, Greptile, SonarCloud |
-| `/merge` | `gh pr merge`, `bd sync` |
+| `/premerge` | `bd sync`, doc updates, hand off PR |
 | `/verify` | Documentation cross-check |
 
 ---

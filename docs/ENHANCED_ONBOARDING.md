@@ -333,7 +333,7 @@ git checkout -b feat/user-authentication
 bunx forge setup --type=critical
 
 # Auto-escalates to Critical profile:
-# - 9-stage workflow
+# - 7-stage workflow
 # - Research required
 # - OWASP analysis
 # - Design docs for strategic changes
