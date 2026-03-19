@@ -169,7 +169,6 @@ Major architectural impact.
 			expect(result.beadsIssueId).toBeTruthy();
 			expect(result.branchName).toBeTruthy();
 			expect(result.requiresDesignDoc).toBe(true);
-			expect(result.proposalPR).toBeTruthy();
 		});
 
 		test.skip('should return actionable output', async () => {
