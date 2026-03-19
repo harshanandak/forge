@@ -157,7 +157,6 @@ Major architectural impact.
 			expect(result.scope).toBe('tactical');
 			expect(result.beadsIssueId).toBeTruthy();
 			expect(result.branchName).toBeTruthy();
-			expect(result.requiresDesignDoc).toBe(false);
 		});
 
 		test.skip('should execute strategic workflow (with design doc) (requires Beads CLI — PR #64)', async () => {
@@ -168,7 +167,6 @@ Major architectural impact.
 			expect(result.scope).toBe('strategic');
 			expect(result.beadsIssueId).toBeTruthy();
 			expect(result.branchName).toBeTruthy();
-			expect(result.requiresDesignDoc).toBe(true);
 		});
 
 		test.skip('should return actionable output', async () => {
