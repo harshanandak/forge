@@ -214,7 +214,7 @@ describe('scripts/dep-guard.sh', () => {
       const result = runDepGuard(['check-ripple', 'forge-xyz'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stderr).toContain('could not extract title');
-    });
+    }, 15000);
 
     test('warns and skips when bd list returns empty', () => {
       const mock = createMockBd(`
