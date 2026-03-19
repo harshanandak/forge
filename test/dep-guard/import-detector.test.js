@@ -186,6 +186,75 @@ Expected output: import detection finds downstream consumers.
 		);
 	});
 
+	test('scoreImportDependencies detects aliased default imports when task text uses backticked symbols', async () => {
+		const repositoryRoot = createTempRepo({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = parseProgress;
+`,
+			'features/dashboard.js': `const progressParser = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return progressParser(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+			'features/esm-dashboard.mjs': `import progressParser from '../lib/progress.js';
+
+export function renderDashboard(raw) {
+  return progressParser(raw);
+}
+`,
+		});
+		const taskFile = createTaskFile(repositoryRoot, `# Task List: logic-level-dependency-detection
+
+## Task 1: Update progress parsing
+
+File(s): \`lib/progress.js\`
+
+What to implement: Update \`parseProgress\` for the new plan status format.
+
+Expected output: import detection finds downstream consumers.
+`);
+		const detectorResult = await scoreImportDependencies(normalizePhase3Input({
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					files: ['features/dashboard.js', 'features/esm-dashboard.mjs'],
+				},
+			],
+			repositoryRoot,
+			taskFile,
+		}));
+
+		expect(detectorResult.evidence).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: 'call',
+					consumerFile: 'features/dashboard.js',
+					targetFile: 'lib/progress.js',
+					symbol: 'parseProgress',
+				}),
+				expect.objectContaining({
+					type: 'call',
+					consumerFile: 'features/esm-dashboard.mjs',
+					targetFile: 'lib/progress.js',
+					symbol: 'parseProgress',
+				}),
+			]),
+		);
+	});
+
 	test('scoreImportDependencies detects member calls through CommonJS module bindings', async () => {
 		const repositoryRoot = createTempRepo({
 			'lib/progress.js': `function parseProgress(raw) {

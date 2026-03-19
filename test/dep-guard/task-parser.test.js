@@ -165,6 +165,35 @@ Expected output: normalized tasks.
 		]);
 	});
 
+	test('extractTaskContracts captures backticked command names without parentheses', () => {
+		const fixture = createTaskFixture(`# Task List: logic-level-dependency-detection
+
+## Task 1: Update shell command contracts
+
+File(s): \`scripts/beads-context.sh\`
+
+What to implement: Extend \`stage-transition\` and \`parse-progress\` for the new approval workflow.
+
+Expected output: normalized tasks.
+`, {
+			'scripts/beads-context.sh': `case "$1" in
+  stage-transition)
+    echo stage-transition
+    ;;
+  parse-progress)
+    echo parse-progress
+    ;;
+esac
+`,
+		});
+		const taskContext = parseTaskFile(fixture.taskPath);
+
+		expect(extractTaskContracts(taskContext, { repositoryRoot: fixture.dir })).toEqual([
+			'scripts/beads-context.sh:parse-progress(command-contract)',
+			'scripts/beads-context.sh:stage-transition(command-contract)',
+		]);
+	});
+
 	test('extractTaskContracts rejects traversal paths and single-file mentions without a matching symbol', () => {
 		const fixture = createTaskFixture(`# Task List: logic-level-dependency-detection
 

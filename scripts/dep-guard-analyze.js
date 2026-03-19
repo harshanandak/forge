@@ -17,7 +17,19 @@ function normalizeListPayload(payload) {
     return [payload];
   }
 
-  return [];
+	return [];
+}
+
+function normalizeSingleIssuePayload(payload) {
+	if (Array.isArray(payload)) {
+		return payload[0] ?? {};
+	}
+
+	if (payload && typeof payload === 'object') {
+		return payload;
+	}
+
+	return {};
 }
 
 async function main() {
@@ -35,7 +47,7 @@ async function main() {
     );
   }
 
-  const currentIssue = readJsonFile(currentIssueFile);
+  const currentIssue = normalizeSingleIssuePayload(readJsonFile(currentIssueFile));
   const openIssues = [
     ...normalizeListPayload(readJsonFile(openIssuesFile)),
     ...normalizeListPayload(readJsonFile(inProgressIssuesFile)),

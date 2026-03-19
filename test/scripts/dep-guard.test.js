@@ -818,6 +818,62 @@ ENDJSON
       expect(result.status).toBe(1);
       expect(result.stderr).toMatch(/rollback|manual intervention/i);
     });
+
+    test('failed ready/state persistence rolls back the dependency edge before exiting', () => {
+      const logPath = path.join(os.tmpdir(), `dep-guard-ready-failure-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      logFiles.push(logPath);
+      const mock = createMockBd(`
+        echo "$*" >> "$MOCK_LOG"
+        if [[ "$1" == "dep" && "$2" == "add" ]]; then
+          echo "Added dependency: $3 depends on $4"
+          exit 0
+        fi
+        if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
+          echo "No cycles detected"
+          exit 0
+        fi
+        if [[ "$1" == "graph" ]]; then
+          echo "forge-src -> forge-other"
+          exit 0
+        fi
+        if [[ "$1" == "ready" ]]; then
+          echo "ready failed" >&2
+          exit 1
+        fi
+        if [[ "$1" == "dep" && "$2" == "remove" ]]; then
+          echo "Removed dependency"
+          exit 0
+        fi
+        if [[ "$1" == "set-state" || "$1" == "comments" ]]; then
+          echo "Should not persist after ready failure" >&2
+          exit 1
+        fi
+        echo "Unknown command: $*" >&2
+        exit 1
+      `);
+      mockFiles.push(mock);
+
+      const result = runDepGuard([
+        'apply-decision',
+        'forge-src',
+        'forge-other',
+        'forge-src',
+        'Approved because shared logic changes affect the dashboard flow.',
+      ], {
+        BD_CMD: mock,
+        MOCK_LOG: logPath,
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/ready work|rollback|manual intervention/i);
+
+      const log = fs.readFileSync(logPath, 'utf8');
+      expect(log).toContain('dep add forge-other forge-src');
+      expect(log).toContain('ready');
+      expect(log).toContain('dep remove forge-other forge-src');
+      expect(log).not.toContain('set-state forge-src');
+      expect(log).not.toContain('comments add forge-src');
+    });
   });
 });
 

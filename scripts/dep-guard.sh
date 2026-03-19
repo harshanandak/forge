@@ -51,6 +51,19 @@ rollback_dependency() {
   printf '%s\n' "$rollback_output" > /dev/null
 }
 
+rollback_and_die() {
+  local dependent_issue="$1"
+  local depends_on_issue="$2"
+  local message="$3"
+  local command_output="${4:-}"
+
+  rollback_dependency "$dependent_issue" "$depends_on_issue"
+  if [[ -n "$command_output" ]]; then
+    echo "$command_output" >&2
+  fi
+  die "$message"
+}
+
 # Sanitize a string: strip shell-injection patterns (OWASP A03)
 # Removes: double quotes, $(...), backticks, semicolons, and newlines
 sanitize() {
@@ -628,17 +641,31 @@ cmd_apply_decision() {
   fi
 
   local graph_output
-  graph_output="$(${BD_CMD:-bd} graph "$issue_id" 2>&1)" || die "Failed to render dependency graph for ${issue_id}"
+  graph_output="$(${BD_CMD:-bd} graph "$issue_id" 2>&1)" || rollback_and_die \
+    "$dependent_issue" \
+    "$depends_on_issue" \
+    "Failed to render dependency graph for ${issue_id}" \
+    "$graph_output"
 
   local ready_output
-  ready_output="$(${BD_CMD:-bd} ready 2>&1)" || die "Failed to summarize ready work"
+  ready_output="$(${BD_CMD:-bd} ready 2>&1)" || rollback_and_die \
+    "$dependent_issue" \
+    "$depends_on_issue" \
+    "Failed to summarize ready work" \
+    "$ready_output"
 
   if ! bd_set_state "$issue_id" "logicdep=approved" --reason "$rationale" > /dev/null; then
-    die "Failed to persist approved decision state on ${issue_id}"
+    rollback_and_die \
+      "$dependent_issue" \
+      "$depends_on_issue" \
+      "Failed to persist approved decision state on ${issue_id}"
   fi
 
   if ! bd_comment_add "$issue_id" "Approved dependency: ${dependent_issue} depends on ${depends_on_issue}. ${rationale}" > /dev/null; then
-    die "Failed to record approval rationale on ${issue_id}"
+    rollback_and_die \
+      "$dependent_issue" \
+      "$depends_on_issue" \
+      "Failed to record approval rationale on ${issue_id}"
   fi
 
   echo "Approved dependency applied: ${dependent_issue} depends on ${depends_on_issue}"
