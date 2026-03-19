@@ -136,6 +136,53 @@ Expected output: contract detection finds downstream consumers.
 		]);
 	});
 
+	test('scoreContractDependencies matches hyphenated command-contract symbols', async () => {
+		const fixture = createContractFixture(`# Task List: beads-workflow
+
+## Task 1: Update stage transition CLI
+
+File(s): \`scripts/beads-context.sh\`
+
+What to implement: Update \`stage-transition\` command to support new workflow stages.
+
+Expected output: contract detection finds downstream consumers.
+`, {
+			'scripts/beads-context.sh': '# stage-transition command handler\nfunction stage_transition() { echo "done"; }\n',
+		});
+		const input = normalizePhase3Input({
+			currentIssue: {
+				id: 'forge-abc',
+				title: 'Beads workflow stage transitions',
+			},
+			openIssues: [
+				{
+					id: 'forge-def',
+					title: 'CI pipeline uses stage-transition',
+					notes: 'contracts@2026-03-18T10:43:07Z: scripts/beads-context.sh:stage-transition(command-contract)',
+				},
+			],
+			repositoryRoot: fixture.dir,
+			taskFile: fixture.taskPath,
+		});
+
+		const result = await scoreContractDependencies(input);
+		expect(result.score).toBeGreaterThan(0);
+		expect(result.findings).toEqual([
+			expect.objectContaining({
+				sourceIssueId: 'forge-abc',
+				targetIssueId: 'forge-def',
+				evidence: expect.arrayContaining([
+					expect.objectContaining({
+						type: 'contract',
+						symbol: 'stage-transition',
+						contractType: 'command-contract',
+						storedContract: 'scripts/beads-context.sh:stage-transition(command-contract)',
+					}),
+				]),
+			}),
+		]);
+	});
+
 	test('scoreContractDependencies ignores non-matching stored contracts', async () => {
 		const fixture = createContractFixture(`# Task List: logic-level-dependency-detection
 

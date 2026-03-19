@@ -46,6 +46,7 @@ jobs:
           set +e
 
           node ./node_modules/eslint/bin/eslint.js . \
+            --max-warnings 0 \
             --format @microsoft/eslint-formatter-sarif \
             --output-file eslint-results.sarif
           exit_code=$?
