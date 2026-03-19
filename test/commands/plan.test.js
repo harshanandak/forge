@@ -84,7 +84,7 @@ Major architectural impact.
 			expect(result.success).toBe(true);
 		});
 
-		test.skip('should create Beads issue with design doc link for strategic', () => {
+		test.skip('should create Beads issue with design doc link for strategic (requires Beads CLI — PR #64)', () => {
 			const featureName = 'payment-integration';
 			const researchPath = 'docs/research/payment-integration.md';
 
@@ -93,7 +93,7 @@ Major architectural impact.
 			expect(result.description.includes('docs/plans')).toBeTruthy();
 		});
 
-		test.skip('should handle Beads command failures', () => {
+		test.skip('should handle Beads command failures (requires Beads CLI — PR #64)', () => {
 			const featureName = 'test-feature';
 
 			// Mock bd command to fail
@@ -149,7 +149,7 @@ Major architectural impact.
 	});
 
 	describe('Command execution', () => {
-		test.skip('should execute tactical workflow (no design doc)', async () => {
+		test.skip('should execute tactical workflow (no design doc) (requires Beads CLI — PR #64)', async () => {
 			const featureName = 'fix-validation';
 
 			const result = await executePlan(featureName);
@@ -160,7 +160,7 @@ Major architectural impact.
 			expect(result.requiresDesignDoc).toBe(false);
 		});
 
-		test.skip('should execute strategic workflow (with design doc)', async () => {
+		test.skip('should execute strategic workflow (with design doc) (requires Beads CLI — PR #64)', async () => {
 			const featureName = 'payment-integration';
 
 			const result = await executePlan(featureName);
