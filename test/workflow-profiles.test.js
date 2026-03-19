@@ -21,19 +21,19 @@ describe('workflow-profiles', () => {
       expect(PROFILES.refactor).toBeTruthy();
     });
 
-    test('critical profile should have 9 stages', () => {
-      expect(PROFILES.critical.stages.length).toBe(9);
+    test('critical profile should have 8 stages', () => {
+      expect(PROFILES.critical.stages.length).toBe(8);
       expect(PROFILES.critical.stages.includes('/status')).toBeTruthy();
-      expect(PROFILES.critical.stages.includes('/research')).toBeTruthy();
+      expect(PROFILES.critical.stages.includes('/premerge')).toBeTruthy();
       expect(PROFILES.critical.stages.includes('/verify')).toBeTruthy();
       expect(PROFILES.critical.tdd).toBe('strict');
     });
 
-    test('standard profile should have 6 stages', () => {
-      expect(PROFILES.standard.stages.length).toBe(6);
+    test('standard profile should have 7 stages', () => {
+      expect(PROFILES.standard.stages.length).toBe(7);
       expect(PROFILES.standard.stages.includes('/status')).toBeTruthy();
       expect(PROFILES.standard.stages.includes('/plan')).toBeTruthy();
-      expect(!PROFILES.standard.stages.includes('/research')).toBeTruthy();
+      expect(PROFILES.standard.stages.includes('/premerge')).toBeTruthy();
       expect(PROFILES.standard.tdd).toBe('required');
     });
 

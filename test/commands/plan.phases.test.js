@@ -147,21 +147,21 @@ describe('Plan Phase 1 — detectScope edge cases', () => {
 	test('should return tactical for null input (safe default)', () => {
 		const scope = detectScope(null);
 		expect(scope.type).toBe('tactical');
-		expect(scope.requiresOpenSpec).toBe(false);
+		expect(scope.requiresDesignDoc).toBe(false);
 		expect(scope.reason).toBeTruthy();
 	});
 
 	test('should return tactical for undefined input', () => {
 		const scope = detectScope(undefined);
 		expect(scope.type).toBe('tactical');
-		expect(scope.requiresOpenSpec).toBe(false);
+		expect(scope.requiresDesignDoc).toBe(false);
 		expect(scope.reason).toBeTruthy();
 	});
 
 	test('should return tactical for empty string', () => {
 		const scope = detectScope('');
 		expect(scope.type).toBe('tactical');
-		expect(scope.requiresOpenSpec).toBe(false);
+		expect(scope.requiresDesignDoc).toBe(false);
 		expect(scope.reason).toBeTruthy();
 	});
 
@@ -179,7 +179,7 @@ describe('Plan Phase 1 — detectScope edge cases', () => {
 		const content = '# My Feature\n\nA small UI fix to the button label.';
 		const scope = detectScope(content);
 		expect(scope.type).toBe('tactical');
-		expect(scope.requiresOpenSpec).toBe(false);
+		expect(scope.requiresDesignDoc).toBe(false);
 	});
 
 	test('should include detected keywords in reason string for keyword-based strategic', () => {
@@ -192,19 +192,19 @@ describe('Plan Phase 1 — detectScope edge cases', () => {
 	test('should detect strategic from "migration" keyword', () => {
 		const scope = detectScope('We need a full database migration.');
 		expect(scope.type).toBe('strategic');
-		expect(scope.requiresOpenSpec).toBe(true);
+		expect(scope.requiresDesignDoc).toBe(true);
 	});
 
 	test('should detect strategic from "refactor" keyword', () => {
 		const scope = detectScope('A large-scale refactor of the auth module.');
 		expect(scope.type).toBe('strategic');
-		expect(scope.requiresOpenSpec).toBe(true);
+		expect(scope.requiresDesignDoc).toBe(true);
 	});
 
 	test('should detect strategic from "redesign" keyword', () => {
 		const scope = detectScope('Complete redesign of the payment flow.');
 		expect(scope.type).toBe('strategic');
-		expect(scope.requiresOpenSpec).toBe(true);
+		expect(scope.requiresDesignDoc).toBe(true);
 	});
 
 	test('should stop reading scope section at next ## heading', () => {
@@ -231,7 +231,7 @@ The architecture will remain unchanged.
 		const scope = detectScope(content);
 		// Explicit declaration wins
 		expect(scope.type).toBe('tactical');
-		expect(scope.requiresOpenSpec).toBe(false);
+		expect(scope.requiresDesignDoc).toBe(false);
 	});
 });
 

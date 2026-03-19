@@ -38,7 +38,7 @@ describe('formatRecommendations', () => {
             name: 'SonarCloud Analysis',
             type: 'skill',
             tier: 'free-public',
-            stage: 'check',
+            stage: 'validate',
             description: 'Code quality analysis',
             install: {
               method: 'skills',
@@ -78,7 +78,7 @@ describe('formatRecommendations', () => {
             name: 'Tool B',
             type: 'cli',
             tier: 'free',
-            stage: 'check',
+            stage: 'validate',
             install: { method: 'npm', cmd: 'bun add tool-b' },
             detectWhen: [],
           },
@@ -88,7 +88,7 @@ describe('formatRecommendations', () => {
 
       const output = formatRecommendations(recommendations);
       expect(output.includes('Research')).toBeTruthy();
-      expect(output.includes('Check')).toBeTruthy();
+      expect(output.includes('Validate')).toBeTruthy();
     });
 
     test('shows free alternatives for tools that have them', () => {

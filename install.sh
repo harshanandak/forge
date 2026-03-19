@@ -342,7 +342,7 @@ create_link() {
 # Universal SKILL.md content
 SKILL_CONTENT='---
 name: forge-workflow
-description: 9-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
+description: 7-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
 category: Development Workflow
 tags: [tdd, workflow, pr, git, testing]
 tools: [Bash, Read, Write, Edit, Grep, Glob]
@@ -360,24 +360,23 @@ Automatically invoke this skill when the user wants to:
 - Create a pull request
 - Run the development workflow
 
-## 9 Stages
+## 7 Stages
 
 | Stage | Command | Description |
 |-------|---------|-------------|
-| 1 | `/status` | Check current context, active work, recent completions |
-| 2 | `/research` | Deep research with web search, document to docs/research/ |
-| 3 | `/plan` | Create implementation plan, branch, OpenSpec if strategic |
-| 4 | `/dev` | TDD development (RED-GREEN-REFACTOR cycles) |
-| 5 | `/check` | Validation (type/lint/security/tests) |
-| 6 | `/ship` | Create PR with full documentation |
-| 7 | `/review` | Address ALL PR feedback |
-| 8 | `/merge` | Update docs, merge PR, cleanup |
-| 9 | `/verify` | Final documentation verification |
+| utility | `/status` | Check current context, active work, recent completions |
+| 1 | `/plan` | Design intent -> research -> branch + worktree + task list |
+| 2 | `/dev` | TDD development (implementer -> spec review -> quality review) |
+| 3 | `/validate` | Type check, lint, security, tests - all fresh output |
+| 4 | `/ship` | Push branch and create PR with full documentation |
+| 5 | `/review` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
+| 6 | `/premerge` | Update docs, hand off PR to user |
+| 7 | `/verify` | Post-merge health check (CI on main, close Beads) |
 
 ## Workflow Flow
 
 ```
-/status -> /research -> /plan -> /dev -> /check -> /ship -> /review -> /merge -> /verify
+/status -> /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
 ```
 
 ## Core Principles
@@ -398,10 +397,10 @@ if [ "$INSTALL_CLAUDE" = true ]; then
     mkdir -p .claude/commands .claude/rules .claude/skills/forge-workflow .claude/scripts
 
     # Download commands
-    for cmd in status research plan dev check ship review merge verify; do
+    for cmd in status plan dev validate ship review premerge verify research rollback sonarcloud; do
         curl -fsSL "$BASE_URL/.claude/commands/$cmd.md" -o ".claude/commands/$cmd.md" 2>/dev/null || true
     done
-    echo -e "  ${GREEN}Downloaded: 9 workflow commands${NC}"
+    echo -e "  ${GREEN}Downloaded: 11 workflow commands${NC}"
 
     # Download rules
     curl -fsSL "$BASE_URL/.claude/rules/workflow.md" -o ".claude/rules/workflow.md" 2>/dev/null || true
@@ -458,14 +457,13 @@ alwaysApply: true
 Use these commands via `/command-name`:
 
 1. `/status` - Check current context, active work, recent completions
-2. `/research` - Deep research with web search, document to docs/research/
-3. `/plan` - Create implementation plan, branch, tracking
-4. `/dev` - TDD development (RED-GREEN-REFACTOR cycles)
-5. `/check` - Validation (type/lint/security/tests)
-6. `/ship` - Create PR with full documentation
-7. `/review` - Address ALL PR feedback
-8. `/merge` - Update docs, merge PR, cleanup
-9. `/verify` - Final documentation verification
+2. `/plan` - Design intent -> research -> branch + worktree + task list
+3. `/dev` - TDD development (implementer -> spec review -> quality review)
+4. `/validate` - Type check, lint, security, tests - all fresh output
+5. `/ship` - Push branch and create PR with full documentation
+6. `/review` - Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud)
+7. `/premerge` - Update docs, hand off PR to user
+8. `/verify` - Post-merge health check (CI on main, close Beads)
 
 See AGENTS.md for full workflow details.
 MDC_EOF
@@ -495,7 +493,7 @@ if [ "$INSTALL_WINDSURF" = true ]; then
             filename=$(basename "$cmd")
             strip_frontmatter "$cmd" > ".windsurf/workflows/$filename" 2>/dev/null || cp "$cmd" ".windsurf/workflows/$filename"
         done
-        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+        echo -e "  ${GREEN}Converted: 11 workflow commands${NC}"
 
         # Copy rules
         cp .claude/rules/workflow.md .windsurf/rules/workflow.md 2>/dev/null || true
@@ -525,7 +523,7 @@ if [ "$INSTALL_KILOCODE" = true ]; then
             filename=$(basename "$cmd")
             strip_frontmatter "$cmd" > ".kilocode/workflows/$filename" 2>/dev/null || cp "$cmd" ".kilocode/workflows/$filename"
         done
-        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+        echo -e "  ${GREEN}Converted: 11 workflow commands${NC}"
 
         # Copy rules
         cp .claude/rules/workflow.md .kilocode/rules/workflow.md 2>/dev/null || true
@@ -552,7 +550,7 @@ if [ "$INSTALL_ANTIGRAVITY" = true ]; then
             filename=$(basename "$cmd")
             strip_frontmatter "$cmd" > ".agent/workflows/$filename" 2>/dev/null || cp "$cmd" ".agent/workflows/$filename"
         done
-        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+        echo -e "  ${GREEN}Converted: 11 workflow commands${NC}"
 
         # Copy rules
         cp .claude/rules/workflow.md .agent/rules/workflow.md 2>/dev/null || true
@@ -583,7 +581,7 @@ if [ "$INSTALL_COPILOT" = true ]; then
             filename="${basename_noext}.prompt.md"
             strip_frontmatter "$cmd" > ".github/prompts/$filename" 2>/dev/null || cp "$cmd" ".github/prompts/$filename"
         done
-        echo -e "  ${GREEN}Converted: 9 workflow prompts${NC}"
+        echo -e "  ${GREEN}Converted: 11 workflow prompts${NC}"
     fi
 
     # Link copilot-instructions.md -> AGENTS.md
@@ -615,7 +613,7 @@ if [ "$INSTALL_CONTINUE" = true ]; then
                 strip_frontmatter "$cmd" 2>/dev/null || cat "$cmd"
             } > ".continue/prompts/$filename"
         done
-        echo -e "  ${GREEN}Converted: 9 workflow prompts${NC}"
+        echo -e "  ${GREEN}Converted: 11 workflow prompts${NC}"
     fi
 
     # Create SKILL.md
@@ -660,7 +658,7 @@ if [ "$INSTALL_OPENCODE" = true ]; then
     # Copy commands as-is (same YAML format)
     if [ "$INSTALL_CLAUDE" = true ]; then
         cp .claude/commands/*.md .opencode/commands/ 2>/dev/null || true
-        echo -e "  ${GREEN}Copied: 9 workflow commands${NC}"
+        echo -e "  ${GREEN}Copied: 11 workflow commands${NC}"
     fi
 
     # Create SKILL.md
@@ -701,7 +699,7 @@ if [ "$INSTALL_ROO" = true ]; then
             filename=$(basename "$cmd")
             strip_frontmatter "$cmd" > ".roo/commands/$filename" 2>/dev/null || cp "$cmd" ".roo/commands/$filename"
         done
-        echo -e "  ${GREEN}Converted: 9 workflow commands${NC}"
+        echo -e "  ${GREEN}Converted: 11 workflow commands${NC}"
     fi
 
     # Link .roorules -> AGENTS.md
@@ -1043,20 +1041,18 @@ echo -e "  GET STARTED"
 echo -e "==============================================${NC}"
 echo ""
 echo "  /status    - Check current context"
-echo "  /research  - Start researching a feature"
-echo "  /plan      - Create implementation plan"
-echo "  /dev       - Start TDD development"
-echo "  /check     - Run validation"
+echo "  /plan      - Design intent, research, branch + task list"
+echo "  /dev       - TDD development"
+echo "  /validate  - Type check, lint, tests, security"
 echo "  /ship      - Create pull request"
 echo "  /review    - Address PR feedback"
-echo "  /merge     - Merge and cleanup"
-echo "  /verify    - Final documentation check"
+echo "  /premerge  - Update docs, hand off PR"
+echo "  /verify    - Post-merge health check"
 echo ""
 echo "  Full guide: docs/WORKFLOW.md"
 echo ""
 echo "Optional tools:"
 echo "  - Beads: $PKG_MANAGER install -g @beads/bd && bd init"
-echo "  - OpenSpec: $PKG_MANAGER install -g @fission-ai/openspec"
 echo ""
 echo -e "${CYAN}Package manager detected: $PKG_MANAGER${NC}"
 echo ""

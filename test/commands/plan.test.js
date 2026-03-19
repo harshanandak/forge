@@ -9,7 +9,7 @@ const {
 	executePlan,
 } = require('../../lib/commands/plan.js');
 
-describe('Plan Command - OpenSpec & Beads Integration', () => {
+describe('Plan Command - Beads Integration', () => {
 	describe('Research document analysis', () => {
 		test.skip('should read research document from path', () => {
 			const featureSlug = 'test-feature';
@@ -41,7 +41,7 @@ describe('Plan Command - OpenSpec & Beads Integration', () => {
 
 			const scope = detectScope(researchContent);
 			expect(scope.type).toBe('tactical');
-			expect(scope.requiresOpenSpec).toBe(false);
+			expect(scope.requiresDesignDoc).toBe(false);
 		});
 
 		test('should detect strategic scope (architecture change)', () => {
@@ -56,7 +56,7 @@ describe('Plan Command - OpenSpec & Beads Integration', () => {
 
 			const scope = detectScope(researchContent);
 			expect(scope.type).toBe('strategic');
-			expect(scope.requiresOpenSpec).toBe(true);
+			expect(scope.requiresDesignDoc).toBe(true);
 		});
 
 		test('should detect strategic scope based on keywords', () => {
@@ -84,16 +84,16 @@ Major architectural impact.
 			expect(result.success).toBe(true);
 		});
 
-		test.skip('should create Beads issue with OpenSpec link for strategic', () => {
+		test.skip('should create Beads issue with design doc link for strategic (requires Beads CLI — PR #64)', () => {
 			const featureName = 'payment-integration';
 			const researchPath = 'docs/research/payment-integration.md';
 
 			const result = createBeadsIssue(featureName, researchPath, 'strategic');
 			expect(result.issueId).toBeTruthy();
-			expect(result.description.includes('openspec/changes')).toBeTruthy();
+			expect(result.description.includes('docs/plans')).toBeTruthy();
 		});
 
-		test.skip('should handle Beads command failures', () => {
+		test.skip('should handle Beads command failures (requires Beads CLI — PR #64)', () => {
 			const featureName = 'test-feature';
 
 			// Mock bd command to fail
@@ -122,7 +122,7 @@ Major architectural impact.
 		});
 	});
 
-	describe('OpenSpec proposal creation', () => {
+	describe('Design document creation', () => {
 		test('should extract decisions from research for design.md', () => {
 			const researchContent = `
 ## Key Decisions
@@ -149,7 +149,7 @@ Major architectural impact.
 	});
 
 	describe('Command execution', () => {
-		test.skip('should execute tactical workflow (no OpenSpec)', async () => {
+		test.skip('should execute tactical workflow (no design doc) (requires Beads CLI — PR #64)', async () => {
 			const featureName = 'fix-validation';
 
 			const result = await executePlan(featureName);
@@ -157,10 +157,9 @@ Major architectural impact.
 			expect(result.scope).toBe('tactical');
 			expect(result.beadsIssueId).toBeTruthy();
 			expect(result.branchName).toBeTruthy();
-			expect(result.openSpecCreated).toBe(false);
 		});
 
-		test.skip('should execute strategic workflow (with OpenSpec)', async () => {
+		test.skip('should execute strategic workflow (with design doc) (requires Beads CLI — PR #64)', async () => {
 			const featureName = 'payment-integration';
 
 			const result = await executePlan(featureName);
@@ -168,8 +167,6 @@ Major architectural impact.
 			expect(result.scope).toBe('strategic');
 			expect(result.beadsIssueId).toBeTruthy();
 			expect(result.branchName).toBeTruthy();
-			expect(result.openSpecCreated).toBe(true);
-			expect(result.proposalPR).toBeTruthy();
 		});
 
 		test.skip('should return actionable output', async () => {
