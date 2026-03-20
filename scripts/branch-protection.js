@@ -17,6 +17,9 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 
+// Common options for execFileSync — shell:true lets Windows resolve .cmd/.bat
+const EXEC_OPTS = { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], shell: true };
+
 // Protected branches
 const PROTECTED_BRANCHES = ['main', 'master'];
 
@@ -32,10 +35,7 @@ function getCurrentBranch() {
     }
 
     // Fallback to git command
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], EXEC_OPTS).trim();
 
     return branch;
   } catch (error) {
@@ -81,17 +81,12 @@ function main() {
       // Resolve upstream ref safely (handles non-'origin' remotes)
       let upstream;
       try {
-        upstream = execFileSync('git', ['rev-parse', '--abbrev-ref', '@{u}'], {
-          encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-        }).trim();
+        upstream = execFileSync('git', ['rev-parse', '--abbrev-ref', '@{u}'], EXEC_OPTS).trim();
       } catch (_e) {
         upstream = `origin/${currentBranch}`;
       }
 
-      const output = execFileSync('git', ['diff', '--name-only', `${upstream}..HEAD`], {
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      }).trim();
+      const output = execFileSync('git', ['diff', '--name-only', `${upstream}..HEAD`], EXEC_OPTS).trim();
       const changedFiles = output.split('\n').filter(Boolean);
 
       if (changedFiles.length > 0 && changedFiles.every(f => f.startsWith('.beads/'))) {
