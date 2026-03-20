@@ -459,10 +459,10 @@ See AGENTS.md for full workflow details.
 `;
 
 // Helper functions
-const resolvedProjectRoot = path.resolve(projectRoot);
 
 function ensureDir(dir) {
   const fullPath = path.resolve(projectRoot, dir);
+  const resolvedProjectRoot = path.resolve(projectRoot);
 
   // SECURITY: Prevent path traversal
   if (!fullPath.startsWith(resolvedProjectRoot)) {
@@ -479,6 +479,7 @@ function ensureDir(dir) {
 function writeFile(filePath, content) {
   try {
     const fullPath = path.resolve(projectRoot, filePath);
+    const resolvedProjectRoot = path.resolve(projectRoot);
 
     // SECURITY: Prevent path traversal
     if (!fullPath.startsWith(resolvedProjectRoot)) {
@@ -512,6 +513,7 @@ function readFile(filePath) {
 function copyFile(src, dest) {
   try {
     const destPath = path.resolve(projectRoot, dest);
+    const resolvedProjectRoot = path.resolve(projectRoot);
 
     // SECURITY: Prevent path traversal
     if (!destPath.startsWith(resolvedProjectRoot)) {
@@ -3792,8 +3794,9 @@ async function main() {
   }
 
   // First-run detection: check if Forge is configured in this project
-  // Skip for: setup (needs to run to configure), recommend (read-only), help, version
-  if (command !== 'setup' && command !== 'recommend' && !flags.help && !flags.version) {
+  // Skip for: setup (needs to run to configure), recommend (read-only)
+  // Note: help and version already returned above, so no need to check here
+  if (command !== 'setup' && command !== 'recommend') {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
     if (!fs.existsSync(agentsMdPath)) {
       console.error('[FORGE_SETUP_REQUIRED] Forge is not configured in this project.\n');
@@ -3807,6 +3810,15 @@ async function main() {
     // Determine agents to install
     let selectedAgents = determineSelectedAgents(flags);
 
+    // Non-interactive mode: --yes defaults to claude agent, skips prompts
+    // Applied before --quick so --quick --yes works correctly
+    if (flags.yes && selectedAgents.length === 0) {
+      selectedAgents = ['claude'];
+    }
+    if (flags.yes) {
+      flags.skipExternal = true;
+    }
+
     // Quick mode
     if (flags.quick) {
       // If no agents specified in quick mode, use all
@@ -3815,14 +3827,6 @@ async function main() {
       }
       await quickSetup(selectedAgents, flags.skipExternal);
       return;
-    }
-
-    // Non-interactive mode: --yes defaults to claude agent, skips prompts
-    if (flags.yes && selectedAgents.length === 0) {
-      selectedAgents = ['claude'];
-    }
-    if (flags.yes) {
-      flags.skipExternal = true;
     }
 
     // Agents specified via flag or --yes default (non-quick mode)
