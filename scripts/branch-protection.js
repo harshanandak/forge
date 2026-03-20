@@ -10,7 +10,7 @@
  *   1 - Push blocked (protected branch)
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 // ANSI color codes
 const RED = '\x1b[31m';
@@ -32,7 +32,7 @@ function getCurrentBranch() {
     }
 
     // Fallback to git command
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe']
     }).trim();
@@ -78,17 +78,28 @@ function main() {
   if (isProtectedBranch(currentBranch)) {
     // Allow beads-only commits (issue tracking metadata) to push directly
     try {
-      const changedFiles = execSync(`git diff --name-only origin/${currentBranch}..HEAD`, {
+      // Resolve upstream ref safely (handles non-'origin' remotes)
+      let upstream;
+      try {
+        upstream = execFileSync('git', ['rev-parse', '--abbrev-ref', '@{u}'], {
+          encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+        }).trim();
+      } catch (_e) {
+        upstream = `origin/${currentBranch}`;
+      }
+
+      const output = execFileSync('git', ['diff', '--name-only', `${upstream}..HEAD`], {
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe']
-      }).trim().split('\n').filter(Boolean);
+      }).trim();
+      const changedFiles = output.split('\n').filter(Boolean);
 
       if (changedFiles.length > 0 && changedFiles.every(f => f.startsWith('.beads/'))) {
         console.log(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
         process.exit(0);
       }
     } catch (_e) {
-      // If origin doesn't exist or diff fails, fall through to block
+      console.error(`${YELLOW}Note: could not detect beads-only push (upstream ref missing?) — blocking by default${RESET}`);
     }
 
     console.error('');

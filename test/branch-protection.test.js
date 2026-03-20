@@ -114,6 +114,47 @@ describe('scripts/branch-protection.js', () => {
     });
   });
 
+  describe('Beads-only bypass logic', () => {
+    test('should use execFileSync (not execSync) to prevent command injection', () => {
+      const content = fs.readFileSync(scriptPath, 'utf-8');
+      expect(content.includes('execFileSync')).toBeTruthy();
+      expect(content.includes("execSync(`git")).toBeFalsy();
+    });
+
+    test('should allow beads-only pushes on protected branches', () => {
+      const content = fs.readFileSync(scriptPath, 'utf-8');
+      expect(content.includes('.beads/')).toBeTruthy();
+      expect(content.includes("startsWith('.beads/')")).toBeTruthy();
+    });
+
+    test('should try upstream ref before falling back to origin', () => {
+      const content = fs.readFileSync(scriptPath, 'utf-8');
+      expect(content.includes('@{u}')).toBeTruthy();
+    });
+
+    test('should warn when beads-only detection fails', () => {
+      const content = fs.readFileSync(scriptPath, 'utf-8');
+      expect(content.includes('could not detect beads-only')).toBeTruthy();
+    });
+
+    test('should block mixed beads + code changes', () => {
+      const content = fs.readFileSync(scriptPath, 'utf-8');
+      expect(content.includes('.every(')).toBeTruthy();
+    });
+
+    test('should allow push on feature branch (non-protected)', () => {
+      const result = spawnSync('node', [scriptPath], {
+        cwd: path.join(__dirname, '..'),
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          LEFTHOOK_GIT_BRANCH: 'feat/some-feature'
+        }
+      });
+      expect(result.status).toBe(0);
+    });
+  });
+
   describe('Integration with lefthook.yml', () => {
     test('lefthook.yml should use node to execute script', () => {
       const lefthookPath = path.join(__dirname, '..', 'lefthook.yml');
