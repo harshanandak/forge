@@ -173,7 +173,6 @@ export async function handleOpened(event, options = {}) {
  *
  * @param {object} event - Parsed GitHub webhook payload
  * @param {object} options
- * @param {string} [options.configPath] - Path to config JSON
  * @param {string} options.mappingPath - Path to mapping JSON
  * @param {string} options.owner - Repository owner
  * @param {string} options.repo - Repository name
@@ -184,7 +183,6 @@ export async function handleOpened(event, options = {}) {
  */
 export async function handleClosed(event, options = {}) {
   const {
-    configPath,
     mappingPath,
     owner,
     repo,
