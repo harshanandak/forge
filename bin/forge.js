@@ -2500,11 +2500,13 @@ function parseFlags() {
     agents: null,
     all: false,
     help: false,
+    version: false,
     path: null,
     merge: null,     // 'smart'|'preserve'|'replace'
     type: null,      // 'critical'|'standard'|'simple'|'hotfix'|'docs'|'refactor'
     interview: false, // Force context interview
     budget: null,     // Budget mode for recommend command
+    yes: false,       // Non-interactive mode (skip prompts, use defaults)
   };
 
   for (let i = 0; i < args.length;) {
@@ -2522,6 +2524,9 @@ function parseFlags() {
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true;
       i++;
+    } else if (arg === '--version' || arg === '-V') {
+      flags.version = true;
+      i++;
     } else if (arg === '--path' || arg === '-p' || arg.startsWith('--path=')) {
       const result = parsePathFlag(args, i);
       flags.path = result.value;
@@ -2538,6 +2543,9 @@ function parseFlags() {
       const result = parseTypeFlag(args, i);
       flags.type = result.value;
       i = result.nextIndex;
+    } else if (arg === '--yes' || arg === '-y') {
+      flags.yes = true;
+      i++;
     } else if (arg === '--interview') {
       flags.interview = true;
       i++;
@@ -3766,7 +3774,15 @@ async function main() {
       return;
     }
 
-    // Agents specified via flag (non-quick mode)
+    // Non-interactive mode: --yes defaults to claude agent, skips prompts
+    if (flags.yes && selectedAgents.length === 0) {
+      selectedAgents = ['claude'];
+    }
+    if (flags.yes) {
+      flags.skipExternal = true;
+    }
+
+    // Agents specified via flag or --yes default (non-quick mode)
     if (selectedAgents.length > 0) {
       await handleSetupCommand(selectedAgents, flags);
       return;
