@@ -2351,13 +2351,14 @@ function displaySetupSummary(selectedAgents) {
   console.log('  - docs/research/TEMPLATE.md (research template)');
   console.log('  - docs/planning/PROGRESS.md (progress tracking)');
 
+  const workflowCount = getWorkflowCommands().length;
   selectedAgents.forEach(key => {
     const agent = AGENTS[key];
     if (agent.linkFile) {
       console.log(`  - ${agent.linkFile} (${agent.name})`);
     }
     if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (${getWorkflowCommands().length} workflow commands)`);
+      console.log(`  - .claude/commands/ (${workflowCount} workflow commands)`);
     }
     if (agent.hasSkill) {
       const skillDir = agent.dirs.find(d => d.includes('/skills/'));

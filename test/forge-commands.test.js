@@ -46,17 +46,25 @@ describe('getWorkflowCommands', () => {
   });
 
   test('returns empty array and warns when directory does not exist', () => {
-    // Test the function's behavior by reading its source — verify it handles missing dir
-    const forgeSource = fs.readFileSync(
-      path.resolve(__dirname, '..', 'bin', 'forge.js'),
-      'utf8'
-    );
-    // Verify the function has a try/catch or existence check for missing directory
-    expect(forgeSource).toContain('readdirSync');
-    // Verify it warns on missing directory (not silent)
-    expect(forgeSource).toContain('console.warn');
-    // Verify it returns empty array as fallback
-    expect(forgeSource).toMatch(/return\s*\[\]/);
+    // Mock readdirSync to throw only for .claude/commands path
+    const origReaddir = fs.readdirSync;
+    const warns = [];
+    const origWarn = console.warn;
+    fs.readdirSync = (dirPath, ...rest) => {
+      if (String(dirPath).includes('.claude') && String(dirPath).includes('commands')) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      return origReaddir(dirPath, ...rest);
+    };
+    console.warn = (...args) => warns.push(args.join(' '));
+    try {
+      const result = getWorkflowCommands();
+      expect(result).toEqual([]);
+      expect(warns.length).toBeGreaterThan(0);
+    } finally {
+      fs.readdirSync = origReaddir;
+      console.warn = origWarn;
+    }
   });
 });
 

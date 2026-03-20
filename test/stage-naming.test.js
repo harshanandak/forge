@@ -19,13 +19,11 @@ describe('Stage naming consistency', () => {
     });
 
     test('does not contain /check as a stage name', () => {
-      const staleCheckRefs = cursorRule.match(/`\/check`/g);
-      expect(staleCheckRefs).toBeNull();
+      expect(cursorRule).not.toContain('/check');
     });
 
     test('does not contain /merge as a stage name', () => {
-      const staleMergeRefs = cursorRule.match(/`\/merge`/g);
-      expect(staleMergeRefs).toBeNull();
+      expect(cursorRule).not.toContain('/merge');
     });
 
     test('contains /validate as stage name', () => {
