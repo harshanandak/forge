@@ -20,7 +20,9 @@ const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 
 /** Test-only: run mock-git.js via `node` so Windows does not need shell:true or git.exe shims */
-const GIT_MOCK_JS = process.env.FORGE_GIT_MOCK_JS;
+const GIT_MOCK_JS = (process.env.NODE_ENV === 'test' || process.env.FORGE_TEST_MODE === '1')
+  ? process.env.FORGE_GIT_MOCK_JS
+  : undefined;
 
 const EXEC_OPTS = { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] };
 

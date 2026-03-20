@@ -54,7 +54,8 @@ function runWithMockGit(scriptPath, mockDir, branch) {
     env: {
       ...process.env,
       LEFTHOOK_GIT_BRANCH: branch,
-      FORGE_GIT_MOCK_JS: mockJs
+      FORGE_GIT_MOCK_JS: mockJs,
+      NODE_ENV: 'test'
     }
   });
 }
