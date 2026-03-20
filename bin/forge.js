@@ -2684,7 +2684,7 @@ function showHelp() {
   console.log('Usage:');
   console.log('  npx forge setup [options]     Interactive agent configuration');
   console.log('  npx forge recommend           Show recommended tools for your project');
-  console.log('  npx forge                     Minimal install (AGENTS.md + docs)');
+  console.log('  npx forge --version              Show version');
   console.log('');
   console.log('Options:');
   console.log('  --path, -p <dir>     Target project directory (default: current directory)');
@@ -2703,6 +2703,9 @@ function showHelp() {
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
   console.log('  --interview          Force context interview (gather project information)');
   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
+  console.log('  --yes, -y            Non-interactive setup with sensible defaults');
+  console.log('                       Defaults to claude agent, skips prompts');
+  console.log('  --version, -V        Show version');
   console.log('  --help, -h           Show this help message');
   console.log('');
   console.log('Available agents:');
@@ -2720,6 +2723,8 @@ function showHelp() {
   console.log('  npx forge setup --agents=claude,cursor   # Same, different syntax');
   console.log('  npx forge setup --skip-external          # No service configuration');
   console.log('  npx forge setup --agents claude --quick  # Quick + specific agent');
+  console.log('  npx forge setup --yes                    # Non-interactive, defaults to claude');
+  console.log('  npx forge setup --yes --agents cursor   # Non-interactive, specific agent');
   console.log('  npx forge setup --all --skip-external    # All agents, no services');
   console.log('  npx forge setup --merge=smart            # Use intelligent merge for existing files');
   console.log('  npx forge setup --type=critical          # Set workflow profile manually');
@@ -3770,6 +3775,12 @@ async function main() {
     return;
   }
 
+  // Show version
+  if (flags.version) {
+    console.log(`Forge v${VERSION}`);
+    return;
+  }
+
   // Handle --path option: change to target directory
   if (flags.path) {
     // Update projectRoot after changing directory to maintain state consistency
@@ -3777,8 +3788,8 @@ async function main() {
   }
 
   // First-run detection: check if Forge is configured in this project
-  // Skip for: setup (needs to run to configure), help, version
-  if (command !== 'setup' && !flags.help && !flags.version) {
+  // Skip for: setup (needs to run to configure), recommend (read-only), help, version
+  if (command !== 'setup' && command !== 'recommend' && !flags.help && !flags.version) {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
     if (!fs.existsSync(agentsMdPath)) {
       console.error('[FORGE_SETUP_REQUIRED] Forge is not configured in this project.\n');
