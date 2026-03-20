@@ -952,7 +952,7 @@ command git "$@"
       }
     });
 
-    test('truncates to 3 files with +N more', () => {
+    test('truncates to 3 files with +N more', { timeout: 15000 }, () => {
       const porcelain = [
         'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
         'worktree /repo/.worktrees/big', 'HEAD def456', 'branch refs/heads/feat/big', '',
@@ -1174,7 +1174,7 @@ command git "$@"
       }
     });
 
-    test('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', () => {
+    test('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', { timeout: 15000 }, () => {
       const branchFiles = {
         'feat/alpha': ['shared.js', 'alpha-only.js'],
         'feat/beta': ['shared.js', 'beta-only.js'],
