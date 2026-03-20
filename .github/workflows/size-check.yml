@@ -8,6 +8,14 @@ on:
       - 'bin/**'
       - 'lib/**'
       - 'packages/**'
+      - 'skills/**'
+      - 'docs/*.md'
+      - '.claude/**'
+      - '.forge/hooks/**'
+      - '.github/prompts/**'
+      - 'install.sh'
+      - 'AGENTS.md'
+      - 'lefthook.yml'
   pull_request:
     branches: [main, master]
     paths:
@@ -15,6 +23,14 @@ on:
       - 'bin/**'
       - 'lib/**'
       - 'packages/**'
+      - 'skills/**'
+      - 'docs/*.md'
+      - '.claude/**'
+      - '.forge/hooks/**'
+      - '.github/prompts/**'
+      - 'install.sh'
+      - 'AGENTS.md'
+      - 'lefthook.yml'
 
 jobs:
   size-check:
