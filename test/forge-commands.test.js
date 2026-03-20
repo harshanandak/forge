@@ -75,3 +75,30 @@ describe('getWorkflowCommands', () => {
     }
   });
 });
+
+describe('hardcoded command count and copyFile warning', () => {
+  const forgeSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'bin', 'forge.js'),
+    'utf8'
+  );
+
+  test('no hardcoded "9 workflow commands" string in bin/forge.js', () => {
+    const matches = forgeSource.match(/9 workflow commands/g);
+    expect(matches).toBeNull();
+  });
+
+  test('copyFile missing-source warning is not gated behind DEBUG', () => {
+    // The pattern "else if (process.env.DEBUG) { ... Source file not found"
+    // should NOT exist — warning should always fire
+    const hasDebugGate = /else if \(process\.env\.DEBUG\)\s*\{[^}]*Source file not found/.test(forgeSource);
+    expect(hasDebugGate).toBe(false);
+  });
+});
+
+describe('CLAUDE.md content', () => {
+  test('does not contain placeholder project description', () => {
+    const claudeMdPath = path.resolve(__dirname, '..', 'CLAUDE.md');
+    const content = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(content).not.toContain('[describe what this project does');
+  });
+});
