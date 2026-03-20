@@ -134,5 +134,15 @@ function validateConfig(cfg) {
   if (!Array.isArray(cfg.gateAssociations)) {
     cfg.gateAssociations = defaults.gateAssociations;
   }
+  const VALID_GATE_VALUES = ['none', 'author_association', 'label'];
+  if (!VALID_GATE_VALUES.includes(cfg.publicRepoGate)) {
+    cfg.publicRepoGate = defaults.publicRepoGate;
+  }
+  if (typeof cfg.defaultType !== 'string' || !cfg.defaultType) {
+    cfg.defaultType = defaults.defaultType;
+  }
+  if (typeof cfg.gateLabelName !== 'string' || !cfg.gateLabelName) {
+    cfg.gateLabelName = defaults.gateLabelName;
+  }
   return cfg;
 }

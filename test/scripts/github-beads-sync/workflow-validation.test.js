@@ -79,6 +79,10 @@ describe('GitHub → Beads Workflow Validation', () => {
       expect(workflowContent).toContain('oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5');
     });
 
+    it('should use SHA-pinned actions/checkout action', () => {
+      expect(workflowContent).toContain('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683');
+    });
+
     it('should install Beads CLI globally', () => {
       expect(workflowContent).toContain('bun add -g @beads/bd@');
     });

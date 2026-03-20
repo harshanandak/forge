@@ -129,7 +129,7 @@ export function handleOpened(event, options = {}) {
     const existingComment = findSyncComment(owner, repo, issueNumber);
     if (!existingComment) {
       const externalRef = `gh-${issueNumber}`;
-      const commentBody = buildComment(existingBeadsId, issueNumber, { externalRef, repaired: true });
+      const commentBody = buildComment(existingBeadsId, issueNumber, { externalRef });
       createOrEditComment(owner, repo, issueNumber, commentBody);
     }
     return {
