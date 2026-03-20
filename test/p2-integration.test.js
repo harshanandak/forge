@@ -8,6 +8,7 @@
  * - forge-cpnj: Wire executeSetup with loadAndSetupClaudeCommands
  */
 
+const { describe, test, expect, beforeAll } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
