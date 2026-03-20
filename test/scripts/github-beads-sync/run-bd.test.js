@@ -77,7 +77,7 @@ describe('buildCloseArgs', () => {
 describe('buildShowArgs', () => {
   test('builds show args', () => {
     const result = buildShowArgs('forge-abc');
-    expect(result).toEqual(['show', 'forge-abc']);
+    expect(result).toEqual(['show', 'forge-abc', '--json']);
   });
 });
 
@@ -115,26 +115,36 @@ describe('parseCreateOutput', () => {
 // --- parseShowOutput ---
 
 describe('parseShowOutput', () => {
-  test('extracts OPEN status', () => {
-    const stdout = 'forge-abc [OPEN]\n  Title: Fix bug';
+  test('extracts open status from JSON array', () => {
+    const stdout = JSON.stringify([{ id: 'forge-abc', status: 'open', title: 'Fix bug' }]);
     expect(parseShowOutput(stdout)).toBe('open');
   });
 
-  test('extracts CLOSED status', () => {
-    const stdout = 'forge-abc [CLOSED]\n  Title: Fix bug';
+  test('extracts closed status from JSON array', () => {
+    const stdout = JSON.stringify([{ id: 'forge-abc', status: 'closed', title: 'Fix bug' }]);
     expect(parseShowOutput(stdout)).toBe('closed');
   });
 
-  test('extracts IN_PROGRESS status', () => {
-    const stdout = 'forge-abc [IN_PROGRESS]\n  Title: Fix bug';
+  test('extracts in_progress status from JSON array', () => {
+    const stdout = JSON.stringify([{ id: 'forge-abc', status: 'in_progress', title: 'Fix bug' }]);
     expect(parseShowOutput(stdout)).toBe('in_progress');
   });
 
-  test('returns null for unrecognized output', () => {
-    expect(parseShowOutput('no status here')).toBeNull();
+  test('handles single object (non-array) JSON', () => {
+    const stdout = JSON.stringify({ id: 'forge-abc', status: 'open' });
+    expect(parseShowOutput(stdout)).toBe('open');
+  });
+
+  test('returns null for invalid JSON', () => {
+    expect(parseShowOutput('not json')).toBeNull();
   });
 
   test('returns null for empty string', () => {
     expect(parseShowOutput('')).toBeNull();
+  });
+
+  test('returns null for JSON without status field', () => {
+    const stdout = JSON.stringify([{ id: 'forge-abc', title: 'No status' }]);
+    expect(parseShowOutput(stdout)).toBeNull();
   });
 });

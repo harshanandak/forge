@@ -267,11 +267,24 @@ if (process.argv[1] === __filename) {
     repo,
   };
 
+  // Validate action explicitly — only allow known actions
+  const VALID_ACTIONS = ['opened', 'closed'];
+  if (!VALID_ACTIONS.includes(action)) {
+    console.error(`Unknown action: "${action}". Expected one of: ${VALID_ACTIONS.join(', ')}`);
+    process.exit(1);
+  }
+
   const handler = action === 'opened' ? handleOpened : handleClosed;
 
   handler(event, options)
     .then((result) => {
       console.log(JSON.stringify(result, null, 2));
+
+      // Exit non-zero on logical failure (e.g., bdCreate returned null)
+      if (result.success === false) {
+        console.error(`Sync failed: ${result.reason || 'unknown'}`);
+        process.exit(1);
+      }
 
       // Write to GITHUB_OUTPUT if available
       const outputPath = process.env.GITHUB_OUTPUT;

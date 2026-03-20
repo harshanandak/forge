@@ -56,7 +56,7 @@ export function buildCloseArgs(beadsId, reason) {
  * @returns {string[]}
  */
 export function buildShowArgs(beadsId) {
-  return ['show', beadsId];
+  return ['show', beadsId, '--json'];
 }
 
 /**
@@ -84,14 +84,19 @@ export function parseCreateOutput(stdout) {
 }
 
 /**
- * Extract status from `bd show` stdout.
- * Looks for bracketed status like [OPEN], [CLOSED], [IN_PROGRESS].
- * @param {string} stdout
+ * Extract status from `bd show --json` stdout.
+ * Parses JSON output for reliable status extraction.
+ * @param {string} stdout - JSON output from `bd show --json`
  * @returns {string|null} Lowercase status or null
  */
 export function parseShowOutput(stdout) {
-  const match = stdout.match(/\[([A-Z_]+)\]/);
-  return match ? match[1].toLowerCase() : null;
+  try {
+    const data = JSON.parse(stdout);
+    const issue = Array.isArray(data) ? data[0] : data;
+    return issue?.status ? issue.status.toLowerCase() : null;
+  } catch (_err) {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
