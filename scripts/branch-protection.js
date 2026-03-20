@@ -76,6 +76,21 @@ function main() {
   const currentBranch = getCurrentBranch();
 
   if (isProtectedBranch(currentBranch)) {
+    // Allow beads-only commits (issue tracking metadata) to push directly
+    try {
+      const changedFiles = execSync(`git diff --name-only origin/${currentBranch}..HEAD`, {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).trim().split('\n').filter(Boolean);
+
+      if (changedFiles.length > 0 && changedFiles.every(f => f.startsWith('.beads/'))) {
+        console.log(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
+        process.exit(0);
+      }
+    } catch (_e) {
+      // If origin doesn't exist or diff fails, fall through to block
+    }
+
     console.error('');
     console.error(`${RED}╔═══════════════════════════════════════════════════════════════╗${RESET}`);
     console.error(`${RED}║                 ⚠  PUSH BLOCKED                              ║${RESET}`);

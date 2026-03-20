@@ -72,13 +72,13 @@ This project uses the **Professional Git Workflow** with Lefthook for automated 
 - **All review comments must be resolved** before merge
 - Squash-only merging: Clean, linear git history
 
-**Emergency bypass**:
+**Emergency bypass** (human-only, NEVER for AI agents):
 ```bash
 LEFTHOOK=0 git push              # Skip all pre-push hooks
 git commit --no-verify           # Skip pre-commit hooks
 ```
 
-**⚠️ Only use bypasses for emergencies.** Document reason in PR description.
+**⚠️ AI agents must NEVER use `LEFTHOOK=0`, `--no-verify`, or any hook bypass.** If a hook fails, fix the underlying issue. Only humans may bypass hooks in emergencies, documented in the PR description.
 
 See [.github/pull_request_template.md](.github/pull_request_template.md) for PR guidelines.
 
@@ -93,7 +93,7 @@ As you work, when you give the same instruction twice, add it here:
 - **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
 - **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
-- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state; `LEFTHOOK=0 git push` is the bypass when manual `bun test` confirms 0 fail.
+- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
 - **Command sync**: After editing `.claude/commands/*.md`, run `node scripts/sync-commands.js` to update all 7 agent directories. Use `--check` in CI to detect drift. Use `--dry-run` to preview.
 
 <!-- USER:END -->
