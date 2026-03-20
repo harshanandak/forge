@@ -11,6 +11,7 @@ const SHELL_META_RE = /[;|&$`()<>\r\n]/g;
 const INTERPOLATION_RE = /\$\{\{[^}]*\}\}/g;
 
 /** Control characters (C0 range, excluding normal whitespace) */
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 /** Label: only allow alphanumeric, dot, underscore, hyphen */
@@ -44,6 +45,7 @@ function sanitizeText(input, maxLen, fieldName) {
   text = text.replace(SHELL_META_RE, '');
 
   // Strip control characters
+  // eslint-disable-next-line no-control-regex
   const controlCharsReLocal = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
   if (controlCharsReLocal.test(text)) {
     warnings.push(`${fieldName}: stripped control characters`);

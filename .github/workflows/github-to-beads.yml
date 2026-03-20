@@ -20,7 +20,7 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           # Need full history for push
           fetch-depth: 0
@@ -28,7 +28,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2
 
       - name: Install Beads CLI
         run: bun add -g @beads/bd@^0.49

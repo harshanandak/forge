@@ -107,5 +107,32 @@ export function loadConfig(configPath) {
     );
   }
 
-  return deepMerge(cloneDefaults(), userConfig);
+  const merged = deepMerge(cloneDefaults(), userConfig);
+  return validateConfig(merged);
+}
+
+/**
+ * Validate and normalize config values.
+ * Replaces invalid types with defaults rather than throwing.
+ * @param {object} cfg
+ * @returns {object} Validated config
+ */
+function validateConfig(cfg) {
+  const defaults = cloneDefaults();
+  if (!cfg.labelToType || typeof cfg.labelToType !== 'object' || Array.isArray(cfg.labelToType)) {
+    cfg.labelToType = defaults.labelToType;
+  }
+  if (!cfg.labelToPriority || typeof cfg.labelToPriority !== 'object' || Array.isArray(cfg.labelToPriority)) {
+    cfg.labelToPriority = defaults.labelToPriority;
+  }
+  if (typeof cfg.defaultPriority !== 'number') {
+    cfg.defaultPriority = defaults.defaultPriority;
+  }
+  if (typeof cfg.mapAssignee !== 'boolean') {
+    cfg.mapAssignee = defaults.mapAssignee;
+  }
+  if (!Array.isArray(cfg.gateAssociations)) {
+    cfg.gateAssociations = defaults.gateAssociations;
+  }
+  return cfg;
 }

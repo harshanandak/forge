@@ -54,9 +54,9 @@ function hasSkipLabel(labels) {
  * @param {object} [options.github] - Dependency injection for github-api functions
  * @param {object} [options.mapping] - Dependency injection for mapping functions
  * @param {object} [options.configOverride] - Merge into loaded config (for testing)
- * @returns {Promise<object>} Result object
+ * @returns {object} Result object
  */
-export async function handleOpened(event, options = {}) {
+export function handleOpened(event, options = {}) {
   const {
     configPath,
     mappingPath,
@@ -198,9 +198,9 @@ export async function handleOpened(event, options = {}) {
  * @param {object} [options.bd] - Dependency injection for bd functions
  * @param {object} [options.github] - Dependency injection for github-api functions
  * @param {object} [options.mapping] - Dependency injection for mapping functions
- * @returns {Promise<object>} Result object
+ * @returns {object} Result object
  */
-export async function handleClosed(event, options = {}) {
+export function handleClosed(event, options = {}) {
   const {
     mappingPath,
     owner,
@@ -298,7 +298,7 @@ if (process.argv[1] === __filename) {
 
   const handler = action === 'opened' ? handleOpened : handleClosed;
 
-  handler(event, options)
+  Promise.resolve(handler(event, options))
     .then((result) => {
       console.log(JSON.stringify(result, null, 2));
 

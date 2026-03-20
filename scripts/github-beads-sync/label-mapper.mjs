@@ -11,11 +11,11 @@
  */
 export function mapLabels(labels, config) {
   const {
-    labelToType = {},
-    labelToPriority = {},
     defaultType = 'task',
     defaultPriority = 2,
   } = config;
+  const labelToType = (config.labelToType && typeof config.labelToType === 'object' && !Array.isArray(config.labelToType)) ? config.labelToType : {};
+  const labelToPriority = (config.labelToPriority && typeof config.labelToPriority === 'object' && !Array.isArray(config.labelToPriority)) ? config.labelToPriority : {};
 
   // Normalize labels to lowercase strings
   const names = labels.map((l) =>

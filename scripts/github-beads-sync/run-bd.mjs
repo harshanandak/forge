@@ -80,7 +80,10 @@ export function buildSearchArgs(query) {
  */
 export function parseCreateOutput(stdout) {
   const match = stdout.match(/Created issue:\s+(forge-[\w-]+)/);
-  return match ? match[1] : null;
+  if (match) return match[1];
+  // Fallback: loose match for any forge-prefixed ID anywhere in output
+  const fallback = stdout.match(/(forge-[a-z0-9]+)/i);
+  return fallback ? fallback[1] : null;
 }
 
 /**

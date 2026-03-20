@@ -29,12 +29,7 @@ export default [
     rules: {
       'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
       'no-console': 'off',
-      'no-prototype-builtins': 'off',
-      'no-empty': 'off',
-      'no-useless-escape': 'off',
-      'preserve-caught-error': 'off',
       'no-undef': 'error',
-      'no-control-regex': 'off',
     },
   },
   // ES Modules (packages/skills, test/forge-uto, and eslint.config.js)
