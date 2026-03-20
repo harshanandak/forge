@@ -58,3 +58,40 @@
 4. Implement: use template literals with `getWorkflowCommands().length`, update copyFile warning
 5. Run tests: confirm they pass
 6. Commit: `fix: use dynamic command count, warn on missing sources`
+
+## Task 5: Fix CLAUDE.md placeholder description
+
+**File(s):** `CLAUDE.md`
+**What to implement:** Replace the placeholder `This is a [describe what this project does in one sentence].` (L1) with the actual project description: "Forge is a 7-stage TDD-first development workflow for AI coding agents."
+
+**TDD steps:**
+1. Write test: `test/forge-commands.test.js` — read `CLAUDE.md`, assert it does not contain `[describe what this project does`
+2. Run test: confirm it fails
+3. Implement: replace the placeholder line
+4. Run test: confirm it passes
+5. Commit: `fix: replace CLAUDE.md placeholder with real project description`
+
+## Task 6: Fix README/package.json agent count disagreements
+
+**File(s):** `README.md`, `package.json`
+**What to implement:** Audit the agent count claims. The repo supports 8 agents (Claude, Cursor, Cline, Codex, Copilot, Kilo, OpenCode, Roo). Ensure README features list and package.json description agree on the count.
+
+**TDD steps:**
+1. Write test: read `package.json` description, assert it mentions correct agent count or "all AI agents"
+2. Write test: read `README.md`, assert agent count in features section is consistent
+3. Run tests: confirm current state
+4. Implement: update any mismatched counts
+5. Run tests: confirm they pass
+6. Commit: `fix: align agent count across README and package.json`
+
+## Task 7: Grep and fix remaining /check stage refs in docs
+
+**File(s):** `docs/`, `CHANGELOG.md`, `docs/plans/`
+**What to implement:** Search all docs for `/check` used as a stage name (not as a verb). Fix any remaining occurrences. Historical plan files can be left as-is (they document past decisions), but active docs (WORKFLOW.md, ROADMAP.md, etc.) must use `/validate`.
+
+**TDD steps:**
+1. Write test: grep active docs (docs/WORKFLOW.md, docs/SETUP.md, docs/EXAMPLES.md, docs/VALIDATION.md) for `` `/check` `` as stage name — assert zero matches
+2. Run test: confirm current state
+3. Implement: fix any matches found
+4. Run test: confirm zero matches
+5. Commit: `fix: update remaining /check stage refs in active docs`
