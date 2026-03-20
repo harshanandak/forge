@@ -8,7 +8,7 @@
 import { readFileSync, appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
-import { sanitizeTitle, sanitizeLabel } from './sanitize.mjs';
+import { sanitizeTitle } from './sanitize.mjs';
 import { mapLabels } from './label-mapper.mjs';
 import { bdCreate as realBdCreate, bdClose as realBdClose, bdShow as realBdShow } from './run-bd.mjs';
 import { getBeadsId as realGetBeadsId, setBeadsId as realSetBeadsId } from './mapping.mjs';
@@ -71,6 +71,7 @@ export async function handleOpened(event, options = {}) {
   const bdCreate = bd.bdCreate ?? realBdCreate;
   const findSyncComment = github.findSyncComment ?? realFindSyncComment;
   const createOrEditComment = github.createOrEditComment ?? realCreateOrEditComment;
+  const getBeadsId = mapping.getBeadsId ?? realGetBeadsId;
   const setBeadsId = mapping.setBeadsId ?? realSetBeadsId;
 
   // 1. Load config
@@ -121,29 +122,44 @@ export async function handleOpened(event, options = {}) {
     }
   }
 
-  // 7. Idempotency — check for existing sync comment
+  // 7. Idempotency — check mapping file first (fast, survives comment deletion)
+  const existingBeadsId = getBeadsId(mappingPath, issueNumber);
+  if (existingBeadsId) {
+    // Mapping exists — ensure the GitHub comment is present (repair if deleted)
+    const existingComment = findSyncComment(owner, repo, issueNumber);
+    if (!existingComment) {
+      const commentBody = buildComment(existingBeadsId, issueNumber, {});
+      createOrEditComment(owner, repo, issueNumber, commentBody);
+    }
+    return {
+      skipped: true,
+      reason: 'already synced (mapping file)',
+      beadsId: existingBeadsId,
+    };
+  }
+
+  // 7b. Fallback idempotency — check for existing sync comment
   const existingComment = findSyncComment(owner, repo, issueNumber);
   if (existingComment) {
     const parsed = parseComment(existingComment.body);
+    // Repair mapping file from comment
+    if (parsed?.beadsId) {
+      setBeadsId(mappingPath, issueNumber, parsed.beadsId);
+    }
     return {
       skipped: true,
-      reason: 'already synced',
+      reason: 'already synced (comment)',
       beadsId: parsed?.beadsId ?? null,
     };
   }
 
-  // 8. Sanitize title and labels
+  // 8. Sanitize title (labels mapped from raw names — sanitization only needed for CLI args)
   const { sanitized: sanitizedTitle, warnings: titleWarnings } = sanitizeTitle(rawTitle);
   if (titleWarnings.length) console.warn('sanitize:', titleWarnings);
-  const sanitizedLabels = labels.map((l) => {
-    const name = typeof l === 'string' ? l : l.name;
-    const { sanitized, warnings } = sanitizeLabel(name);
-    if (warnings.length) console.warn('sanitize:', warnings);
-    return sanitized;
-  });
 
-  // 9. Map labels to type/priority
-  const { type, priority } = mapLabels(sanitizedLabels, config);
+  // 9. Map labels using raw names (case-insensitive matching in mapLabels handles normalization)
+  const rawLabelNames = labels.map((l) => (typeof l === 'string' ? l : l.name));
+  const { type, priority } = mapLabels(rawLabelNames, config);
 
   // 10. Create beads issue
   const externalRef = `gh-${issueNumber}`;

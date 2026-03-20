@@ -162,8 +162,34 @@ describe('handleOpened', () => {
     expect(result.reason).toBe('no-beads in body');
   });
 
-  it('idempotent — existing sync comment returns skip', async () => {
+  it('idempotent — mapping file entry returns skip', async () => {
+    const createOrEditCalls = [];
     const opts = makeOptions({
+      mapping: {
+        getBeadsId: () => 'forge-existing',
+        setBeadsId: () => {},
+      },
+      github: {
+        findSyncComment: () => ({ id: 999, body: '<!-- beads-sync:42 -->' }),
+        createOrEditComment: () => {},
+      },
+    });
+
+    const event = makeOpenedEvent();
+    const result = await handleOpened(event, opts);
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('already synced (mapping file)');
+    expect(result.beadsId).toBe('forge-existing');
+  });
+
+  it('idempotent — sync comment repairs mapping when mapping is missing', async () => {
+    const setBeadsIdCalls = [];
+    const opts = makeOptions({
+      mapping: {
+        getBeadsId: () => null,
+        setBeadsId: (p, num, id) => { setBeadsIdCalls.push({ p, num, id }); },
+      },
       github: {
         findSyncComment: () => ({
           id: 999,
@@ -177,8 +203,31 @@ describe('handleOpened', () => {
     const result = await handleOpened(event, opts);
 
     expect(result.skipped).toBe(true);
-    expect(result.reason).toBe('already synced');
+    expect(result.reason).toBe('already synced (comment)');
     expect(result.beadsId).toBe('forge-existing');
+    expect(setBeadsIdCalls.length).toBe(1);
+    expect(setBeadsIdCalls[0].id).toBe('forge-existing');
+  });
+
+  it('idempotent — mapping file repairs missing comment', async () => {
+    const createOrEditCalls = [];
+    const opts = makeOptions({
+      mapping: {
+        getBeadsId: () => 'forge-existing',
+        setBeadsId: () => {},
+      },
+      github: {
+        findSyncComment: () => null,
+        createOrEditComment: (ow, re, num, body) => { createOrEditCalls.push({ ow, re, num, body }); },
+      },
+    });
+
+    const event = makeOpenedEvent();
+    const result = await handleOpened(event, opts);
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('already synced (mapping file)');
+    expect(createOrEditCalls.length).toBe(1);
   });
 
   it('skips unauthorized author with author_association gate', async () => {
