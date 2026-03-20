@@ -163,7 +163,6 @@ describe('handleOpened', () => {
   });
 
   it('idempotent — mapping file entry returns skip', async () => {
-    const createOrEditCalls = [];
     const opts = makeOptions({
       mapping: {
         getBeadsId: () => 'forge-existing',

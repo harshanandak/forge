@@ -128,7 +128,8 @@ export function handleOpened(event, options = {}) {
     // Mapping exists — ensure the GitHub comment is present (repair if deleted)
     const existingComment = findSyncComment(owner, repo, issueNumber);
     if (!existingComment) {
-      const commentBody = buildComment(existingBeadsId, issueNumber, {});
+      const externalRef = `gh-${issueNumber}`;
+      const commentBody = buildComment(existingBeadsId, issueNumber, { externalRef, repaired: true });
       createOrEditComment(owner, repo, issueNumber, commentBody);
     }
     return {
@@ -215,8 +216,9 @@ export function handleClosed(event, options = {}) {
   const getBeadsId = mapping.getBeadsId ?? realGetBeadsId;
   const findSyncComment = github.findSyncComment ?? realFindSyncComment;
 
-  // 1. Extract issue number and state reason
+  // 1. Extract issue number, labels, and state reason
   const issueNumber = event.issue.number;
+  const labels = event.issue.labels || [];
   const stateReason = event.issue.state_reason;
 
   // 2. Guard: bot actor
@@ -224,7 +226,12 @@ export function handleClosed(event, options = {}) {
     return { skipped: true, reason: 'bot actor' };
   }
 
-  // 3. Guard: skip "not planned" closures (only close on "completed")
+  // 3. Guard: skip label
+  if (hasSkipLabel(labels)) {
+    return { skipped: true, reason: 'skip label' };
+  }
+
+  // 4. Guard: skip "not planned" closures (only close on "completed")
   if (stateReason && stateReason !== 'completed') {
     return { skipped: true, reason: `closed as ${stateReason}` };
   }
