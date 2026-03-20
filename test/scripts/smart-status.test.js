@@ -387,6 +387,253 @@ describe('smart-status.sh', () => {
     });
   });
 
+  describe('grouped output', () => {
+    test('in_progress issues appear under RESUME group', () => {
+      const mockData = {
+        issues: [
+          { id: 'wip1', title: 'Active work', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+          { id: 'open1', title: 'Open work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('RESUME');
+        // The in_progress issue should be under RESUME
+        const resumeIdx = result.stdout.indexOf('RESUME');
+        const wip1Idx = result.stdout.indexOf('wip1');
+        expect(resumeIdx).not.toBe(-1);
+        expect(wip1Idx).not.toBe(-1);
+        expect(wip1Idx).toBeGreaterThan(resumeIdx);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('P4 issues appear under BACKLOG group', () => {
+      const mockData = {
+        issues: [
+          { id: 'p4item', title: 'Low priority backlog', priority: 'P4', type: 'task', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('BACKLOG');
+        const backlogIdx = result.stdout.indexOf('BACKLOG');
+        const itemIdx = result.stdout.indexOf('p4item');
+        expect(itemIdx).toBeGreaterThan(backlogIdx);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('blocked issues (dependency_count > 0, not closed) appear under BLOCKED group', () => {
+      const mockData = {
+        issues: [
+          { id: 'blocked1', title: 'Blocked item', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 2, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('BLOCKED');
+        const blockedIdx = result.stdout.indexOf('BLOCKED');
+        const itemIdx = result.stdout.indexOf('blocked1');
+        expect(itemIdx).toBeGreaterThan(blockedIdx);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('high dependent_count (>=2) non-in_progress issues appear under UNBLOCK CHAINS', () => {
+      const mockData = {
+        issues: [
+          { id: 'chain1', title: 'Unblock chain item', priority: 'P2', type: 'feature', status: 'open', dependent_count: 3, dependency_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('UNBLOCK CHAINS');
+        const chainIdx = result.stdout.indexOf('UNBLOCK CHAINS');
+        const itemIdx = result.stdout.indexOf('chain1');
+        expect(itemIdx).toBeGreaterThan(chainIdx);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('open issues with no blockers and no dependencies go to READY WORK', () => {
+      const mockData = {
+        issues: [
+          { id: 'ready1', title: 'Ready to go', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('READY WORK');
+        const readyIdx = result.stdout.indexOf('READY WORK');
+        const itemIdx = result.stdout.indexOf('ready1');
+        expect(itemIdx).toBeGreaterThan(readyIdx);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('group ordering: RESUME > UNBLOCK CHAINS > READY WORK > BLOCKED > BACKLOG', () => {
+      const mockData = {
+        issues: [
+          { id: 'wip', title: 'WIP', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
+          { id: 'chain', title: 'Chain', priority: 'P2', type: 'feature', status: 'open', dependent_count: 3, dependency_count: 0, updated_at: daysAgo(1) },
+          { id: 'ready', title: 'Ready', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
+          { id: 'blocked', title: 'Blocked', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 1, updated_at: daysAgo(1) },
+          { id: 'backlog', title: 'Backlog', priority: 'P4', type: 'task', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        const resumeIdx = result.stdout.indexOf('RESUME');
+        const chainIdx = result.stdout.indexOf('UNBLOCK CHAINS');
+        const readyIdx = result.stdout.indexOf('READY WORK');
+        const blockedIdx = result.stdout.indexOf('BLOCKED');
+        const backlogIdx = result.stdout.indexOf('BACKLOG');
+        expect(resumeIdx).toBeLessThan(chainIdx);
+        expect(chainIdx).toBeLessThan(readyIdx);
+        expect(readyIdx).toBeLessThan(blockedIdx);
+        expect(blockedIdx).toBeLessThan(backlogIdx);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('entry format: N. [score] id (priority type) -- title [status Nd]', () => {
+      const mockData = {
+        issues: [
+          { id: 'fmt1', title: 'Format test', priority: 'P1', type: 'bug', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(3) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        // Should match format: 1. [score] fmt1 (P1 bug) -- Format test [open 3d]
+        expect(result.stdout).toMatch(/1\.\s+\[\d+(\.\d+)?\]\s+fmt1\s+\(P1 bug\)\s+--\s+Format test\s+\[open \d+d\]/);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('unblock chain annotation shows what issue unblocks', () => {
+      const mockData = {
+        issues: [
+          { id: 'blocker1', title: 'Blocker', priority: 'P1', type: 'feature', status: 'open', dependent_count: 2, dependency_count: 0, updated_at: daysAgo(1), dependents: ['dep-a', 'dep-b'] },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toMatch(/-> Unblocks:/);
+        expect(result.stdout).toContain('dep-a');
+        expect(result.stdout).toContain('dep-b');
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+  });
+
+  describe('staleness flag', () => {
+    test('stale flag appears for issues older than 7 days', () => {
+      const mockData = {
+        issues: [
+          { id: 'stale1', title: 'Stale item', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(14) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toMatch(/\[stale 14d\]/);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('no stale flag for issues less than 7 days old', () => {
+      const mockData = {
+        issues: [
+          { id: 'fresh1', title: 'Fresh item', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(3) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).not.toMatch(/\[stale/);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+  });
+
+  describe('NO_COLOR support', () => {
+    test('NO_COLOR disables ANSI escape codes', () => {
+      const mockData = {
+        issues: [
+          { id: 'nc1', title: 'No color test', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        // Should NOT contain any ANSI escape sequences
+        // eslint-disable-next-line no-control-regex
+        expect(result.stdout).not.toMatch(/\x1b\[/);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('colors are present when NO_COLOR is not set', () => {
+      const mockData = {
+        issues: [
+          { id: 'c1', title: 'Color test', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        // Explicitly unset NO_COLOR
+        const env = { BD_CMD: mockScript };
+        delete env.NO_COLOR;
+        // Also remove from inherited env
+        const fullEnv = { ...process.env, BD_CMD: mockScript };
+        delete fullEnv.NO_COLOR;
+        const result = spawnSync(resolveBashCommand(), [SCRIPT], {
+          cwd: PROJECT_ROOT,
+          encoding: 'utf-8',
+          timeout: 15000,
+          env: fullEnv,
+        });
+        const stdout = (result.stdout || '').trim();
+        // Should contain ANSI escape sequences
+        // eslint-disable-next-line no-control-regex
+        expect(stdout).toMatch(/\x1b\[/);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+  });
+
   describe('epic_proximity', () => {
     test('epic proximity boosts issues near completion', () => {
       const mockData = {
