@@ -264,7 +264,7 @@ Fix issues, commit, push - PR updates automatically.
 
 ---
 
-### Stage 6: Premerge
+### Stage 8: Premerge
 
 ```bash
 $ bunx forge /premerge 42
