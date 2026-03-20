@@ -48,6 +48,9 @@ function runSmartStatus(args = [], env = {}, stdin = undefined) {
     input: stdin,
     env: {
       ...process.env,
+      // Default GIT_CMD to 'true' (outputs nothing) so tests don't pick up
+      // real worktrees. Session detection tests override this with a mock.
+      GIT_CMD: 'true',
       ...env,
     },
   });
@@ -630,6 +633,442 @@ describe('smart-status.sh', () => {
         expect(stdout).toMatch(/\x1b\[/);
       } finally {
         cleanupTmpDir(tmpDir);
+      }
+    });
+  });
+
+  describe('session detection', () => {
+    /**
+     * Helper to create a mock git script that returns canned worktree list output.
+     * The script responds to "worktree list --porcelain" with the given porcelain text.
+     */
+    function createMockGit(porcelainOutput) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-git-'));
+      const mockScript = path.join(tmpDir, 'git');
+      const scriptContent = `#!/usr/bin/env bash
+# Mock git: only handles "worktree list --porcelain"
+for arg in "$@"; do
+  if [ "$arg" = "worktree" ]; then
+    cat <<'PORCELAINEOF'
+${porcelainOutput}
+PORCELAINEOF
+    exit 0
+  fi
+done
+# Fallback to real git for other commands
+command git "$@"
+`;
+      fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
+      return { tmpDir, mockScript };
+    }
+
+    test('ACTIVE SESSIONS section appears when multiple worktrees exist', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /repo/.worktrees/my-feature',
+        'HEAD def456',
+        'branch refs/heads/feat/my-feature',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-abc', title: 'My feature work', priority: 'P2', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('ACTIVE SESSIONS');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('ACTIVE SESSIONS appears before grouped output', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /repo/.worktrees/workflow-intelligence',
+        'HEAD def456',
+        'branch refs/heads/feat/workflow-intelligence',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-68oj', title: 'Workflow intelligence', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        const sessionsIdx = result.stdout.indexOf('ACTIVE SESSIONS');
+        const resumeIdx = result.stdout.indexOf('RESUME');
+        expect(sessionsIdx).not.toBe(-1);
+        expect(resumeIdx).not.toBe(-1);
+        expect(sessionsIdx).toBeLessThan(resumeIdx);
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('branch-to-issue matching via slug', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /repo/.worktrees/p2-bug-fixes',
+        'HEAD def456',
+        'branch refs/heads/feat/p2-bug-fixes',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-iv1p', title: 'P2 bug fixes batch 1', priority: 'P2', type: 'bug', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+          { id: 'forge-cpnj', title: 'P2 bug fixes batch 2', priority: 'P2', type: 'bug', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        // Should show the branch with matched issue IDs
+        expect(result.stdout).toContain('feat/p2-bug-fixes');
+        expect(result.stdout).toContain('forge-iv1p');
+        expect(result.stdout).toContain('forge-cpnj');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('no session section when only main worktree exists', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-abc', title: 'Some issue', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).not.toContain('ACTIVE SESSIONS');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('orphan branch with no matching issue shows as untracked', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /repo/.worktrees/orphan-branch',
+        'HEAD def456',
+        'branch refs/heads/feat/orphan-branch',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-xyz', title: 'Unrelated issue', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('ACTIVE SESSIONS');
+        expect(result.stdout).toContain('feat/orphan-branch');
+        expect(result.stdout).toContain('untracked');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('--json mode includes sessions array', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /repo/.worktrees/my-feature',
+        'HEAD def456',
+        'branch refs/heads/feat/my-feature',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-abc', title: 'My feature work', priority: 'P2', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus(['--json'], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        const parsed = JSON.parse(result.stdout);
+        expect(parsed).toHaveProperty('sessions');
+        expect(Array.isArray(parsed.sessions)).toBe(true);
+        expect(parsed.sessions.length).toBe(1);
+        expect(parsed.sessions[0]).toHaveProperty('branch', 'feat/my-feature');
+        expect(parsed.sessions[0]).toHaveProperty('path');
+        expect(parsed).toHaveProperty('issues');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('multiple worktrees with mixed matching', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /repo/.worktrees/feature-a',
+        'HEAD def456',
+        'branch refs/heads/feat/feature-a',
+        '',
+        'worktree /repo/.worktrees/feature-b',
+        'HEAD ghi789',
+        'branch refs/heads/feat/feature-b',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-fa01', title: 'Feature A task', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('ACTIVE SESSIONS');
+        // feature-b has no matching issue => untracked
+        expect(result.stdout).toContain('feat/feature-b');
+        expect(result.stdout).toContain('untracked');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+  });
+
+  describe('file-level conflict detection', () => {
+    /**
+     * Helper: create a mock git that handles both worktree list (porcelain)
+     * and diff (for changed files per branch).
+     * @param {string} porcelainOutput - worktree list --porcelain output
+     * @param {Object<string, string[]>} branchFiles - map of branch name -> changed files
+     */
+    function createMockGitWithDiff(porcelainOutput, branchFiles) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-conflict-'));
+      const mockScript = path.join(tmpDir, 'git');
+      // Build case entries for diff
+      const diffCases = Object.entries(branchFiles).map(([branch, files]) => {
+        if (files.length === 0) return `    "${branch}") echo "" ;;`;
+        const fileList = files.join('\\n');
+        return `    "${branch}") printf '${fileList}\\n' ;;`;
+      }).join('\n');
+      const scriptContent = `#!/usr/bin/env bash
+if [[ "$1" == "worktree" ]]; then
+  cat <<'PORCELAINEOF'
+${porcelainOutput}
+PORCELAINEOF
+  exit 0
+elif [[ "$1" == "diff" ]]; then
+  # Extract branch: git diff master...<branch> --name-only --
+  BRANCH="\${2#master...}"
+  case "$BRANCH" in
+${diffCases}
+    *) echo "" ;;
+  esac
+  exit 0
+elif [[ "$1" == "rev-parse" ]]; then
+  echo "master"
+  exit 0
+fi
+command git "$@"
+`;
+      fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
+      return { tmpDir, mockScript };
+    }
+
+    test('shows Changed: line with files for each active session branch', () => {
+      const porcelain = [
+        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
+        'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
+        'worktree /repo/.worktrees/beta', 'HEAD ghi789', 'branch refs/heads/feat/beta', '',
+      ].join('\n');
+      const branchFiles = {
+        'feat/alpha': ['src/a.js', 'src/b.js'],
+        'feat/beta': ['src/c.js'],
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Alpha work', priority: 'P2', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitWithDiff(porcelain, branchFiles);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('ACTIVE SESSIONS');
+        expect(result.stdout).toContain('feat/alpha');
+        expect(result.stdout).toContain('Changed:');
+        expect(result.stdout).toContain('src/a.js');
+        expect(result.stdout).toContain('src/b.js');
+        expect(result.stdout).toContain('feat/beta');
+        expect(result.stdout).toContain('src/c.js');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('truncates to 3 files with +N more', () => {
+      const porcelain = [
+        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
+        'worktree /repo/.worktrees/big', 'HEAD def456', 'branch refs/heads/feat/big', '',
+        'worktree /repo/.worktrees/other', 'HEAD ghi789', 'branch refs/heads/feat/other', '',
+      ].join('\n');
+      const branchFiles = {
+        'feat/big': ['f1.js', 'f2.js', 'f3.js', 'f4.js', 'f5.js'],
+        'feat/other': ['x.js'],
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Big work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitWithDiff(porcelain, branchFiles);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('f1.js');
+        expect(result.stdout).toContain('f2.js');
+        expect(result.stdout).toContain('f3.js');
+        expect(result.stdout).toContain('+2 more');
+        expect(result.stdout).not.toContain('f4.js');
+        expect(result.stdout).not.toContain('f5.js');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('shows conflict risk when branches share files', () => {
+      const porcelain = [
+        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
+        'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
+        'worktree /repo/.worktrees/beta', 'HEAD ghi789', 'branch refs/heads/feat/beta', '',
+      ].join('\n');
+      const branchFiles = {
+        'feat/alpha': ['shared.js', 'alpha-only.js'],
+        'feat/beta': ['shared.js', 'beta-only.js'],
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitWithDiff(porcelain, branchFiles);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toMatch(/[Cc]onflict risk/);
+        expect(result.stdout).toContain('shared.js');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('no conflict risk when branches have no overlapping files', () => {
+      const porcelain = [
+        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
+        'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
+        'worktree /repo/.worktrees/beta', 'HEAD ghi789', 'branch refs/heads/feat/beta', '',
+      ].join('\n');
+      const branchFiles = {
+        'feat/alpha': ['alpha.js'],
+        'feat/beta': ['beta.js'],
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitWithDiff(porcelain, branchFiles);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).not.toMatch(/[Cc]onflict risk/);
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('no Changed line for branch with no changed files', () => {
+      const porcelain = [
+        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
+        'worktree /repo/.worktrees/empty', 'HEAD def456', 'branch refs/heads/feat/empty', '',
+        'worktree /repo/.worktrees/full', 'HEAD ghi789', 'branch refs/heads/feat/full', '',
+      ].join('\n');
+      const branchFiles = {
+        'feat/empty': [],
+        'feat/full': ['a.js'],
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitWithDiff(porcelain, branchFiles);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        // feat/full should have Changed: line
+        expect(result.stdout).toContain('feat/full');
+        expect(result.stdout).toContain('a.js');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
       }
     });
   });
