@@ -187,7 +187,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 
 ---
 
-### Stage 5: Check
+### Stage 5: Validate
 
 ```bash
 $ bunx forge /validate

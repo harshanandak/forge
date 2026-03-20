@@ -70,7 +70,7 @@ router.get('/health', (req, res) => {
 git commit -m "feat: add health check endpoint"
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 5: CHECK
+# STAGE 5: VALIDATE
 # ═══════════════════════════════════════════════════════════
 /validate
 
@@ -174,7 +174,7 @@ git commit -m "fix: prevent SQL injection in search endpoint
 OWASP A03:2021 Injection"
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 5: CHECK
+# STAGE 5: VALIDATE
 # ═══════════════════════════════════════════════════════════
 /validate
 
@@ -294,7 +294,7 @@ git commit -m "refactor: extract login to AuthService"
 # 5-6 commits total
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 5: CHECK
+# STAGE 5: VALIDATE
 # ═══════════════════════════════════════════════════════════
 /validate
 

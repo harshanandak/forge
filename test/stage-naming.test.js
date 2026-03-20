@@ -59,7 +59,9 @@ describe('Stage naming consistency', () => {
 
       if (content !== null) {
         test(`${relPath} has no /check as stage name`, () => {
-          const staleRefs = content.match(/`\/check`/g);
+          const staleRefs =
+            content.match(/`\/check`/g) ||
+            content.match(/stage\s+\d+:\s*check\s*$/gim);
           expect(staleRefs).toBeNull();
         });
 
