@@ -51,9 +51,9 @@ describe('executeSetup shared helper (forge-cpnj)', () => {
       nextFunc2 > -1 ? nextFunc2 : Infinity
     );
     const funcBody = content.substring(funcStart, funcEnd);
-    // Should call setupAgent
-    expect(funcBody).toContain('setupAgent(');
-    // Should NOT have the claude exclusion guard
+    // Should call setupSelectedAgents for consistent progress output
+    expect(funcBody).toContain('setupSelectedAgents(');
+    // Should NOT have the bare claude exclusion guard
     expect(funcBody).not.toContain("agentKey !== 'claude'");
   });
 
@@ -78,7 +78,7 @@ describe('executeSetup shared helper (forge-cpnj)', () => {
     expect(funcBody).toContain('handleExternalServices');
   });
 
-  test('executeSetup accepts config object with agents, skipExternal, yes properties', () => {
+  test('executeSetup accepts config object with agents and skipExternal properties', () => {
     const funcStart = content.indexOf('async function executeSetup(');
     expect(funcStart).toBeGreaterThan(-1);
     const funcBody = content.substring(funcStart, funcStart + 200);

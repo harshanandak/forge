@@ -3713,17 +3713,9 @@ async function executeSetup(config) {
     ? loadAndSetupClaudeCommands(agents)
     : loadClaudeCommands(agents);
 
-  // Setup non-claude agents — claude is already set up by loadAndSetupClaudeCommands above
-  // For non-claude-selected runs, all agents go through setupAgent normally
-  const remainingAgents = agents.includes('claude')
-    ? agents.filter(a => a !== 'claude')
-    : agents;
-  remainingAgents.forEach(agentKey => {
-    setupAgent(agentKey, claudeCommands);
-  });
-
-  console.log('');
-  console.log('Agent configuration complete!');
+  // Setup agents with progress output (setupSelectedAgents skips claude internally
+  // since loadAndSetupClaudeCommands already handled it above)
+  setupSelectedAgents(agents, claudeCommands);
 
   // Install git hooks for TDD enforcement
   console.log('');
@@ -3821,8 +3813,8 @@ async function main() {
 
     // Quick mode
     if (flags.quick) {
-      // If no agents specified in quick mode, use all
-      if (selectedAgents.length === 0) {
+      // If no explicit agents specified, use all (--yes default doesn't count)
+      if (selectedAgents.length === 0 || (flags.yes && !flags.agents)) {
         selectedAgents = Object.keys(AGENTS);
       }
       await quickSetup(selectedAgents, flags.skipExternal);
