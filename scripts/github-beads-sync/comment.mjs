@@ -26,7 +26,7 @@ export function buildComment(beadsId, issueNumber, metadata = {}) {
 
   const detailLines = [];
   if (metadata.type) detailLines.push(`- Type: ${metadata.type}`);
-  if (metadata.priority) detailLines.push(`- Priority: ${metadata.priority}`);
+  if (metadata.priority != null) detailLines.push(`- Priority: ${metadata.priority}`);
   if (metadata.externalRef) detailLines.push(`- External ref: ${metadata.externalRef}`);
   detailLines.push(`- Synced: ${timestamp}`);
 
