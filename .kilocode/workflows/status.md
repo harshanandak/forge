@@ -17,15 +17,13 @@ This command helps you understand the current state of the project before starti
 
 ## What This Command Does
 
-### Step 1: Smart Status (Issues ranked by priority)
+### Step 1: Smart Status (ranked issues with conflict detection)
 ```bash
 bash scripts/smart-status.sh
 ```
-- Shows issues grouped by status (in-progress, open, completed)
-- Ranked by priority within each group (blocked first, then by staleness/age)
-- Includes task progress and last commit for each issue
+This script dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed — the script handles everything.
 
-Hint: `bd show <id>` for full context on any issue.
+For full context on any issue: `bd show <id>`
 
 ### Step 2: Review Recent Commits
 ```bash
@@ -36,31 +34,6 @@ git log --oneline -10
 - **New feature**: No active work, ready to start fresh
 - **Continuing work**: In-progress issues found, resume where left off
 - **Review needed**: Work marked complete, needs review/merge
-
-## Example Output
-
-```
-=== IN PROGRESS (1) ===
-  forge-ctc  Clean up stale workflow refs
-    3/7 tasks done | Last: Validation logic (def5678)
-
-=== OPEN (3) ===
-  forge-xyz  Add retry logic to API client
-  forge-pqr  Refactor config loader
-  forge-mno  Update CI pipeline
-
-=== RECENTLY COMPLETED (2) ===
-  forge-uto  Sync AGENTS.md with agent cleanup
-  forge-abc  Auth refresh tokens
-
-Recent commits:
-  abc1234 feat: add retry logic
-  def5678 test: validation tests
-
-Context: Continuing work
-
-Next: Resume with /dev or /validate (check issue status)
-```
 
 ## Next Steps
 
