@@ -213,3 +213,108 @@ test/
   scripts/
     github-beads-sync.test.js    # Unit tests for pure functions
 ```
+
+---
+
+## Technical Research
+
+### Codebase Patterns to Reuse
+
+| Pattern | Location | How to Reuse |
+|---------|----------|--------------|
+| `execFileSync` with array args | `scripts/branch-protection.js` | Same pattern for `bd` CLI calls — no shell, args as array |
+| `validateCommonSecurity()` | `bin/forge.js` | Import for sanitizing GitHub issue titles/bodies before passing to `bd` |
+| `askYesNo()` prompt | `bin/forge.js` | Reuse in `forge setup` for "Enable GitHub sync?" prompt |
+| User section preservation | `bin/forge.js` (`<!-- USER:START -->`) | Apply to scaffolded workflow files so users can customize |
+| `$GITHUB_STEP_SUMMARY` | `.github/workflows/test.yml` | Use for workflow run summaries |
+| `concurrency` groups | Existing workflows | Mandatory for serializing `.beads/` writes |
+
+### bd CLI Capabilities (Verified)
+
+Key flags for sync:
+- **Create**: `bd create --title "..." --type X --priority N --assignee Y --description "..." --external-ref "gh-42"`
+- **Close**: `bd close <id> --reason "Closed via GitHub issue #42"`
+- **Search**: `bd search "query"` (full text across title + description + ID)
+- **List**: `bd list --desc-contains="github.com/issues/42"` (filter by description content)
+- **Show**: `bd show <id>` (check if open/closed)
+
+Discovery: `--external-ref` flag stores `gh-42` natively on the Beads issue. This provides a third lookup path alongside bot comment and mapping file.
+
+### OWASP Top 10 Analysis
+
+| Category | Applies? | Risk | Mitigation |
+|----------|----------|------|------------|
+| **A03: Injection** | CRITICAL | Issue titles/bodies flow into `bd create` args. Existing proof: `forge-04t` in `.beads/issues.jsonl` contains `echo PWNED2 rm -rf /`. | `execFile` with array args (no shell). Sanitize via `validateCommonSecurity()`. Never use `${{ github.event.issue.title }}` in `run:` blocks — pass via `env:` instead. |
+| **A01: Broken Access Control** | HIGH | On public repos, any GitHub user can open issues, triggering commits to default branch. | Gate on `author_association` (MEMBER, COLLABORATOR, OWNER) OR require maintainer-applied label (e.g., `beads-track`). Configurable per-repo. |
+| **A08: Data Integrity** | HIGH | Attacker-controlled content gets committed to `.beads/` without review. | Sanitize all fields. Commit only to `.beads/` and `.github/beads-mapping.json` — never touch source code. Limit what's stored (title, URL, type, priority — not raw body). |
+| **A05: Security Misconfiguration** | MEDIUM | Workflow permissions too broad. | Use minimal permissions: `contents: write` (for push), `issues: write` (for comments). No PATs needed for same-repo. |
+| **A09: Logging & Monitoring** | MEDIUM | Silent failures in sync. | Write to `$GITHUB_STEP_SUMMARY`. Log skipped/failed syncs. Mapping file serves as audit trail. |
+| **A02: Cryptographic Failures** | LOW | No secrets in sync data. | GITHUB_TOKEN is ephemeral, scoped to workflow run. No custom secrets needed. |
+| **A04-A10 (others)** | N/A | Not applicable to this feature's surface area. | — |
+
+**GitHub Actions-Specific Risks:**
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Workflow injection via `${{ }}` interpolation | CRITICAL | Never interpolate event data in `run:` blocks. Use `env:` to pass data safely. |
+| Race conditions (concurrent workflow runs) | HIGH | `concurrency: { group: beads-sync, cancel-in-progress: false }` — queue, don't cancel. |
+| Fork PR manipulation | LOW | `issues` events only fire on the base repo, not forks. Not exploitable. |
+| Token scope escalation | LOW | `GITHUB_TOKEN` is auto-scoped to the repo. No PAT needed. |
+
+### Developer UX Research Findings
+
+**Key insight**: The #1 reason developers don't update issue status is it requires leaving their workflow. 50% of devs lose 10+ hrs/week to non-coding tasks (Atlassian 2025).
+
+**What makes sync "awesome" (validated patterns):**
+
+1. **Zero-action status updates** — Linear auto-updates from PR/branch activity. Our sync achieves this: create issue on GitHub -> Beads auto-creates; close on GitHub -> Beads auto-closes. Developer does nothing extra.
+
+2. **Edit-don't-create for bot comments** — Vercel edits ONE comment per PR instead of creating new ones. Our bot comment should follow this: one `<!-- beads-sync -->` comment per issue, edited if re-synced (not a new comment each time).
+
+3. **Silent by default** — Bot notification noise is the #1 complaint. Our bot comment should be minimal, use collapsible `<details>` for metadata, and avoid @-mentioning anyone.
+
+4. **Convention over configuration** — Branch name parsing, closing keywords, and `--external-ref` should work with zero setup. The config file exists for customization, not as a requirement.
+
+**Minimum viable sync (80% value):**
+- Bidirectional create + bidirectional close = 80% of the value
+- Label/priority mapping on create = +10%
+- Everything else (auto-status from branch activity, comment sync, field updates) = Phase 2+
+
+**Bot comment format (based on Vercel/Dependabot patterns):**
+```markdown
+<!-- beads-sync:42 -->
+**Beads:** `forge-abc` | [View in Beads](bd show forge-abc)
+<details>
+<summary>Sync details</summary>
+
+- Type: feature
+- Priority: P2
+- External ref: gh-42
+- Synced: 2026-03-21T10:00:00Z
+</details>
+```
+
+### DRY Check
+
+Searched for existing GitHub sync implementations:
+- No existing webhook/issue sync code in the codebase
+- No `github-beads` or `issue-sync` patterns found
+- The `scripts/` directory has `branch-protection.js` and `sync-commands.js` but nothing for issue sync
+- **Result: No duplication. Proceeding with new implementation.**
+
+### TDD Test Scenarios
+
+| # | Scenario | Type | Input | Expected Output |
+|---|----------|------|-------|-----------------|
+| 1 | Parse beads ID from bot comment | Happy path | `<!-- beads-sync:42 -->\n**Beads:** forge-abc` | `"forge-abc"` |
+| 2 | Parse beads ID when comment missing | Error path | `"Regular comment with no beads tag"` | `null` |
+| 3 | Parse GitHub URL from beads description | Happy path | `"GitHub: https://github.com/owner/repo/issues/42"` | `{ owner: "owner", repo: "repo", number: 42 }` |
+| 4 | Mapping file read/write | Happy path | Write `{ "42": "forge-abc" }`, read back | `"forge-abc"` for key `"42"` |
+| 5 | Mapping file missing entry | Edge case | Read key `"99"` from `{ "42": "forge-abc" }` | `null` |
+| 6 | Sanitize malicious issue title | Security | `"Normal title; rm -rf / && echo PWNED"` | Sanitized string or rejection |
+| 7 | Label-to-type mapping with config | Happy path | Labels `["bug", "P1"]`, default config | `{ type: "bug", priority: 1 }` |
+| 8 | Label mapping with no matching labels | Edge case | Labels `["wontfix", "stale"]` | `{ type: "task", priority: 2 }` (defaults) |
+| 9 | Idempotency — issue already synced | Edge case | Issue #42 already has beads-sync comment | Skip, return existing beads ID |
+| 10 | Build bd create args from GitHub issue | Integration | `{ title, labels, assignee, url }` | Correct `execFile` args array |
+| 11 | Concurrent mapping file access | Race condition | Two simultaneous writes | File not corrupted, both entries present |
+| 12 | Bot comment format generation | Happy path | `{ beadsId: "forge-abc", issueNumber: 42, type: "feature" }` | Correct markdown with HTML comment tag |
