@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hook bypass protection for AI agents** (PR #66)
+  - `scripts/branch-protection.js`: Allow beads-only pushes to master while blocking code changes
+  - Replaced `execSync` with `execFileSync` + `resolveGitBinary()` to prevent command injection
+  - Added `isSafeGitRefComponent()` validation on all branch name paths
+  - Gated `FORGE_GIT_MOCK_JS` behind `NODE_ENV=test` to prevent bypass in production
+  - Removed `LEFTHOOK=0` and `--no-verify` bypass guidance from all hook scripts
+  - Added behavioral integration tests with cross-platform mock git (Node.js shim)
+  - Updated `CLAUDE.md`: AI agents must never bypass hooks
+
 ### Added
 
 - **Logic-level dependency detection**: Upgrades dep-guard `check-ripple` from keyword-only matching to structured code-aware analysis (PR #65, forge-9zv)
