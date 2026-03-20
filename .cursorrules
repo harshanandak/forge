@@ -9,7 +9,7 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 | utility | `/status` | Check current context, active work, recent completions |
 | 1 | `/plan` | Design intent Q&A → research → branch + task list |
 | 2 | `/dev` | Subagent-driven TDD per task (spec + quality review) |
-| 3 | `/check` | Validation (type/lint/security/tests) |
+| 3 | `/validate` | Validation (type/lint/security/tests) |
 | 4 | `/ship` | Create PR with full documentation |
 | 5 | `/review` | Address ALL PR feedback |
 | 6 | `/premerge` | Complete docs on feature branch, hand off PR to user |
@@ -18,7 +18,7 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 ## Workflow Flow
 
 ```
-/plan → /dev → /check → /ship → /review → /premerge → /verify
+/plan → /dev → /validate → /ship → /review → /premerge → /verify
 ```
 
 ## Core Principles
@@ -38,7 +38,7 @@ A TDD-first workflow for AI coding agents. Ship features with confidence.
 1. `/status` - Check where you are
 2. `/plan <feature-slug>` - Design intent → research → branch + task list
 3. `/dev` - Implement with TDD
-4. `/check` - Validate everything
+4. `/validate` - Validate everything
 5. `/ship` - Create PR
 6. `/review <pr-number>` - Address all feedback
 7. `/premerge <pr-number>` - Docs + hand off to user
@@ -67,7 +67,7 @@ Subagent-driven TDD per task:
 - Code quality reviewer: checks after spec compliance
 - Decision gate: 7-dimension scoring when spec gap found
 
-### 3. Check (`/check`)
+### 3. Validate (`/validate`)
 
 Validate everything (HARD-GATE exit — fresh output required):
 - Type checking
