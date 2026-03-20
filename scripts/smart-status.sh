@@ -625,7 +625,7 @@ else
         # Staleness flag
         (if $item.days_ago >= 7 then " [stale " + ($item.days_ago | tostring) + "d]" else "" end) as $stale |
         # Status + days
-        "[" + ($item.status // "open") + " " + ($item.days_ago | tostring) + "d]" as $status_tag |
+        ("[" + ($item.status // "open") + " " + ($item.days_ago | tostring) + "d]") as $status_tag |
         # Unblocks annotation
         (if ($item.dependents // [] | length) > 0 then
           "\n   -> Unblocks: " + ($item.dependents | join(", "))
