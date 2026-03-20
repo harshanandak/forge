@@ -68,7 +68,9 @@ describe('Stage naming consistency', () => {
         test(`${relPath} has no /merge as stage name`, () => {
           // Match /merge used as a command (in flow diagrams, tables, code blocks)
           // but not in prose like "merge PR" or "git merge"
-          const mergeAsStage = content.match(/\/merge\s*(→|N\b|`|\n)/g);
+          const mergeAsStage =
+            content.match(/\/merge\s*(→|N\b|`|\n)/g) ||
+            content.match(/stage\s+\d+:\s*merge\s*$/gim);
           expect(mergeAsStage).toBeNull();
         });
       }
