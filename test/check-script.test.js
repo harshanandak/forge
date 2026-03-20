@@ -38,10 +38,10 @@ describe('scripts/validate.sh', () => {
     test('should run checks in correct order', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
 
-      // Check that commands appear in order
-      const typecheckIndex = content.indexOf('typecheck');
-      const lintIndex = content.indexOf('lint');
-      const testIndex = content.indexOf('test');
+      // Check that step headers appear in order
+      const typecheckIndex = content.indexOf('Type Check');
+      const lintIndex = content.indexOf('Lint');
+      const testIndex = content.indexOf('Tests');
 
       expect(typecheckIndex > 0).toBeTruthy();
       expect(lintIndex > typecheckIndex).toBeTruthy();
