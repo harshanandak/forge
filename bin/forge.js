@@ -2315,7 +2315,7 @@ function loadClaudeCommands(selectedAgents) {
     return claudeCommands;
   }
 
-  COMMANDS.forEach(cmd => {
+  getWorkflowCommands().forEach(cmd => {
     const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
     const content = readFile(cmdPath);
     if (content) {
@@ -3519,7 +3519,7 @@ function loadAndSetupClaudeCommands(selectedAgents, skipFiles) {
   }
 
   // Then load the commands (from existing or newly created)
-  COMMANDS.forEach(cmd => {
+  getWorkflowCommands().forEach(cmd => {
     const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
     const content = readFile(cmdPath);
     if (content) {
@@ -4243,3 +4243,5 @@ if (require.main === module) {
     }
   })();
 }
+
+module.exports = { getWorkflowCommands };
