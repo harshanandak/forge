@@ -25,8 +25,8 @@ export function readMapping(mappingPath) {
   const raw = fs.readFileSync(mappingPath, 'utf8');
   try {
     return JSON.parse(raw);
-  } catch (_err) {
-    throw new Error(`Failed to parse mapping file at ${mappingPath}: ${_err.message}`, { cause: _err });
+  } catch (err) {
+    throw new Error(`Failed to parse mapping file at ${mappingPath}: ${err.message}`, { cause: err });
   }
 }
 

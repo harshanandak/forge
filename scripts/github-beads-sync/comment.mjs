@@ -54,7 +54,7 @@ export function parseComment(commentBody) {
   const tagMatch = commentBody.match(/<!--\s*beads-sync:(\d+)\s*-->/);
   if (!tagMatch) return null;
 
-  const beadsMatch = commentBody.match(/\*\*Beads:\*\*\s*`(forge-[a-z0-9]+)`/);
+  const beadsMatch = commentBody.match(/\*\*Beads:\*\*\s*`([a-zA-Z]+-[a-zA-Z0-9]+)`/);
   if (!beadsMatch) return null;
 
   return {

@@ -119,5 +119,17 @@ describe('comment module', () => {
       const body = '**Beads:** `forge-orphan`';
       expect(parseComment(body)).toBeNull();
     });
+
+    test('parses non-forge prefixed beads IDs (e.g., myapp-xxx)', () => {
+      const body = '<!-- beads-sync:7 -->\n**Beads:** `myapp-abc123`';
+      const result = parseComment(body);
+      expect(result).toEqual({ beadsId: 'myapp-abc123', issueNumber: 7 });
+    });
+
+    test('parses beads- prefixed IDs', () => {
+      const body = '<!-- beads-sync:15 -->\n**Beads:** `beads-def456`';
+      const result = parseComment(body);
+      expect(result).toEqual({ beadsId: 'beads-def456', issueNumber: 15 });
+    });
   });
 });
