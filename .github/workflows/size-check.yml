@@ -3,8 +3,18 @@ name: Package Size Monitor
 on:
   push:
     branches: [main, master]
+    paths:
+      - 'package.json'
+      - 'bin/**'
+      - 'lib/**'
+      - 'packages/**'
   pull_request:
     branches: [main, master]
+    paths:
+      - 'package.json'
+      - 'bin/**'
+      - 'lib/**'
+      - 'packages/**'
 
 jobs:
   size-check:
