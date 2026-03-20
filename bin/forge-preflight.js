@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Forge Validate CLI
+ * Forge Preflight CLI
  *
  * Prerequisite validation for workflow stages.
  * Helps ensure developers have required tools and files before proceeding.
@@ -235,7 +235,7 @@ function validateShip() {
 
 function showHelp() {
   console.log(`
-Forge Validate - Prerequisite validation for workflow stages
+Forge Preflight - Prerequisite validation for workflow stages
 
 Usage:
   forge-preflight <command>
