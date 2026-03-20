@@ -39,6 +39,34 @@ describe('Stage naming consistency', () => {
     });
   });
 
+  describe('active docs have no stale /check stage refs', () => {
+    const activeDocs = [
+      'docs/WORKFLOW.md',
+      'docs/SETUP.md',
+      'docs/EXAMPLES.md',
+      'docs/VALIDATION.md',
+      'docs/TOOLCHAIN.md',
+      'docs/ROADMAP.md',
+    ];
+
+    for (const relPath of activeDocs) {
+      const absPath = join(ROOT, relPath);
+      let content;
+      try {
+        content = readFileSync(absPath, 'utf8');
+      } catch {
+        content = null;
+      }
+
+      if (content !== null) {
+        test(`${relPath} has no backtick-quoted /check stage name`, () => {
+          const staleRefs = content.match(/`\/check`/g);
+          expect(staleRefs).toBeNull();
+        });
+      }
+    }
+  });
+
   describe('.cursorrules file', () => {
     const cursorrules = readFileSync(join(ROOT, '.cursorrules'), 'utf8');
 
