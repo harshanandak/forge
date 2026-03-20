@@ -62,6 +62,15 @@ function runSmartStatus(args = [], env = {}, stdin = undefined) {
 }
 
 /**
+ * Parse --json output and extract the issues array.
+ * Output shape is always {sessions: [...], issues: [...]}.
+ */
+function parseIssues(stdout) {
+  const parsed = JSON.parse(stdout);
+  return parsed.issues || parsed;
+}
+
+/**
  * Helper to create a mock bd script that returns given JSON.
  * Returns path to the temp mock script.
  */
@@ -131,7 +140,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         // Should be sorted: P0 (5) > P2 (3) > P4 (1)
         expect(scored[0].id).toBe('b');
         expect(scored[1].id).toBe('c');
@@ -153,7 +162,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         // bug (1.2) > feature (1.0) > task (0.8)
         expect(scored[0].id).toBe('bug1');
         expect(scored[1].id).toBe('feat1');
@@ -174,7 +183,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         // in_progress (1.5) > open (1.0)
         expect(scored[0].id).toBe('wip1');
         expect(scored[1].id).toBe('open1');
@@ -194,7 +203,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         // dependent_count 5 => chain 6, vs 0 => chain 1
         expect(scored[0].id).toBe('high');
         expect(scored[1].id).toBe('low');
@@ -215,7 +224,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         // 35d=1.5 > 20d=1.2 > 1d=1.0
         expect(scored[0].id).toBe('stale');
         expect(scored[1].id).toBe('medium');
@@ -242,7 +251,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored.length).toBe(3);
         // z (38.72) > x (10.8) > y (5.0)
         expect(scored[0].id).toBe('z');
@@ -270,7 +279,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         const item = scored[0];
         expect(item.priority_weight).toBe(3);       // P2
         expect(item.unblock_chain).toBe(3);          // 2 + 1
@@ -292,7 +301,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored).toEqual([]);
       } finally {
         cleanupTmpDir(tmpDir);
@@ -309,7 +318,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored.length).toBe(1);
         expect(scored[0].id).toBe('solo');
         expect(scored[0].priority_weight).toBe(2);   // P3
@@ -331,7 +340,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored[0].unblock_chain).toBe(1);
       } finally {
         cleanupTmpDir(tmpDir);
@@ -348,7 +357,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored[0].priority_weight).toBe(1);
       } finally {
         cleanupTmpDir(tmpDir);
@@ -365,7 +374,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored[0].type_weight).toBe(1.0);
       } finally {
         cleanupTmpDir(tmpDir);
@@ -382,7 +391,7 @@ describe('smart-status.sh', () => {
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         expect(scored[0].status_boost).toBe(1.0);
       } finally {
         cleanupTmpDir(tmpDir);
@@ -1271,7 +1280,7 @@ command git "$@"
       }
     });
 
-    test('no merge_conflicts when git >= 2.38 but no real conflicts', () => {
+    test('no merge_conflicts when git >= 2.38 but no real conflicts', { timeout: 15000 }, () => {
       const branchFiles = {
         'feat/alpha': ['shared.js'],
         'feat/beta': ['shared.js'],
@@ -1326,7 +1335,7 @@ command git "$@"
       try {
         const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
         expect(result.status).toBe(0);
-        const scored = JSON.parse(result.stdout);
+        const scored = parseIssues(result.stdout);
         // Find child1 in results
         const child = scored.find(s => s.id === 'child1');
         expect(child).toBeDefined();

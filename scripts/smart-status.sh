@@ -512,13 +512,9 @@ fi
 # ── Output ──────────────────────────────────────────────────────────────
 
 if [ "$JSON_MODE" = "1" ]; then
-  if [ "$SESSION_COUNT" -gt 0 ]; then
-    # Wrap scored issues and sessions together
-    jq -n --argjson sessions "$SESSIONS_JSON" --argjson issues "$SCORED_JSON" \
-      '{sessions: $sessions, issues: $issues}'
-  else
-    printf '%s\n' "$SCORED_JSON"
-  fi
+  # Always output consistent shape: {sessions: [...], issues: [...]}
+  jq -n --argjson sessions "$SESSIONS_JSON" --argjson issues "$SCORED_JSON" \
+    '{sessions: $sessions, issues: $issues}'
 else
   # Grouped, colored output
   # NO_COLOR support: https://no-color.org/
