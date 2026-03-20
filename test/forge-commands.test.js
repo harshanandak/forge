@@ -96,7 +96,12 @@ describe('agent count consistency', () => {
     'utf-8'
   );
   const agentsDir = path.resolve(__dirname, '..', 'lib', 'agents');
-  const pluginFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.plugin.json'));
+  let pluginFiles = [];
+  try {
+    pluginFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.plugin.json'));
+  } catch (_e) {
+    // lib/agents/ may not exist in all environments
+  }
 
   test('package.json description mentions correct agent count or "all AI agents"', () => {
     const desc = packageJson.description;

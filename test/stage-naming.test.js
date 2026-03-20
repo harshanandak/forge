@@ -10,7 +10,7 @@ describe('Stage naming consistency', () => {
 
     // Extract the CURSOR_RULE template string
     const cursorRuleMatch = forgeSource.match(
-      /const CURSOR_RULE = `([\s\S]*?)`;/
+      /const CURSOR_RULE = `([\s\S]*?)\n`;/
     );
     const cursorRule = cursorRuleMatch ? cursorRuleMatch[1] : '';
 
