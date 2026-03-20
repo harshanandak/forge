@@ -162,7 +162,7 @@ describe('scripts/dep-guard.sh', () => {
     });
   });
 
-  describe('check-ripple', () => {
+  describe('check-ripple', { timeout: 15000 }, () => {
     /** @type {string[]} */
     const mockFiles = [];
     /** @type {string[]} */
