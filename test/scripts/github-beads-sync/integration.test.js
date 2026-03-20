@@ -105,7 +105,6 @@ function makeTrackedOptions(overrides = {}, configOverride = undefined) {
       mappingPath: '/tmp/integration-test-mapping.json',
       owner: 'test-owner',
       repo: 'test-repo',
-      dryRun: false,
       bd: bdMocks,
       github: githubMocks,
       mapping: mappingMocks,

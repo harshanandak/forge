@@ -71,7 +71,6 @@ function makeOptions(overrides = {}) {
     mappingPath: '/tmp/test-mapping.json',
     owner: 'testowner',
     repo: 'testrepo',
-    dryRun: false,
     bd: makeMockBd(overrides.bd),
     github: makeMockGithub(overrides.github),
     mapping: makeMockMapping(overrides.mapping),

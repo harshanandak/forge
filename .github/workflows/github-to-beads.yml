@@ -38,6 +38,7 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SYNC_ACTION: ${{ github.event.action }}
+          BEADS_SYNC_CONFIG: scripts/github-beads-sync.config.json
         run: |
           node scripts/github-beads-sync/index.mjs "$SYNC_ACTION"
 
