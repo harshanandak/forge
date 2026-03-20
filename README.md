@@ -93,7 +93,7 @@ bunx forge setup
 
 ## Supported AI Agents
 
-Works with **7 AI coding agents** via universal AGENTS.md:
+Works with **8 AI coding agents** via universal AGENTS.md:
 
 ### Tier 1 (Primary Support)
 
