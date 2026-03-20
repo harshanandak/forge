@@ -58,12 +58,18 @@ jobs:
             git commit -m "chore(beads): sync from GitHub issue #${ISSUE_NUM}"
 
             # Push with retry (handles concurrent runs)
+            push_success=false
             for i in 1 2 3; do
               if git push; then
                 echo "Push succeeded on attempt $i"
+                push_success=true
                 break
               fi
               echo "Push failed, attempt $i/3 — pulling with rebase..."
               git pull --rebase
             done
+            if [ "$push_success" = false ]; then
+              echo "::error::All 3 push attempts failed"
+              exit 1
+            fi
           fi

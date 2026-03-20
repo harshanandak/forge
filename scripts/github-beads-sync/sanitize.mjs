@@ -28,24 +28,27 @@ function sanitizeText(input, maxLen, fieldName) {
   let text = String(input ?? '');
 
   // Strip GitHub Actions interpolation patterns
-  if (INTERPOLATION_RE.test(text)) {
+  // Use local regex to avoid stateful /g lastIndex bug with .test()
+  const interpolationReLocal = /\$\{\{[^}]*\}\}/g;
+  if (interpolationReLocal.test(text)) {
     warnings.push(`${fieldName}: stripped GitHub Actions interpolation pattern(s)`);
-    text = text.replace(INTERPOLATION_RE, '');
   }
+  text = text.replace(INTERPOLATION_RE, '');
 
   // Strip shell metacharacters
   const metaMatches = text.match(SHELL_META_RE);
   if (metaMatches) {
     const unique = [...new Set(metaMatches)];
     warnings.push(`${fieldName}: stripped shell metacharacters: ${unique.join(' ')}`);
-    text = text.replace(SHELL_META_RE, '');
   }
+  text = text.replace(SHELL_META_RE, '');
 
   // Strip control characters
-  if (CONTROL_CHARS_RE.test(text)) {
+  const controlCharsReLocal = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+  if (controlCharsReLocal.test(text)) {
     warnings.push(`${fieldName}: stripped control characters`);
-    text = text.replace(CONTROL_CHARS_RE, '');
   }
+  text = text.replace(CONTROL_CHARS_RE, '');
 
   // Trim whitespace
   text = text.trim();

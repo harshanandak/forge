@@ -5,7 +5,8 @@
  * @module scripts/github-beads-sync/index
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, appendFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { sanitizeTitle, sanitizeLabel } from './sanitize.mjs';
 import { mapLabels } from './label-mapper.mjs';
@@ -49,7 +50,6 @@ function hasSkipLabel(labels) {
  * @param {string} options.mappingPath - Path to mapping JSON
  * @param {string} options.owner - Repository owner
  * @param {string} options.repo - Repository name
- * @param {boolean} [options.dryRun=false] - Skip side effects
  * @param {object} [options.bd] - Dependency injection for bd functions
  * @param {object} [options.github] - Dependency injection for github-api functions
  * @param {object} [options.mapping] - Dependency injection for mapping functions
@@ -110,6 +110,15 @@ export async function handleOpened(event, options = {}) {
     if (!allowed.includes(authorAssociation)) {
       return { skipped: true, reason: 'author not authorized' };
     }
+  } else if (config.publicRepoGate === 'label') {
+    const gateLabelName = config.gateLabelName || 'beads-track';
+    const hasGateLabel = labels.some((l) => {
+      const name = typeof l === 'string' ? l : l.name;
+      return name === gateLabelName;
+    });
+    if (!hasGateLabel) {
+      return { skipped: true, reason: `missing required label: ${gateLabelName}` };
+    }
   }
 
   // 7. Idempotency — check for existing sync comment
@@ -144,6 +153,10 @@ export async function handleOpened(event, options = {}) {
     externalRef,
   });
 
+  if (!beadsId) {
+    return { success: false, reason: 'bd create failed — no beads ID returned', issueNumber };
+  }
+
   // 11. Update mapping
   setBeadsId(mappingPath, issueNumber, beadsId);
 
@@ -164,7 +177,6 @@ export async function handleOpened(event, options = {}) {
  * @param {string} options.mappingPath - Path to mapping JSON
  * @param {string} options.owner - Repository owner
  * @param {string} options.repo - Repository name
- * @param {boolean} [options.dryRun=false] - Skip side effects
  * @param {object} [options.bd] - Dependency injection for bd functions
  * @param {object} [options.github] - Dependency injection for github-api functions
  * @param {object} [options.mapping] - Dependency injection for mapping functions
@@ -230,7 +242,8 @@ export async function handleClosed(event, options = {}) {
 // ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
-if (process.argv[1] === import.meta.filename) {
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
   const action = process.argv[2];
   const eventPath = process.env.GITHUB_EVENT_PATH || process.argv[3];
 
@@ -248,7 +261,6 @@ if (process.argv[1] === import.meta.filename) {
     mappingPath: process.env.BEADS_SYNC_MAPPING || '.github/beads-mapping.json',
     owner,
     repo,
-    dryRun: process.env.DRY_RUN === 'true',
   };
 
   const handler = action === 'opened' ? handleOpened : handleClosed;
@@ -260,7 +272,6 @@ if (process.argv[1] === import.meta.filename) {
       // Write to GITHUB_OUTPUT if available
       const outputPath = process.env.GITHUB_OUTPUT;
       if (outputPath) {
-        const { appendFileSync } = require('node:fs');
         for (const [key, value] of Object.entries(result)) {
           appendFileSync(outputPath, `${key}=${value}\n`);
         }
