@@ -7,9 +7,9 @@
  * Helps ensure developers have required tools and files before proceeding.
  *
  * Usage:
- *   forge-validate status  - Check project prerequisites
- *   forge-validate dev     - Validate before /dev stage
- *   forge-validate ship    - Validate before /ship stage
+ *   forge-preflight status  - Check project prerequisites
+ *   forge-preflight dev     - Validate before /dev stage
+ *   forge-preflight ship    - Validate before /ship stage
  *
  * Security: Uses execFileSync to prevent command injection.
  */
@@ -238,7 +238,7 @@ function showHelp() {
 Forge Validate - Prerequisite validation for workflow stages
 
 Usage:
-  forge-validate <command>
+  forge-preflight <command>
 
 Commands:
   status    Check project prerequisites (git, npm, tests)
@@ -247,9 +247,9 @@ Commands:
   help      Show this help message
 
 Examples:
-  forge-validate status
-  forge-validate dev
-  forge-validate ship
+  forge-preflight status
+  forge-preflight dev
+  forge-preflight ship
 `);
 }
 

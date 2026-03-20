@@ -129,10 +129,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CI/CD-aware: auto-aborts in non-interactive environments
   - Package manager auto-detection (bun/pnpm/yarn/npm)
 
-- **Validation CLI**: `forge-validate` command
-  - `forge-validate status` - Check project prerequisites
-  - `forge-validate dev` - Validate before /dev stage
-  - `forge-validate ship` - Validate before /ship stage
+- **Preflight CLI**: `forge-preflight` command
+  - `forge-preflight status` - Check project prerequisites
+  - `forge-preflight dev` - Validate before /dev stage
+  - `forge-preflight ship` - Validate before /ship stage
 
 - **Auto-Installation**: Beads and OpenSpec setup
   - Quick setup mode auto-installs Beads

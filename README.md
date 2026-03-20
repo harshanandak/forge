@@ -172,9 +172,9 @@ Git hooks automatically enforce TDD practices:
 
 ```bash
 # Validation CLI
-forge-validate status    # Check project prerequisites
-forge-validate dev       # Validate before /dev stage
-forge-validate ship      # Validate before /ship stage
+forge-preflight status    # Check project prerequisites
+forge-preflight dev       # Validate before /dev stage
+forge-preflight ship      # Validate before /ship stage
 ```
 
 ### 5. Smart Tool Recommendations (v1.7.0)
