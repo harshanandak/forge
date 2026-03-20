@@ -20,6 +20,7 @@ on:
       - 'scripts/**'
       - 'packages/**'
       - '.github/workflows/**'
+      - '.forge/hooks/**'
   pull_request:
     branches: [ "master" ]
     paths:
@@ -28,6 +29,7 @@ on:
       - 'scripts/**'
       - 'packages/**'
       - '.github/workflows/**'
+      - '.forge/hooks/**'
   schedule:
     - cron: '19 20 * * 4'
 

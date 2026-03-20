@@ -51,7 +51,12 @@ echo -e "${BLUE}╚════════════════════�
 
 # Step 1: Type Check
 print_header "1/4: Type Check"
-print_warning "SKIPPED (no TypeScript in project)"
+if bun run typecheck; then
+  print_warning "Type check completed (no TypeScript configured yet)"
+else
+  print_error "Type check failed"
+  exit 1
+fi
 
 # Step 2: Lint
 print_header "2/4: Lint"
