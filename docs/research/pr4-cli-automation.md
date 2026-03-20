@@ -24,7 +24,7 @@ Transform Forge from **documentation-driven workflow** to **CLI-automated workfl
 
 **CLI Entry Points**:
 - `bin/forge.js` (3,800+ lines) - Setup with agent configuration
-- `bin/forge-validate.js` (304 lines) - Validation with switch dispatch
+- `bin/forge-preflight.js` (304 lines) - Validation with switch dispatch
 
 **Commands**: `.claude/commands/` - 11 markdown files defining workflow stages
 
@@ -37,7 +37,7 @@ Transform Forge from **documentation-driven workflow** to **CLI-automated workfl
 - loadSetupState() - Resume from last state
 - isSetupComplete() - Check completion
 
-**Validation Pattern** (bin/forge-validate.js):
+**Validation Pattern** (bin/forge-preflight.js):
 - Modular dispatch with switch statement
 - Separate handler functions per command
 - Export for testing
@@ -138,7 +138,7 @@ if (!config.includes('expected-repo')) {
 **What**: Use plain Node.js without Commander.js/yargs/oclif
 
 **Why**:
-- Forge has established patterns (bin/forge-validate.js)
+- Forge has established patterns (bin/forge-preflight.js)
 - Custom logic needed
 - No framework overhead
 - Testing infrastructure in place
@@ -299,7 +299,7 @@ test('complete research workflow end-to-end', async () => {
 ## Sources
 
 **Codebase**:
-- bin/forge.js, bin/forge-validate.js
+- bin/forge.js, bin/forge-preflight.js
 - .claude/commands/*.md
 - lib/setup.js (state management)
 - test/e2e/ (E2E patterns)

@@ -900,16 +900,18 @@ if [[ "$1" == "worktree" ]]; then
 ${porcelainOutput}
 PORCELAINEOF
   exit 0
+elif [[ "$1" == "rev-parse" ]]; then
+  # Support DEFAULT_BRANCH auto-detection: say master exists
+  if [[ "$3" == "master" ]]; then exit 0; fi
+  exit 1
 elif [[ "$1" == "diff" ]]; then
-  # Extract branch: git diff master...<branch> --name-only --
+  # Extract branch: git diff <base>...<branch> --name-only --
   BRANCH="\${2#master...}"
+  BRANCH="\${BRANCH#main...}"
   case "$BRANCH" in
 ${diffCases}
     *) echo "" ;;
   esac
-  exit 0
-elif [[ "$1" == "rev-parse" ]]; then
-  echo "master"
   exit 0
 fi
 command git "$@"
@@ -1094,6 +1096,7 @@ command git "$@"
         // pair is "branch1 branch2", we match on $2 and $3
         const [b1, b2] = pair.split(' ');
         return `    if [ "$MTBRANCH1" = "${b1}" ] && [ "$MTBRANCH2" = "${b2}" ]; then
+      echo "abc123def456abc123def456abc123def456abc1234"
       printf '%s\\n' '${result.output || ''}'
       exit ${result.exitCode}
     fi`;
@@ -1107,8 +1110,14 @@ elif [ "$1" = "worktree" ]; then
 ${porcelainOutput}
 PORCELAINEOF
   exit 0
+elif [ "$1" = "rev-parse" ]; then
+  # Support DEFAULT_BRANCH auto-detection: always say master exists
+  if [ "$3" = "master" ]; then exit 0; fi
+  exit 1
 elif [ "$1" = "diff" ]; then
+  # Strip base-branch prefix (master... or main...)
   BRANCH="\${2#master...}"
+  BRANCH="\${BRANCH#main...}"
   case "$BRANCH" in
 ${diffCases}
     *) echo "" ;;

@@ -12,6 +12,8 @@
 #
 # Environment:
 #   BD_CMD  — override the bd command (for testing with mocks)
+#   GIT_CMD — override the git command (for testing with mocks)
+#   DEFAULT_BRANCH — override the default branch name (default: auto-detect)
 #
 # Cross-platform: bash 3.2 compatible (no associative arrays, no mapfile).
 # OWASP A03: All variables quoted, sanitize() strips injection patterns.
@@ -53,6 +55,17 @@ fi
 BD="${BD_CMD:-bd}"
 GIT="${GIT_CMD:-git}"
 JSON_MODE=0
+
+# Auto-detect default branch (master or main), with override via DEFAULT_BRANCH env
+if [ -n "${DEFAULT_BRANCH:-}" ]; then
+  BASE_BRANCH="$DEFAULT_BRANCH"
+elif "$GIT" rev-parse --verify master >/dev/null 2>&1; then
+  BASE_BRANCH="master"
+elif "$GIT" rev-parse --verify main >/dev/null 2>&1; then
+  BASE_BRANCH="main"
+else
+  BASE_BRANCH="master"
+fi
 
 # Parse arguments (bash 3.2 compatible — no associative arrays)
 for arg in "$@"; do
@@ -223,9 +236,9 @@ EOF
 # Get in-progress issues for matching (only if we have sessions)
 IN_PROGRESS_JSON="[]"
 if [ "$SESSION_COUNT" -gt 0 ]; then
-  IN_PROGRESS_JSON="$("$BD" list --status in_progress --json --limit 0 2>/dev/null || echo '[]')"
-  # Fallback: if bd doesn't support --status flag, filter from full list
-  if [ "$(printf '%s' "$IN_PROGRESS_JSON" | jq 'length' 2>/dev/null)" = "0" ] || [ -z "$IN_PROGRESS_JSON" ]; then
+  IN_PROGRESS_JSON="$("$BD" list --status in_progress --json --limit 0 2>/dev/null || echo '')"
+  # Fallback: only if bd command failed (empty output), not if result is legitimately empty array
+  if [ -z "$IN_PROGRESS_JSON" ] || ! printf '%s' "$IN_PROGRESS_JSON" | jq empty 2>/dev/null; then
     IN_PROGRESS_JSON="$(printf '%s' "$ISSUES_JSON" | jq '[.[] | select(.status == "in_progress")]')"
   fi
 fi
@@ -301,7 +314,7 @@ fi
 
 # ── File-level conflict detection ────────────────────────────────────────
 # For each active worktree branch, get changed files via:
-#   git diff master...<branch> --name-only --
+#   git diff <base-branch>...<branch> --name-only --
 # Uses -- separator to prevent argument injection (OWASP A03)
 
 # ALL_BRANCH_FILES: pipe-delimited list of "branch:file1,file2,..."
@@ -321,7 +334,7 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
     esac
 
     # Get changed files for this branch vs master (-- prevents injection)
-    _files="$("$GIT" diff "master...${_branch}" --name-only -- 2>/dev/null || echo '')"
+    _files="$("$GIT" diff "${BASE_BRANCH}...${_branch}" --name-only -- 2>/dev/null || echo '')"
     # Collapse to comma-delimited, strip empty lines
     _files_csv="$(printf '%s' "$_files" | tr '\n' ',' | sed 's/,$//' | sed 's/^,//')"
 
@@ -458,11 +471,10 @@ if [ "$TIER2_ENABLED" = "1" ]; then
         _line_num=0
         while IFS= read -r _cf_line; do
           _line_num=$((_line_num + 1))
-          # Skip the first line (tree SHA) if present
-          case "$_cf_line" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) continue ;;
-            "") continue ;;
-          esac
+          # Skip the first line (tree SHA output from merge-tree)
+          if [ "$_line_num" -eq 1 ]; then continue; fi
+          # Skip empty lines
+          if [ -z "$_cf_line" ]; then continue; fi
           if [ -n "$_conflict_files" ]; then
             _conflict_files="${_conflict_files},${_cf_line}"
           else
@@ -558,7 +570,6 @@ else
           .branch as $other |
           .files[] |
           # Only show Conflict risk if NOT already a merge conflict
-          select([$mc_files[] | select(. == .)] | length == 0) // . |
           if ($mc_files | index(.)) then empty
           else "    ! Conflict risk: " + . + " (" + $other + " in-progress)"
           end
