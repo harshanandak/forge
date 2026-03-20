@@ -271,47 +271,6 @@ function getWorkflowCommands() {
   }
 }
 
-// Code review tool options (reserved for future feature)
-const _CODE_REVIEW_TOOLS = {
-  'github-code-quality': {
-    name: 'GitHub Code Quality',
-    description: 'FREE, built-in - Zero setup required',
-    recommended: true
-  },
-  'coderabbit': {
-    name: 'CodeRabbit',
-    description: 'FREE for open source - Install GitHub App at https://coderabbit.ai'
-  },
-  'greptile': {
-    name: 'Greptile',
-    description: 'Paid ($99+/mo) - Enterprise code review',
-    requiresApiKey: true,
-    envVar: 'GREPTILE_API_KEY',
-    getKeyUrl: 'https://greptile.com'
-  }
-};
-
-// Code quality tool options (reserved for future feature)
-const _CODE_QUALITY_TOOLS = {
-  'eslint': {
-    name: 'ESLint only',
-    description: 'FREE, built-in - No external server required',
-    recommended: true
-  },
-  'sonarcloud': {
-    name: 'SonarCloud',
-    description: '50k LoC free, cloud-hosted',
-    requiresApiKey: true,
-    envVars: ['SONAR_TOKEN', 'SONAR_ORGANIZATION', 'SONAR_PROJECT_KEY'],
-    getKeyUrl: 'https://sonarcloud.io/account/security'
-  },
-  'sonarqube': {
-    name: 'SonarQube Community',
-    description: 'FREE, self-hosted, unlimited LoC',
-    envVars: ['SONARQUBE_URL', 'SONARQUBE_TOKEN'],
-    dockerCommand: 'docker run -d --name sonarqube -p 9000:9000 sonarqube:community'
-  }
-};
 
 // Helper function to safely execute commands (no user input)
 function safeExec(cmd) {
