@@ -178,18 +178,111 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
 if [ "$JSON_MODE" = "1" ]; then
   printf '%s\n' "$SCORED_JSON"
 else
-  # Human-readable table output
-  printf '%s\n' "$SCORED_JSON" | jq -r '
-    "RANK  SCORE   ID            PRIORITY  TYPE      STATUS        TITLE",
-    "----  ------  ------------  --------  --------  ------------  -----",
-    (to_entries[] |
-      "\(.key + 1 | tostring | .[0:4] | . + "  " * (6 - length))  " +
-      "\(.value.score | tostring | .[0:6] | . + " " * (8 - length))  " +
-      "\(.value.id | .[0:12] | . + " " * (14 - length))  " +
-      "\(.value.priority // "-" | .[0:8] | . + " " * (10 - length))  " +
-      "\(.value.type // "-" | .[0:8] | . + " " * (10 - length))  " +
-      "\(.value.status // "-" | .[0:12] | . + " " * (14 - length))  " +
-      "\(.value.title // "-")"
-    )
-  '
+  # Grouped, colored output
+  # NO_COLOR support: https://no-color.org/
+  if [ -n "${NO_COLOR:-}" ]; then
+    C_RESET="" C_GREEN="" C_YELLOW="" C_RED="" C_DIM="" C_BOLD="" C_CYAN=""
+  else
+    C_RESET=$'\033[0m' C_GREEN=$'\033[32m' C_YELLOW=$'\033[33m'
+    C_RED=$'\033[31m' C_DIM=$'\033[2m' C_BOLD=$'\033[1m' C_CYAN=$'\033[36m'
+  fi
+
+  # Use jq to assign groups and format, then bash to colorize
+  printf '%s\n' "$SCORED_JSON" | jq -r --arg now "$(date +%s)" '
+    # Assign group to each issue
+    [.[] | . as $item |
+      # Compute days since updated_at
+      (if .updated_at then
+        ((.updated_at | sub("\\.[0-9]+Z$"; "Z")) | fromdateiso8601) as $ts |
+        (($now | tonumber) - $ts) / 86400 | floor
+       else 0 end) as $days_ago |
+      # Group assignment (priority order: RESUME > UNBLOCK_CHAINS > READY_WORK > BLOCKED > BACKLOG)
+      (if .status == "in_progress" then "RESUME"
+       elif (.dependent_count // 0) >= 2 and .status != "in_progress" then "UNBLOCK_CHAINS"
+       elif .priority == "P4" then "BACKLOG"
+       elif (.dependency_count // 0) > 0 and .status != "closed" then "BLOCKED"
+       else "READY_WORK"
+       end) as $group |
+      $item + { group: $group, days_ago: $days_ago }
+    ] |
+
+    # Group order mapping
+    def group_order:
+      if . == "RESUME" then 0
+      elif . == "UNBLOCK_CHAINS" then 1
+      elif . == "READY_WORK" then 2
+      elif . == "BLOCKED" then 3
+      elif . == "BACKLOG" then 4
+      else 5 end;
+
+    # Sort by group order, then by score descending within group
+    sort_by([(.group | group_order), -.score]) |
+
+    # Group and format
+    group_by(.group) |
+    sort_by(.[0].group | group_order) |
+    [.[] |
+      # Group header
+      (.[0].group | if . == "UNBLOCK_CHAINS" then "UNBLOCK CHAINS"
+       elif . == "READY_WORK" then "READY WORK"
+       else . end) as $header |
+      "GROUP:" + $header,
+      (to_entries[] |
+        .value as $item |
+        (.key + 1 | tostring) as $rank |
+        # Staleness flag
+        (if $item.days_ago >= 7 then " [stale " + ($item.days_ago | tostring) + "d]" else "" end) as $stale |
+        # Status + days
+        "[" + ($item.status // "open") + " " + ($item.days_ago | tostring) + "d]" as $status_tag |
+        # Unblocks annotation
+        (if ($item.dependents // [] | length) > 0 then
+          "\n   -> Unblocks: " + ($item.dependents | join(", "))
+         else "" end) as $unblocks |
+        "ENTRY:" + $item.group + ":" +
+          $rank + ". [" + ($item.score | tostring) + "] " +
+          $item.id + " (" + ($item.priority // "-") + " " + ($item.type // "-") + ") -- " +
+          ($item.title // "-") + " " + $status_tag + $stale + $unblocks
+      ),
+      ""
+    ] | .[]
+  ' | while IFS= read -r line; do
+    case "$line" in
+      GROUP:RESUME)
+        printf '%s%s=== RESUME ===%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+        ;;
+      GROUP:UNBLOCK\ CHAINS)
+        printf '%s%s=== UNBLOCK CHAINS ===%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
+        ;;
+      GROUP:READY\ WORK)
+        printf '%s%s=== READY WORK ===%s\n' "$C_BOLD" "$C_YELLOW" "$C_RESET"
+        ;;
+      GROUP:BLOCKED)
+        printf '%s%s=== BLOCKED ===%s\n' "$C_BOLD" "$C_RED" "$C_RESET"
+        ;;
+      GROUP:BACKLOG)
+        printf '%s%s=== BACKLOG ===%s\n' "$C_BOLD" "$C_DIM" "$C_RESET"
+        ;;
+      ENTRY:RESUME:*)
+        printf '  %s%s%s\n' "$C_GREEN" "${line#ENTRY:RESUME:}" "$C_RESET"
+        ;;
+      ENTRY:UNBLOCK_CHAINS:*)
+        printf '  %s%s%s\n' "$C_CYAN" "${line#ENTRY:UNBLOCK_CHAINS:}" "$C_RESET"
+        ;;
+      ENTRY:READY_WORK:*)
+        printf '  %s%s%s\n' "$C_YELLOW" "${line#ENTRY:READY_WORK:}" "$C_RESET"
+        ;;
+      ENTRY:BLOCKED:*)
+        printf '  %s%s%s\n' "$C_RED" "${line#ENTRY:BLOCKED:}" "$C_RESET"
+        ;;
+      ENTRY:BACKLOG:*)
+        printf '  %s%s%s\n' "$C_DIM" "${line#ENTRY:BACKLOG:}" "$C_RESET"
+        ;;
+      "")
+        # blank line between groups
+        ;;
+      *)
+        printf '%s\n' "$line"
+        ;;
+    esac
+  done
 fi
