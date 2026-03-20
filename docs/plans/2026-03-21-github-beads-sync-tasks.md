@@ -22,7 +22,8 @@
 5. Write test: assert `loadConfig(customPath)` merges user overrides with defaults
 6. Run test: RED, implement merge logic, GREEN
 7. Write test: assert missing config file returns defaults (not throws)
-8. Commit: `feat: add config loader for GitHub-Beads sync`
+8. Verify: run `bunx eslint scripts/github-beads-sync/config.mjs` — confirm ESLint handles `.mjs` files. If not, update ESLint config before proceeding (blocker for all subsequent tasks).
+9. Commit: `feat: add config loader for GitHub-Beads sync`
 
 **Expected output**: `loadConfig()` returns `{ labelToType, labelToPriority, defaultType, defaultPriority, mapAssignee, publicRepoGate }`.
 
@@ -66,6 +67,27 @@
 8. Commit: `feat: add bot comment parser/builder for GitHub-Beads sync`
 
 **Expected output**: `buildComment` returns markdown string, `parseComment` returns `{ beadsId, issueNumber }` or `null`.
+
+---
+
+### Task 3b: GitHub API caller (`scripts/github-beads-sync/github-api.mjs`)
+
+**File(s)**: `scripts/github-beads-sync/github-api.mjs`
+**What to implement**: Module that interacts with the GitHub API via `gh api` CLI (avoids needing octokit dependency). Exports `findSyncComment(owner, repo, issueNumber)` (returns existing beads-sync comment or null), `createOrEditComment(owner, repo, issueNumber, body)` (edit-don't-create: finds existing sync comment and edits it, or creates new if none exists), `closeIssue(owner, repo, issueNumber)` (for Phase 2). All calls via `execFileSync('gh', [...args])`. Parses JSON responses.
+
+**TDD steps**:
+1. Write test: `test/scripts/github-beads-sync/github-api.test.js` — assert `buildFindCommentArgs("owner", "repo", 42)` returns correct `gh api` args array
+2. Run test: RED, implement, GREEN
+3. Write test: assert `parseFindCommentResponse(jsonArray)` extracts beads-sync comment from array of comments
+4. Run test: RED, implement, GREEN
+5. Write test: assert `parseFindCommentResponse([])` returns `null` when no sync comment exists
+6. Run test: RED, implement, GREEN
+7. Write test: assert `buildCreateCommentArgs` and `buildEditCommentArgs` produce correct args
+8. Run test: RED, implement, GREEN
+9. Write test: assert `buildCloseIssueArgs` produces correct PATCH args
+10. Commit: `feat: add GitHub API caller for beads sync bot comments`
+
+**Expected output**: Correct `gh api` arg arrays, parsed JSON responses for comment find/create/edit.
 
 ---
 
@@ -156,13 +178,34 @@
 
 ---
 
+### Task 7b: Integration test with fixture events
+
+**File(s)**: `test/scripts/github-beads-sync/integration.test.js`, `test/scripts/github-beads-sync/fixtures/`
+**What to implement**: End-to-end integration test that wires all modules together using mock fixtures. Creates fixture GitHub event JSON files (`issue-opened.json`, `issue-closed.json`) with realistic payloads. Mocks `execFileSync` (for both `bd` and `gh` CLI calls) at the boundary. Asserts full flow: event JSON -> sanitize -> map labels -> bd create args -> mapping file update -> comment body output. Tests both `opened` and `closed` paths. Verifies no shell metacharacters leak through the entire pipeline.
+
+**TDD steps**:
+1. Create fixture files: `test/scripts/github-beads-sync/fixtures/issue-opened.json` (realistic GitHub webhook payload with labels, assignee, title with special chars)
+2. Create fixture: `test/scripts/github-beads-sync/fixtures/issue-closed.json`
+3. Write test: assert `handleOpened` with fixture produces correct bd args, mapping update, and comment body
+4. Run test: RED, implement (wire module mocks), GREEN
+5. Write test: assert `handleClosed` with fixture reads mapping, calls bd close with correct args
+6. Run test: RED, implement, GREEN
+7. Write test: assert `handleOpened` with malicious fixture (shell injection in title) sanitizes correctly through entire pipeline
+8. Run test: RED, implement, GREEN
+9. Write test: assert `handleClosed` with missing mapping falls back to GitHub API comment scan
+10. Commit: `test: add integration tests for GitHub-Beads sync pipeline`
+
+**Expected output**: Full pipeline tested with realistic fixtures, no shell injection leaks.
+
+---
+
 ## Wave 3: GitHub Actions workflows (depends on Wave 2)
 
 ### Task 8: GitHub Actions workflow — issues.opened + issues.closed
 
 **Beads**: forge-y3uh, forge-xjl7
 **File(s)**: `.github/workflows/github-to-beads.yml`
-**What to implement**: Single workflow file with two jobs (or one job with conditional steps). Triggers: `issues: [opened, closed]`. Security: all GitHub event data passed via `env:` (never `${{ }}` in `run:`). Concurrency group: `beads-sync` (queue, don't cancel). Permissions: `contents: write`, `issues: write`. Steps: checkout, setup-bun, install bd, run Node script, commit + push `.beads/` and mapping file, post/edit bot comment using GitHub API.
+**What to implement**: Single workflow file with two jobs (or one job with conditional steps). Triggers: `issues: [opened, closed]`. Security: all GitHub event data passed via `env:` (never `${{ }}` in `run:`). Concurrency group: `beads-sync` (queue, don't cancel). Permissions: `contents: write`, `issues: write`. Steps: checkout, setup-bun, install bd, run Node script, commit + push `.beads/` and mapping file, post/edit bot comment using GitHub API. **Push retry**: include retry loop for git push (pull --rebase + push, max 3 attempts) to handle concurrent workflow runs.
 
 **TDD steps**:
 1. Write workflow file with `opened` job
@@ -170,8 +213,9 @@
 3. Add `closed` job with mapping file lookup + bd close
 4. Write test: validate concurrency group is set
 5. Write test: validate permissions are minimal (`contents: write`, `issues: write`)
-6. Manual test: create test issue on fork, verify bot comment + beads creation
-7. Commit: `feat: add GitHub Actions workflow for issue sync`
+6. Write test: validate push retry logic exists (grep for retry/rebase pattern in workflow)
+7. Manual test: create test issue on fork, verify bot comment + beads creation
+8. Commit: `feat: add GitHub Actions workflow for issue sync`
 
 **Expected output**: Workflow triggers on issue events, creates/closes beads issues, posts bot comments.
 
@@ -247,9 +291,9 @@
 ## Dependency Graph
 
 ```
-Wave 1 (parallel):  T1  T2  T3  T4  T5  T6
-                      \   |   |   |   |   /
-Wave 2:                  T7 (entry point)
+Wave 1 (parallel):  T1  T2  T3  T3b  T4  T5  T6
+                      \   |   |   |    |   |   /
+Wave 2:              T7 (entry point) + T7b (integration test)
                           |
 Wave 3 (parallel):    T8     T9
                        \     /
@@ -264,9 +308,20 @@ Wave 6:                 T12
 
 | Wave | Tasks | Parallelizable | Est. Complexity |
 |------|-------|---------------|-----------------|
-| 1 | T1-T6 | Yes (all 6) | Low — pure functions |
-| 2 | T7 | No | Medium — orchestration |
-| 3 | T8-T9 | Yes (both) | Medium — workflow YAML |
+| 1 | T1-T6, T3b | Yes (all 7) | Low — pure functions |
+| 2 | T7, T7b | Sequential (T7 then T7b) | Medium — orchestration + integration test |
+| 3 | T8-T9 | Yes (both) | Medium — workflow YAML + push retry |
 | 4 | T10 | No | Medium — forge.js integration |
 | 5 | T11 | No | Low — similar to T7-T8 |
 | 6 | T12 | No | Low — docs only |
+
+## PR Strategy
+
+**Recommended: 2 PRs to keep reviews manageable**
+
+- **PR 1** (Waves 1-3): Core sync engine — 10 tasks, ~10 new files, all testable
+  - Modules, entry point, integration tests, workflow YAML, config files
+  - Self-contained and functional after merge
+- **PR 2** (Waves 4-6): Distribution + Phase 2 — 4 tasks
+  - Forge setup integration, reverse sync, documentation
+  - Depends on PR 1 being merged first
