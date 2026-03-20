@@ -7,7 +7,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 
 // We will import getWorkflowCommands from bin/forge.js once it is exported
 let getWorkflowCommands;
@@ -92,6 +92,41 @@ describe('hardcoded command count and copyFile warning', () => {
     // should NOT exist — warning should always fire
     const hasDebugGate = /else if \(process\.env\.DEBUG\)\s*\{[^}]*Source file not found/.test(forgeSource);
     expect(hasDebugGate).toBe(false);
+  });
+});
+
+describe('agent count consistency', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8')
+  );
+  const readmeContent = fs.readFileSync(
+    path.resolve(__dirname, '..', 'README.md'),
+    'utf-8'
+  );
+  const agentsDir = path.resolve(__dirname, '..', 'lib', 'agents');
+  const pluginFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.plugin.json'));
+
+  test('package.json description mentions correct agent count or "all AI agents"', () => {
+    const desc = packageJson.description;
+    // Must either say "ALL AI" (case-insensitive) or mention the actual plugin count
+    const mentionsAll = /all ai/i.test(desc);
+    const mentionsCount = desc.includes(String(pluginFiles.length));
+    expect(mentionsAll || mentionsCount).toBe(true);
+  });
+
+  test('README agent count is consistent with lib/agents/*.plugin.json count', () => {
+    const actualCount = pluginFiles.length;
+    // Check all numeric agent count claims in README
+    const countPatterns = [
+      /works with \*\*(\d+) (?:AI )?(?:coding )?agents\*\*/i,
+      /Multi-Agent.*?(\d+) agents/i,
+    ];
+    for (const pattern of countPatterns) {
+      const match = readmeContent.match(pattern);
+      if (match) {
+        expect(Number(match[1])).toBe(actualCount);
+      }
+    }
   });
 });
 

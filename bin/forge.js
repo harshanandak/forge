@@ -563,7 +563,7 @@ function copyFile(src, dest) {
       }
       fs.copyFileSync(src, destPath);
       return true;
-    } else if (process.env.DEBUG) {
+    } else {
       console.warn(`  ⚠ Source file not found: ${src}`);
     }
   } catch (err) {
@@ -1943,7 +1943,7 @@ function copyAgentCommands(agent, claudeCommands) {
     const targetDir = agent.dirs[0]; // First dir is commands/workflows
     writeFile(`${targetDir}/${targetFile}`, targetContent);
   });
-  console.log('  Converted: 9 workflow commands');
+  console.log(`  Converted: ${getWorkflowCommands().length} workflow commands`);
 }
 
 // Helper: Copy rules for agent
@@ -2355,7 +2355,7 @@ function displaySetupSummary(selectedAgents) {
       console.log(`  - ${agent.linkFile} (${agent.name})`);
     }
     if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (9 workflow commands)`);
+      console.log(`  - .claude/commands/ (${getWorkflowCommands().length} workflow commands)`);
     }
     if (agent.hasSkill) {
       const skillDir = agent.dirs.find(d => d.includes('/skills/'));
