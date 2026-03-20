@@ -1073,6 +1073,224 @@ command git "$@"
     });
   });
 
+  describe('tier-2 merge-tree conflict detection', () => {
+    /**
+     * Helper: create a mock git that handles worktree, diff, --version, and merge-tree.
+     * @param {string} porcelainOutput - worktree list --porcelain output
+     * @param {Object<string, string[]>} branchFiles - map of branch name -> changed files
+     * @param {string} gitVersion - git version string (e.g. "git version 2.45.0")
+     * @param {Object<string, {exitCode: number, output: string}>} mergeTreeResults - map of "branch1 branch2" -> result
+     */
+    function createMockGitTier2(porcelainOutput, branchFiles, gitVersion, mergeTreeResults) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-tier2-'));
+      const mockScript = path.join(tmpDir, 'git');
+      const diffCases = Object.entries(branchFiles).map(([branch, files]) => {
+        if (files.length === 0) return `    "${branch}") echo "" ;;`;
+        const fileList = files.join('\\n');
+        return `    "${branch}") printf '${fileList}\\n' ;;`;
+      }).join('\n');
+      // Build merge-tree case entries
+      const mergeCases = Object.entries(mergeTreeResults || {}).map(([pair, result]) => {
+        // pair is "branch1 branch2", we match on $2 and $3
+        const [b1, b2] = pair.split(' ');
+        return `    if [ "$MTBRANCH1" = "${b1}" ] && [ "$MTBRANCH2" = "${b2}" ]; then
+      printf '%s\\n' '${result.output || ''}'
+      exit ${result.exitCode}
+    fi`;
+      }).join('\n');
+      const scriptContent = `#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then
+  echo "${gitVersion}"
+  exit 0
+elif [ "$1" = "worktree" ]; then
+  cat <<'PORCELAINEOF'
+${porcelainOutput}
+PORCELAINEOF
+  exit 0
+elif [ "$1" = "diff" ]; then
+  BRANCH="\${2#master...}"
+  case "$BRANCH" in
+${diffCases}
+    *) echo "" ;;
+  esac
+  exit 0
+elif [ "$1" = "merge-tree" ]; then
+  # Extract the two branch args (after flags)
+  shift  # remove "merge-tree"
+  MTBRANCH1=""
+  MTBRANCH2=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --*) shift ;;
+      *)
+        if [ -z "$MTBRANCH1" ]; then
+          MTBRANCH1="$1"
+        else
+          MTBRANCH2="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+${mergeCases}
+  exit 0
+fi
+command git "$@"
+`;
+      fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
+      return { tmpDir, mockScript };
+    }
+
+    const twoBranchPorcelain = [
+      'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
+      'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
+      'worktree /repo/.worktrees/beta', 'HEAD ghi789', 'branch refs/heads/feat/beta', '',
+    ].join('\n');
+
+    test('shows !! Merge conflict for real conflicts (exit 1)', () => {
+      const branchFiles = {
+        'feat/alpha': ['shared.js', 'alpha-only.js'],
+        'feat/beta': ['shared.js', 'beta-only.js'],
+      };
+      const mergeTreeResults = {
+        'feat/alpha feat/beta': { exitCode: 1, output: 'shared.js' },
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('!! Merge conflict');
+        expect(result.stdout).toContain('shared.js');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', () => {
+      const branchFiles = {
+        'feat/alpha': ['shared.js', 'alpha-only.js'],
+        'feat/beta': ['shared.js', 'beta-only.js'],
+      };
+      const mergeTreeResults = {
+        'feat/alpha feat/beta': { exitCode: 0, output: '' },
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        // Should still show Conflict risk (Tier 1) but NOT Merge conflict
+        expect(result.stdout).toMatch(/! Conflict risk/);
+        expect(result.stdout).not.toContain('!! Merge conflict');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('skips Tier 2 silently when git version < 2.38', () => {
+      const branchFiles = {
+        'feat/alpha': ['shared.js'],
+        'feat/beta': ['shared.js'],
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      // Old git version — no merge-tree results needed since it should be skipped
+      const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.37.1', {});
+      try {
+        const result = runSmartStatus([], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        // Should show Tier 1 conflict risk (file overlap exists)
+        expect(result.stdout).toMatch(/! Conflict risk/);
+        // Should NOT show Tier 2 merge conflict (skipped due to old git)
+        expect(result.stdout).not.toContain('!! Merge conflict');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('JSON output includes merge_conflicts field for real conflicts', () => {
+      const branchFiles = {
+        'feat/alpha': ['shared.js'],
+        'feat/beta': ['shared.js'],
+      };
+      const mergeTreeResults = {
+        'feat/alpha feat/beta': { exitCode: 1, output: 'shared.js' },
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
+      try {
+        const result = runSmartStatus(['--json'], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        const parsed = JSON.parse(result.stdout);
+        expect(parsed).toHaveProperty('sessions');
+        // At least one session should have merge_conflicts
+        const allConflicts = parsed.sessions.flatMap(s => s.merge_conflicts || []);
+        expect(allConflicts.length).toBeGreaterThan(0);
+        expect(allConflicts[0]).toHaveProperty('branch');
+        expect(allConflicts[0]).toHaveProperty('files');
+        expect(allConflicts[0].files).toContain('shared.js');
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+
+    test('no merge_conflicts when git >= 2.38 but no real conflicts', () => {
+      const branchFiles = {
+        'feat/alpha': ['shared.js'],
+        'feat/beta': ['shared.js'],
+      };
+      const mergeTreeResults = {
+        'feat/alpha feat/beta': { exitCode: 0, output: '' },
+      };
+      const mockBd = createMockBd({
+        issues: [
+          { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      });
+      const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
+      try {
+        const result = runSmartStatus(['--json'], {
+          BD_CMD: mockBd.mockScript, GIT_CMD: mockGit.mockScript, NO_COLOR: '1',
+        });
+        expect(result.status).toBe(0);
+        const parsed = JSON.parse(result.stdout);
+        const allConflicts = parsed.sessions.flatMap(s => s.merge_conflicts || []);
+        expect(allConflicts.length).toBe(0);
+      } finally {
+        cleanupTmpDir(mockBd.tmpDir);
+        cleanupTmpDir(mockGit.tmpDir);
+      }
+    });
+  });
+
   describe('epic_proximity', () => {
     test('epic proximity boosts issues near completion', () => {
       const mockData = {
