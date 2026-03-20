@@ -112,8 +112,12 @@ export function parseShowOutput(stdout) {
  * @returns {string|null} The created beads ID, or null if parsing failed
  */
 export function bdCreate(opts) {
-  const stdout = execFileSync('bd', buildCreateArgs(opts), EXEC_OPTS);
-  return parseCreateOutput(stdout);
+  try {
+    const stdout = execFileSync('bd', buildCreateArgs(opts), EXEC_OPTS);
+    return parseCreateOutput(stdout);
+  } catch (_err) {
+    return null;
+  }
 }
 
 /**
@@ -127,12 +131,17 @@ export function bdClose(beadsId, reason) {
 
 /**
  * Run `bd show` and return the parsed status.
+ * Returns null if bd exits non-zero (e.g., deleted issue, corrupted .beads/).
  * @param {string} beadsId
  * @returns {string|null} Lowercase status or null
  */
 export function bdShow(beadsId) {
-  const stdout = execFileSync('bd', buildShowArgs(beadsId), EXEC_OPTS);
-  return parseShowOutput(stdout);
+  try {
+    const stdout = execFileSync('bd', buildShowArgs(beadsId), EXEC_OPTS);
+    return parseShowOutput(stdout);
+  } catch (_err) {
+    return null;
+  }
 }
 
 /**
