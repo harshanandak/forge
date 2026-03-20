@@ -271,47 +271,6 @@ function getWorkflowCommands() {
   }
 }
 
-// Code review tool options (reserved for future feature)
-const _CODE_REVIEW_TOOLS = {
-  'github-code-quality': {
-    name: 'GitHub Code Quality',
-    description: 'FREE, built-in - Zero setup required',
-    recommended: true
-  },
-  'coderabbit': {
-    name: 'CodeRabbit',
-    description: 'FREE for open source - Install GitHub App at https://coderabbit.ai'
-  },
-  'greptile': {
-    name: 'Greptile',
-    description: 'Paid ($99+/mo) - Enterprise code review',
-    requiresApiKey: true,
-    envVar: 'GREPTILE_API_KEY',
-    getKeyUrl: 'https://greptile.com'
-  }
-};
-
-// Code quality tool options (reserved for future feature)
-const _CODE_QUALITY_TOOLS = {
-  'eslint': {
-    name: 'ESLint only',
-    description: 'FREE, built-in - No external server required',
-    recommended: true
-  },
-  'sonarcloud': {
-    name: 'SonarCloud',
-    description: '50k LoC free, cloud-hosted',
-    requiresApiKey: true,
-    envVars: ['SONAR_TOKEN', 'SONAR_ORGANIZATION', 'SONAR_PROJECT_KEY'],
-    getKeyUrl: 'https://sonarcloud.io/account/security'
-  },
-  'sonarqube': {
-    name: 'SonarQube Community',
-    description: 'FREE, self-hosted, unlimited LoC',
-    envVars: ['SONARQUBE_URL', 'SONARQUBE_TOKEN'],
-    dockerCommand: 'docker run -d --name sonarqube -p 9000:9000 sonarqube:community'
-  }
-};
 
 // Helper function to safely execute commands (no user input)
 function safeExec(cmd) {
@@ -500,10 +459,10 @@ See AGENTS.md for full workflow details.
 `;
 
 // Helper functions
-const resolvedProjectRoot = path.resolve(projectRoot);
 
 function ensureDir(dir) {
   const fullPath = path.resolve(projectRoot, dir);
+  const resolvedProjectRoot = path.resolve(projectRoot);
 
   // SECURITY: Prevent path traversal
   if (!fullPath.startsWith(resolvedProjectRoot)) {
@@ -520,6 +479,7 @@ function ensureDir(dir) {
 function writeFile(filePath, content) {
   try {
     const fullPath = path.resolve(projectRoot, filePath);
+    const resolvedProjectRoot = path.resolve(projectRoot);
 
     // SECURITY: Prevent path traversal
     if (!fullPath.startsWith(resolvedProjectRoot)) {
@@ -553,6 +513,7 @@ function readFile(filePath) {
 function copyFile(src, dest) {
   try {
     const destPath = path.resolve(projectRoot, dest);
+    const resolvedProjectRoot = path.resolve(projectRoot);
 
     // SECURITY: Prevent path traversal
     if (!destPath.startsWith(resolvedProjectRoot)) {
@@ -2541,11 +2502,13 @@ function parseFlags() {
     agents: null,
     all: false,
     help: false,
+    version: false,
     path: null,
     merge: null,     // 'smart'|'preserve'|'replace'
     type: null,      // 'critical'|'standard'|'simple'|'hotfix'|'docs'|'refactor'
     interview: false, // Force context interview
     budget: null,     // Budget mode for recommend command
+    yes: false,       // Non-interactive mode (skip prompts, use defaults)
   };
 
   for (let i = 0; i < args.length;) {
@@ -2563,6 +2526,9 @@ function parseFlags() {
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true;
       i++;
+    } else if (arg === '--version' || arg === '-V') {
+      flags.version = true;
+      i++;
     } else if (arg === '--path' || arg === '-p' || arg.startsWith('--path=')) {
       const result = parsePathFlag(args, i);
       flags.path = result.value;
@@ -2579,6 +2545,9 @@ function parseFlags() {
       const result = parseTypeFlag(args, i);
       flags.type = result.value;
       i = result.nextIndex;
+    } else if (arg === '--yes' || arg === '-y') {
+      flags.yes = true;
+      i++;
     } else if (arg === '--interview') {
       flags.interview = true;
       i++;
@@ -2717,7 +2686,7 @@ function showHelp() {
   console.log('Usage:');
   console.log('  npx forge setup [options]     Interactive agent configuration');
   console.log('  npx forge recommend           Show recommended tools for your project');
-  console.log('  npx forge                     Minimal install (AGENTS.md + docs)');
+  console.log('  npx forge --version              Show version');
   console.log('');
   console.log('Options:');
   console.log('  --path, -p <dir>     Target project directory (default: current directory)');
@@ -2736,6 +2705,9 @@ function showHelp() {
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
   console.log('  --interview          Force context interview (gather project information)');
   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
+  console.log('  --yes, -y            Non-interactive setup with sensible defaults');
+  console.log('                       Defaults to claude agent, skips prompts');
+  console.log('  --version, -V        Show version');
   console.log('  --help, -h           Show this help message');
   console.log('');
   console.log('Available agents:');
@@ -2753,6 +2725,8 @@ function showHelp() {
   console.log('  npx forge setup --agents=claude,cursor   # Same, different syntax');
   console.log('  npx forge setup --skip-external          # No service configuration');
   console.log('  npx forge setup --agents claude --quick  # Quick + specific agent');
+  console.log('  npx forge setup --yes                    # Non-interactive, defaults to claude');
+  console.log('  npx forge setup --yes --agents cursor   # Non-interactive, specific agent');
   console.log('  npx forge setup --all --skip-external    # All agents, no services');
   console.log('  npx forge setup --merge=smart            # Use intelligent merge for existing files');
   console.log('  npx forge setup --type=critical          # Set workflow profile manually');
@@ -3706,8 +3680,10 @@ function determineSelectedAgents(flags) {
   return [];
 }
 
-// Helper: Handle setup command in non-quick mode
-async function handleSetupCommand(selectedAgents, flags) {
+// Shared setup executor — used by handleSetupCommand
+async function executeSetup(config) {
+  const { agents, skipExternal } = config;
+
   showBanner('Installing for specified agents...');
   console.log('');
 
@@ -3715,10 +3691,15 @@ async function handleSetupCommand(selectedAgents, flags) {
   checkPrerequisites();
   console.log('');
 
-  // Copy AGENTS.md
-  const agentsSrc = path.join(packageDir, 'AGENTS.md');
-  if (copyFile(agentsSrc, 'AGENTS.md')) {
-    console.log('  Created: AGENTS.md (universal standard)');
+  // Copy AGENTS.md (only if not exists — preserve user customizations)
+  const agentsDest = path.join(projectRoot, 'AGENTS.md');
+  if (fs.existsSync(agentsDest)) {
+    console.log('  Skipped: AGENTS.md (already exists)');
+  } else {
+    const agentsSrc = path.join(packageDir, 'AGENTS.md');
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Created: AGENTS.md (universal standard)');
+    }
   }
   console.log('');
 
@@ -3726,14 +3707,19 @@ async function handleSetupCommand(selectedAgents, flags) {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands if needed
-  const claudeCommands = loadClaudeCommands(selectedAgents);
+  // Load Claude commands — use loadAndSetupClaudeCommands when claude is selected
+  // so that .claude/commands/ are seeded before reading them
+  const claudeCommands = agents.includes('claude')
+    ? loadAndSetupClaudeCommands(agents)
+    : loadClaudeCommands(agents);
 
-  // Setup agents
-  selectedAgents.forEach(agentKey => {
-    if (agentKey !== 'claude') {
-      setupAgent(agentKey, claudeCommands);
-    }
+  // Setup non-claude agents — claude is already set up by loadAndSetupClaudeCommands above
+  // For non-claude-selected runs, all agents go through setupAgent normally
+  const remainingAgents = agents.includes('claude')
+    ? agents.filter(a => a !== 'claude')
+    : agents;
+  remainingAgents.forEach(agentKey => {
+    setupAgent(agentKey, claudeCommands);
   });
 
   console.log('');
@@ -3744,10 +3730,18 @@ async function handleSetupCommand(selectedAgents, flags) {
   installGitHooks();
 
   // External services (unless skipped)
-  await handleExternalServices(flags.skipExternal, selectedAgents);
+  await handleExternalServices(skipExternal, agents);
 
   console.log('');
   console.log('Done! Get started with: /status');
+}
+
+// Helper: Handle setup command in non-quick mode
+async function handleSetupCommand(selectedAgents, flags) {
+  await executeSetup({
+    agents: selectedAgents,
+    skipExternal: flags.skipExternal,
+  });
 }
 
 // Helper: Handle external services configuration
@@ -3787,15 +3781,43 @@ async function main() {
     return;
   }
 
+  // Show version
+  if (flags.version) {
+    console.log(`Forge v${VERSION}`);
+    return;
+  }
+
   // Handle --path option: change to target directory
   if (flags.path) {
     // Update projectRoot after changing directory to maintain state consistency
     projectRoot = handlePathSetup(flags.path);
   }
 
+  // First-run detection: check if Forge is configured in this project
+  // Skip for: setup (needs to run to configure), recommend (read-only)
+  // Note: help and version already returned above, so no need to check here
+  if (command !== 'setup' && command !== 'recommend') {
+    const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
+    if (!fs.existsSync(agentsMdPath)) {
+      console.error('[FORGE_SETUP_REQUIRED] Forge is not configured in this project.\n');
+      console.error('  Run:  npx forge setup');
+      console.error('  Or:   npx forge setup --yes  (non-interactive)\n');
+      process.exit(1);
+    }
+  }
+
   if (command === 'setup') {
     // Determine agents to install
     let selectedAgents = determineSelectedAgents(flags);
+
+    // Non-interactive mode: --yes defaults to claude agent, skips prompts
+    // Applied before --quick so --quick --yes works correctly
+    if (flags.yes && selectedAgents.length === 0) {
+      selectedAgents = ['claude'];
+    }
+    if (flags.yes) {
+      flags.skipExternal = true;
+    }
 
     // Quick mode
     if (flags.quick) {
@@ -3807,7 +3829,7 @@ async function main() {
       return;
     }
 
-    // Agents specified via flag (non-quick mode)
+    // Agents specified via flag or --yes default (non-quick mode)
     if (selectedAgents.length > 0) {
       await handleSetupCommand(selectedAgents, flags);
       return;

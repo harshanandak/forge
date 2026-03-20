@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **P2 bug fixes: setup, postinstall, dead config, lint hooks** (PR #69, forge-cpnj + forge-iv1p + forge-8u6q + forge-zs2u)
+  - Setup code paths unified: extracted `executeSetup()` shared helper, fixed claude agent being skipped in CLI path
+  - Removed `postinstall` script — no more surprise file writes on `npm install`
+  - Added `[FORGE_SETUP_REQUIRED]` first-run detection with exit code 1
+  - Added `--yes`/`-y` flag for non-interactive setup (AI agent friendly)
+  - Removed dead `_CODE_REVIEW_TOOLS` and `_CODE_QUALITY_TOOLS` config objects
+  - Replaced `npx --yes eslint` in lint.js with package manager delegation (eliminates supply chain risk)
+  - Added `--max-warnings 0` to package.json lint script
+  - Added `--version`/`-V` flag handling
+  - Exempted `recommend` command from first-run guard (read-only, useful for onboarding)
+  - 38 new tests (1676 → 1714)
+
 - **Stage naming consistency + COMMANDS array fix** (PR #67, forge-7lvz + forge-b262)
   - Replaced hardcoded COMMANDS array with `getWorkflowCommands()` — scans `.claude/commands/*.md` at runtime
   - Fixed stale `/check` → `/validate` and `/merge` → `/premerge` in CURSOR_RULE and `.cursorrules`
