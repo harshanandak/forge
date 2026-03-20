@@ -147,7 +147,9 @@ function main() {
       const output = execGit(['diff', '--name-only', `${upstream}..HEAD`]).trim();
       const changedFiles = output.split('\n').filter(Boolean);
 
-      if (changedFiles.length > 0 && changedFiles.every(f => f.startsWith('.beads/'))) {
+      if (changedFiles.length === 0) {
+        console.error(`${YELLOW}Note: no changed files detected — nothing to bypass${RESET}`);
+      } else if (changedFiles.every(f => f.startsWith('.beads/'))) {
         console.error(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
         process.exit(0);
       }

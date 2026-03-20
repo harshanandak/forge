@@ -9,7 +9,7 @@ const isWindows = process.platform === 'win32';
  * Create a Node.js-based mock git executable.
  * Works cross-platform: creates a node script + launcher (shell/.cmd).
  */
-function createMockGit(mockDir, { diffOutput = '', diffExitCode = 0, upstreamExitCode = 0 }) {
+function createMockGit(mockDir, { diffOutput = '', diffExitCode = 0, upstreamExitCode = 0, branchName = 'master' }) {
   if (!Number.isInteger(diffExitCode) || !Number.isInteger(upstreamExitCode)) {
     throw new TypeError('Exit codes must be integers');
   }
@@ -17,6 +17,7 @@ function createMockGit(mockDir, { diffOutput = '', diffExitCode = 0, upstreamExi
 
   // Node.js script that emulates git behavior
   const diffFiles = JSON.stringify(diffOutput.split('\n').filter(Boolean));
+  const safeBranch = JSON.stringify(branchName);
   const nodeScript = `
 const args = process.argv.slice(2).join(' ');
 if (args.includes('rev-parse') && args.includes('@{u}')) {
@@ -24,12 +25,16 @@ if (args.includes('rev-parse') && args.includes('@{u}')) {
   process.stdout.write('origin/master\\n');
   process.exit(0);
 }
+if (args.includes('rev-parse') && args.includes('--abbrev-ref')) {
+  process.stdout.write(${safeBranch} + '\\n');
+  process.exit(0);
+}
 if (args.includes('diff') && args.includes('--name-only')) {
   if (${diffExitCode} !== 0) { process.stderr.write('error\\n'); process.exit(${diffExitCode}); }
   ${diffFiles}.forEach(f => process.stdout.write(f + '\\n'));
   process.exit(0);
 }
-process.stdout.write('master\\n');
+process.stdout.write(${safeBranch} + '\\n');
 process.exit(0);
 `;
   fs.writeFileSync(path.join(mockDir, 'mock-git.js'), nodeScript);
@@ -166,6 +171,27 @@ describe('scripts/branch-protection.js', () => {
         }
       });
       expect(result.status).toBe(0);
+    });
+
+    test('should allow push on feature branch via git exec path (no LEFTHOOK_GIT_BRANCH)', () => {
+      const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-branch');
+      try {
+        createMockGit(mockDir, { diffOutput: '', branchName: 'feat/some-feature' });
+        const mockJs = path.join(mockDir, 'mock-git.js');
+        const result = spawnSync('node', [scriptPath], {
+          cwd: path.join(__dirname, '..'),
+          stdio: 'pipe',
+          env: {
+            ...process.env,
+            FORGE_GIT_MOCK_JS: mockJs,
+            NODE_ENV: 'test'
+            // No LEFTHOOK_GIT_BRANCH — forces the execGit path
+          }
+        });
+        expect(result.status).toBe(0);
+      } finally {
+        fs.rmSync(mockDir, { recursive: true, force: true });
+      }
     });
 
     test('should block push to master with non-beads files', () => {
