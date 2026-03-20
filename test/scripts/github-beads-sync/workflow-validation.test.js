@@ -14,7 +14,7 @@ describe('GitHub → Beads Workflow Validation', () => {
   let workflowContent;
 
   beforeAll(() => {
-    workflowContent = readFileSync(WORKFLOW_PATH, 'utf-8');
+    workflowContent = readFileSync(WORKFLOW_PATH, 'utf-8').replace(/\r\n/g, '\n');
   });
 
   describe('Security Constraints', () => {

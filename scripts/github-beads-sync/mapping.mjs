@@ -26,7 +26,7 @@ export function readMapping(mappingPath) {
   try {
     return JSON.parse(raw);
   } catch (_err) {
-    throw new Error(`Failed to parse mapping file at ${mappingPath}: ${_err.message}`);
+    throw new Error(`Failed to parse mapping file at ${mappingPath}: ${_err.message}`, { cause: _err });
   }
 }
 
