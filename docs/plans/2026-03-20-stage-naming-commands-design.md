@@ -51,7 +51,18 @@ Make conservative choice and document in commit message.
 
 ## OWASP Top 10
 
-Low risk — changes are to local CLI tooling, no network input, no user data handling. The filesystem scan uses `path.join` with controlled directory names. No new attack surface.
+This feature is local CLI tooling (filesystem reads, string replacements). Risk assessment per category:
+
+- **A01 Broken Access Control**: N/A — no auth, no access control
+- **A02 Cryptographic Failures**: N/A — no crypto, no secrets
+- **A03 Injection**: Low — `getWorkflowCommands()` uses `fs.readdirSync` + `path.join` with controlled directory, no user input in paths
+- **A04 Insecure Design**: N/A — read-only filesystem scan, no state changes
+- **A05 Security Misconfiguration**: N/A — no configuration surfaces exposed
+- **A06 Vulnerable Components**: N/A — no new dependencies added
+- **A07 Authentication Failures**: N/A — no authentication
+- **A08 Data Integrity Failures**: N/A — no serialization, no data pipelines
+- **A09 Logging & Monitoring Failures**: N/A — local CLI, no monitoring needed
+- **A10 SSRF**: N/A — no network requests
 
 ## TDD Scenarios
 

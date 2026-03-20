@@ -43,6 +43,9 @@ describe('Stage naming consistency', () => {
       'docs/VALIDATION.md',
       'docs/TOOLCHAIN.md',
       'docs/ROADMAP.md',
+      'docs/MANUAL_REVIEW_GUIDE.md',
+      'docs/ENHANCED_ONBOARDING.md',
+      'QUICKSTART.md',
     ];
 
     for (const relPath of activeDocs) {
@@ -55,9 +58,16 @@ describe('Stage naming consistency', () => {
       }
 
       if (content !== null) {
-        test(`${relPath} has no backtick-quoted /check stage name`, () => {
+        test(`${relPath} has no /check as stage name`, () => {
           const staleRefs = content.match(/`\/check`/g);
           expect(staleRefs).toBeNull();
+        });
+
+        test(`${relPath} has no /merge as stage name`, () => {
+          // Match /merge used as a command (in flow diagrams, tables, code blocks)
+          // but not in prose like "merge PR" or "git merge"
+          const mergeAsStage = content.match(/\/merge\s*(→|N\b|`|\n)/g);
+          expect(mergeAsStage).toBeNull();
         });
       }
     }

@@ -300,7 +300,7 @@ All PRs tracked in Beads with proper dependencies:
 Each PR follows the Forge workflow:
 
 ```
-/status → /research → /plan → /dev → /validate → /ship → /review → /merge → /verify
+/status → /research → /plan → /dev → /validate → /ship → /review → /premerge → /verify
 ```
 
 **Current branch**: `master` (ready for next feature branch)
