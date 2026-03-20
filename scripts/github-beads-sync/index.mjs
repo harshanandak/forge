@@ -84,7 +84,7 @@ export async function handleOpened(event, options = {}) {
   const issueNumber = issue.number;
   const rawTitle = issue.title;
   const labels = issue.labels || [];
-  const assignee = issue.assignee?.login;
+  const assignee = config.mapAssignee ? issue.assignee?.login : undefined;
   const htmlUrl = issue.html_url;
   const body = issue.body ?? '';
   const authorAssociation = issue.author_association;
@@ -217,7 +217,10 @@ export async function handleClosed(event, options = {}) {
     const comment = findSyncComment(owner, repo, issueNumber);
     if (comment) {
       const parsed = parseComment(comment.body);
-      beadsId = parsed?.beadsId ?? null;
+      // Verify the comment's tagged issue number matches current issue (prevents cross-issue close)
+      if (parsed && parsed.issueNumber === issueNumber) {
+        beadsId = parsed.beadsId;
+      }
     }
   }
 
