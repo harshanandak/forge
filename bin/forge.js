@@ -3760,6 +3760,18 @@ async function main() {
     projectRoot = handlePathSetup(flags.path);
   }
 
+  // First-run detection: check if Forge is configured in this project
+  // Skip for: setup (needs to run to configure), help, version
+  if (command !== 'setup' && !flags.help && !flags.version) {
+    const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
+    if (!fs.existsSync(agentsMdPath)) {
+      console.error('[FORGE_SETUP_REQUIRED] Forge is not configured in this project.\n');
+      console.error('  Run:  npx forge setup');
+      console.error('  Or:   npx forge setup --yes  (non-interactive)\n');
+      process.exit(1);
+    }
+  }
+
   if (command === 'setup') {
     // Determine agents to install
     let selectedAgents = determineSelectedAgents(flags);
