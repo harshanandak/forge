@@ -80,7 +80,7 @@ describe('GitHub → Beads Workflow Validation', () => {
     });
 
     it('should install Beads CLI globally', () => {
-      expect(workflowContent).toContain('bun add -g @beads/bd');
+      expect(workflowContent).toContain('bun add -g @beads/bd@');
     });
 
     it('should checkout with fetch-depth: 0 for push', () => {

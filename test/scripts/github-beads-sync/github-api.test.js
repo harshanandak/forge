@@ -14,7 +14,6 @@ describe('github-api', () => {
       expect(args).toEqual([
         'api',
         'repos/myorg/myrepo/issues/42/comments',
-        '--paginate',
       ]);
     });
 

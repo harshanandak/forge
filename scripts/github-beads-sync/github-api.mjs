@@ -19,7 +19,6 @@ export function buildFindCommentsArgs(owner, repo, issueNumber) {
   return [
     'api',
     `repos/${owner}/${repo}/issues/${issueNumber}/comments`,
-    '--paginate',
   ];
 }
 

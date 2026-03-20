@@ -133,10 +133,13 @@ export async function handleOpened(event, options = {}) {
   }
 
   // 8. Sanitize title and labels
-  const { sanitized: sanitizedTitle } = sanitizeTitle(rawTitle);
+  const { sanitized: sanitizedTitle, warnings: titleWarnings } = sanitizeTitle(rawTitle);
+  if (titleWarnings.length) console.warn('sanitize:', titleWarnings);
   const sanitizedLabels = labels.map((l) => {
     const name = typeof l === 'string' ? l : l.name;
-    return sanitizeLabel(name).sanitized;
+    const { sanitized, warnings } = sanitizeLabel(name);
+    if (warnings.length) console.warn('sanitize:', warnings);
+    return sanitized;
   });
 
   // 9. Map labels to type/priority
@@ -200,12 +203,12 @@ export async function handleClosed(event, options = {}) {
   const issueNumber = event.issue.number;
   const stateReason = event.issue.state_reason;
 
-  // 3. Guard: bot actor
+  // 2. Guard: bot actor
   if (isBot(event.sender?.login)) {
     return { skipped: true, reason: 'bot actor' };
   }
 
-  // 3b. Guard: skip "not planned" closures (only close on "completed")
+  // 3. Guard: skip "not planned" closures (only close on "completed")
   if (stateReason && stateReason !== 'completed') {
     return { skipped: true, reason: `closed as ${stateReason}` };
   }
