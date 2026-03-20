@@ -403,6 +403,100 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
   done
 fi
 
+# ── Tier 2: git merge-tree conflict detection ──────────────────────────
+# If git >= 2.38 and there are file overlaps from Tier 1, run merge-tree
+# to detect actual merge conflicts vs mere file overlap.
+
+TIER2_ENABLED=0
+if [ "$SESSION_COUNT" -ge 2 ]; then
+  # Check git version >= 2.38 (merge-tree --write-tree requires it)
+  _git_ver="$("$GIT" --version 2>/dev/null || echo '')"
+  _git_major=0
+  _git_minor=0
+  # Parse "git version X.Y.Z..." -> extract major and minor
+  _ver_nums="${_git_ver#git version }"
+  _git_major="${_ver_nums%%.*}"
+  _ver_rest="${_ver_nums#*.}"
+  _git_minor="${_ver_rest%%.*}"
+  # Validate they are numbers
+  case "$_git_major" in ''|*[!0-9]*) _git_major=0 ;; esac
+  case "$_git_minor" in ''|*[!0-9]*) _git_minor=0 ;; esac
+
+  if [ "$_git_major" -gt 2 ] || { [ "$_git_major" -eq 2 ] && [ "$_git_minor" -ge 38 ]; }; then
+    TIER2_ENABLED=1
+  fi
+fi
+
+# For each pair of branches with file overlaps, run merge-tree
+if [ "$TIER2_ENABLED" = "1" ]; then
+  # Collect all branch pairs that have conflicts in SESSIONS_JSON
+  _conflict_pairs="$(printf '%s' "$SESSIONS_JSON" | jq -r '
+    [.[] | select((.conflicts // []) | length > 0) |
+      .branch as $b |
+      .conflicts[] |
+      [$b, .branch] | sort | join(" ")
+    ] | unique | .[]
+  ')"
+
+  if [ -n "$_conflict_pairs" ]; then
+    # Process each unique pair
+    while IFS= read -r _pair; do
+      [ -z "$_pair" ] && continue
+      _b1="${_pair%% *}"
+      _b2="${_pair#* }"
+
+      # Run merge-tree; exit 1 = actual conflict, exit 0 = clean merge
+      _mt_output=""
+      _mt_exit=0
+      _mt_output="$("$GIT" merge-tree --write-tree --name-only --no-messages -- "$_b1" "$_b2" 2>/dev/null)" || _mt_exit=$?
+
+      if [ "$_mt_exit" -ne 0 ] && [ -n "$_mt_output" ]; then
+        # Real conflict detected — parse conflicted file names
+        # merge-tree outputs a tree SHA on first line, then filenames
+        # With --name-only, conflicted files are listed after the SHA line
+        _conflict_files=""
+        _line_num=0
+        while IFS= read -r _cf_line; do
+          _line_num=$((_line_num + 1))
+          # Skip the first line (tree SHA) if present
+          case "$_cf_line" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) continue ;;
+            "") continue ;;
+          esac
+          if [ -n "$_conflict_files" ]; then
+            _conflict_files="${_conflict_files},${_cf_line}"
+          else
+            _conflict_files="${_cf_line}"
+          fi
+        done <<MTEOF
+$_mt_output
+MTEOF
+
+        if [ -n "$_conflict_files" ]; then
+          _cf_json="$(printf '%s' "$_conflict_files" | jq -R 'split(",")')"
+
+          # Add merge_conflicts to both branches in SESSIONS_JSON
+          for _target_branch in "$_b1" "$_b2"; do
+            _other_branch="$_b1"
+            [ "$_target_branch" = "$_b1" ] && _other_branch="$_b2"
+
+            SESSIONS_JSON="$(printf '%s' "$SESSIONS_JSON" | jq \
+              --arg branch "$_target_branch" \
+              --arg other "$_other_branch" \
+              --argjson files "$_cf_json" \
+              '[.[] | if .branch == $branch then
+                . + {merge_conflicts: ((.merge_conflicts // []) + [{branch: $other, files: $files}])}
+              else . end]'
+            )"
+          done
+        fi
+      fi
+    done <<PAIRSEOF
+$_conflict_pairs
+PAIRSEOF
+  fi
+fi
+
 # ── Output ──────────────────────────────────────────────────────────────
 
 if [ "$JSON_MODE" = "1" ]; then
@@ -432,6 +526,7 @@ else
       .issue_count as $count |
       .changed_files as $files |
       .conflicts as $conflicts |
+      .merge_conflicts as $merge_conflicts |
       # Branch line
       (if $count > 0 then
         "  " + $branch + " -> " + ($ids | join(", ")) + " (" + ($count | tostring) + " issue" + (if $count > 1 then "s" else "" end) + ")"
@@ -447,12 +542,26 @@ else
           "    Changed: " + ($files | join(", "))
         end)
       else empty end),
-      # Conflict risk annotations
+      # Tier 2: Merge conflict annotations (real conflicts from merge-tree)
+      (if ($merge_conflicts // [] | length) > 0 then
+        ($merge_conflicts[] |
+          .branch as $other |
+          .files[] |
+          "    !! Merge conflict: " + . + " (" + $branch + " vs " + $other + ")"
+        )
+      else empty end),
+      # Tier 1: Conflict risk annotations (file overlap only, excluding merge conflicts)
       (if ($conflicts // [] | length) > 0 then
+        # Build set of files that have real merge conflicts
+        ([$merge_conflicts // [] | .[] | .files[]] | unique) as $mc_files |
         ($conflicts[] |
           .branch as $other |
           .files[] |
-          "    ! Conflict risk: " + . + " (" + $other + " in-progress)"
+          # Only show Conflict risk if NOT already a merge conflict
+          select([$mc_files[] | select(. == .)] | length == 0) // . |
+          if ($mc_files | index(.)) then empty
+          else "    ! Conflict risk: " + . + " (" + $other + " in-progress)"
+          end
         )
       else empty end)
     '
