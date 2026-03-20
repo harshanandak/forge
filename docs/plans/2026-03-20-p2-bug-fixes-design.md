@@ -27,8 +27,8 @@ Fix 4 bugs across bin/forge.js, lefthook hooks, and package.json that cause setu
 **Fix (UPDATED — was Option E, now full removal)**:
 - **Remove postinstall from package.json entirely** — one line deleted
 - **Add first-run detection**: when any forge command runs and project isn't set up (no AGENTS.md), print clear setup guidance and exit
-- **Add `--auto` flag** to `npx forge setup` for non-interactive use by AI agents
-- `minimalInstall()` stays as internal logic, refactored to back `setup --auto`
+- **Add `--yes` / `-y` flag** to `npx forge setup` for non-interactive use by AI agents (npm ecosystem standard: npm init -y, create-next-app --yes)
+- `minimalInstall()` stays as internal logic, refactored to back `setup --yes`
 
 **Why changed from Option E**: Phase 2 research revealed:
 - pnpm 10+ and Bun block postinstall by default — Option E wouldn't run
@@ -53,7 +53,7 @@ Fix 4 bugs across bin/forge.js, lefthook hooks, and package.json that cause setu
 1. `forge setup --agents claude,cursor` and interactive setup produce identical file sets
 2. `npm install forge-workflow` produces zero output and zero file writes (no postinstall)
 3. Running any forge command without setup prints clear guidance message
-4. `npx forge setup --auto` works non-interactively for AI agents
+4. `npx forge setup --yes` (or `-y`) works non-interactively for AI agents
 5. `_CODE_REVIEW_TOOLS` and `_CODE_QUALITY_TOOLS` removed — no references in codebase
 6. `scripts/lint.js` uses detected package manager (`<pkg> run lint`), not npx
 7. Pre-push lint and `bun run lint` use the same eslint binary and config
@@ -81,7 +81,7 @@ Fix 4 bugs across bin/forge.js, lefthook hooks, and package.json that cause setu
 ## Approach Selected
 
 - **forge-cpnj**: Normalize-to-config pattern. Both `handleSetupCommand` and interactive path produce a config object (`{ agents, flags, skipExternal }`). One `executeSetup(config)` function runs. Uses existing guarded `writeFile`/`ensureDir` helpers (lines 505-539) with `startsWith(resolvedProjectRoot)` traversal protection.
-- **forge-iv1p**: Remove `"postinstall"` line from package.json. Add first-run detection in CLI entry point — check for AGENTS.md, print guidance if missing. Add `--auto` flag to setup command.
+- **forge-iv1p**: Remove `"postinstall"` line from package.json. Add first-run detection in CLI entry point — check for AGENTS.md, print `[FORGE_SETUP_REQUIRED]` guidance and exit with code 1. Add `--yes` / `-y` flag to setup command for non-interactive use. Precedence: explicit flags > --yes defaults > interactive prompts.
 - **forge-8u6q**: Delete `_CODE_REVIEW_TOOLS` (line 275) and `_CODE_QUALITY_TOOLS` (line 295) objects from bin/forge.js. Remove any prompts referencing them.
 - **forge-zs2u**: Rewrite `scripts/lint.js` to detect package manager (reuse pattern from `scripts/test.js`) and run `<pkg> run lint`. Fail with clear error if eslint not installed.
 
@@ -98,8 +98,9 @@ Fix 4 bugs across bin/forge.js, lefthook hooks, and package.json that cause setu
 
 ## Edge Cases
 
-1. **User runs forge command without setup**: first-run detection prints guidance, exits cleanly
-2. **AI agent runs forge command without setup**: sees guidance message, runs `npx forge setup --auto`
+1. **User runs forge command without setup**: first-run detection prints `[FORGE_SETUP_REQUIRED]` guidance, exits with code 1
+2. **AI agent runs forge command without setup**: sees `[FORGE_SETUP_REQUIRED]` prefix, runs `npx forge setup --yes`
+3. **AI agent in pseudo-TTY**: `--yes` flag is explicit (TTY detection alone unreliable — AI agents run in pseudo-TTY where `isTTY` is true)
 3. **No node_modules/.bin/eslint** (or no local eslint): lint.js fails with clear error suggesting `bun install`
 4. **User runs `forge setup --agents cursor` (no claude)**: shared helper skips claude seeding, only sets up cursor
 5. **Existing project with customized AGENTS.md**: setup never overwrites existing files
@@ -116,8 +117,11 @@ Fix 4 bugs across bin/forge.js, lefthook hooks, and package.json that cause setu
 - npm CLI issue #2226 — npx --yes breaking change
 - pnpm 10 — blocks lifecycle scripts by default
 - ci-info — 40+ CI vendor detection
-- create-next-app — normalize-to-config pattern
+- create-next-app — normalize-to-config pattern, --yes flag behavior
+- create-vite — --no-interactive pattern, TTY detection
 - Lefthook docs — recommends npm run lint delegation
+- ESLint v9 — first-run detection pattern (config-file-missing, exit code 2)
+- cross-spawn — Windows .cmd resolution for spawnSync
 
 ### OWASP Analysis
 
@@ -131,8 +135,11 @@ Fix 4 bugs across bin/forge.js, lefthook hooks, and package.json that cause setu
 ### Key Research Decisions
 
 1. **Postinstall removal over Option E**: pnpm/Bun block postinstall by default. First-run detection is more reliable across all package managers.
-2. **`<pkg> run lint` over `node_modules/.bin/eslint`**: Delegates to package.json (single source of truth). scripts/test.js already has the detection pattern.
+2. **`<pkg> run lint` over `node_modules/.bin/eslint`**: Delegates to package.json (single source of truth). scripts/test.js already has the detection pattern. Validated: nested spawnSync works reliably on Windows and Unix.
 3. **Normalize-to-config over shared function**: Prevents future drift — both paths must produce the same config object format, making divergence structurally impossible.
+4. **`--yes` over `--auto`**: npm ecosystem standard (npm init -y, create-next-app --yes). Most intuitive for both developers and AI agents.
+5. **`[FORGE_SETUP_REQUIRED]` prefix**: Machine-parseable hint for AI agents to distinguish "needs setup" from "has a bug". Exit code 1 (not 0) so scripts/CI can detect failure.
+6. **AGENTS.md as primary detection signal**: Single file check, same as ESLint's config file detection. `detectProjectStatus()` provides detailed per-component status when needed.
 
 ---
 
