@@ -12,11 +12,30 @@ name: ESLint
 on:
   push:
     branches: [ "master" ]
+    paths:
+      - 'bin/**'
+      - 'lib/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'packages/**'
+      - 'package.json'
+      - '.github/workflows/**'
+      - '*.js'
+      - '.claude/**/*.js'
+      - '.forge/hooks/**'
   pull_request:
-    # The branches below must be a subset of the branches above
     branches: [ "master" ]
-  schedule:
-    - cron: '39 2 * * 0'
+    paths:
+      - 'bin/**'
+      - 'lib/**'
+      - 'scripts/**'
+      - 'test/**'
+      - 'packages/**'
+      - 'package.json'
+      - '.github/workflows/**'
+      - '*.js'
+      - '.claude/**/*.js'
+      - '.forge/hooks/**'
 
 jobs:
   eslint:

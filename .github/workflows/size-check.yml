@@ -3,8 +3,34 @@ name: Package Size Monitor
 on:
   push:
     branches: [main, master]
+    paths:
+      - 'package.json'
+      - 'bin/**'
+      - 'lib/**'
+      - 'packages/**'
+      - 'skills/**'
+      - 'docs/*.md'
+      - '.claude/**'
+      - '.forge/hooks/**'
+      - '.github/prompts/**'
+      - 'install.sh'
+      - 'AGENTS.md'
+      - 'lefthook.yml'
   pull_request:
     branches: [main, master]
+    paths:
+      - 'package.json'
+      - 'bin/**'
+      - 'lib/**'
+      - 'packages/**'
+      - 'skills/**'
+      - 'docs/*.md'
+      - '.claude/**'
+      - '.forge/hooks/**'
+      - '.github/prompts/**'
+      - 'install.sh'
+      - 'AGENTS.md'
+      - 'lefthook.yml'
 
 jobs:
   size-check:

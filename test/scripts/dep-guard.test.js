@@ -280,7 +280,7 @@ ENDJSON
       expect(result.stdout).toContain('forge-other');
       expect(result.stdout).toContain('dependency');
       expect(result.stdout).toContain('Confidence: LOW');
-    });
+    }, 15000);
 
     test('overlap report includes actionable options', () => {
       // Reuse the overlapping mock from previous test

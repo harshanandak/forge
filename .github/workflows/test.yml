@@ -9,6 +9,7 @@ on:
       - 'scripts/**'
       - 'test/**'
       - 'test-env/**'
+      - 'packages/**'
       - 'package.json'
       - '.github/workflows/**'
   pull_request:
@@ -18,6 +19,7 @@ on:
       - 'scripts/**'
       - 'test/**'
       - 'test-env/**'
+      - 'packages/**'
       - 'package.json'
       - '.github/workflows/**'
   workflow_dispatch:  # Allow manual workflow runs
