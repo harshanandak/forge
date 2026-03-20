@@ -3673,8 +3673,10 @@ function determineSelectedAgents(flags) {
   return [];
 }
 
-// Helper: Handle setup command in non-quick mode
-async function handleSetupCommand(selectedAgents, flags) {
+// Shared setup executor — used by handleSetupCommand (and future interactive refactor)
+async function executeSetup(config) {
+  const { agents, skipExternal } = config;
+
   showBanner('Installing for specified agents...');
   console.log('');
 
@@ -3693,14 +3695,19 @@ async function handleSetupCommand(selectedAgents, flags) {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands if needed
-  const claudeCommands = loadClaudeCommands(selectedAgents);
+  // Load Claude commands — use loadAndSetupClaudeCommands when claude is selected
+  // so that .claude/commands/ are seeded before reading them
+  const claudeCommands = agents.includes('claude')
+    ? loadAndSetupClaudeCommands(agents)
+    : loadClaudeCommands(agents);
 
-  // Setup agents
-  selectedAgents.forEach(agentKey => {
-    if (agentKey !== 'claude') {
-      setupAgent(agentKey, claudeCommands);
-    }
+  // Setup non-claude agents — claude is already set up by loadAndSetupClaudeCommands above
+  // For non-claude-selected runs, all agents go through setupAgent normally
+  const remainingAgents = agents.includes('claude')
+    ? agents.filter(a => a !== 'claude')
+    : agents;
+  remainingAgents.forEach(agentKey => {
+    setupAgent(agentKey, claudeCommands);
   });
 
   console.log('');
@@ -3711,10 +3718,19 @@ async function handleSetupCommand(selectedAgents, flags) {
   installGitHooks();
 
   // External services (unless skipped)
-  await handleExternalServices(flags.skipExternal, selectedAgents);
+  await handleExternalServices(skipExternal, agents);
 
   console.log('');
   console.log('Done! Get started with: /status');
+}
+
+// Helper: Handle setup command in non-quick mode
+async function handleSetupCommand(selectedAgents, flags) {
+  await executeSetup({
+    agents: selectedAgents,
+    skipExternal: flags.skipExternal,
+    yes: flags.yes
+  });
 }
 
 // Helper: Handle external services configuration
