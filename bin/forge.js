@@ -3678,7 +3678,7 @@ function determineSelectedAgents(flags) {
   return [];
 }
 
-// Shared setup executor — used by handleSetupCommand (and future interactive refactor)
+// Shared setup executor — used by handleSetupCommand
 async function executeSetup(config) {
   const { agents, skipExternal } = config;
 
@@ -3689,10 +3689,15 @@ async function executeSetup(config) {
   checkPrerequisites();
   console.log('');
 
-  // Copy AGENTS.md
-  const agentsSrc = path.join(packageDir, 'AGENTS.md');
-  if (copyFile(agentsSrc, 'AGENTS.md')) {
-    console.log('  Created: AGENTS.md (universal standard)');
+  // Copy AGENTS.md (only if not exists — preserve user customizations)
+  const agentsDest = path.join(projectRoot, 'AGENTS.md');
+  if (fs.existsSync(agentsDest)) {
+    console.log('  Skipped: AGENTS.md (already exists)');
+  } else {
+    const agentsSrc = path.join(packageDir, 'AGENTS.md');
+    if (copyFile(agentsSrc, 'AGENTS.md')) {
+      console.log('  Created: AGENTS.md (universal standard)');
+    }
   }
   console.log('');
 
@@ -3734,7 +3739,6 @@ async function handleSetupCommand(selectedAgents, flags) {
   await executeSetup({
     agents: selectedAgents,
     skipExternal: flags.skipExternal,
-    yes: flags.yes
   });
 }
 
