@@ -31,33 +31,30 @@ process.exit(0);
 `;
   fs.writeFileSync(path.join(mockDir, 'mock-git.js'), nodeScript);
 
+  // Optional wrappers for manual PATH-based debugging; tests use FORGE_GIT_MOCK_JS instead.
   if (isWindows) {
-    // .cmd wrapper that delegates to node
     fs.writeFileSync(
       path.join(mockDir, 'git.cmd'),
       `@node "${path.join(mockDir, 'mock-git.js')}" %*\r\n`
     );
   } else {
-    // Shell wrapper
     const wrapper = `#!/bin/sh\nexec node "${path.join(mockDir, 'mock-git.js')}" "$@"\n`;
     fs.writeFileSync(path.join(mockDir, 'git'), wrapper, { mode: 0o755 });
   }
 }
 
 /**
- * Run branch-protection.js with a mock git on PATH.
- * Uses shell:true so Windows resolves .cmd files.
+ * Run branch-protection.js with mock-git.js (no shell, no git.exe shim on Windows).
  */
 function runWithMockGit(scriptPath, mockDir, branch) {
-  const nodeCmd = `node "${scriptPath}"`;
-  return spawnSync(nodeCmd, {
+  const mockJs = path.join(mockDir, 'mock-git.js');
+  return spawnSync('node', [scriptPath], {
     cwd: path.join(__dirname, '..'),
     stdio: 'pipe',
-    shell: true,
     env: {
       ...process.env,
       LEFTHOOK_GIT_BRANCH: branch,
-      PATH: `${mockDir}${path.delimiter}${process.env.PATH}`
+      FORGE_GIT_MOCK_JS: mockJs
     }
   });
 }
