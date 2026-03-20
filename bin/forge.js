@@ -1894,11 +1894,13 @@ function setupClaudeAgent(skipFiles = {}) {
   if (skipFiles.claudeCommands) {
     console.log('  Skipped: .claude/commands/ (keeping existing)');
   } else {
-    getWorkflowCommands().forEach(cmd => {
+    const cmds = getWorkflowCommands();
+    let copied = 0;
+    cmds.forEach(cmd => {
       const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
-      copyFile(src, `.claude/commands/${cmd}.md`);
+      if (copyFile(src, `.claude/commands/${cmd}.md`)) copied++;
     });
-    console.log(`  Copied: ${getWorkflowCommands().length} workflow commands`);
+    console.log(`  Copied: ${copied} workflow commands`);
   }
 
   // Copy rules
@@ -1943,7 +1945,7 @@ function copyAgentCommands(agent, claudeCommands) {
     const targetDir = agent.dirs[0]; // First dir is commands/workflows
     writeFile(`${targetDir}/${targetFile}`, targetContent);
   });
-  console.log(`  Converted: ${getWorkflowCommands().length} workflow commands`);
+  console.log(`  Converted: ${Object.keys(claudeCommands).length} workflow commands`);
 }
 
 // Helper: Copy rules for agent
