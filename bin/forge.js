@@ -261,8 +261,12 @@ function getWorkflowCommands() {
     return fs.readdirSync(commandsDir)
       .filter(f => f.endsWith('.md'))
       .map(f => f.replace(/\.md$/, ''));
-  } catch (_err) {
-    console.warn(`Warning: .claude/commands directory not found at ${commandsDir}`);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.warn(`Warning: .claude/commands directory not found at ${commandsDir}`);
+    } else {
+      console.warn(`Warning: failed to read .claude/commands — ${err.code}: ${err.message}`);
+    }
     return [];
   }
 }
