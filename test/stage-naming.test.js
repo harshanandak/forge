@@ -1,12 +1,12 @@
-import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+const fs = require('node:fs');
+const path = require('node:path');
+const { describe, test, expect } = require('bun:test');
 
-const ROOT = join(import.meta.dirname, '..');
+const ROOT = path.join(__dirname, '..');
 
 describe('Stage naming consistency', () => {
   describe('bin/forge.js CURSOR_RULE', () => {
-    const forgeSource = readFileSync(join(ROOT, 'bin', 'forge.js'), 'utf8');
+    const forgeSource = fs.readFileSync(path.join(ROOT, 'bin', 'forge.js'), 'utf8');
 
     // Extract the CURSOR_RULE template string
     const cursorRuleMatch = forgeSource.match(
@@ -19,8 +19,6 @@ describe('Stage naming consistency', () => {
     });
 
     test('does not contain /check as a stage name', () => {
-      // Match backtick-quoted /check or /check used as a stage command
-      // but not the word "check" in prose
       const staleCheckRefs = cursorRule.match(/`\/check`/g);
       expect(staleCheckRefs).toBeNull();
     });
@@ -50,11 +48,11 @@ describe('Stage naming consistency', () => {
     ];
 
     for (const relPath of activeDocs) {
-      const absPath = join(ROOT, relPath);
+      const absPath = path.join(ROOT, relPath);
       let content;
       try {
-        content = readFileSync(absPath, 'utf8');
-      } catch {
+        content = fs.readFileSync(absPath, 'utf8');
+      } catch (_e) {
         content = null;
       }
 
@@ -68,7 +66,7 @@ describe('Stage naming consistency', () => {
   });
 
   describe('.cursorrules file', () => {
-    const cursorrules = readFileSync(join(ROOT, '.cursorrules'), 'utf8');
+    const cursorrules = fs.readFileSync(path.join(ROOT, '.cursorrules'), 'utf8');
 
     test('does not contain backtick-quoted /check as stage name', () => {
       const staleRefs = cursorrules.match(/`\/check`/g);
@@ -76,13 +74,11 @@ describe('Stage naming consistency', () => {
     });
 
     test('does not contain /check in stage table row', () => {
-      // Stage table pattern: | N | `/check` |
       const tableRef = cursorrules.match(/\|\s*`\/check`\s*\|/g);
       expect(tableRef).toBeNull();
     });
 
     test('does not contain /check in flow diagram', () => {
-      // Flow diagram: /check →
       const flowRef = cursorrules.match(/\/check\s*→/g);
       expect(flowRef).toBeNull();
     });
@@ -92,11 +88,8 @@ describe('Stage naming consistency', () => {
     });
 
     test('contains /validate where /check was replaced', () => {
-      // Stage table should have /validate
       expect(cursorrules).toMatch(/\|\s*`\/validate`\s*\|/);
-      // Flow diagram should have /validate
       expect(cursorrules).toMatch(/\/validate\s*→/);
-      // Heading should reference /validate
       expect(cursorrules).toContain('Validate (`/validate`)');
     });
   });
