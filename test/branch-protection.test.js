@@ -10,6 +10,9 @@ const isWindows = process.platform === 'win32';
  * Works cross-platform: creates a node script + launcher (shell/.cmd).
  */
 function createMockGit(mockDir, { diffOutput = '', diffExitCode = 0, upstreamExitCode = 0 }) {
+  if (!Number.isInteger(diffExitCode) || !Number.isInteger(upstreamExitCode)) {
+    throw new TypeError('Exit codes must be integers');
+  }
   fs.mkdirSync(mockDir, { recursive: true });
 
   // Node.js script that emulates git behavior

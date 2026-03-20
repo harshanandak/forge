@@ -36,7 +36,7 @@ if (result.status !== 0) {
   console.error('');
   console.error('❌ Tests failed. Fix them before pushing.');
   console.error('');
-  console.error('Emergency bypass: LEFTHOOK=0 git push');
+  console.error('Fix the failing checks. Do not bypass hooks.');
   console.error('');
   process.exit(1);
 }

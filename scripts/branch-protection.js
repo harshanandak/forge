@@ -20,7 +20,7 @@ const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 
 /** Test-only: run mock-git.js via `node` so Windows does not need shell:true or git.exe shims */
-const GIT_MOCK_JS = (process.env.NODE_ENV === 'test' || process.env.FORGE_TEST_MODE === '1')
+const GIT_MOCK_JS = process.env.NODE_ENV === 'test'
   ? process.env.FORGE_GIT_MOCK_JS
   : undefined;
 
@@ -38,8 +38,9 @@ function fileExistsSync(p) {
  * Resolve a real git binary (git.exe on Windows). Never uses shell — avoids injection via argv joining.
  */
 function resolveGitBinary() {
-  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
-  const raw = process.env[pathKey] || '';
+  const raw = (process.platform === 'win32'
+    ? (process.env.Path || process.env.PATH || '')
+    : (process.env.PATH || ''));
   const dirs = raw.split(path.delimiter).filter(Boolean);
   if (process.platform === 'win32') {
     for (const d of dirs) {
@@ -87,6 +88,10 @@ function getCurrentBranch() {
     }
 
     const branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    if (!isSafeGitRefComponent(branch)) {
+      console.error(`${RED}✗ Error: Invalid branch name from git${RESET}`);
+      process.exit(1);
+    }
     return branch;
   } catch (error) {
     console.error(`${RED}✗ Error: Could not determine current branch${RESET}`);
