@@ -13,37 +13,22 @@ This command helps you understand the current state of the project before starti
 
 ## What This Command Does
 
-### Step 1: Check Project Health
+### Step 1: Smart Status (Issues ranked by priority)
 ```bash
-bd stats
+bash scripts/smart-status.sh
 ```
-- How many open / in-progress / completed issues?
-- Any blocked issues?
-
-### Step 2: Check Active Work
-```bash
-# Active Beads issues
-bd list --status in_progress
-```
-
-For each in-progress issue, show compact progress:
-```bash
-bash scripts/beads-context.sh parse-progress <issue-id>
-```
-Display the compact output (e.g., "3/7 tasks done | Last: Validation logic (def5678)")
+- Shows issues grouped by status (in-progress, open, completed)
+- Ranked by priority within each group (blocked first, then by staleness/age)
+- Includes task progress and last commit for each issue
 
 Hint: `bd show <id>` for full context on any issue.
 
-### Step 3: Review Recent Work
+### Step 2: Review Recent Commits
 ```bash
-# Recent commits
 git log --oneline -10
-
-# Recently completed Beads
-bd list --status completed --limit 5
 ```
 
-### Step 4: Determine Context
+### Step 3: Determine Context
 - **New feature**: No active work, ready to start fresh
 - **Continuing work**: In-progress issues found, resume where left off
 - **Review needed**: Work marked complete, needs review/merge
@@ -51,16 +36,22 @@ bd list --status completed --limit 5
 ## Example Output
 
 ```
-✓ Project Health: 3 open, 1 in-progress, 12 completed
-
-Active Work:
-  - forge-ctc: Clean up stale workflow refs (in_progress)
+=== IN PROGRESS (1) ===
+  forge-ctc  Clean up stale workflow refs
     3/7 tasks done | Last: Validation logic (def5678)
-    → bd show forge-ctc for full context
 
-Recent Completions:
-  - forge-uto: Sync AGENTS.md with agent cleanup (closed 2 days ago)
-  - forge-abc: Auth refresh tokens (closed 5 days ago)
+=== OPEN (3) ===
+  forge-xyz  Add retry logic to API client
+  forge-pqr  Refactor config loader
+  forge-mno  Update CI pipeline
+
+=== RECENTLY COMPLETED (2) ===
+  forge-uto  Sync AGENTS.md with agent cleanup
+  forge-abc  Auth refresh tokens
+
+Recent commits:
+  abc1234 feat: add retry logic
+  def5678 test: validation tests
 
 Context: Continuing work
 
