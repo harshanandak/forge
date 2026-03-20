@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 
 /**
  * Tests for scripts/smart-status.sh

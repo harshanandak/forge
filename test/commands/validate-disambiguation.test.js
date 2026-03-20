@@ -1,8 +1,8 @@
-import { describe, it, expect } from "bun:test";
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+const { describe, it, expect } = require("bun:test");
+const { readFileSync, existsSync } = require("node:fs");
+const { join } = require("node:path");
 
-const ROOT = join(import.meta.dir, "..", "..");
+const ROOT = join(__dirname, "..", "..");
 
 describe("/validate disambiguation note", () => {
   const validatePath = join(ROOT, ".claude", "commands", "validate.md");

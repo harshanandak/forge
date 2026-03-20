@@ -1,8 +1,8 @@
-import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+const { describe, test, expect } = require('bun:test');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 
-const planPath = join(import.meta.dir, '..', '..', '.claude', 'commands', 'plan.md');
+const planPath = join(__dirname, '..', '..', '.claude', 'commands', 'plan.md');
 const planContent = readFileSync(planPath, 'utf-8');
 
 describe('/plan phase tracking', () => {
