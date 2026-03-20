@@ -235,6 +235,9 @@ export async function handleClosed(event, options = {}) {
 
   // 7. Check if already closed
   const status = bdShow(beadsId);
+  if (status === null) {
+    return { skipped: true, reason: 'could not determine beads status' };
+  }
   if (status === 'closed') {
     return { skipped: true, reason: 'already closed' };
   }

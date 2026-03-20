@@ -67,6 +67,7 @@ jobs:
                 break
               fi
               echo "Push failed, attempt $i/3 — pulling with rebase..."
+              git rebase --abort 2>/dev/null || true
               git pull --rebase
             done
             if [ "$push_success" = false ]; then
