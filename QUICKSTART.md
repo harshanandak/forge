@@ -187,7 +187,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 
 ---
 
-### Stage 5: Check
+### Stage 5: Validate
 
 ```bash
 $ bunx forge /validate
@@ -264,10 +264,10 @@ Fix issues, commit, push - PR updates automatically.
 
 ---
 
-### Stage 8: Merge
+### Stage 8: Premerge
 
 ```bash
-$ bunx forge /merge 42
+$ bunx forge /premerge 42
 ```
 
 **Before merging**, updates:
@@ -346,7 +346,7 @@ In **5 minutes**, you:
 /validate
 /ship
 /review
-/merge
+/premerge
 /verify
 ```
 
@@ -392,8 +392,8 @@ bd ready  # Find work to do
 /validate        # Validate everything
 /ship         # Create PR
 /review N     # Address PR #N feedback
-/merge N      # Merge PR #N
-/verify       # Final docs check
+/premerge N   # Prepare PR #N for merge
+/verify       # Post-merge health check
 ```
 
 ---

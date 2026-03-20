@@ -251,7 +251,25 @@ function _checkWritePermission(filePath) {
   }
 }
 
-const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify', 'rollback'];
+/**
+ * Reads workflow command names from .claude/commands/*.md in the package directory.
+ * @returns {string[]} Command names (filenames without .md extension)
+ */
+function getWorkflowCommands() {
+  const commandsDir = path.join(packageDir, '.claude', 'commands');
+  try {
+    return fs.readdirSync(commandsDir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''));
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.warn(`Warning: .claude/commands directory not found at ${commandsDir}`);
+    } else {
+      console.warn(`Warning: failed to read .claude/commands — ${err.code}: ${err.message}`);
+    }
+    return [];
+  }
+}
 
 // Code review tool options (reserved for future feature)
 const _CODE_REVIEW_TOOLS = {
@@ -469,15 +487,14 @@ alwaysApply: true
 
 Use these commands via \`/command-name\`:
 
-1. \`/status\` - Check current context, active work, recent completions
-2. \`/research\` - Deep research with web search, document to docs/research/
-3. \`/plan\` - Create implementation plan, branch, tracking
-4. \`/dev\` - TDD development (RED-GREEN-REFACTOR cycles)
-5. \`/check\` - Validation (type/lint/security/tests)
-6. \`/ship\` - Create PR with full documentation
-7. \`/review\` - Address ALL PR feedback
-8. \`/merge\` - Update docs, merge PR, cleanup
-9. \`/verify\` - Final documentation verification
+- \`/status\` (utility) - Check current context, active work, recent completions
+1. \`/plan\` - Design intent Q&A, research, branch + task list
+2. \`/dev\` - Subagent-driven TDD per task (spec + quality review)
+3. \`/validate\` - Type check, lint, security, tests (HARD-GATE)
+4. \`/ship\` - Push and create PR with design doc reference
+5. \`/review\` - Handle ALL PR issues (Actions, Greptile, SonarCloud)
+6. \`/premerge\` - Complete docs on feature branch, hand off PR to user
+7. \`/verify\` - Post-merge health check (CI on main, close Beads)
 
 See AGENTS.md for full workflow details.
 `;
@@ -550,7 +567,7 @@ function copyFile(src, dest) {
       }
       fs.copyFileSync(src, destPath);
       return true;
-    } else if (process.env.DEBUG) {
+    } else {
       console.warn(`  ⚠ Source file not found: ${src}`);
     }
   } catch (err) {
@@ -1881,11 +1898,13 @@ function setupClaudeAgent(skipFiles = {}) {
   if (skipFiles.claudeCommands) {
     console.log('  Skipped: .claude/commands/ (keeping existing)');
   } else {
-    COMMANDS.forEach(cmd => {
+    const cmds = getWorkflowCommands();
+    let copied = 0;
+    cmds.forEach(cmd => {
       const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
-      copyFile(src, `.claude/commands/${cmd}.md`);
+      if (copyFile(src, `.claude/commands/${cmd}.md`)) copied++;
     });
-    console.log('  Copied: 9 workflow commands');
+    console.log(`  Copied: ${copied} workflow commands`);
   }
 
   // Copy rules
@@ -1930,7 +1949,7 @@ function copyAgentCommands(agent, claudeCommands) {
     const targetDir = agent.dirs[0]; // First dir is commands/workflows
     writeFile(`${targetDir}/${targetFile}`, targetContent);
   });
-  console.log('  Converted: 9 workflow commands');
+  console.log(`  Converted: ${Object.keys(claudeCommands).length} workflow commands`);
 }
 
 // Helper: Copy rules for agent
@@ -2302,7 +2321,7 @@ function loadClaudeCommands(selectedAgents) {
     return claudeCommands;
   }
 
-  COMMANDS.forEach(cmd => {
+  getWorkflowCommands().forEach(cmd => {
     const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
     const content = readFile(cmdPath);
     if (content) {
@@ -2336,13 +2355,14 @@ function displaySetupSummary(selectedAgents) {
   console.log('  - docs/research/TEMPLATE.md (research template)');
   console.log('  - docs/planning/PROGRESS.md (progress tracking)');
 
+  const workflowCount = getWorkflowCommands().length;
   selectedAgents.forEach(key => {
     const agent = AGENTS[key];
     if (agent.linkFile) {
       console.log(`  - ${agent.linkFile} (${agent.name})`);
     }
     if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (9 workflow commands)`);
+      console.log(`  - .claude/commands/ (${workflowCount} workflow commands)`);
     }
     if (agent.hasSkill) {
       const skillDir = agent.dirs.find(d => d.includes('/skills/'));
@@ -3506,7 +3526,7 @@ function loadAndSetupClaudeCommands(selectedAgents, skipFiles) {
   }
 
   // Then load the commands (from existing or newly created)
-  COMMANDS.forEach(cmd => {
+  getWorkflowCommands().forEach(cmd => {
     const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
     const content = readFile(cmdPath);
     if (content) {
@@ -4230,3 +4250,5 @@ if (require.main === module) {
     }
   })();
 }
+
+module.exports = { getWorkflowCommands };

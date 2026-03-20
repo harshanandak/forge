@@ -23,7 +23,7 @@ Manual review remains essential even with AI-powered tools like Greptile and Cod
 This guide integrates with the Forge 9-Stage TDD Workflow:
 
 ```
-/status → /research → /plan → /dev → /validate → /ship → /review → /merge → /verify
+/status → /research → /plan → /dev → /validate → /ship → /review → /premerge → /verify
                                                            ↑
                                                   You are here
 ```

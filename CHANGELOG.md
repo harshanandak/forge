@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stage naming consistency + COMMANDS array fix** (PR #67, forge-7lvz + forge-b262)
+  - Replaced hardcoded COMMANDS array with `getWorkflowCommands()` — scans `.claude/commands/*.md` at runtime
+  - Fixed stale `/check` → `/validate` and `/merge` → `/premerge` in CURSOR_RULE and `.cursorrules`
+  - Dynamic copy/convert counts — reports actual successes, not filesystem count
+  - `copyFile` now always warns on missing sources (was DEBUG-only)
+  - Fixed CLAUDE.md placeholder description
+  - Fixed README agent count: "7" → "8" to match `lib/agents/`
+  - 24 new regression tests across 2 test files
+
 - **Hook bypass protection for AI agents** (PR #66)
   - `scripts/branch-protection.js`: Allow beads-only pushes to master while blocking code changes
   - Replaced `execSync` with `execFileSync` + `resolveGitBinary()` to prevent command injection

@@ -1,6 +1,6 @@
 # Project Instructions
 
-This is a [describe what this project does in one sentence].
+Forge is a 7-stage TDD-first development workflow harness for AI coding agents (9 commands total, including utility stages).
 
 **Package manager**: Bun (preferred for performance)
 

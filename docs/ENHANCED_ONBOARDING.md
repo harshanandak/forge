@@ -180,12 +180,12 @@ bunx forge setup --type=feature
 
 **Critical Workflow (9 stages):**
 ```
-/status → /research → /plan → /dev → /validate → /ship → /review → /merge → /verify
+/status → /research → /plan → /dev → /validate → /ship → /review → /premerge → /verify
 ```
 
 **Standard Workflow (6 stages):**
 ```
-/status → /plan → /dev → /validate → /ship → /merge
+/status → /plan → /dev → /validate → /ship → /premerge
 ```
 
 #### 2. Fix
@@ -208,7 +208,7 @@ bunx forge setup --type=fix
 
 **Simple Workflow (4 stages):**
 ```
-/dev → /validate → /ship → /merge
+/dev → /validate → /ship → /premerge
 ```
 
 #### 3. Refactor
@@ -221,7 +221,7 @@ bunx forge setup --type=refactor
 
 **Workflow (5 stages):**
 ```
-/plan → /dev → /validate → /ship → /merge
+/plan → /dev → /validate → /ship → /premerge
 ```
 
 - Strict TDD to preserve behavior
@@ -237,7 +237,7 @@ bunx forge setup --type=chore
 
 **Workflow (3 stages):**
 ```
-/verify → /ship → /merge
+/verify → /ship → /premerge
 ```
 
 - Minimal workflow for maintenance tasks
