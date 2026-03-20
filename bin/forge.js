@@ -251,7 +251,21 @@ function _checkWritePermission(filePath) {
   }
 }
 
-const COMMANDS = ['status', 'research', 'plan', 'dev', 'check', 'ship', 'review', 'merge', 'verify', 'rollback'];
+/**
+ * Reads workflow command names from .claude/commands/*.md in the package directory.
+ * @returns {string[]} Command names (filenames without .md extension)
+ */
+function getWorkflowCommands() {
+  const commandsDir = path.join(packageDir, '.claude', 'commands');
+  try {
+    return fs.readdirSync(commandsDir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''));
+  } catch (_err) {
+    console.warn(`Warning: .claude/commands directory not found at ${commandsDir}`);
+    return [];
+  }
+}
 
 // Code review tool options (reserved for future feature)
 const _CODE_REVIEW_TOOLS = {
@@ -469,15 +483,14 @@ alwaysApply: true
 
 Use these commands via \`/command-name\`:
 
-1. \`/status\` - Check current context, active work, recent completions
-2. \`/research\` - Deep research with web search, document to docs/research/
-3. \`/plan\` - Create implementation plan, branch, tracking
-4. \`/dev\` - TDD development (RED-GREEN-REFACTOR cycles)
-5. \`/check\` - Validation (type/lint/security/tests)
-6. \`/ship\` - Create PR with full documentation
-7. \`/review\` - Address ALL PR feedback
-8. \`/merge\` - Update docs, merge PR, cleanup
-9. \`/verify\` - Final documentation verification
+- \`/status\` (utility) - Check current context, active work, recent completions
+1. \`/plan\` - Design intent Q&A, research, branch + task list
+2. \`/dev\` - Subagent-driven TDD per task (spec + quality review)
+3. \`/validate\` - Type check, lint, security, tests (HARD-GATE)
+4. \`/ship\` - Push and create PR with design doc reference
+5. \`/review\` - Handle ALL PR issues (Actions, Greptile, SonarCloud)
+6. \`/premerge\` - Complete docs on feature branch, hand off PR to user
+7. \`/verify\` - Post-merge health check (CI on main, close Beads)
 
 See AGENTS.md for full workflow details.
 `;
@@ -1881,11 +1894,11 @@ function setupClaudeAgent(skipFiles = {}) {
   if (skipFiles.claudeCommands) {
     console.log('  Skipped: .claude/commands/ (keeping existing)');
   } else {
-    COMMANDS.forEach(cmd => {
+    getWorkflowCommands().forEach(cmd => {
       const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
       copyFile(src, `.claude/commands/${cmd}.md`);
     });
-    console.log('  Copied: 9 workflow commands');
+    console.log(`  Copied: ${getWorkflowCommands().length} workflow commands`);
   }
 
   // Copy rules
