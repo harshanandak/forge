@@ -148,7 +148,7 @@ function main() {
       const changedFiles = output.split('\n').filter(Boolean);
 
       if (changedFiles.length > 0 && changedFiles.every(f => f.startsWith('.beads/'))) {
-        console.log(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
+        console.error(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
         process.exit(0);
       }
     } catch (_e) {

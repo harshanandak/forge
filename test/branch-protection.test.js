@@ -185,8 +185,8 @@ describe('scripts/branch-protection.js', () => {
         createMockGit(mockDir, { diffOutput: '.beads/issues.jsonl' });
         const result = runWithMockGit(scriptPath, mockDir, 'master');
         expect(result.status).toBe(0);
-        const stdout = result.stdout.toString();
-        expect(stdout.includes('Beads-only push')).toBeTruthy();
+        const stderr = result.stderr.toString();
+        expect(stderr.includes('Beads-only push')).toBeTruthy();
       } finally {
         fs.rmSync(mockDir, { recursive: true, force: true });
       }
