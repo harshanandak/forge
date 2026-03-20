@@ -198,15 +198,18 @@ export async function handleClosed(event, options = {}) {
   const getBeadsId = mapping.getBeadsId ?? realGetBeadsId;
   const findSyncComment = github.findSyncComment ?? realFindSyncComment;
 
-  // 1. Load config (for potential future use)
-  loadConfig(configPath);
-
-  // 2. Extract issue number
+  // 1. Extract issue number and state reason
   const issueNumber = event.issue.number;
+  const stateReason = event.issue.state_reason;
 
   // 3. Guard: bot actor
   if (isBot(event.sender?.login)) {
     return { skipped: true, reason: 'bot actor' };
+  }
+
+  // 3b. Guard: skip "not planned" closures (only close on "completed")
+  if (stateReason && stateReason !== 'completed') {
+    return { skipped: true, reason: `closed as ${stateReason}` };
   }
 
   // 4. Read mapping
@@ -276,7 +279,9 @@ if (process.argv[1] === __filename) {
       const outputPath = process.env.GITHUB_OUTPUT;
       if (outputPath) {
         for (const [key, value] of Object.entries(result)) {
-          appendFileSync(outputPath, `${key}=${value}\n`);
+          if (value != null) {
+            appendFileSync(outputPath, `${key}=${value}\n`);
+          }
         }
       }
     })
