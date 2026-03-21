@@ -31,7 +31,9 @@ jobs:
         uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2
 
       - name: Install Beads CLI
-        run: bun add -g @beads/bd@^0.49
+        run: |
+          bun add -g @beads/bd@^0.49
+          bun pm -g trust @beads/bd 2>/dev/null || true
 
       - name: Run sync
         env:

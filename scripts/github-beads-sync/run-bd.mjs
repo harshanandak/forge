@@ -114,8 +114,13 @@ export function parseShowOutput(stdout) {
 export function bdCreate(opts) {
   try {
     const stdout = execFileSync('bd', buildCreateArgs(opts), EXEC_OPTS);
-    return parseCreateOutput(stdout);
-  } catch (_err) {
+    const id = parseCreateOutput(stdout);
+    if (!id) {
+      console.error('bd create succeeded but ID not parsed. stdout:', stdout);
+    }
+    return id;
+  } catch (err) {
+    console.error('bd create failed:', err.stderr?.toString() || err.message);
     return null;
   }
 }
