@@ -32,14 +32,10 @@ jobs:
 
       - name: Install Beads CLI
         run: |
-          npm install -g @beads/bd@^0.49 2>&1 || true
-          # If postinstall failed, try running it manually
-          BD_DIR=$(npm root -g)/@beads/bd
-          if [ ! -f "$BD_DIR/bin/bd" ]; then
-            echo "Binary missing — running postinstall manually..."
-            cd "$BD_DIR" && node scripts/postinstall.js 2>&1 || true
-          fi
-          bd --version
+          curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+          echo "$HOME/.beads/bin" >> "$GITHUB_PATH"
+      - name: Verify Beads CLI
+        run: bd --version
 
       - name: Run sync
         env:
