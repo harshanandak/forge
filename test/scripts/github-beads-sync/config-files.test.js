@@ -58,9 +58,14 @@ describe("github-beads-sync config files", () => {
 
   const mappingPath = resolve(ROOT, ".github/beads-mapping.json");
 
-  it(".github/beads-mapping.json is valid JSON and equals {}", () => {
+  it(".github/beads-mapping.json is valid JSON with string values", () => {
     const raw = readFileSync(mappingPath, "utf-8");
     const parsed = JSON.parse(raw);
-    expect(parsed).toEqual({});
+    expect(typeof parsed).toBe("object");
+    expect(parsed).not.toBeNull();
+    // All values should be strings (beads issue IDs)
+    for (const val of Object.values(parsed)) {
+      expect(typeof val).toBe("string");
+    }
   });
 });
