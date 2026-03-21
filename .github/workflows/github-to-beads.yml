@@ -32,8 +32,8 @@ jobs:
 
       - name: Install Beads CLI
         run: |
-          bun add -g @beads/bd@^0.49
-          bun pm -g trust @beads/bd 2>/dev/null || true
+          npm install -g @beads/bd@^0.49
+          bd --version
 
       - name: Run sync
         env:
