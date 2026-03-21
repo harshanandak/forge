@@ -60,7 +60,7 @@ bunx forge setup --agents claude,cursor,cline
 **What this creates**:
 - `AGENTS.md` - Universal instructions
 - Agent-specific files (`.claude/commands/`, `.cursorrules`, etc.)
-- `docs/WORKFLOW.md` - Complete workflow guide
+- `AGENTS.md` - Complete workflow guide
 - `docs/TOOLCHAIN.md` - Toolchain reference
 
 ---
@@ -342,7 +342,7 @@ bd ready  # Find work to do
 ### Learn More
 
 📖 **Full Workflow Guide**
-→ [docs/WORKFLOW.md](docs/WORKFLOW.md)
+→ [AGENTS.md](AGENTS.md)
 
 🛠️ **Toolchain Reference**
 → [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md)

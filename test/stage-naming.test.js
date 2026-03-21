@@ -37,7 +37,6 @@ describe('Stage naming consistency', () => {
 
   describe('active docs have no stale /check stage refs', () => {
     const activeDocs = [
-      'docs/WORKFLOW.md',
       'docs/SETUP.md',
       'docs/EXAMPLES.md',
       'docs/VALIDATION.md',

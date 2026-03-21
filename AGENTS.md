@@ -168,7 +168,7 @@ Task 2: Validation logic
 - `docs/plans/YYYY-MM-DD-<slug>-decisions.md` - Decisions log from /dev
 
 **Comprehensive workflow guide:**
-- [docs/WORKFLOW.md](docs/WORKFLOW.md) - Complete workflow documentation (150 lines)
+- This file (AGENTS.md) is the single source of truth for the complete workflow
 - [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Tool setup and configuration
 - [docs/VALIDATION.md](docs/VALIDATION.md) - Enforcement and validation details
 

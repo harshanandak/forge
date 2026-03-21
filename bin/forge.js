@@ -2338,7 +2338,6 @@ function displaySetupSummary(selectedAgents) {
   console.log('');
   console.log('What\'s installed:');
   console.log('  - AGENTS.md (universal instructions)');
-  console.log('  - docs/WORKFLOW.md (full workflow guide)');
   console.log('  - docs/research/TEMPLATE.md (research template)');
   console.log('  - docs/planning/PROGRESS.md (progress tracking)');
 
@@ -3370,7 +3369,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   console.log('');
   console.log('Next steps:');
   console.log('  1. Start with: /status');
-  console.log('  2. Read the guide: docs/WORKFLOW.md');
+  console.log('  2. Read the guide: AGENTS.md');
   console.log('');
   console.log('Happy shipping!');
   console.log('');

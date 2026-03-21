@@ -201,7 +201,7 @@ Summarize what was completed for the user:
 - `/plan <feature-slug>` - Design + research + implementation plan
 - `/dev` - Start TDD development
 
-**Need help?** Check docs/WORKFLOW.md for full guide
+**Need help?** Check AGENTS.md for full guide
 ```
 
 ---

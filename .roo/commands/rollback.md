@@ -187,18 +187,18 @@ git commit -m "Rollback: <files>"
 ```bash
 bunx forge rollback
 # Select: 4. Rollback specific files
-# Enter: AGENTS.md,docs/WORKFLOW.md
+# Enter: AGENTS.md,CLAUDE.md
 
 ✓ Validating file paths...
 ✓ Working directory is clean
 ✓ Extracting USER sections...
-✓ Executing: git checkout HEAD~1 -- AGENTS.md docs/WORKFLOW.md
+✓ Executing: git checkout HEAD~1 -- AGENTS.md CLAUDE.md
 ✓ Committing changes...
 ✓ Restoring USER sections...
 ✓ Amended commit to preserve USER content
 
 Rollback complete!
-  Commit: q4r5s6t "Rollback: AGENTS.md, docs/WORKFLOW.md"
+  Commit: q4r5s6t "Rollback: AGENTS.md, CLAUDE.md"
   Files affected: 2
 ```
 
@@ -718,5 +718,5 @@ bunx forge rollback
 
 - [/dev](.claude/commands/dev.md) - TDD development workflow
 - [/validate](.claude/commands/validate.md) - Validation before shipping
-- [docs/WORKFLOW.md](../../docs/WORKFLOW.md) - Complete workflow guide
+- [AGENTS.md](../../AGENTS.md) - Complete workflow guide
 - [Beads](https://github.com/beadshq/beads) - Issue tracking integration

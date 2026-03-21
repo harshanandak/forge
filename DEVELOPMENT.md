@@ -60,4 +60,4 @@ forge/
 
 - [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) - Detailed contributor guide
 - [lib/agents/README.md](lib/agents/README.md) - Plugin development
-- [docs/WORKFLOW.md](docs/WORKFLOW.md) - Complete workflow guide
+- [AGENTS.md](AGENTS.md) - Complete workflow guide

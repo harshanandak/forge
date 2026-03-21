@@ -358,6 +358,6 @@ git push
 
 ## See Also
 
-- [Workflow Guide](WORKFLOW.md) - Complete 9-stage workflow
+- [Workflow Guide](../AGENTS.md) - Complete 7-stage workflow
 - [TDD Guide](../CLAUDE.md) - TDD principles and practices
 - [Lefthook Docs](https://github.com/evilmartians/lefthook) - Full hook configuration
