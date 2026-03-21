@@ -143,7 +143,10 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
      elif .priority == "P4" then 1
      else 1 end) as $priority_weight |
 
-    # Unblock chain: dependent_count + 1 (min 1)
+    # Unblock chain: dependent_count + 1 (min 1).
+    # NOTE: dependent_count is the authoritative server-side count. The "Unblocks:"
+    # annotation (computed below from local response) may show fewer items when
+    # bd list omits closed or filtered-out issues. This is an intentional trade-off.
     (((.dependent_count // 0) + 1) | if . < 1 then 1 else . end) as $unblock_chain |
 
     # Type weight: bug=1.2, feature=1.0, task=0.8, default=1.0
@@ -265,7 +268,7 @@ if [ "$SESSION_COUNT" -gt 0 ]; then
     # Extract slug from branch name (strip any <prefix>/ convention)
     _slug="$_branch"
     case "$_slug" in
-      */*) _slug="${_slug#*/}" ;;
+      */*) _slug="${_slug##*/}" ;;
     esac
 
     # Convert slug hyphens to spaces for title matching
