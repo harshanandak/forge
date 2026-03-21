@@ -2,7 +2,7 @@
 
 - **Feature**: multi-dev-awareness
 - **Date**: 2026-03-22
-- **Status**: Phase 1 complete
+- **Status**: Phase 2 complete
 - **Beads**: forge-w69s (Layer 1 of forge-qml5 epic)
 
 ---
@@ -104,6 +104,132 @@ Over-engineered for 5 developers. Breaks the git-native, offline-capable philoso
 ## Ambiguity Policy
 
 7-dimension rubric scoring. Confidence >= 80%: proceed and document in decisions log. Confidence < 80%: stop and ask user. (Per project-wide policy.)
+
+## Technical Research
+
+### Key Findings
+
+**Conflict Detection Techniques**:
+- `git diff --name-only <base>...<branch>` — cheap file-level overlap detection across branches
+- `git merge-tree` (git >= 2.38) — predicts merge conflicts without side effects. Already used in `smart-status.sh` Tier 2 (lines 391-482)
+- Extend existing `smart-status.sh` Tier 1/2 logic for cross-developer detection (currently local-only)
+
+**JSONL Merge Strategy**:
+- Append-only JSONL with unique IDs and `updated_at` timestamps is naturally merge-friendly
+- Last-write-wins (LWW) per-record by `updated_at` handles same-issue conflicts
+- No CRDT complexity needed — git's line-based merge + `bd resolve-conflicts` handles edge cases
+- `.beads/file-index.jsonl` follows same pattern as `issues.jsonl`
+
+**Default Branch Detection** (3-method fallback):
+1. `git symbolic-ref refs/remotes/origin/HEAD` — fast, cached locally
+2. `git remote show origin | grep 'HEAD branch'` — live/accurate, requires network
+3. Common name check: try `main`, then `master`
+- Config override via `.beads/config.json` `sync_branch` or `BD_SYNC_BRANCH` env var takes precedence
+
+**Session Identity** (cross-platform):
+- `hostname -s` — portable across Linux/macOS/Windows Git Bash. Confirmed working.
+- `$HOSTNAME` is bash-specific; `$COMPUTERNAME` is Windows-only
+- Format: `$(git config user.email)@$(hostname -s)` — prefer email over name for uniqueness
+- Validate against `^[a-zA-Z0-9._@+-]+$` (OWASP A03 — injection prevention)
+
+**Existing Code to Extend** (DRY check results):
+| What | Where | Action |
+|------|-------|--------|
+| File-overlap detection (Tier 1) | `smart-status.sh:311-389` | EXTEND for cross-dev |
+| Merge-tree conflicts (Tier 2) | `smart-status.sh:391-482` | EXTEND for cross-dev |
+| Ripple/keyword detection | `dep-guard.sh:check-ripple` | KEEP as-is (different concern) |
+| Input sanitization pattern | `dep-guard.sh:69-83` | REUSE `sanitize()` in new scripts |
+| Worktree parsing | `smart-status.sh:205-248` | REUSE for session detection |
+| HARD-GATE pattern | `.claude/commands/plan.md:1-30` | EXTEND with soft-block gate |
+
+**New artifacts to create**:
+| What | Path |
+|------|------|
+| File index | `.beads/file-index.jsonl` |
+| Conflict detection script | `scripts/conflict-detect.sh` |
+| Beads config | `.beads/config.json` |
+
+### OWASP Top 10 Analysis
+
+Full analysis: [2026-03-22-multi-dev-awareness-owasp-analysis.md](2026-03-22-multi-dev-awareness-owasp-analysis.md)
+
+**High-priority mitigations** (must implement):
+
+| Category | Risk | Mitigation |
+|----------|------|------------|
+| A03: Injection | Shell injection via developer names, hostnames, file paths in bash scripts | Reuse `sanitize()` from `dep-guard.sh`. Validate session identity format `^[a-zA-Z0-9._@+-]+$`. Quote all variables. Use `printf '%s'` not `echo`. |
+| A04: Insecure Design | Race condition in concurrent `bd sync` (JSONL-in-git has no locking). TOCTOU gap between conflict detection and gate entry. | Freshness window (re-validate at gate entry if >15 min stale). Optimistic concurrency via `updated_at`. JSONL append-only format minimizes conflict surface. |
+| A07: Identification | `gituser@hostname` is trivially spoofable | Prefer `git config user.email`. Recommend (don't require) commit signing. Advisory — git itself has no auth. |
+| A09: Logging | No audit trail for sync operations and conflict overrides | Log sync events via `bd comments add`. Record conflict override decisions with rationale. |
+
+**Low-priority** (acceptable risk for v1):
+
+| Category | Risk | Decision |
+|----------|------|----------|
+| A01: Access Control | Any git pusher can modify another dev's issues | Acceptable — git push access = trust. Diff-based validation deferred to Approach C. |
+| A02: Crypto | JSONL files lack integrity checksums | Acceptable — git provides SHA-based integrity. |
+| A08: Data Integrity | Truncated sync could corrupt data | `bd sync` should validate JSONL structure post-pull. |
+
+### TDD Test Scenarios
+
+**1. Happy path — conflict detection finds overlap**
+- Setup: Two issues in file-index.jsonl, both touching `src/lib/status.ts`
+- Input: `conflict-detect.sh --issue forge-abc`
+- Expected: Exit code 1, output shows overlap with other issue, module `src/lib/`
+- Assertion: Output contains developer identity and conflicting issue ID
+
+**2. Happy path — no conflicts**
+- Setup: Two issues in file-index.jsonl, touching different modules
+- Input: `conflict-detect.sh --issue forge-abc`
+- Expected: Exit code 0, no warnings
+- Assertion: Clean output, no overlap messages
+
+**3. Sync branch auto-detection fallback chain**
+- Setup: No config, no env var, `git symbolic-ref` fails (no remote HEAD cached)
+- Input: `get-sync-branch` function called
+- Expected: Falls back to `git remote show origin`, then `main`, then `master`
+- Assertion: Correct branch returned at each fallback level
+
+**4. Session identity format validation**
+- Input: Various identity strings including injection attempts (`; rm -rf /`, `$(whoami)`, `user@host`)
+- Expected: Valid identities pass, injection attempts rejected
+- Assertion: Only `^[a-zA-Z0-9._@+-]+$` matches accepted
+
+**5. Stale sync warning**
+- Setup: Last sync timestamp >15 min ago
+- Input: `conflict-detect.sh --issue forge-abc`
+- Expected: Warning message with "last synced X min ago", conflict check still runs
+- Assertion: Warning present, exit code still reflects conflict state (not staleness)
+
+**6. File index update on issue state change**
+- Setup: Issue transitions to `in_progress` with task list specifying files
+- Input: `update-file-index forge-abc docs/plans/task-list.md`
+- Expected: `.beads/file-index.jsonl` gains entry with issue ID, developer, files, modules
+- Assertion: JSONL entry parseable, contains correct file paths and module groupings
+
+**7. Offline/network failure graceful degradation**
+- Setup: `bd sync` fails (no network)
+- Input: Forge command entry triggers sync
+- Expected: Warning "sync failed, working with local data", command proceeds
+- Assertion: No crash, stale data used, warning displayed
+
+**8. Concurrent sync merge resolution**
+- Setup: Two developers modify `.beads/file-index.jsonl` simultaneously, push
+- Input: `bd sync` on second developer
+- Expected: Git merge succeeds (append-only JSONL), or `bd resolve-conflicts` triggered
+- Assertion: No data loss, both entries present in merged file
+
+**9. Edge case — issue with no task list**
+- Setup: Issue in beads with no design doc or task file
+- Input: `update-file-index forge-xyz` (no task file path)
+- Expected: Falls back to title/description keyword matching, flags "low confidence"
+- Assertion: File index entry created with `confidence: "low"`, module derived from keywords
+
+**10. Soft block confirmation flow**
+- Setup: Conflict detected at `/plan` entry
+- Input: User enters `/plan` with overlapping module
+- Expected: Shows conflicts, prompts y/n, proceeds only on `y`
+- Assertion: `n` exits cleanly with no side effects, `y` proceeds to Phase 1
 
 ## Future Enhancements (Approach C — deferred)
 
