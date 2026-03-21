@@ -557,13 +557,17 @@ else
         (($now | tonumber) - $ts) / 86400 | floor
        else 0 end) as $days_ago |
       # Group assignment (priority order: RESUME > UNBLOCK_CHAINS > BLOCKED > BACKLOG > READY_WORK)
+      # Note: in_progress issues with active blockers still show in RESUME (you started
+      # the work, you need to see it) but get a "BLOCKED" annotation in the output.
       (if .status == "in_progress" then "RESUME"
-       elif (.dependent_count // 0) >= 2 and .status != "in_progress" then "UNBLOCK_CHAINS"
+       elif (.dependent_count // 0) >= 2 then "UNBLOCK_CHAINS"
        elif (.dependency_count // 0) > 0 and .status != "closed" then "BLOCKED"
        elif .priority == "P4" then "BACKLOG"
        else "READY_WORK"
        end) as $group |
-      $item + { group: $group, days_ago: $days_ago }
+      # Flag in_progress issues that have active blockers
+      (if .status == "in_progress" and (.dependency_count // 0) > 0 then true else false end) as $blocked_resume |
+      $item + { group: $group, days_ago: $days_ago, blocked_resume: $blocked_resume }
     ] |
 
     # Group order mapping
@@ -598,10 +602,12 @@ else
         (if ($item.dependents // [] | length) > 0 then
           " -> Unblocks: " + ($item.dependents | join(", "))
          else "" end) as $unblocks |
+        # Blocked-resume warning
+        (if $item.blocked_resume then " !! BLOCKED by dependencies" else "" end) as $blocked_warn |
         "ENTRY:" + $item.group + ":" +
           $rank + ". [" + ($item.score | tostring) + "] " +
           $item.id + " (" + ($item.priority // "-") + " " + ($item.type // "-") + ") -- " +
-          ($item.title // "-") + " " + $status_tag + $stale + $unblocks
+          ($item.title // "-") + " " + $status_tag + $stale + $blocked_warn + $unblocks
       ),
       ""
     ] | .[]
