@@ -24,8 +24,8 @@ jobs:
         with:
           # Need full history for push
           fetch-depth: 0
-          # Use default GITHUB_TOKEN
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT bypasses branch protection for pushing .beads/ changes
+          token: ${{ secrets.BEADS_SYNC_TOKEN }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2
@@ -48,7 +48,7 @@ jobs:
 
       - name: Run sync
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.BEADS_SYNC_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SYNC_ACTION: ${{ github.event.action }}
