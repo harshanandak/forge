@@ -57,6 +57,11 @@ jobs:
         run: |
           node scripts/github-beads-sync/index.mjs "$SYNC_ACTION"
 
+      - name: Export database to JSONL
+        env:
+          BEADS_DIR: ${{ github.workspace }}/.beads
+        run: bd sync
+
       - name: Commit and push changes
         env:
           ISSUE_NUM: ${{ github.event.issue.number }}
