@@ -78,7 +78,7 @@ bunx forge setup
 
 | Stage | Command | Purpose |
 |-------|---------|---------|
-| **utility** | `/status` | Check current context, active work |
+| **utility** | `/status` | Ranked issue dashboard with conflict detection |
 | **1. Plan** | `/plan` | Design Q&A → research → branch + task list |
 | **2. Dev** | `/dev` | Subagent TDD per task (spec + quality review) |
 | **3. Validate** | `/validate` | Validate: types, lint, tests, security |
