@@ -27,6 +27,15 @@ Forge setup currently creates all files for all agents upfront, produces verbose
 - Agent-specific command translation (e.g., Claude `/plan` vs Cursor equivalent)
 - Removing or refactoring `bin/forge.js` into `lib/` modules (tracked separately: forge-0ht2)
 - Changes to the `/plan` command file itself (worktree detection is in setup/runtime code)
+- Composite `check()/run()` step structure refactor (deferred: forge-9m47 under forge-0ht2)
+- `--pretend` dry-run flag (depends on composite step structure, deferred with forge-9m47)
+
+## Additional Scope (from Phase 2 research)
+
+- Content-hash comparison for file skip logic (users re-run setup frequently across agents)
+- `--force` CLI flag (overwrite all without prompts, needed for CI)
+- Centralized action log array (required for Option C progressive output)
+- Fix `detectProjectStatus()` feature gate (mandatory when WORKFLOW.md is removed)
 
 ## Approach Selected
 
