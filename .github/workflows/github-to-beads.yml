@@ -48,7 +48,7 @@ jobs:
 
       - name: Run sync
         env:
-          GH_TOKEN: ${{ secrets.BEADS_SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SYNC_ACTION: ${{ github.event.action }}
