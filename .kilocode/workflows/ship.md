@@ -30,60 +30,89 @@ Do NOT create PR until:
 ### Step 1: Verify /validate Passed
 Ensure all four validation checks completed successfully with fresh output in this session.
 
-### Step 2: Update Beads
+### Step 2: Freshness Check — Is Branch Still Current?
+
+Even though /validate rebased onto master, time may have passed since then (user reviewed design doc, took a break, etc.). This lightweight check catches staleness before pushing.
+
+```bash
+git fetch origin master
+BEHIND=$(git rev-list --count HEAD..origin/master)
+```
+
+- If `BEHIND > 0`: **STOP**. Print: "Master has advanced since /validate ($BEHIND new commits). Run /validate again to rebase and re-check."
+- If `BEHIND = 0`: Continue to push.
+- If fetch fails: **STOP**. Print error. Do NOT push without confirming freshness.
+
+This is NOT a full rebase — just a check. The rebase happens in /validate where the full test suite runs afterward.
+
+### Step 3: Update Beads
 ```bash
 bd update <id> --status done
 bd sync
 ```
 
-### Step 3: Push Branch
+### Step 4: Push Branch
 ```bash
 git push -u origin <branch-name>
 ```
 
-### Step 4: Create PR
+### Step 5: Create PR
+
+Use the narrative PR template below. Lead with WHY (Problem/Root Cause/Fix/Value) — this is what reviewers need to understand first. Keep implementation details (test coverage, security review, design doc) in a collapsible section so they're available but don't clutter the summary.
+
+If no Beads issue exists (hotfix, external contribution), skip the "Closes" line.
 
 ```bash
-gh pr create --title "feat: <feature-name>" --body "$(cat <<'EOF'
-## Summary
-[Auto-generated from commits and design doc]
+gh pr create --title "<type>: <concise description>" --body "$(cat <<'EOF'
+## Problem
+[What was broken, what need existed, or what user pain this addresses]
 
-## Design Doc
-See: docs/plans/YYYY-MM-DD-<slug>-design.md
+## Root Cause
+[Why it happened, why it was missing, or what gap existed]
 
-## Decisions Log
-See: docs/plans/YYYY-MM-DD-<slug>-decisions.md (if any undocumented decisions arose during /dev)
+## Fix
+[What this PR does to solve it — approach, not implementation details]
 
-## Beads Issue
+## Value
+[Who benefits, what improves, what risk is removed]
+
+## Beads
 Closes: <issue-id>
 
-## Key Decisions
-[From design doc - 3-5 key decisions with reasoning]
+<details>
+<summary>Implementation Details</summary>
 
-## TDD Test Coverage
-- Unit tests: [count] tests, [X] scenarios
-- Integration tests: [count] tests
-- E2E tests: [count] tests
-- All tests passing ✓
+### Test Coverage
+- Tests: [count] passing
+- Scenarios covered: [list key scenarios]
 
-## Security Review
-- OWASP Top 10: All mitigations implemented
-- Security tests: [count] scenarios passing
-- Automated scan: No vulnerabilities
+### Security Review
+- OWASP Top 10: [summary — applicable risks and mitigations]
+- Automated scan: [result]
 
-## Test Plan
+### Design Doc
+See: docs/plans/YYYY-MM-DD-<slug>-design.md
+
+### Decisions Log
+See: docs/plans/YYYY-MM-DD-<slug>-decisions.md (if any undocumented decisions arose during /dev)
+
+### Key Decisions
+[From design doc — 3-5 key decisions with reasoning]
+
+### Validation
 - [x] Type check passing
-- [x] Lint passing
-- [x] Code review passing
-- [x] E2E tests passing
+- [x] Lint passing (0 errors, 0 warnings)
+- [x] All tests passing
 - [x] Security review completed
+
+</details>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
 
-### Step 5: Record Stage Transition
+### Step 6: Record Stage Transition
 ```bash
 bash scripts/beads-context.sh stage-transition <id> ship review
 ```
@@ -92,20 +121,13 @@ bash scripts/beads-context.sh stage-transition <id> ship review
 
 ```
 ✓ Validation: /validate passed (all 4 checks — fresh output confirmed)
+✓ Freshness: Branch is up-to-date with master
 ✓ Beads: Marked done & synced (forge-xyz)
 ✓ Pushed: feat/stripe-billing
 ✓ PR created: https://github.com/.../pull/123
+  - PR body: Problem → Root Cause → Fix → Value (narrative format)
   - Beads linked: forge-xyz
-  - Design doc linked: docs/plans/2026-02-26-stripe-billing-design.md
-  - Decisions log linked: docs/plans/2026-02-26-stripe-billing-decisions.md
-  - Test coverage documented
-  - Security review documented
-
-PR Summary:
-  - 12 commits
-  - 18 test cases, all passing
-  - OWASP Top 10 security review completed
-  - 3 key architectural decisions documented
+  - Implementation details in collapsible section
 
 ⏸️  PR created, awaiting automated checks (Greptile, SonarCloud, GitHub Actions)
 

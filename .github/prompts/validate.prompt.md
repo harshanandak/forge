@@ -27,6 +27,37 @@ Or use the unified validation script:
 bun run check    # Runs all validation steps automatically (check is the npm script name; /validate is the workflow command)
 ```
 
+```
+<HARD-GATE: /validate entry — rebase onto latest master>
+Before running ANY validation checks:
+
+1. Fetch latest master:
+   git fetch origin master
+
+   If fetch fails (no network, no remote): STOP. Print error. Do NOT silently skip.
+
+2. Check if branch is behind:
+   BEHIND=$(git rev-list --count HEAD..origin/master)
+
+3. If BEHIND > 0:
+   a. Run: git rebase origin/master
+   b. If rebase succeeds: print "✓ Rebased onto latest master ($BEHIND commits integrated)"
+   c. If rebase conflicts:
+      - Run: git rebase --abort
+      - Print conflicting files from the failed rebase output
+      - Print: "✗ Rebase conflict — resolve manually, then re-run /validate"
+      - STOP. Do NOT proceed to any validation checks.
+
+4. If BEHIND = 0:
+   Print "✓ Branch is up-to-date with master" and continue.
+
+Rationale: Without this step, validation checks run against stale code that doesn't
+include recent master changes. Integration issues are only caught after the PR is
+created, wasting CI cycles and review time. Rebasing here ensures /validate results
+reflect the true state of what will be merged.
+</HARD-GATE>
+```
+
 ## What This Command Does
 
 **Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
