@@ -49,23 +49,30 @@ Forge setup currently creates all files for all agents upfront, produces verbose
 
 ## Design Decisions
 
-### 1. Agent Auto-Detection (D+ strategy)
+### 1. Agent Auto-Detection (4-layer strategy)
 
-**Three-tier detection with confidence levels:**
+**Prior art:** `@vercel/detect-agent` v1.2.1 (5M+ npm downloads, Apache-2.0). Covers 12 agents via env vars. We extend with config file + VSCode path parsing layers.
 
-| Tier | Signal | Confidence | Examples |
-|------|--------|------------|---------|
-| 1. Env vars | High | `CLAUDE_CODE=1`, `CURSOR_SESSION_ID`, `TERM_PROGRAM=vscode` |
-| 2. Config files | Medium | `.cursorrules`, `.claude/settings.json`, `.windsurfrules`, `codex.md` |
-| 3. Directory presence | Low | `.claude/`, `.cursor/`, `.codex/`, `.cline/` |
+**Full research:** [2026-03-22-agent-detection-research.md](2026-03-22-agent-detection-research.md)
+
+**Four detection layers (fast to slow):**
+
+| Layer | Signal | Confidence | What it tells you |
+|-------|--------|------------|-------------------|
+| 1. `AI_AGENT` env var | High | Universal standard (proposed by Vercel) — any agent can self-identify |
+| 2. Agent-specific env vars | High | `CLAUDECODE`/`CLAUDE_CODE`, `CURSOR_TRACE_ID`, `CODEX_SANDBOX`, `GEMINI_CLI`, `OPENCODE_CLIENT`, `AUGMENT_AGENT`, `COPILOT_MODEL` |
+| 3. VSCode path parsing | Medium | `VSCODE_CODE_CACHE_PATH` contains editor name (Cursor, Windsurf, Code) — distinguishes VSCode forks |
+| 4. Config file signatures | Medium-Low | `.cursorrules`, `.claude/settings.json`, `.windsurfrules`, `.clinerules`, `.roo/rules/` — detects *configured* agents, not necessarily *running* |
+
+**Agents with NO env vars (config-file-only):** Cline, Roo Code, Kilocode, Windsurf (when not detectable via VSCODE_CODE_CACHE_PATH)
 
 **Behavior:**
-- Tier 1 match: "Detected: Claude Code (env)" — pre-select, user confirms
-- Tier 2 match: "Likely: Cursor (found .cursorrules)" — suggest, user confirms
-- Tier 3 match: "Previously configured: Claude, Cursor" — list found, user picks
+- Layer 1-2 match: "Detected: Claude Code (env)" — pre-select, user confirms
+- Layer 3 match: "Detected editor: Cursor (vscode path)" — suggest, user confirms
+- Layer 4 match: "Previously configured: Claude, Cursor" — list found, user picks
 - No match: Standard selection prompt (current behavior)
 
-**Phase 2 research goal:** Find additional env vars/signals for Windsurf, Cline, Roo, Kilocode, OpenCode. Check if any agents expose version info or IPC sockets.
+**Implementation choice:** Reimplement the `@vercel/detect-agent` pattern inline (zero new dependencies) rather than adding a dep. The detection map is ~50 lines and we need the config file layer anyway.
 
 ### 2. Incremental Setup (Smart Tiered Strategy — Option D)
 
@@ -147,3 +154,73 @@ If non-empty, we're already inside a worktree — skip creation, announce which 
 **< 80% confidence:** Stop and ask user.
 
 Specific to this epic: if an env var detection is ambiguous (e.g., `TERM_PROGRAM=vscode` could mean Cursor or plain VSCode), default to the less specific match and let the user confirm.
+
+---
+
+## Technical Research
+
+### Codebase Findings
+
+**Key code locations in `bin/forge.js`:**
+- `copyFile` helper: line 514 (reuse for all file operations)
+- `ensureDir('docs/planning')`: line 1784 (NOTE: actual dir is `docs/planning/`, not `docs/plans/`)
+- `ensureDir('docs/research')`: line 1785
+- WORKFLOW.md copy: line 1789 (`copyFile(workflowSrc, 'docs/WORKFLOW.md')`)
+- `hasDocsWorkflow` check: line 781 (`fs.existsSync(...)`)
+- Status output refs: lines 2053, 3475 (`if (projectStatus.hasDocsWorkflow) console.log(...)`)
+- Agent selection: interactive prompt in setup flow (no auto-detection today)
+
+**Existing patterns to reuse:**
+- `lib/context-merge.js` uses `USER:START` / `USER:END` markers for preserving user sections — same pattern applies for agent-specific markers
+- `copyFile` already handles `ensureDir` for parent directories
+- No existing agent detection logic in `bin/forge.js` — greenfield
+
+**Blast radius for WORKFLOW.md removal (50+ references):**
+- `bin/forge.js`: 8 refs (copy, status check, output messages)
+- `lib/agents-config.js`: 3 refs (agent config templates)
+- `install.sh`: 3 refs (curl download, file list, output)
+- Agent command files (rollback, premerge) x 7 agents: ~28 refs
+- `README.md`, `QUICKSTART.md`, `DEVELOPMENT.md`: 6 refs
+- `docs/SETUP.md`, `docs/EXAMPLES.md`, etc.: 5 refs
+- `AGENTS.md`: 1 ref (doc index)
+- `.cursorrules`: 2 refs (dir tree, reference)
+- `test/stage-naming.test.js`: 1 ref (test assertion)
+
+### DRY Check
+
+- No existing agent detection logic — new code needed
+- Marker pattern exists in `context-merge.js` but for USER sections — agent markers are a new use case, same pattern
+- No existing merge/skip logic for setup re-runs — all new
+
+### OWASP Top 10 Analysis
+
+| # | Risk | Applies? | Mitigation |
+|---|------|----------|------------|
+| A01 | Broken Access Control | No | Local CLI, no auth |
+| A02 | Cryptographic Failures | No | No secrets in setup |
+| A03 | Injection | Low | Sanitize marker content, never eval user strings or env var values |
+| A04 | Insecure Design | Low | Smart tiered strategy prevents silent overwrites |
+| A05 | Security Misconfiguration | Low | Review generated configs for safe defaults |
+| A06 | Vulnerable Components | No | No new dependencies |
+| A07 | Auth Failures | No | No authentication |
+| A08 | Software/Data Integrity | Low | Env vars read-only, never executed |
+| A09 | Logging/Monitoring | No | CLI tool |
+| A10 | SSRF | No | No network requests |
+
+### TDD Test Scenarios
+
+1. **Happy path — first-time setup**: No existing files -> all created, clean summary
+2. **Agent auto-detection (env var)**: `CLAUDE_CODE=1` -> detected high confidence
+3. **Agent auto-detection (config file)**: `.cursorrules` exists -> detected medium confidence
+4. **Agent auto-detection (directory)**: `.claude/` exists -> detected low confidence
+5. **Agent auto-detection (ambiguous)**: `TERM_PROGRAM=vscode` without cursor-specific vars -> not auto-selected
+6. **Incremental re-run same agent**: Second setup skips existing, shows "already configured"
+7. **Add second agent**: Claude then Cursor -> Claude untouched, Cursor added, shared files merged
+8. **Marker idempotency**: Setup 3x -> marker sections not duplicated
+9. **Missing markers (user-edited)**: Markers removed -> falls back to diff-and-prompt
+10. **Lazy dir creation**: Fresh project, `/plan` -> `docs/planning/` created with purpose note
+11. **Worktree detection**: Inside existing worktree -> detected, no nested creation
+12. **WORKFLOW.md removal**: After setup, file gone, all refs point to AGENTS.md
+13. **JSON config merge**: `.mcp.json` with user servers -> forge keys added, user keys kept
+14. **Corrupted config**: Invalid JSON in `.mcp.json` -> warn, skip merge, don't crash
+15. **Progressive output**: Default shows summary; `--verbose` shows file list
