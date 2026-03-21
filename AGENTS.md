@@ -108,6 +108,8 @@ Task 2: Validation logic
 
 ## State Management (Single Source of Truth)
 
+> GitHub issue lifecycle may sync to Beads via CI -- see [docs/BEADS_GITHUB_SYNC.md](docs/BEADS_GITHUB_SYNC.md).
+
 **All workflow state stored in Beads metadata** (survives compaction):
 
 ```json
