@@ -51,6 +51,7 @@ function printResults() {
 // Validation functions
 
 function validateStatus() {
+  checks = [];
   console.log("Checking project prerequisites...\n");
 
   check(
@@ -99,6 +100,7 @@ function validateStatus() {
 }
 
 function validateDev() {
+  checks = [];
   console.log("Validating prerequisites for /dev stage...\n");
 
   check(
@@ -172,6 +174,7 @@ function validateDev() {
 }
 
 function validateShip() {
+  checks = [];
   console.log("Validating prerequisites for /ship stage...\n");
 
   check(
