@@ -236,10 +236,10 @@ export function handleClosed(event, options = {}) {
     return { skipped: true, reason: `closed as ${stateReason}` };
   }
 
-  // 4. Read mapping
+  // 5. Read mapping
   let beadsId = getBeadsId(mappingPath, issueNumber);
 
-  // 5. Fallback: find via sync comment
+  // 6. Fallback: find via sync comment
   if (!beadsId) {
     const comment = findSyncComment(owner, repo, issueNumber);
     if (comment) {
@@ -251,12 +251,12 @@ export function handleClosed(event, options = {}) {
     }
   }
 
-  // 6. No beads link found
+  // 7. No beads link found
   if (!beadsId) {
     return { skipped: true, reason: 'no beads link found' };
   }
 
-  // 7. Check if already closed
+  // 8. Check if already closed
   const status = bdShow(beadsId);
   if (status === null) {
     return { skipped: true, reason: 'could not determine beads status' };
@@ -265,10 +265,10 @@ export function handleClosed(event, options = {}) {
     return { skipped: true, reason: 'already closed' };
   }
 
-  // 8. Close beads issue
+  // 9. Close beads issue
   bdClose(beadsId, `Closed via GitHub issue #${issueNumber}`);
 
-  // 9. Return success
+  // 10. Return success
   return { success: true, beadsId, issueNumber };
 }
 

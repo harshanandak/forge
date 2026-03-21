@@ -47,6 +47,7 @@ const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
+const { scaffoldGithubBeadsSync } = require('../lib/setup');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -1742,6 +1743,23 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   // Write all tokens to .env.local (preserving existing values)
   const { added, preserved } = writeEnvTokens(tokens, true);
   displayEnvTokenResults(added, preserved);
+
+  // GitHub-Beads issue sync setup
+  console.log('');
+  const enableSync = await askYesNo(question, 'Enable GitHub ↔ Beads issue sync?', true);
+  if (enableSync) {
+    try {
+      const result = await scaffoldGithubBeadsSync(projectRoot, packageDir);
+      for (const f of result.created) {
+        console.log(`  Created: ${f}`);
+      }
+      for (const f of result.skipped) {
+        console.log(`  Skipped: ${f} (already exists)`);
+      }
+    } catch (err) {
+      console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
+    }
+  }
 }
 
 // Display the Forge banner

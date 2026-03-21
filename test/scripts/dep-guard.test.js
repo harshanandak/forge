@@ -2,7 +2,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
+const { describe, test, expect, beforeAll, afterAll, setDefaultTimeout } = require('bun:test');
+
+// bash + mock script spawning can exceed default 5s on Windows CI
+setDefaultTimeout(15000);
 
 /**
  * Tests for scripts/dep-guard.sh
@@ -162,7 +165,7 @@ describe('scripts/dep-guard.sh', () => {
     });
   });
 
-  describe('check-ripple', { timeout: 15000 }, () => {
+  describe('check-ripple', () => {
     /** @type {string[]} */
     const mockFiles = [];
     /** @type {string[]} */
@@ -214,7 +217,7 @@ describe('scripts/dep-guard.sh', () => {
       const result = runDepGuard(['check-ripple', 'forge-xyz'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stderr).toContain('could not extract title');
-    }, 15000);
+    });
 
     test('warns and skips when bd list returns empty', () => {
       const mock = createMockBd(`
@@ -280,7 +283,7 @@ ENDJSON
       expect(result.stdout).toContain('forge-other');
       expect(result.stdout).toContain('dependency');
       expect(result.stdout).toContain('Confidence: LOW');
-    }, 15000);
+    });
 
     test('overlap report includes actionable options', () => {
       // Reuse the overlapping mock from previous test

@@ -73,6 +73,8 @@ Related to beads-yyy
 - Closes #
 - Related to #
 
+> **Note**: `Closes #N` closes the GitHub issue on merge. If GitHub-Beads sync is enabled, the linked Beads issue is auto-closed too.
+
 ---
 
 ## ✅ Merge Criteria (All Must Be Met)
