@@ -38,8 +38,13 @@ jobs:
           curl -fsSL "$BD_URL" | tar -xz -C "$HOME/.local/bin" bd
           chmod +x "$HOME/.local/bin/bd"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Verify Beads CLI
-        run: bd --version
+      - name: Verify and initialize Beads
+        env:
+          BEADS_DIR: ${{ github.workspace }}/.beads
+        run: |
+          bd --version
+          # Initialize SQLite DB from JSONL on fresh checkout
+          bd init 2>/dev/null || true
 
       - name: Run sync
         env:
