@@ -30,14 +30,16 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2
 
-      - name: Install Beads CLI
+      - name: Install Beads CLI (pinned to v0.49.1)
         run: |
-          curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
-          echo "$HOME/.beads/bin" >> "$GITHUB_PATH"
-      - name: Initialize Beads database
-        run: |
-          bd --version
-          bd doctor --fix --yes 2>&1 || true
+          BD_VERSION="0.49.1"
+          BD_URL="https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "$BD_URL" | tar -xz -C "$HOME/.local/bin" bd
+          chmod +x "$HOME/.local/bin/bd"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify Beads CLI
+        run: bd --version
 
       - name: Run sync
         env:
