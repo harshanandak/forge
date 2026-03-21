@@ -200,7 +200,11 @@ function validateShip() {
       try {
         execFileSync("npm", ["test"], { stdio: "pipe" });
         return true;
-      } catch {
+      } catch (err) {
+        const output = ((err.stdout || "") + "\n" + (err.stderr || "")).trim();
+        if (output) {
+          console.error("\nTest output:\n" + output.slice(0, 2000));
+        }
         return false;
       }
     },
