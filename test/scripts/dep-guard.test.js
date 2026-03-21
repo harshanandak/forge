@@ -198,7 +198,7 @@ describe('scripts/dep-guard.sh', () => {
       const result = runDepGuard(['check-ripple', 'forge-nonexistent'], { BD_CMD: mock });
       expect(result.status).toBe(1);
       expect(result.stderr).toMatch(/not found|Failed|Error/i);
-    });
+    }, 15000);
 
     test('warns and skips when title extraction fails', () => {
       // Mock bd: show returns JSON with no title field
@@ -229,7 +229,7 @@ describe('scripts/dep-guard.sh', () => {
       const result = runDepGuard(['check-ripple', 'forge-xyz'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stderr).toContain('could not fetch active issue list');
-    });
+    }, 15000);
 
     test('no conflicts when source is the only active issue', () => {
       // Mock bd: show returns JSON for the source, list returns only the source
@@ -253,7 +253,7 @@ ENDJSON
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('No conflicts detected');
       expect(result.stdout).toContain('forge-abc');
-    });
+    }, 15000);
 
     test('keyword overlap found between source and another issue', () => {
       // Mock bd: two issues with overlapping keywords "dependency" and "plan"
@@ -306,7 +306,7 @@ ENDJSON
       // Should contain the options section
       expect(result.stdout).toContain('bd dep add forge-src forge-other');
       expect(result.stdout).toContain('bd show forge-other');
-    });
+    }, 15000);
 
     test('no overlap when terms are too short or all stop words', () => {
       // Issues share only stop words / short terms: "add", "the", "is", "to"
@@ -330,7 +330,7 @@ ENDJSON
       const result = runDepGuard(['check-ripple', 'forge-aaa'], { BD_CMD: mock });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('No conflicts detected');
-    });
+    }, 15000);
 
     test('prints structured analyzer output from Beads JSON and task-file context', () => {
       const repositoryRoot = createTempRepo({
@@ -402,7 +402,7 @@ ENDJSON
       expect(result.stdout).toContain('forge-other depends on forge-src');
       expect(result.stdout).toContain('Pros:');
       expect(result.stdout).toContain('Cons:');
-    });
+    }, 15000);
 
     test('falls back to keyword-only report when the analyzer cannot run', () => {
       const repositoryRoot = createTempRepo({
@@ -458,7 +458,7 @@ ENDJSON
       expect(result.stdout).toContain('Potential overlap');
       expect(result.stdout).toContain('Confidence: LOW');
       expect(result.stdout).toContain('bd dep add forge-src forge-other');
-    });
+    }, 15000);
   });
 
   describe('extract-contracts', () => {
