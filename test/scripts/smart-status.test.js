@@ -2,7 +2,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, setDefaultTimeout } = require('bun:test');
+
+// Smart-status tests spawn bash subprocesses — default 5s is too short
+setDefaultTimeout(20000);
 
 /**
  * Tests for scripts/smart-status.sh
@@ -547,7 +550,9 @@ describe('smart-status.sh', () => {
     test('unblock chain annotation shows what issue unblocks', () => {
       const mockData = {
         issues: [
-          { id: 'blocker1', title: 'Blocker', priority: 'P1', type: 'feature', status: 'open', dependent_count: 2, dependency_count: 0, updated_at: daysAgo(1), dependents: ['dep-a', 'dep-b'] },
+          { id: 'blocker1', title: 'Blocker', priority: 'P1', type: 'feature', status: 'open', dependent_count: 2, dependency_count: 0, updated_at: daysAgo(1) },
+          { id: 'dep-a', title: 'Dep A', priority: 'P2', type: 'task', status: 'open', dependent_count: 0, dependency_count: 1, updated_at: daysAgo(1), dependencies: [{ depends_on_id: 'blocker1' }] },
+          { id: 'dep-b', title: 'Dep B', priority: 'P2', type: 'task', status: 'open', dependent_count: 0, dependency_count: 1, updated_at: daysAgo(1), dependencies: [{ depends_on_id: 'blocker1' }] },
         ],
       };
       const { tmpDir, mockScript } = createMockBd(mockData);
@@ -655,17 +660,21 @@ describe('smart-status.sh', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-git-'));
       const mockScript = path.join(tmpDir, 'git');
       const scriptContent = `#!/usr/bin/env bash
-# Mock git: only handles "worktree list --porcelain"
-for arg in "$@"; do
-  if [ "$arg" = "worktree" ]; then
-    cat <<'PORCELAINEOF'
+# Mock git: handles worktree and rev-parse
+if [ "$1" = "worktree" ]; then
+  cat <<'PORCELAINEOF'
 ${porcelainOutput}
 PORCELAINEOF
-    exit 0
-  fi
-done
-# Fallback to real git for other commands
-command git "$@"
+  exit 0
+elif [ "$1" = "rev-parse" ]; then
+  # Support BASE_BRANCH auto-detection: say master exists
+  if [ "$3" = "master" ]; then exit 0; fi
+  exit 1
+elif [ "$1" = "diff" ]; then
+  echo ""
+  exit 0
+fi
+exit 0
 `;
       fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
       return { tmpDir, mockScript };
@@ -929,7 +938,7 @@ command git "$@"
       return { tmpDir, mockScript };
     }
 
-    test('shows Changed: line with files for each active session branch', { timeout: 15000 }, () => {
+    test('shows Changed: line with files for each active session branch', () => {
       const porcelain = [
         'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
         'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
@@ -963,7 +972,7 @@ command git "$@"
       }
     });
 
-    test('truncates to 3 files with +N more', { timeout: 15000 }, () => {
+    test('truncates to 3 files with +N more', () => {
       const porcelain = [
         'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
         'worktree /repo/.worktrees/big', 'HEAD def456', 'branch refs/heads/feat/big', '',
@@ -1192,7 +1201,7 @@ command git "$@"
       }
     });
 
-    test('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', { timeout: 15000 }, () => {
+    test('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', () => {
       const branchFiles = {
         'feat/alpha': ['shared.js', 'alpha-only.js'],
         'feat/beta': ['shared.js', 'beta-only.js'],
@@ -1280,7 +1289,7 @@ command git "$@"
       }
     });
 
-    test('no merge_conflicts when git >= 2.38 but no real conflicts', { timeout: 15000 }, () => {
+    test('no merge_conflicts when git >= 2.38 but no real conflicts', () => {
       const branchFiles = {
         'feat/alpha': ['shared.js'],
         'feat/beta': ['shared.js'],

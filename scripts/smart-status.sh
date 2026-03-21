@@ -125,6 +125,14 @@ fi
 # ── Score issues with jq ────────────────────────────────────────────────
 
 SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS" '
+  # First pass: build reverse dependency map (who does each issue unblock?)
+  # For each issue X, find all issues Y where Y.dependencies[].depends_on_id == X.id
+  (reduce .[] as $dep_issue ({};
+    reduce ($dep_issue.dependencies // [] | .[]) as $dep (.;
+      .[$dep.depends_on_id] += [$dep_issue.id]
+    )
+  )) as $dependents_map |
+
   [.[] | . as $issue |
 
     # Priority weight: P0=5, P1=4, P2=3, P3=2, P4=1, default=1
@@ -174,6 +182,9 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
     # Composite score
     ($priority_weight * $unblock_chain * $type_weight * $status_boost * $epic_proximity * $staleness_boost) as $score |
 
+    # Compute dependents list (which issues does this one unblock?)
+    ($dependents_map[$issue.id] // []) as $dependents_list |
+
     # Output scored issue
     $issue + {
       score: ($score * 100 | round / 100),
@@ -182,7 +193,8 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
       type_weight: $type_weight,
       status_boost: $status_boost,
       epic_proximity: (($epic_proximity * 100 | round) / 100),
-      staleness_boost: $staleness_boost
+      staleness_boost: $staleness_boost,
+      dependents: $dependents_list
     }
   ] | sort_by(-.score)
 ')"
@@ -248,7 +260,6 @@ fi
 SESSIONS_JSON="[]"
 if [ "$SESSION_COUNT" -gt 0 ]; then
   # Process each session
-  _idx=0
   _remaining_branches="$SESSION_BRANCHES"
   _remaining_paths="$SESSION_PATHS"
   while [ -n "$_remaining_branches" ]; do
@@ -308,7 +319,6 @@ if [ "$SESSION_COUNT" -gt 0 ]; then
       '. + [{branch: $branch, path: $path, issue_ids: $ids, issue_count: $count}]'
     )"
 
-    _idx=$((_idx + 1))
   done
 fi
 
