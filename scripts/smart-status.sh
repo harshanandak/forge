@@ -210,8 +210,8 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
 WORKTREE_PORCELAIN="$("$GIT" worktree list --porcelain 2>/dev/null || echo '')"
 
 # Collect non-default-branch worktree branches and paths
-SESSION_BRANCHES=""
-SESSION_PATHS=""
+# Stored as newline-delimited "branch<TAB>path" entries — safe for paths with |, spaces, etc.
+SESSION_ENTRIES=""
 SESSION_COUNT=0
 
 _wt_path=""
@@ -228,12 +228,11 @@ while IFS= read -r line; do
       # End of block — process if we have a branch that is not the default branch
       if [ -n "$_wt_branch" ] && [ "$_wt_branch" != "$BASE_BRANCH" ]; then
         SESSION_COUNT=$((SESSION_COUNT + 1))
-        if [ -n "$SESSION_BRANCHES" ]; then
-          SESSION_BRANCHES="${SESSION_BRANCHES}|${_wt_branch}"
-          SESSION_PATHS="${SESSION_PATHS}|${_wt_path}"
+        if [ -n "$SESSION_ENTRIES" ]; then
+          SESSION_ENTRIES="${SESSION_ENTRIES}
+${_wt_branch}	${_wt_path}"
         else
-          SESSION_BRANCHES="${_wt_branch}"
-          SESSION_PATHS="${_wt_path}"
+          SESSION_ENTRIES="${_wt_branch}	${_wt_path}"
         fi
       fi
       _wt_path=""
@@ -259,25 +258,9 @@ fi
 # Match by: branch slug (after feat/, fix/, docs/) appears in issue title (case-insensitive, hyphen-to-space)
 SESSIONS_JSON="[]"
 if [ "$SESSION_COUNT" -gt 0 ]; then
-  # Process each session
-  _remaining_branches="$SESSION_BRANCHES"
-  _remaining_paths="$SESSION_PATHS"
-  while [ -n "$_remaining_branches" ]; do
-    # Extract first branch and path (delimited by |)
-    case "$_remaining_branches" in
-      *"|"*)
-        _branch="${_remaining_branches%%|*}"
-        _remaining_branches="${_remaining_branches#*|}"
-        _path="${_remaining_paths%%|*}"
-        _remaining_paths="${_remaining_paths#*|}"
-        ;;
-      *)
-        _branch="$_remaining_branches"
-        _remaining_branches=""
-        _path="$_remaining_paths"
-        _remaining_paths=""
-        ;;
-    esac
+  # Process each session (newline-delimited "branch<TAB>path" entries)
+  while IFS='	' read -r _branch _path; do
+    [ -z "$_branch" ] && continue
 
     # Extract slug from branch name (strip feat/, fix/, docs/ prefix)
     _slug="$_branch"
@@ -319,7 +302,9 @@ if [ "$SESSION_COUNT" -gt 0 ]; then
       '. + [{branch: $branch, path: $path, issue_ids: $ids, issue_count: $count}]'
     )"
 
-  done
+  done <<SESSIONS_EOF
+$SESSION_ENTRIES
+SESSIONS_EOF
 fi
 
 # ── File-level conflict detection ────────────────────────────────────────
@@ -327,21 +312,12 @@ fi
 #   git diff <base-branch>...<branch> --name-only --
 # Uses -- separator to prevent argument injection (OWASP A03)
 
-# ALL_BRANCH_FILES: pipe-delimited list of "branch:file1,file2,..."
+# ALL_BRANCH_FILES: newline-delimited list of "branch<TAB>file1<TAB>file2..."
 ALL_BRANCH_FILES=""
 if [ "$SESSION_COUNT" -ge 2 ]; then
-  _remaining_branches="$SESSION_BRANCHES"
-  while [ -n "$_remaining_branches" ]; do
-    case "$_remaining_branches" in
-      *"|"*)
-        _branch="${_remaining_branches%%|*}"
-        _remaining_branches="${_remaining_branches#*|}"
-        ;;
-      *)
-        _branch="$_remaining_branches"
-        _remaining_branches=""
-        ;;
-    esac
+  # Read branches from SESSION_ENTRIES (newline-delimited "branch<TAB>path")
+  while IFS='	' read -r _branch _path; do
+    [ -z "$_branch" ] && continue
 
     # Get changed files for this branch vs BASE_BRANCH (-- prevents injection)
     _files="$("$GIT" diff "${BASE_BRANCH}...${_branch}" --name-only -- 2>/dev/null || echo '')"
@@ -349,27 +325,19 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
     _files_csv="$(printf '%s' "$_files" | tr '\n' '\t' | sed 's/\t$//' | sed 's/^\t//')"
 
     if [ -n "$ALL_BRANCH_FILES" ]; then
-      ALL_BRANCH_FILES="${ALL_BRANCH_FILES}|${_branch}:${_files_csv}"
+      ALL_BRANCH_FILES="${ALL_BRANCH_FILES}
+${_branch}:${_files_csv}"
     else
       ALL_BRANCH_FILES="${_branch}:${_files_csv}"
     fi
-  done
+  done <<CONFLICT_EOF
+$SESSION_ENTRIES
+CONFLICT_EOF
 
   # Build conflict map: find files that appear in multiple branches
   # and add changed_files + conflicts to SESSIONS_JSON
-  _remaining="$ALL_BRANCH_FILES"
-  while [ -n "$_remaining" ]; do
-    case "$_remaining" in
-      *"|"*)
-        _entry="${_remaining%%|*}"
-        _remaining="${_remaining#*|}"
-        ;;
-      *)
-        _entry="$_remaining"
-        _remaining=""
-        ;;
-    esac
-
+  while IFS= read -r _entry; do
+    [ -z "$_entry" ] && continue
     _branch="${_entry%%:*}"
     _files_csv="${_entry#*:}"
 
@@ -382,19 +350,8 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
 
     # Find conflicts: files in this branch that also appear in other branches
     _conflicts_json="[]"
-    _remaining_other="$ALL_BRANCH_FILES"
-    while [ -n "$_remaining_other" ]; do
-      case "$_remaining_other" in
-        *"|"*)
-          _other_entry="${_remaining_other%%|*}"
-          _remaining_other="${_remaining_other#*|}"
-          ;;
-        *)
-          _other_entry="$_remaining_other"
-          _remaining_other=""
-          ;;
-      esac
-
+    while IFS= read -r _other_entry; do
+      [ -z "$_other_entry" ] && continue
       _other_branch="${_other_entry%%:*}"
       _other_files="${_other_entry#*:}"
 
@@ -414,7 +371,9 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
           --argjson files "$_overlap" \
           '$existing + [{branch: $other_branch, files: $files}]')"
       fi
-    done
+    done <<INNER_EOF
+$ALL_BRANCH_FILES
+INNER_EOF
 
     # Update SESSIONS_JSON: add changed_files and conflicts to matching branch entry
     SESSIONS_JSON="$(printf '%s' "$SESSIONS_JSON" | jq \
@@ -423,7 +382,9 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
       --argjson conflicts "$_conflicts_json" \
       '[.[] | if .branch == $branch then . + {changed_files: $files, conflicts: $conflicts} else . end]'
     )"
-  done
+  done <<OUTER_EOF
+$ALL_BRANCH_FILES
+OUTER_EOF
 fi
 
 # ── Tier 2: git merge-tree conflict detection ──────────────────────────
