@@ -129,15 +129,15 @@ function validateDev() {
     "Plan file exists",
     () => {
       try {
-        const plansDir = ".claude/plans";
+        const plansDir = "docs/plans";
         if (!fs.existsSync(plansDir)) return false;
-        const plans = fs.readdirSync(plansDir).filter((f) => f.endsWith(".md"));
+        const plans = fs.readdirSync(plansDir).filter((f) => f.endsWith("-design.md"));
         return plans.length > 0;
       } catch {
         return false;
       }
     },
-    "No plan file found in .claude/plans/. Run: /plan",
+    "No plan file found in docs/plans/. Run: /plan",
   );
 
   check(
