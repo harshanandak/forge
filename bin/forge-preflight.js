@@ -182,7 +182,7 @@ function validateShip() {
       return testDirs.some((dir) => {
         if (!fs.existsSync(dir)) return false;
         try {
-          const files = fs.readdirSync(dir, { recursive: true });
+          const files = fs.readdirSync(dir);
           return files.some(
             (f) => f.includes(".test.") || f.includes(".spec."),
           );

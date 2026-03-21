@@ -262,12 +262,10 @@ if [ "$SESSION_COUNT" -gt 0 ]; then
   while IFS='	' read -r _branch _path; do
     [ -z "$_branch" ] && continue
 
-    # Extract slug from branch name (strip feat/, fix/, docs/ prefix)
+    # Extract slug from branch name (strip any <prefix>/ convention)
     _slug="$_branch"
     case "$_slug" in
-      feat/*) _slug="${_slug#feat/}" ;;
-      fix/*) _slug="${_slug#fix/}" ;;
-      docs/*) _slug="${_slug#docs/}" ;;
+      */*) _slug="${_slug#*/}" ;;
     esac
 
     # Convert slug hyphens to spaces for title matching
