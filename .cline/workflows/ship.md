@@ -28,14 +28,16 @@ Ensure all four validation checks completed successfully with fresh output in th
 
 ### Step 2: Freshness Check — Is Branch Still Current?
 
-Even though /validate rebased onto master, time may have passed since then (user reviewed design doc, took a break, etc.). This lightweight check catches staleness before pushing.
+Even though /validate rebased onto the base branch, time may have passed since then (user reviewed design doc, took a break, etc.). This lightweight check catches staleness before pushing.
 
 ```bash
-git fetch origin master || { echo "✗ Fetch failed — cannot verify freshness"; exit 1; }
-BEHIND=$(git rev-list --count HEAD..origin/master)
+BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+if [ -z "$BASE" ]; then BASE="master"; fi
+git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify freshness"; exit 1; }
+BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
 ```
 
-- If `BEHIND > 0`: **STOP**. Print: "Master has advanced since /validate ($BEHIND new commits). Run /validate again to rebase and re-check."
+- If `BEHIND > 0`: **STOP**. Print: "$BASE has advanced since /validate ($BEHIND new commits). Run /validate again to rebase and re-check."
 - If `BEHIND = 0`: Continue to push.
 - If fetch fails: the `|| { ...; exit 1; }` guard catches this — **STOP**. Do NOT push without confirming freshness.
 

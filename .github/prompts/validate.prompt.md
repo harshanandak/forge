@@ -29,20 +29,26 @@ bun run check    # Runs lint/test/security checks only. Does NOT rebase onto mas
 ```
 
 ```
-<HARD-GATE: /validate entry — rebase onto latest master>
+<HARD-GATE: /validate entry — rebase onto latest base branch>
 Before running ANY validation checks:
 
-1. Fetch latest master:
-   git fetch origin master || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
+0. Resolve the base branch dynamically (do NOT hardcode master or main):
+   BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+   if [ -z "$BASE" ]; then BASE="master"; fi
+
+   This handles repos using main, master, or any other default branch.
+
+1. Fetch latest base branch:
+   git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
 
    The `|| { ...; exit 1; }` guard ensures fetch failures are never silently skipped.
 
 2. Check if branch is behind:
-   BEHIND=$(git rev-list --count HEAD..origin/master)
+   BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
 
 3. If BEHIND > 0:
-   a. Run: git rebase origin/master
-   b. If rebase succeeds: print "✓ Rebased onto latest master ($BEHIND commits integrated)"
+   a. Run: git rebase origin/"$BASE"
+   b. If rebase succeeds: print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
    c. If rebase conflicts:
       - Run: git rebase --abort
       - Print conflicting files from the failed rebase output
@@ -50,7 +56,7 @@ Before running ANY validation checks:
       - STOP. Do NOT proceed to any validation checks.
 
 4. If BEHIND = 0:
-   Print "✓ Branch is up-to-date with master" and continue.
+   Print "✓ Branch is up-to-date with $BASE" and continue.
 
 Rationale: Without this step, validation checks run against stale code that doesn't
 include recent master changes. Integration issues are only caught after the PR is
