@@ -83,8 +83,8 @@ describe('GitHub → Beads Workflow Validation', () => {
       expect(workflowContent).toContain('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683');
     });
 
-    it('should install Beads CLI via install script', () => {
-      expect(workflowContent).toContain('curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh');
+    it('should install Beads CLI via pinned binary download', () => {
+      expect(workflowContent).toContain('Install Beads CLI (pinned to v0.49.1)');
     });
 
     it('should checkout with fetch-depth: 0 for push', () => {

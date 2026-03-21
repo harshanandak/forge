@@ -466,7 +466,7 @@ describe('/dev command integration with beads-context.sh', () => {
 	});
 });
 
-describe('/status command integration with beads-context.sh', () => {
+describe('/status command integration with smart-status.sh', () => {
 	const STATUS_MD_PATH = path.join(
 		__dirname,
 		'..',
@@ -480,17 +480,16 @@ describe('/status command integration with beads-context.sh', () => {
 		statusContent = fs.readFileSync(STATUS_MD_PATH, 'utf-8');
 	});
 
-	test('status.md should reference beads-context.sh parse-progress for in-progress issues', () => {
-		expect(statusContent).toContain('beads-context.sh parse-progress');
+	test('status.md should reference smart-status.sh as the primary status command', () => {
+		expect(statusContent).toContain('smart-status.sh');
 	});
 
 	test('status.md should include hint to use bd show for full context', () => {
-		expect(statusContent).toMatch(/bd show.*full context/i);
+		expect(statusContent).toMatch(/bd show/i);
 	});
 
-	test('status.md example output should show compact progress format with tasks done', () => {
-		// Example output should show the tasks done format like "3/7 tasks done"
-		expect(statusContent).toMatch(/\d+\/\d+ tasks done/);
+	test('status.md should describe dynamic ranked output', () => {
+		expect(statusContent).toContain('composite score');
 	});
 });
 

@@ -1,22 +1,21 @@
 #!/usr/bin/env node
 
 /**
- * Forge Validate CLI
+ * Forge Preflight CLI
  *
  * Prerequisite validation for workflow stages.
  * Helps ensure developers have required tools and files before proceeding.
  *
  * Usage:
- *   forge-validate status  - Check project prerequisites
- *   forge-validate dev     - Validate before /dev stage
- *   forge-validate ship    - Validate before /ship stage
+ *   forge-preflight status  - Check project prerequisites
+ *   forge-preflight dev     - Validate before /dev stage
+ *   forge-preflight ship    - Validate before /ship stage
  *
  * Security: Uses execFileSync to prevent command injection.
  */
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
-// const path = require("node:path"); // Currently unused
 
 // Validation results
 let checks = [];
@@ -52,6 +51,7 @@ function printResults() {
 // Validation functions
 
 function validateStatus() {
+  checks = [];
   console.log("Checking project prerequisites...\n");
 
   check(
@@ -100,6 +100,7 @@ function validateStatus() {
 }
 
 function validateDev() {
+  checks = [];
   console.log("Validating prerequisites for /dev stage...\n");
 
   check(
@@ -129,15 +130,15 @@ function validateDev() {
     "Plan file exists",
     () => {
       try {
-        const plansDir = ".claude/plans";
+        const plansDir = "docs/plans";
         if (!fs.existsSync(plansDir)) return false;
-        const plans = fs.readdirSync(plansDir).filter((f) => f.endsWith(".md"));
+        const plans = fs.readdirSync(plansDir).filter((f) => f.endsWith("-design.md"));
         return plans.length > 0;
       } catch {
         return false;
       }
     },
-    "No plan file found in .claude/plans/. Run: /plan",
+    "No plan file found in docs/plans/. Run: /plan",
   );
 
   check(
@@ -173,6 +174,7 @@ function validateDev() {
 }
 
 function validateShip() {
+  checks = [];
   console.log("Validating prerequisites for /ship stage...\n");
 
   check(
@@ -182,7 +184,7 @@ function validateShip() {
       return testDirs.some((dir) => {
         if (!fs.existsSync(dir)) return false;
         try {
-          const files = fs.readdirSync(dir, { recursive: true });
+          const files = fs.readdirSync(dir);
           return files.some(
             (f) => f.includes(".test.") || f.includes(".spec."),
           );
@@ -200,7 +202,11 @@ function validateShip() {
       try {
         execFileSync("npm", ["test"], { stdio: "pipe" });
         return true;
-      } catch {
+      } catch (err) {
+        const output = ((err.stdout || "") + "\n" + (err.stderr || "")).trim();
+        if (output) {
+          console.error("\nTest output:\n" + output.slice(0, 2000));
+        }
         return false;
       }
     },
@@ -235,10 +241,10 @@ function validateShip() {
 
 function showHelp() {
   console.log(`
-Forge Validate - Prerequisite validation for workflow stages
+Forge Preflight - Prerequisite validation for workflow stages
 
 Usage:
-  forge-validate <command>
+  forge-preflight <command>
 
 Commands:
   status    Check project prerequisites (git, npm, tests)
@@ -247,9 +253,9 @@ Commands:
   help      Show this help message
 
 Examples:
-  forge-validate status
-  forge-validate dev
-  forge-validate ship
+  forge-preflight status
+  forge-preflight dev
+  forge-preflight ship
 `);
 }
 

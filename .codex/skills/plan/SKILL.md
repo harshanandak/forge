@@ -23,7 +23,13 @@ Before ANY planning work begins:
    a. bd worktree create .worktrees/<slug> --branch feat/<slug>
    b. cd .worktrees/<slug>
 4. Confirm: "Working in isolated worktree: .worktrees/<slug> (branch: feat/<slug>)"
-5. ONLY THEN begin Phase 1.
+5. Create the epic issue and record the stage transition:
+   ```bash
+   bd create --title="<feature-name>" --type=epic
+   bd update <id> --status=in_progress
+   bash scripts/beads-context.sh stage-transition <id> none plan
+   ```
+6. ONLY THEN begin Phase 1.
 
 Rationale: Planning commits (design docs, task lists) belong only to this feature's branch.
 If planning runs in the main directory on a non-master branch, those commits contaminate
@@ -181,6 +187,11 @@ Do NOT begin Phase 2 (web research) until:
 
 **Goal**: Find HOW to build it — best practices, known issues, security risks, TDD scenarios.
 
+Record the phase transition before starting research:
+```bash
+bash scripts/beads-context.sh stage-transition <id> plan research
+```
+
 Run these in parallel:
 
 ### Web research (parallel-deep-research skill)
@@ -271,13 +282,19 @@ Do NOT begin Phase 3 (setup) until:
 
 ## Phase 3: Setup + Task List
 
-**Goal**: Create branch, worktree, Beads issue, and a complete task list ready for /dev.
+**Goal**: Create branch, worktree, and a complete task list ready for /dev.
 
-### Step 1: Beads issue
+Record the phase transition before starting setup:
+```bash
+bash scripts/beads-context.sh stage-transition <id> research setup
+```
+
+### Step 1: Link child issues to the epic
+
+The epic was created in the Entry HARD-GATE (Phase 1 entry). If this feature requires child issues (sub-tasks tracked separately), create them now and link to the epic:
 
 ```bash
-bd create --title="<feature-name>" --type=feature
-bd update <id> --status=in_progress
+bd create --title="<sub-task-name>" --type=feature --parent=<epic-id>
 ```
 
 ### Step 2: Branch + worktree

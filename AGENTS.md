@@ -71,6 +71,10 @@ When the user requests work, **you MUST automatically classify** the change type
 
  Proceed?"
 
+**Dynamic commands — no hardcoded examples:**
+
+Command files (`.claude/commands/*.md` and agent equivalents) must never hardcode example output when a script generates that output dynamically. Reference the script and describe what it does — don't duplicate its output with fake data that becomes stale.
+
 ## TDD Development (Stage 2: /dev)
 
 **Subagent-driven per-task implementation loop:**

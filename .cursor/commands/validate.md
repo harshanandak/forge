@@ -1,4 +1,9 @@
 
+> **Note:** Three things share the "validate" name in Forge:
+> - `/validate` (this command): Workflow Stage 3 — runs type/lint/test/security checks
+> - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
+> - `bun run check` (scripts/validate.sh): Local quality gate — same checks as /validate, non-interactive
+
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
 # Validate

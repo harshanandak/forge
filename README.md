@@ -78,7 +78,7 @@ bunx forge setup
 
 | Stage | Command | Purpose |
 |-------|---------|---------|
-| **utility** | `/status` | Check current context, active work |
+| **utility** | `/status` | Ranked issue dashboard with conflict detection |
 | **1. Plan** | `/plan` | Design Q&A → research → branch + task list |
 | **2. Dev** | `/dev` | Subagent TDD per task (spec + quality review) |
 | **3. Validate** | `/validate` | Validate: types, lint, tests, security |
@@ -172,9 +172,9 @@ Git hooks automatically enforce TDD practices:
 
 ```bash
 # Validation CLI
-forge-validate status    # Check project prerequisites
-forge-validate dev       # Validate before /dev stage
-forge-validate ship      # Validate before /ship stage
+forge-preflight status    # Check project prerequisites
+forge-preflight dev       # Validate before /dev stage
+forge-preflight ship      # Validate before /ship stage
 ```
 
 ### 5. Smart Tool Recommendations (v1.7.0)

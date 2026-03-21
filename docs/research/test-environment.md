@@ -28,7 +28,7 @@ Forge is a universal AI agent workflow tool supporting 11 agent plugins with com
 1. `test/agents-md/structure.test.js` - AGENTS.md structure validation
 2. `test/plugins/plugin-manager.test.js` - Plugin loading tests
 3. `test/plugins/plugin-schema.test.js` - Plugin JSON schema validation
-4. `test/validation/forge-validate.test.js` - CLI validation
+4. `test/validation/forge-preflight.test.js` - CLI validation
 5. `test/validation/git-hooks.test.js` - Lefthook configuration
 6. `test/validation/project-tools.test.js` - Project tools detection
 7. `test/rollback-validation.test.js` - Rollback input validation
@@ -47,7 +47,7 @@ Forge is a universal AI agent workflow tool supporting 11 agent plugins with com
 ### Critical Files
 
 - `bin/forge.js` (3,771 lines) - Main CLI, all flows
-- `bin/forge-validate.js` (303 lines) - Validation CLI
+- `bin/forge-preflight.js` (303 lines) - Validation CLI
 - `lib/plugin-manager.js` (115 lines) - Plugin loading
 - `install.sh` (1,063 lines) - Curl installation
 - 11 plugin files in `lib/agents/*.plugin.json`
@@ -491,7 +491,7 @@ const testDir = mkdtempSync(join(tmpdir(), 'forge-test-'));
 
 ## References
 
-- Forge codebase: `bin/forge.js`, `bin/forge-validate.js`, `lib/plugin-manager.js`
+- Forge codebase: `bin/forge.js`, `bin/forge-preflight.js`, `lib/plugin-manager.js`
 - Security test pattern: `test/rollback-edge-cases.test.js`
 - Installation script: `install.sh`
 - Plugin definitions: `lib/agents/*.plugin.json`

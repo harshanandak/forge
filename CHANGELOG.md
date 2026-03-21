@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Workflow Intelligence: smart status, phase tracking, naming clarity** (PR #72, forge-68oj)
+  - `scripts/smart-status.sh`: Ranks all issues by composite score (priority × unblock chain × type × status boost × epic proximity × staleness)
+  - Grouped output: Resume → Unblock Chains → Ready Work → Blocked → Backlog with ANSI colors and NO_COLOR support
+  - Active session detection: parses `git worktree list --porcelain`, maps branches to in-progress beads issues
+  - Two-tier conflict detection: Tier 1 (file-level overlap via `git diff`) + Tier 2 (actual merge conflicts via `git merge-tree`, git 2.38+)
+  - `/plan` now creates epic at Phase 1 entry with stage transitions at each phase boundary
+  - `/status` updated to use `smart-status.sh` for dynamic ranked output
+  - Disambiguation note added to `/validate` command (three concepts: /validate, forge-preflight, bun run check)
+  - Auto-detect default branch (master/main) with `DEFAULT_BRANCH` env override
+  - Reverse dependency map computes "Unblocks:" annotations from actual dependency data
+  - 67 new tests, 0 regressions
+
+### Changed
+
+- **CLI prerequisite checker renamed to `forge-preflight`** (PR #72, forge-0xic)
+  - Clearer name distinguishes it from `/validate` workflow command and `bun run check`
+  - Updated: bin entry, package.json, README, CHANGELOG, DEVELOPMENT, docs/VALIDATION, docs/research/
+  - Fixed pre-existing bug: `validateDev` now checks `docs/plans/` (was `.claude/plans/`)
+  - Fixed Node compat: removed `readdirSync({ recursive })` (requires Node 18.17+)
+
+- **Dynamic commands rule** (PR #72)
+  - Added to AGENTS.md and CLAUDE.md: never hardcode example output in command files when scripts generate it dynamically
+
 ### Fixed
 
 - **P2 bug fixes: setup, postinstall, dead config, lint hooks** (PR #69, forge-cpnj + forge-iv1p + forge-8u6q + forge-zs2u)
@@ -129,10 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CI/CD-aware: auto-aborts in non-interactive environments
   - Package manager auto-detection (bun/pnpm/yarn/npm)
 
-- **Validation CLI**: `forge-validate` command
-  - `forge-validate status` - Check project prerequisites
-  - `forge-validate dev` - Validate before /dev stage
-  - `forge-validate ship` - Validate before /ship stage
+- **Preflight CLI**: `forge-preflight` command
+  - `forge-preflight status` - Check project prerequisites
+  - `forge-preflight dev` - Validate before /dev stage
+  - `forge-preflight ship` - Validate before /ship stage
 
 - **Auto-Installation**: Beads and OpenSpec setup
   - Quick setup mode auto-installs Beads

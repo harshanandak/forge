@@ -70,12 +70,12 @@ LEFTHOOK=0 git push  # Skip all hooks
 
 ## Validation CLI
 
-The `forge-validate` CLI checks prerequisites for each workflow stage.
+The `forge-preflight` CLI checks prerequisites for each workflow stage.
 
 ### Usage
 
 ```bash
-forge-validate <command>
+forge-preflight <command>
 ```
 
 ### Commands
@@ -90,7 +90,7 @@ forge-validate <command>
 
 ## Validators by Stage
 
-### `forge-validate status`
+### `forge-preflight status`
 
 **Purpose**: Check basic project setup
 
@@ -102,7 +102,7 @@ forge-validate <command>
 
 **Example**:
 ```bash
-$ forge-validate status
+$ forge-preflight status
 
 Checking project prerequisites...
 
@@ -118,7 +118,7 @@ Validation Results:
 
 ---
 
-### `forge-validate dev`
+### `forge-preflight dev`
 
 **Purpose**: Validate before starting implementation (`/dev`)
 
@@ -130,7 +130,7 @@ Validation Results:
 
 **Example**:
 ```bash
-$ forge-validate dev
+$ forge-preflight dev
 
 Validating prerequisites for /dev stage...
 
@@ -146,7 +146,7 @@ Validation Results:
 
 **Failed Example**:
 ```bash
-$ forge-validate dev
+$ forge-preflight dev
 
 Validating prerequisites for /dev stage...
 
@@ -163,7 +163,7 @@ Validation Results:
 
 ---
 
-### `forge-validate ship`
+### `forge-preflight ship`
 
 **Purpose**: Validate before creating PR (`/ship`)
 
@@ -175,7 +175,7 @@ Validation Results:
 
 **Example**:
 ```bash
-$ forge-validate ship
+$ forge-preflight ship
 
 Validating prerequisites for /ship stage...
 
@@ -269,7 +269,7 @@ const testPatterns = [
 
 ### Validation CLI Customization
 
-Edit `bin/forge-validate.js` to add custom validators:
+Edit `bin/forge-preflight.js` to add custom validators:
 
 ```javascript
 function validateCustomStage() {

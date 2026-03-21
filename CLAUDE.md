@@ -95,5 +95,6 @@ As you work, when you give the same instruction twice, add it here:
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
 - **Command sync**: After editing `.claude/commands/*.md`, run `node scripts/sync-commands.js` to update all 7 agent directories. Use `--check` in CI to detect drift. Use `--dry-run` to preview.
+- **Dynamic commands**: Never hardcode example output in command files (`.claude/commands/*.md`) when a script generates that output dynamically. Command files should reference the script and describe what it does — not duplicate its output with fake data that becomes stale.
 
 <!-- USER:END -->

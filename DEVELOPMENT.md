@@ -40,7 +40,7 @@ Pre-commit hook (`.forge/hooks/check-tdd.js`) checks for tests.
 
 ```
 forge/
-├── bin/                    # CLI scripts (forge.js, forge-validate.js)
+├── bin/                    # CLI scripts (forge.js, forge-preflight.js)
 ├── lib/
 │   └── agents/             # Plugin definitions (*.plugin.json)
 ├── .claude/

@@ -16,59 +16,23 @@ This command helps you understand the current state of the project before starti
 
 ## What This Command Does
 
-### Step 1: Check Project Health
+### Step 1: Smart Status (ranked issues with conflict detection)
 ```bash
-bd stats
+bash scripts/smart-status.sh
 ```
-- How many open / in-progress / completed issues?
-- Any blocked issues?
+This script dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed — the script handles everything.
 
-### Step 2: Check Active Work
+For full context on any issue: `bd show <id>`
+
+### Step 2: Review Recent Commits
 ```bash
-# Active Beads issues
-bd list --status in_progress
-```
-
-For each in-progress issue, show compact progress:
-```bash
-bash scripts/beads-context.sh parse-progress <issue-id>
-```
-Display the compact output (e.g., "3/7 tasks done | Last: Validation logic (def5678)")
-
-Hint: `bd show <id>` for full context on any issue.
-
-### Step 3: Review Recent Work
-```bash
-# Recent commits
 git log --oneline -10
-
-# Recently completed Beads
-bd list --status completed --limit 5
 ```
 
-### Step 4: Determine Context
+### Step 3: Determine Context
 - **New feature**: No active work, ready to start fresh
 - **Continuing work**: In-progress issues found, resume where left off
 - **Review needed**: Work marked complete, needs review/merge
-
-## Example Output
-
-```
-✓ Project Health: 3 open, 1 in-progress, 12 completed
-
-Active Work:
-  - forge-ctc: Clean up stale workflow refs (in_progress)
-    3/7 tasks done | Last: Validation logic (def5678)
-    → bd show forge-ctc for full context
-
-Recent Completions:
-  - forge-uto: Sync AGENTS.md with agent cleanup (closed 2 days ago)
-  - forge-abc: Auth refresh tokens (closed 5 days ago)
-
-Context: Continuing work
-
-Next: Resume with /dev or /validate (check issue status)
-```
 
 ## Next Steps
 
