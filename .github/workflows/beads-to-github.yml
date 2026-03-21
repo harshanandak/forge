@@ -32,15 +32,21 @@ jobs:
         if: env.SKIP != 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Detect and close
         if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           # Get old and new versions of .beads/issues.jsonl
-          OLD_CONTENT=$(git show HEAD~1:.beads/issues.jsonl 2>/dev/null || echo "")
+          # Use github.event.before (pre-push SHA) to catch multi-commit pushes
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
+            OLD_CONTENT=""
+          else
+            OLD_CONTENT=$(git show "$BEFORE_SHA":.beads/issues.jsonl 2>/dev/null || echo "")
+          fi
           NEW_CONTENT=$(cat .beads/issues.jsonl 2>/dev/null || echo "")
 
           # Export via temp files to avoid shell injection

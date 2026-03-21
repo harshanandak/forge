@@ -21,21 +21,23 @@ describe('GitHub-Beads sync setup integration', () => {
 
       await scaffoldGithubBeadsSync(tmpDir, packageDir);
 
-      // Workflow file
-      const workflowPath = path.join(tmpDir, '.github', 'workflows', 'github-to-beads.yml');
-      expect(fs.existsSync(workflowPath)).toBe(true);
+      // Phase 1 workflow
+      expect(fs.existsSync(path.join(tmpDir, '.github', 'workflows', 'github-to-beads.yml'))).toBe(true);
+
+      // Phase 2 workflow
+      expect(fs.existsSync(path.join(tmpDir, '.github', 'workflows', 'beads-to-github.yml'))).toBe(true);
 
       // Config file
-      const configPath = path.join(tmpDir, 'scripts', 'github-beads-sync.config.json');
-      expect(fs.existsSync(configPath)).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'scripts', 'github-beads-sync.config.json'))).toBe(true);
 
       // Mapping file
       const mappingPath = path.join(tmpDir, '.github', 'beads-mapping.json');
       expect(fs.existsSync(mappingPath)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(mappingPath, 'utf-8'))).toEqual({});
 
-      // Mapping file should be empty JSON object
-      const mappingContent = JSON.parse(fs.readFileSync(mappingPath, 'utf-8'));
-      expect(mappingContent).toEqual({});
+      // Sync script modules (spot-check key files)
+      expect(fs.existsSync(path.join(tmpDir, 'scripts', 'github-beads-sync', 'index.mjs'))).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'scripts', 'github-beads-sync', 'reverse-sync-cli.mjs'))).toBe(true);
     });
 
     test('does not overwrite existing config files', async () => {
@@ -95,8 +97,12 @@ describe('GitHub-Beads sync setup integration', () => {
       for (const dir of dirs) {
         await fs.promises.mkdir(dir, { recursive: true });
       }
+      // Pre-create all expected files
       await fs.promises.writeFile(
         path.join(tmpDir, '.github', 'workflows', 'github-to-beads.yml'), 'existing', 'utf-8'
+      );
+      await fs.promises.writeFile(
+        path.join(tmpDir, '.github', 'workflows', 'beads-to-github.yml'), 'existing', 'utf-8'
       );
       await fs.promises.writeFile(
         path.join(tmpDir, 'scripts', 'github-beads-sync.config.json'), '{}', 'utf-8'
@@ -104,11 +110,22 @@ describe('GitHub-Beads sync setup integration', () => {
       await fs.promises.writeFile(
         path.join(tmpDir, '.github', 'beads-mapping.json'), '{}', 'utf-8'
       );
+      // Pre-create script modules
+      const syncDir = path.join(tmpDir, 'scripts', 'github-beads-sync');
+      await fs.promises.mkdir(syncDir, { recursive: true });
+      const scriptNames = [
+        'config.mjs', 'mapping.mjs', 'comment.mjs', 'github-api.mjs',
+        'sanitize.mjs', 'run-bd.mjs', 'label-mapper.mjs', 'index.mjs',
+        'reverse-sync.mjs', 'reverse-sync-cli.mjs',
+      ];
+      for (const name of scriptNames) {
+        await fs.promises.writeFile(path.join(syncDir, name), 'existing', 'utf-8');
+      }
 
       const result = await scaffoldGithubBeadsSync(tmpDir, packageDir);
 
       expect(result.created.length).toBe(0);
-      expect(result.skipped.length).toBe(3);
+      expect(result.skipped.length).toBe(14);
     });
   });
 
