@@ -34,8 +34,10 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
           echo "$HOME/.beads/bin" >> "$GITHUB_PATH"
-      - name: Verify Beads CLI
-        run: bd --version
+      - name: Verify Beads CLI and initialize database
+        run: |
+          bd --version
+          bd sync 2>&1 || bd doctor --fix 2>&1 || true
 
       - name: Run sync
         env:
