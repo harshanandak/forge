@@ -16,9 +16,25 @@ export default [
       'test/e2e/fixtures/**',
     ],
   },
+  // ES Modules — .mjs files (Node scripts using ESM)
+  {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2021,
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-console': 'off',
+      'no-undef': 'error',
+    },
+  },
   // ES Modules (packages/skills, test/forge-uto, and eslint.config.js)
   {
-    files: ['packages/skills/**/*.js', 'test/forge-uto/**/*.js', 'eslint.config.js'],
+    files: ['packages/skills/**/*.js', 'test/forge-uto/**/*.js', 'test/scripts/github-beads-sync/**/*.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'module',
@@ -39,7 +55,7 @@ export default [
   // CommonJS (everything else)
   {
     files: ['**/*.js'],
-    ignores: ['packages/skills/**/*.js', 'test/forge-uto/**/*.js', 'eslint.config.js'],
+    ignores: ['packages/skills/**/*.js', 'test/forge-uto/**/*.js', 'test/scripts/github-beads-sync/**/*.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'commonjs',

