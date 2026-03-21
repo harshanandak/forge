@@ -95,7 +95,7 @@ ISSUES_JSON="$("$BD" list --json --limit 0 2>/dev/null || echo '[]')"
 # Bail early on empty
 if [ "$(printf '%s' "$ISSUES_JSON" | jq 'length')" = "0" ]; then
   if [ "$JSON_MODE" = "1" ]; then
-    echo "[]"
+    echo '{"sessions":[],"issues":[]}'
   else
     echo "No issues found."
   fi
@@ -593,7 +593,7 @@ else
         ("[" + ($item.status // "open") + " " + ($item.days_ago | tostring) + "d]") as $status_tag |
         # Unblocks annotation
         (if ($item.dependents // [] | length) > 0 then
-          "\n   -> Unblocks: " + ($item.dependents | join(", "))
+          " -> Unblocks: " + ($item.dependents | join(", "))
          else "" end) as $unblocks |
         "ENTRY:" + $item.group + ":" +
           $rank + ". [" + ($item.score | tostring) + "] " +

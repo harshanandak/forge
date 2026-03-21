@@ -70,7 +70,10 @@ function runSmartStatus(args = [], env = {}, stdin = undefined) {
  */
 function parseIssues(stdout) {
   const parsed = JSON.parse(stdout);
-  return parsed.issues || parsed;
+  if (!parsed.issues) {
+    throw new Error('Expected {sessions, issues} envelope but got: ' + stdout.slice(0, 200));
+  }
+  return parsed.issues;
 }
 
 /**
