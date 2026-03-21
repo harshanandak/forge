@@ -745,7 +745,7 @@ function smartMergeAgentsMd(existingContent, newContent) {
   merged += forgeSection + '\n\n';
 
   // Add footer
-  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`docs/WORKFLOW.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
+  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`AGENTS.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
 
   return merged;
 }
@@ -778,7 +778,6 @@ async function detectProjectStatus() {
     hasClaudeMd: fs.existsSync(path.join(projectRoot, 'CLAUDE.md')),
     hasClaudeCommands: fs.existsSync(path.join(projectRoot, '.claude/commands')),
     hasEnvLocal: fs.existsSync(path.join(projectRoot, '.env.local')),
-    hasDocsWorkflow: fs.existsSync(path.join(projectRoot, 'docs/WORKFLOW.md')),
     existingEnvVars: {},
     agentsMdSize: 0,
     claudeMdSize: 0,
@@ -811,7 +810,7 @@ async function detectProjectStatus() {
   }
 
   // Determine installation type
-  if (status.hasAgentsMd && status.hasClaudeCommands && status.hasDocsWorkflow) {
+  if (status.hasAgentsMd && status.hasClaudeCommands) {
     status.type = 'upgrade'; // Full forge installation exists
   } else if (status.hasClaudeCommands || status.hasEnvLocal) {
     status.type = 'partial'; // Agent-specific files exist (not just base files from postinstall)
@@ -1778,17 +1777,27 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   }
 }
 
+/**
+ * Creates a directory on first use and prints a one-time purpose note.
+ * @param {string} dir - Absolute path to the directory to create.
+ * @param {string} purpose - Human-readable purpose description.
+ * @returns {string|null} Purpose message if created, null if already existed.
+ */
+function ensureDirWithNote(dir, purpose) {
+  if (fs.existsSync(dir)) {
+    return null;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const display = dir.replace(/\\/g, '/');
+  const msg = `Created ${display} for ${purpose}`;
+  console.log(`  ${msg}`);
+  return msg;
+}
+
 // Setup core documentation and directories
 function setupCoreDocs() {
-  // Create core directories
-  ensureDir('docs/planning');
-  ensureDir('docs/research');
-
-  // Copy WORKFLOW.md
-  const workflowSrc = path.join(packageDir, 'docs/WORKFLOW.md');
-  if (copyFile(workflowSrc, 'docs/WORKFLOW.md')) {
-    console.log('  Created: docs/WORKFLOW.md');
-  }
+  // docs/planning/ and docs/research/ are created lazily on first use
+  // by /plan Phase 1 and Phase 2 respectively, via ensureDirWithNote().
 
   // Copy research TEMPLATE.md
   const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
@@ -2050,7 +2059,6 @@ function displayInstallationStatus(projectStatus) {
   if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
   if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
   if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
   console.log('');
 }
 
@@ -3472,7 +3480,6 @@ function displayExistingInstallation(projectStatus) {
   if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
   if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
   if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
   console.log('');
 }
 
@@ -4283,4 +4290,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getWorkflowCommands };
+module.exports = { getWorkflowCommands, ensureDirWithNote };
