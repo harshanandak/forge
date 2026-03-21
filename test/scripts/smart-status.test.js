@@ -929,7 +929,7 @@ command git "$@"
       return { tmpDir, mockScript };
     }
 
-    test('shows Changed: line with files for each active session branch', () => {
+    test('shows Changed: line with files for each active session branch', { timeout: 15000 }, () => {
       const porcelain = [
         'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
         'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',

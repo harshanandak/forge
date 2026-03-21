@@ -213,8 +213,8 @@ while IFS= read -r line; do
       _wt_branch="${line#branch refs/heads/}"
       ;;
     "")
-      # End of block — process if we have a branch that is not main/master
-      if [ -n "$_wt_branch" ] && [ "$_wt_branch" != "main" ] && [ "$_wt_branch" != "master" ]; then
+      # End of block — process if we have a branch that is not the default branch
+      if [ -n "$_wt_branch" ] && [ "$_wt_branch" != "$BASE_BRANCH" ] && [ "$_wt_branch" != "main" ] && [ "$_wt_branch" != "master" ]; then
         SESSION_COUNT=$((SESSION_COUNT + 1))
         if [ -n "$SESSION_BRANCHES" ]; then
           SESSION_BRANCHES="${SESSION_BRANCHES}|${_wt_branch}"
@@ -335,8 +335,8 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
 
     # Get changed files for this branch vs master (-- prevents injection)
     _files="$("$GIT" diff "${BASE_BRANCH}...${_branch}" --name-only -- 2>/dev/null || echo '')"
-    # Collapse to comma-delimited, strip empty lines
-    _files_csv="$(printf '%s' "$_files" | tr '\n' ',' | sed 's/,$//' | sed 's/^,//')"
+    # Collapse to tab-delimited (tabs can't appear in filenames), strip empty lines
+    _files_csv="$(printf '%s' "$_files" | tr '\n' '\t' | sed 's/\t$//' | sed 's/^\t//')"
 
     if [ -n "$ALL_BRANCH_FILES" ]; then
       ALL_BRANCH_FILES="${ALL_BRANCH_FILES}|${_branch}:${_files_csv}"
@@ -363,9 +363,9 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
     _branch="${_entry%%:*}"
     _files_csv="${_entry#*:}"
 
-    # Convert comma-delimited files to JSON array
+    # Convert tab-delimited files to JSON array
     if [ -n "$_files_csv" ]; then
-      _files_json="$(printf '%s' "$_files_csv" | jq -R 'split(",")')"
+      _files_json="$(printf '%s' "$_files_csv" | jq -R 'split("\t")')"
     else
       _files_json="[]"
     fi
@@ -393,7 +393,7 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
       [ -z "$_other_files" ] && continue
 
       # Find intersection
-      _other_json="$(printf '%s' "$_other_files" | jq -R 'split(",")')"
+      _other_json="$(printf '%s' "$_other_files" | jq -R 'split("\t")')"
       _overlap="$(jq -n --argjson a "$_files_json" --argjson b "$_other_json" \
         '[$a[] as $f | select($b | index($f))] | unique')"
       _overlap_len="$(printf '%s' "$_overlap" | jq 'length')"
@@ -476,7 +476,7 @@ if [ "$TIER2_ENABLED" = "1" ]; then
           # Skip empty lines
           if [ -z "$_cf_line" ]; then continue; fi
           if [ -n "$_conflict_files" ]; then
-            _conflict_files="${_conflict_files},${_cf_line}"
+            _conflict_files="${_conflict_files}	${_cf_line}"
           else
             _conflict_files="${_cf_line}"
           fi
@@ -485,7 +485,7 @@ $_mt_output
 MTEOF
 
         if [ -n "$_conflict_files" ]; then
-          _cf_json="$(printf '%s' "$_conflict_files" | jq -R 'split(",")')"
+          _cf_json="$(printf '%s' "$_conflict_files" | jq -R 'split("\t")')"
 
           # Add merge_conflicts to both branches in SESSIONS_JSON
           for _target_branch in "$_b1" "$_b2"; do
