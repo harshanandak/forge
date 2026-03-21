@@ -556,11 +556,11 @@ else
         ((.updated_at | sub("\\.[0-9]+Z$"; "Z")) | fromdateiso8601) as $ts |
         (($now | tonumber) - $ts) / 86400 | floor
        else 0 end) as $days_ago |
-      # Group assignment (priority order: RESUME > UNBLOCK_CHAINS > READY_WORK > BLOCKED > BACKLOG)
+      # Group assignment (priority order: RESUME > UNBLOCK_CHAINS > BLOCKED > BACKLOG > READY_WORK)
       (if .status == "in_progress" then "RESUME"
        elif (.dependent_count // 0) >= 2 and .status != "in_progress" then "UNBLOCK_CHAINS"
-       elif .priority == "P4" then "BACKLOG"
        elif (.dependency_count // 0) > 0 and .status != "closed" then "BLOCKED"
+       elif .priority == "P4" then "BACKLOG"
        else "READY_WORK"
        end) as $group |
       $item + { group: $group, days_ago: $days_ago }
