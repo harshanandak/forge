@@ -34,13 +34,13 @@ Ensure all four validation checks completed successfully with fresh output in th
 Even though /validate rebased onto master, time may have passed since then (user reviewed design doc, took a break, etc.). This lightweight check catches staleness before pushing.
 
 ```bash
-git fetch origin master
+git fetch origin master || { echo "✗ Fetch failed — cannot verify freshness"; exit 1; }
 BEHIND=$(git rev-list --count HEAD..origin/master)
 ```
 
 - If `BEHIND > 0`: **STOP**. Print: "Master has advanced since /validate ($BEHIND new commits). Run /validate again to rebase and re-check."
 - If `BEHIND = 0`: Continue to push.
-- If fetch fails: **STOP**. Print error. Do NOT push without confirming freshness.
+- If fetch fails: the `|| { ...; exit 1; }` guard catches this — **STOP**. Do NOT push without confirming freshness.
 
 This is NOT a full rebase — just a check. The rebase happens in /validate where the full test suite runs afterward.
 
@@ -98,6 +98,9 @@ See: docs/plans/YYYY-MM-DD-<slug>-decisions.md (if any undocumented decisions ar
 ### Key Decisions
 [From design doc — 3-5 key decisions with reasoning]
 
+### Documentation Updated
+[List docs updated in this PR, or "None — no doc-facing changes"]
+
 ### Validation
 - [x] Type check passing
 - [x] Lint passing (0 errors, 0 warnings)
@@ -148,9 +151,9 @@ Stage 7: /verify     → Post-merge CI check on main
 
 ## Tips
 
-- **Complete PR body**: Include design doc, decisions log, and test coverage
-- **Link everything**: Design doc, decisions log, Beads issue
-- **Document security**: OWASP Top 10 review in PR body
+- **Lead with why**: Problem → Root Cause → Fix → Value is what reviewers need first
+- **Collapsible details**: Design doc, decisions log, test coverage go in `<details>` — available but not in the way
+- **Document security**: OWASP Top 10 review in collapsible section
 - **Test coverage**: Show all test scenarios passing
 - **Wait for checks**: Let GitHub Actions, Greptile, SonarCloud run
 - **NO auto-merge**: Always wait for /review phase

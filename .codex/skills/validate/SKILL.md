@@ -3,9 +3,9 @@ description: Complete validation (type/lint/tests/security)
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
-> - `/validate` (this command): Workflow Stage 3 — runs type/lint/test/security checks
+> - `/validate` (this command): Workflow Stage 3 — rebases onto master, then runs type/lint/test/security checks
 > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
-> - `bun run check` (scripts/validate.sh): Local quality gate — same checks as /validate, non-interactive
+> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with master)
 
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
@@ -19,10 +19,11 @@ This command validates all code before creating a pull request.
 /validate
 ```
 
-Or use the unified validation script:
+Or use the validation script (checks only — no rebase):
 
 ```bash
-bun run check    # Runs all validation steps automatically (check is the npm script name; /validate is the workflow command)
+bun run check    # Runs lint/test/security checks only. Does NOT rebase onto master.
+                 # Use /validate for the full workflow (rebase + checks).
 ```
 
 ```
@@ -30,9 +31,9 @@ bun run check    # Runs all validation steps automatically (check is the npm scr
 Before running ANY validation checks:
 
 1. Fetch latest master:
-   git fetch origin master
+   git fetch origin master || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
 
-   If fetch fails (no network, no remote): STOP. Print error. Do NOT silently skip.
+   The `|| { ...; exit 1; }` guard ensures fetch failures are never silently skipped.
 
 2. Check if branch is behind:
    BEHIND=$(git rev-list --count HEAD..origin/master)
