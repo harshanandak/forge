@@ -1,0 +1,50 @@
+name: Beads → GitHub Issue Sync
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.beads/**'
+
+# Serialize with forward-sync to prevent race conditions
+concurrency:
+  group: beads-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reverse-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard — skip loop commits
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ "$COMMIT_MSG" == chore\(beads\):* ]]; then
+            echo "Loop guard: skipping chore(beads): commit"
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout current
+        if: env.SKIP != 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect and close
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get old and new versions of .beads/issues.jsonl
+          OLD_CONTENT=$(git show HEAD~1:.beads/issues.jsonl 2>/dev/null || echo "")
+          NEW_CONTENT=$(cat .beads/issues.jsonl 2>/dev/null || echo "")
+
+          # Export via temp files to avoid shell injection
+          printf '%s' "$OLD_CONTENT" > /tmp/old-issues.jsonl
+          printf '%s' "$NEW_CONTENT" > /tmp/new-issues.jsonl
+
+          node scripts/github-beads-sync/reverse-sync-cli.mjs /tmp/old-issues.jsonl /tmp/new-issues.jsonl
