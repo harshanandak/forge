@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Renamed `forge-validate` to `forge-preflight`** (PR #72, forge-0xic)
-  - CLI prerequisite checker renamed for clarity — `/validate` workflow command unchanged
+- **CLI prerequisite checker renamed to `forge-preflight`** (PR #72, forge-0xic)
+  - Clearer name distinguishes it from `/validate` workflow command and `bun run check`
   - Updated: bin entry, package.json, README, CHANGELOG, DEVELOPMENT, docs/VALIDATION, docs/research/
   - Fixed pre-existing bug: `validateDev` now checks `docs/plans/` (was `.claude/plans/`)
   - Fixed Node compat: removed `readdirSync({ recursive })` (requires Node 18.17+)
