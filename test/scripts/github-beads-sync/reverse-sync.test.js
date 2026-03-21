@@ -214,17 +214,23 @@ describe('handleBeadsClosed', () => {
   });
 });
 
-// --- Loop guard ---
+// --- Loop guard (validated against actual workflow YAML) ---
 
 describe('loop guard', () => {
-  test('commit message starting with chore(beads): should be detected as loop', () => {
-    // This tests the logic the workflow YAML uses — we verify the pattern here
-    const commitMsg = 'chore(beads): sync from GitHub issue #42';
-    expect(commitMsg.startsWith('chore(beads):')).toBe(true);
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const workflowPath = path.resolve(__dirname, '../../../.github/workflows/beads-to-github.yml');
+  const workflowContent = fs.readFileSync(workflowPath, 'utf-8');
+
+  test('workflow YAML contains chore(beads): loop guard pattern', () => {
+    expect(workflowContent).toContain('chore\\(beads\\):');
   });
 
-  test('non-sync commit message is not a loop', () => {
-    const commitMsg = 'feat: close beads issue forge-abc';
-    expect(commitMsg.startsWith('chore(beads):')).toBe(false);
+  test('workflow skips execution when SKIP is true', () => {
+    expect(workflowContent).toContain("if: env.SKIP != 'true'");
+  });
+
+  test('workflow uses github.event.before for pre-push comparison', () => {
+    expect(workflowContent).toContain('github.event.before');
   });
 });

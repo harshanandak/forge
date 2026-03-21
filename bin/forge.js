@@ -1748,12 +1748,16 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   console.log('');
   const enableSync = await askYesNo(question, 'Enable GitHub ↔ Beads issue sync?', true);
   if (enableSync) {
-    const result = await scaffoldGithubBeadsSync(projectRoot, packageDir);
-    for (const f of result.created) {
-      console.log(`  Created: ${f}`);
-    }
-    for (const f of result.skipped) {
-      console.log(`  Skipped: ${f} (already exists)`);
+    try {
+      const result = await scaffoldGithubBeadsSync(projectRoot, packageDir);
+      for (const f of result.created) {
+        console.log(`  Created: ${f}`);
+      }
+      for (const f of result.skipped) {
+        console.log(`  Skipped: ${f} (already exists)`);
+      }
+    } catch (err) {
+      console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
     }
   }
 }
