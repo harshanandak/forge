@@ -197,7 +197,7 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
 
 WORKTREE_PORCELAIN="$("$GIT" worktree list --porcelain 2>/dev/null || echo '')"
 
-# Collect non-main worktree branches and paths
+# Collect non-default-branch worktree branches and paths
 SESSION_BRANCHES=""
 SESSION_PATHS=""
 SESSION_COUNT=0
@@ -214,7 +214,7 @@ while IFS= read -r line; do
       ;;
     "")
       # End of block — process if we have a branch that is not the default branch
-      if [ -n "$_wt_branch" ] && [ "$_wt_branch" != "$BASE_BRANCH" ] && [ "$_wt_branch" != "main" ] && [ "$_wt_branch" != "master" ]; then
+      if [ -n "$_wt_branch" ] && [ "$_wt_branch" != "$BASE_BRANCH" ]; then
         SESSION_COUNT=$((SESSION_COUNT + 1))
         if [ -n "$SESSION_BRANCHES" ]; then
           SESSION_BRANCHES="${SESSION_BRANCHES}|${_wt_branch}"
@@ -333,7 +333,7 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
         ;;
     esac
 
-    # Get changed files for this branch vs master (-- prevents injection)
+    # Get changed files for this branch vs BASE_BRANCH (-- prevents injection)
     _files="$("$GIT" diff "${BASE_BRANCH}...${_branch}" --name-only -- 2>/dev/null || echo '')"
     # Collapse to tab-delimited (tabs can't appear in filenames), strip empty lines
     _files_csv="$(printf '%s' "$_files" | tr '\n' '\t' | sed 's/\t$//' | sed 's/^\t//')"
