@@ -4,9 +4,9 @@ mode: code
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
-> - `/validate` (this command): Workflow Stage 3 — rebases onto master, then runs type/lint/test/security checks
+> - `/validate` (this command): Workflow Stage 3 — rebases onto the base branch, then runs type/lint/test/security checks
 > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
-> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with master)
+> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
 
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
@@ -23,7 +23,7 @@ This command validates all code before creating a pull request.
 Or use the validation script (checks only — no rebase):
 
 ```bash
-bun run check    # Runs lint/test/security checks only. Does NOT rebase onto master.
+bun run check    # Runs lint/test/security checks only. Does NOT rebase onto the base branch.
                  # Use /validate for the full workflow (rebase + checks).
 ```
 
