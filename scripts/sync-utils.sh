@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # sync-utils.sh — Shared utilities for multi-dev-awareness sync scripts.
 #
-# Source this file; do not execute directly.
+# Source this file or execute directly with a subcommand.
 # Cross-platform: works on Windows (Git Bash), macOS, and Linux.
 # OWASP A03: All identity strings validated against strict allowlist regex.
 # OWASP A03: All config values sanitized before use (no injection vectors).
+
+# Only set errexit/pipefail when run as a script, not when sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  set -euo pipefail
+fi
 
 # ── Session Identity ───────────────────────────────────────────────────
 
@@ -253,3 +258,164 @@ get_sync_remote() {
   # 4. Default to 'origin'
   printf '%s' "origin"
 }
+
+# ── Auto Sync ──────────────────────────────────────────────────────────
+
+# Staleness threshold in seconds (15 minutes)
+_SYNC_STALENESS_THRESHOLD=900
+
+# auto_sync [repo_dir]
+# Runs `bd sync` to pull/push latest beads state.
+# On failure: warns but continues (non-blocking, always returns 0).
+# On success: records Unix epoch timestamp to .beads/.last-sync
+#             and updates file index from all in-progress issues' task files.
+#
+# Environment overrides (for testing):
+#   BD_SYNC_CMD — command to run instead of `bd sync` (default: "bd sync")
+#   FILE_INDEX_ROOT — root directory for file-index.sh (default: repo_dir)
+auto_sync() {
+  local repo_dir="${1:-.}"
+  local sync_cmd="${BD_SYNC_CMD:-bd sync}"
+  local last_sync_file="$repo_dir/.beads/.last-sync"
+
+  # Ensure .beads directory exists
+  mkdir -p "$repo_dir/.beads"
+
+  # Run bd sync (or mock)
+  if eval "$sync_cmd" >/dev/null 2>&1; then
+    # Success: record timestamp
+    date +%s > "$last_sync_file"
+
+    # Update file index from in-progress issues' task files
+    _auto_sync_update_file_index "$repo_dir"
+  else
+    # Failure: warn but continue (non-blocking)
+    local last_ts="unknown"
+    if [[ -f "$last_sync_file" ]]; then
+      last_ts="$(cat "$last_sync_file")"
+    fi
+    echo "Warning: sync failed, working with local data (last sync: $last_ts)" >&2
+  fi
+
+  return 0
+}
+
+# _auto_sync_update_file_index [repo_dir]
+# After a successful sync, iterate over in-progress issues and update the file index.
+# Uses file_index_update_from_tasks from file-index.sh.
+_auto_sync_update_file_index() {
+  local repo_dir="${1:-.}"
+
+  # Source file-index.sh if file_index_update_from_tasks is not defined
+  if ! command -v file_index_update_from_tasks &>/dev/null; then
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -f "$script_dir/file-index.sh" ]]; then
+      source "$script_dir/file-index.sh"
+    else
+      return 0
+    fi
+  fi
+
+  # Export FILE_INDEX_ROOT so file-index.sh uses the right directory
+  export FILE_INDEX_ROOT="${FILE_INDEX_ROOT:-$repo_dir}"
+
+  # Find in-progress issues by scanning .beads/issues.jsonl
+  local issues_file="$repo_dir/.beads/issues.jsonl"
+  if [[ ! -f "$issues_file" ]] || [[ ! -s "$issues_file" ]]; then
+    return 0
+  fi
+
+  # Check jq is available
+  if ! command -v jq &>/dev/null; then
+    return 0
+  fi
+
+  # Extract in-progress issue IDs (LWW resolution: group by id, take last, filter in_progress)
+  local issue_ids
+  issue_ids="$(jq -s -r '
+    group_by(.id)
+    | map(sort_by(.updated_at) | last)
+    | map(select(.status == "in_progress"))
+    | .[].id
+  ' "$issues_file" 2>/dev/null)" || true
+
+  if [[ -z "$issue_ids" ]]; then
+    return 0
+  fi
+
+  # For each in-progress issue, find its task file and update the file index
+  local issue_id
+  while IFS= read -r issue_id; do
+    if [[ -z "$issue_id" ]]; then
+      continue
+    fi
+
+    # Look for task files in common locations
+    local task_file=""
+    for candidate in \
+      "$repo_dir/.beads/tasks/${issue_id}.md" \
+      "$repo_dir/.beads/tasks/${issue_id}-tasks.md" \
+      "$repo_dir/docs/plans/"*"-tasks.md"; do
+      if [[ -f "$candidate" ]]; then
+        task_file="$candidate"
+        break
+      fi
+    done
+
+    # Update file index (file_index_update_from_tasks handles missing task files gracefully)
+    file_index_update_from_tasks "$issue_id" "$task_file" "in_progress" 2>/dev/null || true
+  done <<< "$issue_ids"
+
+  return 0
+}
+
+# check_sync_staleness [repo_dir]
+# Reads .beads/.last-sync and warns if the last sync is older than 15 minutes.
+# Always returns 0 (non-blocking).
+# Outputs:
+#   - Nothing if sync is fresh (<= 900 seconds)
+#   - Warning to stderr if stale (> 900 seconds)
+#   - Warning to stderr if .last-sync is missing (never synced)
+check_sync_staleness() {
+  local repo_dir="${1:-.}"
+  local last_sync_file="$repo_dir/.beads/.last-sync"
+
+  if [[ ! -f "$last_sync_file" ]]; then
+    echo "Warning: beads sync has never been run (no .last-sync record)" >&2
+    return 0
+  fi
+
+  local last_ts
+  last_ts="$(cat "$last_sync_file")"
+
+  # Validate it's a number
+  if [[ ! "$last_ts" =~ ^[0-9]+$ ]]; then
+    echo "Warning: .last-sync contains invalid timestamp" >&2
+    return 0
+  fi
+
+  local now
+  now="$(date +%s)"
+  local age=$(( now - last_ts ))
+
+  if [[ "$age" -gt "$_SYNC_STALENESS_THRESHOLD" ]]; then
+    local minutes=$(( age / 60 ))
+    echo "Warning: beads data is stale (last sync: ${minutes}m ago, threshold: 15m)" >&2
+  fi
+
+  return 0
+}
+
+# ── CLI Dispatcher ─────────────────────────────────────────────────────
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    auto-sync) shift; auto_sync "$@" ;;
+    check-staleness) shift; check_sync_staleness "$@" ;;
+    identity) get_session_identity ;;
+    sync-branch) shift; get_sync_branch "$@" ;;
+    sync-remote) shift; get_sync_remote "$@" ;;
+    *) echo "Usage: sync-utils.sh <auto-sync|check-staleness|identity|sync-branch|sync-remote>" >&2; exit 1 ;;
+  esac
+fi
