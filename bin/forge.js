@@ -52,12 +52,21 @@ const { scaffoldGithubBeadsSync } = require('../lib/setup');
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
 const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
+
+// Load incremental setup modules
+const { detectEnvironment } = require('../lib/detect-agent');
+const { fileMatchesContent } = require('../lib/file-hash');
+const { SetupActionLog } = require('../lib/setup-action-log');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
 // Get the project root (let allows reassignment after --path flag handling)
 let projectRoot = process.env.INIT_CWD || process.cwd();
 const args = process.argv.slice(2);
+
+// Incremental setup state (set during main() from parsed flags)
+let FORCE_MODE = false;
+let actionLog = new SetupActionLog();
 
 // Detected package manager
 let PKG_MANAGER = 'npm';
@@ -523,11 +532,23 @@ function copyFile(src, dest) {
     }
 
     if (fs.existsSync(src)) {
+      // Content-hash comparison: skip if destination already matches source
+      if (!FORCE_MODE) {
+        const sourceContent = fs.readFileSync(src, 'utf8');
+        if (fileMatchesContent(destPath, sourceContent)) {
+          actionLog.add(dest, 'skipped', 'identical content');
+          return 'skipped';
+        }
+      }
+
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
         fs.mkdirSync(destDir, { recursive: true });
       }
+      const isNew = !fs.existsSync(destPath);
       fs.copyFileSync(src, destPath);
+      const action = FORCE_MODE ? 'force-created' : (isNew ? 'created' : 'updated');
+      actionLog.add(dest, action);
       return true;
     } else {
       console.warn(`  ⚠ Source file not found: ${src}`);
@@ -2534,6 +2555,7 @@ function parseFlags() {
     interview: false, // Force context interview
     budget: null,     // Budget mode for recommend command
     yes: false,       // Non-interactive mode (skip prompts, use defaults)
+    force: false,     // Force overwrite even if content is identical
   };
 
   for (let i = 0; i < args.length;) {
@@ -2572,6 +2594,9 @@ function parseFlags() {
       i = result.nextIndex;
     } else if (arg === '--yes' || arg === '-y') {
       flags.yes = true;
+      i++;
+    } else if (arg === '--force') {
+      flags.force = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -3618,6 +3643,15 @@ async function interactiveSetupWithFlags(flags) {
   // Prompt for overwrite decisions
   const skipFiles = await promptForOverwriteDecisions(question, projectStatus);
 
+  // Agent auto-detection (suggests but does not force)
+  const envDetection = detectEnvironment(projectRoot);
+  if (envDetection.activeAgent && envDetection.confidence === 'high') {
+    console.log(`  Detected: ${envDetection.activeAgent} (${envDetection.activeAgentSource})`);
+  }
+  if (envDetection.configuredAgents.length > 0) {
+    console.log(`  Previously configured: ${envDetection.configuredAgents.join(', ')}`);
+  }
+
   // STEP 1: Agent Selection (delegated to helper)
   const agentKeys = Object.keys(AGENTS);
   const selectedAgents = await promptForAgentSelection(question, agentKeys);
@@ -3790,6 +3824,10 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 async function main() {
   const command = args[0];
   const flags = parseFlags();
+
+  // Wire up incremental setup state from parsed flags
+  FORCE_MODE = flags.force;
+  actionLog = new SetupActionLog();
 
   // Show help
   if (flags.help) {
