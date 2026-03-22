@@ -105,9 +105,9 @@ describe('SetupActionLog', () => {
       log.add('.claude/commands/plan.md', 'skipped');
       log.add('.cursor/rules/forge.md', 'created');
       log.add('.cursor/rules/old.md', 'removed');
-      log.add('.windsurf/config.json', 'merged');
+      log.add('.codex/skills/dev/SKILL.md', 'merged');
       log.add('.cline/settings.json', 'created');
-      log.add('.copilot/config.yml', 'skipped');
+      log.add('.github/prompts/plan.prompt.md', 'skipped');
 
       const agentSummary = log.getAgentSummary();
 
@@ -124,14 +124,14 @@ describe('SetupActionLog', () => {
       expect(agentSummary['Cursor'].created).toEqual(['rules/forge.md']);
       expect(agentSummary['Cursor'].removed).toEqual(['rules/old.md']);
 
-      expect(agentSummary['Windsurf']).toBeDefined();
-      expect(agentSummary['Windsurf'].merged).toEqual(['config.json']);
+      expect(agentSummary['Codex']).toBeDefined();
+      expect(agentSummary['Codex'].merged).toEqual(['skills/dev/SKILL.md']);
 
       expect(agentSummary['Cline']).toBeDefined();
       expect(agentSummary['Cline'].created).toEqual(['settings.json']);
 
-      expect(agentSummary['Copilot']).toBeDefined();
-      expect(agentSummary['Copilot'].skipped).toEqual(['config.yml']);
+      expect(agentSummary['GitHub Copilot']).toBeDefined();
+      expect(agentSummary['GitHub Copilot'].skipped).toEqual(['plan.prompt.md']);
     });
 
     test('should handle files not matching any known agent', () => {

@@ -91,15 +91,6 @@ describe('detect-agent', () => {
         });
       });
 
-      test('GEMINI_CLI detects gemini', () => {
-        const result = detectActiveAgent({ GEMINI_CLI: '1' });
-        expect(result).toEqual({
-          name: 'gemini',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
       test('CODEX_SANDBOX detects codex', () => {
         const result = detectActiveAgent({ CODEX_SANDBOX: '1' });
         expect(result).toEqual({
@@ -127,24 +118,6 @@ describe('detect-agent', () => {
         });
       });
 
-      test('ANTIGRAVITY_AGENT detects antigravity', () => {
-        const result = detectActiveAgent({ ANTIGRAVITY_AGENT: '1' });
-        expect(result).toEqual({
-          name: 'antigravity',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
-      test('AUGMENT_AGENT detects augment', () => {
-        const result = detectActiveAgent({ AUGMENT_AGENT: '1' });
-        expect(result).toEqual({
-          name: 'augment',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
       test('OPENCODE_CLIENT detects opencode', () => {
         const result = detectActiveAgent({ OPENCODE_CLIENT: '1' });
         expect(result).toEqual({
@@ -154,41 +127,6 @@ describe('detect-agent', () => {
         });
       });
 
-      test('COPILOT_MODEL detects github-copilot', () => {
-        const result = detectActiveAgent({ COPILOT_MODEL: 'gpt-4' });
-        expect(result).toEqual({
-          name: 'github-copilot',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
-      test('COPILOT_ALLOW_ALL detects github-copilot', () => {
-        const result = detectActiveAgent({ COPILOT_ALLOW_ALL: '1' });
-        expect(result).toEqual({
-          name: 'github-copilot',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
-      test('COPILOT_GITHUB_TOKEN detects github-copilot', () => {
-        const result = detectActiveAgent({ COPILOT_GITHUB_TOKEN: 'tok' });
-        expect(result).toEqual({
-          name: 'github-copilot',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
-      test('REPL_ID detects replit', () => {
-        const result = detectActiveAgent({ REPL_ID: 'abc' });
-        expect(result).toEqual({
-          name: 'replit',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
     });
 
     describe('Layer 3: VSCode path parsing', () => {
@@ -198,17 +136,6 @@ describe('detect-agent', () => {
         });
         expect(result).toEqual({
           name: 'cursor',
-          source: 'path',
-          confidence: 'medium',
-        });
-      });
-
-      test('VSCODE_NLS_CONFIG containing windsurf detects windsurf', () => {
-        const result = detectActiveAgent({
-          VSCODE_NLS_CONFIG: '{"locale":"en","osLocale":"en","appRoot":"/opt/Windsurf/resources/app"}',
-        });
-        expect(result).toEqual({
-          name: 'windsurf',
           source: 'path',
           confidence: 'medium',
         });
@@ -256,10 +183,10 @@ describe('detect-agent', () => {
     describe('Layer priority', () => {
       test('Layer 2 env vars take priority over Layer 3 paths', () => {
         const result = detectActiveAgent({
-          GEMINI_CLI: '1',
+          CLAUDE_CODE: '1',
           VSCODE_CODE_CACHE_PATH: '/home/user/.config/Cursor/CachedData',
         });
-        expect(result.name).toBe('gemini');
+        expect(result.name).toBe('claude');
         expect(result.confidence).toBe('high');
       });
     });
@@ -283,18 +210,6 @@ describe('detect-agent', () => {
       await fs.promises.writeFile(path.join(tempDir, '.claude', 'settings.json'), '{}');
       const agents = detectConfiguredAgents(tempDir);
       expect(agents).toContain('claude');
-    });
-
-    test('.windsurfrules detects windsurf', async () => {
-      await fs.promises.writeFile(path.join(tempDir, '.windsurfrules'), '');
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('windsurf');
-    });
-
-    test('.windsurf/rules detects windsurf', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.windsurf', 'rules'), { recursive: true });
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('windsurf');
     });
 
     test('.clinerules detects cline', async () => {
@@ -327,16 +242,6 @@ describe('detect-agent', () => {
       expect(agents).toContain('kilocode');
     });
 
-    test('.github/copilot-instructions.md detects github-copilot', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.github'), { recursive: true });
-      await fs.promises.writeFile(
-        path.join(tempDir, '.github', 'copilot-instructions.md'),
-        '# Copilot'
-      );
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('github-copilot');
-    });
-
     test('codex.md detects codex', async () => {
       await fs.promises.writeFile(path.join(tempDir, 'codex.md'), '');
       const agents = detectConfiguredAgents(tempDir);
@@ -349,40 +254,6 @@ describe('detect-agent', () => {
       expect(agents).toContain('codex');
     });
 
-    test('GEMINI.md detects gemini', async () => {
-      await fs.promises.writeFile(path.join(tempDir, 'GEMINI.md'), '');
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('gemini');
-    });
-
-    test('.gemini directory detects gemini', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.gemini'), { recursive: true });
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('gemini');
-    });
-
-    test('.continue/config.json detects continue', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.continue'), { recursive: true });
-      await fs.promises.writeFile(
-        path.join(tempDir, '.continue', 'config.json'),
-        '{}'
-      );
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('continue');
-    });
-
-    test('.aider.conf.yml detects aider', async () => {
-      await fs.promises.writeFile(path.join(tempDir, '.aider.conf.yml'), '');
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('aider');
-    });
-
-    test('.amazonq detects amazon-q', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.amazonq'), { recursive: true });
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('amazon-q');
-    });
-
     test('empty directory returns empty array', () => {
       const agents = detectConfiguredAgents(tempDir);
       expect(agents).toEqual([]);
@@ -392,14 +263,14 @@ describe('detect-agent', () => {
       await fs.promises.mkdir(path.join(tempDir, '.claude'), { recursive: true });
       await fs.promises.writeFile(path.join(tempDir, '.claude', 'settings.json'), '{}');
       await fs.promises.writeFile(path.join(tempDir, '.cursorrules'), '');
-      await fs.promises.writeFile(path.join(tempDir, 'GEMINI.md'), '');
-      await fs.promises.writeFile(path.join(tempDir, '.aider.conf.yml'), '');
+      await fs.promises.writeFile(path.join(tempDir, '.clinerules'), '');
+      await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
 
       const agents = detectConfiguredAgents(tempDir);
       expect(agents).toContain('claude');
       expect(agents).toContain('cursor');
-      expect(agents).toContain('gemini');
-      expect(agents).toContain('aider');
+      expect(agents).toContain('cline');
+      expect(agents).toContain('roo-code');
       expect(agents.length).toBe(4);
     });
 
@@ -455,12 +326,11 @@ describe('detect-agent', () => {
       expect(result.editor).toBe('cursor');
     });
 
-    test('Windsurf path sets both agent and editor', () => {
+    test('unsupported VSCode fork returns null agent', () => {
       const result = detectEnvironment(tempDir, {
         VSCODE_NLS_CONFIG: '{"appRoot":"/opt/Windsurf/resources/app"}',
       });
-      expect(result.activeAgent).toBe('windsurf');
-      expect(result.editor).toBe('windsurf');
+      expect(result.activeAgent).toBeNull();
     });
   });
 });
