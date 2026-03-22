@@ -3846,13 +3846,18 @@ function determineSelectedAgents(flags) {
 function dryRunSetup(agents) {
   const collector = new ActionCollector();
 
-  // AGENTS.md
-  const agentsDest = path.join(projectRoot, 'AGENTS.md');
-  if (fs.existsSync(agentsDest)) {
-    collector.add('skip', 'AGENTS.md', 'Already exists');
-  } else {
-    collector.add('create', 'AGENTS.md', 'Copy workflow documentation');
+  // Helper: add create or skip based on whether file exists
+  function addFileAction(relPath, description) {
+    const absPath = path.join(projectRoot, relPath);
+    if (fs.existsSync(absPath)) {
+      collector.add('skip', relPath, 'Already exists');
+    } else {
+      collector.add('create', relPath, description);
+    }
   }
+
+  // AGENTS.md
+  addFileAction('AGENTS.md', 'Copy workflow documentation');
 
   // Per-agent planned actions
   for (const agentKey of agents) {
@@ -3861,31 +3866,25 @@ function dryRunSetup(agents) {
 
     // Agent directories
     for (const dir of agent.dirs) {
-      collector.add('create', dir + '/', 'Create agent directory');
+      addFileAction(dir + '/', 'Create agent directory');
     }
 
     // Claude-specific files
     if (agentKey === 'claude') {
       const cmds = getWorkflowCommands();
       for (const cmd of cmds) {
-        collector.add('create', `.claude/commands/${cmd}.md`, 'Workflow command');
+        addFileAction(`.claude/commands/${cmd}.md`, 'Workflow command');
       }
-      collector.add('create', '.claude/rules/workflow.md', 'Workflow rules');
-      collector.add('create', '.claude/scripts/load-env.sh', 'Environment loader script');
-      collector.add('create', '.claude/skills/forge-workflow/SKILL.md', 'Forge workflow skill');
-      collector.add('create', '.mcp.json', 'MCP server configuration');
-
-      const claudeMdDest = path.join(projectRoot, 'CLAUDE.md');
-      if (fs.existsSync(claudeMdDest)) {
-        collector.add('skip', 'CLAUDE.md', 'Already exists');
-      } else {
-        collector.add('create', 'CLAUDE.md', 'Claude root config (links to AGENTS.md)');
-      }
+      addFileAction('.claude/rules/workflow.md', 'Workflow rules');
+      addFileAction('.claude/scripts/load-env.sh', 'Environment loader script');
+      addFileAction('.claude/skills/forge-workflow/SKILL.md', 'Forge workflow skill');
+      addFileAction('.mcp.json', 'MCP server configuration');
+      addFileAction('CLAUDE.md', 'Claude root config (links to AGENTS.md)');
     }
 
     // Cursor-specific files
     if (agent.customSetup === 'cursor') {
-      collector.add('create', '.cursor/rules/forge-workflow.mdc', 'Cursor workflow rule');
+      addFileAction('.cursor/rules/forge-workflow.mdc', 'Cursor workflow rule');
     }
 
     // Agent commands (converted from Claude format)
@@ -3894,7 +3893,7 @@ function dryRunSetup(agents) {
       const targetDir = agent.dirs[0];
       for (const cmd of cmds) {
         const ext = agent.promptFormat ? '.prompt.md' : '.md';
-        collector.add('create', `${targetDir}/${cmd}${ext}`, 'Converted workflow command');
+        addFileAction(`${targetDir}/${cmd}${ext}`, 'Converted workflow command');
       }
     }
 
@@ -3902,7 +3901,7 @@ function dryRunSetup(agents) {
     if (agent.needsConversion) {
       const rulesDir = agent.dirs.find(d => d.includes('/rules'));
       if (rulesDir) {
-        collector.add('create', `${rulesDir}/workflow.md`, 'Workflow rules');
+        addFileAction(`${rulesDir}/workflow.md`, 'Workflow rules');
       }
     }
 
@@ -3910,19 +3909,19 @@ function dryRunSetup(agents) {
     if (agent.hasSkill) {
       const skillDir = agent.dirs.find(d => d.includes('/skills/'));
       if (skillDir) {
-        collector.add('create', `${skillDir}/SKILL.md`, 'Forge workflow skill');
+        addFileAction(`${skillDir}/SKILL.md`, 'Forge workflow skill');
       }
     }
 
     // Agent link file (symlink or copy of AGENTS.md)
     if (agent.linkFile) {
-      collector.add('create', agent.linkFile, 'Link to AGENTS.md');
+      addFileAction(agent.linkFile, 'Link to AGENTS.md');
     }
   }
 
   // Git hooks
-  collector.add('create', 'lefthook.yml', 'Git hook configuration');
-  collector.add('create', '.forge/hooks/check-tdd.js', 'TDD enforcement hook');
+  addFileAction('lefthook.yml', 'Git hook configuration');
+  addFileAction('.forge/hooks/check-tdd.js', 'TDD enforcement hook');
 
   // Print dry-run summary
   console.log('');
