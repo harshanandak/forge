@@ -62,6 +62,16 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
+# Warn if jq < 1.6 (fromdateiso8601 and sub/2 require 1.6+)
+_jq_version="$(jq --version 2>/dev/null | sed 's/jq-//')" || true
+if [ -n "$_jq_version" ]; then
+  _jq_major="${_jq_version%%.*}"
+  _jq_minor="${_jq_version#*.}"; _jq_minor="${_jq_minor%%.*}"
+  if [ "${_jq_major:-0}" -lt 1 ] || { [ "${_jq_major:-0}" -eq 1 ] && [ "${_jq_minor:-0}" -lt 6 ]; }; then
+    echo "Warning: jq $_jq_version detected — staleness features require jq 1.6+. Team Activity may not display." >&2
+  fi
+fi
+
 # ── Configuration ───────────────────────────────────────────────────────
 
 BD="${BD_CMD:-bd}"

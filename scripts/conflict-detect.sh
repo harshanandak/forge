@@ -9,7 +9,8 @@
 #
 # Exit codes:
 #   0 = no conflicts found
-#   1 = conflicts found (or validation error)
+#   1 = conflicts found
+#   2 = usage/validation error (malformed input)
 #
 # OWASP A03: All inputs validated; shell variables quoted; jq --arg used.
 
@@ -262,7 +263,7 @@ main() {
 
   if [[ "$mode" == "issue" ]]; then
     # Validate issue_id
-    _validate_issue_id_arg "$issue_id" || exit 1
+    _validate_issue_id_arg "$issue_id" || exit 2
 
     # Get the issue's entry from the file index
     local entry
@@ -291,7 +292,7 @@ main() {
     for f in "${file_list[@]}"; do
       # Trim whitespace
       f="$(printf '%s' "$f" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      _validate_file_path "$f" || exit 1
+      _validate_file_path "$f" || exit 2
       valid_files+=("$f")
 
       # Derive module from file path

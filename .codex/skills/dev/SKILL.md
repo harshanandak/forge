@@ -76,6 +76,8 @@ bash scripts/sync-utils.sh auto-sync
 bash scripts/conflict-detect.sh --issue <beads-id>
 ```
 
+If exit code 2 (validation error): show error message, abort — do not show conflict prompt.
+
 If exit code 1 (conflicts found):
 - Display the conflict output to the developer
 - Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"

@@ -153,7 +153,7 @@ export FILE_INDEX_ROOT="$TEST_DIR3"
 
 output="$(auto_sync "$TEST_DIR3" 2>&1)"
 
-assert_match "warning includes last sync timestamp" "1700000000" "$output"
+assert_match "warning includes human-readable last sync" "m ago" "$output"
 
 # The pre-existing timestamp should be preserved (not overwritten)
 ts_after="$(cat "$TEST_DIR3/.beads/.last-sync")"

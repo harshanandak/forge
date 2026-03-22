@@ -236,7 +236,7 @@ test_injection_issue_rejected() {
   local output rc=0
   output="$(bash "$SUT" --issue 'forge-abc; rm -rf /' 2>&1)" || rc=$?
 
-  assert_exit_code "injection rejected (non-zero exit)" 1 "$rc"
+  assert_exit_code "injection rejected (non-zero exit)" 2 "$rc"
   assert_contains "shows error" "invalid" "$output"
 
   teardown
@@ -251,7 +251,7 @@ test_injection_files_rejected() {
   local output rc=0
   output="$(bash "$SUT" --files '$(whoami)/evil.ts' 2>&1)" || rc=$?
 
-  assert_exit_code "injection in files rejected" 1 "$rc"
+  assert_exit_code "injection in files rejected" 2 "$rc"
   assert_contains "shows error" "invalid" "$output"
 
   teardown

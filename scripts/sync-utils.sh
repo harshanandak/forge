@@ -301,6 +301,10 @@ auto_sync() {
     local last_ts="unknown"
     if [[ -f "$last_sync_file" ]]; then
       last_ts="$(cat "$last_sync_file")"
+      if [[ "$last_ts" =~ ^[0-9]+$ ]]; then
+        local mins=$(( ($(date +%s) - last_ts) / 60 ))
+        last_ts="${mins}m ago"
+      fi
     fi
     echo "Warning: sync failed, working with local data (last sync: $last_ts)" >&2
   fi
