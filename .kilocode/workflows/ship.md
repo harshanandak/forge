@@ -36,7 +36,7 @@ Even though /validate rebased onto the base branch, time may have passed since t
 
 ```bash
 BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
-if [ -z "$BASE" ]; then BASE="master"; fi
+if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
 git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify freshness"; exit 1; }
 BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
 ```

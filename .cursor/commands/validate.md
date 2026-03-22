@@ -29,9 +29,10 @@ Before running ANY validation checks:
 
 0. Resolve the base branch dynamically (do NOT hardcode master or main):
    BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
-   if [ -z "$BASE" ]; then BASE="master"; fi
+   if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
 
    This handles repos using main, master, or any other default branch.
+   Falls back to "master" when HEAD is unresolved (detached remote, empty repo).
 
 1. Fetch latest base branch:
    git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
@@ -42,9 +43,9 @@ Before running ANY validation checks:
    BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
 
 3. If BEHIND > 0:
-   a. Run: git rebase origin/"$BASE"
-   b. If rebase succeeds: print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
-   c. If rebase conflicts:
+   a. Run: git rebase origin/"$BASE" || REBASE_FAILED=1
+   b. If rebase succeeds (REBASE_FAILED unset): print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
+   c. If rebase fails (REBASE_FAILED=1 — conflicts or any other error):
       - Run: git rebase --abort
       - Print conflicting files from the failed rebase output
       - Print: "✗ Rebase conflict — resolve manually, then re-run /validate"
@@ -54,7 +55,7 @@ Before running ANY validation checks:
    Print "✓ Branch is up-to-date with $BASE" and continue.
 
 Rationale: Without this step, validation checks run against stale code that doesn't
-include recent master changes. Integration issues are only caught after the PR is
+include recent base branch changes. Integration issues are only caught after the PR is
 created, wasting CI cycles and review time. Rebasing here ensures /validate results
 reflect the true state of what will be merged.
 </HARD-GATE>
