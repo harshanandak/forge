@@ -92,53 +92,31 @@ Ready to start!
 
 ---
 
-### Stage 2: Research
-
-```bash
-$ bunx forge /research health-check-endpoint
-```
-
-**What happens**:
-1. AI searches web for health check best practices
-2. Analyzes your codebase for existing patterns
-3. OWASP Top 10 security analysis
-4. Documents findings in `docs/research/health-check-endpoint.md`
-
-**Research doc includes**:
-- Best practices (REST conventions, status codes)
-- Security considerations (information disclosure risks)
-- Existing patterns in your codebase
-- TDD test scenarios identified upfront
-
-**Time**: ~2 minutes
-
----
-
-### Stage 3: Plan
+### Stage 2: Plan
 
 ```bash
 $ bunx forge /plan health-check-endpoint
 ```
 
 **What happens**:
-1. Creates feature branch: `feat/health-check-endpoint`
-2. Creates tracking issue (if Beads installed)
-3. Creates implementation plan
+1. Design Q&A captures intent (Phase 1)
+2. AI researches best practices, OWASP Top 10 analysis (Phase 2)
+3. Creates feature branch, tracking issue, and task list (Phase 3)
 
 **Output:**
 ```
+✓ Design doc: docs/plans/health-check-endpoint-design.md
 ✓ Created branch: feat/health-check-endpoint
-✓ Created issue: PROJ-42
-✓ Plan ready in: docs/planning/health-check-endpoint.md
+✓ Task list: docs/plans/health-check-endpoint-tasks.md (4 tasks)
 
 Next: /dev to start TDD implementation
 ```
 
-**Time**: ~30 seconds
+**Time**: ~3 minutes
 
 ---
 
-### Stage 4: Development (TDD)
+### Stage 3: Development (TDD)
 
 ```bash
 $ bunx forge /dev
@@ -187,7 +165,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 
 ---
 
-### Stage 5: Validate
+### Stage 4: Validate
 
 ```bash
 $ bunx forge /validate
@@ -207,7 +185,7 @@ Running security scan... ✓ (no vulnerabilities)
 
 ---
 
-### Stage 6: Ship
+### Stage 5: Ship
 
 ```bash
 $ bunx forge /ship
@@ -225,7 +203,7 @@ $ bunx forge /ship
 - Minimal information disclosure
 
 ## Research
-See: docs/research/health-check-endpoint.md
+See: docs/plans/health-check-endpoint-design.md
 
 ## Test Coverage
 - 1 unit test (health endpoint returns 200 OK)
@@ -248,7 +226,7 @@ Next: /review to address feedback
 
 ---
 
-### Stage 7: Review (if needed)
+### Stage 6: Review (if needed)
 
 ```bash
 $ bunx forge /review 42
@@ -264,7 +242,7 @@ Fix issues, commit, push - PR updates automatically.
 
 ---
 
-### Stage 8: Premerge
+### Stage 7: Premerge
 
 ```bash
 $ bunx forge /premerge 42
@@ -291,7 +269,7 @@ Back on main branch. Ready for next feature!
 
 ---
 
-### Stage 9: Verify
+### Stage 8: Verify
 
 ```bash
 $ bunx forge /verify

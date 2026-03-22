@@ -372,7 +372,7 @@ A: Yes, via `.greptile/config.yml` configuration file.
 - **Greptile Documentation**: https://docs.greptile.com
 - **GitHub App Settings**: https://github.com/settings/installations
 - **Branch Protection Guide**: [../.github/BRANCH_PROTECTION_GUIDE.md](../.github/BRANCH_PROTECTION_GUIDE.md)
-- **Your PR #13** (example): https://github.com/harshanandak/forge/pull/13
+- **Your PRs**: Check the [pull requests page](https://github.com/harshanandak/forge/pulls) for examples
 
 ---
 

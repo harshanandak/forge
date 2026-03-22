@@ -3,8 +3,8 @@
 **Comprehensive implementation plan for transforming Forge into a fully automated, orchestrated workflow system.**
 
 **Plan Created**: 2026-02-10
-**Status**: Phase 2 complete. PR5/PR6 research done, ready for planning.
-**Timeline**: 3-4 weeks total
+**Status**: Phase 2 complete. PRs 0-6 merged, PR7-PR8 pending.
+**Timeline**: Originally 3-4 weeks; Phases 0-2 complete as of March 2026.
 **Strategy**: Quick wins first → Build testing foundation → Add automation → Enable extensibility
 
 ---
@@ -87,8 +87,8 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 | PR5 | PR4 | PR5.5 | ✅ MERGED (2026-02-20, PR #40) |
 | PR5.5 | PR5 | PR6 | ✅ MERGED (2026-02-23, PR #43) |
 | PR6 | PR5.5 | PR7 | ✅ MERGED (2026-02-21, PR #41) |
-| PR7 | PR6 | PR8 | Blocked |
-| PR8 | PR7 | None | Blocked |
+| PR7 | PR6 | PR8 | Planned |
+| PR8 | PR7 | None | Planned |
 
 ---
 
