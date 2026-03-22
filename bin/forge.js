@@ -57,9 +57,11 @@ const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery
 const { detectEnvironment } = require('../lib/detect-agent');
 const { fileMatchesContent } = require('../lib/file-hash');
 const { SetupActionLog } = require('../lib/setup-action-log');
+const { ActionCollector } = require('../lib/setup-utils');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
+const { isNonInteractive } = require('../lib/setup-utils');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
@@ -70,6 +72,7 @@ const args = process.argv.slice(2);
 // Incremental setup state (set during main() from parsed flags)
 let FORCE_MODE = false;
 let VERBOSE_MODE = false;
+let NON_INTERACTIVE = false;
 let actionLog = new SetupActionLog();
 
 // Detected package manager
