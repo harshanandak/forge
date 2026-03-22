@@ -49,8 +49,9 @@ describe('install.sh thin bootstrapper', () => {
   });
 
   it('should print install instructions when no package manager found', () => {
+    // Use exact URL match to avoid CodeQL "Incomplete URL substring sanitization" warning
     const hasInstructions =
-      content.includes('https://bun.sh') || content.includes('install bun');
+      /\bhttps:\/\/bun\.sh\b/.test(content) || content.includes('install bun');
     expect(hasInstructions).toBe(true);
   });
 

@@ -80,6 +80,8 @@ const args = process.argv.slice(2);
 let FORCE_MODE = false;
 let VERBOSE_MODE = false;
 let NON_INTERACTIVE = false;
+let SYMLINK_ONLY = false;   // --symlink: fail instead of copy fallback
+let SYNC_ENABLED = false;   // --sync: scaffold Beads GitHub sync workflows
 let actionLog = new SetupActionLog();
 
 // Detected package manager
@@ -1742,8 +1744,9 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       }
 
       // PAT setup guidance for Beads sync (non-fatal)
+      // Use interactive mode when available so the user can enter their PAT
       try {
-        const patResult = setupPAT(projectRoot, { interactive: false });
+        const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
         if (patResult.success) {
           console.log('  ✓ Beads sync PAT configured');
         } else if (patResult.reminder) {
@@ -1965,10 +1968,11 @@ function setupClaudeMcpConfig() {
 }
 
 // Helper: Create agent link file
-function createAgentLinkFile(agent) {
+// When symlinkOnly is true (--symlink flag), skip copy fallback
+function createAgentLinkFile(agent, symlinkOnly = false) {
   if (!agent.linkFile) return;
 
-  const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile);
+  const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile, { symlinkOnly });
   if (result) {
     console.log(`  ${result === 'linked' ? 'Linked' : 'Copied'}: ${agent.linkFile}`);
   }
@@ -2007,8 +2011,8 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
     setupClaudeMcpConfig();
   }
 
-  // Create link file
-  createAgentLinkFile(agent);
+  // Create link file (SYMLINK_ONLY = --symlink flag disables copy fallback)
+  createAgentLinkFile(agent, SYMLINK_ONLY);
 }
 
 
@@ -2764,12 +2768,27 @@ function showHelp() {
 
 // Detect Husky and offer migration to Lefthook
 // Called before installGitHooks() in setup flows
-function handleHuskyMigration() {
+async function handleHuskyMigration() {
   const detection = detectHusky(projectRoot);
   if (!detection.found) return;
 
   console.log('Husky detected — migrating to Lefthook...');
-  const result = migrateHusky(projectRoot, { nonInteractive: NON_INTERACTIVE });
+
+  // In interactive mode, ask the user before proceeding
+  let proceed = NON_INTERACTIVE;
+  if (!NON_INTERACTIVE) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
+    proceed = await askYesNo(question, 'Migrate Husky hooks to Lefthook?', false);
+    rl.close();
+    if (!proceed) {
+      console.log('  Skipped Husky migration (user declined)');
+      console.log('');
+      return;
+    }
+  }
+
+  const result = migrateHusky(projectRoot, { nonInteractive: true });
 
   if (result.success) {
     console.log(`  Migrated ${result.mappedCount} hook(s) to lefthook.yml`);
@@ -2785,7 +2804,7 @@ function handleHuskyMigration() {
     console.log('  Removed .husky/ directory');
     console.log('');
   } else {
-    // Non-interactive returned false or validation failed
+    // Validation failed (e.g. symlink detected)
     for (const w of result.warnings) {
       console.warn(`  ${w}`);
     }
@@ -2922,18 +2941,60 @@ function isBeadsInitialized() {
   return beadsSetupLib.isBeadsInitialized(projectRoot);
 }
 
-// Initialize Beads in the project
+// Initialize Beads in the project using the defensive safeBeadsInit wrapper
+// Handles config/gitignore writes, hook snapshot/restore, and JSONL pre-seeding
 function initializeBeads(installType) {
   console.log('Initializing Beads in project...');
 
-  try {
+  // Build the execBdInit function based on installType
+  const execBdInit = (root) => {
     // SECURITY: execFileSync with hardcoded commands
     if (installType === 'global') {
-      secureExecFileSync('bd', ['init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bd', ['init'], { stdio: 'inherit', cwd: root });
     } else if (installType === 'bunx') {
-      secureExecFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: root });
     } else if (installType === 'local') {
-      secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: root });
+    }
+  };
+
+  // Derive prefix from package.json name or directory name
+  let prefix = '';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+    prefix = pkg.name || path.basename(projectRoot);
+  } catch (_e) {
+    prefix = path.basename(projectRoot);
+  }
+
+  try {
+    const result = beadsSetupLib.safeBeadsInit(projectRoot, {
+      prefix,
+      execBdInit,
+      restoreLefthook: (root) => {
+        try {
+          secureExecFileSync('lefthook', ['install'], { stdio: 'ignore', cwd: root });
+        } catch (_e) {
+          // lefthook may not be installed yet — non-fatal
+        }
+      }
+    });
+
+    if (result.skipped) {
+      console.log('  ✓ Beads already initialized');
+      return true;
+    }
+
+    if (!result.success) {
+      for (const e of result.errors) {
+        console.log(`  ⚠ ${e}`);
+      }
+      console.log('  Run manually: bd init');
+      return false;
+    }
+
+    for (const w of result.warnings) {
+      console.warn(`  ⚠ ${w}`);
     }
     console.log('  ✓ Beads initialized');
 
@@ -3420,7 +3481,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   setupSelectedAgents(selectedAgents, claudeCommands);
 
   // Detect Husky and migrate before installing Lefthook hooks
-  handleHuskyMigration();
+  await handleHuskyMigration();
 
   // Install git hooks for TDD enforcement
   console.log('');
@@ -3428,6 +3489,11 @@ async function quickSetup(selectedAgents, skipExternal) {
 
   // Configure external services with defaults (unless skipped)
   configureDefaultExternalServices(skipExternal);
+
+  // --sync flag: scaffold Beads GitHub sync workflows without prompting
+  if (SYNC_ENABLED) {
+    await handleSyncScaffold();
+  }
 
   // Progressive setup summary
   console.log('');
@@ -3902,7 +3968,7 @@ async function executeSetup(config) {
   setupSelectedAgents(agents, claudeCommands);
 
   // Detect Husky and migrate before installing Lefthook hooks
-  handleHuskyMigration();
+  await handleHuskyMigration();
 
   // Install git hooks for TDD enforcement
   console.log('');
@@ -3911,10 +3977,46 @@ async function executeSetup(config) {
   // External services (unless skipped)
   await handleExternalServices(skipExternal, agents);
 
+  // --sync flag: scaffold Beads GitHub sync workflows without prompting
+  if (SYNC_ENABLED) {
+    await handleSyncScaffold();
+  }
+
   // Progressive setup summary
   console.log('');
   console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE));
   console.log('');
+}
+
+// Helper: Scaffold Beads GitHub sync when --sync flag is provided
+async function handleSyncScaffold() {
+  console.log('');
+  console.log('Scaffolding Beads GitHub sync workflows (--sync)...');
+  try {
+    const result = await scaffoldGithubBeadsSync(projectRoot, packageDir);
+    for (const f of result.created) {
+      console.log(`  Created: ${f}`);
+    }
+    for (const f of result.skipped) {
+      console.log(`  Skipped: ${f} (already exists)`);
+    }
+
+    // PAT setup: interactive when possible, reminder otherwise
+    try {
+      const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
+      if (patResult.success) {
+        console.log('  PAT configured for Beads sync');
+      } else if (patResult.reminder) {
+        console.log(`  ${patResult.reminder}`);
+      } else if (patResult.instructions) {
+        console.log(`  ${patResult.instructions.split('\n')[0]}`);
+      }
+    } catch (_patErr) {
+      // PAT setup is best-effort — don't block sync scaffold
+    }
+  } catch (err) {
+    console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
+  }
 }
 
 // Helper: Handle setup command in non-quick mode
@@ -3960,10 +4062,19 @@ async function main() {
   FORCE_MODE = flags.force;
   VERBOSE_MODE = flags.verbose;
   NON_INTERACTIVE = flags.nonInteractive || flags.yes || isNonInteractive();
+  SYMLINK_ONLY = flags.symlink;
+  SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
   if (NON_INTERACTIVE) {
-    console.log('Non-interactive mode: using default agent selection (all)');
+    const agentFlag = flags.agents;
+    if (agentFlag && agentFlag.length > 0) {
+      // flags.agents is a comma-separated string (e.g. "claude,cursor")
+      const agentDisplay = agentFlag.replace(/,/g, ', ');
+      console.log(`Non-interactive mode: using provided agent selection (${agentDisplay})`);
+    } else {
+      console.log('Non-interactive mode: using default agent selection (all)');
+    }
   }
 
   // Show help
