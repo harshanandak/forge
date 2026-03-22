@@ -69,7 +69,7 @@ bunx forge setup --agents claude,cursor,cline
 
 Let's add a health check endpoint to demonstrate the full workflow.
 
-### Stage 1: Check Status
+### Utility: Check Status
 
 ```bash
 $ bunx forge /status
@@ -92,53 +92,31 @@ Ready to start!
 
 ---
 
-### Stage 2: Research
-
-```bash
-$ bunx forge /research health-check-endpoint
-```
-
-**What happens**:
-1. AI searches web for health check best practices
-2. Analyzes your codebase for existing patterns
-3. OWASP Top 10 security analysis
-4. Documents findings in `docs/research/health-check-endpoint.md`
-
-**Research doc includes**:
-- Best practices (REST conventions, status codes)
-- Security considerations (information disclosure risks)
-- Existing patterns in your codebase
-- TDD test scenarios identified upfront
-
-**Time**: ~2 minutes
-
----
-
-### Stage 3: Plan
+### Stage 1: Plan
 
 ```bash
 $ bunx forge /plan health-check-endpoint
 ```
 
 **What happens**:
-1. Creates feature branch: `feat/health-check-endpoint`
-2. Creates tracking issue (if Beads installed)
-3. Creates implementation plan
+1. Design Q&A captures intent (Phase 1)
+2. AI researches best practices, OWASP Top 10 analysis (Phase 2)
+3. Creates feature branch, tracking issue, and task list (Phase 3)
 
 **Output:**
 ```
 ✓ Created branch: feat/health-check-endpoint
-✓ Created issue: PROJ-42
-✓ Plan ready in: docs/planning/health-check-endpoint.md
+✓ Created issue: forge-abc1 (in_progress)
+✓ Design Q&A complete, research done, task list ready
 
 Next: /dev to start TDD implementation
 ```
 
-**Time**: ~30 seconds
+**Time**: ~3 minutes
 
 ---
 
-### Stage 4: Development (TDD)
+### Stage 2: Development (TDD)
 
 ```bash
 $ bunx forge /dev
@@ -187,7 +165,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 
 ---
 
-### Stage 5: Validate
+### Stage 3: Validate
 
 ```bash
 $ bunx forge /validate
@@ -207,7 +185,7 @@ Running security scan... ✓ (no vulnerabilities)
 
 ---
 
-### Stage 6: Ship
+### Stage 4: Ship
 
 ```bash
 $ bunx forge /ship
@@ -225,7 +203,7 @@ $ bunx forge /ship
 - Minimal information disclosure
 
 ## Research
-See: docs/research/health-check-endpoint.md
+See: design doc from /plan phase
 
 ## Test Coverage
 - 1 unit test (health endpoint returns 200 OK)
@@ -248,7 +226,7 @@ Next: /review to address feedback
 
 ---
 
-### Stage 7: Review (if needed)
+### Stage 5: Review (if needed)
 
 ```bash
 $ bunx forge /review 42
@@ -264,7 +242,7 @@ Fix issues, commit, push - PR updates automatically.
 
 ---
 
-### Stage 8: Premerge
+### Stage 6: Premerge
 
 ```bash
 $ bunx forge /premerge 42
@@ -291,7 +269,7 @@ Back on main branch. Ready for next feature!
 
 ---
 
-### Stage 9: Verify
+### Stage 7: Verify
 
 ```bash
 $ bunx forge /verify
@@ -326,12 +304,11 @@ In **5 minutes**, you:
 
 **Simple feature** (like you just did):
 ```bash
-/research → /plan → /dev → /validate → /ship
+/plan → /dev → /validate → /ship
 ```
 
 **Bug fix with security**:
 ```bash
-/research sql-injection-fix
 /plan sql-injection-fix
 /dev  # Fix + tests
 /validate  # Security scan critical
@@ -340,8 +317,7 @@ In **5 minutes**, you:
 
 **Architecture change** (uses design doc):
 ```bash
-/research user-authentication
-/plan user-authentication  # Creates design doc + branch
+/plan user-authentication  # Design Q&A + research + branch
 /dev
 /validate
 /ship
@@ -386,8 +362,7 @@ bd ready  # Find work to do
 
 ```bash
 /status       # Check current state
-/research X   # Research feature X
-/plan X       # Create plan for X
+/plan X       # Design Q&A + research + branch + task list
 /dev          # TDD development
 /validate        # Validate everything
 /ship         # Create PR
@@ -423,4 +398,4 @@ Get approval on design before implementing.
 /status
 ```
 
-Then start with `/research <your-feature-name>` 🚀
+Then start with `/plan <your-feature-name>`

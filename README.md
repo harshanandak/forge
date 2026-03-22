@@ -45,7 +45,7 @@ Ship features with confidence using a 7-stage TDD-first workflow for AI coding a
 **With Forge** (systematic):
 - Tests written BEFORE code (TDD)
 - Research-backed decisions
-- OWASP Top 10 analysis built-in
+- OWASP Top 10 analysis in every /plan
 - Documentation at every stage
 
 → [See complete walkthrough in QUICKSTART.md](QUICKSTART.md)
@@ -163,7 +163,7 @@ One workflow, works with ALL major AI agents:
 
 Switch agents anytime without changing your workflow.
 
-### 4. Built-in TDD Enforcement (v1.5.0)
+### 4. Built-in TDD Enforcement
 Git hooks automatically enforce TDD practices:
 - **Pre-commit**: Blocks source commits without tests
 - **Pre-push**: Runs full test suite before push
@@ -177,11 +177,11 @@ forge-preflight dev       # Validate before /dev stage
 forge-preflight ship      # Validate before /ship stage
 ```
 
-### 5. Smart Tool Recommendations (v1.7.0)
-Intelligent plugin catalog with 30+ curated tools:
+### 5. Smart Tool Recommendations
+Curated plugin catalog across 7 workflow stages — plan, dev, validate, ship, review, and more:
 - **Auto-detection**: Scans your project for frameworks, databases, auth, payments, and more
 - **Budget modes**: free, open-source, startup, professional, custom
-- **CLI-first**: Prefers CLI tools over MCPs for portability
+- **Portability-first**: MCPs included only when they add clear value over CLI alternatives
 - **Free alternatives**: Every paid tool shows free alternatives
 
 ```bash
@@ -189,9 +189,9 @@ bunx forge recommend                  # Recommendations for your project
 bunx forge recommend --budget free    # Only free tools
 ```
 
-→ [Validation docs](docs/VALIDATION.md) | [Plugin docs](lib/agents/README.md)
+→ [Validation docs](docs/VALIDATION.md) | [Plugin docs](docs/TOOLCHAIN.md)
 
-### 6. Enhanced Onboarding (v1.6.0) 🆕
+### 6. Enhanced Onboarding
 Smart setup that adapts to your project:
 
 **Intelligent File Merging**
@@ -210,11 +210,13 @@ bunx forge setup --merge=smart    # Intelligent merge
 - Saves to `.forge/context.json`
 
 **Workflow Profiles**
-- Adapts workflow based on work type:
-  - `feature`: Full 7-stage workflow (auto-escalates to critical for auth/payment)
-  - `fix`: Streamlined 5-stage workflow (auto-escalates to hotfix for production)
+- Adapts workflow based on work type (3-8 stages):
+  - `critical`: Full 8-stage workflow (auth, payments, security-sensitive)
+  - `standard`: 7-stage workflow (typical features)
   - `refactor`: Behavior-preserving 5-stage workflow
-  - `chore`: Minimal 3-stage workflow (docs/deps/config)
+  - `simple`: Streamlined 4-stage workflow
+  - `hotfix`: Minimal 3-stage workflow (production fixes)
+  - `docs`: Minimal 3-stage workflow (documentation/config)
 ```bash
 bunx forge setup --type=critical    # Set workflow manually
 ```
