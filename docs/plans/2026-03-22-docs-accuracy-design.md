@@ -60,3 +60,39 @@ Make reasonable choice and document it. All changes are doc-only (except one tes
 | 6 | CHANGELOG note at top, not rewrite | Preserves historical record while preventing confusion |
 | 7 | Add enforcement test for paid alternatives | Prevents future regressions; all paid tools already comply |
 | 8 | Acknowledge profile stage range | Honest about varying workflows without complexity |
+
+## Technical Research
+
+### OWASP Analysis
+
+Not applicable — this PR is doc fixes + one test. No user input, no auth, no API, no data processing. Zero security risk surface.
+
+### Blast-Radius Search
+
+Version tags (v1.5, v1.6, v1.7) also appear in:
+- docs/ENHANCED_ONBOARDING.md (6 occurrences) — out of scope (forge-z1ft epic)
+- docs/AGENT_INSTALL_PROMPT.md (1 occurrence) — out of scope (forge-z1ft epic)
+- docs/research/dependency-chain.md (2 occurrences) — research docs, not user-facing
+
+Only README.md lines 166, 180, 194 are in scope for this PR.
+
+"30+" claim appears only in README.md line 181 — single fix point.
+
+### Verified Findings
+
+| Item | README Claim | Actual Code | File |
+|------|-------------|-------------|------|
+| Version | v1.5.0, v1.6.0, v1.7.0 | 0.0.3 | package.json:3 |
+| Tool count | "30+ curated tools" | 15 tool entries | lib/plugin-catalog.js |
+| CLI-first | "Prefers CLI over MCPs" | Skips MCPs unless mcpJustified=true | lib/plugin-recommender.js:117-124 |
+| OWASP | "built-in" | Manual checklist in /plan Phase 2 | .claude/commands/plan.md:206 |
+| Plugin docs | lib/agents/README.md | Should be docs/TOOLCHAIN.md | README.md:192 |
+| Profiles | "7-stage" universal | 6 profiles, 3-8 stages | lib/workflow-profiles.js |
+| Paid alts | "Every paid tool shows free alternatives" | parallel-deep-research missing alternatives | lib/plugin-catalog.js:78 |
+| CHANGELOG | /check in v1.4.0 section | Should be /validate | CHANGELOG.md:381 |
+
+### TDD Test Scenarios
+
+1. **Happy path**: All `tier: 'paid'` entries in plugin-catalog have a non-empty `alternatives` array
+2. **Failure path**: Test fails when a paid entry has no alternatives (validates enforcement)
+3. **Edge case**: Each alternative has required `tool` and `tier` fields
