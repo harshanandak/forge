@@ -107,7 +107,7 @@ ISSUES_JSON="$("$BD" list --json --limit 0 2>/dev/null || echo '[]')"
 # Bail early on empty
 if [ "$(printf '%s' "$ISSUES_JSON" | jq 'length')" = "0" ]; then
   if [ "$JSON_MODE" = "1" ]; then
-    echo '{"sessions":[],"issues":[]}'
+    echo '{"sessions":[],"issues":[],"team_activity":[]}'
   else
     echo "No issues found."
   fi

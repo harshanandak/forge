@@ -196,8 +196,9 @@ get_sync_branch() {
     return 0
   fi
 
-  # Determine which remote to check (use get_sync_remote logic but avoid recursion)
-  local remote="origin"
+  # Determine which remote to check (respects sync_remote config)
+  local remote
+  remote="$(get_sync_remote "$repo_dir")"
 
   # 3. git symbolic-ref refs/remotes/<remote>/HEAD
   # Note: symbolic-ref accepts -- before ref names, but rev-parse --verify

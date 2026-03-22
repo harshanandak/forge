@@ -281,16 +281,18 @@ file_index_update_from_tasks() {
       local path
       while [[ "$line" =~ \`([^\`]+)\` ]]; do
         path="${BASH_REMATCH[1]}"
-        # Strip annotations like " (extend)", " (run script only)" — remove
-        # from the path anything after the file extension that looks like an annotation
-        path="$(printf '%s' "$path" | sed 's/[[:space:]]*([^)]*)//g')"
+        # Strip only trailing annotations like " (extend)" at end of path
+        # Anchored to $ to avoid corrupting paths with parentheses (e.g., test(1).spec.ts)
+        path="$(printf '%s' "$path" | sed 's/[[:space:]]*([^)]*)$//')"
         # Trim whitespace
         path="$(printf '%s' "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         if [[ -n "$path" ]]; then
           raw_files+=("$path")
         fi
-        # Remove the matched backtick segment and continue
-        line="${line#*\`${BASH_REMATCH[1]}\`}"
+        # Remove the matched backtick segment — use fixed pattern to avoid
+        # glob interpretation of path characters like [ ] * ?
+        line="${line#*\`}"      # strip up to and including the opening backtick
+        line="${line#*\`}"      # strip the content and closing backtick
       done
     done < <(grep -i '^File(s):' "$task_file_path" 2>/dev/null || true)
 

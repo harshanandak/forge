@@ -118,9 +118,9 @@ _detect_conflicts() {
 
   # Read all active entries from file index
   local all_entries
-  all_entries="$(file_index_read)"
+  all_entries="$(file_index_read 2>/dev/null)" || all_entries="[]"
 
-  if [[ "$all_entries" == "[]" ]]; then
+  if [[ "$all_entries" == "[]" ]] || [[ -z "$all_entries" ]]; then
     echo "No conflicts found. File index is empty."
     return 0
   fi
