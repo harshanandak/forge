@@ -19,7 +19,6 @@ on:
       - 'lib/**'
       - 'scripts/**'
       - 'test/**'
-      - 'test-env/**'
       - 'packages/**'
       - 'package.json'
       - '*.js'
