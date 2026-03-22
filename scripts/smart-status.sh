@@ -39,6 +39,18 @@ sanitize() {
   printf '%s' "$val"
 }
 
+# ── Source cross-dev awareness scripts ────────────────────────────────
+# file-index.sh: file_index_read for reading file index entries
+# sync-utils.sh: get_session_identity for current developer identity
+
+_SMART_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$_SMART_STATUS_DIR/file-index.sh" ]; then
+  source "$_SMART_STATUS_DIR/file-index.sh"
+fi
+if [ -f "$_SMART_STATUS_DIR/sync-utils.sh" ]; then
+  source "$_SMART_STATUS_DIR/sync-utils.sh"
+fi
+
 # ── Dependency check ────────────────────────────────────────────────────
 
 if ! command -v jq &>/dev/null; then
@@ -481,12 +493,84 @@ PAIRSEOF
   fi
 fi
 
+# ── Cross-developer team activity ────────────────────────────────────────
+# Read file index entries from all developers, identify OTHER developers'
+# in-progress work, compute module overlaps, and flag stale claims.
+
+TEAM_ACTIVITY_JSON="[]"
+
+# Only proceed if file_index_read and get_session_identity are available
+if command -v file_index_read &>/dev/null && command -v get_session_identity &>/dev/null; then
+  _file_index_all="$(file_index_read 2>/dev/null || echo '[]')"
+  _file_index_len="$(printf '%s' "$_file_index_all" | jq 'length')"
+
+  if [ "$_file_index_len" -gt 0 ]; then
+    _my_identity="$(get_session_identity 2>/dev/null || echo '')"
+
+    # Allow override via SMART_STATUS_IDENTITY env (for testing)
+    if [ -n "${SMART_STATUS_IDENTITY:-}" ]; then
+      _my_identity="$SMART_STATUS_IDENTITY"
+    fi
+
+    if [ -n "$_my_identity" ]; then
+      # Build team activity: filter out current dev, compute overlaps and staleness
+      # Current dev's modules (for overlap detection)
+      _my_modules="$(printf '%s' "$_file_index_all" | jq -c --arg me "$_my_identity" \
+        '[.[] | select(.developer == $me) | .modules // [] | .[]] | unique')"
+
+      # STALENESS_THRESHOLD_SECS = 48 hours = 172800 seconds
+      TEAM_ACTIVITY_JSON="$(printf '%s' "$_file_index_all" | jq -c --arg me "$_my_identity" \
+        --argjson my_modules "$_my_modules" \
+        --arg now_ts "$(date +%s)" '
+        [.[] | select(.developer != $me) |
+          . as $entry |
+          # Compute staleness
+          (if .updated_at then
+            ((.updated_at | sub("\\.[0-9]+Z$"; "Z")) | fromdateiso8601) as $ts |
+            (($now_ts | tonumber) - $ts) as $age_secs |
+            {
+              age_secs: $age_secs,
+              stale: ($age_secs > 172800),
+              days_ago: (($age_secs / 86400) | floor)
+            }
+          else
+            { age_secs: 0, stale: false, days_ago: 0 }
+          end) as $staleness |
+          # Compute module overlaps
+          ([$entry.modules // [] | .[] | select(. as $m | $my_modules | index($m))] | unique) as $overlaps |
+          {
+            developer: $entry.developer,
+            issue_id: $entry.issue_id,
+            modules: ($entry.modules // []),
+            files: ($entry.files // []),
+            stale: $staleness.stale,
+            days_ago: $staleness.days_ago,
+            overlapping_modules: $overlaps,
+            updated_at: $entry.updated_at
+          }
+        ] | group_by(.developer) | map({
+          developer: .[0].developer,
+          issues: [.[] | {
+            issue_id: .issue_id,
+            modules: .modules,
+            files: .files,
+            stale: .stale,
+            days_ago: .days_ago,
+            overlapping_modules: .overlapping_modules
+          }]
+        })
+      ')"
+    fi
+  fi
+fi
+
 # ── Output ──────────────────────────────────────────────────────────────
 
 if [ "$JSON_MODE" = "1" ]; then
-  # Always output consistent shape: {sessions: [...], issues: [...]}
+  # Always output consistent shape: {sessions: [...], issues: [...], team_activity: [...]}
   jq -n --argjson sessions "$SESSIONS_JSON" --argjson issues "$SCORED_JSON" \
-    '{sessions: $sessions, issues: $issues}'
+    --argjson team_activity "$TEAM_ACTIVITY_JSON" \
+    '{sessions: $sessions, issues: $issues, team_activity: $team_activity}'
 else
   # Grouped, colored output
   # NO_COLOR support: https://no-color.org/
@@ -543,6 +627,40 @@ else
           end
         )
       else empty end)
+    '
+    printf '\n'
+  fi
+
+  # ── Team Activity (cross-developer visibility) ──
+  _ta_len="$(printf '%s' "$TEAM_ACTIVITY_JSON" | jq 'length')"
+  if [ "$_ta_len" -gt 0 ]; then
+    printf '%s%s── Team Activity ──────────────────────────────────────%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
+    printf '%s' "$TEAM_ACTIVITY_JSON" | jq -r '
+      .[] |
+      .developer as $dev |
+      "  " + $dev + ":",
+      (.issues[] |
+        .issue_id as $iid |
+        .modules as $mods |
+        .stale as $stale |
+        .days_ago as $days |
+        .overlapping_modules as $overlaps |
+        # Issue line with optional stale annotation
+        (if $stale then
+          "    " + $iid + " (in_progress, stale: claimed " + ($days | tostring) + " days ago)"
+        else
+          "    " + $iid + " (in_progress)" +
+            (if ($mods | length) > 0 then
+              " — touching " + ($mods | join(", "))
+            else "" end)
+        end),
+        # Overlap or no-overlap line
+        (if ($overlaps | length) > 0 then
+          "    ! Overlap: " + ($overlaps | join(", ")) + " (you are also working here)"
+        else
+          "    No overlaps with your work"
+        end)
+      )
     '
     printf '\n'
   fi
