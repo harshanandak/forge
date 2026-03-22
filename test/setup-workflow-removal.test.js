@@ -5,13 +5,12 @@
  * Historical files (docs/plans/*, docs/research/*, CHANGELOG.md) are excluded
  * since they may legitimately reference removed files.
  */
-import { describe, test, expect } from 'bun:test';
-import fs from 'fs';
-import path from 'path';
-// Using execSync with a hardcoded grep command (no user input) - safe from injection
-import { execSync } from 'child_process'; // eslint-disable-line forge/no-exec
+const { describe, test, expect } = require('bun:test');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
 
-const ROOT = path.resolve(import.meta.dirname, '..');
+const ROOT = path.resolve(__dirname, '..');
 
 describe('docs/WORKFLOW.md removal', () => {
   test('docs/WORKFLOW.md file does not exist', () => {
