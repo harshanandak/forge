@@ -57,6 +57,7 @@ const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery
 const { detectEnvironment } = require('../lib/detect-agent');
 const { fileMatchesContent } = require('../lib/file-hash');
 const { SetupActionLog } = require('../lib/setup-action-log');
+const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
@@ -66,6 +67,7 @@ const args = process.argv.slice(2);
 
 // Incremental setup state (set during main() from parsed flags)
 let FORCE_MODE = false;
+let VERBOSE_MODE = false;
 let actionLog = new SetupActionLog();
 
 // Detected package manager
@@ -2556,6 +2558,7 @@ function parseFlags() {
     budget: null,     // Budget mode for recommend command
     yes: false,       // Non-interactive mode (skip prompts, use defaults)
     force: false,     // Force overwrite even if content is identical
+    verbose: false,   // Show file-by-file detail in setup summary
   };
 
   for (let i = 0; i < args.length;) {
@@ -2597,6 +2600,9 @@ function parseFlags() {
       i++;
     } else if (arg === '--force') {
       flags.force = true;
+      i++;
+    } else if (arg === '--verbose') {
+      flags.verbose = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -3358,11 +3364,9 @@ async function quickSetup(selectedAgents, skipExternal) {
   checkPrerequisites();
   console.log('');
 
-  // Copy AGENTS.md
+  // Copy AGENTS.md (actionLog tracks it via copyFile)
   const agentsSrc = path.join(packageDir, 'AGENTS.md');
-  if (copyFile(agentsSrc, 'AGENTS.md')) {
-    console.log('  Created: AGENTS.md (universal standard)');
-  }
+  copyFile(agentsSrc, 'AGENTS.md');
   console.log('');
 
   // Setup core documentation
@@ -3386,17 +3390,9 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Configure external services with defaults (unless skipped)
   configureDefaultExternalServices(skipExternal);
 
-  // Final summary
+  // Progressive setup summary
   console.log('');
-  console.log('==============================================');
-  console.log(`  Forge v${VERSION} Quick Setup Complete!`);
-  console.log('==============================================');
-  console.log('');
-  console.log('Next steps:');
-  console.log('  1. Start with: /status');
-  console.log('  2. Read the guide: AGENTS.md');
-  console.log('');
-  console.log('Happy shipping!');
+  console.log(renderSetupSummary(actionLog, selectedAgents, VERBOSE_MODE));
   console.log('');
 }
 
@@ -3749,15 +3745,13 @@ async function executeSetup(config) {
   checkPrerequisites();
   console.log('');
 
-  // Copy AGENTS.md (only if not exists — preserve user customizations)
+  // Copy AGENTS.md (only if not exists — preserve user customizations; actionLog tracks it)
   const agentsDest = path.join(projectRoot, 'AGENTS.md');
   if (fs.existsSync(agentsDest)) {
-    console.log('  Skipped: AGENTS.md (already exists)');
+    actionLog.add('AGENTS.md', 'skipped', 'already exists');
   } else {
     const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    if (copyFile(agentsSrc, 'AGENTS.md')) {
-      console.log('  Created: AGENTS.md (universal standard)');
-    }
+    copyFile(agentsSrc, 'AGENTS.md');
   }
   console.log('');
 
@@ -3782,8 +3776,10 @@ async function executeSetup(config) {
   // External services (unless skipped)
   await handleExternalServices(skipExternal, agents);
 
+  // Progressive setup summary
   console.log('');
-  console.log('Done! Get started with: /status');
+  console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE));
+  console.log('');
 }
 
 // Helper: Handle setup command in non-quick mode
@@ -3827,6 +3823,7 @@ async function main() {
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
+  VERBOSE_MODE = flags.verbose;
   actionLog = new SetupActionLog();
 
   // Show help
