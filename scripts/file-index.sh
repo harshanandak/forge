@@ -185,7 +185,8 @@ file_index_read() {
   # 3. For each group, sort by updated_at and take the last (LWW)
   # 4. Filter out tombstoned entries
   jq -s -c '
-    group_by(.issue_id)
+    sort_by(.issue_id)
+    | group_by(.issue_id)
     | map(sort_by(.updated_at) | last)
     | map(select(.tombstone == false))
   ' "$jsonl_path"

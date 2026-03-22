@@ -41,7 +41,7 @@ _validate_issue_id_arg() {
 # Allows: alphanumeric, dots, hyphens, underscores, forward slashes
 _validate_file_path() {
   local path="$1"
-  if [[ ! "$path" =~ ^[a-zA-Z0-9./_[:space:]-]+$ ]]; then
+  if [[ ! "$path" =~ ^[a-zA-Z0-9./_@[:space:]-]+$ ]]; then
     echo "Error: invalid file path — contains disallowed characters: $path" >&2
     return 1
   fi

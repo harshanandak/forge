@@ -516,7 +516,7 @@ if command -v file_index_read &>/dev/null && command -v get_session_identity &>/
       # Build team activity: filter out current dev, compute overlaps and staleness
       # Current dev's modules (for overlap detection)
       _my_modules="$(printf '%s' "$_file_index_all" | jq -c --arg me "$_my_identity" \
-        '[.[] | select(.developer == $me) | .modules // [] | .[]] | unique')"
+        '[.[] | select(.developer == $me) | .modules // [] | .[]] | unique')" || _my_modules="[]"
 
       # STALENESS_THRESHOLD_SECS = 48 hours = 172800 seconds
       TEAM_ACTIVITY_JSON="$(printf '%s' "$_file_index_all" | jq -c --arg me "$_my_identity" \
@@ -548,7 +548,7 @@ if command -v file_index_read &>/dev/null && command -v get_session_identity &>/
             overlapping_modules: $overlaps,
             updated_at: $entry.updated_at
           }
-        ] | group_by(.developer) | map({
+        ] | sort_by(.developer) | group_by(.developer) | map({
           developer: .[0].developer,
           issues: [.[] | {
             issue_id: .issue_id,
@@ -559,7 +559,7 @@ if command -v file_index_read &>/dev/null && command -v get_session_identity &>/
             overlapping_modules: .overlapping_modules
           }]
         })
-      ')"
+      ')" || TEAM_ACTIVITY_JSON="[]"
     fi
   fi
 fi

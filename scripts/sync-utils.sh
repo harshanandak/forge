@@ -62,6 +62,9 @@ get_session_identity() {
     return 1
   fi
 
+  # Replace spaces with hyphens (common in git user.name like "John Doe")
+  user_part="${user_part// /-}"
+  host_part="${host_part// /-}"
   local identity="${user_part}@${host_part}"
 
   # OWASP A03: validate before returning
@@ -338,7 +341,8 @@ _auto_sync_update_file_index() {
   # Extract in-progress issue IDs (LWW resolution: group by id, take last, filter in_progress)
   local issue_ids
   issue_ids="$(jq -s -r '
-    group_by(.id)
+    sort_by(.id)
+    | group_by(.id)
     | map(sort_by(.updated_at) | last)
     | map(select(.status == "in_progress"))
     | .[].id
