@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-03-22
+
 ### Added
 
 - **Multi-dev session awareness: conflict detection, parallel work visibility** (PR #92, forge-w69s)
