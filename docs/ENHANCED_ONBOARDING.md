@@ -582,7 +582,7 @@ Share project knowledge with team.
 ## Related Documentation
 
 - [Main README](../README.md) - Overview and quick start
-- [Workflow Guide](WORKFLOW.md) - Complete 9-stage workflow
+- [Workflow Guide](../AGENTS.md) - Complete 7-stage workflow
 - [Setup Guide](SETUP.md) - Agent-specific setup
 - [Agent Install Prompt](AGENT_INSTALL_PROMPT.md) - AI-assisted setup
 

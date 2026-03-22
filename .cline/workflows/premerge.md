@@ -79,9 +79,6 @@ Check each of the following and update if the feature affects it. Be selective â
 **F. `AGENTS.md`** (if agent config, skills, or cross-agent workflow changed):
 - Update relevant sections describing agent capabilities or workflow
 
-**G. `docs/WORKFLOW.md`** (if the workflow itself changed):
-- Update stage descriptions or workflow tables
-
 **Commit doc updates to feature branch**:
 
 ```bash

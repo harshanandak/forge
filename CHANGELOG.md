@@ -9,8 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Smart Setup UX: agent detection, incremental setup, clean output** (PR #90, forge-iv8b)
+  - 4-layer agent auto-detection: `AI_AGENT` env > agent-specific env vars > VSCode path parsing > config file signatures (8 agents)
+  - Incremental setup: content-hash comparison skips identical files on re-run; `--force` flag for CI/overwrite
+  - Progressive summary output: clean 3-line default, `--verbose` for file-by-file detail
+  - Lazy directory creation: `docs/planning/` and `docs/research/` created on first `/plan` use, not at setup
+  - Worktree detection utility: prevents nested worktree creation in `/plan`
+  - 5 new lib modules: `detect-agent.js`, `setup-action-log.js`, `file-hash.js`, `detect-worktree.js`, `setup-summary-renderer.js`
+  - 124 new tests across 9 test files
+
+### Removed
+
+- **`docs/WORKFLOW.md`** — content duplicated in `AGENTS.md`; all 50+ references updated (PR #90, forge-iv8b)
+
 ### Fixed
 
+- **Smart-status.sh jq date parsing** for fractional seconds + timezone offsets (PR #90, forge-iv8b)
+- **CI bypass workflow** — removed `test/**` from `paths-ignore` to unblock test-only PRs (PR #90, forge-iv8b)
 - **Ship command rebases onto latest base branch before push** (PR #89, forge-ebls)
   - `/validate` entry gate: rebases onto base branch (detected dynamically) before running checks
   - `/ship` freshness check: lightweight behind-check before push, alerts if stale

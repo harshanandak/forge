@@ -349,7 +349,7 @@ Each PR is self-contained and can be rolled back independently:
 
 - **Master Plan**: `.claude/plans/*.md`
 - **Beads Issues**: `bd list` or `bd show <issue-id>`
-- **Workflow Guide**: [WORKFLOW.md](./WORKFLOW.md)
+- **Workflow Guide**: [AGENTS.md](../AGENTS.md)
 - **Architecture Docs**: Coming in PR0 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---

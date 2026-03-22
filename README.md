@@ -87,7 +87,7 @@ bunx forge setup
 | **6. Premerge** | `/premerge` | Complete docs on feature branch, hand off PR |
 | **7. Verify** | `/verify` | Post-merge health check (CI on main) |
 
-**Full workflow guide**: [docs/WORKFLOW.md](docs/WORKFLOW.md)
+**Full workflow guide**: [AGENTS.md](AGENTS.md)
 
 ---
 
@@ -350,7 +350,7 @@ gh auth login
 **Documentation Progressive**: Update at each stage
 **Multi-Session**: Work persists across sessions
 
-→ [Read the philosophy in docs/WORKFLOW.md](docs/WORKFLOW.md)
+→ [Read the philosophy in AGENTS.md](AGENTS.md)
 
 ---
 
@@ -360,7 +360,7 @@ gh auth login
 → [QUICKSTART.md](QUICKSTART.md) - Your first feature in 5 minutes
 
 📖 **Learn the workflow**
-→ [docs/WORKFLOW.md](docs/WORKFLOW.md) - Complete guide with examples
+→ [AGENTS.md](AGENTS.md) - Complete guide with examples
 
 🛠️ **Setup the toolchain**
 → [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Beads, GitHub CLI

@@ -171,10 +171,10 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
 
     # Staleness boost based on updated_at
     # 0-7d=1.0, 7-14d=1.1, 14-30d=1.2, 30+d=1.5
-    # Strip fractional seconds (.NNZ) before parsing — jq fromdateiso8601
-    # only accepts "%Y-%m-%dT%H:%M:%SZ" format
+    # Truncate to first 19 chars (YYYY-MM-DDTHH:MM:SS) + "Z" for fromdateiso8601.
+    # Handles fractional seconds (.NNN), timezone offsets (+05:30), or both.
     (if .updated_at then
-       ((.updated_at | sub("\\.[0-9]+Z$"; "Z")) | fromdateiso8601) as $ts |
+       ((.updated_at[:19] + "Z") | fromdateiso8601) as $ts |
        ((now - $ts) / 86400) as $days |
        if $days >= 30 then 1.5
        elif $days >= 14 then 1.2
@@ -553,7 +553,7 @@ else
     [.[] | . as $item |
       # Compute days since updated_at
       (if .updated_at then
-        ((.updated_at | sub("\\.[0-9]+Z$"; "Z")) | fromdateiso8601) as $ts |
+        ((.updated_at[:19] + "Z") | fromdateiso8601) as $ts |
         (($now | tonumber) - $ts) / 86400 | floor
        else 0 end) as $days_ago |
       # Group assignment (priority order: RESUME > UNBLOCK_CHAINS > BLOCKED > BACKLOG > READY_WORK)

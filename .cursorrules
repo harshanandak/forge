@@ -118,7 +118,7 @@ your-project/
     ├── plans/
     │   ├── YYYY-MM-DD-<slug>-design.md
     │   └── YYYY-MM-DD-<slug>-tasks.md
-    └── WORKFLOW.md
+    └── TOOLCHAIN.md
 ```
 
 ## Supported Agents

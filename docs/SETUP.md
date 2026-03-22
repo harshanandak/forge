@@ -533,7 +533,6 @@ your-project/
 │   └── skills/forge-workflow/
 │
 ├── docs/
-│   ├── WORKFLOW.md              # Complete guide
 │   ├── TOOLCHAIN.md             # Tool reference
 │   ├── SETUP.md                 # This file
 │   ├── EXAMPLES.md              # Real examples
@@ -621,7 +620,7 @@ curl -s -X POST "https://api.parallel.ai/v1beta/search" \
 
 ✅ Setup complete? Try your [first feature](../QUICKSTART.md)
 
-📖 Learn the workflow in [WORKFLOW.md](WORKFLOW.md)
+📖 Learn the workflow in [AGENTS.md](../AGENTS.md)
 
 🛠️ Explore toolchain in [TOOLCHAIN.md](TOOLCHAIN.md)
 

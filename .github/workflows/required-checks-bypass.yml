@@ -18,7 +18,6 @@ on:
       - 'bin/**'
       - 'lib/**'
       - 'scripts/**'
-      - 'test/**'
       - 'packages/**'
       - 'package.json'
       - '*.js'

@@ -475,7 +475,7 @@ bd sync
 
 📚 **New to Forge?** → [QUICKSTART.md](../QUICKSTART.md)
 
-📖 **Learn workflow** → [WORKFLOW.md](WORKFLOW.md)
+📖 **Learn workflow** → [AGENTS.md](../AGENTS.md)
 
 🛠️ **Setup tools** → [SETUP.md](SETUP.md)
 

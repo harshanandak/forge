@@ -52,12 +52,23 @@ const { scaffoldGithubBeadsSync } = require('../lib/setup');
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
 const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
+
+// Load incremental setup modules
+const { detectEnvironment } = require('../lib/detect-agent');
+const { fileMatchesContent } = require('../lib/file-hash');
+const { SetupActionLog } = require('../lib/setup-action-log');
+const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
 // Get the project root (let allows reassignment after --path flag handling)
 let projectRoot = process.env.INIT_CWD || process.cwd();
 const args = process.argv.slice(2);
+
+// Incremental setup state (set during main() from parsed flags)
+let FORCE_MODE = false;
+let VERBOSE_MODE = false;
+let actionLog = new SetupActionLog();
 
 // Detected package manager
 let PKG_MANAGER = 'npm';
@@ -523,11 +534,23 @@ function copyFile(src, dest) {
     }
 
     if (fs.existsSync(src)) {
+      // Content-hash comparison: skip if destination already matches source
+      if (!FORCE_MODE) {
+        const sourceContent = fs.readFileSync(src, 'utf8');
+        if (fileMatchesContent(destPath, sourceContent)) {
+          actionLog.add(dest, 'skipped', 'identical content');
+          return true;
+        }
+      }
+
       const destDir = path.dirname(destPath);
       if (!fs.existsSync(destDir)) {
         fs.mkdirSync(destDir, { recursive: true });
       }
+      const isNew = !fs.existsSync(destPath);
       fs.copyFileSync(src, destPath);
+      const action = FORCE_MODE ? 'force-created' : (isNew ? 'created' : 'updated');
+      actionLog.add(dest, action);
       return true;
     } else {
       console.warn(`  ⚠ Source file not found: ${src}`);
@@ -745,7 +768,7 @@ function smartMergeAgentsMd(existingContent, newContent) {
   merged += forgeSection + '\n\n';
 
   // Add footer
-  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`docs/WORKFLOW.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
+  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`AGENTS.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
 
   return merged;
 }
@@ -778,7 +801,6 @@ async function detectProjectStatus() {
     hasClaudeMd: fs.existsSync(path.join(projectRoot, 'CLAUDE.md')),
     hasClaudeCommands: fs.existsSync(path.join(projectRoot, '.claude/commands')),
     hasEnvLocal: fs.existsSync(path.join(projectRoot, '.env.local')),
-    hasDocsWorkflow: fs.existsSync(path.join(projectRoot, 'docs/WORKFLOW.md')),
     existingEnvVars: {},
     agentsMdSize: 0,
     claudeMdSize: 0,
@@ -811,7 +833,7 @@ async function detectProjectStatus() {
   }
 
   // Determine installation type
-  if (status.hasAgentsMd && status.hasClaudeCommands && status.hasDocsWorkflow) {
+  if (status.hasAgentsMd && status.hasClaudeCommands) {
     status.type = 'upgrade'; // Full forge installation exists
   } else if (status.hasClaudeCommands || status.hasEnvLocal) {
     status.type = 'partial'; // Agent-specific files exist (not just base files from postinstall)
@@ -1778,40 +1800,28 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
   }
 }
 
+/**
+ * Creates a directory on first use and prints a one-time purpose note.
+ * @param {string} dir - Absolute path to the directory to create.
+ * @param {string} purpose - Human-readable purpose description.
+ * @returns {string|null} Purpose message if created, null if already existed.
+ */
+function ensureDirWithNote(dir, purpose) {
+  if (fs.existsSync(dir)) {
+    return null;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const display = dir.replace(/\\/g, '/');
+  const msg = `Created ${display} for ${purpose}`;
+  console.log(`  ${msg}`);
+  return msg;
+}
+
 // Setup core documentation and directories
 function setupCoreDocs() {
-  // Create core directories
-  ensureDir('docs/planning');
-  ensureDir('docs/research');
-
-  // Copy WORKFLOW.md
-  const workflowSrc = path.join(packageDir, 'docs/WORKFLOW.md');
-  if (copyFile(workflowSrc, 'docs/WORKFLOW.md')) {
-    console.log('  Created: docs/WORKFLOW.md');
-  }
-
-  // Copy research TEMPLATE.md
-  const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
-  if (copyFile(templateSrc, 'docs/research/TEMPLATE.md')) {
-    console.log('  Created: docs/research/TEMPLATE.md');
-  }
-
-  // Create PROGRESS.md if not exists
-  const progressPath = path.join(projectRoot, 'docs/planning/PROGRESS.md');
-  if (!fs.existsSync(progressPath)) {
-    writeFile('docs/planning/PROGRESS.md', `# Project Progress
-
-## Current Focus
-<!-- What you're working on -->
-
-## Completed
-<!-- Completed features -->
-
-## Upcoming
-<!-- Next priorities -->
-`);
-    console.log('  Created: docs/planning/PROGRESS.md');
-  }
+  // docs/planning/ and docs/research/ are created lazily on first use
+  // by /plan Phase 1 and Phase 2 respectively, via ensureDirWithNote().
+  // TEMPLATE.md and PROGRESS.md are also deferred to first use.
 }
 
 // Minimal installation (postinstall)
@@ -2050,7 +2060,6 @@ function displayInstallationStatus(projectStatus) {
   if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
   if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
   if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
   console.log('');
 }
 
@@ -2330,9 +2339,6 @@ function displaySetupSummary(selectedAgents) {
   console.log('');
   console.log('What\'s installed:');
   console.log('  - AGENTS.md (universal instructions)');
-  console.log('  - docs/WORKFLOW.md (full workflow guide)');
-  console.log('  - docs/research/TEMPLATE.md (research template)');
-  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
 
   const workflowCount = getWorkflowCommands().length;
   selectedAgents.forEach(key => {
@@ -2527,6 +2533,8 @@ function parseFlags() {
     interview: false, // Force context interview
     budget: null,     // Budget mode for recommend command
     yes: false,       // Non-interactive mode (skip prompts, use defaults)
+    force: false,     // Force overwrite even if content is identical
+    verbose: false,   // Show file-by-file detail in setup summary
   };
 
   for (let i = 0; i < args.length;) {
@@ -2565,6 +2573,12 @@ function parseFlags() {
       i = result.nextIndex;
     } else if (arg === '--yes' || arg === '-y') {
       flags.yes = true;
+      i++;
+    } else if (arg === '--force') {
+      flags.force = true;
+      i++;
+    } else if (arg === '--verbose') {
+      flags.verbose = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -3326,11 +3340,9 @@ async function quickSetup(selectedAgents, skipExternal) {
   checkPrerequisites();
   console.log('');
 
-  // Copy AGENTS.md
+  // Copy AGENTS.md (actionLog tracks it via copyFile)
   const agentsSrc = path.join(packageDir, 'AGENTS.md');
-  if (copyFile(agentsSrc, 'AGENTS.md')) {
-    console.log('  Created: AGENTS.md (universal standard)');
-  }
+  copyFile(agentsSrc, 'AGENTS.md');
   console.log('');
 
   // Setup core documentation
@@ -3354,17 +3366,9 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Configure external services with defaults (unless skipped)
   configureDefaultExternalServices(skipExternal);
 
-  // Final summary
+  // Progressive setup summary
   console.log('');
-  console.log('==============================================');
-  console.log(`  Forge v${VERSION} Quick Setup Complete!`);
-  console.log('==============================================');
-  console.log('');
-  console.log('Next steps:');
-  console.log('  1. Start with: /status');
-  console.log('  2. Read the guide: docs/WORKFLOW.md');
-  console.log('');
-  console.log('Happy shipping!');
+  console.log(renderSetupSummary(actionLog, selectedAgents, VERBOSE_MODE));
   console.log('');
 }
 
@@ -3472,7 +3476,6 @@ function displayExistingInstallation(projectStatus) {
   if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
   if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
   if (projectStatus.hasEnvLocal) console.log('  - .env.local');
-  if (projectStatus.hasDocsWorkflow) console.log('  - docs/WORKFLOW.md');
   console.log('');
 }
 
@@ -3612,6 +3615,15 @@ async function interactiveSetupWithFlags(flags) {
   // Prompt for overwrite decisions
   const skipFiles = await promptForOverwriteDecisions(question, projectStatus);
 
+  // Agent auto-detection (suggests but does not force)
+  const envDetection = detectEnvironment(projectRoot);
+  if (envDetection.activeAgent && envDetection.confidence === 'high') {
+    console.log(`  Detected: ${envDetection.activeAgent} (${envDetection.activeAgentSource})`);
+  }
+  if (envDetection.configuredAgents.length > 0) {
+    console.log(`  Previously configured: ${envDetection.configuredAgents.join(', ')}`);
+  }
+
   // STEP 1: Agent Selection (delegated to helper)
   const agentKeys = Object.keys(AGENTS);
   const selectedAgents = await promptForAgentSelection(question, agentKeys);
@@ -3709,15 +3721,13 @@ async function executeSetup(config) {
   checkPrerequisites();
   console.log('');
 
-  // Copy AGENTS.md (only if not exists — preserve user customizations)
+  // Copy AGENTS.md (only if not exists — preserve user customizations; actionLog tracks it)
   const agentsDest = path.join(projectRoot, 'AGENTS.md');
   if (fs.existsSync(agentsDest)) {
-    console.log('  Skipped: AGENTS.md (already exists)');
+    actionLog.add('AGENTS.md', 'skipped', 'already exists');
   } else {
     const agentsSrc = path.join(packageDir, 'AGENTS.md');
-    if (copyFile(agentsSrc, 'AGENTS.md')) {
-      console.log('  Created: AGENTS.md (universal standard)');
-    }
+    copyFile(agentsSrc, 'AGENTS.md');
   }
   console.log('');
 
@@ -3742,8 +3752,10 @@ async function executeSetup(config) {
   // External services (unless skipped)
   await handleExternalServices(skipExternal, agents);
 
+  // Progressive setup summary
   console.log('');
-  console.log('Done! Get started with: /status');
+  console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE));
+  console.log('');
 }
 
 // Helper: Handle setup command in non-quick mode
@@ -3784,6 +3796,11 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 async function main() {
   const command = args[0];
   const flags = parseFlags();
+
+  // Wire up incremental setup state from parsed flags
+  FORCE_MODE = flags.force;
+  VERBOSE_MODE = flags.verbose;
+  actionLog = new SetupActionLog();
 
   // Show help
   if (flags.help) {
@@ -4283,4 +4300,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getWorkflowCommands };
+module.exports = { getWorkflowCommands, ensureDirWithNote };

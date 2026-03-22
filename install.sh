@@ -285,7 +285,6 @@ echo -e "  ${GREEN}Created: AGENTS.md${NC}"
 
 # Download documentation
 echo "Downloading documentation..."
-curl -fsSL "$BASE_URL/docs/WORKFLOW.md" -o "docs/WORKFLOW.md" 2>/dev/null || true
 curl -fsSL "$BASE_URL/docs/research/TEMPLATE.md" -o "docs/research/TEMPLATE.md" 2>/dev/null || true
 
 # Create PROGRESS.md if not exists
@@ -723,7 +722,6 @@ if [ "$INSTALL_AIDER" = true ]; then
 # Read AGENTS.md for workflow instructions
 read:
   - AGENTS.md
-  - docs/WORKFLOW.md
 EOF
         echo -e "  ${GREEN}Created: .aider.conf.yml${NC}"
     else
@@ -1049,7 +1047,7 @@ echo "  /review    - Address PR feedback"
 echo "  /premerge  - Update docs, hand off PR"
 echo "  /verify    - Post-merge health check"
 echo ""
-echo "  Full guide: docs/WORKFLOW.md"
+echo "  Full guide: AGENTS.md"
 echo ""
 echo "Optional tools:"
 echo "  - Beads: $PKG_MANAGER install -g @beads/bd && bd init"
