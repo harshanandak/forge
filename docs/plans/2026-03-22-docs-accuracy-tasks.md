@@ -128,24 +128,17 @@ Do NOT rewrite historical entries — this preserves the record while preventing
 
 ---
 
-## Task 8: Add paid-alternatives enforcement test + fix catalog (forge-b1ai)
+## Task 8: Verify paid-alternatives enforcement test (forge-b1ai)
 
 **File(s)**:
-- test/lib/plugin-catalog.test.js (new test)
-- lib/plugin-catalog.js (fix parallel-deep-research entry)
+- test/plugin-catalog.test.js (existing test at line 148)
 
 **What to implement**:
-1. Add test that iterates all CATALOG entries, finds those with `tier: 'paid'`, and asserts each has a non-empty `alternatives` array where each alternative has `tool` and `tier` fields.
-2. Add `alternatives` array to `parallel-deep-research` entry (line 78) with at least one free alternative (e.g., WebSearch as the free alternative, since it's already referenced in other code as the fallback).
+No action needed. The enforcement test already exists at `test/plugin-catalog.test.js:148` ("every paid tool has >= 1 free alternative") and passes (25/25 tests, 0 failures). All paid catalog entries already have alternatives defined.
 
-**TDD steps**:
-1. Write test: `test/lib/plugin-catalog.test.js` — assert all paid entries have alternatives with tool+tier
-2. Run test: confirm it FAILS (parallel-deep-research has no alternatives)
-3. Implement: add `alternatives: [{ tool: 'WebSearch', tier: 'free', note: 'Built-in web search — no API key needed' }]` to parallel-deep-research
-4. Run test: confirm it PASSES
-5. Commit: `test: add paid-alternatives enforcement for plugin catalog` then `fix: add free alternative to parallel-deep-research`
+**Status**: Already satisfied — verified during /dev
 
-**Expected output**: Test passes, all paid catalog entries have free alternatives defined
+**Expected output**: Existing test passes, all paid catalog entries have free alternatives defined
 
 ---
 

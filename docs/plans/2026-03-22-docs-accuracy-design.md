@@ -58,14 +58,14 @@ Make reasonable choice and document it. All changes are doc-only (except one tes
 | 4 | "Portability-first" over "CLI-first" | Matches actual mcpJustified filtering logic |
 | 5 | Plugin docs → docs/TOOLCHAIN.md | Best UX — users want setup info, not source code |
 | 6 | CHANGELOG note at top, not rewrite | Preserves historical record while preventing confusion |
-| 7 | Add enforcement test for paid alternatives | Prevents future regressions; all paid tools already comply |
+| 7 | Paid-alternatives test already exists | Existing test at test/plugin-catalog.test.js:148 passes — no action needed |
 | 8 | Acknowledge profile stage range | Honest about varying workflows without complexity |
 
 ## Technical Research
 
 ### OWASP Analysis
 
-Not applicable — this PR is doc fixes + one test. No user input, no auth, no API, no data processing. Zero security risk surface.
+Not applicable — this PR is doc-only fixes. No user input, no auth, no API, no data processing. Zero security risk surface.
 
 ### Blast-Radius Search
 
@@ -83,12 +83,12 @@ Only README.md lines 166, 180, 194 are in scope for this PR.
 | Item | README Claim | Actual Code | File |
 |------|-------------|-------------|------|
 | Version | v1.5.0, v1.6.0, v1.7.0 | 0.0.3 | package.json:3 |
-| Tool count | "30+ curated tools" | 15 tool entries | lib/plugin-catalog.js |
+| Tool count | "30+ curated tools" | 29 tool entries | lib/plugin-catalog.js |
 | CLI-first | "Prefers CLI over MCPs" | Skips MCPs unless mcpJustified=true | lib/plugin-recommender.js:117-124 |
 | OWASP | "built-in" | Manual checklist in /plan Phase 2 | .claude/commands/plan.md:206 |
 | Plugin docs | lib/agents/README.md | Should be docs/TOOLCHAIN.md | README.md:192 |
 | Profiles | "7-stage" universal | 6 profiles, 3-8 stages | lib/workflow-profiles.js |
-| Paid alts | "Every paid tool shows free alternatives" | parallel-deep-research missing alternatives | lib/plugin-catalog.js:78 |
+| Paid alts | "Every paid tool shows free alternatives" | All paid tools have alternatives (test passes) | test/plugin-catalog.test.js:148 |
 | CHANGELOG | /check in v1.4.0 section | Should be /validate | CHANGELOG.md:381 |
 
 ### TDD Test Scenarios
