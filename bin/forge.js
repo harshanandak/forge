@@ -64,12 +64,11 @@ const { detectDefaultBranch, detectBeadsVersion, templateWorkflows, scaffoldBead
 const { detectEnvironment } = require('../lib/detect-agent');
 const { fileMatchesContent } = require('../lib/file-hash');
 const { SetupActionLog } = require('../lib/setup-action-log');
-const { ActionCollector } = require('../lib/setup-utils');
+const { ActionCollector, isNonInteractive } = require('../lib/setup-utils');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
 const { detectHusky, migrateHusky } = require('../lib/husky-migration');
-const { isNonInteractive } = require('../lib/setup-utils');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
@@ -4006,7 +4005,7 @@ async function handleSyncScaffold() {
     const branch = detectDefaultBranch(projectRoot);
     const beadsVersion = detectBeadsVersion();
     const workflowDir = path.join(projectRoot, '.github', 'workflows');
-    templateWorkflows(workflowDir, branch, beadsVersion);
+    templateWorkflows(workflowDir, branch, beadsVersion, result.filesCreated || []);
     console.log(`  Branch: ${branch}, Beads version: ${beadsVersion}`);
 
     // PAT setup: interactive when possible, reminder otherwise
