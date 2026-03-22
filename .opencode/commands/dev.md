@@ -63,6 +63,32 @@ Do NOT write any code until ALL confirmed:
 
 ---
 
+
+### Multi-developer conflict check (soft block)
+
+Before starting the per-task loop, check for cross-developer conflicts:
+
+```bash
+# Auto-sync to get latest team state
+bash scripts/sync-utils.sh auto-sync
+
+# Check for conflicts with the current beads issue
+bash scripts/conflict-detect.sh --issue <beads-id>
+```
+
+If exit code 2 (validation error): show error message, abort — do not show conflict prompt.
+
+If exit code 1 (conflicts found):
+- Display the conflict output to the developer
+- Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"
+- If `n`: exit cleanly, no side effects
+- If `y`: log override via `bd comments add <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
+- Audit: record conflict override per OWASP A09
+
+If exit code 0: proceed silently to Per-Task Loop.
+
+---
+
 ## Per-Task Loop
 
 Repeat for each task in the task list, in order:

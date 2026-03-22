@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-dev session awareness: conflict detection, parallel work visibility** (PR #92, forge-w69s)
+  - Pluggable sync backend (`refs`/`branch`/`inline`) for cross-developer beads sync via git
+  - File index (`.beads/file-index.jsonl`) tracks which developer touches which files/modules
+  - Conflict detection script with module-level overlap warnings and `--detail` drill-down
+  - Cross-developer "Team Activity" section in `/status` with overlap and staleness warnings
+  - Soft-block gates on `/plan` and `/dev` entry when module overlap detected
+  - Auto-sync at Forge command entry pulls latest team state
+  - Session identity as `email@hostname`, sync branch auto-detection with config override
+  - 136 new shell tests across 5 test suites
+
 - **Smart Setup UX: agent detection, incremental setup, clean output** (PR #90, forge-iv8b)
   - 4-layer agent auto-detection: `AI_AGENT` env > agent-specific env vars > VSCode path parsing > config file signatures (8 agents)
   - Incremental setup: content-hash comparison skips identical files on re-run; `--force` flag for CI/overwrite

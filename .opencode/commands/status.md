@@ -16,6 +16,13 @@ This command helps you understand the current state of the project before starti
 
 ## What This Command Does
 
+## Step 0: Sync team state
+
+```bash
+# Sync team state before showing status
+bash scripts/sync-utils.sh auto-sync
+```
+
 ### Step 1: Smart Status (ranked issues with conflict detection)
 ```bash
 bash scripts/smart-status.sh
