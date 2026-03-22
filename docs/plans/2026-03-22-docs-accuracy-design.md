@@ -30,7 +30,7 @@ README.md and supporting docs contain multiple factual inaccuracies vs the actua
 
 ## Approach Selected
 
-Doc-only fixes for 7 of 8 issues. One small test addition (forge-b1ai) to enforce paid tools always have free alternatives in the catalog. No production code changes.
+Doc-only fixes for all issues. The paid-alternatives enforcement test (forge-b1ai) already exists in the codebase and passes — no new test or code changes needed.
 
 ## Constraints
 
