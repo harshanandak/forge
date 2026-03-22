@@ -134,13 +134,13 @@ describe('GitHub-Beads sync setup integration', () => {
     const content = fs.readFileSync(forgePath, 'utf-8');
 
     test('--quick mode skips sync setup (no prompt)', () => {
-      // quickSetup should NOT call scaffoldGithubBeadsSync or prompt for it
-      const quickSection = content.substring(
-        content.indexOf('async function quickSetup'),
-        content.indexOf('async function quickSetup') + 2000
-      );
-      // Quick mode should not contain the sync prompt
-      expect(quickSection).not.toContain('GitHub');
+      // quickSetup should NOT prompt for sync — it only runs sync when --sync flag is set
+      const quickStart = content.indexOf('async function quickSetup');
+      const quickEnd = content.indexOf('\nasync function ', quickStart + 1);
+      const quickSection = content.substring(quickStart, quickEnd > quickStart ? quickEnd : quickStart + 3000);
+      // Quick mode should not contain the interactive sync prompt
+      expect(quickSection).not.toContain('Beads issue sync');
+      expect(quickSection).not.toContain('scaffoldGithubBeadsSync');
     });
 
     test('configureExternalServices includes sync prompt', () => {
