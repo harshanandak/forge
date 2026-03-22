@@ -132,12 +132,14 @@ New behavior:
 1. Write test: `--dry-run` produces "Would create" lines for expected files, exit 0
 2. Write test: `--dry-run` does not create any files (tmpdir is empty after run)
 3. Write test: `--dry-run` + `--agents=claude` only lists Claude-related files
-4. Run tests: confirm they fail
-5. Implement: wire ActionCollector into bin/forge.js setup flow
-6. Run tests: confirm they pass
-7. Commit: `feat: add --dry-run flag for setup preview`
+4. Write test: `--agents=claude,cursor` in normal mode installs ONLY .claude/ and .cursor/ dirs (verifies existing --agents logic works end-to-end)
+5. Write test: `--agents=invalid` exits with error listing valid agent names
+6. Run tests: confirm they fail
+7. Implement: wire ActionCollector into bin/forge.js setup flow
+8. Run tests: confirm they pass
+9. Commit: `feat: add --dry-run flag for setup preview`
 
-**Expected output**: `bunx forge setup --dry-run` prints file list, creates nothing.
+**Expected output**: `bunx forge setup --dry-run` prints file list, creates nothing. `--agents` filtering verified.
 
 ---
 
@@ -145,24 +147,28 @@ New behavior:
 
 **File(s)**: `bin/forge.js`, `test/non-interactive.test.js` (new)
 
-**What to implement**: Add `--non-interactive` flag and CI environment detection so setup completes without any prompts.
+**What to implement**: Add `--non-interactive` flag and CI environment detection so setup completes without any prompts. Also fix `--quick` mode to fully skip external service prompts.
 
 1. Parse `--non-interactive` flag in CLI args section
 2. At the top of setup, call `isNonInteractive()` (Task 1)
 3. Wrap every `askYesNo()`, `question()`, and `readline` prompt with a check: if non-interactive, use the default value silently
 4. Log which defaults were chosen: "Non-interactive mode: using default agent selection (all)"
-5. Ensure `--quick` still works as before (it's a superset of non-interactive)
+5. Fix `--quick` mode: it should imply `--non-interactive` (currently still prompts for external services)
+6. `.env.local` security: after writing API keys, set file permissions to 0600 (OWASP A02). On Windows, skip chmod (not applicable).
+7. Mask API key input during prompts (use readline with `muted` option or replace with asterisks)
 
 **TDD steps**:
 1. Write test: CI=true → setup completes with no stdin, uses defaults
 2. Write test: --non-interactive → same behavior as CI=true
-3. Write test: interactive mode (TTY) still prompts (mock readline)
-4. Run tests: confirm they fail
-5. Implement: add flag parsing + wrap all prompts
-6. Run tests: confirm they pass
-7. Commit: `feat: add --non-interactive flag and CI auto-detection`
+3. Write test: --quick → skips ALL prompts including external services
+4. Write test: interactive mode (TTY) still prompts (mock readline)
+5. Write test: .env.local has 0600 permissions after write (Unix only)
+6. Run tests: confirm they fail
+7. Implement: add flag parsing + wrap all prompts + chmod + quick fix
+8. Run tests: confirm they pass
+9. Commit: `feat: add --non-interactive flag, CI detection, fix --quick, secure .env.local`
 
-**Expected output**: `CI=true bunx forge setup` completes silently with defaults.
+**Expected output**: `CI=true bunx forge setup` completes silently with defaults. `.env.local` is owner-only readable.
 
 ---
 
@@ -406,28 +412,35 @@ New behavior:
 
 **File(s)**: `lib/beads-sync-scaffold.js` (extend), `test/beads-sync-scaffold.test.js` (extend)
 
-**What to implement**: Auto-detect the repo's default branch and write it into workflow templates.
+**What to implement**: Auto-detect the repo's default branch AND Beads version, then write both into workflow templates.
 
 1. `detectDefaultBranch(projectRoot)` — try in order:
    a. `git symbolic-ref refs/remotes/origin/HEAD` → parse branch name
    b. `git remote show origin` → parse "HEAD branch" line
    c. Fall back to `main`
-2. In interactive mode: show detected branch, ask "Use this? (y/n)", allow override
-3. In non-interactive mode: use detected branch silently
-4. Template replacement in workflow YAML: replace `branches: [master]` with detected branch
+2. `detectBeadsVersion(projectRoot)` — try in order:
+   a. Run `bd --version` → parse version string
+   b. Fall back to known-good default (currently `0.49.1`)
+3. In interactive mode: show detected branch + Beads version, ask "Use these? (y/n)", allow override
+4. In non-interactive mode: use detected values silently
+5. Template replacement in workflow YAML:
+   - Replace `branches: [master]` with detected branch
+   - Replace `BD_VERSION="0.49.1"` with detected Beads version
 
 **TDD steps**:
 1. Write test: origin/HEAD set to main → detects `main`
 2. Write test: origin/HEAD not set, remote show returns develop → detects `develop`
 3. Write test: no remote at all → falls back to `main`
-4. Write test: interactive mode shows confirmation prompt
-5. Write test: non-interactive uses detected silently
-6. Run tests: confirm they fail
-7. Implement: extend `lib/beads-sync-scaffold.js`
-8. Run tests: confirm they pass
-9. Commit: `feat: auto-detect default branch for Beads sync workflows`
+4. Write test: `bd --version` returns "0.52.0" → writes `BD_VERSION="0.52.0"` to workflow
+5. Write test: `bd` not installed → falls back to `BD_VERSION="0.49.1"`
+6. Write test: interactive mode shows confirmation prompt with both values
+7. Write test: non-interactive uses detected silently
+8. Run tests: confirm they fail
+9. Implement: extend `lib/beads-sync-scaffold.js`
+10. Run tests: confirm they pass
+11. Commit: `feat: auto-detect default branch and Beads version for sync workflows`
 
-**Expected output**: Workflow YAML uses the correct branch name.
+**Expected output**: Workflow YAML uses the correct branch name and matching Beads version.
 
 ---
 
