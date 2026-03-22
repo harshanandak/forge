@@ -23,10 +23,10 @@ README.md and supporting docs contain multiple factual inaccuracies vs the actua
 
 ## Out of Scope
 
-- Roadmap/planned-features section (deferred to separate issue)
 - Bumping package.json version
 - Adding automated OWASP gate (separate feature)
 - Fixing other epics (CI alignment, validate contracts, onboarding)
+- ENHANCED_ONBOARDING.md / AGENT_INSTALL_PROMPT.md (belong to forge-z1ft epic)
 
 ## Approach Selected
 

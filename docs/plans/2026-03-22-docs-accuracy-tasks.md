@@ -9,8 +9,7 @@
 
 ```
 Wave 1 (parallel): Tasks 1-6 (all independent README edits)
-Wave 2 (sequential after Wave 1): Task 7 (CHANGELOG — independent but logically after README)
-Wave 3 (sequential after Wave 1): Task 8 (test + code fix — independent)
+Wave 2 (parallel): Tasks 7-11 (CHANGELOG, test, QUICKSTART, ROADMAP, GREPTILE — all independent)
 ```
 
 ## Dependency Graph
@@ -20,8 +19,10 @@ Task 1 ──┐
 Task 2 ──┤
 Task 3 ──┤
 Task 4 ──┼──▶ Wave 1 complete ──▶ Task 7 (CHANGELOG)
-Task 5 ──┤                   └──▶ Task 8 (test + catalog fix)
-Task 6 ──┘
+Task 5 ──┤                   ├──▶ Task 8 (test + catalog fix)
+Task 6 ──┘                   ├──▶ Task 9 (QUICKSTART /research fix)
+                              ├──▶ Task 10 (ROADMAP stale dates)
+                              └──▶ Task 11 (GREPTILE hardcoded PR)
 ```
 
 ---
@@ -145,3 +146,42 @@ Do NOT rewrite historical entries — this preserves the record while preventing
 5. Commit: `test: add paid-alternatives enforcement for plugin catalog` then `fix: add free alternative to parallel-deep-research`
 
 **Expected output**: Test passes, all paid catalog entries have free alternatives defined
+
+---
+
+## Task 9: Fix QUICKSTART.md /research stage reference
+
+**File(s)**: QUICKSTART.md (lines 95-113)
+**What to implement**: QUICKSTART references `/research` as a separate stage/command, but research is Phase 2 of `/plan` — not its own command. Fix the section to show research as part of `/plan` output, not a separate step. Ensure the walkthrough matches the actual 7-stage workflow (/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify).
+
+**TDD steps**:
+1. Doc-only change — no test needed
+2. Verify: grep for "/research" in QUICKSTART.md returns no matches as a stage name
+
+**Expected output**: QUICKSTART walkthrough matches actual workflow stages
+
+---
+
+## Task 10: Update ROADMAP.md stale status info
+
+**File(s)**: docs/ROADMAP.md
+**What to implement**: ROADMAP has stale status information — Feb 2026 plans and PR merge dates that are inconsistent with current date (March 2026). Update status of completed items, remove outdated timeline references, and ensure the roadmap reflects current project state.
+
+**TDD steps**:
+1. Doc-only change — no test needed
+2. Verify: no obviously stale dates or incorrect PR statuses remain
+
+**Expected output**: ROADMAP reflects current project state accurately
+
+---
+
+## Task 11: Fix GREPTILE_SETUP.md hardcoded PR reference
+
+**File(s)**: docs/GREPTILE_SETUP.md (line 375)
+**What to implement**: Replace hardcoded "Your PR #13" reference with a generic example or a note to use your own PR number. Hardcoded PR references become stale as the repo evolves.
+
+**TDD steps**:
+1. Doc-only change — no test needed
+2. Verify: no hardcoded PR numbers remain as "examples" in the guide
+
+**Expected output**: GREPTILE_SETUP uses generic/dynamic PR references
