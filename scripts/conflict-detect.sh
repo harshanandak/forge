@@ -41,7 +41,7 @@ _validate_issue_id_arg() {
 # Allows: alphanumeric, dots, hyphens, underscores, forward slashes
 _validate_file_path() {
   local path="$1"
-  if [[ ! "$path" =~ ^[a-zA-Z0-9._/\ -]+$ ]]; then
+  if [[ ! "$path" =~ ^[a-zA-Z0-9./_[:space:]-]+$ ]]; then
     echo "Error: invalid file path — contains disallowed characters: $path" >&2
     return 1
   fi
@@ -67,10 +67,14 @@ _check_stale_sync() {
     return 0
   fi
 
-  # Convert ISO 8601 timestamp to epoch seconds
+  # .last-sync stores Unix epoch seconds (written by sync-utils.sh)
   local last_epoch now_epoch
-  # Try GNU date first, then BSD date
-  last_epoch="$(date -d "$last_sync_ts" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%SZ" "$last_sync_ts" +%s 2>/dev/null || echo 0)"
+  if [[ "$last_sync_ts" =~ ^[0-9]+$ ]]; then
+    last_epoch="$last_sync_ts"
+  else
+    # Fallback: try parsing as ISO 8601 (GNU date, then BSD date)
+    last_epoch="$(date -d "$last_sync_ts" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%SZ" "$last_sync_ts" +%s 2>/dev/null || echo 0)"
+  fi
   now_epoch="$(date +%s)"
 
   local diff=$(( now_epoch - last_epoch ))

@@ -299,15 +299,11 @@ file_index_update_from_tasks() {
     fi
   fi
 
-  # Sanitize file paths and deduplicate
-  local -a clean_files=()
-  local -a clean_modules=()
-  local -A seen_files=()
-  local -A seen_modules=()
+  # Sanitize file paths, derive modules, deduplicate via jq (Bash 3.2 compatible)
+  local sanitized_paths=""
 
   for raw_path in "${raw_files[@]}"; do
     # OWASP A03: reject paths with shell injection patterns
-    # Skip paths containing: $( ), backticks, semicolons, pipes, &&, ||
     if printf '%s' "$raw_path" | grep -qE '(\$\(|`|;|\||\&\&|\|\|)'; then
       continue
     fi
@@ -315,35 +311,20 @@ file_index_update_from_tasks() {
     if [[ "$raw_path" =~ ^[./]+$ ]]; then
       continue
     fi
-    # Deduplicate
-    if [[ -n "${seen_files[$raw_path]+x}" ]]; then
-      continue
-    fi
-    seen_files["$raw_path"]=1
-    clean_files+=("$raw_path")
-
-    # Derive module = directory portion
-    local module
-    module="$(dirname "$raw_path")"
-    if [[ "$module" != "." ]]; then
-      module="${module}/"
-      if [[ -z "${seen_modules[$module]+x}" ]]; then
-        seen_modules["$module"]=1
-        clean_modules+=("$module")
-      fi
-    fi
+    sanitized_paths="${sanitized_paths}${raw_path}"$'\n'
   done
 
-  # Build JSON arrays using jq
+  # Build deduplicated JSON arrays using jq (no associative arrays needed)
   local files_json modules_json
-  if [[ ${#clean_files[@]} -gt 0 ]]; then
-    files_json="$(printf '%s\n' "${clean_files[@]}" | jq -R . | jq -s -c .)"
+  if [[ -n "$sanitized_paths" ]]; then
+    files_json="$(printf '%s' "$sanitized_paths" | grep -v '^$' | jq -R . | jq -s -c 'unique')"
+    modules_json="$(printf '%s' "$sanitized_paths" | grep -v '^$' | while IFS= read -r p; do
+      local d
+      d="$(dirname "$p")"
+      if [[ "$d" != "." ]]; then printf '%s\n' "${d}/"; fi
+    done | jq -R . | jq -s -c 'unique')"
   else
     files_json="[]"
-  fi
-  if [[ ${#clean_modules[@]} -gt 0 ]]; then
-    modules_json="$(printf '%s\n' "${clean_modules[@]}" | jq -R . | jq -s -c .)"
-  else
     modules_json="[]"
   fi
 

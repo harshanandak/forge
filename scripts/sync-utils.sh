@@ -281,8 +281,9 @@ auto_sync() {
   # Ensure .beads directory exists
   mkdir -p "$repo_dir/.beads"
 
-  # Run bd sync (or mock)
-  if eval "$sync_cmd" >/dev/null 2>&1; then
+  # Run bd sync (or mock) — use $sync_cmd without eval to prevent injection
+  # shellcheck disable=SC2086
+  if $sync_cmd >/dev/null 2>&1; then
     # Success: record timestamp
     date +%s > "$last_sync_file"
 
@@ -351,17 +352,26 @@ _auto_sync_update_file_index() {
       continue
     fi
 
-    # Look for task files in common locations
+    # Look for this issue's task file
+    # 1. Try beads design metadata (set by beads-context.sh set-design)
     local task_file=""
-    for candidate in \
-      "$repo_dir/.beads/tasks/${issue_id}.md" \
-      "$repo_dir/.beads/tasks/${issue_id}-tasks.md" \
-      "$repo_dir/docs/plans/"*"-tasks.md"; do
-      if [[ -f "$candidate" ]]; then
-        task_file="$candidate"
-        break
-      fi
-    done
+    local design_meta
+    design_meta="$(bd show "$issue_id" 2>/dev/null | grep -A1 'DESIGN' | tail -1 | sed 's/.*| //')" || true
+    if [[ -n "$design_meta" ]] && [[ -f "$repo_dir/$design_meta" ]]; then
+      task_file="$repo_dir/$design_meta"
+    fi
+
+    # 2. Fall back to known locations with issue-specific naming
+    if [[ -z "$task_file" ]]; then
+      for candidate in \
+        "$repo_dir/.beads/tasks/${issue_id}.md" \
+        "$repo_dir/.beads/tasks/${issue_id}-tasks.md"; do
+        if [[ -f "$candidate" ]]; then
+          task_file="$candidate"
+          break
+        fi
+      done
+    fi
 
     # Update file index (file_index_update_from_tasks handles missing task files gracefully)
     file_index_update_from_tasks "$issue_id" "$task_file" "in_progress" 2>/dev/null || true
