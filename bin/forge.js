@@ -59,6 +59,7 @@ const { fileMatchesContent } = require('../lib/file-hash');
 const { SetupActionLog } = require('../lib/setup-action-log');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
+const { checkLefthookStatus } = require('../lib/lefthook-check');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
@@ -2495,6 +2496,8 @@ function parseFlags() {
     yes: false,       // Non-interactive mode (skip prompts, use defaults)
     force: false,     // Force overwrite even if content is identical
     verbose: false,   // Show file-by-file detail in setup summary
+    dryRun: false,    // Preview planned actions without writing files
+    symlink: false,   // Create CLAUDE.md as symlink to AGENTS.md (--symlink)
   };
 
   for (let i = 0; i < args.length;) {
@@ -2539,6 +2542,12 @@ function parseFlags() {
       i++;
     } else if (arg === '--verbose') {
       flags.verbose = true;
+      i++;
+    } else if (arg === '--dry-run') {
+      flags.dryRun = true;
+      i++;
+    } else if (arg === '--symlink') {
+      flags.symlink = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -2695,6 +2704,7 @@ function showHelp() {
   console.log('                                replace (overwrite with new)');
   console.log('  --type <type>        Set workflow profile type manually');
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
+  console.log('  --dry-run            Preview planned actions without writing any files');
   console.log('  --interview          Force context interview (gather project information)');
   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
   console.log('  --yes, -y            Non-interactive setup with sensible defaults');
@@ -2733,6 +2743,17 @@ function showHelp() {
 // SECURITY: Uses execSync with HARDCODED strings only (no user input)
 function installGitHooks() {
   console.log('Installing git hooks (TDD enforcement)...');
+
+  // Skip lefthook.yml creation if binary is not available
+  const lefthookStatus = checkLefthookStatus(projectRoot);
+  if (!lefthookStatus.binaryAvailable) {
+    if (lefthookStatus.message) {
+      console.warn(`  \u26A0 Skipping lefthook setup: ${lefthookStatus.message}`);
+    } else {
+      console.warn('  \u26A0 Skipping lefthook setup: binary not available');
+    }
+    return;
+  }
 
   // Check if lefthook.yml exists (it should, as it's in the package)
   const lefthookConfig = path.join(packageDir, 'lefthook.yml');
@@ -2800,18 +2821,13 @@ function installGitHooks() {
   }
 }
 
-// Check if lefthook is already installed in project
+// Check if lefthook is already installed in project (delegates to lib/lefthook-check)
 function checkForLefthook() {
-  const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return false;
-
-  try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return Boolean(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
-  } catch (err) {
-    console.warn('Failed to check lefthook in package.json:', err.message);
-    return false;
+  const status = checkLefthookStatus(projectRoot);
+  if (status.installed && !status.binaryAvailable) {
+    console.warn(`  \u26A0 ${status.message}`);
   }
+  return status;
 }
 
 // Check if Beads is installed (global, local, or bunx-capable)
@@ -3206,9 +3222,26 @@ function autoSetupBeadsInQuickMode() {
 
 // Helper: Auto-install lefthook if not present - extracted to reduce cognitive complexity
 function autoInstallLefthook() {
-  const hasLefthook = checkForLefthook();
-  if (hasLefthook) return;
+  const status = checkForLefthook();
 
+  // Binary available — nothing to do
+  if (status.binaryAvailable) return;
+
+  // In package.json but binary missing — just need install, not add
+  if (status.installed && !status.binaryAvailable) {
+    console.log('📦 Installing lefthook dependencies (binary missing)...');
+    try {
+      secureExecFileSync(PKG_MANAGER, ['install'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Lefthook binary restored');
+    } catch (err) {
+      console.warn('Lefthook install failed:', err.message);
+      console.log(`  ⚠ ${status.message}`);
+    }
+    console.log('');
+    return;
+  }
+
+  // Not in package.json at all — full install
   console.log('📦 Installing lefthook for git hooks...');
   try {
     // SECURITY: secureExecFileSync with PKG_MANAGER — cross-platform support
