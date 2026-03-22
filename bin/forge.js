@@ -2519,6 +2519,7 @@ function parseFlags() {
     verbose: false,   // Show file-by-file detail in setup summary
     dryRun: false,    // Preview planned actions without writing files
     symlink: false,   // Create CLAUDE.md as symlink to AGENTS.md (--symlink)
+    sync: false,      // Scaffold Beads GitHub sync workflows (--sync)
   };
 
   for (let i = 0; i < args.length;) {
@@ -2572,6 +2573,9 @@ function parseFlags() {
       i++;
     } else if (arg === '--symlink') {
       flags.symlink = true;
+      i++;
+    } else if (arg === '--sync') {
+      flags.sync = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
