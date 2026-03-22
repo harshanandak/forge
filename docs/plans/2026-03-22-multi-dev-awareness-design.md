@@ -55,17 +55,26 @@ Over-engineered for 5 developers. Breaks the git-native, offline-capable philoso
    - Module-level output by default, function-level via `--detail` flag (uses grep, not AST)
    - Exit codes: 0 = no conflicts, 1 = conflicts found (for gate integration)
 
-4. **Sync branch auto-detection**:
-   - Primary: `git remote show origin | grep 'HEAD branch'`
-   - Override: `.beads/config.json` field `sync_branch` or env var `BD_SYNC_BRANCH`
-   - Fallback order: config > env > auto-detect > "main" > "master"
+4. **Pluggable sync backend**:
+   - `refs` (default): Custom hidden refs (`refs/beads/*`). Invisible to developers — never shows in branches, PRs, or git log. Proven by git-bug (9.7k stars) and git-appraise (Google). JSONL merges via `cat | sort | uniq`.
+   - `branch`: Dedicated `beads/sync` branch. For teams that can't use custom refs or need auditability.
+   - `inline`: Beads data on the code branch (master/develop). Simplest, zero config. Current behavior.
+   - Config: `.beads/config.json` `sync_backend` field. Fallback detection if `refs` push fails → auto-downgrade to `inline`.
+   - `bd sync` abstracts the backend — developers just run `bd sync` regardless.
 
-5. **Session identity**:
-   - Format: `git config user.name` + `@` + `hostname`
+5. **Sync remote + branch detection** (for `branch` and `inline` backends):
+   - Primary: `git symbolic-ref refs/remotes/origin/HEAD`
+   - Fallback: `git remote show origin | grep 'HEAD branch'`
+   - Override: `.beads/config.json` `sync_branch` or `BD_SYNC_BRANCH` env var
+   - Fork detection: if `upstream` remote exists, sync from `upstream`. Override via `sync_remote`.
+
+6. **Session identity**:
+   - Format: `$(git config user.email)@$(hostname -s)` — prefer email for uniqueness
+   - Fallback: `git config user.name` if email not set
+   - Validate: `^[a-zA-Z0-9._@+-]+$` (OWASP A03)
    - Stored via `--assignee` on `bd update --claim`
-   - Distinguishes parallel sessions from the same developer
 
-6. **Soft block integration**:
+7. **Soft block integration**:
    - `/plan` entry gate: run conflict-detect, show overlaps, require `y/n` to proceed
    - `/dev` entry gate: same check
    - Not a hard block — developers can always proceed with confirmation

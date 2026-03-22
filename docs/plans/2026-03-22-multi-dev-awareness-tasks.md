@@ -7,29 +7,47 @@
 ## Parallel Wave Structure
 
 ```
-Wave 1 (foundational, parallel):  Tasks 1, 2, 3
-Wave 2 (core logic, parallel):    Tasks 4, 5       (depends on Wave 1)
-Wave 3 (integration, sequential): Tasks 6, 7       (depends on Wave 2)
-Wave 4 (gates, sequential):       Task 8            (depends on Wave 3)
-Wave 5 (docs):                    Task 9            (depends on Wave 4)
+Wave 1 (foundational, parallel):  Tasks 1, 2, 3, 4
+Wave 2 (core logic, parallel):    Tasks 5, 6       (depends on Wave 1)
+Wave 3 (integration, sequential): Tasks 7, 8       (depends on Wave 2)
+Wave 4 (gates, sequential):       Task 9            (depends on Wave 3)
+Wave 5 (docs):                    Task 10           (depends on Wave 4)
 ```
 
 ---
 
 ## Wave 1: Foundations (parallel — no interdependencies)
 
-### Task 1: Sync branch auto-detection utility
+### Task 1: Pluggable sync backend abstraction
 File(s): `scripts/sync-utils.sh`
-What to implement: Shell function `get_sync_branch()` that returns the correct sync branch using 3-method fallback: (1) `.beads/config.json` `sync_branch` field or `BD_SYNC_BRANCH` env var, (2) `git symbolic-ref refs/remotes/origin/HEAD`, (3) `git remote show origin | grep 'HEAD branch'`, (4) try `main`, then `master`. Also `get_sync_remote()` with config override and `upstream` detection for forks.
+What to implement: Sync backend system with three strategies, configured via `.beads/config.json` `sync_backend` field:
+- `refs` (default): Uses `refs/beads/*` custom hidden refs. Push/pull via `git push origin refs/beads/*` and `git fetch origin refs/beads/*:refs/beads/*`. Invisible to developers (no branches, no PR noise, no git log). JSONL merge via `cat | sort | uniq` on conflict. Auto-fallback to `inline` if remote rejects custom refs.
+- `branch`: Dedicated `beads/sync` branch. Push/pull `.beads/` files to/from this branch. Auto-created on first sync if missing.
+- `inline`: Sync `.beads/` on the code branch (master/develop). Current behavior, zero config.
+- Function `sync_push()` and `sync_pull()` abstract the backend. `bd sync` calls these.
+- Function `get_sync_config()` reads `.beads/config.json` with defaults.
 TDD steps:
-  1. Write test: `tests/sync-utils.test.sh` — assert fallback chain returns correct branch for each scenario (config set, env set, symbolic-ref works, remote show works, neither works)
+  1. Write test: `tests/sync-utils.test.sh` — assert: config reading with defaults, backend selection, fallback from refs to inline on failure
   2. Run test: confirm it fails (script doesn't exist)
-  3. Implement: `scripts/sync-utils.sh` with `get_sync_branch` and `get_sync_remote` functions
+  3. Implement: `scripts/sync-utils.sh` with sync backend abstraction
   4. Run test: confirm it passes
-  5. Commit: `test: add sync branch detection tests` then `feat: implement sync branch auto-detection`
-Expected output: `get_sync_branch` returns correct branch name in all fallback scenarios
+  5. Commit: `test: add sync backend tests` then `feat: implement pluggable sync backend`
+Expected output: `sync_pull`/`sync_push` work transparently across all three backends
 
-### Task 2: Session identity utility
+### Task 2: Sync branch/remote detection utility
+File(s): `scripts/sync-utils.sh` (extend)
+What to implement: Functions for `branch` and `inline` backends:
+- `get_sync_branch()`: fallback chain — config > env (`BD_SYNC_BRANCH`) > `git symbolic-ref refs/remotes/origin/HEAD` > `git remote show origin` > try `main` > `master`
+- `get_sync_remote()`: config > env > detect `upstream` remote for forks > default `origin`
+TDD steps:
+  1. Write test: `tests/sync-utils.test.sh` (extend) — assert fallback chain returns correct branch/remote for each scenario
+  2. Run test: confirm it fails
+  3. Implement: `get_sync_branch` and `get_sync_remote` in `scripts/sync-utils.sh`
+  4. Run test: confirm it passes
+  5. Commit: `test: add branch detection tests` then `feat: implement sync branch/remote detection`
+Expected output: Correct branch/remote returned for git flow, trunk-based, fork-based setups
+
+### Task 3: Session identity utility
 File(s): `scripts/sync-utils.sh`
 What to implement: Shell function `get_session_identity()` that returns `$(git config user.email)@$(hostname -s)` format. Validate against `^[a-zA-Z0-9._@+-]+$` regex (OWASP A03). Fallback to `git config user.name` if email not set. Cross-platform: use `hostname -s` (portable across Linux/macOS/Windows Git Bash).
 TDD steps:
@@ -40,7 +58,7 @@ TDD steps:
   5. Commit: `test: add session identity tests` then `feat: implement session identity utility`
 Expected output: Valid identity string like `harsha@Harsha-OFC`
 
-### Task 3: File index JSONL schema and read/write helpers
+### Task 4: File index JSONL schema and read/write helpers
 File(s): `scripts/file-index.sh`
 What to implement: Shell functions to manage `.beads/file-index.jsonl`:
 - `file_index_add <issue_id> <developer> <files_json> <modules_json>` — append entry with `updated_at` timestamp
@@ -60,7 +78,7 @@ Expected output: JSONL entries with `{issue_id, developer, files, modules, updat
 
 ## Wave 2: Core Logic (parallel — depends on Wave 1)
 
-### Task 4: Conflict detection script
+### Task 5: Conflict detection script
 File(s): `scripts/conflict-detect.sh`
 What to implement: Main conflict detection script:
 - `conflict-detect.sh --issue <id>` — check for overlaps between given issue's files/modules and all other in-progress issues in file index
@@ -78,7 +96,7 @@ TDD steps:
   5. Commit: `test: add conflict detection tests` then `feat: implement conflict detection script`
 Expected output: Module-level overlap warnings with developer identity and issue references
 
-### Task 5: File index auto-update on issue state changes
+### Task 6: File index auto-update on issue state changes
 File(s): `scripts/file-index.sh` (extend)
 What to implement: Function `file_index_update_from_tasks <issue_id> <task_file_path>` that:
 - Parses task file for `File(s):` lines, extracts file paths
@@ -98,7 +116,7 @@ Expected output: File index populated from task list `File(s):` entries
 
 ## Wave 3: Integration (sequential — depends on Wave 2)
 
-### Task 6: Extend smart-status.sh for cross-developer visibility
+### Task 7: Extend smart-status.sh for cross-developer visibility
 File(s): `scripts/smart-status.sh`
 What to implement: Extend existing Tier 1/2 conflict detection (lines 311-482) to include cross-developer data:
 - After local worktree conflict checks, read file index for OTHER developers' in-progress issues
@@ -114,7 +132,7 @@ TDD steps:
   5. Commit: `test: add cross-dev status tests` then `feat: extend smart-status for cross-developer visibility`
 Expected output: `/status` shows "Team Activity" with developer-grouped issues and overlap warnings
 
-### Task 7: Auto-sync at Forge command entry
+### Task 8: Auto-sync at Forge command entry
 File(s): `scripts/sync-utils.sh` (extend), `.claude/commands/plan.md`, `.claude/commands/dev.md`, `.claude/commands/status.md`
 What to implement: Function `auto_sync()` in sync-utils.sh that:
 - Runs `bd sync` targeting the correct sync branch (from `get_sync_branch`)
@@ -134,7 +152,7 @@ Expected output: Every Forge command starts with fresh beads state, graceful off
 
 ## Wave 4: Gate Integration (sequential — depends on Wave 3)
 
-### Task 8: Soft block gates on /plan and /dev entry
+### Task 9: Soft block gates on /plan and /dev entry
 File(s): `.claude/commands/plan.md`, `.claude/commands/dev.md`
 What to implement: After the existing HARD-GATE (worktree isolation), add a soft-block gate:
 - Run `bash scripts/conflict-detect.sh --issue <beads-id>`
@@ -155,7 +173,7 @@ Expected output: Developers warned before entering conflicting work areas
 
 ## Wave 5: Documentation (depends on Wave 4)
 
-### Task 9: Sync commands after command file edits
+### Task 10: Sync commands after command file edits
 File(s): (run script only)
 What to implement: Run `node scripts/sync-commands.js` to propagate command changes to all 7 agent directories. Verify with `--check`.
 TDD steps:
