@@ -25,6 +25,10 @@ on:
       - '*.js'
       - '.claude/**/*.js'
       - '.forge/hooks/**'
+      - '.github/workflows/**'
+
+# Limit permissions — these jobs only echo a message
+permissions: {}
 
 jobs:
   # Job names MUST match the required check names exactly.
