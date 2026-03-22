@@ -5,10 +5,11 @@
 # is working on which files/modules, keyed by issue_id.
 #
 # Functions (source this file):
-#   file_index_add    <issue_id> <developer> <files_json> <modules_json>
-#   file_index_remove <issue_id>
+#   file_index_add                <issue_id> <developer> <files_json> <modules_json>
+#   file_index_remove             <issue_id>
 #   file_index_read
-#   file_index_get    <issue_id>
+#   file_index_get                <issue_id>
+#   file_index_update_from_tasks  <issue_id> <task_file_path> [action]
 #
 # Uses jq for all JSON construction (never string concatenation).
 # OWASP A03: All inputs validated and shell-injection patterns stripped.
@@ -223,6 +224,163 @@ file_index_get() {
   ' "$jsonl_path"
 }
 
+# file_index_update_from_tasks <issue_id> <task_file_path> [action]
+# Parse a task file for File(s): lines, extract file paths, derive modules,
+# and update the file index using the current session identity.
+#
+# action: "in_progress" (default) — adds/updates entry
+#         "closed"               — appends tombstone via file_index_remove
+#
+# Edge cases:
+#   - Missing task file or no File(s): lines → fallback with confidence: "low"
+#   - File paths are sanitized against shell injection (OWASP A03)
+file_index_update_from_tasks() {
+  local raw_issue_id="$1"
+  local task_file_path="${2:-}"
+  local action="${3:-in_progress}"
+
+  # Sanitize and validate issue_id
+  local issue_id
+  issue_id="$(sanitize "$raw_issue_id")"
+  issue_id="$(printf '%s' "$issue_id" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  _validate_issue_id "$issue_id" || return 1
+
+  # Handle closed action: just tombstone
+  if [[ "$action" == "closed" ]]; then
+    file_index_remove "$issue_id"
+    return 0
+  fi
+
+  # Get session identity (source sync-utils.sh if get_session_identity not defined)
+  local developer
+  if ! command -v get_session_identity &>/dev/null; then
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -f "$script_dir/sync-utils.sh" ]]; then
+      source "$script_dir/sync-utils.sh"
+    fi
+  fi
+  developer="$(get_session_identity)" || {
+    echo "Error: could not determine session identity" >&2
+    return 1
+  }
+
+  # Parse task file for File(s): lines
+  local -a raw_files=()
+  local confidence="high"
+
+  if [[ -z "$task_file_path" ]] || [[ ! -f "$task_file_path" ]]; then
+    # Fallback: no task file
+    confidence="low"
+  else
+    # Extract backtick-quoted paths from File(s): lines (case-insensitive)
+    local line
+    while IFS= read -r line; do
+      # Extract all backtick-quoted strings from this line
+      local path
+      while [[ "$line" =~ \`([^\`]+)\` ]]; do
+        path="${BASH_REMATCH[1]}"
+        # Strip annotations like " (extend)", " (run script only)" — remove
+        # from the path anything after the file extension that looks like an annotation
+        path="$(printf '%s' "$path" | sed 's/[[:space:]]*([^)]*)//g')"
+        # Trim whitespace
+        path="$(printf '%s' "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [[ -n "$path" ]]; then
+          raw_files+=("$path")
+        fi
+        # Remove the matched backtick segment and continue
+        line="${line#*\`${BASH_REMATCH[1]}\`}"
+      done
+    done < <(grep -i '^File(s):' "$task_file_path" 2>/dev/null || true)
+
+    # If no File(s): lines found, fall back
+    if [[ ${#raw_files[@]} -eq 0 ]]; then
+      confidence="low"
+    fi
+  fi
+
+  # Sanitize file paths and deduplicate
+  local -a clean_files=()
+  local -a clean_modules=()
+  local -A seen_files=()
+  local -A seen_modules=()
+
+  for raw_path in "${raw_files[@]}"; do
+    # OWASP A03: reject paths with shell injection patterns
+    # Skip paths containing: $( ), backticks, semicolons, pipes, &&, ||
+    if printf '%s' "$raw_path" | grep -qE '(\$\(|`|;|\||\&\&|\|\|)'; then
+      continue
+    fi
+    # Skip paths with only dots/slashes (directory traversal)
+    if [[ "$raw_path" =~ ^[./]+$ ]]; then
+      continue
+    fi
+    # Deduplicate
+    if [[ -n "${seen_files[$raw_path]+x}" ]]; then
+      continue
+    fi
+    seen_files["$raw_path"]=1
+    clean_files+=("$raw_path")
+
+    # Derive module = directory portion
+    local module
+    module="$(dirname "$raw_path")"
+    if [[ "$module" != "." ]]; then
+      module="${module}/"
+      if [[ -z "${seen_modules[$module]+x}" ]]; then
+        seen_modules["$module"]=1
+        clean_modules+=("$module")
+      fi
+    fi
+  done
+
+  # Build JSON arrays using jq
+  local files_json modules_json
+  if [[ ${#clean_files[@]} -gt 0 ]]; then
+    files_json="$(printf '%s\n' "${clean_files[@]}" | jq -R . | jq -s -c .)"
+  else
+    files_json="[]"
+  fi
+  if [[ ${#clean_modules[@]} -gt 0 ]]; then
+    modules_json="$(printf '%s\n' "${clean_modules[@]}" | jq -R . | jq -s -c .)"
+  else
+    modules_json="[]"
+  fi
+
+  # Build and append the entry
+  local updated_at
+  updated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  local jsonl_path
+  jsonl_path="$(_file_index_path)"
+  mkdir -p "$(dirname "$jsonl_path")"
+
+  if [[ "$confidence" == "low" ]]; then
+    # Include confidence field for fallback entries
+    local json_line
+    json_line="$(jq -n -c \
+      --arg id "$issue_id" \
+      --arg dev "$developer" \
+      --argjson files "$files_json" \
+      --argjson modules "$modules_json" \
+      --arg ts "$updated_at" \
+      --arg conf "$confidence" \
+      '{
+        issue_id: $id,
+        developer: $dev,
+        files: $files,
+        modules: $modules,
+        updated_at: $ts,
+        tombstone: false,
+        confidence: $conf
+      }')"
+    printf '%s\n' "$json_line" >> "$jsonl_path"
+  else
+    # Normal entry via file_index_add (no confidence field needed)
+    file_index_add "$issue_id" "$developer" "$files_json" "$modules_json"
+  fi
+}
+
 # ── Main dispatcher (when run as a script) ────────────────────────────────
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -231,10 +389,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 Usage: file-index.sh <subcommand> [args...]
 
 Subcommands:
-  add     <issue_id> <developer> <files_json> <modules_json>
-  remove  <issue_id>
+  add              <issue_id> <developer> <files_json> <modules_json>
+  remove           <issue_id>
   read
-  get     <issue_id>
+  get              <issue_id>
+  update-from-tasks <issue_id> <task_file_path> [action]
 EOF
     exit 1
   fi
@@ -243,10 +402,11 @@ EOF
   shift
 
   case "$subcommand" in
-    add)    file_index_add "$@" ;;
-    remove) file_index_remove "$@" ;;
-    read)   file_index_read ;;
-    get)    file_index_get "$@" ;;
+    add)               file_index_add "$@" ;;
+    remove)            file_index_remove "$@" ;;
+    read)              file_index_read ;;
+    get)               file_index_get "$@" ;;
+    update-from-tasks) file_index_update_from_tasks "$@" ;;
     *)
       echo "Error: Unknown subcommand '${subcommand}'" >&2
       exit 1
