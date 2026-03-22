@@ -39,12 +39,13 @@ describe('--yes / -y flag for non-interactive setup', () => {
     // flags.agents is checked first in determineSelectedAgents, then --yes
     // kicks in only when selectedAgents is empty
     const mainSection = content.substring(content.indexOf('async function main()'));
-    // --yes logic should appear AFTER determineSelectedAgents call
+    // --yes agent-override logic should appear AFTER determineSelectedAgents call
     const determineCall = mainSection.indexOf('determineSelectedAgents');
-    const yesCheck = mainSection.indexOf('flags.yes');
+    // Look for the agent-specific flags.yes check (not the NON_INTERACTIVE one)
+    const yesAgentCheck = mainSection.indexOf('flags.yes && selectedAgents');
     expect(determineCall).toBeGreaterThan(-1);
-    expect(yesCheck).toBeGreaterThan(-1);
-    expect(yesCheck).toBeGreaterThan(determineCall);
+    expect(yesAgentCheck).toBeGreaterThan(-1);
+    expect(yesAgentCheck).toBeGreaterThan(determineCall);
   });
 
   test('--yes skips interactive setup (does not call interactiveSetupWithFlags)', () => {

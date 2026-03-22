@@ -53,11 +53,22 @@ const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
 const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
 
+// Load lib modules for symlink, beads, and PAT setup
+const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
+const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
+const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
+const { setupPAT } = require(path.join(packageDir, 'lib', 'pat-setup'));
+const { detectDefaultBranch, detectBeadsVersion, templateWorkflows, scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
+
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');
 const { fileMatchesContent } = require('../lib/file-hash');
 const { SetupActionLog } = require('../lib/setup-action-log');
+const { ActionCollector, isNonInteractive } = require('../lib/setup-utils');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
+const { smartMergeAgentsMd } = require('../lib/smart-merge');
+const { checkLefthookStatus } = require('../lib/lefthook-check');
+const { detectHusky, migrateHusky } = require('../lib/husky-migration');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
@@ -68,6 +79,9 @@ const args = process.argv.slice(2);
 // Incremental setup state (set during main() from parsed flags)
 let FORCE_MODE = false;
 let VERBOSE_MODE = false;
+let NON_INTERACTIVE = false;
+let SYMLINK_ONLY = false;   // --symlink: fail instead of copy fallback
+let SYNC_ENABLED = false;   // --sync: scaffold Beads GitHub sync workflows
 let actionLog = new SetupActionLog();
 
 // Detected package manager
@@ -561,7 +575,7 @@ function copyFile(src, dest) {
   return false;
 }
 
-function createSymlinkOrCopy(source, target) {
+function createSymlinkOrCopy(source, target, options = {}) {
   const fullSource = path.resolve(projectRoot, source);
   const fullTarget = path.resolve(projectRoot, target);
   const resolvedProjectRoot = path.resolve(projectRoot);
@@ -576,33 +590,8 @@ function createSymlinkOrCopy(source, target) {
     return '';
   }
 
-  try {
-    if (fs.existsSync(fullTarget)) {
-      const stat = fs.lstatSync(fullTarget);
-      if (stat.isDirectory()) {
-        // Target is an actual directory — cannot replace with a file/symlink
-        console.warn(`  ⚠ Skipped ${target} (a directory exists at this path). Remove it manually and re-run setup to create the symlink.`);
-        return '';
-      }
-      fs.unlinkSync(fullTarget);
-    }
-    const targetDir = path.dirname(fullTarget);
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-    try {
-      const relPath = path.relative(targetDir, fullSource);
-      fs.symlinkSync(relPath, fullTarget);
-      return 'linked';
-    } catch (_error) {
-      // Symlink may fail on Windows without admin — silent fallback to copy
-      fs.copyFileSync(fullSource, fullTarget);
-      return 'copied';
-    }
-  } catch (err) {
-    console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
-    return '';
-  }
+  // Delegate to lib/symlink-utils after security validation
+  return libCreateSymlinkOrCopy(fullSource, fullTarget, options);
 }
 
 function stripFrontmatter(content) {
@@ -710,6 +699,16 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 
   fs.writeFileSync(envPath, finalContent);
 
+  // OWASP A02: Set restrictive permissions on .env.local (contains API keys)
+  // On Windows, chmod is a no-op so we skip it
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(envPath, 0o600);
+    } catch (_err) {
+      // chmod failure is non-fatal — file was still written successfully
+    }
+  }
+
   // Add .env.local to .gitignore if not present
   const gitignorePath = path.join(projectRoot, '.gitignore');
   try {
@@ -730,51 +729,16 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 }
 
 // Detect existing project installation status
-// Smart merge for AGENTS.md - preserves USER sections, updates FORGE sections
-function smartMergeAgentsMd(existingContent, newContent) {
-  // Check if existing content has markers
-  const hasUserMarkers = existingContent.includes('<!-- USER:START') && existingContent.includes('<!-- USER:END');
-  const hasForgeMarkers = existingContent.includes('<!-- FORGE:START') && existingContent.includes('<!-- FORGE:END');
-
-  if (!hasUserMarkers || !hasForgeMarkers) {
-    // Old format without markers - return empty to signal merge not possible
-    return '';
-  }
-
-  // Extract USER section from existing content
-  const userStartMatch = existingContent.match(/<!-- USER:START.*?-->([\s\S]*?)<!-- USER:END -->/);
-  const userSection = userStartMatch ? userStartMatch[0] : '';
-
-  // Extract FORGE section from new content
-  const forgeStartMatch = newContent.match(/(<!-- FORGE:START.*?-->[\s\S]*?<!-- FORGE:END -->)/);
-  const forgeSection = forgeStartMatch ? forgeStartMatch[0] : '';
-
-  // Build merged content
-  const setupInstructions = newContent.includes('<!-- FORGE:SETUP-INSTRUCTIONS')
-    ? newContent.match(/(<!-- FORGE:SETUP-INSTRUCTIONS[\s\S]*?-->)/)?.[0] || ''
-    : '';
-
-  let merged = '# AGENTS.md\n\n';
-
-  // Add setup instructions if this is first-time setup
-  if (setupInstructions && !existingContent.includes('FORGE:SETUP-INSTRUCTIONS')) {
-    merged += setupInstructions + '\n\n';
-  }
-
-  // Add preserved USER section
-  merged += userSection + '\n\n';
-
-  // Add updated FORGE section
-  merged += forgeSection + '\n\n';
-
-  // Add footer
-  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`AGENTS.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
-
-  return merged;
-}
+// Smart merge for AGENTS.md - extracted to lib/smart-merge.js for testability
 
 // Helper function for yes/no prompts with validation
 async function askYesNo(question, prompt, defaultNo = true) {
+  // Non-interactive mode: return default without prompting
+  if (NON_INTERACTIVE) {
+    const defaultValue = !defaultNo;
+    console.log(`  Non-interactive mode: ${prompt} -> ${defaultValue ? 'yes' : 'no'} (default)`);
+    return defaultValue;
+  }
   const defaultText = defaultNo ? '[n]' : '[y]';
   while (true) {
     const answer = await question(`${prompt} (y/n) ${defaultText}: `);
@@ -1778,6 +1742,23 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       for (const f of result.skipped) {
         console.log(`  Skipped: ${f} (already exists)`);
       }
+
+      // PAT setup guidance for Beads sync (non-fatal)
+      // Skip if --sync flag is set — handleSyncScaffold will handle PAT setup
+      if (!SYNC_ENABLED) {
+        try {
+          const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
+          if (patResult.success) {
+            console.log('  ✓ Beads sync PAT configured');
+          } else if (patResult.reminder) {
+            console.log(`  ℹ ${patResult.reminder}`);
+          } else if (patResult.instructions) {
+            console.log(`  ℹ ${patResult.instructions.split('\n')[0]}`);
+          }
+        } catch (_patErr) {
+          // PAT setup is best-effort — don't block sync scaffold
+        }
+      }
     } catch (err) {
       console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
     }
@@ -1989,10 +1970,11 @@ function setupClaudeMcpConfig() {
 }
 
 // Helper: Create agent link file
-function createAgentLinkFile(agent) {
+// When symlinkOnly is true (--symlink flag), skip copy fallback
+function createAgentLinkFile(agent, symlinkOnly = false) {
   if (!agent.linkFile) return;
 
-  const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile);
+  const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile, { symlinkOnly });
   if (result) {
     console.log(`  ${result === 'linked' ? 'Linked' : 'Copied'}: ${agent.linkFile}`);
   }
@@ -2031,8 +2013,8 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
     setupClaudeMcpConfig();
   }
 
-  // Create link file
-  createAgentLinkFile(agent);
+  // Create link file (SYMLINK_ONLY = --symlink flag disables copy fallback)
+  createAgentLinkFile(agent, SYMLINK_ONLY);
 }
 
 
@@ -2533,8 +2515,12 @@ function parseFlags() {
     interview: false, // Force context interview
     budget: null,     // Budget mode for recommend command
     yes: false,       // Non-interactive mode (skip prompts, use defaults)
+    nonInteractive: false, // --non-interactive flag (or CI auto-detection)
     force: false,     // Force overwrite even if content is identical
     verbose: false,   // Show file-by-file detail in setup summary
+    dryRun: false,    // Preview planned actions without writing files
+    symlink: false,   // Create CLAUDE.md as symlink to AGENTS.md (--symlink)
+    sync: false,      // Scaffold Beads GitHub sync workflows (--sync)
   };
 
   for (let i = 0; i < args.length;) {
@@ -2574,11 +2560,23 @@ function parseFlags() {
     } else if (arg === '--yes' || arg === '-y') {
       flags.yes = true;
       i++;
+    } else if (arg === '--non-interactive') {
+      flags.nonInteractive = true;
+      i++;
     } else if (arg === '--force') {
       flags.force = true;
       i++;
     } else if (arg === '--verbose') {
       flags.verbose = true;
+      i++;
+    } else if (arg === '--dry-run') {
+      flags.dryRun = true;
+      i++;
+    } else if (arg === '--symlink') {
+      flags.symlink = true;
+      i++;
+    } else if (arg === '--sync') {
+      flags.sync = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -2735,6 +2733,7 @@ function showHelp() {
   console.log('                                replace (overwrite with new)');
   console.log('  --type <type>        Set workflow profile type manually');
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
+  console.log('  --dry-run            Preview planned actions without writing any files');
   console.log('  --interview          Force context interview (gather project information)');
   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
   console.log('  --yes, -y            Non-interactive setup with sensible defaults');
@@ -2769,10 +2768,66 @@ function showHelp() {
   console.log('');
 }
 
+// Detect Husky and offer migration to Lefthook
+// Called before installGitHooks() in setup flows
+async function handleHuskyMigration() {
+  const detection = detectHusky(projectRoot);
+  if (!detection.found) return;
+
+  console.log('Husky detected — migrating to Lefthook...');
+
+  // In interactive mode, ask the user before proceeding
+  if (!NON_INTERACTIVE) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
+    const userApproved = await askYesNo(question, 'Migrate Husky hooks to Lefthook?', false);
+    rl.close();
+    if (!userApproved) {
+      console.log('  Skipped Husky migration (user declined)');
+      console.log('');
+      return;
+    }
+  }
+
+  const result = migrateHusky(projectRoot, { nonInteractive: true });
+
+  if (result.success) {
+    console.log(`  Migrated ${result.mappedCount} hook(s) to lefthook.yml`);
+    if (result.unmappedCount > 0) {
+      console.warn(`  ${result.unmappedCount} hook(s) could not be auto-mapped:`);
+      for (const w of result.warnings) {
+        console.warn(`    - ${w}`);
+      }
+    }
+    if (result.hooksPathUnset) {
+      console.log('  Unset core.hooksPath git config');
+    }
+    console.log('  Removed .husky/ directory');
+    console.log('');
+  } else {
+    // Validation failed (e.g. symlink detected)
+    for (const w of result.warnings) {
+      console.warn(`  ${w}`);
+    }
+    console.log('');
+  }
+}
+
 // Install git hooks via lefthook
 // SECURITY: Uses execSync with HARDCODED strings only (no user input)
 function installGitHooks() {
   console.log('Installing git hooks (TDD enforcement)...');
+
+  // Skip lefthook.yml creation if binary is not available
+  const lefthookStatus = checkLefthookStatus(projectRoot);
+  if (!lefthookStatus.binaryAvailable) {
+    if (lefthookStatus.message) {
+      console.warn(`  \u26A0 Skipping lefthook setup: ${lefthookStatus.message}`);
+    } else {
+      console.warn('  \u26A0 Skipping lefthook setup: binary not available');
+    }
+    return;
+  }
 
   // Check if lefthook.yml exists (it should, as it's in the package)
   const lefthookConfig = path.join(packageDir, 'lefthook.yml');
@@ -2840,18 +2895,13 @@ function installGitHooks() {
   }
 }
 
-// Check if lefthook is already installed in project
+// Check if lefthook is already installed in project (delegates to lib/lefthook-check)
 function checkForLefthook() {
-  const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return false;
-
-  try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    return Boolean(pkg.devDependencies?.lefthook || pkg.dependencies?.lefthook);
-  } catch (err) {
-    console.warn('Failed to check lefthook in package.json:', err.message);
-    return false;
+  const status = checkLefthookStatus(projectRoot);
+  if (status.installed && !status.binaryAvailable) {
+    console.warn(`  \u26A0 ${status.message}`);
   }
+  return status;
 }
 
 // Check if Beads is installed (global, local, or bunx-capable)
@@ -2887,25 +2937,80 @@ function checkForBeads() {
     return null;
   }
 }
-// Check if Beads is initialized in project
+// Check if Beads is initialized in project — delegates to lib/beads-setup
 function isBeadsInitialized() {
-  return fs.existsSync(path.join(projectRoot, '.beads'));
+  return beadsSetupLib.isBeadsInitialized(projectRoot);
 }
 
-// Initialize Beads in the project
+// Initialize Beads in the project using the defensive safeBeadsInit wrapper
+// Handles config/gitignore writes, hook snapshot/restore, and JSONL pre-seeding
 function initializeBeads(installType) {
   console.log('Initializing Beads in project...');
 
-  try {
+  // Build the execBdInit function based on installType
+  const execBdInit = (root) => {
     // SECURITY: execFileSync with hardcoded commands
     if (installType === 'global') {
-      secureExecFileSync('bd', ['init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bd', ['init'], { stdio: 'inherit', cwd: root });
     } else if (installType === 'bunx') {
-      secureExecFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: root });
     } else if (installType === 'local') {
-      secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
+      secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: root });
+    }
+  };
+
+  // Derive prefix from package.json name or directory name
+  let prefix;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+    prefix = pkg.name || path.basename(projectRoot);
+  } catch (_e) {
+    prefix = path.basename(projectRoot);
+  }
+
+  try {
+    const result = beadsSetupLib.safeBeadsInit(projectRoot, {
+      prefix,
+      execBdInit,
+      restoreLefthook: (root) => {
+        try {
+          secureExecFileSync('lefthook', ['install'], { stdio: 'ignore', cwd: root });
+        } catch (_e) {
+          // lefthook may not be installed yet — non-fatal
+        }
+      }
+    });
+
+    if (result.skipped) {
+      console.log('  ✓ Beads already initialized');
+      return true;
+    }
+
+    if (!result.success) {
+      for (const e of result.errors) {
+        console.log(`  ⚠ ${e}`);
+      }
+      console.log('  Run manually: bd init');
+      return false;
+    }
+
+    for (const w of result.warnings) {
+      console.warn(`  ⚠ ${w}`);
     }
     console.log('  ✓ Beads initialized');
+
+    // Run post-init health check (non-fatal)
+    try {
+      const health = beadsHealthCheck(projectRoot);
+      if (health.healthy) {
+        console.log('  ✓ Beads health check passed');
+      } else {
+        console.log(`  ⚠ Beads health check failed at ${health.failedStep}: ${health.error}`);
+      }
+    } catch (_healthErr) {
+      // Health check is best-effort — don't block setup
+    }
+
     return true;
   } catch (err) {
     console.log('  ⚠ Failed to initialize Beads:', err.message);
@@ -3246,9 +3351,26 @@ function autoSetupBeadsInQuickMode() {
 
 // Helper: Auto-install lefthook if not present - extracted to reduce cognitive complexity
 function autoInstallLefthook() {
-  const hasLefthook = checkForLefthook();
-  if (hasLefthook) return;
+  const status = checkForLefthook();
 
+  // Binary available — nothing to do
+  if (status.binaryAvailable) return;
+
+  // In package.json but binary missing — just need install, not add
+  if (status.installed && !status.binaryAvailable) {
+    console.log('📦 Installing lefthook dependencies (binary missing)...');
+    try {
+      secureExecFileSync(PKG_MANAGER, ['install'], { stdio: 'inherit', cwd: projectRoot });
+      console.log('  ✓ Lefthook binary restored');
+    } catch (err) {
+      console.warn('Lefthook install failed:', err.message);
+      console.log(`  ⚠ ${status.message}`);
+    }
+    console.log('');
+    return;
+  }
+
+  // Not in package.json at all — full install
   console.log('📦 Installing lefthook for git hooks...');
   try {
     // SECURITY: secureExecFileSync with PKG_MANAGER — cross-platform support
@@ -3359,12 +3481,20 @@ async function quickSetup(selectedAgents, skipExternal) {
   const claudeCommands = loadAndSetupClaudeCommands(selectedAgents);
   setupSelectedAgents(selectedAgents, claudeCommands);
 
+  // Detect Husky and migrate before installing Lefthook hooks
+  await handleHuskyMigration();
+
   // Install git hooks for TDD enforcement
   console.log('');
   installGitHooks();
 
   // Configure external services with defaults (unless skipped)
   configureDefaultExternalServices(skipExternal);
+
+  // --sync flag: scaffold Beads GitHub sync workflows without prompting
+  if (SYNC_ENABLED) {
+    await handleSyncScaffold();
+  }
 
   // Progressive setup summary
   console.log('');
@@ -3711,6 +3841,98 @@ function determineSelectedAgents(flags) {
 }
 
 // Shared setup executor — used by handleSetupCommand
+
+// Dry-run setup — enumerate planned actions without writing files
+function dryRunSetup(agents) {
+  const collector = new ActionCollector();
+
+  // Helper: add create or skip based on whether file exists
+  function addFileAction(relPath, description) {
+    const absPath = path.join(projectRoot, relPath);
+    if (fs.existsSync(absPath)) {
+      collector.add('skip', relPath, 'Already exists');
+    } else {
+      collector.add('create', relPath, description);
+    }
+  }
+
+  // AGENTS.md
+  addFileAction('AGENTS.md', 'Copy workflow documentation');
+
+  // Per-agent planned actions
+  for (const agentKey of agents) {
+    const agent = AGENTS[agentKey];
+    if (!agent) continue;
+
+    // Agent directories
+    for (const dir of agent.dirs) {
+      addFileAction(dir + '/', 'Create agent directory');
+    }
+
+    // Claude-specific files
+    if (agentKey === 'claude') {
+      const cmds = getWorkflowCommands();
+      for (const cmd of cmds) {
+        addFileAction(`.claude/commands/${cmd}.md`, 'Workflow command');
+      }
+      addFileAction('.claude/rules/workflow.md', 'Workflow rules');
+      addFileAction('.claude/scripts/load-env.sh', 'Environment loader script');
+      addFileAction('.claude/skills/forge-workflow/SKILL.md', 'Forge workflow skill');
+      addFileAction('.mcp.json', 'MCP server configuration');
+      addFileAction('CLAUDE.md', 'Claude root config (links to AGENTS.md)');
+    }
+
+    // Cursor-specific files
+    if (agent.customSetup === 'cursor') {
+      addFileAction('.cursor/rules/forge-workflow.mdc', 'Cursor workflow rule');
+    }
+
+    // Agent commands (converted from Claude format)
+    if (agent.needsConversion || agent.copyCommands || agent.promptFormat) {
+      const cmds = getWorkflowCommands();
+      const targetDir = agent.dirs[0];
+      for (const cmd of cmds) {
+        const ext = agent.promptFormat ? '.prompt.md' : '.md';
+        addFileAction(`${targetDir}/${cmd}${ext}`, 'Converted workflow command');
+      }
+    }
+
+    // Agent rules (copied from Claude)
+    if (agent.needsConversion) {
+      const rulesDir = agent.dirs.find(d => d.includes('/rules'));
+      if (rulesDir) {
+        addFileAction(`${rulesDir}/workflow.md`, 'Workflow rules');
+      }
+    }
+
+    // Agent skill
+    if (agent.hasSkill) {
+      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+      if (skillDir) {
+        addFileAction(`${skillDir}/SKILL.md`, 'Forge workflow skill');
+      }
+    }
+
+    // Agent link file (symlink or copy of AGENTS.md)
+    if (agent.linkFile) {
+      addFileAction(agent.linkFile, 'Link to AGENTS.md');
+    }
+  }
+
+  // Git hooks
+  addFileAction('lefthook.yml', 'Git hook configuration');
+  addFileAction('.forge/hooks/check-tdd.js', 'TDD enforcement hook');
+
+  // Print dry-run summary
+  console.log('');
+  console.log('Dry-run: the following actions would be performed:');
+  console.log('');
+  collector.print();
+  console.log('');
+  console.log(`Total: ${collector.list().length} planned actions`);
+  console.log('No files were modified.');
+}
+
 async function executeSetup(config) {
   const { agents, skipExternal } = config;
 
@@ -3745,6 +3967,9 @@ async function executeSetup(config) {
   // since loadAndSetupClaudeCommands already handled it above)
   setupSelectedAgents(agents, claudeCommands);
 
+  // Detect Husky and migrate before installing Lefthook hooks
+  await handleHuskyMigration();
+
   // Install git hooks for TDD enforcement
   console.log('');
   installGitHooks();
@@ -3752,10 +3977,54 @@ async function executeSetup(config) {
   // External services (unless skipped)
   await handleExternalServices(skipExternal, agents);
 
+  // --sync flag: scaffold Beads GitHub sync workflows without prompting
+  if (SYNC_ENABLED) {
+    await handleSyncScaffold();
+  }
+
   // Progressive setup summary
   console.log('');
   console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE));
   console.log('');
+}
+
+// Helper: Scaffold Beads GitHub sync when --sync flag is provided
+async function handleSyncScaffold() {
+  console.log('');
+  console.log('Scaffolding Beads GitHub sync workflows (--sync)...');
+  try {
+    // Scaffold sync files using the new lib module
+    const result = scaffoldBeadsSync(projectRoot, packageDir);
+    for (const f of (result.filesCreated || [])) {
+      console.log(`  Created: ${f}`);
+    }
+    for (const f of (result.filesSkipped || [])) {
+      console.log(`  Skipped: ${f} (already exists)`);
+    }
+
+    // Detect default branch and Beads version, then template workflows
+    const branch = detectDefaultBranch(projectRoot);
+    const beadsVersion = detectBeadsVersion();
+    const workflowDir = path.join(projectRoot, '.github', 'workflows');
+    templateWorkflows(workflowDir, branch, beadsVersion, result.filesCreated || []);
+    console.log(`  Branch: ${branch}, Beads version: ${beadsVersion}`);
+
+    // PAT setup: interactive when possible, reminder otherwise
+    try {
+      const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
+      if (patResult.success) {
+        console.log('  PAT configured for Beads sync');
+      } else if (patResult.reminder) {
+        console.log(`  ${patResult.reminder}`);
+      } else if (patResult.instructions) {
+        console.log(`  ${patResult.instructions.split('\n')[0]}`);
+      }
+    } catch (_patErr) {
+      // PAT setup is best-effort — don't block sync scaffold
+    }
+  } catch (err) {
+    console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
+  }
 }
 
 // Helper: Handle setup command in non-quick mode
@@ -3800,7 +4069,21 @@ async function main() {
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
   VERBOSE_MODE = flags.verbose;
+  NON_INTERACTIVE = flags.nonInteractive || flags.yes || isNonInteractive();
+  SYMLINK_ONLY = flags.symlink;
+  SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
+
+  if (NON_INTERACTIVE) {
+    const agentFlag = flags.agents;
+    if (agentFlag && agentFlag.length > 0) {
+      // flags.agents is a comma-separated string (e.g. "claude,cursor")
+      const agentDisplay = agentFlag.replace(/,/g, ', ');
+      console.log(`Non-interactive mode: using provided agent selection (${agentDisplay})`);
+    } else {
+      console.log('Non-interactive mode: using default agent selection (all)');
+    }
+  }
 
   // Show help
   if (flags.help) {
@@ -3846,8 +4129,18 @@ async function main() {
       flags.skipExternal = true;
     }
 
-    // Quick mode
+    // Dry-run mode: preview planned actions without writing files
+    if (flags.dryRun) {
+      if (selectedAgents.length === 0) {
+        selectedAgents = ['claude'];
+      }
+      dryRunSetup(selectedAgents);
+      return;
+    }
+
+    // Quick mode: --quick implies skipExternal (no external service prompts)
     if (flags.quick) {
+      flags.skipExternal = true;
       // If no explicit agents specified, use all (--yes default doesn't count)
       if (selectedAgents.length === 0 || (flags.yes && !flags.agents)) {
         selectedAgents = Object.keys(AGENTS);

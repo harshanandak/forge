@@ -1,6 +1,6 @@
 {
   "name": "forge-workflow",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "7-stage TDD workflow for ALL AI coding agents (Claude, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)",
   "bin": {
     "forge": "bin/forge.js",
@@ -86,8 +86,11 @@
     ".codex/",
     ".kilocode/",
     ".opencode/",
+    "scripts/",
     ".github/prompts/",
     ".github/PLUGIN_TEMPLATE.json",
+    ".github/workflows/github-to-beads.yml",
+    ".github/workflows/beads-to-github.yml",
     ".forge/hooks/",
     "docs/*.md",
     "install.sh",

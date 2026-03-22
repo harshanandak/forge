@@ -55,8 +55,8 @@ Ship features with confidence using a 7-stage TDD-first workflow for AI coding a
 ## Installation
 
 ```bash
-# Step 1: Install the package
-bun install forge-workflow
+# Step 1: Install the package (as dev dependency)
+bun add -D forge-workflow
 
 # Step 2: Setup for your AI agent
 bunx forge setup
@@ -69,6 +69,19 @@ bunx forge setup
 
 **Prerequisites**: Node.js, Git, GitHub account
 **Optional tools**: Beads (issue tracking)
+
+### Setup Flags
+
+| Flag | Description |
+|------|-------------|
+| `--agents=<list>` | Comma-separated agents to set up (e.g., `--agents=claude,cursor`) |
+| `--all` | Set up all supported agents |
+| `--dry-run` | Preview what setup would do without writing files |
+| `--non-interactive` | Skip all prompts (use defaults). Auto-enabled when `CI=true` |
+| `--symlink` | Create CLAUDE.md as a symlink to AGENTS.md instead of a copy |
+| `--sync` | Enable Beads GitHub sync (scaffolds workflow + PAT) |
+| `--verbose` | Show file-by-file detail instead of summary |
+| `--force` | Overwrite existing files even if content matches |
 
 → [Detailed setup guide for all agents](docs/SETUP.md)
 
@@ -408,7 +421,7 @@ MIT © Harsha Nandak
 **Ready to start?**
 
 ```bash
-bun install forge-workflow
+bun add -D forge-workflow
 bunx forge setup
 /status
 ```
