@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-03-22
+
+### Added
+
+- **Install-fixes: hardened setup, Beads sync, documentation overhaul**
+  - `--dry-run` flag: preview setup actions without writing files
+  - `--non-interactive` flag: skip all prompts, use defaults; auto-enabled when `CI=true`
+  - `--symlink` flag: create CLAUDE.md as a symlink to AGENTS.md instead of a copy
+  - `--sync` flag: scaffold Beads GitHub sync workflow with PAT setup
+  - `--agents=<list>` flag: comma-separated agent selection (e.g., `--agents=claude,cursor`)
+  - `ActionCollector` and `isNonInteractive` utilities for setup orchestration
+  - Beads config writer utilities for programmatic `.beads/config.yaml` generation
+  - Beads health check smoke test after initialization
+  - Defensive `bd init` wrapper with hook preservation
+  - Auto-detect default branch and Beads version for sync workflows
+  - Guided PAT setup for Beads sync via `gh` CLI
+  - Beads sync scaffolding during `forge setup --sync`
+  - Husky detection and automated migration to Lefthook
+  - Documentation consistency tests (`test/docs-consistency.test.js`)
+
+### Changed
+
+- **Install command**: `bun install forge-workflow` changed to `bun add -D forge-workflow` (dev dependency)
+- **install.sh**: Deprecated to thin bootstrapper that installs forge-workflow and delegates to `bunx forge setup`
+- **Lefthook check**: Now verifies binary existence, not just package.json entry
+- **CLAUDE.md merge**: `smartMergeAgentsMd` preserves existing CLAUDE.md without markers
+- **README.md**: Added Setup Flags table documenting all new CLI flags
+- **docs/SETUP.md**: Added Beads sync section with PAT requirements and `BEADS_SYNC_TOKEN` documentation
+- **Sync scripts and workflow templates**: Added to npm package `files` array
+
+### Fixed
+
+- Lefthook check verifies binary existence, not just package.json entry
+- `smartMergeAgentsMd` preserves existing CLAUDE.md without markers
+- Sync scripts and workflow templates added to npm package
+
 ## [0.0.4] - 2026-03-22
 
 ### Added

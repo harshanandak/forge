@@ -20,8 +20,8 @@ Complete setup instructions for all AI agents and optional toolchain.
 ### Option 1: Bun (Recommended)
 
 ```bash
-# Step 1: Install the package
-bun add forge-workflow
+# Step 1: Install the package (as dev dependency)
+bun add -D forge-workflow
 
 # Step 2: Interactive setup
 bunx forge setup
@@ -53,6 +53,8 @@ bunx forge setup --all
 curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh | bash
 ```
 
+> **Note**: `install.sh` is a thin bootstrapper that installs forge-workflow and delegates to `bunx forge setup`. All setup logic lives in the npm package.
+
 **Interactive prompts**:
 1. Which agents do you use?
 2. Install Beads? (y/n)
@@ -60,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/main/install.sh 
 ### Option 4: bun
 
 ```bash
-bun add forge-workflow
+bun add -D forge-workflow
 bunx forge setup
 ```
 
@@ -274,6 +276,36 @@ bd init --prefix MYPROJ
 ```bash
 bd init --stealth
 ```
+
+### Beads GitHub Sync
+
+The `--sync` flag during setup scaffolds a GitHub Actions workflow that syncs Beads issues with GitHub Issues bidirectionally.
+
+```bash
+# Enable Beads sync during setup
+bunx forge setup --sync
+```
+
+**What gets scaffolded**:
+- `.github/workflows/beads-sync.yml` - GitHub Actions workflow for bidirectional sync
+- PAT (Personal Access Token) configuration via `gh secret set`
+
+**PAT requirements**:
+- A GitHub PAT with `repo` scope is required for the sync workflow
+- During setup, Forge prompts to create and store the token as `BEADS_SYNC_TOKEN`
+- The token is stored as a GitHub Actions secret (never committed to the repo)
+
+**Manual PAT setup** (if skipped during setup):
+```bash
+# Create a PAT at https://github.com/settings/tokens
+# Then store it as a repo secret:
+gh secret set BEADS_SYNC_TOKEN --body "ghp_your_token_here"
+```
+
+**How sync works**:
+- On push: Beads issues are synced to GitHub Issues
+- On issue change: GitHub Issues are synced back to Beads
+- Conflict resolution: last-write-wins with timestamps
 
 ---
 
@@ -558,7 +590,7 @@ your-project/
 bun pm ls | grep forge-workflow
 
 # If not, install
-bun add forge-workflow
+bun add -D forge-workflow
 ```
 
 ### "Permission denied: gh"
