@@ -83,3 +83,85 @@ Research: See `docs/plans/2026-03-22-bootstrap-installer-research.md`
 | 8 | Interactive blocks CI | Medium | Add `CI` env detection, `--non-interactive` flag, TTY fallback |
 | 9 | No dry-run | Low | Add `--dry-run` flag, collect planned actions, print list, exit 0 |
 | 10 | Multi-dev scripts not in package | High | Verify `scripts/` distribution, add package verification test |
+
+## Technical Research
+
+### Key Findings from Codebase Exploration
+
+**Critical bugs found during research:**
+
+1. **`smartMergeAgentsMd()` (bin/forge.js:734-774)**: Returns empty string `''` when existing CLAUDE.md has no USER/FORGE markers — the common case for pre-Forge projects. This signals "merge not possible" and the caller overwrites the file. **Root cause of issue #5.**
+
+2. **`context-merge.js` IS imported** (bin/forge.js:53) and `smartMergeAgentsMd` IS defined (line 734). The explore agent initially missed these — verified via blast-radius grep.
+
+3. **`--agents` flag works in `bin/forge.js`** (lines 2562-2712) but does NOT exist in `install.sh`.
+
+4. **Lefthook check** (bin/forge.js:2844-2855) only checks `package.json` for `lefthook` dependency — doesn't verify the binary actually exists.
+
+5. **No TTY detection** — no `process.stdin.isTTY` or `process.env.CI` checks found.
+
+6. **No Husky detection** — zero references to `husky` or `.husky/` in setup logic.
+
+7. **Missing flags**: `--non-interactive`, `--symlink`, `--dry-run` all absent from both entry points.
+
+### Blast-Radius: install.sh Deprecation
+
+`install.sh` is referenced in **30+ files**. All need updating:
+
+| Location | Action |
+|----------|--------|
+| `docs/SETUP.md:53` | Update curl command to note bootstrapper |
+| `package.json:93` | Keep in `files` array (still distributed) |
+| `CHANGELOG.md:145` | Historical — no change needed |
+| `docs/research/test-environment.md` (6 refs) | Update test docs |
+| `test-env/README.md` | Update test instructions |
+| `.github/workflows/size-check.yml` (2 refs) | Update CI workflow |
+| `lib/plugin-catalog.js:51` | Different install.sh (Parallel AI) — no change |
+| `.beads/README.md:64` | Different install.sh (Beads) — no change |
+| Agent command files (7 refs: .claude/, .cursor/, .cline/, .roo/, .codex/, .opencode/, .github/prompts/) | Generic "install.sh / setup scripts" in plan template — no change needed |
+
+### OWASP Top 10 Analysis
+
+| Category | Applies | Risk | Mitigation |
+|----------|---------|------|------------|
+| A01 Broken Access Control | Low | File writes to project dir | Validate paths stay within project root |
+| A02 Crypto Failures | Yes | `.env.local` stores API keys as plaintext, no `chmod 0600`, no input masking | Add chmod 0600, mask input during prompts |
+| A03 Injection | Low | Node.js uses `secureExecFileSync` (no shell). install.sh needs shellcheck | Keep execFileSync pattern, add shellcheck to CI |
+| A04 Insecure Design | Yes | `install.sh` downloads from `raw.githubusercontent.com` with no checksum, no pinned commit | Thin bootstrapper eliminates most risk — only installs npm package |
+| A05 Security Misconfiguration | Low | Lefthook.yml created without binary check | Check binary exists before creating config |
+| A06 Vulnerable Components | N/A | No third-party deps in setup path | — |
+| A07 Auth Failures | N/A | No auth in setup | — |
+| A08 Integrity Failures | Yes | No SBOM, no npm provenance, no release signing. Husky migration doesn't validate .husky/ for symlink attacks | Validate .husky/ contents are regular files before migration |
+| A09 Logging Failures | Low | No audit trail of setup actions | Dry-run mode doubles as action log |
+| A10 SSRF | N/A | No server-side requests | — |
+
+### Web Research Summary
+
+- **TTY detection**: `process.stdin.isTTY` + `process.env.CI` (covers GitHub Actions, GitLab, Travis, Vercel, Netlify). Zero-dep approach.
+- **npm pack verification**: `npm pack --dry-run` lists tarball contents — use in CI test.
+- **Husky migration**: Must `git config --unset core.hooksPath`. Map `.husky/` scripts to `lefthook.yml` commands.
+- **Windows symlinks**: `fs.symlinkSync` needs admin. Use file copy as cross-platform fallback.
+- **Dry-run pattern**: ActionCollector — collect `{ type, path, description }` pairs, print list or execute.
+- **Smart merge**: Additive merge for existing configs. existence-check for new files. Always-write for Forge-owned files.
+
+Research docs: `docs/plans/2026-03-22-bootstrap-installer-research.md`, `docs/plans/2026-03-22-install-setup-research.md`, `docs/plans/2026-03-22-owasp-top10-setup-analysis.md`
+
+### TDD Test Scenarios
+
+| # | Scenario | Type | What to Assert |
+|---|----------|------|----------------|
+| 1 | `--dry-run` lists actions without modifying files | Happy path | No files created/modified, stdout contains "Would create" lines, exit 0 |
+| 2 | `--agents=claude,cursor` installs only 2 agents | Happy path | Only `.claude/` and `.cursor/` dirs created, others absent |
+| 3 | `--agents=invalid` errors with valid agent list | Error path | Exit 1, stderr shows valid agents |
+| 4 | Non-interactive mode (CI=true) skips all prompts | Happy path | No stdin reads, uses defaults, completes successfully |
+| 5 | CLAUDE.md without markers preserved on merge | Edge case | Existing content wrapped in USER markers, FORGE section appended |
+| 6 | CLAUDE.md with USER markers preserved on upgrade | Happy path | USER section unchanged, FORGE section updated |
+| 7 | Husky detected → migration offered and works | Happy path | .husky/ removed, core.hooksPath unset, lefthook.yml has mapped hooks |
+| 8 | Husky with unmappable hooks warns user | Edge case | Warning lists hooks that couldn't be auto-migrated |
+| 9 | Lefthook binary missing → clear warning | Error path | No lefthook.yml created, warning with install command |
+| 10 | `--symlink` creates CLAUDE.md → AGENTS.md link | Happy path | CLAUDE.md is a symlink (or copy on Windows) |
+| 11 | `--symlink` on Windows falls back to copy | Edge case | CLAUDE.md is a copy with header comment explaining it |
+| 12 | install.sh bootstrapper delegates to bunx forge setup | Happy path | Package installed, `bunx forge setup` called with passthrough args |
+| 13 | npm pack includes all required scripts | Integration | `scripts/*.js` and `scripts/*.sh` present in tarball |
+| 14 | Husky migration validates .husky/ files are regular files | Security | Symlinks in .husky/ rejected with warning |
+| 15 | .env.local gets chmod 0600 after writing | Security | File permissions are 0600 (owner read/write only) |
