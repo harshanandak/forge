@@ -117,9 +117,18 @@ _detect_conflicts() {
   local exclude_issue="$3"
   local detail="$4"
 
-  # Read all active entries from file index
+  # Read all active entries from file index, filter out stale entries (>48 hours)
   local all_entries
-  all_entries="$(file_index_read 2>/dev/null)" || all_entries="[]"
+  local now_epoch
+  now_epoch="$(date +%s)"
+  all_entries="$(file_index_read 2>/dev/null | jq -c --arg now "$now_epoch" '
+    [.[] | select(
+      if .updated_at then
+        ((.updated_at[:19] + "Z") | fromdateiso8601) as $ts |
+        (($now | tonumber) - $ts) < 172800
+      else true end
+    )]
+  ' 2>/dev/null)" || all_entries="[]"
 
   if [[ "$all_entries" == "[]" ]] || [[ -z "$all_entries" ]]; then
     echo "No conflicts found. File index is empty."

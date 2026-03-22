@@ -393,6 +393,19 @@ _auto_sync_update_file_index() {
     file_index_update_from_tasks "$issue_id" "$task_file" "in_progress" 2>/dev/null || true
   done <<< "$issue_ids"
 
+  # Tombstone closed issues: find indexed entries no longer in_progress
+  local indexed_ids
+  indexed_ids="$(file_index_read 2>/dev/null | jq -r '.[].issue_id' 2>/dev/null)" || true
+  if [[ -n "$indexed_ids" ]]; then
+    while IFS= read -r indexed_id; do
+      [[ -z "$indexed_id" ]] && continue
+      # If this issue is not in the in_progress list, tombstone it
+      if ! printf '%s' "$issue_ids" | grep -qF "$indexed_id"; then
+        file_index_remove "$indexed_id" 2>/dev/null || true
+      fi
+    done <<< "$indexed_ids"
+  fi
+
   return 0
 }
 
