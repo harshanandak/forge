@@ -189,7 +189,9 @@ get_sync_branch() {
   local remote="origin"
 
   # 3. git symbolic-ref refs/remotes/<remote>/HEAD
-  branch="$(git -C "$repo_dir" symbolic-ref -- "refs/remotes/${remote}/HEAD" 2>/dev/null)" || true
+  # Note: symbolic-ref accepts -- before ref names, but rev-parse --verify
+  # does NOT — after --, rev-parse treats arguments as paths, not revisions.
+  branch="$(git -C "$repo_dir" symbolic-ref "refs/remotes/${remote}/HEAD" 2>/dev/null)" || true
   if [ -n "$branch" ]; then
     # Strip refs/remotes/<remote>/ prefix
     branch="${branch#refs/remotes/${remote}/}"
@@ -198,13 +200,14 @@ get_sync_branch() {
   fi
 
   # 4. Try 'main' — check if remote has it
-  if git -C "$repo_dir" rev-parse --verify -- "refs/remotes/${remote}/main" &>/dev/null; then
+  # Note: no -- before ref; rev-parse --verify treats post--- args as paths
+  if git -C "$repo_dir" rev-parse --verify "refs/remotes/${remote}/main" &>/dev/null; then
     printf '%s' "main"
     return 0
   fi
 
   # 5. Try 'master'
-  if git -C "$repo_dir" rev-parse --verify -- "refs/remotes/${remote}/master" &>/dev/null; then
+  if git -C "$repo_dir" rev-parse --verify "refs/remotes/${remote}/master" &>/dev/null; then
     printf '%s' "master"
     return 0
   fi
