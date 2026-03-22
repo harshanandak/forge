@@ -576,7 +576,7 @@ function copyFile(src, dest) {
   return false;
 }
 
-function createSymlinkOrCopy(source, target) {
+function createSymlinkOrCopy(source, target, options = {}) {
   const fullSource = path.resolve(projectRoot, source);
   const fullTarget = path.resolve(projectRoot, target);
   const resolvedProjectRoot = path.resolve(projectRoot);
@@ -592,7 +592,7 @@ function createSymlinkOrCopy(source, target) {
   }
 
   // Delegate to lib/symlink-utils after security validation
-  return libCreateSymlinkOrCopy(fullSource, fullTarget);
+  return libCreateSymlinkOrCopy(fullSource, fullTarget, options);
 }
 
 function stripFrontmatter(content) {
