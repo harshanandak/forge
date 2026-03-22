@@ -54,8 +54,11 @@ bd sync
 ```
 
 ### Step 4: Push Branch
+
+Use `--force-with-lease` because `/validate` may have rebased the branch, rewriting history. This is safe: it only forces the push if the remote branch hasn't been updated by someone else since the last fetch.
+
 ```bash
-git push -u origin <branch-name>
+git push --force-with-lease -u origin <branch-name>
 ```
 
 ### Step 5: Create PR

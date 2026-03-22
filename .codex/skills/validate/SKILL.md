@@ -49,8 +49,9 @@ Before running ANY validation checks:
    a. Run: git rebase origin/"$BASE" || REBASE_FAILED=1
    b. If rebase succeeds (REBASE_FAILED unset): print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
    c. If rebase fails (REBASE_FAILED=1 — conflicts or any other error):
+      - Capture conflicting files BEFORE aborting: git diff --name-only --diff-filter=U
       - Run: git rebase --abort
-      - Print conflicting files from the failed rebase output
+      - Print the captured conflicting file list
       - Print: "✗ Rebase conflict — resolve manually, then re-run /validate"
       - STOP. Do NOT proceed to any validation checks.
 
