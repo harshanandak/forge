@@ -2775,8 +2775,10 @@ async function handleHuskyMigration() {
   console.log('Husky detected — migrating to Lefthook...');
 
   // In interactive mode, ask the user before proceeding
-  let proceed = NON_INTERACTIVE;
-  if (!NON_INTERACTIVE) {
+  let proceed;
+  if (NON_INTERACTIVE) {
+    proceed = true;
+  } else {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
     proceed = await askYesNo(question, 'Migrate Husky hooks to Lefthook?', false);
@@ -2959,7 +2961,7 @@ function initializeBeads(installType) {
   };
 
   // Derive prefix from package.json name or directory name
-  let prefix = '';
+  let prefix;
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
     prefix = pkg.name || path.basename(projectRoot);
