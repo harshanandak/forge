@@ -413,6 +413,237 @@ test_valid_developer_formats() {
   teardown
 }
 
+# ── Test: file_index_update_from_tasks parses task file correctly ──────────
+
+SYNC_UTILS="$REPO_ROOT/scripts/sync-utils.sh"
+
+test_update_from_tasks_parses_task_file() {
+  echo "TEST: file_index_update_from_tasks parses File(s): lines from task file"
+  setup
+
+  # Create a mock task file with File(s): lines
+  local task_file="$TEST_TMP/task-file.md"
+  cat > "$task_file" <<'TASKEOF'
+### Task 1: Pluggable sync backend abstraction
+File(s): `scripts/sync-utils.sh`
+What to implement: Sync backend system
+
+### Task 2: Sync branch/remote detection utility
+File(s): `scripts/sync-utils.sh` (extend), `src/lib/status.ts`
+What to implement: Functions for branch and inline backends
+
+### Task 3: No files line
+What to implement: Something without a File(s): line
+TASKEOF
+
+  source "$SUT"
+  # Mock get_session_identity so we don't depend on git config
+  get_session_identity() { printf '%s' "testdev@testhost"; }
+
+  file_index_update_from_tasks "forge-task1" "$task_file"
+
+  local output
+  output="$(file_index_get "forge-task1")"
+
+  # Should have created an entry
+  local issue_id
+  issue_id="$(printf '%s' "$output" | jq -r '.issue_id')"
+  assert_eq "issue_id set correctly" "forge-task1" "$issue_id"
+
+  # Should have extracted 2 unique files from the task file
+  local files_count
+  files_count="$(printf '%s' "$output" | jq '.files | length')"
+  assert_eq "extracted 2 unique files" "2" "$files_count"
+
+  # Should contain both file paths (without annotations like "(extend)")
+  local has_sync_utils has_status
+  has_sync_utils="$(printf '%s' "$output" | jq '[.files[] | select(. == "scripts/sync-utils.sh")] | length')"
+  has_status="$(printf '%s' "$output" | jq '[.files[] | select(. == "src/lib/status.ts")] | length')"
+  assert_eq "contains scripts/sync-utils.sh" "1" "$has_sync_utils"
+  assert_eq "contains src/lib/status.ts" "1" "$has_status"
+
+  # Should have derived modules from directory paths
+  local has_scripts_mod has_src_mod
+  has_scripts_mod="$(printf '%s' "$output" | jq '[.modules[] | select(. == "scripts/")] | length')"
+  has_src_mod="$(printf '%s' "$output" | jq '[.modules[] | select(. == "src/lib/")] | length')"
+  assert_eq "module scripts/ derived" "1" "$has_scripts_mod"
+  assert_eq "module src/lib/ derived" "1" "$has_src_mod"
+
+  # Developer should be set from session identity
+  local developer
+  developer="$(printf '%s' "$output" | jq -r '.developer')"
+  assert_eq "developer from session identity" "testdev@testhost" "$developer"
+
+  teardown
+}
+
+# ── Test: file_index_update_from_tasks with no task file (fallback) ───────
+
+test_update_from_tasks_no_task_file() {
+  echo "TEST: file_index_update_from_tasks falls back with confidence:low when no task file"
+  setup
+
+  source "$SUT"
+  get_session_identity() { printf '%s' "testdev@testhost"; }
+
+  file_index_update_from_tasks "forge-nofile" "/nonexistent/path/task-file.md"
+
+  local output
+  output="$(file_index_get "forge-nofile")"
+
+  # Should still create an entry
+  local issue_id
+  issue_id="$(printf '%s' "$output" | jq -r '.issue_id')"
+  assert_eq "entry created for missing task file" "forge-nofile" "$issue_id"
+
+  # Should have confidence: low
+  local confidence
+  confidence="$(printf '%s' "$output" | jq -r '.confidence')"
+  assert_eq "confidence is low for missing task file" "low" "$confidence"
+
+  # Files should be empty array
+  local files_count
+  files_count="$(printf '%s' "$output" | jq '.files | length')"
+  assert_eq "files empty for missing task file" "0" "$files_count"
+
+  teardown
+}
+
+# ── Test: file_index_update_from_tasks with no File(s): lines (fallback) ──
+
+test_update_from_tasks_no_files_lines() {
+  echo "TEST: file_index_update_from_tasks falls back when task file has no File(s): lines"
+  setup
+
+  local task_file="$TEST_TMP/no-files-task.md"
+  cat > "$task_file" <<'TASKEOF'
+### Task 1: Something
+What to implement: Something without file references
+TASKEOF
+
+  source "$SUT"
+  get_session_identity() { printf '%s' "testdev@testhost"; }
+
+  file_index_update_from_tasks "forge-nolines" "$task_file"
+
+  local output
+  output="$(file_index_get "forge-nolines")"
+
+  # Should have confidence: low
+  local confidence
+  confidence="$(printf '%s' "$output" | jq -r '.confidence')"
+  assert_eq "confidence is low for no File(s): lines" "low" "$confidence"
+
+  teardown
+}
+
+# ── Test: file_index_update_from_tasks tombstones on close ────────────────
+
+test_update_from_tasks_tombstone_on_close() {
+  echo "TEST: file_index_update_from_tasks with closed status creates tombstone"
+  setup
+
+  local task_file="$TEST_TMP/task-close.md"
+  cat > "$task_file" <<'TASKEOF'
+### Task 1: Something
+File(s): `src/index.ts`
+TASKEOF
+
+  source "$SUT"
+  get_session_identity() { printf '%s' "testdev@testhost"; }
+
+  # First add an entry
+  file_index_update_from_tasks "forge-closing" "$task_file"
+
+  # Verify it exists
+  local before
+  before="$(file_index_get "forge-closing")"
+  local before_id
+  before_id="$(printf '%s' "$before" | jq -r '.issue_id')"
+  assert_eq "entry exists before close" "forge-closing" "$before_id"
+
+  # Now call with "closed" action
+  file_index_update_from_tasks "forge-closing" "$task_file" "closed"
+
+  # Should be tombstoned
+  local after
+  after="$(file_index_get "forge-closing")"
+  assert_eq "entry tombstoned after close" "null" "$after"
+
+  teardown
+}
+
+# ── Test: file_index_update_from_tasks strips annotations ─────────────────
+
+test_update_from_tasks_strips_annotations() {
+  echo "TEST: file_index_update_from_tasks strips annotations like (extend), (run script only)"
+  setup
+
+  local task_file="$TEST_TMP/task-annotated.md"
+  cat > "$task_file" <<'TASKEOF'
+### Task 7: Auto-sync at Forge command entry
+File(s): `scripts/sync-utils.sh` (extend), `.claude/commands/plan.md`, `.claude/commands/dev.md` (run script only), `.claude/commands/status.md`
+TASKEOF
+
+  source "$SUT"
+  get_session_identity() { printf '%s' "testdev@testhost"; }
+
+  file_index_update_from_tasks "forge-annot" "$task_file"
+
+  local output
+  output="$(file_index_get "forge-annot")"
+
+  # Should have 4 files, all without annotations
+  local files_count
+  files_count="$(printf '%s' "$output" | jq '.files | length')"
+  assert_eq "4 files extracted" "4" "$files_count"
+
+  # Verify no annotations leaked into paths
+  local has_paren
+  has_paren="$(printf '%s' "$output" | jq '[.files[] | select(contains("("))] | length')"
+  assert_eq "no parenthetical annotations in paths" "0" "$has_paren"
+
+  # Verify specific files present
+  local has_plan
+  has_plan="$(printf '%s' "$output" | jq '[.files[] | select(. == ".claude/commands/plan.md")] | length')"
+  assert_eq "plan.md extracted" "1" "$has_plan"
+
+  teardown
+}
+
+# ── Test: file_index_update_from_tasks rejects injection in file paths ────
+
+test_update_from_tasks_rejects_injection() {
+  echo "TEST: file_index_update_from_tasks sanitizes malicious file paths"
+  setup
+
+  local task_file="$TEST_TMP/task-injection.md"
+  cat > "$task_file" <<'TASKEOF'
+### Task 1: Injection attempt
+File(s): `src/legit.ts`, `$(rm -rf /)`
+TASKEOF
+
+  source "$SUT"
+  get_session_identity() { printf '%s' "testdev@testhost"; }
+
+  file_index_update_from_tasks "forge-inject" "$task_file"
+
+  local output
+  output="$(file_index_get "forge-inject")"
+
+  # The injection path should be stripped/excluded
+  local has_injection
+  has_injection="$(printf '%s' "$output" | jq '[.files[] | select(contains("rm"))] | length')"
+  assert_eq "injection path excluded" "0" "$has_injection"
+
+  # The legit file should be present
+  local has_legit
+  has_legit="$(printf '%s' "$output" | jq '[.files[] | select(. == "src/legit.ts")] | length')"
+  assert_eq "legit file kept" "1" "$has_legit"
+
+  teardown
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────
 
 echo "=== file-index.sh test suite ==="
@@ -431,6 +662,12 @@ test_sanitize_developer
 test_sanitize_command_substitution
 test_read_empty_file
 test_valid_developer_formats
+test_update_from_tasks_parses_task_file
+test_update_from_tasks_no_task_file
+test_update_from_tasks_no_files_lines
+test_update_from_tasks_tombstone_on_close
+test_update_from_tasks_strips_annotations
+test_update_from_tasks_rejects_injection
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
