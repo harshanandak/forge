@@ -321,7 +321,7 @@ file_index_update_from_tasks() {
     modules_json="$(printf '%s' "$sanitized_paths" | grep -v '^$' | while IFS= read -r p; do
       local d
       d="$(dirname "$p")"
-      if [[ "$d" != "." ]]; then printf '%s\n' "${d}/"; fi
+      if [[ "$d" == "." ]]; then printf '%s\n' "./"; else printf '%s\n' "${d}/"; fi
     done | jq -R . | jq -s -c 'unique')"
   else
     files_json="[]"

@@ -125,8 +125,11 @@ _read_config_yaml() {
   local config_file="$repo_dir/.beads/config.yaml"
   if [ -f "$config_file" ]; then
     local raw
+    # Escape regex metacharacters in key for safe use in grep/sed
+    local escaped_key
+    escaped_key="$(printf '%s' "$key" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')"
     # Match: key: "value" or key: value (strip quotes)
-    raw="$(grep -E "^${key}:" -- "$config_file" 2>/dev/null | head -1 | sed -e "s/^${key}:[[:space:]]*//" -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")" || true
+    raw="$(grep -E "^${escaped_key}:" -- "$config_file" 2>/dev/null | head -1 | sed -e "s/^${escaped_key}:[[:space:]]*//" -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")" || true
     if [ -n "$raw" ]; then
       sanitize_config_value "$raw"
       return 0
@@ -357,6 +360,10 @@ _auto_sync_update_file_index() {
     local task_file=""
     local design_meta
     design_meta="$(bd show "$issue_id" 2>/dev/null | grep -A1 'DESIGN' | tail -1 | sed 's/.*| //')" || true
+    # OWASP A04: reject paths that escape the repo root
+    case "$design_meta" in
+      *../*|..*) design_meta="" ;;
+    esac
     if [[ -n "$design_meta" ]] && [[ -f "$repo_dir/$design_meta" ]]; then
       task_file="$repo_dir/$design_meta"
     fi

@@ -269,8 +269,8 @@ main() {
     entry="$(file_index_get "$issue_id")"
 
     if [[ "$entry" == "null" ]]; then
-      echo "Error: issue '$issue_id' not found in file index" >&2
-      exit 1
+      echo "Info: issue '$issue_id' not yet in file index — no conflicts possible." >&2
+      exit 0
     fi
 
     local check_modules check_files
