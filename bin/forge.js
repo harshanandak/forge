@@ -58,6 +58,7 @@ const { detectEnvironment } = require('../lib/detect-agent');
 const { fileMatchesContent } = require('../lib/file-hash');
 const { SetupActionLog } = require('../lib/setup-action-log');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
+const { smartMergeAgentsMd } = require('../lib/smart-merge');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
 
@@ -730,48 +731,7 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 }
 
 // Detect existing project installation status
-// Smart merge for AGENTS.md - preserves USER sections, updates FORGE sections
-function smartMergeAgentsMd(existingContent, newContent) {
-  // Check if existing content has markers
-  const hasUserMarkers = existingContent.includes('<!-- USER:START') && existingContent.includes('<!-- USER:END');
-  const hasForgeMarkers = existingContent.includes('<!-- FORGE:START') && existingContent.includes('<!-- FORGE:END');
-
-  if (!hasUserMarkers || !hasForgeMarkers) {
-    // Old format without markers - return empty to signal merge not possible
-    return '';
-  }
-
-  // Extract USER section from existing content
-  const userStartMatch = existingContent.match(/<!-- USER:START.*?-->([\s\S]*?)<!-- USER:END -->/);
-  const userSection = userStartMatch ? userStartMatch[0] : '';
-
-  // Extract FORGE section from new content
-  const forgeStartMatch = newContent.match(/(<!-- FORGE:START.*?-->[\s\S]*?<!-- FORGE:END -->)/);
-  const forgeSection = forgeStartMatch ? forgeStartMatch[0] : '';
-
-  // Build merged content
-  const setupInstructions = newContent.includes('<!-- FORGE:SETUP-INSTRUCTIONS')
-    ? newContent.match(/(<!-- FORGE:SETUP-INSTRUCTIONS[\s\S]*?-->)/)?.[0] || ''
-    : '';
-
-  let merged = '# AGENTS.md\n\n';
-
-  // Add setup instructions if this is first-time setup
-  if (setupInstructions && !existingContent.includes('FORGE:SETUP-INSTRUCTIONS')) {
-    merged += setupInstructions + '\n\n';
-  }
-
-  // Add preserved USER section
-  merged += userSection + '\n\n';
-
-  // Add updated FORGE section
-  merged += forgeSection + '\n\n';
-
-  // Add footer
-  merged += `---\n\n## 💡 Improving This Workflow\n\nEvery time you give the same instruction twice, add it to this file:\n1. User-specific rules → Add to USER:START section above\n2. Forge workflow improvements → Suggest to forge maintainers\n\n**Keep this file updated as you learn about the project.**\n\n---\n\nSee \`AGENTS.md\` for complete workflow guide.\nSee \`docs/TOOLCHAIN.md\` for comprehensive tool reference.\n`;
-
-  return merged;
-}
+// Smart merge for AGENTS.md - extracted to lib/smart-merge.js for testability
 
 // Helper function for yes/no prompts with validation
 async function askYesNo(question, prompt, defaultNo = true) {
