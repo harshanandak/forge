@@ -58,6 +58,7 @@ const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packag
 const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
 const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
 const { setupPAT } = require(path.join(packageDir, 'lib', 'pat-setup'));
+const { detectDefaultBranch, detectBeadsVersion, templateWorkflows, scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
 
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');
@@ -3992,13 +3993,21 @@ async function handleSyncScaffold() {
   console.log('');
   console.log('Scaffolding Beads GitHub sync workflows (--sync)...');
   try {
-    const result = await scaffoldGithubBeadsSync(projectRoot, packageDir);
-    for (const f of result.created) {
+    // Scaffold sync files using the new lib module
+    const result = scaffoldBeadsSync(projectRoot, packageDir);
+    for (const f of (result.filesCreated || [])) {
       console.log(`  Created: ${f}`);
     }
-    for (const f of result.skipped) {
+    for (const f of (result.filesSkipped || [])) {
       console.log(`  Skipped: ${f} (already exists)`);
     }
+
+    // Detect default branch and Beads version, then template workflows
+    const branch = detectDefaultBranch(projectRoot);
+    const beadsVersion = detectBeadsVersion();
+    const workflowDir = path.join(projectRoot, '.github', 'workflows');
+    templateWorkflows(workflowDir, branch, beadsVersion);
+    console.log(`  Branch: ${branch}, Beads version: ${beadsVersion}`);
 
     // PAT setup: interactive when possible, reminder otherwise
     try {
