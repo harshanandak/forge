@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ship command rebases onto latest base branch before push** (PR #89, forge-ebls)
+  - `/validate` entry gate: rebases onto base branch (detected dynamically) before running checks
+  - `/ship` freshness check: lightweight behind-check before push, alerts if stale
+  - Fetch failures caught with `|| { exit 1; }` guards
+  - `bun run check` clarified as checks-only (no rebase)
+
+### Changed
+
+- **PR template restructured to narrative format** (PR #89, forge-ebls)
+  - Visible: Problem → Root Cause → Fix → Value → Beads
+  - Collapsible `<details>`: Test Coverage, Security Review, Design Doc, Decisions Log, Documentation Updated, Validation checklist
+  - Tips section updated to reinforce narrative-first approach
+
 ### Added
 
 - **Workflow Intelligence: smart status, phase tracking, naming clarity** (PR #72, forge-68oj)
