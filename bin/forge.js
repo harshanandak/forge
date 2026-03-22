@@ -2775,15 +2775,12 @@ async function handleHuskyMigration() {
   console.log('Husky detected — migrating to Lefthook...');
 
   // In interactive mode, ask the user before proceeding
-  let proceed;
-  if (NON_INTERACTIVE) {
-    proceed = true;
-  } else {
+  if (!NON_INTERACTIVE) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const question = (prompt) => new Promise(resolve => rl.question(prompt, resolve));
-    proceed = await askYesNo(question, 'Migrate Husky hooks to Lefthook?', false);
+    const userApproved = await askYesNo(question, 'Migrate Husky hooks to Lefthook?', false);
     rl.close();
-    if (!proceed) {
+    if (!userApproved) {
       console.log('  Skipped Husky migration (user declined)');
       console.log('');
       return;
