@@ -159,8 +159,6 @@ describe('migrateHusky', () => {
       fs.symlinkSync(realFile, symlinkPath);
     } catch (_err) {
       // Windows requires elevated privileges for symlinks — skip test
-      // eslint-disable-next-line no-console
-      console.log('  (skipped: symlink creation requires elevated privileges on Windows)');
       return;
     }
 
