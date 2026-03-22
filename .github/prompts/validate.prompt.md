@@ -5,9 +5,9 @@ tools: []
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
-> - `/validate` (this command): Workflow Stage 3 — runs type/lint/test/security checks
+> - `/validate` (this command): Workflow Stage 3 — rebases onto the base branch, then runs type/lint/test/security checks
 > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
-> - `bun run check` (scripts/validate.sh): Local quality gate — same checks as /validate, non-interactive
+> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
 
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
@@ -21,10 +21,50 @@ This command validates all code before creating a pull request.
 /validate
 ```
 
-Or use the unified validation script:
+Or use the validation script (checks only — no rebase):
 
 ```bash
-bun run check    # Runs all validation steps automatically (check is the npm script name; /validate is the workflow command)
+bun run check    # Runs lint/test/security checks only. Does NOT rebase onto the base branch.
+                 # Use /validate for the full workflow (rebase + checks).
+```
+
+```
+<HARD-GATE: /validate entry — rebase onto latest base branch>
+Before running ANY validation checks:
+
+0. Resolve the base branch dynamically (do NOT hardcode master or main):
+   BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+   if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
+
+   This handles repos using main, master, or any other default branch.
+   Falls back to "master" when HEAD is unresolved (detached remote, empty repo).
+
+1. Fetch latest base branch:
+   git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
+
+   The `|| { ...; exit 1; }` guard ensures fetch failures are never silently skipped.
+
+2. Check if branch is behind:
+   BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
+
+3. If BEHIND > 0:
+   a. Run: git rebase origin/"$BASE" || REBASE_FAILED=1
+   b. If rebase succeeds (REBASE_FAILED unset): print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
+   c. If rebase fails (REBASE_FAILED=1 — conflicts or any other error):
+      - Capture conflicting files BEFORE aborting: git diff --name-only --diff-filter=U
+      - Run: git rebase --abort
+      - Print the captured conflicting file list
+      - Print: "✗ Rebase conflict — resolve manually, then re-run /validate"
+      - STOP. Do NOT proceed to any validation checks.
+
+4. If BEHIND = 0:
+   Print "✓ Branch is up-to-date with $BASE" and continue.
+
+Rationale: Without this step, validation checks run against stale code that doesn't
+include recent base branch changes. Integration issues are only caught after the PR is
+created, wasting CI cycles and review time. Rebasing here ensures /validate results
+reflect the true state of what will be merged.
+</HARD-GATE>
 ```
 
 ## What This Command Does
