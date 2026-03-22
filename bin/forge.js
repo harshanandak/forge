@@ -539,7 +539,7 @@ function copyFile(src, dest) {
         const sourceContent = fs.readFileSync(src, 'utf8');
         if (fileMatchesContent(destPath, sourceContent)) {
           actionLog.add(dest, 'skipped', 'identical content');
-          return 'skipped';
+          return true;
         }
       }
 
@@ -1821,29 +1821,7 @@ function ensureDirWithNote(dir, purpose) {
 function setupCoreDocs() {
   // docs/planning/ and docs/research/ are created lazily on first use
   // by /plan Phase 1 and Phase 2 respectively, via ensureDirWithNote().
-
-  // Copy research TEMPLATE.md
-  const templateSrc = path.join(packageDir, 'docs/research/TEMPLATE.md');
-  if (copyFile(templateSrc, 'docs/research/TEMPLATE.md')) {
-    console.log('  Created: docs/research/TEMPLATE.md');
-  }
-
-  // Create PROGRESS.md if not exists
-  const progressPath = path.join(projectRoot, 'docs/planning/PROGRESS.md');
-  if (!fs.existsSync(progressPath)) {
-    writeFile('docs/planning/PROGRESS.md', `# Project Progress
-
-## Current Focus
-<!-- What you're working on -->
-
-## Completed
-<!-- Completed features -->
-
-## Upcoming
-<!-- Next priorities -->
-`);
-    console.log('  Created: docs/planning/PROGRESS.md');
-  }
+  // TEMPLATE.md and PROGRESS.md are also deferred to first use.
 }
 
 // Minimal installation (postinstall)
@@ -2361,8 +2339,6 @@ function displaySetupSummary(selectedAgents) {
   console.log('');
   console.log('What\'s installed:');
   console.log('  - AGENTS.md (universal instructions)');
-  console.log('  - docs/research/TEMPLATE.md (research template)');
-  console.log('  - docs/planning/PROGRESS.md (progress tracking)');
 
   const workflowCount = getWorkflowCommands().length;
   selectedAgents.forEach(key => {
