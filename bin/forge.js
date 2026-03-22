@@ -1744,18 +1744,20 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       }
 
       // PAT setup guidance for Beads sync (non-fatal)
-      // Use interactive mode when available so the user can enter their PAT
-      try {
-        const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
-        if (patResult.success) {
-          console.log('  ✓ Beads sync PAT configured');
-        } else if (patResult.reminder) {
-          console.log(`  ℹ ${patResult.reminder}`);
-        } else if (patResult.instructions) {
-          console.log(`  ℹ ${patResult.instructions.split('\n')[0]}`);
+      // Skip if --sync flag is set — handleSyncScaffold will handle PAT setup
+      if (!SYNC_ENABLED) {
+        try {
+          const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
+          if (patResult.success) {
+            console.log('  ✓ Beads sync PAT configured');
+          } else if (patResult.reminder) {
+            console.log(`  ℹ ${patResult.reminder}`);
+          } else if (patResult.instructions) {
+            console.log(`  ℹ ${patResult.instructions.split('\n')[0]}`);
+          }
+        } catch (_patErr) {
+          // PAT setup is best-effort — don't block sync scaffold
         }
-      } catch (_patErr) {
-        // PAT setup is best-effort — don't block sync scaffold
       }
     } catch (err) {
       console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);

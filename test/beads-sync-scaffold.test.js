@@ -170,25 +170,25 @@ describe('scaffoldBeadsSync', () => {
     }
   });
 
-  test('existing workflow files are overwritten (not skipped)', () => {
+  test('existing workflow files are skipped (idempotent re-runs)', () => {
     const { projectRoot, cleanup } = createTmpProject();
     try {
-      // Pre-create a stale workflow
+      // Pre-create a customised workflow
       const wfDir = path.join(projectRoot, '.github', 'workflows');
       fs.mkdirSync(wfDir, { recursive: true });
-      fs.writeFileSync(path.join(wfDir, 'github-to-beads.yml'), '# stale version\n');
+      fs.writeFileSync(path.join(wfDir, 'github-to-beads.yml'), '# user customised\n');
 
       const result = scaffoldBeadsSync(projectRoot, packageDir);
 
-      // Should overwrite with fresh content
+      // Should preserve user content (not overwrite)
       const content = fs.readFileSync(
         path.join(projectRoot, '.github', 'workflows', 'github-to-beads.yml'), 'utf8'
       );
-      expect(content).toContain('github-to-beads workflow');
-      expect(content).not.toContain('stale version');
+      expect(content).toContain('user customised');
 
-      // Should be in filesCreated (overwritten counts as created)
-      expect(result.filesCreated).toContain('.github/workflows/github-to-beads.yml');
+      // Should be in filesSkipped (not filesCreated)
+      expect(result.filesSkipped).toContain('.github/workflows/github-to-beads.yml');
+      expect(result.filesCreated).not.toContain('.github/workflows/github-to-beads.yml');
     } finally {
       cleanup();
     }
