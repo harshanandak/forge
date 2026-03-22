@@ -178,7 +178,7 @@ forge-preflight ship      # Validate before /ship stage
 ```
 
 ### 5. Smart Tool Recommendations
-Curated plugin catalog across 7 workflow stages — research, dev, validate, ship, review, and more:
+Curated plugin catalog across 7 workflow stages — plan, dev, validate, ship, review, and more:
 - **Auto-detection**: Scans your project for frameworks, databases, auth, payments, and more
 - **Budget modes**: free, open-source, startup, professional, custom
 - **Portability-first**: MCPs included only when they add clear value over CLI alternatives
