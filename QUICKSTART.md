@@ -69,7 +69,7 @@ bunx forge setup --agents claude,cursor,cline
 
 Let's add a health check endpoint to demonstrate the full workflow.
 
-### Stage 1: Check Status
+### Utility: Check Status
 
 ```bash
 $ bunx forge /status
@@ -92,7 +92,7 @@ Ready to start!
 
 ---
 
-### Stage 2: Plan
+### Stage 1: Plan
 
 ```bash
 $ bunx forge /plan health-check-endpoint
@@ -105,9 +105,9 @@ $ bunx forge /plan health-check-endpoint
 
 **Output:**
 ```
-✓ Design doc: docs/plans/health-check-endpoint-design.md
 ✓ Created branch: feat/health-check-endpoint
-✓ Task list: docs/plans/health-check-endpoint-tasks.md (4 tasks)
+✓ Created issue: forge-abc1 (in_progress)
+✓ Design Q&A complete, research done, task list ready
 
 Next: /dev to start TDD implementation
 ```
@@ -116,7 +116,7 @@ Next: /dev to start TDD implementation
 
 ---
 
-### Stage 3: Development (TDD)
+### Stage 2: Development (TDD)
 
 ```bash
 $ bunx forge /dev
@@ -165,7 +165,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 
 ---
 
-### Stage 4: Validate
+### Stage 3: Validate
 
 ```bash
 $ bunx forge /validate
@@ -185,7 +185,7 @@ Running security scan... ✓ (no vulnerabilities)
 
 ---
 
-### Stage 5: Ship
+### Stage 4: Ship
 
 ```bash
 $ bunx forge /ship
@@ -203,7 +203,7 @@ $ bunx forge /ship
 - Minimal information disclosure
 
 ## Research
-See: docs/plans/health-check-endpoint-design.md
+See: design doc from /plan phase
 
 ## Test Coverage
 - 1 unit test (health endpoint returns 200 OK)
@@ -226,7 +226,7 @@ Next: /review to address feedback
 
 ---
 
-### Stage 6: Review (if needed)
+### Stage 5: Review (if needed)
 
 ```bash
 $ bunx forge /review 42
@@ -242,7 +242,7 @@ Fix issues, commit, push - PR updates automatically.
 
 ---
 
-### Stage 7: Premerge
+### Stage 6: Premerge
 
 ```bash
 $ bunx forge /premerge 42
@@ -269,7 +269,7 @@ Back on main branch. Ready for next feature!
 
 ---
 
-### Stage 8: Verify
+### Stage 7: Verify
 
 ```bash
 $ bunx forge /verify
@@ -304,12 +304,11 @@ In **5 minutes**, you:
 
 **Simple feature** (like you just did):
 ```bash
-/research → /plan → /dev → /validate → /ship
+/plan → /dev → /validate → /ship
 ```
 
 **Bug fix with security**:
 ```bash
-/research sql-injection-fix
 /plan sql-injection-fix
 /dev  # Fix + tests
 /validate  # Security scan critical
@@ -318,8 +317,7 @@ In **5 minutes**, you:
 
 **Architecture change** (uses design doc):
 ```bash
-/research user-authentication
-/plan user-authentication  # Creates design doc + branch
+/plan user-authentication  # Design Q&A + research + branch
 /dev
 /validate
 /ship
@@ -364,8 +362,7 @@ bd ready  # Find work to do
 
 ```bash
 /status       # Check current state
-/research X   # Research feature X
-/plan X       # Create plan for X
+/plan X       # Design Q&A + research + branch + task list
 /dev          # TDD development
 /validate        # Validate everything
 /ship         # Create PR
@@ -401,4 +398,4 @@ Get approval on design before implementing.
 /status
 ```
 
-Then start with `/research <your-feature-name>` 🚀
+Then start with `/plan <your-feature-name>`
