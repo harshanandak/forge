@@ -61,6 +61,7 @@ const { ActionCollector } = require('../lib/setup-utils');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
+const { detectHusky, migrateHusky } = require('../lib/husky-migration');
 const { isNonInteractive } = require('../lib/setup-utils');
 // workflowProfiles is loaded but not currently used in the setup flow
 // const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
@@ -715,6 +716,16 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 
   fs.writeFileSync(envPath, finalContent);
 
+  // OWASP A02: Set restrictive permissions on .env.local (contains API keys)
+  // On Windows, chmod is a no-op so we skip it
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(envPath, 0o600);
+    } catch (_err) {
+      // chmod failure is non-fatal — file was still written successfully
+    }
+  }
+
   // Add .env.local to .gitignore if not present
   const gitignorePath = path.join(projectRoot, '.gitignore');
   try {
@@ -739,6 +750,12 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 
 // Helper function for yes/no prompts with validation
 async function askYesNo(question, prompt, defaultNo = true) {
+  // Non-interactive mode: return default without prompting
+  if (NON_INTERACTIVE) {
+    const defaultValue = !defaultNo;
+    console.log(`  Non-interactive mode: ${prompt} -> ${defaultValue ? 'yes' : 'no'} (default)`);
+    return defaultValue;
+  }
   const defaultText = defaultNo ? '[n]' : '[y]';
   while (true) {
     const answer = await question(`${prompt} (y/n) ${defaultText}: `);
@@ -2497,6 +2514,7 @@ function parseFlags() {
     interview: false, // Force context interview
     budget: null,     // Budget mode for recommend command
     yes: false,       // Non-interactive mode (skip prompts, use defaults)
+    nonInteractive: false, // --non-interactive flag (or CI auto-detection)
     force: false,     // Force overwrite even if content is identical
     verbose: false,   // Show file-by-file detail in setup summary
     dryRun: false,    // Preview planned actions without writing files
@@ -2539,6 +2557,9 @@ function parseFlags() {
       i = result.nextIndex;
     } else if (arg === '--yes' || arg === '-y') {
       flags.yes = true;
+      i++;
+    } else if (arg === '--non-interactive') {
+      flags.nonInteractive = true;
       i++;
     } else if (arg === '--force') {
       flags.force = true;
@@ -2740,6 +2761,37 @@ function showHelp() {
   console.log('Also works with bun:');
   console.log('  bunx forge setup --quick');
   console.log('');
+}
+
+// Detect Husky and offer migration to Lefthook
+// Called before installGitHooks() in setup flows
+function handleHuskyMigration() {
+  const detection = detectHusky(projectRoot);
+  if (!detection.found) return;
+
+  console.log('Husky detected — migrating to Lefthook...');
+  const result = migrateHusky(projectRoot, { nonInteractive: NON_INTERACTIVE });
+
+  if (result.success) {
+    console.log(`  Migrated ${result.mappedCount} hook(s) to lefthook.yml`);
+    if (result.unmappedCount > 0) {
+      console.warn(`  ${result.unmappedCount} hook(s) could not be auto-mapped:`);
+      for (const w of result.warnings) {
+        console.warn(`    - ${w}`);
+      }
+    }
+    if (result.hooksPathUnset) {
+      console.log('  Unset core.hooksPath git config');
+    }
+    console.log('  Removed .husky/ directory');
+    console.log('');
+  } else {
+    // Non-interactive returned false or validation failed
+    for (const w of result.warnings) {
+      console.warn(`  ${w}`);
+    }
+    console.log('');
+  }
 }
 
 // Install git hooks via lefthook
@@ -3355,6 +3407,9 @@ async function quickSetup(selectedAgents, skipExternal) {
   const claudeCommands = loadAndSetupClaudeCommands(selectedAgents);
   setupSelectedAgents(selectedAgents, claudeCommands);
 
+  // Detect Husky and migrate before installing Lefthook hooks
+  handleHuskyMigration();
+
   // Install git hooks for TDD enforcement
   console.log('');
   installGitHooks();
@@ -3707,6 +3762,99 @@ function determineSelectedAgents(flags) {
 }
 
 // Shared setup executor — used by handleSetupCommand
+
+// Dry-run setup — enumerate planned actions without writing files
+function dryRunSetup(agents) {
+  const collector = new ActionCollector();
+
+  // AGENTS.md
+  const agentsDest = path.join(projectRoot, 'AGENTS.md');
+  if (fs.existsSync(agentsDest)) {
+    collector.add('skip', 'AGENTS.md', 'Already exists');
+  } else {
+    collector.add('create', 'AGENTS.md', 'Copy workflow documentation');
+  }
+
+  // Per-agent planned actions
+  for (const agentKey of agents) {
+    const agent = AGENTS[agentKey];
+    if (!agent) continue;
+
+    // Agent directories
+    for (const dir of agent.dirs) {
+      collector.add('create', dir + '/', 'Create agent directory');
+    }
+
+    // Claude-specific files
+    if (agentKey === 'claude') {
+      const cmds = getWorkflowCommands();
+      for (const cmd of cmds) {
+        collector.add('create', `.claude/commands/${cmd}.md`, 'Workflow command');
+      }
+      collector.add('create', '.claude/rules/workflow.md', 'Workflow rules');
+      collector.add('create', '.claude/scripts/load-env.sh', 'Environment loader script');
+      collector.add('create', '.claude/skills/forge-workflow/SKILL.md', 'Forge workflow skill');
+      collector.add('create', '.mcp.json', 'MCP server configuration');
+
+      const claudeMdDest = path.join(projectRoot, 'CLAUDE.md');
+      if (fs.existsSync(claudeMdDest)) {
+        collector.add('skip', 'CLAUDE.md', 'Already exists');
+      } else {
+        collector.add('create', 'CLAUDE.md', 'Claude root config (links to AGENTS.md)');
+      }
+    }
+
+    // Cursor-specific files
+    if (agent.customSetup === 'cursor') {
+      collector.add('create', '.cursor/rules/forge-workflow.mdc', 'Cursor workflow rule');
+    }
+
+    // Agent commands (converted from Claude format)
+    if (agent.needsConversion || agent.copyCommands || agent.promptFormat) {
+      const cmds = getWorkflowCommands();
+      const targetDir = agent.dirs[0];
+      for (const cmd of cmds) {
+        const ext = agent.promptFormat ? '.prompt.md' : '.md';
+        collector.add('create', `${targetDir}/${cmd}${ext}`, 'Converted workflow command');
+      }
+    }
+
+    // Agent rules (copied from Claude)
+    if (agent.needsConversion) {
+      const rulesDir = agent.dirs.find(d => d.includes('/rules'));
+      if (rulesDir) {
+        collector.add('create', `${rulesDir}/workflow.md`, 'Workflow rules');
+      }
+    }
+
+    // Agent skill
+    if (agent.hasSkill) {
+      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
+      if (skillDir) {
+        collector.add('create', `${skillDir}/SKILL.md`, 'Forge workflow skill');
+      }
+    }
+
+    // Agent link file (symlink or copy of AGENTS.md)
+    if (agent.linkFile) {
+      collector.add('create', agent.linkFile, 'Link to AGENTS.md');
+    }
+  }
+
+  // Git hooks
+  collector.add('create', 'lefthook.yml', 'Git hook configuration');
+  collector.add('create', '.forge/hooks/check-tdd.js', 'TDD enforcement hook');
+
+  // Print dry-run summary
+  console.log('');
+  console.log('Dry-run: the following actions would be performed:');
+  console.log('');
+  collector.print();
+  console.log('');
+  console.log(`Total: ${collector.list().length} planned actions`);
+  console.log('No files were modified.');
+}
+
 async function executeSetup(config) {
   const { agents, skipExternal } = config;
 
@@ -3740,6 +3888,9 @@ async function executeSetup(config) {
   // Setup agents with progress output (setupSelectedAgents skips claude internally
   // since loadAndSetupClaudeCommands already handled it above)
   setupSelectedAgents(agents, claudeCommands);
+
+  // Detect Husky and migrate before installing Lefthook hooks
+  handleHuskyMigration();
 
   // Install git hooks for TDD enforcement
   console.log('');
@@ -3796,7 +3947,12 @@ async function main() {
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
   VERBOSE_MODE = flags.verbose;
+  NON_INTERACTIVE = flags.nonInteractive || flags.yes || isNonInteractive();
   actionLog = new SetupActionLog();
+
+  if (NON_INTERACTIVE) {
+    console.log('Non-interactive mode: using default agent selection (all)');
+  }
 
   // Show help
   if (flags.help) {
@@ -3842,8 +3998,18 @@ async function main() {
       flags.skipExternal = true;
     }
 
-    // Quick mode
+    // Dry-run mode: preview planned actions without writing files
+    if (flags.dryRun) {
+      if (selectedAgents.length === 0) {
+        selectedAgents = ['claude'];
+      }
+      dryRunSetup(selectedAgents);
+      return;
+    }
+
+    // Quick mode: --quick implies skipExternal (no external service prompts)
     if (flags.quick) {
+      flags.skipExternal = true;
       // If no explicit agents specified, use all (--yes default doesn't count)
       if (selectedAgents.length === 0 || (flags.yes && !flags.agents)) {
         selectedAgents = Object.keys(AGENTS);
