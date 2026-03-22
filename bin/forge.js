@@ -53,6 +53,12 @@ const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
 const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
 
+// Load lib modules for symlink, beads, and PAT setup
+const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
+const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
+const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
+const { setupPAT } = require(path.join(packageDir, 'lib', 'pat-setup'));
+
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');
 const { fileMatchesContent } = require('../lib/file-hash');
@@ -582,33 +588,8 @@ function createSymlinkOrCopy(source, target) {
     return '';
   }
 
-  try {
-    if (fs.existsSync(fullTarget)) {
-      const stat = fs.lstatSync(fullTarget);
-      if (stat.isDirectory()) {
-        // Target is an actual directory — cannot replace with a file/symlink
-        console.warn(`  ⚠ Skipped ${target} (a directory exists at this path). Remove it manually and re-run setup to create the symlink.`);
-        return '';
-      }
-      fs.unlinkSync(fullTarget);
-    }
-    const targetDir = path.dirname(fullTarget);
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-    try {
-      const relPath = path.relative(targetDir, fullSource);
-      fs.symlinkSync(relPath, fullTarget);
-      return 'linked';
-    } catch (_error) {
-      // Symlink may fail on Windows without admin — silent fallback to copy
-      fs.copyFileSync(fullSource, fullTarget);
-      return 'copied';
-    }
-  } catch (err) {
-    console.error(`  ✗ Failed to link/copy ${source} -> ${target}: ${err.message}`);
-    return '';
-  }
+  // Delegate to lib/symlink-utils after security validation
+  return libCreateSymlinkOrCopy(fullSource, fullTarget);
 }
 
 function stripFrontmatter(content) {
@@ -1758,6 +1739,20 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
       }
       for (const f of result.skipped) {
         console.log(`  Skipped: ${f} (already exists)`);
+      }
+
+      // PAT setup guidance for Beads sync (non-fatal)
+      try {
+        const patResult = setupPAT(projectRoot, { interactive: false });
+        if (patResult.success) {
+          console.log('  ✓ Beads sync PAT configured');
+        } else if (patResult.reminder) {
+          console.log(`  ℹ ${patResult.reminder}`);
+        } else if (patResult.instructions) {
+          console.log(`  ℹ ${patResult.instructions.split('\n')[0]}`);
+        }
+      } catch (_patErr) {
+        // PAT setup is best-effort — don't block sync scaffold
       }
     } catch (err) {
       console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
@@ -2922,9 +2917,9 @@ function checkForBeads() {
     return null;
   }
 }
-// Check if Beads is initialized in project
+// Check if Beads is initialized in project — delegates to lib/beads-setup
 function isBeadsInitialized() {
-  return fs.existsSync(path.join(projectRoot, '.beads'));
+  return beadsSetupLib.isBeadsInitialized(projectRoot);
 }
 
 // Initialize Beads in the project
@@ -2941,6 +2936,19 @@ function initializeBeads(installType) {
       secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: projectRoot });
     }
     console.log('  ✓ Beads initialized');
+
+    // Run post-init health check (non-fatal)
+    try {
+      const health = beadsHealthCheck(projectRoot);
+      if (health.healthy) {
+        console.log('  ✓ Beads health check passed');
+      } else {
+        console.log(`  ⚠ Beads health check failed at ${health.failedStep}: ${health.error}`);
+      }
+    } catch (_healthErr) {
+      // Health check is best-effort — don't block setup
+    }
+
     return true;
   } catch (err) {
     console.log('  ⚠ Failed to initialize Beads:', err.message);
