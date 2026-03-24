@@ -308,7 +308,7 @@ Each PR follows the Forge workflow:
 
 ### Plan Files
 
-- **Master Plan**: `.claude/plans/*.md` (global, tracked by Claude Code)
+- **Master Plan**: `docs/plans/*.md` (global, tracked by Claude Code)
 - **Roadmap**: `docs/ROADMAP.md` (repository, git-tracked)
 - **Beads Tracking**: `.beads/issues.jsonl` (git-tracked)
 
@@ -347,7 +347,7 @@ Each PR is self-contained and can be rolled back independently:
 
 ## Resources
 
-- **Master Plan**: `.claude/plans/*.md`
+- **Master Plan**: `docs/plans/*.md`
 - **Beads Issues**: `bd list` or `bd show <issue-id>`
 - **Workflow Guide**: [AGENTS.md](../AGENTS.md)
 - **Architecture Docs**: Coming in PR0 - [ARCHITECTURE.md](./ARCHITECTURE.md)
