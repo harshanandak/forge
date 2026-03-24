@@ -7,10 +7,11 @@
 
 ## Purpose
 
-Fix three P1 bugs that break core workflow functionality:
+Fix three P1 bugs that break core workflow functionality, plus a workflow improvement:
 1. Plan file path mismatch prevents `/validate` from finding plans created by `/plan`
 2. ENHANCED_ONBOARDING.md describes a non-existent 9-stage workflow with invalid `--type` values
 3. smart-status.sh crashes because beads 0.62.0 changed JSON field types
+4. `/plan` Phase 1 asks ambiguity policy every time — should be hardcoded to rubric scoring
 
 ## Success Criteria
 
@@ -19,7 +20,9 @@ Fix three P1 bugs that break core workflow functionality:
 3. ENHANCED_ONBOARDING.md accurately describes the 7-stage workflow with valid `--type` values (critical|standard|simple|hotfix|docs|refactor)
 4. `smart-status.sh` handles both numeric priorities (0-4) and string priorities ("P0"-"P4")
 5. `smart-status.sh` handles null `type` fields gracefully
-6. All existing tests pass after changes
+6. `/plan` Phase 1 no longer asks the ambiguity policy question — rubric scoring is hardcoded
+7. All agent command files synced via `scripts/sync-commands.js`
+8. All existing tests pass after changes
 
 ## Out of Scope
 

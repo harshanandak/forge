@@ -10,9 +10,10 @@ Wave 1 (parallel — no dependencies between tasks):
   Task 1: Fix plan file path contract (forge-ddk3)
   Task 2: Rewrite ENHANCED_ONBOARDING.md (forge-3tnu)
   Task 3: Fix smart-status.sh jq error (new)
+  Task 4: Hardcode rubric scoring as default ambiguity policy in /plan commands
 
 Wave 2 (after Wave 1):
-  Task 4: Validate all changes together
+  Task 5: Sync commands + validate all changes
 ```
 
 ---
@@ -91,10 +92,37 @@ Wave 2 (after Wave 1):
 
 ---
 
-## Task 4: Validate all changes
+## Task 4: Hardcode rubric scoring as default ambiguity policy
+
+**File(s)**:
+- `.claude/commands/plan.md` (source of truth — synced to all agents)
+
+**What to implement**:
+- Remove question 6 ("Ambiguity policy") from Phase 1 Step 2 Q&A list — stop asking the user
+- Replace the interactive question with a hardcoded project-wide default in the design doc template:
+  > **Ambiguity policy**: Use 7-dimension rubric scoring. >= 80% confidence (of max score): proceed and document the decision. < 80%: stop and ask the user.
+- Update the Phase 1 example output to show the hardcoded policy
+- Keep the "Ambiguity policy" section in the design doc template — it's still documented, just auto-filled
+- Run `node scripts/sync-commands.js` to propagate to all 7 agent directories
+
+**TDD steps**:
+1. Edit `.claude/commands/plan.md`:
+   - Remove question 6 from Phase 1 Step 2
+   - Update design doc template to show hardcoded rubric scoring policy
+   - Update example output
+2. Run `node scripts/sync-commands.js` to sync to all agents
+3. Verify with `node scripts/sync-commands.js --check` (should show no drift)
+4. Commit: `feat: hardcode rubric scoring as default ambiguity policy in /plan`
+
+**Expected output**: `/plan` no longer asks about ambiguity policy; design docs auto-include rubric scoring.
+
+---
+
+## Task 5: Sync commands + validate all changes
 
 **What to do**:
-1. Run full test suite: `bun test`
-2. Run `smart-status.sh` end-to-end
-3. Verify no remaining `.claude/plans` references in source (excluding .beads/, .forge/pr-body.md, CHANGELOG.md)
-4. Verify no "9-stage" or invalid --type in ENHANCED_ONBOARDING.md
+1. Run `node scripts/sync-commands.js` (if not already done in Task 4)
+2. Run full test suite: `bun test`
+3. Run `smart-status.sh` end-to-end
+4. Verify no remaining `.claude/plans` references in source (excluding .beads/, .forge/pr-body.md, CHANGELOG.md)
+5. Verify no "9-stage" or invalid --type in ENHANCED_ONBOARDING.md
