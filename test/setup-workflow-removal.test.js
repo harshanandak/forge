@@ -55,6 +55,8 @@ describe('docs/WORKFLOW.md removal', () => {
       if (line.startsWith('./test/')) return false;
       // Allow .beads/ internal data
       if (line.startsWith('./.beads/')) return false;
+      // Allow worktrees (isolated copies of repo)
+      if (line.startsWith('./.worktrees/')) return false;
       return true;
     });
 

@@ -160,7 +160,7 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
     # Priority weight: P0=5, P1=4, P2=3, P3=2, P4=1, default=1
     # Normalize priority to number (beads 0.62+ sends numbers, older sends strings)
     ((.priority // 2) | if type == "string" then
-      (if . == "P0" then 0 elif . == "P1" then 1 elif . == "P2" then 2 elif . == "P3" then 3 elif . == "P4" then 4 else 2 end)
+      (if . == "P0" then 0 elif . == "P1" then 1 elif . == "P2" then 2 elif . == "P3" then 3 elif . == "P4" then 4 else 5 end)
     else . end) as $pri_num |
     (if $pri_num == 0 then 5
      elif $pri_num == 1 then 4
