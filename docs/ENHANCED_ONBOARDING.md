@@ -1,10 +1,10 @@
 # Enhanced Onboarding Guide
 
-Version 1.6.0 introduces intelligent onboarding that adapts to your project and preserves existing content.
+Intelligent onboarding that adapts to your project and preserves existing content.
 
 ---
 
-## What's New in v1.6.0
+## Key Features
 
 ### Key Features
 
@@ -303,9 +303,9 @@ bunx forge setup --merge=smart --type=critical --interview
 --skip-external         Skip external services
 --agents <list>         Specify agents (--agents claude cursor)
 --all                   Install for all agents
---merge <mode>          Merge strategy (v1.6.0)
---type <type>           Workflow profile (v1.6.0)
---interview             Context interview (v1.6.0)
+--merge <mode>          Merge strategy
+--type <type>           Workflow profile
+--interview             Context interview
 --help, -h              Show help
 ```
 
@@ -392,19 +392,9 @@ bunx forge setup --type=docs
 
 ## Migration Guide
 
-### Upgrading from v1.5.0 to v1.6.0
+### Upgrading
 
-**No breaking changes!** Enhanced onboarding is backwards compatible.
-
-**What's new:**
-1. Enhanced file merging options
-2. Auto-detection and context storage
-3. Workflow profiles with auto-escalation
-
-**What stays the same:**
-- Existing marker-based merge (USER:START/END) still works
-- All CLI flags from v1.5.0 remain functional
-- AGENTS.md format unchanged
+Enhanced onboarding is backwards compatible.
 
 **Recommended steps:**
 ```bash
@@ -619,6 +609,4 @@ Found an issue or have a suggestion?
 
 ---
 
-**Version**: 1.6.0
-**Last Updated**: 2026-02-06
-**Stability**: Stable
+**Last Updated**: 2026-03-24
