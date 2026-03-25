@@ -34,10 +34,18 @@ For full context on any issue: `bd show <id>`
 Check if any in-progress issues were already merged but not closed (can happen if `/verify` was skipped or backup was restored from stale snapshot):
 
 ```bash
+# Detect default branch dynamically
+DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+if [ -z "$DEFAULT_BRANCH" ]; then
+  if git rev-parse --verify master >/dev/null 2>&1; then DEFAULT_BRANCH="master"
+  elif git rev-parse --verify main >/dev/null 2>&1; then DEFAULT_BRANCH="main"
+  else DEFAULT_BRANCH="master"; fi
+fi
+
 # For each in_progress issue, check if its PR was already merged
 bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
   # Search git log for the issue ID in commit messages
-  if git log --oneline --first-parent master --grep="$id" | grep -q .; then
+  if git log --oneline --first-parent "$DEFAULT_BRANCH" --fixed-strings --grep="$id" | grep -q .; then
     echo "STALE: $id — found in git history, likely already merged"
   fi
 done

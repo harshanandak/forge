@@ -159,7 +159,16 @@ PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
 
 # Extract beads IDs from PR body (matches "Closes beads-xxx", "closes forge-xxx", etc.)
 # Patterns: "Closes <prefix>-<id>", "Fixes <prefix>-<id>", "Resolves <prefix>-<id>"
-BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]+$')
+BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]{3,6}$')
+
+# Validate each ID exists in beads
+VALID_IDS=""
+for id in $BEADS_IDS; do
+  if bd show "$id" >/dev/null 2>&1; then
+    VALID_IDS="$VALID_IDS $id"
+  fi
+done
+BEADS_IDS="$VALID_IDS"
 
 # Also check branch name for beads ID — extract segment after last /
 # then validate with bd show to avoid false matches like "pr-templa"
@@ -178,8 +187,10 @@ for id in $BEADS_IDS; do
   bd close "$id" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $id"
 done
 
-# If no issues found in body, try branch name match
+# If no issues found in body, try branch name match (skip if already closed above)
 if [ -z "$BEADS_IDS" ] && [ -n "$BRANCH_ID" ]; then
+  bd close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+elif [ -n "$BRANCH_ID" ] && ! echo "$BEADS_IDS" | grep -qw "$BRANCH_ID"; then
   bd close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
 fi
 ```
@@ -187,7 +198,7 @@ fi
 **If no beads issues detected at all**, prompt the user:
 ```
 ⚠ No beads issue ID found in PR body or branch name.
-  If this PR closes a beads issue, run: bd close <id> --reason="Merged (PR #<number>)"
+  If this PR closes a beads issue, run: bd close <id> --reason="Merged and verified on master (PR #<number>)"
 ```
 
 ```

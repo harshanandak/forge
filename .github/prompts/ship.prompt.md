@@ -104,7 +104,7 @@ If no PR template exists, use this minimal fallback:
 [How it was tested, test results]
 
 ## Beads
-Closes: <issue-id>
+Closes beads-xxx
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
