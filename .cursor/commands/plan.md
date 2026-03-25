@@ -475,20 +475,20 @@ bash scripts/beads-context.sh stage-transition <id> plan dev
 
 ```
 ✓ Phase 1: Design intent captured
-  - Design doc: docs/plans/2026-02-26-stripe-billing-design.md
-  - Approach: Stripe SDK v4 (selected over v3)
+  - Design doc: docs/plans/<date>-<slug>-design.md
+  - Approach: <selected approach> (selected over <alternatives>)
   - Ambiguity policy: Rubric scoring (>= 80% proceed, < 80% ask)
 
 ✓ Phase 2: Technical research complete
-  - OWASP Top 10: 3 risks identified, 3 mitigations planned
-  - TDD scenarios: 5 identified
-  - Sources: 8 references
+  - OWASP Top 10: <N> risks identified, <N> mitigations planned
+  - TDD scenarios: <N> identified
+  - Sources: <N> references
 
 ✓ Phase 3: Setup complete
-  - Beads: forge-xyz (in_progress)
-  - Branch: feat/stripe-billing
-  - Worktree: .worktrees/stripe-billing (baseline: 24/24 tests passing)
-  - Task list: docs/plans/2026-02-26-stripe-billing-tasks.md (8 tasks)
+  - Beads: <issue-id> (in_progress)
+  - Branch: feat/<slug>
+  - Worktree: .worktrees/<slug> (baseline: <N>/<N> tests passing)
+  - Task list: docs/plans/<date>-<slug>-tasks.md (<N> tasks)
 
 ⏸️  Task list ready for review. Confirm to proceed.
 

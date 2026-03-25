@@ -370,6 +370,73 @@ describe('smart-status.sh', () => {
       }
     });
 
+    test('numeric priority 2 gets same weight as P2', () => {
+      const mockData = {
+        issues: [
+          { id: 'num-pri', title: 'Numeric pri', priority: 2, type: 'bug', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
+        expect(result.status).toBe(0);
+        const scored = parseIssues(result.stdout);
+        expect(scored[0].priority_weight).toBe(3);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('numeric priority 4 is grouped into BACKLOG', () => {
+      const mockData = {
+        issues: [
+          { id: 'backlog-num', title: 'Backlog numeric', priority: 4, type: 'task', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('BACKLOG');
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('null type defaults to task weight 0.8', () => {
+      const mockData = {
+        issues: [
+          { id: 'null-type', title: 'Null type issue', priority: 'P2', type: null, status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus(['--json'], { BD_CMD: mockScript });
+        expect(result.status).toBe(0);
+        const scored = parseIssues(result.stdout);
+        expect(scored[0].type_weight).toBe(0.8);
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
+    test('numeric priority displays with P prefix in output', () => {
+      const mockData = {
+        issues: [
+          { id: 'p-prefix', title: 'P prefix test', priority: 2, type: 'bug', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir, mockScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus([], { BD_CMD: mockScript });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('(P2 bug)');
+        expect(result.stdout).not.toContain('(2 bug)');
+      } finally {
+        cleanupTmpDir(tmpDir);
+      }
+    });
+
     test('unknown type defaults to weight 1.0', () => {
       const mockData = {
         issues: [
@@ -632,11 +699,8 @@ describe('smart-status.sh', () => {
       };
       const { tmpDir, mockScript } = createMockBd(mockData);
       try {
-        // Explicitly unset NO_COLOR
-        const env = { BD_CMD: mockScript };
-        delete env.NO_COLOR;
-        // Also remove from inherited env
-        const fullEnv = { ...process.env, BD_CMD: mockScript };
+        // Explicitly unset NO_COLOR and use GIT_CMD: 'true' like runSmartStatus helper
+        const fullEnv = { ...process.env, BD_CMD: mockScript, GIT_CMD: 'true' };
         delete fullEnv.NO_COLOR;
         const result = spawnSync(resolveBashCommand(), [SCRIPT], {
           cwd: PROJECT_ROOT,

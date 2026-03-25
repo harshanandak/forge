@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Plan file path contract** (forge-ddk3): Unified all references from `.claude/plans/` to `docs/plans/` across all 7 agent directories, tests, and source code
+- **ENHANCED_ONBOARDING.md** (forge-3tnu): Rewrote to match actual 7-stage workflow with correct `--type` values (critical|standard|simple|hotfix|docs|refactor)
+- **smart-status.sh jq errors**: Handle numeric priorities (0-4) and null types from beads 0.62+ — no more `string/number cannot be iterated` crashes
+- **smart-status.sh display**: Numeric priorities now display as `P2` not `2` in dashboard; numeric `4` correctly groups into BACKLOG
+- **Plan detection**: `forge status` no longer misdetects plan stage from unrelated files in `docs/plans/` — scopes to current branch slug
+- **OWASP docs**: Fixed path-traversal risk in allowlist, clarified mitigations as collective requirements, corrected git `--` separator placement
+
+### Changed
+
+- **Ambiguity policy**: Hardcoded rubric scoring (>= 80% proceed, < 80% ask) as default in `/plan` — removed redundant per-feature Q&A question
+
 ## [0.0.5] - 2026-03-22
 
 ### Added

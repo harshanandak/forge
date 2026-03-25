@@ -695,7 +695,7 @@ else
       (if .status == "in_progress" then "RESUME"
        elif (.dependent_count // 0) >= 2 then "UNBLOCK_CHAINS"
        elif (.dependency_count // 0) > 0 and .status != "closed" then "BLOCKED"
-       elif .priority == "P4" then "BACKLOG"
+       elif (.priority == "P4" or .priority == 4) then "BACKLOG"
        else "READY_WORK"
        end) as $group |
       # Flag in_progress issues that have active blockers
@@ -739,7 +739,7 @@ else
         (if $item.blocked_resume then " !! BLOCKED by dependencies" else "" end) as $blocked_warn |
         "ENTRY:" + $item.group + ":" +
           $rank + ". [" + ($item.score | tostring) + "] " +
-          $item.id + " (" + ($item.priority // "-" | tostring) + " " + ($item.type // "-" | tostring) + ") -- " +
+          $item.id + " (" + (if ($item.priority | type) == "number" then "P" + ($item.priority | tostring) else ($item.priority // "-" | tostring) end) + " " + ($item.type // "-" | tostring) + ") -- " +
           ($item.title // "-") + " " + $status_tag + $stale + $blocked_warn + $unblocks
       ),
       ""
