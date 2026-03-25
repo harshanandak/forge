@@ -40,7 +40,7 @@ Check if any in-progress issues were already merged but not closed (can happen i
 # For each in_progress issue, check if its PR was already merged
 bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
   # Search git log for the issue ID in commit messages
-  if git log --oneline --all --grep="$id" | grep -q .; then
+  if git log --oneline --first-parent master --grep="$id" | grep -q .; then
     echo "STALE: $id — found in git history, likely already merged"
   fi
 done

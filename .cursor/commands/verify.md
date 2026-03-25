@@ -155,10 +155,15 @@ PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
 
 # Extract beads IDs from PR body (matches "Closes beads-xxx", "closes forge-xxx", etc.)
 # Patterns: "Closes <prefix>-<id>", "Fixes <prefix>-<id>", "Resolves <prefix>-<id>"
-BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves)\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]+$')
+BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]+$')
 
-# Also check branch name for beads ID (e.g., feat/forge-m0fw-review-system)
-BRANCH_ID=$(echo "$PR_BRANCH" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
+# Also check branch name for beads ID — extract segment after last /
+# then validate with bd show to avoid false matches like "pr-templa"
+BRANCH_SLUG=$(echo "$PR_BRANCH" | sed 's|.*/||')
+BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
+if [ -n "$BRANCH_ID" ] && ! bd show "$BRANCH_ID" >/dev/null 2>&1; then
+  BRANCH_ID=""  # Not a valid beads ID — discard
+fi
 ```
 
 **Close each matched issue:**

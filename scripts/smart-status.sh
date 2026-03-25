@@ -119,11 +119,12 @@ done
 # then >/dev/null discards original stdout so only errors remain).
 _bd_list_err="$("$BD" list --json --limit 0 2>&1 >/dev/null || true)"
 if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
-  # Derive prefix from directory name (matches bd init default behavior)
-  _bd_prefix="$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
+  # Derive prefix from repo root directory name (not pwd, which could be a subdirectory)
+  _repo_root="$("$GIT" rev-parse --show-toplevel 2>/dev/null || pwd)"
+  _bd_prefix="$(basename "$_repo_root" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
   echo "Beads database not found — attempting auto-recovery..." >&2
   if "$BD" init --force --prefix "$_bd_prefix" >/dev/null 2>&1; then
-    if [ -d ".beads/backup" ] && ls .beads/backup/*.jsonl >/dev/null 2>&1; then
+    if [ -d "$_repo_root/.beads/backup" ] && ls "$_repo_root/.beads/backup"/*.jsonl >/dev/null 2>&1; then
       "$BD" backup restore >/dev/null 2>&1 && echo "Beads: restored from backup." >&2 || echo "Beads: backup restore failed." >&2
     else
       echo "Beads: initialized fresh (no backup found)." >&2
