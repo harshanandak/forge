@@ -158,11 +158,15 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
   [.[] | . as $issue |
 
     # Priority weight: P0=5, P1=4, P2=3, P3=2, P4=1, default=1
-    (if .priority == "P0" then 5
-     elif .priority == "P1" then 4
-     elif .priority == "P2" then 3
-     elif .priority == "P3" then 2
-     elif .priority == "P4" then 1
+    # Normalize priority to number (beads 0.62+ sends numbers, older sends strings)
+    ((.priority // 2) | if type == "string" then
+      (if . == "P0" then 0 elif . == "P1" then 1 elif . == "P2" then 2 elif . == "P3" then 3 elif . == "P4" then 4 else 5 end)
+    else . end) as $pri_num |
+    (if $pri_num == 0 then 5
+     elif $pri_num == 1 then 4
+     elif $pri_num == 2 then 3
+     elif $pri_num == 3 then 2
+     elif $pri_num == 4 then 1
      else 1 end) as $priority_weight |
 
     # Unblock chain: dependent_count + 1 (min 1).
@@ -172,9 +176,10 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
     (((.dependent_count // 0) + 1) | if . < 1 then 1 else . end) as $unblock_chain |
 
     # Type weight: bug=1.2, feature=1.0, task=0.8, default=1.0
-    (if .type == "bug" then 1.2
-     elif .type == "feature" then 1.0
-     elif .type == "task" then 0.8
+    # Handle null type from beads 0.62+
+    (if (.type // "task") == "bug" then 1.2
+     elif (.type // "task") == "feature" then 1.0
+     elif (.type // "task") == "task" then 0.8
      else 1.0 end) as $type_weight |
 
     # Status boost: in_progress=1.5, open=1.0, default=1.0
@@ -690,7 +695,7 @@ else
       (if .status == "in_progress" then "RESUME"
        elif (.dependent_count // 0) >= 2 then "UNBLOCK_CHAINS"
        elif (.dependency_count // 0) > 0 and .status != "closed" then "BLOCKED"
-       elif .priority == "P4" then "BACKLOG"
+       elif (.priority == "P4" or .priority == 4) then "BACKLOG"
        else "READY_WORK"
        end) as $group |
       # Flag in_progress issues that have active blockers
@@ -734,7 +739,7 @@ else
         (if $item.blocked_resume then " !! BLOCKED by dependencies" else "" end) as $blocked_warn |
         "ENTRY:" + $item.group + ":" +
           $rank + ". [" + ($item.score | tostring) + "] " +
-          $item.id + " (" + ($item.priority // "-") + " " + ($item.type // "-") + ") -- " +
+          $item.id + " (" + (if ($item.priority | type) == "number" then "P" + ($item.priority | tostring) else ($item.priority // "-" | tostring) end) + " " + ($item.type // "-" | tostring) + ") -- " +
           ($item.title // "-") + " " + $status_tag + $stale + $blocked_warn + $unblocks
       ),
       ""

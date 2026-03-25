@@ -62,7 +62,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'feat/feature-name',
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 				tests: [],
 				pr: null,
 				beadsIssue: { status: 'in_progress' },
@@ -77,7 +77,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'feat/feature-name',
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 				tests: ['test/feature.test.js'],
 				testsPass: false,
 				pr: null,
@@ -93,7 +93,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'feat/feature-name',
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 				tests: ['test/feature.test.js'],
 				testsPass: true,
 				checksPass: true,
@@ -111,7 +111,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'feat/feature-name',
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 				tests: ['test/feature.test.js'],
 				testsPass: true,
 				pr: { number: 123, state: 'open', reviews: [] },
@@ -127,7 +127,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'feat/feature-name',
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 				tests: ['test/feature.test.js'],
 				testsPass: true,
 				checksPass: true,
@@ -144,7 +144,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'master',
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 				tests: ['test/feature.test.js'],
 				pr: { number: 123, state: 'merged' },
 				beadsIssue: { status: 'closed' },
@@ -176,7 +176,7 @@ describe('Status Command - Stage Detection', () => {
 			const context = {
 				branch: 'feat/feature-name',
 				researchDoc: null, // Missing research doc
-				plan: '.claude/plans/feature.md', // But plan exists
+				plan: 'docs/plans/feature.md', // But plan exists
 				tests: [],
 				pr: null,
 				beadsIssue: null,
@@ -213,7 +213,7 @@ describe('Status Command - Stage Detection', () => {
 		test('should analyze file existence', () => {
 			const factors = analyzeFiles({
 				researchDoc: 'docs/research/feature.md',
-				plan: '.claude/plans/feature.md',
+				plan: 'docs/plans/feature.md',
 			});
 			expect(factors.hasResearch).toBe(true);
 			expect(factors.hasPlan).toBe(true);

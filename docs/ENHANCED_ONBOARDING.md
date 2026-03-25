@@ -1,12 +1,12 @@
 # Enhanced Onboarding Guide
 
-Version 1.6.0 introduces intelligent onboarding that adapts to your project and preserves existing content.
+Intelligent onboarding that adapts to your project and preserves existing content.
 
 ---
 
-## What's New in v1.6.0
+## Key Features
 
-### 🎯 Key Features
+### Key Features
 
 1. **Intelligent File Merging** - Preserves your existing AGENTS.md content
 2. **Auto-Detection** - Automatically detects framework, language, and project stage
@@ -35,7 +35,7 @@ bunx forge setup --merge=smart
 - Tech stack details
 
 **What gets updated:**
-- Workflow instructions (9-stage TDD process)
+- Workflow instructions (7-stage TDD process)
 - TDD principles
 - Git conventions
 
@@ -65,9 +65,9 @@ E-commerce platform for selling widgets.
 - 80% test coverage
 
 ## Workflow Configuration
-Use the 9-stage TDD workflow:
-1. /status - Check current context
-2. /research - Research with web search
+Use the 7-stage TDD workflow:
+1. /plan - Design intent, research, branch + worktree + task list
+2. /dev - Subagent-driven TDD per task
 ...
 ```
 
@@ -163,55 +163,92 @@ bunx forge setup --interview
 
 Forge adapts its workflow based on the type of work you're doing.
 
-### Four User-Facing Types
+### Six Change Classifications
 
-#### 1. Feature (Default)
-**Use for:** New functionality, enhancements
+#### 1. Critical (7 stages)
+**Use for:** Security, auth, payments, breaking changes
 
 ```bash
-bunx forge setup --type=feature
+bunx forge setup --type=critical
+# Or create branch: feat/user-authentication
+```
+
+**Workflow:**
+```
+/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
+```
+
+- Full 7-stage workflow with all gates
+- OWASP analysis required
+- Design docs for strategic changes
+
+#### 2. Standard (6 stages)
+**Use for:** Normal features, enhancements
+
+```bash
+bunx forge setup --type=standard
 # Or create branch: feat/user-dashboard
 ```
 
 **Workflow:**
-- Full 9-stage workflow
+```
+/plan -> /dev -> /validate -> /ship -> /review -> /premerge
+```
+
+- Default for most feature work
 - Auto-escalates to **Critical** if keywords detected:
   - auth, security, payment, crypto, password, token, session, migration, breaking
 
-**Critical Workflow (9 stages):**
-```
-/status → /research → /plan → /dev → /validate → /ship → /review → /premerge → /verify
-```
-
-**Standard Workflow (6 stages):**
-```
-/status → /plan → /dev → /validate → /ship → /premerge
-```
-
-#### 2. Fix
-**Use for:** Bug fixes, corrections
+#### 3. Simple (3 stages)
+**Use for:** Bug fixes, small changes
 
 ```bash
-bunx forge setup --type=fix
+bunx forge setup --type=simple
 # Or create branch: fix/login-validation
 ```
 
 **Workflow:**
-- Streamlined 5-stage workflow
-- Auto-escalates to **Hotfix** if keywords detected:
-  - urgent, production, emergency, hotfix, critical
-
-**Hotfix Workflow (3 stages):**
 ```
-/dev → /validate → /ship
+/dev -> /validate -> /ship
 ```
 
-**Simple Workflow (4 stages):**
-```
-/dev → /validate → /ship → /premerge
+- Streamlined for quick fixes
+- TDD to reproduce bug, then fix
+
+#### 4. Hotfix (3 stages)
+**Use for:** Production emergencies
+
+```bash
+bunx forge setup --type=hotfix
+# Or create branch: hotfix/payment-crash
 ```
 
-#### 3. Refactor
+**Workflow:**
+```
+/dev -> /validate -> /ship
+```
+
+- Emergency fast path (immediate merge)
+- Skip planning and research
+- TDD to reproduce, then fix
+
+#### 5. Docs (2 stages)
+**Use for:** Documentation only
+
+```bash
+bunx forge setup --type=docs
+# Or create branch: docs/update-readme
+```
+
+**Workflow:**
+```
+/verify -> /ship
+```
+
+- Minimal workflow for documentation changes
+- No TDD required
+
+#### 6. Refactor (5 stages)
 **Use for:** Code cleanup, optimization
 
 ```bash
@@ -219,40 +256,24 @@ bunx forge setup --type=refactor
 # Or create branch: refactor/extract-payment-service
 ```
 
-**Workflow (5 stages):**
+**Workflow:**
 ```
-/plan → /dev → /validate → /ship → /premerge
+/plan -> /dev -> /validate -> /ship -> /premerge
 ```
 
 - Strict TDD to preserve behavior
-- Optional research for architectural changes
-
-#### 4. Chore
-**Use for:** Documentation, dependencies, configuration
-
-```bash
-bunx forge setup --type=chore
-# Or create branch: docs/update-readme
-```
-
-**Workflow (3 stages):**
-```
-/verify → /ship → /premerge
-```
-
-- Minimal workflow for maintenance tasks
-- Auto-detects if only markdown files changed → uses Docs profile
+- Planning phase for architectural changes
 
 ### Workflow Mapping
 
-| User Type | Keywords Detected | Internal Profile | Stages |
-|-----------|------------------|------------------|--------|
-| Feature | auth, security, payment | Critical | 9 |
-| Feature | (none) | Standard | 6 |
-| Fix | urgent, production | Hotfix | 3 |
-| Fix | (none) | Simple | 4 |
-| Refactor | (always) | Refactor | 5 |
-| Chore | only .md files | Docs | 3 |
+| Classification | Use Case | Stages | Workflow |
+|----------------|----------|--------|---------|
+| Critical | Security, auth, payments, breaking changes | 7 | plan, dev, validate, ship, review, premerge, verify |
+| Standard | Normal features, enhancements | 6 | plan, dev, validate, ship, review, premerge |
+| Simple | Bug fixes, small changes | 3 | dev, validate, ship |
+| Hotfix | Production emergencies | 3 | dev, validate, ship (immediate merge) |
+| Docs | Documentation only | 2 | verify, ship |
+| Refactor | Code cleanup, optimization | 5 | plan, dev, validate, ship, premerge |
 
 ---
 
@@ -282,9 +303,9 @@ bunx forge setup --merge=smart --type=critical --interview
 --skip-external         Skip external services
 --agents <list>         Specify agents (--agents claude cursor)
 --all                   Install for all agents
---merge <mode>          Merge strategy (v1.6.0)
---type <type>           Workflow profile (v1.6.0)
---interview             Context interview (v1.6.0)
+--merge <mode>          Merge strategy
+--type <type>           Workflow profile
+--interview             Context interview
 --help, -h              Show help
 ```
 
@@ -332,10 +353,9 @@ git checkout -b feat/user-authentication
 
 bunx forge setup --type=critical
 
-# Auto-escalates to Critical profile:
-# - 7-stage workflow
-# - Research required
-# - OWASP analysis
+# Uses Critical profile:
+# - Full 7-stage workflow
+# - OWASP analysis required
 # - Design docs for strategic changes
 ```
 
@@ -350,7 +370,7 @@ bunx forge setup --type=hotfix
 # Uses Hotfix profile:
 # - 3-stage emergency workflow
 # - TDD to reproduce bug
-# - Skip research and planning
+# - Skip planning and research
 # - Fast path to production
 ```
 
@@ -360,29 +380,21 @@ bunx forge setup --type=hotfix
 # Update README
 git checkout -b docs/update-installation-guide
 
-# Forge auto-detects chore → docs profile:
-# - 3-stage minimal workflow
+bunx forge setup --type=docs
+
+# Uses Docs profile:
+# - 2-stage minimal workflow
 # - No TDD required
-# - Just verify, ship, merge
+# - Just verify and ship
 ```
 
 ---
 
 ## Migration Guide
 
-### Upgrading from v1.5.0 to v1.6.0
+### Upgrading
 
-**No breaking changes!** Enhanced onboarding is backwards compatible.
-
-**What's new:**
-1. Enhanced file merging options
-2. Auto-detection and context storage
-3. Workflow profiles with auto-escalation
-
-**What stays the same:**
-- Existing marker-based merge (USER:START/END) still works
-- All CLI flags from v1.5.0 remain functional
-- AGENTS.md format unchanged
+Enhanced onboarding is backwards compatible.
 
 **Recommended steps:**
 ```bash
@@ -507,7 +519,7 @@ Edit `.forge/context.json` to add custom fields:
 Override specific stages:
 
 ```bash
-# Feature workflow but skip research
+# Standard workflow for a feature
 bunx forge setup --type=standard
 
 # Then manually edit AGENTS.md to customize workflow
@@ -552,10 +564,10 @@ When upgrading existing projects:
 ### 3. Set Workflow Type Per Branch
 
 Different branches, different workflows:
-- `feat/auth-*` → critical
-- `feat/ui-*` → standard
-- `fix/*` → simple
-- `docs/*` → chore
+- `feat/auth-*` -> critical
+- `feat/ui-*` -> standard
+- `fix/*` -> simple
+- `docs/*` -> docs
 
 ### 4. Review Context Regularly
 
@@ -597,6 +609,4 @@ Found an issue or have a suggestion?
 
 ---
 
-**Version**: 1.6.0
-**Last Updated**: 2026-02-06
-**Stability**: Stable
+**Last Updated**: 2026-03-24

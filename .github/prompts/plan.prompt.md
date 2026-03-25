@@ -155,7 +155,6 @@ Questions to cover (adapt to feature, don't ask mechanical copies):
 3. **Success criteria** — How will we know it's done? What is the minimum viable result?
 4. **Edge cases** — What happens when [key dependency] fails / [input] is missing / [state] is ambiguous?
 5. **Technical preferences** — Library A or B? Pattern X or Y? (when real options exist)
-6. **Ambiguity policy** — If a spec gap is found mid-dev, should the agent: (a) make a reasonable choice and document it, or (b) pause and wait for input?
 
 ### Step 3: Propose approaches
 
@@ -174,7 +173,7 @@ Save to `docs/plans/YYYY-MM-DD-<slug>-design.md` with these sections:
 - **Approach selected**: which option and why
 - **Constraints**: hard limits
 - **Edge cases**: decisions made during Q&A
-- **Ambiguity policy**: agent's fallback when spec gaps arise mid-dev
+- **Ambiguity policy**: Use 7-dimension rubric scoring per /dev decision gate. >= 80% confidence: proceed and document. < 80%: stop and ask.
 
 Commit the design doc:
 ```bash
@@ -481,20 +480,20 @@ bash scripts/beads-context.sh stage-transition <id> plan dev
 
 ```
 ✓ Phase 1: Design intent captured
-  - Design doc: docs/plans/2026-02-26-stripe-billing-design.md
-  - Approach: Stripe SDK v4 (selected over v3)
-  - Ambiguity policy: Make conservative choice + document in decisions log
+  - Design doc: docs/plans/<date>-<slug>-design.md
+  - Approach: <selected approach> (selected over <alternatives>)
+  - Ambiguity policy: Rubric scoring (>= 80% proceed, < 80% ask)
 
 ✓ Phase 2: Technical research complete
-  - OWASP Top 10: 3 risks identified, 3 mitigations planned
-  - TDD scenarios: 5 identified
-  - Sources: 8 references
+  - OWASP Top 10: <N> risks identified, <N> mitigations planned
+  - TDD scenarios: <N> identified
+  - Sources: <N> references
 
 ✓ Phase 3: Setup complete
-  - Beads: forge-xyz (in_progress)
-  - Branch: feat/stripe-billing
-  - Worktree: .worktrees/stripe-billing (baseline: 24/24 tests passing)
-  - Task list: docs/plans/2026-02-26-stripe-billing-tasks.md (8 tasks)
+  - Beads: <issue-id> (in_progress)
+  - Branch: feat/<slug>
+  - Worktree: .worktrees/<slug> (baseline: <N>/<N> tests passing)
+  - Task list: docs/plans/<date>-<slug>-tasks.md (<N> tasks)
 
 ⏸️  Task list ready for review. Confirm to proceed.
 

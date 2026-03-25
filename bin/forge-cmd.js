@@ -223,7 +223,11 @@ async function main() { // NOSONAR S3776
 			const context = {
 				branch,
 				researchDoc: fs.existsSync('docs/research') ? fs.readdirSync('docs/research').find(f => f.endsWith('.md')) : null,
-				plan: fs.existsSync('.claude/plans') ? fs.readdirSync('.claude/plans').find(f => f.endsWith('.md')) : null,
+				plan: (() => {
+					if (!fs.existsSync('docs/plans')) return null;
+					const slug = branch.replace(/^(feat|fix|docs|refactor)\//, '');
+					return fs.readdirSync('docs/plans').find(f => f.endsWith('.md') && f.includes(slug)) || null;
+				})(),
 				tests: (() => { try { return fs.readdirSync('test').filter(f => f.endsWith('.test.js')); } catch (error_) { void error_; return []; } })(), // NOSONAR S2486 - intentional: missing test dir
 			};
 			const stageResult = HANDLERS.status.detectStage(context);
