@@ -112,6 +112,27 @@ done
 
 # ── Fetch issues ────────────────────────────────────────────────────────
 
+# Auto-recover beads database if Dolt server lost the database (e.g. branch
+# switch, fresh clone, server restart).  Checks for the specific "database
+# not found" error, runs bd init --force + bd backup restore, then retries.
+# Capture stderr into variable (2>&1 redirects stderr to stdout for capture,
+# then >/dev/null discards original stdout so only errors remain).
+_bd_list_err="$("$BD" list --json --limit 0 2>&1 >/dev/null || true)"
+if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
+  # Derive prefix from directory name (matches bd init default behavior)
+  _bd_prefix="$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
+  echo "Beads database not found — attempting auto-recovery..." >&2
+  if "$BD" init --force --prefix "$_bd_prefix" >/dev/null 2>&1; then
+    if [ -d ".beads/backup" ] && ls .beads/backup/*.jsonl >/dev/null 2>&1; then
+      "$BD" backup restore >/dev/null 2>&1 && echo "Beads: restored from backup." >&2 || echo "Beads: backup restore failed." >&2
+    else
+      echo "Beads: initialized fresh (no backup found)." >&2
+    fi
+  else
+    echo "Beads: auto-recovery failed — run 'bd doctor' manually." >&2
+  fi
+fi
+
 ISSUES_JSON="$("$BD" list --json --limit 0 2>/dev/null || echo '[]')"
 
 # Bail early on empty

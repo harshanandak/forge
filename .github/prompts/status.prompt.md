@@ -26,12 +26,32 @@ bash scripts/sync-utils.sh auto-sync
 ```
 
 ### Step 1: Smart Status (ranked issues with conflict detection)
+
 ```bash
 bash scripts/smart-status.sh
 ```
 This script dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed — the script handles everything.
 
 For full context on any issue: `bd show <id>`
+
+### Step 1b: Reconcile stale in-progress issues
+
+Check if any in-progress issues were already merged but not closed (can happen if `/verify` was skipped or backup was restored from stale snapshot):
+
+```bash
+# For each in_progress issue, check if its PR was already merged
+bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
+  # Search git log for the issue ID in commit messages
+  if git log --oneline --all --grep="$id" | grep -q .; then
+    echo "STALE: $id — found in git history, likely already merged"
+  fi
+done
+```
+
+If stale issues are found, close them:
+```bash
+bd close <id> --force --reason="Already merged — detected during status reconciliation"
+```
 
 ### Step 2: Review Recent Commits
 ```bash
