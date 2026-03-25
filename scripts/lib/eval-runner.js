@@ -36,8 +36,16 @@ function cleanupActiveWorktrees() {
 }
 
 process.on('exit', cleanupActiveWorktrees);
-process.on('SIGINT', () => { cleanupActiveWorktrees(); process.exit(130); });
-process.on('SIGTERM', () => { cleanupActiveWorktrees(); process.exit(143); });
+process.on('SIGINT', () => {
+  const hadWork = activeEvalWorktrees.size > 0;
+  cleanupActiveWorktrees();
+  if (hadWork) process.exit(130);
+});
+process.on('SIGTERM', () => {
+  const hadWork = activeEvalWorktrees.size > 0;
+  cleanupActiveWorktrees();
+  if (hadWork) process.exit(143);
+});
 
 // ── helpers ──────────────────────────────────────────────────────────
 
