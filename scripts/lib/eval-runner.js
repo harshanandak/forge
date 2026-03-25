@@ -11,6 +11,42 @@
 const path = require('path');
 const { execSync } = require('node:child_process');
 
+// ── active worktree tracking (cleanup on crash) ─────────────────────
+// Tracks active eval worktrees so we can clean up on process exit/crash.
+// Prevents orphaned eval-* branches when interrupted.
+// Note: execSync is safe here — all paths are internally generated, never user input.
+const activeEvalWorktrees = new Map(); // path -> branch
+
+function cleanupActiveWorktrees() {
+  if (activeEvalWorktrees.size === 0) return;
+  let repoRoot;
+  try { repoRoot = getRepoRoot(); } catch (_err) { return; }
+  for (const [wtPath, branch] of activeEvalWorktrees) {
+    try {
+      execSync(`git worktree remove --force "${wtPath}"`, { cwd: repoRoot, stdio: 'pipe' });
+    } catch (_err) { /* already removed */ }
+    if (branch && branch.startsWith('eval-')) {
+      try {
+        execSync(`git branch -D "${branch}"`, { cwd: repoRoot, stdio: 'pipe' });
+      } catch (_err) { /* already deleted */ }
+    }
+  }
+  try { execSync('git worktree prune', { cwd: repoRoot, stdio: 'pipe' }); } catch (_err) { /* ignore */ }
+  activeEvalWorktrees.clear();
+}
+
+process.on('exit', cleanupActiveWorktrees);
+process.on('SIGINT', () => {
+  const hadWork = activeEvalWorktrees.size > 0;
+  cleanupActiveWorktrees();
+  if (hadWork) process.exit(130);
+});
+process.on('SIGTERM', () => {
+  const hadWork = activeEvalWorktrees.size > 0;
+  cleanupActiveWorktrees();
+  if (hadWork) process.exit(143);
+});
+
 // ── helpers ──────────────────────────────────────────────────────────
 
 /**
@@ -56,6 +92,7 @@ async function createEvalWorktree() {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
+  activeEvalWorktrees.set(wtPath, branch);
   return { path: wtPath, branch };
 }
 
@@ -97,6 +134,8 @@ async function destroyEvalWorktree(worktreePath) {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+
+  activeEvalWorktrees.delete(worktreePath);
 
   // Delete the temporary branch (force in case it's not fully merged)
   if (branch && branch.startsWith('eval-')) {
