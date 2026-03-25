@@ -142,19 +142,67 @@ Branch: <branch-name> deleted ✓
 bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
-### Step 8: Close Beads Issue (if healthy)
+### Step 8: Close Beads Issues (if healthy)
 
-If everything is clean, close the Beads issue:
+If everything is clean, close all Beads issues referenced in the merged PR.
+
+**Auto-detect beads issues from PR body and branch name:**
 
 ```bash
-bd close <id> --reason="Merged and verified on master"
+# Get PR body and branch name
+PR_BODY=$(gh pr view <number> --json body --jq '.body')
+PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
+
+# Extract beads IDs from PR body (matches "Closes beads-xxx", "closes forge-xxx", etc.)
+# Patterns: "Closes <prefix>-<id>", "Fixes <prefix>-<id>", "Resolves <prefix>-<id>"
+BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]{3,6}$')
+
+# Validate each ID exists in beads
+VALID_IDS=""
+for id in $BEADS_IDS; do
+  if bd show "$id" >/dev/null 2>&1; then
+    VALID_IDS="$VALID_IDS $id"
+  fi
+done
+BEADS_IDS="$VALID_IDS"
+
+# Also check branch name for beads ID — extract segment after last /
+# then validate with bd show to avoid false matches like "pr-templa"
+BRANCH_SLUG=$(echo "$PR_BRANCH" | sed 's|.*/||')
+BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
+if [ -n "$BRANCH_ID" ] && ! bd show "$BRANCH_ID" >/dev/null 2>&1; then
+  BRANCH_ID=""  # Not a valid beads ID — discard
+fi
+```
+
+**Close each matched issue:**
+
+```bash
+# Close issues found in PR body
+for id in $BEADS_IDS; do
+  bd close "$id" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $id"
+done
+
+# If no issues found in body, try branch name match (skip if already closed above)
+if [ -z "$BEADS_IDS" ] && [ -n "$BRANCH_ID" ]; then
+  bd close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+elif [ -n "$BRANCH_ID" ] && ! echo "$BEADS_IDS" | grep -qw "$BRANCH_ID"; then
+  bd close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+fi
+```
+
+**If no beads issues detected at all**, prompt the user:
+```
+⚠ No beads issue ID found in PR body or branch name.
+  If this PR closes a beads issue, run: bd close <id> --reason="Merged and verified on master (PR #<number>)"
 ```
 
 ```
 <HARD-GATE: /verify exit>
 Do NOT declare /verify complete until:
 1. gh run list --branch master --limit 3 shows actual CI output (not "should be fine")
-2. If healthy: Beads issue is closed (bd close <id> run and confirmed)
+2. If healthy: Beads issues extracted from PR body/branch and closed (bd close run and confirmed)
+   - If no beads ID found: user was warned and given manual close command
 3. If issues found: Beads tracking issue created for every problem
 4. Worktree removed (or confirmed already gone) — OR Step 6 was intentionally skipped because CI was unhealthy; if skipped, state explicitly: "cleanup deferred, CI was not healthy"
 "It should be fine" is not evidence. Run the command. Show the output.

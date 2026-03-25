@@ -62,64 +62,65 @@ Use `--force-with-lease` because `/validate` may have rebased the branch, rewrit
 git push --force-with-lease -u origin <branch-name>
 ```
 
-### Step 5: Create PR
+### Step 5: Create PR Using Project's PR Template
 
-Use the narrative PR template below. Lead with WHY (Problem/Root Cause/Fix/Value) — this is what reviewers need to understand first. Keep implementation details (test coverage, security review, design doc) in a collapsible section so they're available but don't clutter the summary.
+**CRITICAL**: Always use the project's own PR template. Never use a hardcoded body.
 
-If no Beads issue exists (hotfix, external contribution), skip the "Closes" line.
+**Step 5a: Locate the PR template**
 
+Check for a PR template in the project (in order of precedence):
 ```bash
-gh pr create --title "<type>: <concise description>" --body "$(cat <<'EOF'
-## Problem
-[What was broken, what need existed, or what user pain this addresses]
+# Check standard locations
+PR_TEMPLATE=""
+for path in .github/pull_request_template.md .github/PULL_REQUEST_TEMPLATE.md docs/pull_request_template.md pull_request_template.md; do
+  if [ -f "$path" ]; then
+    PR_TEMPLATE="$path"
+    break
+  fi
+done
+```
 
-## Root Cause
-[Why it happened, why it was missing, or what gap existed]
+**Step 5b: Read and populate the template**
 
-## Fix
-[What this PR does to solve it — approach, not implementation details]
+If a PR template exists:
+1. **Read the template file** using the Read tool
+2. **Fill in every section** with actual data from the current PR context:
+   - Replace HTML comments (`<!-- ... -->`) with real content
+   - Check applicable checkboxes (`- [x]`)
+   - Fill in beads issue IDs (replace `beads-xxx` with actual ID)
+   - Fill in test results, validation status, and other concrete data
+   - Reference the design doc: `docs/plans/YYYY-MM-DD-<slug>-design.md`
+3. **Do NOT remove any sections** — fill them all, even if "N/A"
+4. **Do NOT restructure the template** — keep the project's chosen format
 
-## Value
-[Who benefits, what improves, what risk is removed]
+If no PR template exists, use this minimal fallback:
+```
+## Summary
+[1-3 sentences: what this PR does and why]
+
+## Changes
+[Bulleted list of key changes]
+
+## Testing
+[How it was tested, test results]
 
 ## Beads
-Closes: <issue-id>
-
-<details>
-<summary>Implementation Details</summary>
-
-### Test Coverage
-- Tests: [count] passing
-- Scenarios covered: [list key scenarios]
-
-### Security Review
-- OWASP Top 10: [summary — applicable risks and mitigations]
-- Automated scan: [result]
-
-### Design Doc
-See: docs/plans/YYYY-MM-DD-<slug>-design.md
-
-### Decisions Log
-See: docs/plans/YYYY-MM-DD-<slug>-decisions.md (if any undocumented decisions arose during /dev)
-
-### Key Decisions
-[From design doc — 3-5 key decisions with reasoning]
-
-### Documentation Updated
-[List docs updated in this PR, or "None — no doc-facing changes"]
-
-### Validation
-- [x] Type check passing
-- [x] Lint passing (0 errors, 0 warnings)
-- [x] All tests passing
-- [x] Security review completed
-
-</details>
+Closes beads-xxx
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
 ```
+
+**Step 5c: Create the PR**
+
+```bash
+gh pr create --title "<type>: <concise description>" --body "<populated-template-content>"
+```
+
+Rules for the PR body:
+- **Use the project's template structure** — never substitute your own format
+- **Fill in concrete data** — commit counts, test results, actual file paths, real beads IDs
+- **Check applicable checkboxes** — `[x]` for items that apply, `[ ]` for items that don't
+- **Include "Closes beads-xxx"** in the Beads section (required for auto-close in /verify)
 
 ### Step 6: Record Stage Transition
 ```bash
@@ -158,9 +159,9 @@ Stage 7: /verify     → Post-merge CI check on main
 
 ## Tips
 
-- **Lead with why**: Problem → Root Cause → Fix → Value is what reviewers need first
-- **Collapsible details**: Design doc, decisions log, test coverage go in `<details>` — available but not in the way
-- **Document security**: OWASP Top 10 review in collapsible section
-- **Test coverage**: Show all test scenarios passing
+- **Use the project's PR template**: Always read `.github/pull_request_template.md` (or equivalent) and populate it — never substitute your own format
+- **Fill every section**: Even if "N/A" — empty/missing sections cause review friction
+- **Include "Closes beads-xxx"**: Required for auto-close in /verify
+- **Concrete data only**: Test counts, file paths, commit SHAs — not placeholder text
 - **Wait for checks**: Let GitHub Actions, Greptile, SonarCloud run
 - **NO auto-merge**: Always wait for /review phase
