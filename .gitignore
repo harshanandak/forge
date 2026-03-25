@@ -86,3 +86,6 @@ test-env/fixtures/*
 .dolt/
 .beads/*.db
 .beads-credential-key
+
+# Beads / Dolt files (added by bd init)
+*.db
