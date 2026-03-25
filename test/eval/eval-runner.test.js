@@ -19,13 +19,27 @@ const createdWorktrees = [];
 afterAll(() => {
   // Cleanup any worktrees that tests didn't destroy
   for (const wt of createdWorktrees) {
+    // Extract branch name from worktree path for cleanup
+    const branchName = path.basename(wt);
     try {
+      // execSync is safe here — paths are generated internally, not from user input
       execSync(`git worktree remove --force "${wt}"`, {
         cwd: WORKTREE_ROOT,
         stdio: 'pipe',
       });
     } catch (_err) {
       // already removed — ignore
+    }
+    // Delete the eval branch (worktree removal doesn't clean up branches)
+    if (branchName.startsWith('eval-')) {
+      try {
+        execSync(`git branch -D "${branchName}"`, {
+          cwd: WORKTREE_ROOT,
+          stdio: 'pipe',
+        });
+      } catch (_err) {
+        // already deleted — ignore
+      }
     }
   }
   // Prune stale worktree references
