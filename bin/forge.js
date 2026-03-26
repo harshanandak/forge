@@ -50,6 +50,7 @@ const PluginManager = require('../lib/plugin-manager');
 const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const { listTopics, getTopicContent } = require('../lib/docs-command');
+const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -4121,6 +4122,7 @@ async function main() {
   // Skip for: setup (needs to run), recommend (read-only), postinstall (fresh install)
   // Note: help and version already returned above, so no need to check here
   if (command !== 'setup' && command !== 'recommend'
+      && command !== 'reset' && command !== 'reinstall'
       && process.env.npm_lifecycle_event !== 'postinstall') {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
     if (!fs.existsSync(agentsMdPath)) {
@@ -4201,6 +4203,67 @@ async function main() {
       } else {
         console.log(result.content);
       }
+    }
+  } else if (command === 'reset') {
+    const isSoft = args.includes('--soft');
+    const isHard = args.includes('--hard');
+    const isForce = args.includes('--force');
+
+    if (!isSoft && !isHard) {
+      console.log('');
+      console.log('  Forge Reset');
+      console.log('');
+      console.log('  Usage:');
+      console.log('    forge reset --soft --force    Remove .forge/ config only');
+      console.log('    forge reset --hard --force    Remove ALL forge-managed files');
+      console.log('');
+      console.log('  Flags:');
+      console.log('    --soft     Remove only .forge/ directory (preserves commands, rules, agents)');
+      console.log('    --hard     Remove all forge files (preserves user-created files)');
+      console.log('    --force    Required safety flag to confirm destructive operation');
+      console.log('');
+    } else if (isSoft) {
+      try {
+        const result = resetSoft(projectRoot, { force: isForce });
+        console.log('');
+        console.log('  Soft reset complete.');
+        for (const f of result.removed) {
+          console.log(`    Removed: ${f}`);
+        }
+        console.log('');
+      } catch (error) {
+        console.error(`  Error: ${error.message}`);
+        process.exitCode = 1;
+      }
+    } else if (isHard) {
+      try {
+        const result = resetHard(projectRoot, { force: isForce });
+        console.log('');
+        console.log('  Hard reset complete.');
+        for (const f of result.removed) {
+          console.log(`    Removed: ${f}`);
+        }
+        console.log('');
+      } catch (error) {
+        console.error(`  Error: ${error.message}`);
+        process.exitCode = 1;
+      }
+    }
+  } else if (command === 'reinstall') {
+    const isForce = args.includes('--force');
+    try {
+      const result = await reinstall(projectRoot, { force: isForce });
+      console.log('');
+      console.log('  Reinstall complete.');
+      for (const f of result.resetResult.removed) {
+        console.log(`    Removed: ${f}`);
+      }
+      console.log('');
+      console.log('  Run "forge setup" to reconfigure.');
+      console.log('');
+    } catch (error) {
+      console.error(`  Error: ${error.message}`);
+      process.exitCode = 1;
     }
   } else if (command === 'rollback') {
     // Execute rollback menu
