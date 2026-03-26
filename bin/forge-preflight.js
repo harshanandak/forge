@@ -204,13 +204,13 @@ function validateShip() {
       let cmdArgs = ["test"];
       if (fs.existsSync("bun.lockb") || fs.existsSync("bun.lock")) {
         cmd = "bun";
-        cmdArgs = ["test"];
+        cmdArgs = ["run", "test"];
       } else if (fs.existsSync("pnpm-lock.yaml")) {
         cmd = "pnpm";
-        cmdArgs = ["test"];
+        cmdArgs = ["run", "test"];
       } else if (fs.existsSync("yarn.lock")) {
         cmd = "yarn";
-        cmdArgs = ["test"];
+        cmdArgs = ["run", "test"];
       }
       try {
         execFileSync(cmd, cmdArgs, { stdio: "pipe" });
