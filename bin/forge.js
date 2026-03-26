@@ -49,6 +49,7 @@ const VERSION = packageJson.version;
 const PluginManager = require('../lib/plugin-manager');
 const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
+const { listTopics, getTopicContent } = require('../lib/docs-command');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -4180,6 +4181,27 @@ async function main() {
       return;
     }
     console.log(formatRecommendations(result.recommendations));
+  } else if (command === 'docs') {
+    const topic = args[1];
+    if (!topic) {
+      console.log('');
+      console.log('  Available documentation topics:');
+      console.log('');
+      for (const t of listTopics()) {
+        console.log(`    - ${t}`);
+      }
+      console.log('');
+      console.log('  Usage: forge docs <topic>');
+      console.log('');
+    } else {
+      const result = getTopicContent(topic, packageDir);
+      if (result.error) {
+        console.error(`  Error: ${result.error}`);
+        process.exitCode = 1;
+      } else {
+        console.log(result.content);
+      }
+    }
   } else if (command === 'rollback') {
     // Execute rollback menu
     await showRollbackMenu();
