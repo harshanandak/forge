@@ -46,7 +46,7 @@ assert_exit_code "dep no-args exits 1" 1 "$rc"
 assert_contains "dep no-args shows usage" "Usage:" "$output"
 
 # remaining stubs are reachable
-for cmd in merge-order rebase-check stale-worktrees; do
+for cmd in rebase-check stale-worktrees; do
   output="$(bash "$PR_COORD" "$cmd" 2>&1)"; rc=$?
   assert_exit_code "$cmd is reachable (exits 0)" 0 "$rc"
   assert_contains "$cmd returns stub" "not implemented" "$output"
