@@ -1,9 +1,9 @@
-import { describe, test, expect } from "bun:test";
-import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
-import yaml from "js-yaml";
+const { describe, test, expect } = require("bun:test");
+const { readFileSync, existsSync } = require("fs");
+const { resolve } = require("path");
+const yaml = require("js-yaml");
 
-const configPath = resolve(import.meta.dirname, "../.github/dependabot.yml");
+const configPath = resolve(__dirname, "../.github/dependabot.yml");
 
 describe("dependabot.yml", () => {
   test("file exists", () => {

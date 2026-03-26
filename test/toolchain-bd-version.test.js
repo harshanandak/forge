@@ -1,8 +1,8 @@
-import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+const { describe, test, expect } = require("bun:test");
+const { readFileSync } = require("fs");
+const { resolve } = require("path");
 
-const toolchainPath = resolve(import.meta.dirname, "../docs/TOOLCHAIN.md");
+const toolchainPath = resolve(__dirname, "../docs/TOOLCHAIN.md");
 
 describe("TOOLCHAIN.md bd version documentation", () => {
   test("contains bd or beads reference in a version context", () => {
