@@ -472,7 +472,87 @@ cmd_rebase_check() {
   return 0
 }
 cmd_auto_label() { echo "auto-label: not implemented"; }
-cmd_stale_worktrees() { echo "stale-worktrees: not implemented"; }
+cmd_stale_worktrees() {
+  local threshold_hours=48
+  local worktrees_dir=".worktrees"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --threshold=*)
+        local val="${1#--threshold=}"
+        # Parse hours: "48h" -> 48, "72h" -> 72, just a number -> hours
+        threshold_hours="${val%h}"
+        if [[ ! "$threshold_hours" =~ ^[0-9]+$ ]]; then
+          echo "Error: invalid threshold '$val' (use e.g. 48h or 48)" >&2
+          return 1
+        fi
+        shift ;;
+      --dir=*) worktrees_dir="${1#--dir=}"; shift ;;
+      *) echo "Error: unknown flag '$1'" >&2; return 1 ;;
+    esac
+  done
+
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root="."
+  local wt_path="$repo_root/$worktrees_dir"
+
+  if [[ ! -d "$wt_path" ]]; then
+    echo "No worktrees found (directory $worktrees_dir does not exist)"
+    return 0
+  fi
+
+  # OWASP A01: validate each worktree path with realpath
+  local found_any=0
+  local stale_count=0
+
+  for entry in "$wt_path"/*/; do
+    [[ -d "$entry" ]] || continue
+    found_any=1
+
+    # Resolve real path and verify it's under repo root
+    local real_path
+    real_path="$(realpath "$entry" 2>/dev/null)" || continue
+    local real_root
+    real_root="$(realpath "$repo_root" 2>/dev/null)" || continue
+
+    if [[ "$real_path" != "$real_root"* ]]; then
+      echo "WARNING: skipping symlink outside repo: $entry" >&2
+      continue
+    fi
+
+    # Get last commit date
+    local last_commit_date
+    last_commit_date="$(git -C "$entry" log -1 --format=%ci 2>/dev/null)" || continue
+
+    # Get branch name
+    local branch_name
+    branch_name="$(git -C "$entry" branch --show-current 2>/dev/null)" || branch_name="unknown"
+
+    # Calculate age in hours
+    local last_epoch now_epoch
+    last_epoch="$(date -d "$last_commit_date" +%s 2>/dev/null || date -jf "%Y-%m-%d %H:%M:%S %z" "$last_commit_date" +%s 2>/dev/null || echo 0)"
+    now_epoch="$(date +%s)"
+    local age_hours=$(( (now_epoch - last_epoch) / 3600 ))
+
+    if [[ "$age_hours" -ge "$threshold_hours" ]]; then
+      stale_count=$((stale_count + 1))
+      local dir_name
+      dir_name="$(basename "$entry")"
+      echo "STALE: $dir_name (branch: $branch_name, last commit: ${age_hours}h ago)"
+    fi
+  done
+
+  if [[ "$found_any" -eq 0 ]]; then
+    echo "No worktrees found"
+  elif [[ "$stale_count" -eq 0 ]]; then
+    echo "All worktrees are active"
+  else
+    echo ""
+    echo "$stale_count potentially abandoned worktree(s) found"
+  fi
+
+  return 0  # Always exit 0 (informational only)
+}
 
 cmd_help() {
   cat <<'EOF'
