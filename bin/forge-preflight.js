@@ -201,7 +201,7 @@ function validateShip() {
     () => {
       // Detect package manager from lock files (same heuristic as forge.js)
       let cmd = "npm";
-      let cmdArgs = ["test"];
+      let cmdArgs = ["run", "test"];
       if (fs.existsSync("bun.lockb") || fs.existsSync("bun.lock")) {
         cmd = "bun";
         cmdArgs = ["run", "test"];

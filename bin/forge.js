@@ -4173,12 +4173,16 @@ async function main() {
   } else if (process.env.npm_lifecycle_event === 'postinstall') {
     // Postinstall: show success message only, no file changes
     // Surprising file modifications during npm/bun install break user expectations
-    // Use `bunx forge setup` for explicit file installation
+    // Detect package manager from lock files for accurate setup instruction
+    let runCmd = 'npx';
+    if (fs.existsSync(path.join(projectRoot, 'bun.lockb')) || fs.existsSync(path.join(projectRoot, 'bun.lock'))) runCmd = 'bunx';
+    else if (fs.existsSync(path.join(projectRoot, 'pnpm-lock.yaml'))) runCmd = 'pnpm dlx';
+    else if (fs.existsSync(path.join(projectRoot, 'yarn.lock'))) runCmd = 'yarn dlx';
     console.log('');
     console.log('  \u2705 Forge installed successfully!');
     console.log('');
     console.log('  To set up in your project:');
-    console.log('    bunx forge setup');
+    console.log(`    ${runCmd} forge setup`);
     console.log('');
   } else {
     // Explicit invocation with no command: run minimal install
