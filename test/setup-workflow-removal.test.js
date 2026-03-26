@@ -38,8 +38,8 @@ describe('docs/WORKFLOW.md removal', () => {
   test('no active source file contains docs/WORKFLOW.md as a live reference', () => {
     // Hardcoded grep command - no user input, safe from injection
     const result = execSync(
-      'grep -rn "WORKFLOW\\.md" --include="*.js" --include="*.sh" --include="*.md" --include="*.json" . || true',
-      { cwd: ROOT, encoding: 'utf8' }
+      'grep -rn "WORKFLOW\\.md" --include="*.js" --include="*.sh" --include="*.md" --include="*.json" --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=.git . || true',
+      { cwd: ROOT, encoding: 'utf8', timeout: 10000 }
     );
 
     // Filter out allowed historical files

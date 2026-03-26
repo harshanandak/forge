@@ -107,11 +107,11 @@ describe('eval-runner', () => {
       // Directory should be gone
       expect(fs.existsSync(wtPath)).toBe(false);
 
-      // Branch should be deleted
+      // Branch should be deleted — check exact match (not substring)
       const branches = execSync('git branch --list', {
         cwd: WORKTREE_ROOT,
         encoding: 'utf-8',
-      });
+      }).split('\n').map(b => b.trim().replace(/^\* /, '').replace(/^\+ /, ''));
       expect(branches).not.toContain(wtBranch);
     });
 
