@@ -69,8 +69,9 @@ const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
 const { detectHusky, migrateHusky } = require('../lib/husky-migration');
-// workflowProfiles is loaded but not currently used in the setup flow
-// const _workflowProfiles = require(path.join(packageDir, 'lib', 'workflow-profiles'));
+// workflowProfiles: module exists and is tested but not yet wired into setup flow
+// Will be activated when workflow profile selection is added to interactive setup
+// See: lib/workflow-profiles.js, test/workflow-profiles.test.js
 
 // Get the project root (let allows reassignment after --path flag handling)
 let projectRoot = process.env.INIT_CWD || process.cwd();
@@ -4169,8 +4170,18 @@ async function main() {
   } else if (command === 'rollback') {
     // Execute rollback menu
     await showRollbackMenu();
+  } else if (process.env.npm_lifecycle_event === 'postinstall') {
+    // Postinstall: show success message only, no file changes
+    // Surprising file modifications during npm/bun install break user expectations
+    // Use `bunx forge setup` for explicit file installation
+    console.log('');
+    console.log('  \u2705 Forge installed successfully!');
+    console.log('');
+    console.log('  To set up in your project:');
+    console.log('    bunx forge setup');
+    console.log('');
   } else {
-    // Default: minimal install (postinstall behavior)
+    // Explicit invocation with no command: run minimal install
     minimalInstall();
   }
 }

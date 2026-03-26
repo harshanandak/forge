@@ -199,8 +199,21 @@ function validateShip() {
   check(
     "Tests pass",
     () => {
+      // Detect package manager from lock files (same heuristic as forge.js)
+      let cmd = "npm";
+      let cmdArgs = ["test"];
+      if (fs.existsSync("bun.lockb") || fs.existsSync("bun.lock")) {
+        cmd = "bun";
+        cmdArgs = ["test"];
+      } else if (fs.existsSync("pnpm-lock.yaml")) {
+        cmd = "pnpm";
+        cmdArgs = ["test"];
+      } else if (fs.existsSync("yarn.lock")) {
+        cmd = "yarn";
+        cmdArgs = ["test"];
+      }
       try {
-        execFileSync("npm", ["test"], { stdio: "pipe" });
+        execFileSync(cmd, cmdArgs, { stdio: "pipe" });
         return true;
       } catch (err) {
         const output = ((err.stdout || "") + "\n" + (err.stderr || "")).trim();
@@ -210,7 +223,7 @@ function validateShip() {
         return false;
       }
     },
-    "Tests are failing. Fix them before shipping: npm test",
+    "Tests are failing. Fix them before shipping.",
   );
 
   check(

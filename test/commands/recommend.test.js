@@ -16,14 +16,14 @@ describe('forge recommend CLI command', () => {
   });
 
   describe('handleRecommend()', () => {
-    test('default budget mode is startup', () => {
+    test('default budget mode is free', () => {
       const output = handleRecommend({});
-      expect(output.budgetMode === 'startup').toBeTruthy();
+      expect(output.budgetMode === 'free').toBeTruthy();
     });
 
-    test('--budget free flag overrides default', () => {
-      const output = handleRecommend({ budget: 'free' });
-      expect(output.budgetMode === 'free').toBeTruthy();
+    test('--budget startup flag overrides default', () => {
+      const output = handleRecommend({ budget: 'startup' });
+      expect(output.budgetMode === 'startup').toBeTruthy();
     });
 
     test('--budget invalid produces error', () => {
