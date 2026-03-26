@@ -97,7 +97,7 @@ describe('eval-runner', () => {
     test('removes worktree and branch', async () => {
       const wt = await createEvalWorktree();
       const wtPath = wt.path;
-      const wtBranch = wt.branch;
+      const _wtBranch = wt.branch;
 
       // Worktree exists
       expect(fs.existsSync(wtPath)).toBe(true);
