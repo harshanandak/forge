@@ -20,11 +20,6 @@ describe('postinstall guard', () => {
   });
 
   test('postinstall branch does not call minimalInstall()', () => {
-    // Extract the postinstall branch (between the lifecycle check and the else)
-    const postinstallMatch = source.match(
-      /npm_lifecycle_event === 'postinstall'\)[\s\S]*?} else \{[\s\S]*?minimalInstall\(\)/
-    );
-    // The minimalInstall() call should be in the else branch, not the postinstall branch
     // Verify the postinstall block itself doesn't contain minimalInstall
     const postinstallBlock = source.match(
       /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
