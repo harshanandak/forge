@@ -41,10 +41,8 @@ atomic_jsonl_append() {
       fi
       sleep 0.1
     done
-    # Ensure cleanup on exit
-    trap 'rmdir "$lock_file" 2>/dev/null' RETURN
+    # RETURN trap handles cleanup on both success and failure
+    trap 'rmdir "$lock_file" 2>/dev/null; trap - RETURN' RETURN
     printf '%s\n' "$json_line" >> "$jsonl_file"
-    rmdir "$lock_file" 2>/dev/null
-    trap - RETURN
   fi
 }

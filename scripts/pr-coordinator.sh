@@ -52,13 +52,8 @@ cmd_dep() {
         return 1
       }
 
-      # Check for cycles
-      local cycles_output
-      cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || true
-
-      # Detect actual cycles (not "no cycles found" messages)
-      if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
-        && ! printf '%s' "$cycles_output" | grep -Eqi 'no cycles? found|no cycles? detected|no dependency cycles|0 dependency cycles|0 cycles'; then
+      # Check for cycles — use exit code as primary signal (exit 0 = no cycles)
+      if ! ${BD_CMD:-bd} dep cycles &>/dev/null; then
         # Cycle detected — rollback
         ${BD_CMD:-bd} dep remove "$issue_a" "$issue_b" 2>/dev/null || true
         echo "Error: circular dependency detected — rolled back" >&2
@@ -203,8 +198,15 @@ cmd_merge_sim() {
   local original_head
   original_head="$(git rev-parse HEAD)"
 
-  # Set up trap for crash recovery — ALWAYS clean up
-  trap '_merge_sim_cleanup "$original_branch" "$original_head"' EXIT ERR INT TERM
+  # Set up trap for crash recovery — guard flag prevents double-cleanup when
+  # ERR fires followed by EXIT (both invoke the trap in bash)
+  _merge_sim_cleanup_done=0
+  _merge_sim_cleanup_once() {
+    [[ "$_merge_sim_cleanup_done" -eq 1 ]] && return
+    _merge_sim_cleanup_done=1
+    _merge_sim_cleanup "$original_branch" "$original_head"
+  }
+  trap '_merge_sim_cleanup_once' EXIT ERR INT TERM
 
   # Checkout base branch (detached to avoid moving branch pointer)
   git checkout --detach "$base" 2>/dev/null || {
