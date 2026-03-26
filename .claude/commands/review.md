@@ -364,7 +364,13 @@ Do NOT declare /review complete until:
 1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
 2. ALL human reviewer comments are either resolved or have a reply with explanation
 3. gh pr checks <pr-number> shows all checks passing
-4. Stage transition: Run `bash scripts/beads-context.sh stage-transition <id> review premerge` → exit 0 confirmed
+4. Context check: Run `bash scripts/beads-context.sh validate <id>` and address any warnings
+5. Stage transition: Run the following → exit 0 confirmed:
+   bash scripts/beads-context.sh stage-transition <id> review premerge \
+     --summary "<all feedback addressed summary>" \
+     --decisions "<comment resolutions — valid fixes and justified rejections>" \
+     --artifacts "<fixed files, commit SHAs>" \
+     --next "<doc update needs for premerge>"
 </HARD-GATE>
 ```
 
