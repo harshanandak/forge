@@ -29,9 +29,10 @@ jobs:
 
             const pr = prs[0];
 
-            // Only enforce on PRs targeting master
-            if (pr.base.ref !== 'master') {
-              console.log(`⏭️ Skipping: PR targets ${pr.base.ref}, not master`);
+            // Only enforce on PRs targeting the default branch (master or main)
+            const defaultBranch = context.payload.repository?.default_branch || 'master';
+            if (pr.base.ref !== defaultBranch) {
+              console.log(`⏭️ Skipping: PR targets ${pr.base.ref}, not ${defaultBranch}`);
               return;
             }
 

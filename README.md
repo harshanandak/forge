@@ -222,8 +222,8 @@ bunx forge setup --merge=smart    # Intelligent merge
 - Infers project stage (new, active, stable)
 - Saves to `.forge/context.json`
 
-**Workflow Profiles**
-- Adapts workflow based on work type (3-8 stages):
+**Workflow Profiles** *(planned — not yet wired into setup)*
+- Will adapt workflow based on work type (3-8 stages):
   - `critical`: Full 8-stage workflow (auth, payments, security-sensitive)
   - `standard`: 7-stage workflow (typical features)
   - `refactor`: Behavior-preserving 5-stage workflow

@@ -86,3 +86,5 @@ test-env/fixtures/*
 .dolt/
 .beads/*.db
 .beads-credential-key
+
+# Note: .beads/*.db is scoped above — avoid global *.db which hides legitimate database files
