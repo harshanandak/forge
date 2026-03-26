@@ -36,9 +36,12 @@ assert_not_contains() {
 }
 
 # Create a temporary git repo with stale and active worktrees
+# Uses /c/tmp for Windows Git Bash compatibility (mktemp -d can create paths git can't resolve)
 setup_test_worktree() {
+  local base_tmp="/c/tmp/forge-stale-test"
+  mkdir -p "$base_tmp"
   local repo
-  repo="$(mktemp -d)"
+  repo="$(mktemp -d "$base_tmp/repo.XXXXXX")"
   CLEANUP_DIRS+=("$repo")
   git -C "$repo" init -b master &>/dev/null
   git -C "$repo" config user.email "test@test.com"
@@ -51,13 +54,20 @@ setup_test_worktree() {
   mkdir -p "$repo/.worktrees"
 
   # Create stale worktree (old commit — 6 days ago)
-  git -C "$repo" worktree add "$repo/.worktrees/stale" -b feat/stale &>/dev/null
+  # Use separate git init instead of worktree add (avoids cross-platform path issues)
+  mkdir -p "$repo/.worktrees/stale"
+  git -C "$repo/.worktrees/stale" init -b feat/stale &>/dev/null
+  git -C "$repo/.worktrees/stale" config user.email "test@test.com"
+  git -C "$repo/.worktrees/stale" config user.name "Test"
   printf '%s' "stale" > "$repo/.worktrees/stale/stale.txt"
   git -C "$repo/.worktrees/stale" add -A &>/dev/null
   GIT_COMMITTER_DATE="2026-03-20T00:00:00+0000" git -C "$repo/.worktrees/stale" commit -m "old commit" --date="2026-03-20T00:00:00+0000" &>/dev/null
 
   # Create active worktree (recent commit — now)
-  git -C "$repo" worktree add "$repo/.worktrees/active" -b feat/active &>/dev/null
+  mkdir -p "$repo/.worktrees/active"
+  git -C "$repo/.worktrees/active" init -b feat/active &>/dev/null
+  git -C "$repo/.worktrees/active" config user.email "test@test.com"
+  git -C "$repo/.worktrees/active" config user.name "Test"
   printf '%s' "active" > "$repo/.worktrees/active/active.txt"
   git -C "$repo/.worktrees/active" add -A &>/dev/null
   git -C "$repo/.worktrees/active" commit -m "recent commit" &>/dev/null
@@ -67,13 +77,6 @@ setup_test_worktree() {
 
 cleanup() {
   for d in "${CLEANUP_DIRS[@]}"; do
-    # Remove worktrees before deleting temp dir
-    git -C "$d" worktree list 2>/dev/null | while IFS= read -r line; do
-      local wt_path
-      wt_path="$(printf '%s' "$line" | awk '{print $1}')"
-      [[ "$wt_path" == "$d" ]] && continue
-      git -C "$d" worktree remove --force "$wt_path" 2>/dev/null || true
-    done
     rm -rf "$d" 2>/dev/null || true
   done
 }
@@ -114,7 +117,7 @@ assert_contains "stale still flagged at 1h" "STALE: stale" "$output3"
 
 echo ""
 echo "Test 4: Empty .worktrees/ directory"
-empty_repo="$(mktemp -d)"
+empty_repo="$(mktemp -d /c/tmp/forge-stale-test/empty.XXXXXX)"
 CLEANUP_DIRS+=("$empty_repo")
 git -C "$empty_repo" init -b master &>/dev/null
 git -C "$empty_repo" config user.email "test@test.com"
@@ -133,7 +136,7 @@ assert_contains "reports no worktrees" "No worktrees found" "$output4"
 
 echo ""
 echo "Test 5: Symlink outside repo skipped with WARNING"
-outside_dir="$(mktemp -d)"
+outside_dir="$(mktemp -d /c/tmp/forge-stale-test/outside.XXXXXX)"
 CLEANUP_DIRS+=("$outside_dir")
 mkdir -p "$outside_dir/evil"
 # Create a symlink inside .worktrees pointing outside the repo
@@ -154,7 +157,7 @@ fi
 
 echo ""
 echo "Test 6: Non-existent .worktrees/ directory"
-nodir_repo="$(mktemp -d)"
+nodir_repo="$(mktemp -d /c/tmp/forge-stale-test/nodir.XXXXXX)"
 CLEANUP_DIRS+=("$nodir_repo")
 git -C "$nodir_repo" init -b master &>/dev/null
 git -C "$nodir_repo" config user.email "test@test.com"

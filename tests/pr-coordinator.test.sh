@@ -45,12 +45,12 @@ output="$(bash "$PR_COORD" dep 2>&1)"; rc=$?
 assert_exit_code "dep no-args exits 1" 1 "$rc"
 assert_contains "dep no-args shows usage" "Usage:" "$output"
 
-# remaining stubs are reachable
-for cmd in rebase-check stale-worktrees; do
-  output="$(bash "$PR_COORD" "$cmd" 2>&1)"; rc=$?
-  assert_exit_code "$cmd is reachable (exits 0)" 0 "$rc"
-  assert_contains "$cmd returns stub" "not implemented" "$output"
-done
+# implemented commands are reachable (no longer stubs)
+output="$(bash "$PR_COORD" rebase-check 2>&1)"; rc=$?
+assert_exit_code "rebase-check is reachable (exits 0)" 0 "$rc"
+
+output="$(bash "$PR_COORD" stale-worktrees 2>&1)"; rc=$?
+assert_exit_code "stale-worktrees is reachable (exits 0)" 0 "$rc"
 
 echo ""
 echo "── Input Validation ──"

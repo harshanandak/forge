@@ -9,7 +9,8 @@ FAIL=0
 TEST_TMP=""
 
 setup() {
-  TEST_TMP="$(mktemp -d)"
+  mkdir -p /c/tmp/forge-integ-test
+  TEST_TMP="$(mktemp -d /c/tmp/forge-integ-test/run.XXXXXX)"
   mkdir -p "$TEST_TMP/mock"
 }
 
