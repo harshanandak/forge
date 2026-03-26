@@ -174,6 +174,56 @@ Task 2: Validation logic
 
 **Load these files when you need detailed instructions for a specific stage.**
 
+## Descriptive Context Convention
+
+Every stage transition should carry structured context so the next stage (or a new session) can resume without re-reading the full design doc. This convention is **advisory** — warnings are informational, not blocking.
+
+### Required Fields at Each Stage Exit
+
+| Stage Exit | Summary | Decisions | Artifacts | Next |
+|------------|---------|-----------|-----------|------|
+| /plan      | Design approach chosen | Key trade-offs resolved | Design doc, task list paths | First dev task focus |
+| /dev       | Tasks completed, gate count | Spec gaps encountered | Changed files, test files | Validation priorities |
+| /validate  | All checks pass/fail summary | Failures diagnosed | Scripts/commands run | Ship readiness |
+| /ship      | PR created, checks pending | Template sections filled | PR URL, branch name | Review focus areas |
+| /review    | All feedback addressed | Comment resolutions | Fixed files, commit SHAs | Doc update needs |
+| /premerge  | Docs updated, CI green | N/A | Updated doc files | Merge instructions |
+
+### Validation Command
+
+Run at each stage exit to check for missing context:
+
+```bash
+bash scripts/beads-context.sh validate <beads-issue-id>
+```
+
+This checks: (1) issue has a description, (2) at least one stage transition exists, (3) most recent transition has a summary, (4) design metadata is set if past the plan stage. Always exits 0 (advisory).
+
+### Field Definitions
+
+- **Summary**: 1-2 sentence recap of what was accomplished in this stage. Example: `--summary "All 5 tasks done, 1 decision gate fired"`
+- **Decisions**: Key choices made during this stage that affect downstream work. Example: `--decisions "Used streaming parser over DOM for memory efficiency"`
+- **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/plans/2026-03-26-parser-design.md"`
+- **Next**: Guidance for the next stage on what to focus on. Example: `--next "Run lint first — streaming approach may trigger no-await rule"`
+
+### Usage in Stage Transitions
+
+```bash
+# Basic (backward compatible)
+bash scripts/beads-context.sh stage-transition <id> dev validate
+
+# With context fields (recommended)
+bash scripts/beads-context.sh stage-transition <id> dev validate \
+  --summary "All 5 tasks done, 0 gates fired" \
+  --decisions "Used approach A per design doc" \
+  --artifacts "lib/foo.js test/foo.test.js" \
+  --next "Run type check and lint"
+```
+
+### Enforcement Level
+
+This convention is **advisory only**. The `validate` subcommand prints warnings but always exits 0. It does not block any stage transition. The goal is to build good habits, not to create friction.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 
