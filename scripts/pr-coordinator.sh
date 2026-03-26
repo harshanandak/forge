@@ -165,8 +165,245 @@ cmd_dep() {
       ;;
   esac
 }
-cmd_merge_sim() { echo "merge-sim: not implemented"; }
-cmd_merge_order() { echo "merge-order: not implemented"; }
+cmd_merge_sim() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: pr-coordinator.sh merge-sim <branch> [--base=<base>]" >&2
+    return 1
+  fi
+
+  local branch="$1"
+  shift
+  local base="master"
+
+  # Parse optional --base flag
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base=*) base="${1#--base=}"; shift ;;
+      *) echo "Error: unknown flag '$1'" >&2; return 1 ;;
+    esac
+  done
+
+  # Validate branch names (defense in depth — dispatcher also validates)
+  validate_branch_name "$branch" || return 2
+  validate_branch_name "$base" || return 2
+
+  # Verify branches exist
+  if ! git rev-parse --verify "$branch" &>/dev/null; then
+    echo "Error: branch '$branch' does not exist" >&2
+    return 1
+  fi
+  if ! git rev-parse --verify "$base" &>/dev/null; then
+    echo "Error: base branch '$base' does not exist" >&2
+    return 1
+  fi
+
+  # Save current state
+  local original_branch
+  original_branch="$(git rev-parse --abbrev-ref HEAD)"
+  local original_head
+  original_head="$(git rev-parse HEAD)"
+
+  # Set up trap for crash recovery — ALWAYS clean up
+  trap '_merge_sim_cleanup "$original_branch" "$original_head"' EXIT ERR INT TERM
+
+  # Checkout base branch (detached to avoid moving branch pointer)
+  git checkout --detach "$base" 2>/dev/null || {
+    echo "Error: failed to checkout base '$base'" >&2
+    trap - EXIT ERR INT TERM
+    return 1
+  }
+
+  # Attempt merge
+  local merge_output
+  if merge_output="$(git merge --no-commit --no-ff "$branch" 2>&1)"; then
+    # Clean merge — no conflicts
+    git merge --abort 2>/dev/null || true
+    git checkout "$original_branch" 2>/dev/null || git checkout "$original_head" 2>/dev/null
+    trap - EXIT ERR INT TERM
+    echo "No conflicts detected with $base"
+    return 0
+  else
+    # Conflicts detected
+    local conflicted_files
+    conflicted_files="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
+    git merge --abort 2>/dev/null || true
+    git checkout "$original_branch" 2>/dev/null || git checkout "$original_head" 2>/dev/null
+    trap - EXIT ERR INT TERM
+
+    if [[ -n "$conflicted_files" ]]; then
+      echo "Conflicts detected with $base:"
+      printf '%s\n' "$conflicted_files"
+    else
+      echo "Merge failed (non-conflict reason):"
+      printf '%s\n' "$merge_output"
+    fi
+    return 1
+  fi
+}
+
+_merge_sim_cleanup() {
+  local original_branch="$1"
+  local original_head="$2"
+  git merge --abort 2>/dev/null || true
+  git checkout "$original_branch" 2>/dev/null || git checkout "$original_head" 2>/dev/null || true
+}
+cmd_merge_order() {
+  local format="text"
+
+  # Parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --format=*) format="${1#--format=}"; shift ;;
+      *) echo "Error: unknown flag '$1'" >&2; return 1 ;;
+    esac
+  done
+
+  # Check for cycles first
+  local cycles_output
+  cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || true
+  if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
+    && ! printf '%s' "$cycles_output" | grep -Eqi 'no cycles? found|no cycles? detected|no dependency cycles|0 dependency cycles|0 cycles'; then
+    echo "Error: dependency cycle detected — cannot compute merge order" >&2
+    printf '%s\n' "$cycles_output" >&2
+    return 1
+  fi
+
+  # Get all open/in_progress issues
+  local issues_output
+  issues_output="$(${BD_CMD:-bd} list --status=open,in_progress 2>&1)" || {
+    echo "Error: failed to list issues" >&2
+    return 1
+  }
+
+  if [[ -z "$issues_output" ]]; then
+    echo "Nothing to merge — no open issues"
+    return 0
+  fi
+
+  # Extract issue IDs
+  local -a all_issues=()
+  while IFS= read -r line; do
+    local id
+    id="$(printf '%s' "$line" | grep -oE '[a-z]+-[a-z0-9]+' | head -1)" || continue
+    [[ -n "$id" ]] && all_issues+=("$id")
+  done <<< "$issues_output"
+
+  if [[ ${#all_issues[@]} -eq 0 ]]; then
+    echo "Nothing to merge — no open issues"
+    return 0
+  fi
+
+  # Build adjacency list and in-degree count
+  # dependency: A depends on B means B must merge before A
+  # So edge is B -> A (B blocks A)
+  local -A in_degree=()
+  local -A adj=()  # adj[B] = "A1 A2 A3" (B blocks these)
+
+  for id in "${all_issues[@]}"; do
+    in_degree[$id]=0
+    adj[$id]=""
+  done
+
+  # For each issue, get its dependencies
+  for id in "${all_issues[@]}"; do
+    local show_out
+    show_out="$(${BD_CMD:-bd} show "$id" 2>&1)" || continue
+
+    # Parse DEPENDS ON section — extract issue IDs
+    local deps
+    deps="$(printf '%s' "$show_out" | sed -n '/^DEPENDS ON/,/^$/p' | grep -oE '[a-z]+-[a-z0-9]+' || true)"
+
+    while IFS= read -r dep_id; do
+      [[ -z "$dep_id" ]] && continue
+      # Only count deps that are in our open issues list
+      local found=0
+      for oid in "${all_issues[@]}"; do
+        if [[ "$oid" == "$dep_id" ]]; then
+          found=1
+          break
+        fi
+      done
+      [[ "$found" -eq 0 ]] && continue
+
+      # dep_id blocks id (dep_id must merge first)
+      in_degree[$id]=$(( ${in_degree[$id]} + 1 ))
+      adj[$dep_id]="${adj[$dep_id]} $id"
+    done <<< "$deps"
+  done
+
+  # Kahn's algorithm
+  local -a queue=()
+  local -a result=()
+
+  # Find all nodes with in-degree 0
+  for id in "${all_issues[@]}"; do
+    if [[ "${in_degree[$id]}" -eq 0 ]]; then
+      queue+=("$id")
+    fi
+  done
+
+  while [[ ${#queue[@]} -gt 0 ]]; do
+    # Pop first element
+    local current="${queue[0]}"
+    queue=("${queue[@]:1}")
+    result+=("$current")
+
+    # Reduce in-degree of neighbors
+    for neighbor in ${adj[$current]}; do
+      in_degree[$neighbor]=$(( ${in_degree[$neighbor]} - 1 ))
+      if [[ "${in_degree[$neighbor]}" -eq 0 ]]; then
+        queue+=("$neighbor")
+      fi
+    done
+  done
+
+  # Output
+  if [[ "$format" == "json" ]]; then
+    printf '%s\n' "${result[@]}" | jq -R . | jq -s -c '.'
+  else
+    if [[ ${#result[@]} -eq 0 ]]; then
+      echo "Nothing to merge"
+    elif [[ ${#result[@]} -eq 1 ]]; then
+      echo "Ready to merge: ${result[0]}"
+    else
+      # Check if all are independent (all in-degree 0 initially)
+      local all_independent=1
+      for id in "${all_issues[@]}"; do
+        local show_out
+        show_out="$(${BD_CMD:-bd} show "$id" 2>&1)" || continue
+        local deps
+        deps="$(printf '%s' "$show_out" | sed -n '/^DEPENDS ON/,/^$/p' | grep -oE '[a-z]+-[a-z0-9]+' || true)"
+        # Check if any dep is in our open list
+        while IFS= read -r dep_id; do
+          [[ -z "$dep_id" ]] && continue
+          for oid in "${all_issues[@]}"; do
+            if [[ "$oid" == "$dep_id" ]]; then
+              all_independent=0
+              break 2
+            fi
+          done
+        done <<< "$deps"
+        [[ "$all_independent" -eq 0 ]] && break
+      done
+
+      if [[ "$all_independent" -eq 1 ]]; then
+        echo "Can merge in any order:"
+        local i=1
+        for id in "${result[@]}"; do
+          echo "  $i. $id"
+          i=$((i + 1))
+        done
+      else
+        echo "Recommended merge order:"
+        local i=1
+        for id in "${result[@]}"; do
+          echo "  $i. $id"
+          i=$((i + 1))
+        done
+      fi
+    fi
+  fi
+}
 cmd_rebase_check() { echo "rebase-check: not implemented"; }
 cmd_auto_label() { echo "auto-label: not implemented"; }
 cmd_stale_worktrees() { echo "stale-worktrees: not implemented"; }

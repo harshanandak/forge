@@ -59,9 +59,10 @@ echo "── Input Validation ──"
 output="$(bash "$PR_COORD" merge-sim ';rm -rf /' 2>&1)"; rc=$?
 assert_exit_code "merge-sim bad branch exits 2" 2 "$rc"
 
-# merge-sim with valid branch
+# merge-sim with valid branch name (passes dispatcher validation, exits 1 because branch doesn't exist)
 output="$(bash "$PR_COORD" merge-sim feat/test-branch 2>&1)"; rc=$?
-assert_exit_code "merge-sim valid branch exits 0" 0 "$rc"
+assert_exit_code "merge-sim valid branch passes validation (not exit 2)" 1 "$rc"
+assert_contains "merge-sim valid branch reports not found" "does not exist" "$output"
 
 # auto-label with bad issue-id exits 2
 output="$(bash "$PR_COORD" auto-label ';drop table' 2>&1)"; rc=$?
