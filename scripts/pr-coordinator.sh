@@ -404,7 +404,73 @@ cmd_merge_order() {
     fi
   fi
 }
-cmd_rebase_check() { echo "rebase-check: not implemented"; }
+cmd_rebase_check() {
+  local after_merge=""
+  local base="master"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --after-merge=*) after_merge="${1#--after-merge=}"; shift ;;
+      --base=*) base="${1#--base=}"; shift ;;
+      *) echo "Error: unknown flag '$1'" >&2; return 1 ;;
+    esac
+  done
+
+  # Get list of feature branches (not merged into base)
+  local branches
+  branches="$(git branch --no-merged "$base" --format='%(refname:short)' 2>/dev/null | grep -v '^HEAD' || true)"
+
+  if [[ -z "$branches" ]]; then
+    echo "No branches need rebasing"
+    return 0
+  fi
+
+  local found_any=0
+
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    [[ "$branch" == "$base" ]] && continue
+
+    # Files changed on the branch (relative to base)
+    local branch_files
+    branch_files="$(git log --name-only --pretty=format: "$base".."$branch" 2>/dev/null | sort -u | grep -v '^$' || true)"
+
+    # Files changed on base since branch diverged
+    local base_files
+    if [[ -n "$after_merge" ]]; then
+      # Only check overlap with specific merged branch's changes
+      base_files="$(git log --name-only --pretty=format: "$branch".."$after_merge" 2>/dev/null | sort -u | grep -v '^$' || true)"
+    else
+      base_files="$(git log --name-only --pretty=format: "$branch".."$base" 2>/dev/null | sort -u | grep -v '^$' || true)"
+    fi
+
+    if [[ -z "$base_files" ]]; then
+      continue  # Branch is up-to-date with base
+    fi
+
+    # Check for file overlap
+    local overlap
+    overlap="$(comm -12 <(printf '%s\n' "$branch_files" | sort) <(printf '%s\n' "$base_files" | sort) 2>/dev/null || true)"
+
+    found_any=1
+    if [[ -n "$overlap" ]]; then
+      echo "CONFLICT REBASE: $branch"
+      echo "  Overlapping files:"
+      printf '%s\n' "$overlap" | while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        echo "    - $f"
+      done
+    else
+      echo "CLEAN REBASE: $branch (behind but no file overlap)"
+    fi
+  done <<< "$branches"
+
+  if [[ "$found_any" -eq 0 ]]; then
+    echo "No branches need rebasing"
+  fi
+
+  return 0
+}
 cmd_auto_label() { echo "auto-label: not implemented"; }
 cmd_stale_worktrees() { echo "stale-worktrees: not implemented"; }
 
