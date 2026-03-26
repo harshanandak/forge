@@ -129,3 +129,112 @@ No recommendation needed — they can merge in any order. Only recommend orderin
 Use 7-dimension rubric scoring per /dev decision gate:
 - >= 80% confidence: proceed and document the decision
 - < 80% confidence: stop and ask user
+
+---
+
+## Technical Research (Phase 2)
+
+### DRY Check Results
+
+- **Zero existing PR coordination logic** in the codebase — pr-coordinator.sh is fully greenfield
+- **No merge simulation, merge ordering, rebase guidance, or PR label automation** exists anywhere
+- **file-index.sh** has a clear insertion point for `auto-update` subcommand (after line 366, following existing `update-from-tasks`)
+- **Workflow gate integration**: `/plan` command has conflict check at lines 54-75, `/ship` has freshness check at lines 32-47 — both have clear injection points for new soft-block prompts
+
+### Existing Script Improvements (fix during implementation)
+
+These issues in forge-w69s scripts should be fixed as part of this feature since they directly affect reliability of the parallel PR workflow:
+
+#### Critical (P0 — must fix)
+
+1. **JSONL concurrent append not safe** — `file-index.sh` lines 130, 166, 361. Multiple processes appending to `.beads/file-index.jsonl` simultaneously can corrupt lines. **Fix**: Add `flock -w 5` locking on a `.lock` file during append operations.
+
+2. **jq pipe errors not propagated** — `file-index.sh` lines 323, 328. Pipeline `grep | jq -R . | jq -s -c` fails silently; `set -o pipefail` not set in sourced function context. **Fix**: Add `set -o pipefail` in functions that use jq pipelines, or check intermediate results.
+
+3. **Source command failures silent** — `conflict-detect.sh` line 22, `sync-utils.sh` lines 325-329. `source "$SCRIPT_DIR/file-index.sh"` fails silently if file missing/malformed. **Fix**: Add `source ... || die "Failed to source..."`.
+
+#### High (P1 — should fix)
+
+4. **sanitize() duplicated 4x** — beads-context.sh:28, dep-guard.sh:48, file-index.sh:35, sync-utils.sh variant. **Fix**: Extract to shared `scripts/lib/sanitize.sh` sourced by all scripts. Backward compatible — existing function names preserved.
+
+5. **Missing error check on file index update after sync** — sync-utils.sh line 298. `_auto_sync_update_file_index` called with no return code check. **Fix**: Check return code, warn if file index update fails.
+
+6. **jq not checked before use** — sync-utils.sh line 346. `command -v jq` returns 0 (silent skip) but downstream code may still call jq. **Fix**: Fail loudly with error message.
+
+#### Medium (P2 — fix if touched)
+
+7. **Empty JSONL handling inconsistent** — file-index.sh returns `"[]"`, sync-utils.sh silently skips. **Fix**: Standardize to return empty array `[]` consistently.
+
+8. **dep-guard.sh cycle detection brittle** — Line 38 uses `grep -Eqi` for specific output strings. **Fix**: Check exit code rather than output string matching.
+
+### OWASP Top 10 Analysis
+
+| Category | Applies? | Risk | Mitigation |
+|----------|----------|------|------------|
+| **A01 Broken Access Control** | Partially | Worktree scanning could follow symlinks outside repo | Use `realpath` + validate path starts with repo root before processing |
+| **A02 Cryptographic Failures** | No | No secrets, tokens, or encryption involved | N/A |
+| **A03 Injection** | **YES — P0** | Branch names, PR numbers interpolated into `git merge`, `gh pr edit`, `git log` shell commands | Validate: branches `^[a-zA-Z0-9._/@-]+$`, PR numbers `^[0-9]+$`, labels `^[a-zA-Z0-9._-]+$`. Double-quote all variables. Use `--` before branch args. Reuse existing `sanitize()` from sync-utils.sh |
+| **A04 Insecure Design** | **YES — P0** | Race condition: two agents appending to JSONL simultaneously. Crash during merge simulation leaves dirty git state | `flock -w 5` for JSONL writes. `trap 'git merge --abort 2>/dev/null' EXIT ERR INT` for merge simulation |
+| **A05 Security Misconfiguration** | Partially | Labels created by automation could mislead reviewers if naming is ambiguous | Use namespaced labels: `forge/has-deps`, `forge/blocks-others`, `forge/needs-rebase` |
+| **A06 Vulnerable Components** | No | No external dependencies added | N/A |
+| **A07 Auth Failures** | No | Local trust model — git credentials already authenticated | N/A |
+| **A08 Data Integrity** | Partially | Topological sort with undetected cycle could recommend wrong merge order | Always run `bd dep cycles` before computing merge order. Abort if cycles found |
+| **A09 Logging** | Yes | Override decisions (proceeding despite conflicts) need audit trail | Log all soft-block overrides via `bd comments add`. Include: who, what conflict, why proceeding |
+| **A10 SSRF** | No | No network requests beyond git remote operations | N/A |
+
+**Validation functions to implement in pr-coordinator.sh:**
+```bash
+validate_branch_name()  # ^[a-zA-Z0-9._/@-]+$ — reuse pattern from sync-utils.sh
+validate_pr_number()    # ^[0-9]+$
+validate_label_name()   # ^[a-zA-Z0-9._/-]+$
+safe_merge_simulation() # trap-guarded git merge --no-commit --no-ff + abort
+atomic_jsonl_append()   # flock-based append to prevent concurrent corruption
+```
+
+### TDD Test Scenarios
+
+#### pr-coordinator.sh tests
+
+| # | Scenario | Type | Input | Expected |
+|---|----------|------|-------|----------|
+| 1 | **Happy path: dep add** | Unit | `dep add forge-aaa forge-bbb` | Exit 0, `bd set-state` called with pr_depends_on including forge-bbb |
+| 2 | **Circular dep rejected** | Error | `dep add forge-aaa forge-bbb` when forge-bbb already depends on forge-aaa | Exit 1, error message "circular dependency detected" |
+| 3 | **Merge order — linear chain** | Unit | 3 issues: A→B→C | Output: "1. C, 2. B, 3. A" (topological sort) |
+| 4 | **Merge order — independent PRs** | Edge | 2 issues with no deps | Output: both listed as "can merge in any order" |
+| 5 | **Merge order — cycle detected** | Error | A→B→A | Exit 1, abort with cycle error |
+| 6 | **Merge simulation — clean** | Unit | Branch with no conflicts vs master | Exit 0, "No conflicts detected" |
+| 7 | **Merge simulation — conflicts** | Unit | Branch with deliberate conflict | Exit 1, list of conflicted files |
+| 8 | **Merge simulation — crash recovery** | Edge | Simulate interrupt during merge | Git state clean after trap fires (no leftover MERGE_HEAD) |
+| 9 | **Rebase check — needs rebase** | Unit | Branch behind master with overlapping files | Exit 0, output lists branch + reason |
+| 10 | **Rebase check — clean** | Unit | Branch up-to-date or no overlap | Exit 0, "No branches need rebasing" |
+| 11 | **PR label auto-tag — has deps** | Unit | Issue with pr_depends_on set | `gh pr edit --add-label forge/has-deps` called |
+| 12 | **PR label auto-tag — no deps** | Unit | Issue with empty pr_depends_on | No label added (or removed if previously set) |
+| 13 | **Abandoned worktree — stale** | Unit | Worktree with last commit >48h ago | Flagged as "potentially abandoned" |
+| 14 | **Abandoned worktree — active** | Unit | Worktree with recent commit | Not flagged |
+| 15 | **Input validation — bad branch name** | Security | Branch name with `;rm -rf /` | Exit 2, rejected by validate_branch_name |
+| 16 | **Input validation — bad PR number** | Security | PR number `123; cat /etc/passwd` | Exit 2, rejected by validate_pr_number |
+
+#### file-index.sh auto-update tests
+
+| # | Scenario | Type | Input | Expected |
+|---|----------|------|-------|----------|
+| 17 | **Auto-update after commit** | Unit | Issue ID + list of changed files | New JSONL entry appended with updated files/modules |
+| 18 | **Auto-update concurrent safety** | Edge | Two parallel auto-update calls | Both entries written correctly, no corruption |
+| 19 | **Auto-update with flock timeout** | Error | Lock held >5s by another process | Exit 1, warning "file index locked" |
+
+#### Workflow gate integration tests
+
+| # | Scenario | Type | Input | Expected |
+|---|----------|------|-------|----------|
+| 20 | **Soft-block at /ship — conflicts found** | Integration | Two branches modifying same file | Warning displayed, confirmation prompt shown |
+| 21 | **Soft-block at /ship — no conflicts** | Integration | Independent branches | No prompt, proceed silently |
+| 22 | **Soft-block at /plan — stale index** | Edge | File index >15 min old | Staleness warning + conflict check still runs |
+
+### Approach Confirmation
+
+**Confirmed approach**: Extend existing scripts (Approach 1)
+- New: `scripts/pr-coordinator.sh` + `tests/pr-coordinator.test.sh`
+- Extend: `scripts/file-index.sh` (add `auto-update` + `flock` locking)
+- Extend: `/plan` and `/ship` commands (add soft-block prompts)
+- Fix: P0 issues in existing scripts (JSONL locking, pipefail, source checks)
+- Extract: `scripts/lib/sanitize.sh` (deduplicate sanitize functions)
