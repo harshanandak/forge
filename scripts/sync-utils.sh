@@ -11,6 +11,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   set -euo pipefail
 fi
 
+# Source shared sanitize library
+_SU_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_SU_SCRIPT_DIR/lib/sanitize.sh"
+
 # ── Session Identity ───────────────────────────────────────────────────
 
 # Validates a session identity string against the allowlist regex.
@@ -74,28 +78,6 @@ get_session_identity() {
   fi
 
   printf '%s' "$identity"
-}
-
-# ── Input Sanitization ─────────────────────────────────────────────────
-
-# Sanitize a config value: strip shell-injection patterns (OWASP A03).
-# Removes: backticks, $(...), semicolons, pipes, newlines.
-# Usage: sanitized="$(sanitize_config_value "$raw")"
-sanitize_config_value() {
-  local val="$1"
-  # Remove backtick command substitution
-  val="${val//\`/}"
-  # Remove $(...) command substitution patterns (loop handles nested)
-  val="$(printf '%s' "$val" | sed -e ':loop' -e 's/\$([^()]*)//g' -e 't loop')"
-  # Remove semicolons (command chaining)
-  val="${val//;/}"
-  # Remove pipes (command chaining)
-  val="${val//|/}"
-  # Collapse newlines to spaces
-  val="$(printf '%s' "$val" | tr '\n' ' ')"
-  # Trim leading/trailing whitespace
-  val="$(printf '%s' "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  printf '%s' "$val"
 }
 
 # ── Config Reading ─────────────────────────────────────────────────────
@@ -278,11 +260,11 @@ _SYNC_STALENESS_THRESHOLD=900
 #             and updates file index from all in-progress issues' task files.
 #
 # Environment overrides (for testing):
-#   BD_SYNC_CMD — command to run instead of `bd sync` (default: "bd sync")
+#   BD_SYNC_CMD — command to run instead of `bd dolt pull && bd dolt push` (default: "bd dolt pull && bd dolt push")
 #   FILE_INDEX_ROOT — root directory for file-index.sh (default: repo_dir)
 auto_sync() {
   local repo_dir="${1:-.}"
-  local sync_cmd="${BD_SYNC_CMD:-bd sync}"
+  local sync_cmd="${BD_SYNC_CMD:-bd dolt pull && bd dolt push}"
   local last_sync_file="$repo_dir/.beads/.last-sync"
 
   # Ensure .beads directory exists
@@ -295,7 +277,9 @@ auto_sync() {
     date +%s > "$last_sync_file"
 
     # Update file index from in-progress issues' task files
-    _auto_sync_update_file_index "$repo_dir"
+    _auto_sync_update_file_index "$repo_dir" || {
+      echo "Warning: file index update failed after sync" >&2
+    }
   else
     # Failure: warn but continue (non-blocking)
     local last_ts="unknown"
@@ -340,7 +324,8 @@ _auto_sync_update_file_index() {
 
   # Check jq is available
   if ! command -v jq &>/dev/null; then
-    return 0
+    echo "Warning: jq not found — file index update skipped" >&2
+    return 1
   fi
 
   # Extract in-progress issue IDs (LWW resolution: group by id, take last, filter in_progress)
