@@ -147,7 +147,7 @@ pushd "$repo" > /dev/null
 original_branch="$(git rev-parse --abbrev-ref HEAD)"
 
 # Run a clean merge-sim
-bash "$PR_COORD" merge-sim feat/clean 2>&1 > /dev/null; rc=$?
+bash "$PR_COORD" merge-sim feat/clean > /dev/null 2>&1; rc=$?
 
 # Verify no MERGE_HEAD left behind
 if [[ -f "$repo/.git/MERGE_HEAD" ]]; then
@@ -161,7 +161,7 @@ current_branch="$(git rev-parse --abbrev-ref HEAD)"
 assert_contains "original branch restored after clean" "$original_branch" "$current_branch"
 
 # Run a conflict merge-sim
-bash "$PR_COORD" merge-sim feat/conflict 2>&1 > /dev/null || true
+bash "$PR_COORD" merge-sim feat/conflict > /dev/null 2>&1 || true
 
 # Verify no MERGE_HEAD left behind
 if [[ -f "$repo/.git/MERGE_HEAD" ]]; then

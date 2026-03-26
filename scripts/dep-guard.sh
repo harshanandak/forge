@@ -614,17 +614,9 @@ cmd_apply_decision() {
     die "Failed to add dependency ${dependent_issue} -> ${depends_on_issue}"
   }
 
-  local cycles_output
-  cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || {
+  # Check for cycles — use exit code as primary signal
+  if ! ${BD_CMD:-bd} dep cycles &>/dev/null; then
     rollback_dependency "$dependent_issue" "$depends_on_issue"
-    echo "$cycles_output" >&2
-    die "Failed to validate dependency cycles"
-  }
-
-  if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
-    && ! cycles_output_is_safe "$cycles_output"; then
-    rollback_dependency "$dependent_issue" "$depends_on_issue"
-    echo "$cycles_output" >&2
     die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
   fi
 

@@ -120,7 +120,7 @@ cmd_dep() {
       # For each issue, show its dependencies
       local issue_id
       while IFS= read -r line; do
-        issue_id="$(printf '%s' "$line" | grep -oE '[a-z]+-[a-z0-9]+' | head -1)" || continue
+        issue_id="$(printf '%s' "$line" | grep -oE '[A-Za-z]+-[A-Za-z0-9]+' | head -1)" || continue
         [[ -z "$issue_id" ]] && continue
 
         local show_out
@@ -168,7 +168,8 @@ cmd_merge_sim() {
 
   local branch="$1"
   shift
-  local base="master"
+  local base
+  base="$(get_sync_branch 2>/dev/null || echo "master")"
 
   # Parse optional --base flag
   while [[ $# -gt 0 ]]; do
@@ -282,7 +283,7 @@ cmd_merge_order() {
   local -a all_issues=()
   while IFS= read -r line; do
     local id
-    id="$(printf '%s' "$line" | grep -oE '[a-z]+-[a-z0-9]+' | head -1)" || continue
+    id="$(printf '%s' "$line" | grep -oE '[A-Za-z]+-[A-Za-z0-9]+' | head -1)" || continue
     [[ -n "$id" ]] && all_issues+=("$id")
   done <<< "$issues_output"
 
@@ -309,7 +310,7 @@ cmd_merge_order() {
 
     # Parse DEPENDS ON section — extract issue IDs
     local deps
-    deps="$(printf '%s' "$show_out" | sed -n '/^DEPENDS ON/,/^$/p' | grep -oE '[a-z]+-[a-z0-9]+' || true)"
+    deps="$(printf '%s' "$show_out" | sed -n '/^DEPENDS ON/,/^$/p' | grep -oE '[A-Za-z]+-[A-Za-z0-9]+' || true)"
 
     while IFS= read -r dep_id; do
       [[ -z "$dep_id" ]] && continue
@@ -370,7 +371,7 @@ cmd_merge_order() {
         local show_out
         show_out="$(${BD_CMD:-bd} show "$id" 2>&1)" || continue
         local deps
-        deps="$(printf '%s' "$show_out" | sed -n '/^DEPENDS ON/,/^$/p' | grep -oE '[a-z]+-[a-z0-9]+' || true)"
+        deps="$(printf '%s' "$show_out" | sed -n '/^DEPENDS ON/,/^$/p' | grep -oE '[A-Za-z]+-[A-Za-z0-9]+' || true)"
         # Check if any dep is in our open list
         while IFS= read -r dep_id; do
           [[ -z "$dep_id" ]] && continue
@@ -404,7 +405,8 @@ cmd_merge_order() {
 }
 cmd_rebase_check() {
   local after_merge=""
-  local base="master"
+  local base
+  base="$(get_sync_branch 2>/dev/null || echo "master")"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -450,8 +452,8 @@ cmd_rebase_check() {
     local overlap
     overlap="$(comm -12 <(printf '%s\n' "$branch_files" | sort) <(printf '%s\n' "$base_files" | sort) 2>/dev/null || true)"
 
-    found_any=1
     if [[ -n "$overlap" ]]; then
+      found_any=1
       echo "CONFLICT REBASE: $branch"
       echo "  Overlapping files:"
       printf '%s\n' "$overlap" | while IFS= read -r f; do
@@ -459,6 +461,7 @@ cmd_rebase_check() {
         echo "    - $f"
       done
     else
+      found_any=1
       echo "CLEAN REBASE: $branch (behind but no file overlap)"
     fi
   done <<< "$branches"
@@ -519,7 +522,8 @@ cmd_auto_label() {
   local pr_branch=""
   pr_branch="$(printf '%s' "$show_output" | grep -oE 'pr_branch:[a-zA-Z0-9./_@-]+' | head -1 | cut -d: -f2 || true)"
   if [[ -n "$pr_branch" ]]; then
-    local base="master"
+    local base
+  base="$(get_sync_branch 2>/dev/null || echo "master")"
     local behind_count
     behind_count="$(git rev-list --count "$pr_branch".."$base" 2>/dev/null || echo 0)"
     [[ "$behind_count" -gt 0 ]] && needs_rebase=1
@@ -602,7 +606,7 @@ cmd_stale_worktrees() {
     local real_root
     real_root="$(realpath "$repo_root" 2>/dev/null)" || continue
 
-    if [[ "$real_path" != "$real_root"* ]]; then
+    if [[ "$real_path" != "$real_root/"* ]]; then
       echo "WARNING: skipping symlink outside repo: $entry" >&2
       continue
     fi

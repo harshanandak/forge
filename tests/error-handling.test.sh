@@ -80,16 +80,13 @@ test_jq_missing_warning() {
   echo '{"id":"test-1","status":"in_progress","updated_at":"2026-03-26T00:00:00Z"}' > "$TEST_TMP/.beads/issues.jsonl"
 
   # Override command to pretend jq doesn't exist
+  command() {
+    if [[ "$2" == "jq" ]]; then return 1; fi
+    builtin command "$@"
+  }
   local output
   local exit_code
-  output="$(
-    command() {
-      if [[ "$2" == "jq" ]]; then return 1; fi
-      builtin command "$@"
-    }
-    export -f command
-    _auto_sync_update_file_index "$TEST_TMP" 2>&1
-  )" || true
+  output="$(_auto_sync_update_file_index "$TEST_TMP" 2>&1)"
   exit_code=$?
 
   assert_contains "$output" "jq not found" "warns about missing jq"

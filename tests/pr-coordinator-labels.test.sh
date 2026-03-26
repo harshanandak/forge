@@ -276,7 +276,7 @@ assert_contains "output mentions forge/blocks-others" "$output" "forge/blocks-ot
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [[ $FAIL -gt 0 ]]; then
-  printf "$ERRORS\n"
+  printf '%b\n' "$ERRORS"
   exit 1
 fi
 exit 0
