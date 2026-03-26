@@ -259,20 +259,30 @@ _SYNC_STALENESS_THRESHOLD=900
 # On success: records Unix epoch timestamp to .beads/.last-sync
 #             and updates file index from all in-progress issues' task files.
 #
+# _run_sync — execute beads sync (pull + push).
+# If BD_SYNC_CMD is set, run it as a single command (for testing).
+# Otherwise, run the default two-step pull+push sequence.
+# shellcheck disable=SC2086
+_run_sync() {
+  if [[ -n "${BD_SYNC_CMD:-}" ]]; then
+    $BD_SYNC_CMD
+  else
+    bd dolt pull && bd dolt push
+  fi
+}
+
 # Environment overrides (for testing):
-#   BD_SYNC_CMD — command to run instead of `bd dolt pull && bd dolt push` (default: "bd dolt pull && bd dolt push")
+#   BD_SYNC_CMD — single command to run instead of default pull+push (e.g. "echo mock-sync")
 #   FILE_INDEX_ROOT — root directory for file-index.sh (default: repo_dir)
 auto_sync() {
   local repo_dir="${1:-.}"
-  local sync_cmd="${BD_SYNC_CMD:-bd dolt pull && bd dolt push}"
   local last_sync_file="$repo_dir/.beads/.last-sync"
 
   # Ensure .beads directory exists
   mkdir -p "$repo_dir/.beads"
 
-  # Run bd sync (or mock) — use $sync_cmd without eval to prevent injection
-  # shellcheck disable=SC2086
-  if $sync_cmd >/dev/null 2>&1; then
+  # Run sync — helper function avoids eval while supporting compound default
+  if _run_sync >/dev/null 2>&1; then
     # Success: record timestamp
     date +%s > "$last_sync_file"
 

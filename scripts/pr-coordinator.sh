@@ -260,13 +260,9 @@ cmd_merge_order() {
     esac
   done
 
-  # Check for cycles first
-  local cycles_output
-  cycles_output="$(${BD_CMD:-bd} dep cycles 2>&1)" || true
-  if printf '%s' "$cycles_output" | grep -Eqi 'cycle' \
-    && ! printf '%s' "$cycles_output" | grep -Eqi 'no cycles? found|no cycles? detected|no dependency cycles|0 dependency cycles|0 cycles'; then
+  # Check for cycles first — use exit code as primary signal
+  if ! ${BD_CMD:-bd} dep cycles &>/dev/null; then
     echo "Error: dependency cycle detected — cannot compute merge order" >&2
-    printf '%s\n' "$cycles_output" >&2
     return 1
   fi
 
