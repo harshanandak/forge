@@ -48,6 +48,7 @@ const VERSION = packageJson.version;
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
 const { scaffoldGithubBeadsSync } = require('../lib/setup');
+const { copyEssentialDocs } = require('../lib/docs-copy');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -1804,6 +1805,17 @@ function setupCoreDocs() {
   // docs/planning/ and docs/research/ are created lazily on first use
   // by /plan Phase 1 and Phase 2 respectively, via ensureDirWithNote().
   // TEMPLATE.md and PROGRESS.md are also deferred to first use.
+
+  // Copy essential docs (TOOLCHAIN.md, VALIDATION.md) to consumer's docs/forge/
+  const result = copyEssentialDocs(projectRoot, packageDir);
+  for (const f of result.created) {
+    console.log(`  Created: ${f}`);
+  }
+  for (const f of result.skipped) {
+    if (VERBOSE_MODE) {
+      console.log(`  Skipped: ${f} (already exists)`);
+    }
+  }
 }
 
 // Minimal installation (postinstall)
