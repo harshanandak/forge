@@ -318,6 +318,102 @@ Next: ${flag_next}"
   echo "Stage transition recorded on ${issue_id}: ${completed} → ${next}"
 }
 
+cmd_validate() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: beads-context.sh validate <issue-id>" >&2
+    exit 1
+  fi
+
+  local issue_id="$1"
+  local warnings=0
+
+  # Get issue JSON
+  local json
+  json="$(bd show "$issue_id" --json 2>&1)" || {
+    echo "Error: Failed to retrieve issue ${issue_id}" >&2
+    exit 1
+  }
+
+  # Check for bd error patterns
+  if printf '%s' "$json" | grep -Eqi '^Error|Error resolving|Error fetching'; then
+    echo "Error: Issue not found: ${issue_id}" >&2
+    exit 1
+  fi
+
+  if [[ -z "$json" || "$json" == "[]" || "$json" == "null" ]]; then
+    echo "Error: Issue not found: ${issue_id}" >&2
+    exit 1
+  fi
+
+  # Extract fields — prefer jq, fall back to grep/sed
+  local description="" design=""
+  if command -v jq &>/dev/null; then
+    description="$(printf '%s' "$json" | jq -r 'if type == "array" then .[0].description else .description end // empty' 2>/dev/null || true)"
+    design="$(printf '%s' "$json" | jq -r 'if type == "array" then .[0].design else .design end // empty' 2>/dev/null || true)"
+  else
+    description="$(printf '%s' "$json" | grep -o '"description": *"[^"]*"' | head -1 | sed 's/^"description": *"//;s/"$//' || true)"
+    design="$(printf '%s' "$json" | grep -o '"design": *"[^"]*"' | head -1 | sed 's/^"design": *"//;s/"$//' || true)"
+  fi
+
+  # Check 1: Issue has description
+  if [[ -z "$description" ]]; then
+    echo "Warning: Issue ${issue_id} has no description"
+    warnings=$((warnings + 1))
+  fi
+
+  # Get comments to check for stage transitions
+  local comments
+  comments="$(bd comments list "$issue_id" 2>/dev/null || true)"
+
+  # Check 2: At least one stage transition exists
+  local has_transition=false
+  if echo "$comments" | grep -q 'Stage:.*complete'; then
+    has_transition=true
+  fi
+
+  if [[ "$has_transition" == "false" ]]; then
+    echo "Warning: No stage transition found on issue ${issue_id}"
+    warnings=$((warnings + 1))
+  fi
+
+  # Check 3: Most recent transition has summary
+  if [[ "$has_transition" == "true" ]]; then
+    local has_summary=false
+    if echo "$comments" | grep -q 'Summary:'; then
+      has_summary=true
+    fi
+    if [[ "$has_summary" == "false" ]]; then
+      echo "Warning: Most recent stage transition has no summary on issue ${issue_id}"
+      warnings=$((warnings + 1))
+    fi
+  fi
+
+  # Check 4: Design metadata is set if past plan stage
+  # "Past plan" means there's a transition FROM plan or any later stage
+  local past_plan=false
+  if echo "$comments" | grep -q 'Stage: plan complete'; then
+    past_plan=true
+  fi
+  if echo "$comments" | grep -Eq 'Stage: (dev|validate|ship|review|premerge) complete'; then
+    past_plan=true
+  fi
+
+  if [[ "$past_plan" == "true" && -z "$design" ]]; then
+    echo "Warning: Design metadata not set on issue ${issue_id} (past plan stage)"
+    warnings=$((warnings + 1))
+  fi
+
+  # Summary
+  if [[ $warnings -eq 0 ]]; then
+    echo "All context fields present on issue ${issue_id}"
+  else
+    echo "${warnings} warning(s) found on issue ${issue_id}"
+  fi
+
+  # Always exit 0 — advisory only
+  exit 0
+}
+
 # ── Main dispatcher ──────────────────────────────────────────────────────
 
 if [[ $# -lt 1 ]]; then
@@ -333,6 +429,7 @@ case "$subcommand" in
   update-progress)  cmd_update_progress "$@" ;;
   parse-progress)   cmd_parse_progress "$@" ;;
   stage-transition) cmd_stage_transition "$@" ;;
+  validate)         cmd_validate "$@" ;;
   *)
     echo "Error: Unknown subcommand '${subcommand}'" >&2
     usage
