@@ -109,7 +109,7 @@ describe('CLI lifecycle commands', () => {
       fs.writeFileSync(path.join(tmpDir, '.forge', 'setup-state.json'), '{}', 'utf-8');
 
       const result = runForge(['reinstall', '--force'], { cwd: tmpDir });
-      const output = result.stdout + result.stderr;
+      const _output = result.stdout + result.stderr;
 
       // .forge should be removed (hard reset part)
       expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
