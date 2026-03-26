@@ -151,6 +151,11 @@ assert_exit_nonzero "backtick injection" validate_branch_name 'feat`whoami`'
 assert_exit_nonzero "command substitution" validate_branch_name 'feat$(id)'
 assert_exit_nonzero "space in name" validate_branch_name "feat my thing"
 assert_exit_nonzero "empty string" validate_branch_name ""
+assert_exit_nonzero "double dots (traversal)" validate_branch_name "feat/../../etc/passwd"
+assert_exit_nonzero "trailing .lock" validate_branch_name "feat/thing.lock"
+assert_exit_nonzero "leading slash" validate_branch_name "/feat/thing"
+assert_exit_nonzero "trailing slash" validate_branch_name "feat/thing/"
+assert_exit_nonzero "leading hyphen" validate_branch_name "-feat/thing"
 
 # ══════════════════════════════════════════════════════════════════════════
 # Tests: validate_pr_number()

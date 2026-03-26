@@ -74,6 +74,11 @@ validate_branch_name() {
     echo "Error: invalid branch name format: $name" >&2
     return 1
   fi
+  # Git rejects: double dots (..), trailing .lock, leading/trailing slash, leading hyphen
+  if [[ "$name" == *..* ]] || [[ "$name" == *.lock ]] || [[ "$name" == /* ]] || [[ "$name" == */ ]] || [[ "$name" == -* ]]; then
+    echo "Error: invalid branch name (contains .., .lock suffix, leading/trailing /, or leading -): $name" >&2
+    return 1
+  fi
   return 0
 }
 
