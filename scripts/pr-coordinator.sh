@@ -471,7 +471,96 @@ cmd_rebase_check() {
 
   return 0
 }
-cmd_auto_label() { echo "auto-label: not implemented"; }
+cmd_auto_label() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: pr-coordinator.sh auto-label <issue-id>" >&2
+    return 1
+  fi
+
+  local issue_id="$1"
+
+  # Get issue details
+  local show_output
+  show_output="$(${BD_CMD:-bd} show "$issue_id" 2>&1)" || {
+    echo "Error: failed to show issue $issue_id" >&2
+    return 1
+  }
+
+  # Get PR number from bd state metadata (pr_number:NNN in show output)
+  local pr_number=""
+  pr_number="$(printf '%s' "$show_output" | grep -oE 'pr_number:[0-9]+' | head -1 | cut -d: -f2 || true)"
+
+  if [[ -z "$pr_number" ]]; then
+    echo "No PR found for $issue_id, skipping labels"
+    return 0
+  fi
+
+  # Validate PR number
+  validate_pr_number "$pr_number" || return 2
+
+  # Determine label state
+  local has_deps=0
+  local blocks_others=0
+  local needs_rebase=0
+
+  # Check DEPENDS ON section
+  if printf '%s' "$show_output" | grep -q '^DEPENDS ON'; then
+    local dep_lines
+    dep_lines="$(printf '%s' "$show_output" | sed -n '/^DEPENDS ON/,/^$/p' | grep -E '^\s+' || true)"
+    [[ -n "$dep_lines" ]] && has_deps=1
+  fi
+
+  # Check BLOCKS section
+  if printf '%s' "$show_output" | grep -q '^BLOCKS'; then
+    local block_lines
+    block_lines="$(printf '%s' "$show_output" | sed -n '/^BLOCKS/,/^$/p' | grep -E '^\s+' || true)"
+    [[ -n "$block_lines" ]] && blocks_others=1
+  fi
+
+  # Check if branch needs rebase (behind base)
+  local pr_branch=""
+  pr_branch="$(printf '%s' "$show_output" | grep -oE 'pr_branch:[a-zA-Z0-9./_@-]+' | head -1 | cut -d: -f2 || true)"
+  if [[ -n "$pr_branch" ]]; then
+    local base="master"
+    local behind_count
+    behind_count="$(git rev-list --count "$pr_branch".."$base" 2>/dev/null || echo 0)"
+    [[ "$behind_count" -gt 0 ]] && needs_rebase=1
+  fi
+
+  # Apply or remove labels
+  local GH_CMD="${GH_CMD:-gh}"
+  local labels_added=()
+  local labels_removed=()
+
+  if [[ "$has_deps" -eq 1 ]]; then
+    $GH_CMD pr edit "$pr_number" --add-label "forge/has-deps" 2>/dev/null && labels_added+=("forge/has-deps") || true
+  else
+    $GH_CMD pr edit "$pr_number" --remove-label "forge/has-deps" 2>/dev/null && labels_removed+=("forge/has-deps") || true
+  fi
+
+  if [[ "$blocks_others" -eq 1 ]]; then
+    $GH_CMD pr edit "$pr_number" --add-label "forge/blocks-others" 2>/dev/null && labels_added+=("forge/blocks-others") || true
+  else
+    $GH_CMD pr edit "$pr_number" --remove-label "forge/blocks-others" 2>/dev/null && labels_removed+=("forge/blocks-others") || true
+  fi
+
+  if [[ "$needs_rebase" -eq 1 ]]; then
+    $GH_CMD pr edit "$pr_number" --add-label "forge/needs-rebase" 2>/dev/null && labels_added+=("forge/needs-rebase") || true
+  else
+    $GH_CMD pr edit "$pr_number" --remove-label "forge/needs-rebase" 2>/dev/null && labels_removed+=("forge/needs-rebase") || true
+  fi
+
+  # Report
+  if [[ ${#labels_added[@]} -gt 0 ]]; then
+    echo "Labels added: ${labels_added[*]}"
+  fi
+  if [[ ${#labels_removed[@]} -gt 0 ]]; then
+    echo "Labels removed: ${labels_removed[*]}"
+  fi
+  if [[ ${#labels_added[@]} -eq 0 ]] && [[ ${#labels_removed[@]} -eq 0 ]]; then
+    echo "No label changes needed for PR #$pr_number"
+  fi
+}
 cmd_stale_worktrees() {
   local threshold_hours=48
   local worktrees_dir=".worktrees"
