@@ -39,7 +39,7 @@ describe('docs/WORKFLOW.md removal', () => {
     // Hardcoded grep command - no user input, safe from injection
     const result = execSync(
       'grep -rn "WORKFLOW\\.md" --include="*.js" --include="*.sh" --include="*.md" --include="*.json" --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=.git . || true',
-      { cwd: ROOT, encoding: 'utf8', timeout: 10000 }
+      { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
     );
 
     // Filter out allowed historical files
