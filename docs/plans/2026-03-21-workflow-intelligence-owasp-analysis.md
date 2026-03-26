@@ -25,7 +25,7 @@
 
 ### Risk 1: Shell injection via `bd` / `git` output parsed by smart-status.sh
 
-`bd list`, `bd show --json`, and `git diff` produce output that includes user-authored content (issue titles, branch names, commit messages). If this output is interpolated into shell commands without sanitization, an attacker-crafted issue title like `$(rm -rf /)` or `` `malicious` `` could execute arbitrary commands.
+`bd list`, `bd show --json`, and `git diff` produce output that includes user-authored content (issue titles, branch names, commit messages). If this output is interpolated into shell commands without sanitization, an attacker-crafted issue title like `$(rm -rf /)` or backtick-wrapped commands (e.g., `` `malicious` ``) could execute arbitrary commands.
 
 **Specific vectors in smart-status.sh**:
 - Parsing `bd show --json` output: issue titles, descriptions, and notes fields contain free-text user input.
@@ -78,8 +78,8 @@ If smart-status.sh runs `git diff <branch1>..<branch2>` where branch names come 
 
 ## A06:2021 — Vulnerable and Outdated Components
 
-**Applies**: No
-**Rationale**: smart-status.sh is a pure bash script with no third-party dependencies. It calls only `bd`, `git`, `jq`, and standard Unix utilities. The Node.js binary (forge-preflight.js) uses only `node:child_process` and `node:fs` built-ins with `execFileSync` (already injection-safe per the comment in forge-validate.js line 16).
+**Applies**: Low risk
+**Rationale**: `smart-status.sh` is a bash script that uses standard Unix utilities plus the third-party tool `jq` (for JSON parsing). `jq` should be kept up to date but has a stable, well-audited codebase. The Node.js binary (`forge-preflight.js`, referenced in `forge-validate.js`) relies only on Node built-ins (`node:child_process`, `node:fs`) with `execFileSync` (injection-safe by design).
 
 ---
 
@@ -123,7 +123,7 @@ If smart-status.sh runs `git diff <branch1>..<branch2>` where branch names come 
 | **A03 Injection** | **YES** | **Medium** | **All required: reuse sanitize(), quote all vars, use `--` separator after revisions, prefer jq with grep fallback, set -euo pipefail, printf for untrusted data** |
 | A04 Insecure Design | Low | Low | Document scoring algorithm |
 | A05 Security Misconfiguration | Low | Low | Complete blast-radius for rename |
-| A06 Vulnerable Components | No | N/A | None |
+| A06 Vulnerable Components | Low | Low | Keep jq up to date |
 | A07 Auth Failures | No | N/A | None |
 | A08 Data Integrity | Low | Low | Rely on git integrity + lefthook |
 | A09 Logging | No | N/A | None |
