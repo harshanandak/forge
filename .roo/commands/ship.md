@@ -121,9 +121,14 @@ Rules for the PR body:
 - **Check applicable checkboxes** — `[x]` for items that apply, `[ ]` for items that don't
 - **Include "Closes beads-xxx"** in the Beads section (required for auto-close in /verify)
 
-### Step 6: Record Stage Transition
+### Step 6: Validate Context and Record Stage Transition
 ```bash
-bash scripts/beads-context.sh stage-transition <id> ship review
+bash scripts/beads-context.sh validate <id>
+bash scripts/beads-context.sh stage-transition <id> ship review \
+  --summary "<PR created, checks pending>" \
+  --decisions "<template sections filled, beads linked>" \
+  --artifacts "<PR URL, branch name>" \
+  --next "<review focus areas>"
 ```
 
 ## Example Output

@@ -468,10 +468,15 @@ Do NOT proceed to /dev until ALL are confirmed:
 </HARD-GATE>
 ```
 
-After all HARD-GATE items pass, record the stage transition on the Beads issue:
+After all HARD-GATE items pass, validate context and record the stage transition:
 
 ```bash
-bash scripts/beads-context.sh stage-transition <id> plan dev
+bash scripts/beads-context.sh validate <id>
+bash scripts/beads-context.sh stage-transition <id> plan dev \
+  --summary "<design approach chosen, task count>" \
+  --decisions "<key trade-offs resolved during Q&A>" \
+  --artifacts "docs/plans/YYYY-MM-DD-<slug>-design.md docs/plans/YYYY-MM-DD-<slug>-tasks.md" \
+  --next "<first dev task focus area>"
 ```
 
 ---
