@@ -19,6 +19,12 @@ describe('postinstall guard', () => {
     expect(source).toContain("process.env.npm_lifecycle_event === 'postinstall'");
   });
 
+  test('first-run detection excludes postinstall so fresh installs are not blocked', () => {
+    // The FORGE_SETUP_REQUIRED check must skip when npm_lifecycle_event is postinstall,
+    // otherwise AGENTS.md absence causes process.exit(1) before the postinstall branch
+    expect(source).toMatch(/npm_lifecycle_event\s*!==\s*'postinstall'/);
+  });
+
   test('postinstall branch does not call minimalInstall()', () => {
     // Verify the postinstall block itself doesn't contain minimalInstall
     const postinstallBlock = source.match(

@@ -37,7 +37,7 @@ describe('preflight package manager detection', () => {
     const runTestMatches = source.match(/cmdArgs\s*=\s*\["run",\s*"test"\]/g);
     const bareTestMatches = source.match(/cmdArgs\s*=\s*\["test"\]/g);
     expect(runTestMatches).not.toBeNull();
-    expect(runTestMatches.length).toBeGreaterThanOrEqual(3); // bun, pnpm, yarn
+    expect(runTestMatches.length).toBeGreaterThanOrEqual(4); // npm default + bun, pnpm, yarn
     expect(bareTestMatches).toBeNull(); // no bare "test" args
   });
 });

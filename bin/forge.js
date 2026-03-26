@@ -4105,9 +4105,10 @@ async function main() {
   }
 
   // First-run detection: check if Forge is configured in this project
-  // Skip for: setup (needs to run to configure), recommend (read-only)
+  // Skip for: setup (needs to run), recommend (read-only), postinstall (fresh install)
   // Note: help and version already returned above, so no need to check here
-  if (command !== 'setup' && command !== 'recommend') {
+  if (command !== 'setup' && command !== 'recommend'
+      && process.env.npm_lifecycle_event !== 'postinstall') {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
     if (!fs.existsSync(agentsMdPath)) {
       console.error('[FORGE_SETUP_REQUIRED] Forge is not configured in this project.\n');
