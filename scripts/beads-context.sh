@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+# Source shared sanitize library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/sanitize.sh"
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 usage() {
@@ -33,24 +37,6 @@ EOF
 die() {
   echo "Error: $1" >&2
   exit 1
-}
-
-# Sanitize a string: strip shell-injection patterns (OWASP A03)
-# Removes: double quotes, $(...), backticks, semicolons, and newlines
-sanitize() {
-  local val="$1"
-  # Remove double quotes
-  val="${val//\"/}"
-  # Remove $(...) command substitution patterns (loop handles nested)
-  # Use newline-separated commands for BSD sed compatibility (macOS)
-  val="$(printf '%s' "$val" | sed -e ':loop' -e 's/\$([^()]*)//g' -e 't loop')"
-  # Remove backtick command substitution
-  val="${val//\`/}"
-  # Remove semicolons (command chaining)
-  val="${val//;/}"
-  # Replace newlines with spaces
-  val="$(printf '%s' "$val" | tr '\n' ' ')"
-  printf '%s' "$val"
 }
 
 # Run bd update and check for errors in both exit code and output.

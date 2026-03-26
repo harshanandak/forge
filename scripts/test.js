@@ -22,7 +22,9 @@ function detectPackageManager() {
 const pkgManager = detectPackageManager();
 console.log(`🧪 Running test suite (${pkgManager} test)...`);
 
-const result = spawnSync(pkgManager, ['test'], { stdio: 'inherit', shell: isWindows });
+// Use 'run test' to invoke the package.json script (which may include --timeout flags)
+// 'bun test' is a built-in that ignores package.json scripts
+const result = spawnSync(pkgManager, ['run', 'test'], { stdio: 'inherit', shell: isWindows });
 
 if (result.error) {
   console.error('');
