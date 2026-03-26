@@ -537,6 +537,29 @@ gh issue create --title "..." --body "..."
 
 ---
 
+## Global CLI Tools
+
+### Beads (`bd`) — Minimum Version
+
+**Minimum version**: v0.49.x
+**Check installed version**:
+```bash
+bd --version
+```
+
+**Install / Update**:
+```bash
+# macOS / Linux
+bun add -g @beads/bd
+
+# Windows — use PowerShell installer (npm has EPERM bug)
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+```
+
+> **Why v0.49.x?** Earlier versions lack the `bd ready` dependency-aware query, `bd sync --status`, and the dual-database (JSONL + SQLite) architecture that Forge relies on.
+
+---
+
 ## Integration with Forge Stages
 
 | Stage | Tools Used |
