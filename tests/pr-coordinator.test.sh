@@ -40,8 +40,13 @@ output="$(bash "$PR_COORD" foobar 2>&1)"; rc=$?
 assert_exit_code "unknown subcommand exits 1" 1 "$rc"
 assert_contains "unknown shows error" "unknown subcommand" "$output"
 
-# each subcommand is reachable
-for cmd in dep merge-order rebase-check stale-worktrees; do
+# dep (implemented) — no args prints usage and exits 1
+output="$(bash "$PR_COORD" dep 2>&1)"; rc=$?
+assert_exit_code "dep no-args exits 1" 1 "$rc"
+assert_contains "dep no-args shows usage" "Usage:" "$output"
+
+# remaining stubs are reachable
+for cmd in merge-order rebase-check stale-worktrees; do
   output="$(bash "$PR_COORD" "$cmd" 2>&1)"; rc=$?
   assert_exit_code "$cmd is reachable (exits 0)" 0 "$rc"
   assert_contains "$cmd returns stub" "not implemented" "$output"
