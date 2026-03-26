@@ -7,7 +7,8 @@
 #   set-acceptance   <issue-id> "<criteria-text>"
 #   update-progress  <issue-id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>
 #   parse-progress   <issue-id>
-#   stage-transition <issue-id> <completed-stage> <next-stage>
+#   stage-transition <issue-id> <completed-stage> <next-stage> [--summary "..."] [--decisions "..."] [--artifacts "..."] [--next "..."]
+#   validate         <issue-id>
 #
 # Cross-platform: works on Windows (Git Bash), macOS, and Linux.
 # OWASP A03: All variables properly quoted to prevent shell injection.
@@ -25,7 +26,8 @@ Subcommands:
   set-acceptance   <issue-id> "<criteria-text>"
   update-progress  <issue-id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>
   parse-progress   <issue-id>
-  stage-transition <issue-id> <completed-stage> <next-stage>
+  stage-transition <issue-id> <completed-stage> <next-stage> [--summary "..."] [--decisions "..."] [--artifacts "..."] [--next "..."]
+  validate         <issue-id>
 EOF
   exit 1
 }
@@ -250,7 +252,7 @@ cmd_parse_progress() {
 
 cmd_stage_transition() {
   if [[ $# -lt 3 ]]; then
-    echo "Usage: beads-context.sh stage-transition <issue-id> <completed-stage> <next-stage>" >&2
+    echo "Usage: beads-context.sh stage-transition <issue-id> <completed-stage> <next-stage> [--summary \"...\"] [--decisions \"...\"] [--artifacts \"...\"] [--next \"...\"]" >&2
     exit 1
   fi
 
@@ -259,8 +261,55 @@ cmd_stage_transition() {
   completed="$(sanitize "$2")"
   local next
   next="$(sanitize "$3")"
+  shift 3
 
+  # Parse optional flags
+  local flag_summary="" flag_decisions="" flag_artifacts="" flag_next=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --summary)
+        shift
+        flag_summary="$(sanitize "$1")"
+        ;;
+      --decisions)
+        shift
+        flag_decisions="$(sanitize "$1")"
+        ;;
+      --artifacts)
+        shift
+        flag_artifacts="$(sanitize "$1")"
+        ;;
+      --next)
+        shift
+        flag_next="$(sanitize "$1")"
+        ;;
+      *)
+        # Ignore unknown flags for forward compatibility
+        ;;
+    esac
+    shift
+  done
+
+  # Build comment: header line always present
   local comment="Stage: ${completed} complete → ready for ${next}"
+
+  # Append structured fields only if provided
+  if [[ -n "$flag_summary" ]]; then
+    comment="${comment}
+Summary: ${flag_summary}"
+  fi
+  if [[ -n "$flag_decisions" ]]; then
+    comment="${comment}
+Decisions: ${flag_decisions}"
+  fi
+  if [[ -n "$flag_artifacts" ]]; then
+    comment="${comment}
+Artifacts: ${flag_artifacts}"
+  fi
+  if [[ -n "$flag_next" ]]; then
+    comment="${comment}
+Next: ${flag_next}"
+  fi
 
   if ! bd_comment "$issue_id" "$comment" > /dev/null; then
     die "Failed to record stage transition on issue ${issue_id}"
