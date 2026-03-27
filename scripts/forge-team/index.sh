@@ -23,6 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$SCRIPT_DIR/lib/workload.sh" ]] && source "$SCRIPT_DIR/lib/workload.sh"
 [[ -f "$SCRIPT_DIR/lib/epic.sh" ]] && source "$SCRIPT_DIR/lib/epic.sh"
 [[ -f "$SCRIPT_DIR/lib/dashboard.sh" ]] && source "$SCRIPT_DIR/lib/dashboard.sh"
+[[ -f "$SCRIPT_DIR/lib/hooks.sh" ]] && source "$SCRIPT_DIR/lib/hooks.sh"
+[[ -f "$SCRIPT_DIR/lib/verify.sh" ]] && source "$SCRIPT_DIR/lib/verify.sh"
 
 # Source shared forge utilities
 FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -34,7 +36,7 @@ FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
 # cmd_dashboard provided by lib/dashboard.sh
 cmd_add() { echo "add: not implemented"; }
 cmd_verify() { echo "verify: not implemented"; }
-cmd_sync() { echo "sync: not implemented"; }
+cmd_sync() { forge_team_sync "$@"; }
 cmd_claim() { echo "claim: not implemented"; }
 
 cmd_help() {
