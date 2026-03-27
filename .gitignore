@@ -86,4 +86,3 @@ test-env/fixtures/*
 .dolt/
 .beads/*.db
 .beads-credential-key
-.dolt/*.db
