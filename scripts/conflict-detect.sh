@@ -19,12 +19,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source file-index helpers (file_index_read, file_index_get)
-source "$SCRIPT_DIR/file-index.sh"
+source "$SCRIPT_DIR/file-index.sh" || { echo "FATAL: failed to source file-index.sh" >&2; exit 2; }
 
 # Source sync-utils (get_session_identity, sanitize_config_value)
 # Only source if available (tests may not need all utils)
 if [[ -f "$SCRIPT_DIR/sync-utils.sh" ]]; then
-  source "$SCRIPT_DIR/sync-utils.sh"
+  source "$SCRIPT_DIR/sync-utils.sh" || { echo "FATAL: failed to source sync-utils.sh" >&2; exit 2; }
 fi
 
 # ── Input Validation ─────────────────────────────────────────────────────
