@@ -322,7 +322,7 @@ _dashboard_json() {
     [[ $first -eq 0 ]] && stale_json+=","
     first=0
     IFS='|' read -r _id _owner _title _age <<< "$entry"
-    stale_json+="{\"id\":\"$_id\",\"owner\":\"$_owner\",\"title\":\"$_title\",\"age\":\"$_age\"}"
+    stale_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg age "$_age" '{id:$id,owner:$owner,title:$title,age:$age}')"
   done
   stale_json+="]"
 
@@ -333,7 +333,7 @@ _dashboard_json() {
     [[ $first -eq 0 ]] && blocked_json+=","
     first=0
     IFS='|' read -r _id _owner _title _deps <<< "$entry"
-    blocked_json+="{\"id\":\"$_id\",\"owner\":\"$_owner\",\"title\":\"$_title\",\"blocked_by\":\"$_deps\"}"
+    blocked_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg deps "$_deps" '{id:$id,owner:$owner,title:$title,blocked_by:$deps}')"
   done
   blocked_json+="]"
 

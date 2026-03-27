@@ -175,7 +175,7 @@ claim_with_lock() {
     (
       flock -w 5 200 || {
         _claim_error "Claim lock timeout after 5s"
-        return 1
+        exit 1
       }
       # Re-check assignee inside lock (skip if --force)
       if [[ "$force" != "--force" ]]; then
@@ -183,13 +183,15 @@ claim_with_lock() {
         assignee="$(_get_github_assignee "$issue_num")" || true
         if [[ -n "$assignee" ]] && [[ "$assignee" != "$current_user" ]]; then
           _claim_error "$beads_id was claimed by $assignee while waiting for lock"
-          return 1
+          exit 1
         fi
       fi
       # Claim on both Beads and GitHub
       "$bd_cmd" update "$beads_id" --claim >/dev/null 2>&1 || true
       "$gh_cmd" issue edit "$issue_num" --add-assignee "$current_user" >/dev/null 2>&1 || true
     ) 200>"$lock_file"
+    local subshell_rc=$?
+    [[ $subshell_rc -ne 0 ]] && return $subshell_rc
   else
     # mkdir-based fallback
     local lock_mkdir="$lock_dir/claim.lock.d"
