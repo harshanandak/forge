@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  # npm ecosystem — production and dev deps grouped separately
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Etc/UTC"
+    groups:
+      production-deps:
+        dependency-type: "production"
+      dev-deps:
+        dependency-type: "development"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 10
+
+  # GitHub Actions ecosystem — all actions grouped together
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Etc/UTC"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
+    labels:
+      - "github-actions"
+      - "dependencies"
