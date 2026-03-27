@@ -11,7 +11,7 @@ jobs:
   sync-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check behavioral-test .lock.yml exists
         run: |
           if [ ! -f .github/agentic-workflows/behavioral-test.lock.yml ]; then
