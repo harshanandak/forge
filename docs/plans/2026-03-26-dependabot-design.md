@@ -22,7 +22,7 @@ No automated dependency monitoring exists. Breaking changes (like beads SQLite t
 
 ## Out of Scope
 
-- Renovate (Dependabot is simpler, native GitHub, right-sized for 2 prod + 8 dev deps)
+- Renovate (Dependabot is simpler, native GitHub, right-sized for 2 prod + 11 dev deps)
 - Auto-merge workflow
 - bd version pinning in project config
 - Custom Dependabot reviewers/assignees
@@ -69,7 +69,7 @@ Dependabot with grouped updates + TOOLCHAIN.md documentation update.
 ### Current Dependencies (from package.json)
 
 - **Production (2)**: `@babel/parser`, `fastest-levenshtein`
-- **Dev (8)**: `@commitlint/cli`, `@commitlint/config-conventional`, `@eslint/js`, `@microsoft/eslint-formatter-sarif`, `@stryker-mutator/core`, `c8`, `eslint`, `globals`, `js-yaml`, `lefthook`, `yaml`
+- **Dev (11)**: `@commitlint/cli`, `@commitlint/config-conventional`, `@eslint/js`, `@microsoft/eslint-formatter-sarif`, `@stryker-mutator/core`, `c8`, `eslint`, `globals`, `js-yaml`, `lefthook`, `yaml`
 - **Peer (1, optional)**: `lefthook`
 
 ---
