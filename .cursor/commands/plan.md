@@ -99,6 +99,18 @@ If merge conflicts or unmet dependencies are found:
 
 ---
 
+### Team identity verification
+
+Before starting planning, verify team identity is mapped:
+
+```bash
+bash scripts/forge-team/index.sh verify 2>&1 || true
+```
+
+If verify reports issues, address them before proceeding (the output will include `FORGE_AGENT_7f3a:PROMPT:` directives with exact commands to run).
+
+---
+
 ## Phase 1: Design Intent (Brainstorming)
 
 **Goal**: Capture WHAT to build — purpose, constraints, success criteria, edge cases, approach.

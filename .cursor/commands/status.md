@@ -68,6 +68,18 @@ git log --oneline -10
 - **Continuing work**: In-progress issues found, resume where left off
 - **Review needed**: Work marked complete, needs review/merge
 
+### Team context
+
+Show current developer's active work and team overview:
+
+```bash
+# Show my active issues
+bash scripts/forge-team/index.sh workload --me 2>&1 || true
+
+# One-line team summary
+bash scripts/forge-team/index.sh dashboard 2>&1 | head -5 || true
+```
+
 ## Next Steps
 
 - **If starting new work**: Run `/plan <feature-name>`

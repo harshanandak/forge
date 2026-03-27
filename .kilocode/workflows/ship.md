@@ -161,6 +161,18 @@ bash scripts/beads-context.sh stage-transition <id> ship review \
   --next "<review focus areas>"
 ```
 
+### Team sync after PR
+
+After PR is created, sync issue state to GitHub and verify 1:1 mapping:
+
+```bash
+# Sync issue state to GitHub
+bash scripts/forge-team/index.sh sync 2>&1 || true
+
+# Verify 1:1 mapping
+bash scripts/forge-team/index.sh verify 2>&1 || true
+```
+
 ## Example Output
 
 ```
