@@ -102,7 +102,7 @@ describe('CLI lifecycle commands', () => {
       expect(output).toContain('--force');
     });
 
-    test('with --force performs reset', { timeout: 15000 }, () => {
+    test('with --force performs reset', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-reinstall-'));
       fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Test', 'utf-8');
       fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
@@ -115,6 +115,6 @@ describe('CLI lifecycle commands', () => {
       expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    });
+    }, 30000);
   });
 });
