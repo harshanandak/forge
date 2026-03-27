@@ -5,6 +5,12 @@
 # Usage: source this file from other scripts.
 # This library does NOT set errexit/pipefail.
 
+# Guard against double-sourcing (readonly would error on second source)
+if [[ -n "${_AGENT_PROMPT_LIB_LOADED:-}" ]]; then
+  return 0 2>/dev/null || true
+fi
+_AGENT_PROMPT_LIB_LOADED=1
+
 readonly FORGE_AGENT_PREFIX="FORGE_AGENT_7f3a"
 
 # Output a prompt for the AI agent to ask the user.
