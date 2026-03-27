@@ -277,7 +277,12 @@ Do NOT declare /dev complete until:
 ### Beads update
 
 ```bash
-bash scripts/beads-context.sh stage-transition <id> dev validate
+bash scripts/beads-context.sh validate <id>
+bash scripts/beads-context.sh stage-transition <id> dev validate \
+  --summary "<N tasks done, M decision gates fired>" \
+  --decisions "<key spec gaps and how they were resolved>" \
+  --artifacts "<changed source files and test files>" \
+  --next "<validation priorities — lint issues, type concerns>"
 ```
 
 ---

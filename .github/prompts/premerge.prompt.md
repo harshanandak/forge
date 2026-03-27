@@ -125,6 +125,16 @@ Output:
 After you merge, run /verify to confirm everything landed correctly.
 ```
 
+### Step 6: Validate Context and Record Stage Transition
+
+```bash
+bash scripts/beads-context.sh validate <id>
+bash scripts/beads-context.sh stage-transition <id> premerge verify \
+  --summary "<docs updated, CI green, PR ready>" \
+  --artifacts "<updated doc files, PR URL>" \
+  --next "<merge instructions for user>"
+```
+
 ```
 <HARD-GATE: /premerge exit>
 Do NOT run gh pr merge.
