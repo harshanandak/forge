@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source libs (graceful if missing — stubs used in early dev)
 [[ -f "$SCRIPT_DIR/lib/agent-prompt.sh" ]] && source "$SCRIPT_DIR/lib/agent-prompt.sh"
 [[ -f "$SCRIPT_DIR/lib/identity.sh" ]] && source "$SCRIPT_DIR/lib/identity.sh"
+[[ -f "$SCRIPT_DIR/lib/workload.sh" ]] && source "$SCRIPT_DIR/lib/workload.sh"
 [[ -f "$SCRIPT_DIR/lib/epic.sh" ]] && source "$SCRIPT_DIR/lib/epic.sh"
 [[ -f "$SCRIPT_DIR/lib/dashboard.sh" ]] && source "$SCRIPT_DIR/lib/dashboard.sh"
 
@@ -28,7 +29,7 @@ FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
 [[ -f "$FORGE_SCRIPTS/lib/sanitize.sh" ]] && source "$FORGE_SCRIPTS/lib/sanitize.sh"
 
 # ── Stub implementations ──
-cmd_workload() { echo "workload: not implemented"; }
+# cmd_workload provided by lib/workload.sh
 # cmd_epic provided by lib/epic.sh
 # cmd_dashboard provided by lib/dashboard.sh
 cmd_add() { echo "add: not implemented"; }
