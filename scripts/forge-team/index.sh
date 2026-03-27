@@ -35,7 +35,7 @@ FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
 # cmd_epic provided by lib/epic.sh
 # cmd_dashboard provided by lib/dashboard.sh
 cmd_add() { echo "add: not implemented"; }
-cmd_verify() { echo "verify: not implemented"; }
+# cmd_verify provided by lib/verify.sh
 cmd_sync() { forge_team_sync "$@"; }
 cmd_claim() { echo "claim: not implemented"; }
 
