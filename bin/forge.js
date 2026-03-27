@@ -48,6 +48,9 @@ const VERSION = packageJson.version;
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
 const { scaffoldGithubBeadsSync } = require('../lib/setup');
+const { copyEssentialDocs } = require('../lib/docs-copy');
+const { listTopics, getTopicContent } = require('../lib/docs-command');
+const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -1804,6 +1807,17 @@ function setupCoreDocs() {
   // docs/planning/ and docs/research/ are created lazily on first use
   // by /plan Phase 1 and Phase 2 respectively, via ensureDirWithNote().
   // TEMPLATE.md and PROGRESS.md are also deferred to first use.
+
+  // Copy essential docs (TOOLCHAIN.md, VALIDATION.md) to consumer's docs/forge/
+  const result = copyEssentialDocs(projectRoot, packageDir);
+  for (const f of result.created) {
+    console.log(`  Created: ${f}`);
+  }
+  for (const f of result.skipped) {
+    if (VERBOSE_MODE) {
+      console.log(`  Skipped: ${f} (already exists)`);
+    }
+  }
 }
 
 // Minimal installation (postinstall)
@@ -4030,10 +4044,19 @@ async function handleSyncScaffold() {
 
 // Helper: Handle setup command in non-quick mode
 async function handleSetupCommand(selectedAgents, flags) {
-  await executeSetup({
-    agents: selectedAgents,
-    skipExternal: flags.skipExternal,
-  });
+  // Allow callers (e.g. reinstall) to override projectRoot without process.chdir()
+  const savedRoot = projectRoot;
+  if (flags.projectRoot) {
+    projectRoot = flags.projectRoot;
+  }
+  try {
+    await executeSetup({
+      agents: selectedAgents,
+      skipExternal: flags.skipExternal,
+    });
+  } finally {
+    projectRoot = savedRoot;
+  }
 }
 
 // Helper: Handle external services configuration
@@ -4105,9 +4128,11 @@ async function main() {
   }
 
   // First-run detection: check if Forge is configured in this project
-  // Skip for: setup (needs to run), recommend (read-only), postinstall (fresh install)
+  // Skip for: setup (needs to run), recommend (read-only), docs (read-only),
+  //           postinstall (fresh install)
   // Note: help and version already returned above, so no need to check here
-  if (command !== 'setup' && command !== 'recommend'
+  if (command !== 'setup' && command !== 'recommend' && command !== 'docs'
+      && command !== 'reset' && command !== 'reinstall'
       && process.env.npm_lifecycle_event !== 'postinstall') {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
     if (!fs.existsSync(agentsMdPath)) {
@@ -4168,6 +4193,101 @@ async function main() {
       return;
     }
     console.log(formatRecommendations(result.recommendations));
+  } else if (command === 'docs') {
+    const topic = args[1];
+    if (!topic) {
+      console.log('');
+      console.log('  Available documentation topics:');
+      console.log('');
+      for (const t of listTopics()) {
+        console.log(`    - ${t}`);
+      }
+      console.log('');
+      console.log('  Usage: forge docs <topic>');
+      console.log('');
+    } else {
+      const result = getTopicContent(topic, packageDir);
+      if (result.error) {
+        console.error(`  Error: ${result.error}`);
+        process.exitCode = 1;
+      } else {
+        console.log(result.content);
+      }
+    }
+  } else if (command === 'reset') {
+    const isSoft = args.includes('--soft');
+    const isHard = args.includes('--hard');
+    const isForce = args.includes('--force');
+
+    if (isSoft && isHard) {
+      console.error('  Error: --soft and --hard are mutually exclusive. Specify one.');
+      process.exitCode = 1;
+    } else if (!isSoft && !isHard) {
+      console.log('');
+      console.log('  Forge Reset');
+      console.log('');
+      console.log('  Usage:');
+      console.log('    forge reset --soft --force    Remove .forge/ config only');
+      console.log('    forge reset --hard --force    Remove ALL forge-managed files');
+      console.log('');
+      console.log('  Flags:');
+      console.log('    --soft     Remove only .forge/ directory (preserves commands, rules, agents)');
+      console.log('    --hard     Remove all forge files (preserves user-created files)');
+      console.log('    --force    Required safety flag to confirm destructive operation');
+      console.log('');
+    } else if (isSoft) {
+      try {
+        const result = resetSoft(projectRoot, { force: isForce });
+        console.log('');
+        console.log('  Soft reset complete.');
+        for (const f of result.removed) {
+          console.log(`    Removed: ${f}`);
+        }
+        console.log('');
+      } catch (error) {
+        console.error(`  Error: ${error.message}`);
+        process.exitCode = 1;
+      }
+    } else if (isHard) {
+      try {
+        const result = resetHard(projectRoot, { force: isForce });
+        console.log('');
+        console.log('  Hard reset complete.');
+        for (const f of result.removed) {
+          console.log(`    Removed: ${f}`);
+        }
+        console.log('');
+      } catch (error) {
+        console.error(`  Error: ${error.message}`);
+        process.exitCode = 1;
+      }
+    }
+  } else if (command === 'reinstall') {
+    const isForce = args.includes('--force');
+    try {
+      const result = await reinstall(projectRoot, {
+        force: isForce,
+        setupFn: async (root) => {
+          // Re-run default setup (claude agent, skip external prompts)
+          const agents = ['claude'];
+          await handleSetupCommand(agents, { skipExternal: true, yes: true, projectRoot: root });
+          return { agents };
+        },
+      });
+      console.log('');
+      console.log('  Reinstall complete.');
+      for (const f of result.resetResult.removed) {
+        console.log(`    Removed: ${f}`);
+      }
+      if (result.setupResult) {
+        console.log('');
+        console.log('  Setup re-run automatically.');
+      }
+      console.log('');
+    } catch (error) {
+      console.error(`  Error: ${error.message}`);
+      process.exitCode = 1;
+    }
   } else if (command === 'rollback') {
     // Execute rollback menu
     await showRollbackMenu();

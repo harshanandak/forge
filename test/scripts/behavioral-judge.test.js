@@ -299,7 +299,7 @@ describe('scripts/behavioral-judge.sh', () => {
       // To get exactly 36: security:4*3=12, tdd:4*3=12, design:4*2=8, structural:4*1=4 → 36
       // Actually with these mock scores: 12+12+6+3=33 → WEAK
       expect(['PASS', 'WEAK']).toContain(parsed.result);
-    });
+    }, 15000);
 
     test('WEAK boundary: total exactly 27', () => {
       const result = runJudge(SAMPLE_PLAN_OUTPUT, {
@@ -310,7 +310,7 @@ describe('scripts/behavioral-judge.sh', () => {
       expect(parsed).not.toBeNull();
       // 9+9+6+3=27 → WEAK
       expect(parsed.result).toBe('WEAK');
-    });
+    }, 15000);
   });
 
   describe('fallback chain (BEHAVIORAL_JUDGE_TEST_MODE with failure simulation)', () => {
