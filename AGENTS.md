@@ -256,9 +256,9 @@ bd close <id>         # Complete work
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd dolt push   # requires Dolt-backed Beads — run 'bd init' if missing
    git push
    git status  # MUST show "up to date with origin"
+   bd dolt push   # requires Dolt-backed Beads — run 'bd init' if missing
    ```
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed
