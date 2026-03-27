@@ -255,19 +255,19 @@ cmd_stage_transition() {
     case "$1" in
       --summary)
         shift
-        flag_summary="$(sanitize "$1")"
+        flag_summary="$(sanitize "${1:-}")"
         ;;
       --decisions)
         shift
-        flag_decisions="$(sanitize "$1")"
+        flag_decisions="$(sanitize "${1:-}")"
         ;;
       --artifacts)
         shift
-        flag_artifacts="$(sanitize "$1")"
+        flag_artifacts="$(sanitize "${1:-}")"
         ;;
       --next)
         shift
-        flag_next="$(sanitize "$1")"
+        flag_next="$(sanitize "${1:-}")"
         ;;
       *)
         # Ignore unknown flags for forward compatibility
