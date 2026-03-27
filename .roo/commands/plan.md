@@ -77,6 +77,32 @@ If exit code 0: proceed silently to Phase 1.
 
 ---
 
+### Parallel PR coordination check (soft block)
+
+Before proceeding to Phase 1, check for merge conflicts and dependency issues with in-flight PRs:
+
+```bash
+# Run merge simulation if on a feature branch
+current_branch="$(git branch --show-current)"
+if [[ "$current_branch" != "master" ]] && [[ "$current_branch" != "main" ]]; then
+  bash scripts/pr-coordinator.sh merge-sim "$current_branch" 2>&1 || true
+fi
+
+# Show current merge queue
+bash scripts/pr-coordinator.sh merge-order 2>&1 || true
+
+# Check for stale worktrees (informational)
+bash scripts/pr-coordinator.sh stale-worktrees 2>&1 || true
+```
+
+If merge conflicts or unmet dependencies are found:
+- Display the findings to the developer
+- Ask: "In-flight PRs have potential conflicts. Proceed with planning anyway? (y/n)"
+- If `n`: exit cleanly, no side effects
+- If `y`: log override via `bd comments add <id> "PR coordination override: proceeding despite in-flight conflicts"`, then continue to Phase 1
+
+---
+
 ## Phase 1: Design Intent (Brainstorming)
 
 **Goal**: Capture WHAT to build — purpose, constraints, success criteria, edge cases, approach.

@@ -43,6 +43,36 @@ BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
 
 This is NOT a full rebase — just a check. The rebase happens in /validate where the full test suite runs afterward.
 
+### Parallel PR coordination (soft block)
+
+Before creating the PR, check merge readiness:
+
+```bash
+# Run merge simulation against base branch
+bash scripts/pr-coordinator.sh merge-sim "$(git branch --show-current)" 2>&1
+
+# Show recommended merge order
+bash scripts/pr-coordinator.sh merge-order 2>&1 || true
+
+# Auto-label the PR after creation (called after gh pr create below)
+# bash scripts/pr-coordinator.sh auto-label <issue-id>
+```
+
+If merge simulation finds conflicts:
+- Display conflicted files
+- Ask: "Merge conflicts detected with base branch. These PRs should merge first: [list]. Proceed with PR creation anyway? (y/n)"
+- If `n`: exit cleanly
+- If `y`: log override via `bd comments add <id> "Ship override: creating PR despite merge conflicts"`, then continue
+
+After PR creation completes:
+```bash
+# Auto-label the newly created PR
+bash scripts/pr-coordinator.sh auto-label <issue-id>
+
+# Check for stale worktrees (informational)
+bash scripts/pr-coordinator.sh stale-worktrees 2>&1 || true
+```
+
 ### Step 3: Update Beads
 ```bash
 bd update <id> --status done

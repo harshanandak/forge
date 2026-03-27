@@ -698,7 +698,7 @@ ENDJSON
         fi
         if [[ "$1" == "dep" && "$2" == "cycles" ]]; then
           echo "Cycle detected: forge-other -> forge-src -> forge-other"
-          exit 0
+          exit 1
         fi
         if [[ "$1" == "dep" && "$2" == "remove" ]]; then
           echo "Removed dependency"
