@@ -19,6 +19,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   set -euo pipefail
 fi
 
+# Source shared libraries
+_FI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_FI_SCRIPT_DIR/lib/sanitize.sh"
+if [[ -f "$_FI_SCRIPT_DIR/lib/jsonl-lock.sh" ]]; then
+  source "$_FI_SCRIPT_DIR/lib/jsonl-lock.sh"
+fi
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 # Resolve the JSONL file path.
@@ -26,24 +33,6 @@ fi
 _file_index_path() {
   local root="${FILE_INDEX_ROOT:-.}"
   printf '%s' "$root/.beads/file-index.jsonl"
-}
-
-# Sanitize a string: strip shell-injection patterns (OWASP A03)
-# Reused from dep-guard.sh pattern.
-# Removes: double quotes, $(...), backticks, semicolons, and newlines
-sanitize() {
-  local val="$1"
-  # Remove double quotes
-  val="${val//\"/}"
-  # Remove $(...) command substitution patterns (loop handles nested)
-  val="$(printf '%s' "$val" | sed -e ':loop' -e 's/\$([^()]*)//g' -e 't loop')"
-  # Remove backtick command substitution
-  val="${val//\`/}"
-  # Remove semicolons (command chaining)
-  val="${val//;/}"
-  # Replace newlines with spaces
-  val="$(printf '%s' "$val" | tr '\n' ' ')"
-  printf '%s' "$val"
 }
 
 # Validate issue_id: alphanumeric + hyphens only
@@ -127,7 +116,11 @@ file_index_add() {
   # Ensure parent directory exists
   mkdir -p "$(dirname "$jsonl_path")"
 
-  printf '%s\n' "$json_line" >> "$jsonl_path"
+  if command -v atomic_jsonl_append &>/dev/null; then
+    atomic_jsonl_append "$jsonl_path" "$json_line"
+  else
+    printf '%s\n' "$json_line" >> "$jsonl_path"
+  fi
 }
 
 # file_index_remove <issue_id>
@@ -163,7 +156,11 @@ file_index_remove() {
   local jsonl_path
   jsonl_path="$(_file_index_path)"
   mkdir -p "$(dirname "$jsonl_path")"
-  printf '%s\n' "$json_line" >> "$jsonl_path"
+  if command -v atomic_jsonl_append &>/dev/null; then
+    atomic_jsonl_append "$jsonl_path" "$json_line"
+  else
+    printf '%s\n' "$json_line" >> "$jsonl_path"
+  fi
 }
 
 # file_index_read
@@ -320,12 +317,28 @@ file_index_update_from_tasks() {
   # Build deduplicated JSON arrays using jq (no associative arrays needed)
   local files_json modules_json
   if [[ -n "$sanitized_paths" ]]; then
-    files_json="$(printf '%s' "$sanitized_paths" | grep -v '^$' | jq -R . | jq -s -c 'unique')"
+    # Save and restore pipefail state to avoid side effects
+    local _prev_pipefail
+    _prev_pipefail="$(set +o | grep pipefail)" || true
+    set -o pipefail
+
+    files_json="$(printf '%s' "$sanitized_paths" | grep -v '^$' | jq -R . | jq -s -c 'unique')" || {
+      eval "$_prev_pipefail"
+      echo "Error: failed to build files JSON array" >&2
+      return 1
+    }
     modules_json="$(printf '%s' "$sanitized_paths" | grep -v '^$' | while IFS= read -r p; do
       local d
       d="$(dirname "$p")"
       if [[ "$d" == "." ]]; then printf '%s\n' "./"; else printf '%s\n' "${d}/"; fi
-    done | jq -R . | jq -s -c 'unique')"
+    done | jq -R . | jq -s -c 'unique')" || {
+      eval "$_prev_pipefail"
+      echo "Error: failed to build modules JSON array" >&2
+      return 1
+    }
+
+    # Restore pipefail state
+    eval "$_prev_pipefail"
   else
     files_json="[]"
     modules_json="[]"
@@ -358,11 +371,90 @@ file_index_update_from_tasks() {
         tombstone: false,
         confidence: $conf
       }')"
-    printf '%s\n' "$json_line" >> "$jsonl_path"
+    if command -v atomic_jsonl_append &>/dev/null; then
+      atomic_jsonl_append "$jsonl_path" "$json_line"
+    else
+      printf '%s\n' "$json_line" >> "$jsonl_path"
+    fi
   else
     # Normal entry via file_index_add (no confidence field needed)
     file_index_add "$issue_id" "$developer" "$files_json" "$modules_json"
   fi
+}
+
+# file_index_auto_update <issue_id> [--from-git]
+# Update the file index with the current set of changed files.
+# Files come from: --from-git flag (git diff HEAD~1) or stdin.
+file_index_auto_update() {
+  local raw_issue_id="$1"
+  shift
+  local from_git=0
+
+  # Parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from-git) from_git=1; shift ;;
+      *) echo "Error: unknown flag '$1'" >&2; return 1 ;;
+    esac
+  done
+
+  # Sanitize and validate issue_id
+  local issue_id
+  issue_id="$(sanitize "$raw_issue_id")"
+  issue_id="$(printf '%s' "$issue_id" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  _validate_issue_id "$issue_id" || return 1
+
+  # Get file list
+  local -a files=()
+  if [[ "$from_git" -eq 1 ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && files+=("$f")
+    done < <(git diff --name-only HEAD~1 2>/dev/null || true)
+  else
+    # Read from stdin (non-blocking check)
+    if [[ ! -t 0 ]]; then
+      while IFS= read -r f; do
+        [[ -n "$f" ]] && files+=("$f")
+      done
+    else
+      echo "Error: no file list provided (use --from-git or pipe files via stdin)" >&2
+      return 1
+    fi
+  fi
+
+  # Empty file list = nothing to do
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "No files changed"
+    return 0
+  fi
+
+  # Get session identity
+  local developer
+  if ! command -v get_session_identity &>/dev/null; then
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -f "$script_dir/sync-utils.sh" ]]; then
+      source "$script_dir/sync-utils.sh"
+    fi
+  fi
+  developer="$(get_session_identity)" || {
+    echo "Error: could not determine session identity" >&2
+    return 1
+  }
+
+  # Build JSON arrays using jq
+  local files_json modules_json
+  files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -s -c 'unique')"
+  modules_json="$(printf '%s\n' "${files[@]}" | while IFS= read -r p; do
+    local d
+    d="$(dirname "$p")"
+    if [[ "$d" == "." ]]; then printf '%s\n' "./"; else printf '%s\n' "${d}/"; fi
+  done | jq -R . | jq -s -c 'unique')"
+
+  # Append via file_index_add (which uses atomic locking)
+  file_index_add "$issue_id" "$developer" "$files_json" "$modules_json"
+
+  echo "File index updated for $issue_id (${#files[@]} files)"
 }
 
 # ── Main dispatcher (when run as a script) ────────────────────────────────
@@ -378,6 +470,7 @@ Subcommands:
   read
   get              <issue_id>
   update-from-tasks <issue_id> <task_file_path> [action]
+  auto-update      <issue_id> [--from-git]
 EOF
     exit 1
   fi
@@ -391,6 +484,7 @@ EOF
     read)              file_index_read ;;
     get)               file_index_get "$@" ;;
     update-from-tasks) file_index_update_from_tasks "$@" ;;
+    auto-update)       file_index_auto_update "$@" ;;
     *)
       echo "Error: Unknown subcommand '${subcommand}'" >&2
       exit 1
