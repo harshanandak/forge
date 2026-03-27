@@ -4119,9 +4119,10 @@ async function main() {
   }
 
   // First-run detection: check if Forge is configured in this project
-  // Skip for: setup (needs to run), recommend (read-only), postinstall (fresh install)
+  // Skip for: setup (needs to run), recommend (read-only), docs (read-only),
+  //           postinstall (fresh install)
   // Note: help and version already returned above, so no need to check here
-  if (command !== 'setup' && command !== 'recommend'
+  if (command !== 'setup' && command !== 'recommend' && command !== 'docs'
       && command !== 'reset' && command !== 'reinstall'
       && process.env.npm_lifecycle_event !== 'postinstall') {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
@@ -4252,14 +4253,25 @@ async function main() {
   } else if (command === 'reinstall') {
     const isForce = args.includes('--force');
     try {
-      const result = await reinstall(projectRoot, { force: isForce });
+      const result = await reinstall(projectRoot, {
+        force: isForce,
+        setupFn: async (root) => {
+          // Re-run default setup (claude agent, skip external prompts)
+          const agents = ['claude'];
+          process.chdir(root);
+          await handleSetupCommand(agents, { skipExternal: true, yes: true });
+          return { agents };
+        },
+      });
       console.log('');
       console.log('  Reinstall complete.');
       for (const f of result.resetResult.removed) {
         console.log(`    Removed: ${f}`);
       }
-      console.log('');
-      console.log('  Run "forge setup" to reconfigure.');
+      if (result.setupResult) {
+        console.log('');
+        console.log('  Setup re-run automatically.');
+      }
       console.log('');
     } catch (error) {
       console.error(`  Error: ${error.message}`);
