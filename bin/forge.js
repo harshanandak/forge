@@ -4044,10 +4044,19 @@ async function handleSyncScaffold() {
 
 // Helper: Handle setup command in non-quick mode
 async function handleSetupCommand(selectedAgents, flags) {
-  await executeSetup({
-    agents: selectedAgents,
-    skipExternal: flags.skipExternal,
-  });
+  // Allow callers (e.g. reinstall) to override projectRoot without process.chdir()
+  const savedRoot = projectRoot;
+  if (flags.projectRoot) {
+    projectRoot = flags.projectRoot;
+  }
+  try {
+    await executeSetup({
+      agents: selectedAgents,
+      skipExternal: flags.skipExternal,
+    });
+  } finally {
+    projectRoot = savedRoot;
+  }
 }
 
 // Helper: Handle external services configuration
@@ -4210,7 +4219,10 @@ async function main() {
     const isHard = args.includes('--hard');
     const isForce = args.includes('--force');
 
-    if (!isSoft && !isHard) {
+    if (isSoft && isHard) {
+      console.error('  Error: --soft and --hard are mutually exclusive. Specify one.');
+      process.exitCode = 1;
+    } else if (!isSoft && !isHard) {
       console.log('');
       console.log('  Forge Reset');
       console.log('');
@@ -4258,8 +4270,7 @@ async function main() {
         setupFn: async (root) => {
           // Re-run default setup (claude agent, skip external prompts)
           const agents = ['claude'];
-          process.chdir(root);
-          await handleSetupCommand(agents, { skipExternal: true, yes: true });
+          await handleSetupCommand(agents, { skipExternal: true, yes: true, projectRoot: root });
           return { agents };
         },
       });
