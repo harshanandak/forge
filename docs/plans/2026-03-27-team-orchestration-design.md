@@ -105,20 +105,20 @@ forge team sync                        # Manual GitHub ↔ Beads sync
 Stored in `.beads/team-map.jsonl` (append-only, LWW per GitHub username):
 
 ```json
-{"github":"harshanandak","git_emails":["harsha@befach.com"],"session_ids":["harsha@befach.com@LAPTOP-WORK"],"display_name":"Harsha Nanda","updated_at":"2026-03-27T00:00:00Z","is_bot":false}
+{"github":"harshanandak","display_name":"Harsha Nanda","updated_at":"2026-03-27T00:00:00Z","is_bot":false}
 ```
 
-**Auto-detection flow** (no user interaction 90% of the time):
-1. `gh api user --jq .login` → GitHub username
-2. `git config user.email` → git email
-3. `get_session_identity` → session identity
-4. If all succeed → write mapping entry silently
-5. If any fail → output `AGENT_PROMPT: <question>` for AI agent to ask user
+GitHub username is the **sole canonical identity**. No emails, no session IDs, no multi-machine mapping complexity.
+
+**Auto-detection flow** (no user interaction needed):
+1. `gh api user --jq .login` → GitHub username (gh CLI is already authenticated)
+2. If succeeds → write mapping entry silently
+3. If fails → output `FORGE_AGENT_7f3a:PROMPT: Run gh auth login to connect your GitHub account`
 
 **Resolving identities:**
-- Any Beads session identity → look up in team-map → resolve to GitHub username
-- Any git email → look up in team-map → resolve to GitHub username
-- Multiple machines/emails per developer → all map to same GitHub username
+- Beads issue assignee → already a GitHub username (set by forge-d2cl)
+- Current developer → `gh api user --jq .login`
+- No email mapping needed — GitHub username is the only identity layer
 
 ### GitHub Sync Strategy
 
@@ -164,7 +164,7 @@ This works with ANY AI agent because it's plain text in stderr/stdout.
 ## Edge Cases
 
 ### A) Same developer, multiple machines
-Auto-detected via git email matching. Both `harsha@LAPTOP-WORK` and `harsha@LAPTOP-HOME` map to `harshanandak` because they share `git config user.email`. If emails differ, `forge team verify` flags the mismatch and outputs `AGENT_PROMPT:`.
+Auto-detected via `gh api user --jq .login` — returns the same GitHub username regardless of which machine. No email matching needed.
 
 ### B) Two developers claim same issue simultaneously
 Pre-claim check queries GitHub assignee. If already assigned:
@@ -184,7 +184,7 @@ Auto-detected from `[bot]` suffix in GitHub username. Filtered from `forge team 
 Batch queries via GraphQL (one call for all issues). Cache GitHub state locally. Hook-driven sync only updates what changed. Typical team (5 devs, 50 issues) uses ~10 API calls per sync cycle, well under the 5000/hour limit.
 
 ### G) Git email changes
-Developer changes git email. Old Beads issues show old identity. `forge team verify` detects the mismatch and outputs `AGENT_PROMPT: New git email detected (new@email.com). Map to existing GitHub user harshanandak? Run: forge team add --github=harshanandak --email=new@email.com`
+Not relevant — identity is GitHub username only, not git email. Email changes have no impact on team features.
 
 ### H) Epic with mixed ownership
 Epic `forge-qml5` has child issues owned by different developers. `forge team epic` shows per-developer breakdown. No single "owner" enforced — epics are collaborative.
@@ -260,7 +260,7 @@ forge-d2cl (PRs #71, #73) built a comprehensive GitHub↔Beads sync engine in `s
 
 1. **AGENT_PROMPT injection vector** — Use non-guessable prefix, sanitize GitHub text before embedding in agent directives.
 
-2. **`team-map.jsonl` privacy** — Developer emails committed to git repo. **Fix**: `.beads/team-map.jsonl` must be in `.gitignore` by default. Sync identity mappings via GitHub API (usernames are public), not via git-committed JSONL. OR encrypt email fields.
+2. **`team-map.jsonl` privacy** — ~~Developer emails committed to git repo.~~ RESOLVED: Simplified to GitHub-username-only (no emails stored). GitHub usernames are public. No privacy risk.
 
 3. **Claim race condition** — Two concurrent agents can both pass pre-claim check. **Fix**: `flock`-based locking around check-then-claim sequence. Reuse `atomic_jsonl_append` pattern from `scripts/lib/jsonl-lock.sh`.
 
@@ -284,12 +284,11 @@ forge-d2cl (PRs #71, #73) built a comprehensive GitHub↔Beads sync engine in `s
 
 | # | Scenario | Type | Expected |
 |---|----------|------|----------|
-| 1 | Auto-detect: `gh api user` + `git config user.email` both available | Happy path | JSONL entry created silently, exit 0 |
-| 2 | `gh` not authenticated | Error | `FORGE_AGENT_7f3a:PROMPT: gh auth login required` + exit 1 |
-| 3 | Git email not configured | Error | `FORGE_AGENT_7f3a:PROMPT: Ask user for git email` + exit 1 |
-| 4 | Multiple emails for same GitHub user | Edge | All emails mapped to same entry, LWW resolution |
-| 5 | Bot account detection (`[bot]` suffix) | Edge | `is_bot: true` in entry, filtered from workload |
-| 6 | Malicious GitHub username injection | Security | Rejected by `^[a-zA-Z0-9-]+$` validation |
+| 1 | Auto-detect: `gh api user` returns GitHub username | Happy path | JSONL entry created silently, exit 0 |
+| 2 | `gh` not authenticated | Error | `FORGE_AGENT_7f3a:PROMPT: Run gh auth login` + exit 1 |
+| 3 | Bot account detection (`[bot]` suffix) | Edge | `is_bot: true` in entry, filtered from workload |
+| 4 | Malicious GitHub username injection | Security | Rejected by `^[a-zA-Z0-9-]+$` validation |
+| 5 | Same user on multiple machines | Edge | Same GitHub username returned, single entry in JSONL |
 
 #### GitHub sync (sync-github.sh)
 
