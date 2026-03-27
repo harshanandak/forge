@@ -175,6 +175,17 @@ sync_issue_create() {
     return 1
   }
 
+  # Update beads-mapping.json for verify Check 4
+  local mapping_file=".github/beads-mapping.json"
+  if [[ -f "$mapping_file" ]]; then
+    local updated
+    updated="$(jq --arg num "$issue_num" --arg id "$beads_id" '.[$num] = $id' "$mapping_file")"
+    printf '%s\n' "$updated" > "$mapping_file"
+  else
+    mkdir -p .github
+    printf '%s\n' "{\"$issue_num\":\"$beads_id\"}" > "$mapping_file"
+  fi
+
   return 0
 }
 

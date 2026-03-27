@@ -83,7 +83,7 @@ _get_github_assignee() {
   local issue_num="$1"
   local gh_cmd="${GH_CMD:-gh}"
   local assignee
-  assignee="$("$gh_cmd" issue view "$issue_num" --json assignees --jq '.assignees[].login' 2>/dev/null)" || return 1
+  assignee="$("$gh_cmd" issue view "$issue_num" --json assignees --jq '.assignees[0].login // empty' 2>/dev/null)" || return 1
   printf '%s' "$assignee"
 }
 

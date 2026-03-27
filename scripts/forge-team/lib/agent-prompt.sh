@@ -41,5 +41,12 @@ sanitize_for_agent() {
   else
     input="$(cat)"
   fi
-  printf '%s\n' "${input//${FORGE_AGENT_PREFIX}:/}"
+  # Loop until no more prefix occurrences (prevents split-prefix bypass)
+  local prev
+  while true; do
+    prev="$input"
+    input="${input//${FORGE_AGENT_PREFIX}:/}"
+    [[ "$input" == "$prev" ]] && break
+  done
+  printf '%s' "$input"
 }
