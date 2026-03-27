@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$SCRIPT_DIR/lib/agent-prompt.sh" ]] && source "$SCRIPT_DIR/lib/agent-prompt.sh"
 [[ -f "$SCRIPT_DIR/lib/identity.sh" ]] && source "$SCRIPT_DIR/lib/identity.sh"
 [[ -f "$SCRIPT_DIR/lib/epic.sh" ]] && source "$SCRIPT_DIR/lib/epic.sh"
+[[ -f "$SCRIPT_DIR/lib/dashboard.sh" ]] && source "$SCRIPT_DIR/lib/dashboard.sh"
 
 # Source shared forge utilities
 FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -29,7 +30,7 @@ FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Stub implementations ──
 cmd_workload() { echo "workload: not implemented"; }
 # cmd_epic provided by lib/epic.sh
-cmd_dashboard() { echo "dashboard: not implemented"; }
+# cmd_dashboard provided by lib/dashboard.sh
 cmd_add() { echo "add: not implemented"; }
 cmd_verify() { echo "verify: not implemented"; }
 cmd_sync() { echo "sync: not implemented"; }
