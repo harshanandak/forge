@@ -42,12 +42,14 @@ function runForge(cliArgs, envOverrides = {}) {
 
 describe('CLI Registry Integration', () => {
   describe('registry command dispatch', () => {
-    test('forge sync produces sync-related output (not unknown command)', () => {
-      const { stdout, stderr } = runForge(['sync']);
+    test('forge sync dispatches to registry (not unknown command)', () => {
+      const { stdout, stderr, status } = runForge(['sync']);
       const combined = stdout + stderr;
-      // sync command should produce some output — NOT fall through to minimalInstall
-      // The sync handler runs bd commands; if bd is missing it reports that
-      expect(combined).toMatch(/sync|beads|bd/i);
+      // Key assertion: sync command does NOT fall through to FORGE_SETUP_REQUIRED
+      // or minimalInstall. It dispatches via registry and exits cleanly.
+      expect(combined).not.toContain('FORGE_SETUP_REQUIRED');
+      // Exit 0 means the registry handled it (even if bd is not installed — graceful skip)
+      expect(status).toBe(0);
     });
 
     test('forge worktree produces worktree-related output (not unknown command)', () => {
