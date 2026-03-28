@@ -4291,6 +4291,9 @@ async function main() {
   } else if (command === 'rollback') {
     // Execute rollback menu
     await showRollbackMenu();
+  } else if (command === 'team') {
+    const { handleTeam } = require('../lib/commands/team.js');
+    handleTeam(process.argv.slice(3));
   } else if (process.env.npm_lifecycle_event === 'postinstall') {
     // Postinstall: show success message only, no file changes
     // Surprising file modifications during npm/bun install break user expectations

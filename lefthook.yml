@@ -37,3 +37,8 @@ pre-push:
     tests:
       run: node scripts/test.js
       tags: tests
+
+    # 4. Team sync — push Beads status to GitHub (non-blocking)
+    team-sync:
+      run: bash scripts/forge-team/lib/hooks.sh sync --quiet || true
+      tags: team

@@ -65,7 +65,6 @@ call_lefthook()
       devbox run lefthook "$@"
     else
       echo "Can't find lefthook in PATH"
-      exit 1
     fi
   fi
 }
