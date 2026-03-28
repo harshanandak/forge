@@ -12,7 +12,7 @@ const { describe, test, expect } = require('bun:test');
 
 let testCommand;
 try {
-	testCommand = require('../lib/commands/test.js');
+	testCommand = require('../../lib/commands/test.js');
 } catch (_e) {
 	// Will fail in RED phase — expected
 }

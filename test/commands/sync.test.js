@@ -9,7 +9,7 @@ const { describe, test, expect } = require('bun:test');
 describe('forge sync command', () => {
   // (a) Module exports correct shape
   test('exports name, description, usage, flags, and handler', () => {
-    const mod = require('../lib/commands/sync');
+    const mod = require('../../lib/commands/sync');
     expect(mod.name).toBe('sync');
     expect(typeof mod.description).toBe('string');
     expect(mod.usage).toBe('forge sync');
@@ -19,7 +19,7 @@ describe('forge sync command', () => {
 
   // (b) Happy path: bd exists, dolt pull + push succeed
   test('returns { success: true, synced: true } when bd and dolt succeed', async () => {
-    const mod = require('../lib/commands/sync');
+    const mod = require('../../lib/commands/sync');
     const mockExec = (_cmd, args, _opts) => {
       if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
       if (args[0] === 'dolt' && args[1] === 'pull') return Buffer.from('ok\n');
@@ -32,7 +32,7 @@ describe('forge sync command', () => {
 
   // (c) bd not found: execFileSync throws ENOENT on bd --version
   test('returns graceful skip when bd is not installed', async () => {
-    const mod = require('../lib/commands/sync');
+    const mod = require('../../lib/commands/sync');
     const mockExec = (_cmd, args, _opts) => {
       if (args[0] === '--version') {
         const err = new Error('spawn bd ENOENT');
@@ -49,7 +49,7 @@ describe('forge sync command', () => {
 
   // (d) dolt pull fails: returns { success: false } with error containing 'pull'
   test('returns failure when dolt pull fails', async () => {
-    const mod = require('../lib/commands/sync');
+    const mod = require('../../lib/commands/sync');
     const mockExec = (_cmd, args, _opts) => {
       if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
       if (args[0] === 'dolt' && args[1] === 'pull') {
@@ -65,7 +65,7 @@ describe('forge sync command', () => {
 
   // (e) dolt push fails: returns { success: false } with error containing 'push'
   test('returns failure when dolt push fails', async () => {
-    const mod = require('../lib/commands/sync');
+    const mod = require('../../lib/commands/sync');
     const mockExec = (_cmd, args, _opts) => {
       if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
       if (args[0] === 'dolt' && args[1] === 'pull') return Buffer.from('ok\n');

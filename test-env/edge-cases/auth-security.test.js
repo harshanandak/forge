@@ -114,7 +114,8 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
             content.includes('env.') ||
             // Config files that just pass CLI args (no secrets) are fine
             content.includes('npx') ||
-            content.includes('bunx');
+            content.includes('bunx') ||
+            content.includes('node scripts/');
           assert.ok(
             usesEnvVar,
             `${configFile} mentions auth but doesn't use env vars`

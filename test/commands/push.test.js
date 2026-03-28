@@ -11,7 +11,7 @@ const { describe, test, expect } = require('bun:test');
  */
 
 // We will require push.js once it exists — for now these tests should RED
-const pushModule = require('../lib/commands/push.js');
+const pushModule = require('../../lib/commands/push.js');
 
 describe('Forge Push Command', () => {
 	describe('Module exports', () => {

@@ -10,7 +10,7 @@ const { describe, test, expect } = require('bun:test');
 describe('forge clean command', () => {
   // (a) Module exports correct shape
   test('exports name, description, usage, flags, and handler', () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     expect(mod.name).toBe('clean');
     expect(typeof mod.description).toBe('string');
     expect(typeof mod.usage).toBe('string');
@@ -20,7 +20,7 @@ describe('forge clean command', () => {
 
   // (b) Scans .worktrees/ directory
   test('scans .worktrees/ directory for worktree dirs', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     let readdirPath = null;
     const mockFs = {
       existsSync: (p) => p.includes('.worktrees'),
@@ -37,7 +37,7 @@ describe('forge clean command', () => {
 
   // (c) Identifies merged branches correctly
   test('identifies merged branches and marks them for cleaning', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     const removedPaths = [];
     const mockFs = {
       existsSync: () => true,
@@ -86,7 +86,7 @@ describe('forge clean command', () => {
 
   // (d) Calls stopDolt before removing worktree
   test('calls stopDolt before removing each merged worktree', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     const callOrder = [];
     const mockFs = {
       existsSync: () => true,
@@ -123,7 +123,7 @@ describe('forge clean command', () => {
 
   // (e) --dry-run reports without removing
   test('--dry-run lists what would be cleaned without removing', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     const removeCalls = [];
     const mockFs = {
       existsSync: () => true,
@@ -160,7 +160,7 @@ describe('forge clean command', () => {
 
   // (f) Skips active (unmerged) worktrees
   test('skips worktrees whose branches are not merged', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     const removeCalls = [];
     const mockFs = {
       existsSync: () => true,
@@ -197,7 +197,7 @@ describe('forge clean command', () => {
 
   // (g) Returns correct result shape
   test('returns { success, cleaned, active, dryRun }', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     const mockFs = {
       existsSync: () => false,
       readdirSync: () => [],
@@ -213,7 +213,7 @@ describe('forge clean command', () => {
 
   // (h) Returns success with zeros when .worktrees does not exist
   test('returns zeros when .worktrees directory does not exist', async () => {
-    const mod = require('../lib/commands/clean');
+    const mod = require('../../lib/commands/clean');
     const mockFs = {
       existsSync: () => false,
       readdirSync: () => [],

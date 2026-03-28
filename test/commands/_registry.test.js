@@ -11,7 +11,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 // Will be implemented in lib/commands/_registry.js
-const { loadCommands } = require('../lib/commands/_registry');
+const { loadCommands } = require('../../lib/commands/_registry');
 
 describe('Command Registry', () => {
   let tmpDir;

@@ -9,7 +9,7 @@ const { describe, test, expect } = require('bun:test');
 describe('forge worktree command', () => {
   // (a) Module exports correct shape
   test('exports name, description, usage, flags, and handler', () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     expect(mod.name).toBe('worktree');
     expect(typeof mod.description).toBe('string');
     expect(mod.usage).toBe('forge worktree <create|remove> <slug>');
@@ -19,7 +19,7 @@ describe('forge worktree command', () => {
 
   // (b) create: calls git worktree add with correct args (new branch)
   test('create calls git worktree add with -b for new branch', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const calls = [];
     const mockExec = (cmd, args, opts) => {
       calls.push({ cmd, args, opts });
@@ -66,7 +66,7 @@ describe('forge worktree command', () => {
 
   // (c) create: uses junction symlink on Windows for .beads
   test('create uses junction symlink on Windows', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const calls = [];
     const mockExec = (cmd, args, _opts) => {
       calls.push({ cmd, args });
@@ -95,7 +95,7 @@ describe('forge worktree command', () => {
 
   // (d) create: falls back to copy on EPERM
   test('create falls back to copy when symlink throws EPERM', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     let copyCalled = false;
     const mockExec = (cmd, args, _opts) => {
       if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
@@ -126,7 +126,7 @@ describe('forge worktree command', () => {
 
   // (e) create: skips beads setup when .beads doesn't exist
   test('create skips beads setup when .beads does not exist', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const symlinkCalls = [];
     const mockExec = (cmd, args, _opts) => {
       if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
@@ -154,7 +154,7 @@ describe('forge worktree command', () => {
 
   // (f) create: creates .worktrees dir if missing
   test('create calls mkdirSync with recursive for .worktrees', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const mkdirCalls = [];
     const mockExec = (cmd, args, _opts) => {
       if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
@@ -181,7 +181,7 @@ describe('forge worktree command', () => {
 
   // (g) create: uses existing branch (no -b) when branch already exists
   test('create omits -b flag when branch already exists', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const calls = [];
     const mockExec = (cmd, args, _opts) => {
       calls.push({ cmd, args });
@@ -214,7 +214,7 @@ describe('forge worktree command', () => {
 
   // (h) create: detects worktree already exists and returns reuse message
   test('create returns reuse message when worktree path already exists', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const mockExec = (cmd, args, _opts) => {
       if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
       return Buffer.from('');
@@ -244,7 +244,7 @@ describe('forge worktree command', () => {
 
   // (i) remove: calls git worktree remove with correct args
   test('remove calls git worktree remove with correct path', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const calls = [];
     const mockExec = (cmd, args, opts) => {
       calls.push({ cmd, args, opts });
@@ -265,7 +265,7 @@ describe('forge worktree command', () => {
 
   // (n) remove: calls stopDolt before git worktree remove
   test('remove calls stopDolt before git worktree remove', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const callOrder = [];
     const mockExec = (cmd, args, _opts) => {
       if (cmd === 'bd' && args[0] === 'dolt' && args[1] === 'stop') {
@@ -291,7 +291,7 @@ describe('forge worktree command', () => {
 
   // (j) error: missing slug returns helpful error
   test('returns error when slug is missing', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const result = await mod.handler(['create'], {}, '/fake/root', {});
     expect(result.success).toBe(false);
     expect(result.error).toContain('slug');
@@ -299,7 +299,7 @@ describe('forge worktree command', () => {
 
   // (k) error: missing subcommand returns helpful error
   test('returns error when subcommand is missing', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const result = await mod.handler([], {}, '/fake/root', {});
     expect(result.success).toBe(false);
     expect(result.error).toContain('create|remove');
@@ -307,7 +307,7 @@ describe('forge worktree command', () => {
 
   // (l) create: custom --branch flag overrides default branch name
   test('create uses custom branch name from --branch flag', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const calls = [];
     const mockExec = (cmd, args, _opts) => {
       calls.push({ cmd, args });
@@ -336,7 +336,7 @@ describe('forge worktree command', () => {
 
   // (m) create: runs package install after worktree creation
   test('create runs package manager install in worktree', async () => {
-    const mod = require('../lib/commands/worktree');
+    const mod = require('../../lib/commands/worktree');
     const spawnCalls = [];
     const mockExec = (cmd, args, _opts) => {
       if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
