@@ -360,6 +360,22 @@ cmd_resolve_all() {
     local threads
     threads=$(echo "$response" | jq -r '.data.repository.pullRequest.reviewThreads.nodes')
 
+    # Build threads JSON for the Node helper (file + line for each unresolved Greptile thread)
+    local THREADS_JSON
+    THREADS_JSON=$(echo "$threads" | jq -c '[.[] | select(.isResolved == false and (.comments.nodes[0].author.login | startswith("greptile-apps"))) | { file: .comments.nodes[0].path, line: (.comments.nodes[0].line // 0) }]')
+
+    # Use Node helper to match threads to recent commits
+    local match_results=""
+    if command -v node &> /dev/null && [ -f "$(dirname "$0")/../../lib/greptile-match.js" ]; then
+        echo -e "${BLUE}Matching threads to recent commits...${NC}"
+        match_results=$(node -e "
+            const { matchThreadsToCommits } = require('$(dirname "$0")/../../lib/greptile-match.js');
+            const threads = JSON.parse(process.argv[1]);
+            const results = matchThreadsToCommits(threads, process.cwd());
+            console.log(JSON.stringify(results));
+        " "$THREADS_JSON" 2>/dev/null || echo "")
+    fi
+
     local resolved_count=0
     local failed_count=0
 
@@ -381,6 +397,22 @@ cmd_resolve_all() {
         # Skip if not Greptile
         if [[ "$author" != "greptile-apps"* ]]; then
             continue
+        fi
+
+        # Check if the Node helper found a matching commit for this file
+        local file_path
+        file_path=$(echo "$thread" | jq -r '.comments.nodes[0].path // ""')
+        local match_sha=""
+        if [ -n "$match_results" ] && [ "$match_results" != "null" ]; then
+            match_sha=$(echo "$match_results" | jq -r --arg f "$file_path" '.[] | select(.file == $f and .resolved == true) | .sha // empty' 2>/dev/null | head -1)
+        fi
+
+        # Auto-reply with commit info if we have a matching SHA
+        local comment_id
+        comment_id=$(echo "$thread" | jq -r '.comments.nodes[0].databaseId // empty')
+        if [ -n "$match_sha" ] && [ -n "$comment_id" ]; then
+            echo -e "${BLUE}Auto-replying to thread $thread_id (commit $match_sha)...${NC}"
+            reply_to_comment "$pr_number" "$comment_id" "Addressed in commit $match_sha" > /dev/null 2>&1 || true
         fi
 
         # Resolve

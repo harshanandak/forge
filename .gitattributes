@@ -1,3 +1,15 @@
+# Enforce LF line endings on all text files
+* text=auto eol=lf
+
+# Binary files — do not modify
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
 
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads

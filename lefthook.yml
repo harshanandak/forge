@@ -26,17 +26,23 @@ pre-push:
     branch-protection:
       run: node scripts/branch-protection.js
       tags: protection
+      skip:
+        - run: node scripts/check-forge-token.js
 
     # 2. ESLint check (strict mode: blocks on errors and warnings)
     # Uses Node.js script for cross-platform compatibility
     lint:
       run: node scripts/lint.js
       tags: lint
+      skip:
+        - run: node scripts/check-forge-token.js
 
     # 3. Test suite (cross-platform Node.js script detects package manager)
     tests:
       run: node scripts/test.js
       tags: tests
+      skip:
+        - run: node scripts/check-forge-token.js
 
     # 4. Team sync — push Beads status to GitHub (non-blocking)
     team-sync:

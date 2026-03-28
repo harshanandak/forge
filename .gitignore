@@ -86,3 +86,9 @@ test-env/fixtures/*
 .dolt/
 .beads/*.db
 .beads-credential-key
+
+# Forge freshness token (ephemeral validate/ship state)
+.forge-freshness
+
+# Forge push nonce token (ephemeral one-time lefthook skip)
+.forge-push-token

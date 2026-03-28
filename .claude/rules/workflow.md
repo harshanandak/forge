@@ -51,6 +51,18 @@ bd close <id>                                     # Complete
 bd sync                                           # Sync with git
 ```
 
+## Forge CLI Commands
+
+Use forge commands instead of raw tools — forge handles OS quirks, beads integration, and quality gates:
+
+| Instead of... | Use... |
+|---------------|--------|
+| `git worktree add .worktrees/<slug> -b feat/<slug>` | `forge worktree create <slug>` |
+| `bd dolt pull && bd dolt push` / `bd sync` | `forge sync` |
+| `bun test` / `bun run test` | `forge test` or `forge test --affected` |
+| `git push` (with manual checks) | `forge push` or `forge push --quick` |
+| Manual worktree cleanup | `forge clean` or `forge clean --dry-run` |
+
 ## Git Workflow
 
 ```bash
@@ -67,6 +79,10 @@ git commit -m "refactor: extract helpers"      # REFACTOR
 # Worktrees (required for /dev)
 git worktree add .worktrees/<slug> feat/<slug>
 # .worktrees/ is gitignored
+
+# Push workflow (preferred)
+forge push              # Full quality gates: branch protection + lint + tests + push
+forge push --quick      # Review-cycle: lint-only + push (CI runs full suite)
 ```
 
 ## Configuration

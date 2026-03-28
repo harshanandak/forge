@@ -33,9 +33,7 @@ describe('detectWorktree', () => {
   test('returns branch name when inside a worktree', () => {
     const result = detectWorktree(WORKTREE_DIR);
     if (result.inWorktree) {
-      // Branch name is dynamic — just verify it's a non-empty string
-      expect(typeof result.branch).toBe('string');
-      expect(result.branch.length).toBeGreaterThan(0);
+      expect(result.branch).toMatch(/^[a-z]+\/[a-z0-9-]+$/);
     }
   });
 
