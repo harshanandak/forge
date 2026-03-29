@@ -51,6 +51,7 @@ const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const { listTopics, getTopicContent } = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
+const { loadCommands } = require('../lib/commands/_registry');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -2781,6 +2782,15 @@ function showHelp() {
   console.log('Also works with bun:');
   console.log('  bunx forge setup --quick');
   console.log('');
+
+  // Append auto-discovered registry commands
+  const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+  const registryHelp = helpRegistry.getHelp();
+  if (registryHelp) {
+    console.log('Additional commands:');
+    console.log(registryHelp);
+    console.log('');
+  }
 }
 
 // Detect Husky and offer migration to Lefthook
@@ -4127,12 +4137,16 @@ async function main() {
     projectRoot = handlePathSetup(flags.path);
   }
 
+  // Load command registry (auto-discovered commands from lib/commands/)
+  const registry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+
   // First-run detection: check if Forge is configured in this project
   // Skip for: setup (needs to run), recommend (read-only), docs (read-only),
-  //           postinstall (fresh install)
+  //           postinstall (fresh install), registry commands (handle own requirements)
   // Note: help and version already returned above, so no need to check here
   if (command !== 'setup' && command !== 'recommend' && command !== 'docs'
       && command !== 'reset' && command !== 'reinstall'
+      && !registry.commands.has(command)
       && process.env.npm_lifecycle_event !== 'postinstall') {
     const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
     if (!fs.existsSync(agentsMdPath)) {
@@ -4141,6 +4155,22 @@ async function main() {
       console.error('  Or:   npx forge setup --yes  (non-interactive)\n');
       process.exit(1);
     }
+  }
+
+  // Registry command dispatch — auto-discovered commands take priority
+  if (registry.commands.has(command)) {
+    const cmd = registry.commands.get(command);
+    try {
+      const result = await cmd.handler(args.slice(1), flags, projectRoot);
+      if (result && !result.success) {
+        console.error(result.error || result.message || 'Command failed');
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error(`Error running '${command}':`, err.message);
+      process.exit(1);
+    }
+    return;
   }
 
   if (command === 'setup') {

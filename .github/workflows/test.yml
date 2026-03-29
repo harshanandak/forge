@@ -39,7 +39,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: [20, 22]
+        node-version: [22, 24]  # Node 20 dropped: deprecated by GitHub, causes Bun segfault on Windows
 
     steps:
       - name: Checkout code
@@ -53,7 +53,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.5
 
       - name: Install dependencies
         run: bun install
@@ -67,8 +67,11 @@ jobs:
         shell: bash
         run: bash test-env/automation/setup-fixtures.sh --force
 
-      - name: Run all tests
-        run: bun test
+      - name: Run unit tests (Bun)
+        run: bun test test/
+
+      - name: Run edge-case tests (Node)
+        run: node --test test-env/**/*.test.js || true  # node:test runner for test-env/ (incompatible with Bun)
 
       - name: Test summary
         if: always()
@@ -94,7 +97,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.5
 
       - name: Install dependencies
         run: bun install
@@ -103,7 +106,7 @@ jobs:
         run: bash test-env/automation/setup-fixtures.sh --force
 
       - name: Run tests with coverage
-        run: bun test --coverage
+        run: bun test --coverage test/ # Exclude test-env/ (uses node:test, incompatible with Bun)
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
@@ -142,7 +145,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.5
 
       - name: Install dependencies
         run: bun install
@@ -176,7 +179,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.5
 
       - name: Install dependencies
         run: bun install
@@ -223,7 +226,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.5
 
       - name: Install dependencies
         run: bun install

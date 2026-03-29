@@ -425,6 +425,9 @@ Expected output: <what running the test/code produces when done>
 - Feature logic SECOND
 - Integration/wiring THIRD
 - Uncertain/ambiguous tasks LAST (so they can be deferred if blocked)
+- **File ownership**: Each task MUST include an `OWNS:` line listing files it will modify
+- No two tasks in the same wave can own the same file
+- Cross-wave ownership is allowed (sequential execution prevents conflicts)
 
 **YAGNI filter** (after initial task draft, before saving):
 

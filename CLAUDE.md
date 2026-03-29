@@ -80,6 +80,16 @@ git commit --no-verify           # Skip pre-commit hooks
 
 **⚠️ AI agents must NEVER use `LEFTHOOK=0`, `--no-verify`, or any hook bypass.** If a hook fails, fix the underlying issue. Only humans may bypass hooks in emergencies, documented in the PR description.
 
+**Preferred push workflow** (for AI agents and humans):
+```bash
+forge push              # Runs branch protection + lint + tests, then pushes
+forge push --quick      # Review-cycle: lint-only push (CI runs full suite)
+forge worktree create <slug>  # Creates worktree with Beads integration
+forge test              # Runs tests with correct timeouts + Beads skip
+forge sync              # Syncs Beads data (dolt pull + push)
+forge clean             # Removes merged worktrees (stops Dolt servers)
+```
+
 See [.github/pull_request_template.md](.github/pull_request_template.md) for PR guidelines.
 
 ---

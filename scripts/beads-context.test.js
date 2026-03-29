@@ -8,10 +8,14 @@ const { resolveBashCommand } = require('../test/helpers/bash.js');
 const SCRIPT_PATH = path.join(__dirname, 'beads-context.sh');
 const WORKTREE_ROOT = path.resolve(__dirname, '..');
 
-// Check if bd CLI is available (not installed in CI)
+// Check if bd CLI is available AND Dolt database is reachable (not just binary exists).
+// Prevents tests from hanging when Dolt is dead. BD_TIMEOUT env var overrides default.
 function isBdAvailable() {
 	try {
 		execFileSync('bd', ['--version'], { stdio: 'ignore' });
+		// Also verify Dolt database is reachable (not just binary exists)
+		const timeout = parseInt(process.env.BD_TIMEOUT || '3000', 10);
+		execFileSync('bd', ['list', '--limit=1'], { stdio: 'ignore', timeout });
 		return true;
 	} catch {
 		return false;
