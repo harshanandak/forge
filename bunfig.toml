@@ -1,4 +1,0 @@
-[test]
-# Increase default test timeout from 5s to 15s
-# Some tests invoke bd CLI which requires Dolt server startup
-timeout = 15000
