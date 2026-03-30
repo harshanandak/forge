@@ -77,26 +77,26 @@ const PROTECTED_BRANCHES = new Set(['main', 'master']);
  * @returns {string} Current git branch name
  */
 function getCurrentBranch() {
-  try {
-    if (process.env.LEFTHOOK_GIT_BRANCH) {
-      const b = process.env.LEFTHOOK_GIT_BRANCH.trim();
-      if (!isSafeGitRefComponent(b)) {
-        console.error(`${RED}✗ Error: Invalid LEFTHOOK_GIT_BRANCH value${RESET}`);
-        process.exit(1);
-      }
-      return b;
+  if (process.env.LEFTHOOK_GIT_BRANCH) {
+    const b = process.env.LEFTHOOK_GIT_BRANCH.trim();
+    if (!isSafeGitRefComponent(b)) {
+      console.error(`${RED}✗ Error: Invalid LEFTHOOK_GIT_BRANCH value${RESET}`);
+      return { error: true, code: 1 };
     }
+    return { error: false, branch: b };
+  }
 
+  try {
     const branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
     if (!isSafeGitRefComponent(branch)) {
       console.error(`${RED}✗ Error: Invalid branch name from git${RESET}`);
-      process.exit(1);
+      return { error: true, code: 1 };
     }
-    return branch;
+    return { error: false, branch };
   } catch (error) {
     console.error(`${RED}✗ Error: Could not determine current branch${RESET}`);
     console.error(`  ${error.message}`);
-    process.exit(1);
+    return { error: true, code: 1 };
   }
 }
 
@@ -110,9 +110,10 @@ function isProtectedBranch(branch) {
 }
 
 /**
- * Main function
+ * Check branch protection and return an exit code.
+ * @returns {number} 0 if push is allowed, 1 if push is blocked
  */
-function main() {
+function checkBranchProtection() {
   // Handle --help flag
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
     console.log('Branch Protection Script');
@@ -125,10 +126,12 @@ function main() {
     console.log('Exit codes:');
     console.log('  0 - Push allowed');
     console.log('  1 - Push blocked (protected branch)');
-    process.exit(0);
+    return 0;
   }
 
-  const currentBranch = getCurrentBranch();
+  const result = getCurrentBranch();
+  if (result.error) return result.code;
+  const currentBranch = result.branch;
 
   if (isProtectedBranch(currentBranch)) {
     // Allow beads-only commits (issue tracking metadata) to push directly
@@ -151,7 +154,7 @@ function main() {
         console.error(`${YELLOW}Note: no changed files detected — nothing to bypass${RESET}`);
       } else if (changedFiles.every(f => f.startsWith('.beads/'))) {
         console.error(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
-        process.exit(0);
+        return 0;
       }
     } catch (_e) {
       console.error(`${YELLOW}Note: could not detect beads-only push (upstream ref missing?) — blocking by default${RESET}`);
@@ -172,12 +175,15 @@ function main() {
     console.error(`${YELLOW}Emergency hook bypass is human-only and must not appear in agent logs.${RESET}`);
     console.error(`  See ${YELLOW}CLAUDE.md${RESET} (Git Workflow) — AI agents must fix failing hooks, not bypass them.`);
     console.error('');
-    process.exit(1);
+    return 1;
   }
 
   // Push allowed
-  process.exit(0);
+  return 0;
 }
 
-// Run main function
-main();
+module.exports = { checkBranchProtection };
+
+if (require.main === module) {
+  process.exit(checkBranchProtection());
+}
