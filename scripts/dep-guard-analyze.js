@@ -17,22 +17,22 @@ function normalizeListPayload(payload) {
     return [payload];
   }
 
-	return [];
+  return [];
 }
 
 function normalizeSingleIssuePayload(payload) {
-	if (Array.isArray(payload)) {
-		return payload[0] ?? {};
-	}
+  if (Array.isArray(payload)) {
+    return payload[0] ?? {};
+  }
 
-	if (payload && typeof payload === 'object') {
-		return payload;
-	}
+  if (payload && typeof payload === 'object') {
+    return payload;
+  }
 
-	return {};
+  return {};
 }
 
-function main() {
+function analyze() {
   const [
     currentIssueFile,
     openIssuesFile,
@@ -61,11 +61,16 @@ function main() {
   });
 
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  return result;
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error.message}\n`);
-  process.exit(1);
+module.exports = { analyze };
+
+if (require.main === module) {
+  try {
+    analyze();
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  }
 }
