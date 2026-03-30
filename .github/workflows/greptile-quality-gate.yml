@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Check Greptile Score
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const checkRun = context.payload.check_run;
