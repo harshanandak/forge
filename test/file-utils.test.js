@@ -170,7 +170,7 @@ describe('file-utils', () => {
 
     test('writeEnvTokens writes new tokens', () => {
       const { writeEnvTokens } = require('../lib/file-utils');
-      const result = writeEnvTokens({ API_KEY: 'abc123' }, true, tmpDir);
+      const result = writeEnvTokens({ API_KEY: 'abc123' }, tmpDir, true);
       expect(result.added).toContain('API_KEY');
       const content = fs.readFileSync(path.join(tmpDir, '.env.local'), 'utf8');
       expect(content).toContain('API_KEY=abc123');
@@ -179,7 +179,7 @@ describe('file-utils', () => {
     test('writeEnvTokens preserves existing values', () => {
       const { writeEnvTokens } = require('../lib/file-utils');
       fs.writeFileSync(path.join(tmpDir, '.env.local'), 'EXISTING=keep\n');
-      const result = writeEnvTokens({ EXISTING: 'overwrite' }, true, tmpDir);
+      const result = writeEnvTokens({ EXISTING: 'overwrite' }, tmpDir, true);
       expect(result.preserved).toContain('EXISTING');
       const content = fs.readFileSync(path.join(tmpDir, '.env.local'), 'utf8');
       expect(content).toContain('EXISTING=keep');
