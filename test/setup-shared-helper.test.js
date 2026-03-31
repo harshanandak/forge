@@ -3,8 +3,8 @@ const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
 describe('executeSetup shared helper (forge-cpnj)', () => {
-  const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
-  const content = fs.readFileSync(forgePath, 'utf-8');
+  const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
+  const content = fs.readFileSync(setupPath, 'utf-8');
 
   test('executeSetup function exists', () => {
     expect(content).toContain('async function executeSetup(');

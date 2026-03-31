@@ -4,7 +4,9 @@ const { describe, test, expect } = require('bun:test');
 
 describe('--yes / -y flag for non-interactive setup', () => {
   const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+  const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
   const content = fs.readFileSync(forgePath, 'utf-8');
+  const setupContent = fs.readFileSync(setupPath, 'utf-8');
 
   test('parseFlags recognizes --yes flag', () => {
     // The parseFlags function should handle '--yes'
@@ -28,9 +30,10 @@ describe('--yes / -y flag for non-interactive setup', () => {
 
   test('main() uses --yes to default agents to claude and skip interactive', () => {
     // When --yes is active and no --agents specified, default to claude
+    // The flags.yes handling is split: parsing in bin/forge.js, setup logic in lib/commands/setup.js
     expect(content).toContain("flags.yes");
-    // Should have logic that defaults to ['claude'] when yes is set
-    expect(content).toMatch(/flags\.yes[\s\S]*?claude/);
+    // Should have logic that defaults to ['claude'] when yes is set (now in setup.js)
+    expect(setupContent).toMatch(/flags\.yes[\s\S]*?claude/);
   });
 
   test('explicit --agents flag overrides --yes default agent', () => {
@@ -38,7 +41,8 @@ describe('--yes / -y flag for non-interactive setup', () => {
     // before falling back to --yes default — this is ensured by the order:
     // flags.agents is checked first in determineSelectedAgents, then --yes
     // kicks in only when selectedAgents is empty
-    const mainSection = content.substring(content.indexOf('async function main()'));
+    // After extraction, handleSetupCommand lives in lib/commands/setup.js
+    const mainSection = setupContent.substring(setupContent.indexOf('async function handleSetupCommand('));
     // --yes agent-override logic should appear AFTER determineSelectedAgents call
     const determineCall = mainSection.indexOf('determineSelectedAgents');
     // Look for the agent-specific flags.yes check (not the NON_INTERACTIVE one)
@@ -51,7 +55,8 @@ describe('--yes / -y flag for non-interactive setup', () => {
   test('--yes skips interactive setup (does not call interactiveSetupWithFlags)', () => {
     // When --yes is active, the code should NOT fall through to interactiveSetupWithFlags
     // It should route to handleSetupCommand instead
-    const mainSection = content.substring(content.indexOf('async function main()'));
+    // After extraction, handleSetupCommand lives in lib/commands/setup.js
+    const mainSection = setupContent.substring(setupContent.indexOf('async function handleSetupCommand('));
     // There should be a flags.yes check before the interactiveSetupWithFlags call
     const interactiveCall = mainSection.indexOf('interactiveSetupWithFlags');
     const yesCheck = mainSection.indexOf('flags.yes');
