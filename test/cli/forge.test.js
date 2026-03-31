@@ -52,10 +52,9 @@ describe('bin/forge.js structure', () => {
   test('should have Phase 7A helper functions for complexity reduction', () => {
     // Helpers extracted to reduce cognitive complexity in Phase 7A
     // Note: validateCommonSecurity was extracted to lib/validation-utils.js in CLI maturity epic
+    // Note: detectFromLockFile/detectFromCommand extracted to lib/detection-utils.js
     const phase7aHelpers = [
       'installViaBunx',
-      'detectFromLockFile',
-      'detectFromCommand',
       'getSkillsInstallArgs',
       'installSkillsWithMethod',
     ];
@@ -113,9 +112,8 @@ describe('bin/forge.js structure', () => {
     expect(source.includes("installViaBunx('@forge/skills'")).toBeTruthy();
   });
 
-  test('should use data-driven detection in detectPackageManager', () => {
-    // Verify detectPackageManager uses helper functions instead of repeated if-else
-    expect(source.includes("detectFromLockFile('bun'")).toBeTruthy();
-    expect(source.includes("detectFromCommand('npm'")).toBeTruthy();
+  test('should delegate detectPackageManager to detection-utils', () => {
+    // Verify detectPackageManager delegates to lib/detection-utils
+    expect(source.includes("detectionUtils.detectPackageManager(errors, projectRoot)")).toBeTruthy();
   });
 });

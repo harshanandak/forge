@@ -75,6 +75,8 @@ const { ActionCollector, isNonInteractive } = require('../lib/setup-utils');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
+const fileUtils = require('../lib/file-utils');
+const detectionUtils = require('../lib/detection-utils');
 const { detectHusky, migrateHusky } = require('../lib/husky-migration');
 // workflowProfiles: module exists and is tested but not yet wired into setup flow
 // Will be activated when workflow profile selection is added to interactive setup
@@ -168,43 +170,13 @@ function safeExec(cmd) {
   }
 }
 
-// Helper: Try to detect a package manager from lock file - returns true if found
-function detectFromLockFile(name, lockFiles, versionPrefix) {
-  const found = lockFiles.some(f => fs.existsSync(path.join(projectRoot, f)));
-  if (!found) return false;
-
-  PKG_MANAGER = name;
-  const version = safeExec(`${name} --version`);
-  if (version) console.log(`  ✓ ${versionPrefix}${version} (detected from lock file)`);
-  return true;
-}
-
-// Helper: Try to detect a package manager from command availability - returns true if found
-function detectFromCommand(name, versionPrefix) {
-  const version = safeExec(`${name} --version`);
-  if (!version) return false;
-
-  PKG_MANAGER = name;
-  console.log(`  ✓ ${versionPrefix}${version} (detected as package manager)`);
-  return true;
-}
-
-// Detect package manager from command availability and lock files
-// Extracted to reduce cognitive complexity
+// Detect package manager — delegates to lib/detection-utils.js
+// Bridges the new return-value API back to the module-level PKG_MANAGER variable
 function detectPackageManager(errors) {
-  // Check lock files first (most authoritative)
-  if (detectFromLockFile('bun', ['bun.lockb', 'bun.lock'], 'bun v')) return;
-  if (detectFromLockFile('pnpm', ['pnpm-lock.yaml'], 'pnpm ')) return;
-  if (detectFromLockFile('yarn', ['yarn.lock'], 'yarn ')) return;
-
-  // Fallback: detect from installed commands
-  if (detectFromCommand('bun', 'bun v')) return;
-  if (detectFromCommand('pnpm', 'pnpm ')) return;
-  if (detectFromCommand('yarn', 'yarn ')) return;
-  if (detectFromCommand('npm', 'npm ')) return;
-
-  // No package manager found
-  errors.push('npm, yarn, pnpm, or bun - Install a package manager');
+  const result = detectionUtils.detectPackageManager(errors, projectRoot);
+  if (result) {
+    PKG_MANAGER = result.name;
+  }
 }
 
 // Prerequisite check function
@@ -345,53 +317,15 @@ See AGENTS.md for full workflow details.
 // Helper functions
 
 function ensureDir(dir) {
-  const fullPath = path.resolve(projectRoot, dir);
-  const resolvedProjectRoot = path.resolve(projectRoot);
-
-  // SECURITY: Prevent path traversal
-  if (!fullPath.startsWith(resolvedProjectRoot)) {
-    console.error(`  ✗ Security: Directory path escape blocked: ${dir}`);
-    return false;
-  }
-
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, { recursive: true });
-  }
-  return true;
+  return fileUtils.ensureDir(dir, projectRoot);
 }
 
 function writeFile(filePath, content) {
-  try {
-    const fullPath = path.resolve(projectRoot, filePath);
-    const resolvedProjectRoot = path.resolve(projectRoot);
-
-    // SECURITY: Prevent path traversal
-    if (!fullPath.startsWith(resolvedProjectRoot)) {
-      console.error(`  ✗ Security: Write path escape blocked: ${filePath}`);
-      return false;
-    }
-
-    const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(fullPath, content, { mode: 0o644 });
-    return true;
-  } catch (err) {
-    console.error(`  ✗ Failed to write ${filePath}: ${err.message}`);
-    return false;
-  }
+  return fileUtils.writeFile(filePath, content, projectRoot);
 }
 
 function readFile(filePath) {
-  try {
-    return fs.readFileSync(filePath, 'utf8');
-  } catch (err) {
-    if (process.env.DEBUG) {
-      console.warn(`  ⚠ Could not read ${filePath}: ${err.message}`);
-    }
-    return null;
-  }
+  return fileUtils.readFile(filePath);
 }
 
 function copyFile(src, dest) {
@@ -453,137 +387,22 @@ function createSymlinkOrCopy(source, target, options = {}) {
 }
 
 function stripFrontmatter(content) {
-  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
-  return match ? match[1] : content;
+  return fileUtils.stripFrontmatter(content);
 }
 
 // Read existing .env.local
 function readEnvFile() {
-  const envPath = path.join(projectRoot, '.env.local');
-  try {
-    if (fs.existsSync(envPath)) {
-      return fs.readFileSync(envPath, 'utf8');
-    }
-  } catch (err) {
-    // File read failure is acceptable - file may not exist or have permission issues
-    // Return empty string to allow caller to proceed with defaults
-    console.warn('Failed to read .env.local:', err.message);
-  }
-  return '';
+  return fileUtils.readEnvFile(projectRoot);
 }
 
 // Parse .env.local and return key-value pairs
 function parseEnvFile() {
-  const content = readEnvFile();
-  const lines = content.split(/\r?\n/);
-  const vars = {};
-  lines.forEach(line => {
-    const match = line.match(/^([A-Z_]+)=(.*)$/);
-    if (match) {
-      vars[match[1]] = match[2];
-    }
-  });
-  return vars;
+  return fileUtils.parseEnvFile(projectRoot);
 }
 
 // Write or update .env.local - PRESERVES existing values
 function writeEnvTokens(tokens, preserveExisting = true) {
-  const envPath = path.join(projectRoot, '.env.local');
-  let content = readEnvFile();
-
-  // Parse existing content (handle both CRLF and LF line endings)
-  const lines = content.split(/\r?\n/);
-  const existingVars = {};
-  const existingKeys = new Set();
-  lines.forEach(line => {
-    const match = line.match(/^([A-Z_]+)=/);
-    if (match) {
-      existingVars[match[1]] = line;
-      existingKeys.add(match[1]);
-    }
-  });
-
-  // Track what was added vs preserved
-  let added = [];
-  let preserved = [];
-
-  // Add/update tokens - PRESERVE existing values if preserveExisting is true
-  Object.entries(tokens).forEach(([key, value]) => {
-    if (value?.trim()) {
-      if (preserveExisting && existingKeys.has(key)) {
-        // Keep existing value, don't overwrite
-        preserved.push(key);
-      } else {
-        // Add new token
-        existingVars[key] = `${key}=${value.trim()}`;
-        added.push(key);
-      }
-    }
-  });
-
-  // Rebuild file with comments
-  const outputLines = [];
-
-  // Add header if new file
-  if (!content.includes('# External Service API Keys')) {
-    outputLines.push(
-      '# External Service API Keys for Forge Workflow',
-      '# Get your keys from:',
-      '#   Parallel AI: https://platform.parallel.ai',
-      '#   Greptile: https://app.greptile.com/api',
-      '#   SonarCloud: https://sonarcloud.io/account/security',
-      ''
-    );
-  }
-
-  // Add existing content (preserve order and comments)
-  lines.forEach(line => {
-    const match = line.match(/^([A-Z_]+)=/);
-    if (match && existingVars[match[1]]) {
-      outputLines.push(existingVars[match[1]]);
-      delete existingVars[match[1]]; // Mark as added
-    } else if (line.trim()) {
-      outputLines.push(line);
-    }
-  });
-
-  // Add any new tokens not in original file
-  Object.values(existingVars).forEach(line => {
-    outputLines.push(line);
-  });
-
-  // Ensure ends with newline
-  let finalContent = outputLines.join('\n').trim() + '\n';
-
-  fs.writeFileSync(envPath, finalContent);
-
-  // OWASP A02: Set restrictive permissions on .env.local (contains API keys)
-  // On Windows, chmod is a no-op so we skip it
-  if (process.platform !== 'win32') {
-    try {
-      fs.chmodSync(envPath, 0o600);
-    } catch (_err) {
-      // chmod failure is non-fatal — file was still written successfully
-    }
-  }
-
-  // Add .env.local to .gitignore if not present
-  const gitignorePath = path.join(projectRoot, '.gitignore');
-  try {
-    let gitignore = '';
-    if (fs.existsSync(gitignorePath)) {
-      gitignore = fs.readFileSync(gitignorePath, 'utf8');
-    }
-    if (!gitignore.includes('.env.local')) {
-      fs.appendFileSync(gitignorePath, '\n# Local environment variables\n.env.local\n');
-    }
-  } catch (err) {
-    // Gitignore update is optional - failure doesn't prevent .env.local creation
-    // User can manually add .env.local to .gitignore if needed
-    console.warn('Failed to update .gitignore:', err.message);
-  }
-
-  return { added, preserved };
+  return fileUtils.writeEnvTokens(tokens, preserveExisting, projectRoot);
 }
 
 // Detect existing project installation status
@@ -660,239 +479,20 @@ async function detectProjectStatus() {
   return status;
 }
 
-// Helper: Detect test framework from dependencies
-function detectTestFramework(deps) {
-  if (deps.jest) return 'jest';
-  if (deps.vitest) return 'vitest';
-  if (deps.mocha) return 'mocha';
-  if (deps['@playwright/test']) return 'playwright';
-  if (deps.cypress) return 'cypress';
-  if (deps.karma) return 'karma';
-  return null;
-}
-
-// Helper: Detect language features (TypeScript, monorepo, Docker, CI/CD)
-function detectLanguageFeatures(pkg) {
-  const features = {
-    typescript: false,
-    monorepo: false,
-    docker: false,
-    cicd: false
-  };
-
-  // Detect TypeScript
-  if (pkg.devDependencies?.typescript || pkg.dependencies?.typescript) {
-    features.typescript = true;
-  }
-
-  // Detect monorepo
-  if (pkg.workspaces ||
-    fs.existsSync(path.join(projectRoot, 'pnpm-workspace.yaml')) ||
-    fs.existsSync(path.join(projectRoot, 'lerna.json'))) {
-    features.monorepo = true;
-  }
-
-  // Detect Docker
-  if (fs.existsSync(path.join(projectRoot, 'Dockerfile')) ||
-    fs.existsSync(path.join(projectRoot, 'docker-compose.yml'))) {
-    features.docker = true;
-  }
-
-  // Detect CI/CD
-  if (fs.existsSync(path.join(projectRoot, '.github/workflows')) ||
-    fs.existsSync(path.join(projectRoot, '.gitlab-ci.yml')) ||
-    fs.existsSync(path.join(projectRoot, 'azure-pipelines.yml')) ||
-    fs.existsSync(path.join(projectRoot, '.circleci/config.yml'))) {
-    features.cicd = true;
-  }
-
-  return features;
-}
-
-// Helper: Detect Next.js framework
-function detectNextJs(deps) {
-  if (!deps.next) return null;
-
-  return {
-    framework: 'Next.js',
-    frameworkConfidence: 100,
-    projectType: 'fullstack',
-    buildTool: 'next',
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect NestJS framework
-function detectNestJs(deps) {
-  if (!deps['@nestjs/core'] && !deps['@nestjs/common']) return null;
-
-  return {
-    framework: 'NestJS',
-    frameworkConfidence: 100,
-    projectType: 'backend',
-    buildTool: 'nest',
-    testFramework: 'jest'
-  };
-}
-
-// Helper: Detect Angular framework
-function detectAngular(deps) {
-  if (!deps['@angular/core'] && !deps['@angular/cli']) return null;
-
-  return {
-    framework: 'Angular',
-    frameworkConfidence: 100,
-    projectType: 'frontend',
-    buildTool: 'ng',
-    testFramework: 'karma'
-  };
-}
-
-// Helper: Detect Vue.js framework
-function detectVue(deps) {
-  if (!deps.vue) return null;
-
-  if (deps.nuxt) {
-    return {
-      framework: 'Nuxt',
-      frameworkConfidence: 100,
-      projectType: 'fullstack',
-      buildTool: 'nuxt',
-      testFramework: detectTestFramework(deps)
-    };
-  }
-
-  const hasVite = deps.vite;
-  const hasWebpack = deps.webpack;
-
-  // Determine build tool without nested ternary
-  let buildTool = 'vue-cli';
-  if (hasVite) {
-    buildTool = 'vite';
-  } else if (hasWebpack) {
-    buildTool = 'webpack';
-  }
-
-  return {
-    framework: 'Vue.js',
-    frameworkConfidence: deps['@vue/cli'] ? 100 : 90,
-    projectType: 'frontend',
-    buildTool,
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect React framework
-function detectReact(deps) {
-  if (!deps.react) return null;
-
-  const hasVite = deps.vite;
-  const hasReactScripts = deps['react-scripts'];
-
-  // Determine build tool without nested ternary
-  let buildTool = 'webpack';
-  if (hasVite) {
-    buildTool = 'vite';
-  } else if (hasReactScripts) {
-    buildTool = 'create-react-app';
-  }
-
-  return {
-    framework: 'React',
-    frameworkConfidence: 95,
-    projectType: 'frontend',
-    buildTool,
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect Express framework
-function detectExpress(deps, features) {
-  if (!deps.express) return null;
-
-  return {
-    framework: 'Express',
-    frameworkConfidence: 90,
-    projectType: 'backend',
-    buildTool: features.typescript ? 'tsc' : 'node',
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect Fastify framework
-function detectFastify(deps, features) {
-  if (!deps.fastify) return null;
-
-  return {
-    framework: 'Fastify',
-    frameworkConfidence: 95,
-    projectType: 'backend',
-    buildTool: features.typescript ? 'tsc' : 'node',
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect Svelte framework
-function detectSvelte(deps) {
-  if (!deps.svelte) return null;
-
-  if (deps['@sveltejs/kit']) {
-    return {
-      framework: 'SvelteKit',
-      frameworkConfidence: 100,
-      projectType: 'fullstack',
-      buildTool: 'vite',
-      testFramework: detectTestFramework(deps)
-    };
-  }
-
-  return {
-    framework: 'Svelte',
-    frameworkConfidence: 95,
-    projectType: 'frontend',
-    buildTool: 'vite',
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect Remix framework
-function detectRemix(deps) {
-  if (!deps['@remix-run/react']) return null;
-
-  return {
-    framework: 'Remix',
-    frameworkConfidence: 100,
-    projectType: 'fullstack',
-    buildTool: 'remix',
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect Astro framework
-function detectAstro(deps) {
-  if (!deps.astro) return null;
-
-  return {
-    framework: 'Astro',
-    frameworkConfidence: 100,
-    projectType: 'frontend',
-    buildTool: 'astro',
-    testFramework: detectTestFramework(deps)
-  };
-}
-
-// Helper: Detect generic Node.js project
-function detectGenericNodeJs(pkg, deps, features) {
-  if (!pkg.main && !pkg.scripts?.start) return null;
-
-  return {
-    framework: 'Node.js',
-    frameworkConfidence: 70,
-    projectType: 'backend',
-    buildTool: features.typescript ? 'tsc' : 'node',
-    testFramework: detectTestFramework(deps)
-  };
-}
+// Detection helpers — delegated to lib/detection-utils.js
+function detectTestFramework(deps) { return detectionUtils.detectTestFramework(deps); }
+function detectLanguageFeatures(pkg) { return detectionUtils.detectLanguageFeatures(pkg, projectRoot); }
+function detectNextJs(deps) { return detectionUtils.detectNextJs(deps); }
+function detectNestJs(deps) { return detectionUtils.detectNestJs(deps); }
+function detectAngular(deps) { return detectionUtils.detectAngular(deps); }
+function detectVue(deps) { return detectionUtils.detectVue(deps); }
+function detectReact(deps) { return detectionUtils.detectReact(deps); }
+function detectExpress(deps, features) { return detectionUtils.detectExpress(deps, features); }
+function detectFastify(deps, features) { return detectionUtils.detectFastify(deps, features); }
+function detectSvelte(deps) { return detectionUtils.detectSvelte(deps); }
+function detectRemix(deps) { return detectionUtils.detectRemix(deps); }
+function detectAstro(deps) { return detectionUtils.detectAstro(deps); }
+function detectGenericNodeJs(pkg, deps, features) { return detectionUtils.detectGenericNodeJs(pkg, deps, features); }
 
 // Helper: Detect generic JavaScript/TypeScript project (fallback)
 function detectGenericProject(deps, features) {
@@ -1620,19 +1220,13 @@ function showBanner(subtitle = 'Universal AI Agent Workflow') {
 
 /**
  * Creates a directory on first use and prints a one-time purpose note.
+ * Delegates to lib/file-utils.js.
  * @param {string} dir - Absolute path to the directory to create.
  * @param {string} purpose - Human-readable purpose description.
  * @returns {string|null} Purpose message if created, null if already existed.
  */
 function ensureDirWithNote(dir, purpose) {
-  if (fs.existsSync(dir)) {
-    return null;
-  }
-  fs.mkdirSync(dir, { recursive: true });
-  const display = dir.replace(/\\/g, '/');
-  const msg = `Created ${display} for ${purpose}`;
-  console.log(`  ${msg}`);
-  return msg;
+  return fileUtils.ensureDirWithNote(dir, purpose);
 }
 
 // Setup core documentation and directories
