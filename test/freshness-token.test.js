@@ -11,12 +11,18 @@ const {
   isStale
 } = require('../lib/freshness-token');
 
+// Counter for unique branch names across test runs (avoids collision in CI)
+let branchCounter = 0;
+
 /**
  * Creates a temporary git repo with a commit on main and a feature branch.
- * Returns { dir, cleanup }.
+ * Uses a unique branch name per invocation to prevent collisions when
+ * git state from a previous test run leaks (e.g., during CI push).
+ * Returns { dir, cleanup, branchName }.
  */
 function createTempGitRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-freshness-'));
+  const branchName = `feat/test-feature-${Date.now()}-${++branchCounter}`;
 
   // Initialize repo with 'main' as default branch
   execFileSync('git', ['init', '--initial-branch', 'main'], { cwd: dir });
@@ -28,8 +34,8 @@ function createTempGitRepo() {
   execFileSync('git', ['add', '.'], { cwd: dir });
   execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: dir });
 
-  // Create and switch to feature branch
-  execFileSync('git', ['checkout', '-b', 'feat/test-feature'], { cwd: dir });
+  // Create and switch to feature branch (unique name per test)
+  execFileSync('git', ['checkout', '-b', branchName], { cwd: dir });
 
   // Add a commit on the feature branch so HEAD differs from main
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'feature work');
@@ -40,7 +46,7 @@ function createTempGitRepo() {
     fs.rmSync(dir, { recursive: true, force: true });
   };
 
-  return { dir, cleanup };
+  return { dir, cleanup, branchName };
 }
 
 describe('freshness-token', () => {
@@ -60,7 +66,7 @@ describe('freshness-token', () => {
 
       expect(written).toBeDefined();
       expect(typeof written.timestamp).toBe('number');
-      expect(written.branch).toBe('feat/test-feature');
+      expect(written.branch).toBe(repo.branchName);
       expect(typeof written.baseCommit).toBe('string');
       expect(written.baseCommit.length).toBeGreaterThan(0);
 
@@ -81,7 +87,7 @@ describe('freshness-token', () => {
       // Should be valid JSON
       const content = fs.readFileSync(tokenPath, 'utf8');
       const parsed = JSON.parse(content);
-      expect(parsed.branch).toBe('feat/test-feature');
+      expect(parsed.branch).toBe(repo.branchName);
     });
   });
 
@@ -103,7 +109,7 @@ describe('freshness-token', () => {
       execFileSync('git', ['commit', '-m', 'main moved forward'], { cwd: repo.dir });
 
       // Rebase feature branch onto new main tip — this changes merge-base
-      execFileSync('git', ['checkout', 'feat/test-feature'], { cwd: repo.dir });
+      execFileSync('git', ['checkout', repo.branchName], { cwd: repo.dir });
       execFileSync('git', ['rebase', 'main'], { cwd: repo.dir });
 
       const stale = isStale(token, repo.dir);
@@ -171,7 +177,7 @@ describe('freshness-token', () => {
       // Create a token with a fake baseCommit
       const token = {
         timestamp: Date.now(),
-        branch: 'feat/test-feature',
+        branch: repo.branchName,
         baseCommit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
       };
 

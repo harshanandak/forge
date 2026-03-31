@@ -27,12 +27,15 @@ describe('P2 bug fixes integration', () => {
   /** @type {string} */
   let forgeSource;
   /** @type {string} */
+  let setupSource;
+  /** @type {string} */
   let lintSource;
   /** @type {object} */
   let packageJsonScripts;
 
   beforeAll(() => {
     forgeSource = readFile('bin/forge.js');
+    setupSource = readFile('lib/commands/setup.js');
     lintSource = readFile('scripts/lint.js');
     const pkg = JSON.parse(readFile('package.json'));
     packageJsonScripts = pkg.scripts || {};
@@ -70,13 +73,14 @@ describe('P2 bug fixes integration', () => {
   });
 
   // forge-cpnj: executeSetup wired with loadAndSetupClaudeCommands
-  test('bin/forge.js contains executeSetup function', () => {
-    expect(forgeSource).toMatch(/function executeSetup/);
+  // After extraction, executeSetup lives in lib/commands/setup.js
+  test('lib/commands/setup.js contains executeSetup function', () => {
+    expect(setupSource).toMatch(/function executeSetup/);
   });
 
-  test('bin/forge.js uses loadAndSetupClaudeCommands in executeSetup context', () => {
+  test('lib/commands/setup.js uses loadAndSetupClaudeCommands in executeSetup context', () => {
     // Extract the executeSetup function body and verify it references loadAndSetupClaudeCommands
-    const execSetupMatch = forgeSource.match(
+    const execSetupMatch = setupSource.match(
       /function executeSetup[\s\S]*?(?=\n(?:async )?function |module\.exports|\n\/\*\*\n)/
     );
     expect(execSetupMatch).not.toBeNull();

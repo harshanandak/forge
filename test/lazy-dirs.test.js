@@ -4,8 +4,9 @@ const os = require('node:os');
 const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 
 describe('Lazy directory creation', () => {
-  const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
-  const content = fs.readFileSync(forgePath, 'utf-8');
+  // setupCoreDocs was extracted from bin/forge.js to lib/commands/setup.js
+  const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
+  const content = fs.readFileSync(setupPath, 'utf-8');
 
   // -----------------------------------------------------------
   // Structural tests: setupCoreDocs must NOT eagerly create dirs
@@ -36,12 +37,18 @@ describe('Lazy directory creation', () => {
   // ensureDirWithNote helper tests
   // -----------------------------------------------------------
   describe('ensureDirWithNote helper', () => {
-    test('ensureDirWithNote function exists in forge.js', () => {
-      expect(content).toContain('function ensureDirWithNote(');
+    test('ensureDirWithNote function exists in lib/file-utils.js', () => {
+      const fileUtilsContent = fs.readFileSync(
+        path.join(__dirname, '..', 'lib', 'file-utils.js'), 'utf-8'
+      );
+      expect(fileUtilsContent).toContain('function ensureDirWithNote(');
     });
 
-    test('ensureDirWithNote is exported via module.exports', () => {
-      expect(content).toMatch(/module\.exports\s*=\s*\{[^}]*ensureDirWithNote/);
+    test('ensureDirWithNote is re-exported from bin/forge.js', () => {
+      const forgeContent = fs.readFileSync(
+        path.join(__dirname, '..', 'bin', 'forge.js'), 'utf-8'
+      );
+      expect(forgeContent).toMatch(/module\.exports\s*=\s*\{[^}]*ensureDirWithNote/);
     });
   });
 

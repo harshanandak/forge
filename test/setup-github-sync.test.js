@@ -129,9 +129,10 @@ describe('GitHub-Beads sync setup integration', () => {
     });
   });
 
-  describe('forge.js integration', () => {
-    const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
-    const content = fs.readFileSync(forgePath, 'utf-8');
+  describe('setup.js integration', () => {
+    // configureExternalServices and quickSetup were extracted to lib/commands/setup.js
+    const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
+    const content = fs.readFileSync(setupPath, 'utf-8');
 
     test('--quick mode skips sync setup (no prompt)', () => {
       // quickSetup should NOT prompt for sync — it only runs sync when --sync flag is set
