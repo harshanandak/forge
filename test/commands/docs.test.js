@@ -4,7 +4,7 @@
  * Tests for lib/commands/docs.js — registry-compliant docs command.
  */
 
-const { describe, test, expect, beforeEach, afterEach, jest } = require('bun:test');
+const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 
 // Capture console.log output
 let logOutput;

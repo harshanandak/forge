@@ -1,5 +1,4 @@
 const { describe, test, expect } = require('bun:test');
-const path = require('node:path');
 
 const {
   validateCommonSecurity,

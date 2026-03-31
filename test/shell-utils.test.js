@@ -1,4 +1,4 @@
-const { describe, test, expect, beforeEach, mock } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 
 const { secureExecFileSync } = require('../lib/shell-utils');
 

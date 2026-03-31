@@ -7,7 +7,7 @@ const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
 const lefthookPath = path.join(__dirname, '..', 'lefthook.yml');
 const mcpPath = path.join(__dirname, '..', '.mcp.json.example');
 
-const forgeSource = fs.readFileSync(forgePath, 'utf8');
+const _forgeSource = fs.readFileSync(forgePath, 'utf8');
 const setupSource = fs.readFileSync(setupPath, 'utf8');
 const lefthookSource = fs.readFileSync(lefthookPath, 'utf8');
 
