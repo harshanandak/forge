@@ -142,7 +142,7 @@ describe('forge lint command', () => {
 				spawnSync: spawnSpy,
 			});
 
-			expect(spawnSpy.calls[0].opts.stdio).toBe('inherit');
+			expect(spawnSpy.calls[0].opts.stdio).toEqual(['inherit', 'pipe', 'pipe']);
 		});
 
 		test('runs from projectRoot (cwd)', async () => {
