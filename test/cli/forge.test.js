@@ -51,11 +51,11 @@ describe('bin/forge.js structure', () => {
 
   test('should have Phase 7A helper functions for complexity reduction', () => {
     // Helpers extracted to reduce cognitive complexity in Phase 7A
+    // Note: validateCommonSecurity was extracted to lib/validation-utils.js in CLI maturity epic
     const phase7aHelpers = [
       'installViaBunx',
       'detectFromLockFile',
       'detectFromCommand',
-      'validateCommonSecurity',
       'getSkillsInstallArgs',
       'installSkillsWithMethod',
     ];

@@ -38,7 +38,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
-const { execSync, execFileSync, spawnSync } = require('node:child_process');
+const { execSync, execFileSync } = require('node:child_process');
 
 // Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
@@ -52,6 +52,9 @@ const { copyEssentialDocs } = require('../lib/docs-copy');
 const { listTopics, getTopicContent } = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands } = require('../lib/commands/_registry');
+const { secureExecFileSync } = require('../lib/shell-utils');
+const { validateCommonSecurity, validateUserInput, validatePathInput, validateDirectoryPathInput, validateAgentInput, validateHashInput, _checkWritePermission } = require('../lib/validation-utils');
+const { askYesNo: _askYesNoBase } = require('../lib/ui-utils');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -92,37 +95,7 @@ let actionLog = new SetupActionLog();
 // Detected package manager
 let PKG_MANAGER = 'npm';
 
-/**
- * Securely execute a command with PATH validation
- * Mitigates SonarCloud S4036: Ensures executables are from trusted locations
- * @param {string} command - The command to execute
- * @param {string[]} args - Command arguments
- * @param {object} options - execFileSync options
- */
-function secureExecFileSync(command, args = [], options = {}) {
-  try {
-    // Resolve command's full path to validate it's in a trusted location
-    const isWindows = process.platform === 'win32';
-    const pathResolver = isWindows ? 'where.exe' : 'which';
-
-    const result = spawnSync(pathResolver, [command], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-
-    if (result.status === 0 && result.stdout) {
-      // Command found - use resolved path for execution
-      // Handle both CRLF (Windows) and LF (Unix) line endings
-      const resolvedPath = result.stdout.trim().split(/\r?\n/)[0].trim();
-      return execFileSync(resolvedPath, args, options);
-    }
-  } catch (_err) { // NOSONAR - S2486: Intentionally ignored; falls back to direct command execution below
-  }
-
-  // Fallback: execute with command name (maintains compatibility)
-  // This is safe for our use case as we only execute known, hardcoded commands
-  return execFileSync(command, args, options);
-}
+// secureExecFileSync — imported from lib/shell-utils.js
 
 /**
  * Load agent definitions from plugin architecture
@@ -158,129 +131,9 @@ const AGENTS = loadAgentsFromPlugins();
 Object.freeze(AGENTS);
 Object.values(AGENTS).forEach(agent => Object.freeze(agent));
 
-/**
- * Validate user input against security patterns
- * Prevents shell injection, path traversal, and unicode attacks
- * @param {string} input - User input to validate
- * @param {string} type - Input type: 'path', 'agent', 'hash'
- * @returns {{valid: boolean, error?: string}}
- */
-// Helper: Run common security checks on input - extracted to reduce cognitive complexity
-function validateCommonSecurity(input) {
-  // Shell injection check - common shell metacharacters
-  if (/[;|&$`()<>\r\n]/.test(input)) {
-    return { valid: false, error: 'Invalid characters detected (shell metacharacters)' };
-  }
-
-  // URL encoding check - prevent encoded path traversal
-  if (/%2[eE]|%2[fF]|%5[cC]/.test(input)) {
-    return { valid: false, error: 'URL-encoded characters not allowed' };
-  }
-
-  // ASCII-only check - prevent unicode attacks
-  if (!/^[\x20-\x7E]+$/.test(input)) {
-    return { valid: false, error: 'Only ASCII printable characters allowed' };
-  }
-
-  return { valid: true }; // No security issues found
-}
-
-function validateUserInput(input, type) {
-  // Common security checks first
-  const securityResult = validateCommonSecurity(input);
-  if (!securityResult.valid) return securityResult;
-
-  // Type-specific validation - delegated to helpers
-  switch (type) {
-    case 'path':
-      return validatePathInput(input);
-    case 'directory_path':
-      return validateDirectoryPathInput(input);
-    case 'agent':
-      return validateAgentInput(input);
-    case 'hash':
-      return validateHashInput(input);
-    default:
-      return { valid: true };
-  }
-}
-
-// Helper: Validate 'path' type input - extracted to reduce cognitive complexity
-function validatePathInput(input) {
-  const resolved = path.resolve(projectRoot, input);
-  if (!resolved.startsWith(path.resolve(projectRoot))) {
-    return { valid: false, error: 'Path outside project root' };
-  }
-  return { valid: true };
-}
-
-// Helper: Validate 'directory_path' type input - extracted to reduce cognitive complexity
-function validateDirectoryPathInput(input) {
-  // Block null bytes
-  if (input.includes('\0')) {
-    return { valid: false, error: 'Null bytes not allowed in path' };
-  }
-
-  // Block absolute paths to sensitive system directories
-  const resolved = path.resolve(input);
-  const normalizedResolved = path.normalize(resolved).toLowerCase();
-
-  // Get platform-specific blocked paths
-  const blockedPaths = process.platform === 'win32'
-    ? [String.raw`c:\windows`, String.raw`c:\program files`, String.raw`c:\program files (x86)`]
-    : ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
-  const errorMsg = process.platform === 'win32'
-    ? 'Cannot target Windows system directories'
-    : 'Cannot target system directories';
-
-  if (blockedPaths.some(blocked => normalizedResolved.startsWith(blocked))) {
-    return { valid: false, error: errorMsg };
-  }
-
-  return { valid: true };
-}
-
-// Helper: Validate 'agent' type input - extracted to reduce cognitive complexity
-function validateAgentInput(input) {
-  // Agent names: lowercase alphanumeric with hyphens only
-  if (!/^[a-z0-9-]+$/.test(input)) {
-    return { valid: false, error: 'Agent name must be lowercase alphanumeric with hyphens' };
-  }
-  return { valid: true };
-}
-
-// Helper: Validate 'hash' type input - extracted to reduce cognitive complexity
-function validateHashInput(input) {
-  // Git commit hash: 4-40 hexadecimal characters
-  if (!/^[0-9a-f]{4,40}$/i.test(input)) {
-    return { valid: false, error: 'Invalid commit hash format (must be 4-40 hex chars)' };
-  }
-  return { valid: true };
-}
-
-/**
- * Check write permission to a directory or file
- * @param {string} filePath - Path to check
- * @returns {{writable: boolean, error?: string}}
- * @private - Currently unused but kept for future permission validation
- */
-function _checkWritePermission(filePath) {
-  try {
-    const dir = fs.statSync(filePath).isDirectory() ? filePath : path.dirname(filePath);
-    const testFile = path.join(dir, `.forge-write-test-${Date.now()}`);
-    fs.writeFileSync(testFile, 'test');
-    fs.unlinkSync(testFile);
-    return { writable: true };
-  } catch (err) {
-    if (err.code === 'EACCES' || err.code === 'EPERM') {
-      const fix = process.platform === 'win32'
-        ? 'Run Command Prompt as Administrator'
-        : 'Try: sudo npx forge setup';
-      return { writable: false, error: `No write permission to ${filePath}. ${fix}` };
-    }
-    return { writable: false, error: err.message };
-  }
-}
+// Validation functions — imported from lib/validation-utils.js
+// (validateCommonSecurity, validateUserInput, validatePathInput,
+//  validateDirectoryPathInput, validateAgentInput, validateHashInput, _checkWritePermission)
 
 /**
  * Reads workflow command names from .claude/commands/*.md in the package directory.
@@ -737,30 +590,9 @@ function writeEnvTokens(tokens, preserveExisting = true) {
 // Smart merge for AGENTS.md - extracted to lib/smart-merge.js for testability
 
 // Helper function for yes/no prompts with validation
+// askYesNo — wrapper around lib/ui-utils.js that passes NON_INTERACTIVE global
 async function askYesNo(question, prompt, defaultNo = true) {
-  // Non-interactive mode: return default without prompting
-  if (NON_INTERACTIVE) {
-    const defaultValue = !defaultNo;
-    console.log(`  Non-interactive mode: ${prompt} -> ${defaultValue ? 'yes' : 'no'} (default)`);
-    return defaultValue;
-  }
-  const defaultText = defaultNo ? '[n]' : '[y]';
-  while (true) {
-    const answer = await question(`${prompt} (y/n) ${defaultText}: `);
-    const normalized = answer.trim().toLowerCase();
-
-    // Handle empty input (use default)
-    if (normalized === '') return !defaultNo;
-
-    // Accept yes variations
-    if (normalized === 'y' || normalized === 'yes') return true;
-
-    // Accept no variations
-    if (normalized === 'n' || normalized === 'no') return false;
-
-    // Invalid input - re-prompt
-    console.log('  Please enter y or n');
-  }
+  return _askYesNoBase(question, prompt, defaultNo, NON_INTERACTIVE);
 }
 
 async function detectProjectStatus() {
@@ -4214,15 +4046,6 @@ async function main() {
 
     // Interactive setup (skip-external still applies)
     await interactiveSetupWithFlags(flags);
-  } else if (command === 'recommend') {
-    const { handleRecommend, formatRecommendations } = require('../lib/commands/recommend');
-    const result = handleRecommend(flags, projectRoot);
-    if (result.error) {
-      console.error(`Error: ${result.error}`);
-      process.exitCode = 1;
-      return;
-    }
-    console.log(formatRecommendations(result.recommendations));
   } else if (command === 'docs') {
     const topic = args[1];
     if (!topic) {
@@ -4321,9 +4144,6 @@ async function main() {
   } else if (command === 'rollback') {
     // Execute rollback menu
     await showRollbackMenu();
-  } else if (command === 'team') {
-    const { handleTeam } = require('../lib/commands/team.js');
-    handleTeam(process.argv.slice(3));
   } else if (process.env.npm_lifecycle_event === 'postinstall') {
     // Postinstall: show success message only, no file changes
     // Surprising file modifications during npm/bun install break user expectations
