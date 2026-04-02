@@ -35,7 +35,7 @@ describe('lib/commands/setup.js structure', () => {
       'saveWorkflowTypeOverride',
       'displayExistingInstallation',
       'promptForOverwriteDecisions',
-      'loadAndSetupClaudeCommands',
+      'loadAndSetupCanonicalCommands',
       'setupSelectedAgents',
       'handleExternalServicesStep',
     ];
@@ -51,7 +51,7 @@ describe('lib/commands/setup.js structure', () => {
       'handleFlagsOverride(flags',
       'displayExistingInstallation(projectStatus)',
       'promptForOverwriteDecisions(question',
-      'loadAndSetupClaudeCommands(selectedAgents',
+      'loadAndSetupCanonicalCommands(selectedAgents',
       'setupSelectedAgents(selectedAgents',
       'handleExternalServicesStep(flags',
     ];
@@ -94,7 +94,7 @@ describe('lib/commands/setup.js structure', () => {
     const quickSetupDelegations = [
       'autoInstallLefthook()',
       'autoSetupToolsInQuickMode()',
-      'loadAndSetupClaudeCommands(selectedAgents)',
+      'loadAndSetupCanonicalCommands(selectedAgents)',
       'setupSelectedAgents(selectedAgents, claudeCommands)',
       'configureDefaultExternalServices(skipExternal)',
     ];

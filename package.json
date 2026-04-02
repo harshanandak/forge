@@ -76,6 +76,7 @@
     "bin/",
     "lib/",
     "skills/",
+    "commands/",
     ".claude/commands/",
     ".claude/rules/",
     ".claude/scripts/",
@@ -101,7 +102,8 @@
   ],
   "dependencies": {
     "@babel/parser": "^7.29.2",
-    "fastest-levenshtein": "^1.0.16"
+    "fastest-levenshtein": "^1.0.16",
+    "gray-matter": "^4.0.3"
   },
   "overrides": {
     "eslint": "^10.0.2",

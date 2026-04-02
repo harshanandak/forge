@@ -1,7 +1,7 @@
 /**
  * Tests for getWorkflowCommands() — filesystem-derived command list.
  *
- * Verifies that workflow commands are read from .claude/commands/*.md
+ * Verifies that workflow commands are read from commands/*.md (canonical source)
  * rather than hardcoded in an array.
  */
 
@@ -9,23 +9,26 @@ const path = require('path');
 const fs = require('fs');
 const { describe, test, expect } = require('bun:test');
 
-// We will import getWorkflowCommands from bin/forge.js once it is exported
+// Import getWorkflowCommands from lib/commands/setup.js (extracted from bin/forge.js)
 let getWorkflowCommands;
 try {
-  ({ getWorkflowCommands } = require('../bin/forge.js'));
+  ({ getWorkflowCommands } = require('../lib/commands/setup.js'));
 } catch (_e) {
   // Will fail in RED phase — expected
 }
 
 describe('getWorkflowCommands', () => {
-  test('returns an array of command names from .claude/commands/*.md', () => {
+  test('returns an array of command names from commands/*.md', () => {
     const commands = getWorkflowCommands();
     expect(Array.isArray(commands)).toBe(true);
     expect(commands.length).toBeGreaterThan(0);
 
-    // Should match the actual .md files in .claude/commands/
+    // Should match the actual .md files in commands/ (canonical source)
     const packageDir = path.resolve(__dirname, '..');
-    const commandsDir = path.join(packageDir, '.claude', 'commands');
+    const canonicalDir = path.join(packageDir, 'commands');
+    const commandsDir = fs.existsSync(canonicalDir)
+      ? canonicalDir
+      : path.join(packageDir, '.claude', 'commands');
     const expected = fs.readdirSync(commandsDir)
       .filter(f => f.endsWith('.md'))
       .map(f => f.replace(/\.md$/, ''))
@@ -36,9 +39,12 @@ describe('getWorkflowCommands', () => {
 
   test('filters out non-.md files', () => {
     const commands = getWorkflowCommands();
-    // Every returned name should correspond to a .md file
+    // Every returned name should correspond to a .md file in canonical source
     const packageDir = path.resolve(__dirname, '..');
-    const commandsDir = path.join(packageDir, '.claude', 'commands');
+    const canonicalDir = path.join(packageDir, 'commands');
+    const commandsDir = fs.existsSync(canonicalDir)
+      ? canonicalDir
+      : path.join(packageDir, '.claude', 'commands');
     for (const cmd of commands) {
       const mdPath = path.join(commandsDir, `${cmd}.md`);
       expect(fs.existsSync(mdPath)).toBe(true);
@@ -46,12 +52,18 @@ describe('getWorkflowCommands', () => {
   });
 
   test('returns empty array and warns when directory does not exist', () => {
-    // Mock readdirSync to throw only for .claude/commands path
+    // Mock readdirSync to throw for commands paths (both canonical and fallback)
     const origReaddir = fs.readdirSync;
+    const origExists = fs.existsSync;
     const warns = [];
     const origWarn = console.warn;
+    // Make canonical commands/ dir appear non-existent so it falls back
+    fs.existsSync = (p, ...rest) => {
+      if (String(p).endsWith('commands') && !String(p).includes('.claude')) return false;
+      return origExists(p, ...rest);
+    };
     fs.readdirSync = (dirPath, ...rest) => {
-      if (String(dirPath).includes('.claude') && String(dirPath).includes('commands')) {
+      if (String(dirPath).includes('commands')) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       }
       return origReaddir(dirPath, ...rest);
@@ -63,6 +75,7 @@ describe('getWorkflowCommands', () => {
       expect(warns.length).toBeGreaterThan(0);
     } finally {
       fs.readdirSync = origReaddir;
+      fs.existsSync = origExists;
       console.warn = origWarn;
     }
   });

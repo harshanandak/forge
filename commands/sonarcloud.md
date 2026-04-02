@@ -1,5 +1,5 @@
 ---
-description: Pull issues, metrics, quality gates, and analysis data from SonarCloud
+description: 'Pull issues, metrics, quality gates, and analysis data from SonarCloud'
 ---
 
 # SonarCloud Query Command

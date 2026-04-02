@@ -53,14 +53,15 @@ describe('--yes / -y flag for non-interactive setup', () => {
   });
 
   test('--yes skips interactive setup (does not call interactiveSetupWithFlags)', () => {
-    // When --yes is active, the code should NOT fall through to interactiveSetupWithFlags
-    // It should route to handleSetupCommand instead
-    // After extraction, handleSetupCommand lives in lib/commands/setup.js
-    const mainSection = setupContent.substring(setupContent.indexOf('async function handleSetupCommand('));
-    // There should be a flags.yes check before the interactiveSetupWithFlags call
-    const interactiveCall = mainSection.indexOf('interactiveSetupWithFlags');
-    const yesCheck = mainSection.indexOf('flags.yes');
+    // After extraction, the handler in setup.js owns the --yes runtime path.
+    const handlerSection = setupContent.substring(setupContent.indexOf('handler: async (args, flags, root) =>'));
+    const yesCheck = handlerSection.indexOf('if (flags.yes && selectedAgents.length === 0)');
+    const handleSetupCall = handlerSection.indexOf('await handleSetupCommand(selectedAgents, flags)');
+    const interactiveCall = handlerSection.indexOf('await interactiveSetupWithFlags(flags)');
     expect(yesCheck).toBeGreaterThan(-1);
-    expect(yesCheck).toBeLessThan(interactiveCall);
+    expect(handleSetupCall).toBeGreaterThan(-1);
+    expect(interactiveCall).toBeGreaterThan(-1);
+    expect(yesCheck).toBeLessThan(handleSetupCall);
+    expect(handleSetupCall).toBeLessThan(interactiveCall);
   });
 });

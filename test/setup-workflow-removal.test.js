@@ -8,9 +8,47 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+
+function collectWorkflowReferences(rootDir) {
+  const results = [];
+  const allowedDirs = new Set(['node_modules', '.worktrees', '.git']);
+  const allowedExts = new Set(['.js', '.sh', '.md', '.json']);
+
+  function walk(currentDir) {
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = path.join(currentDir, entry.name);
+      const relPath = `.${path.sep}${path.relative(rootDir, fullPath)}`.replace(/\\/g, '/');
+
+      if (entry.isDirectory()) {
+        if (!allowedDirs.has(entry.name)) {
+          walk(fullPath);
+        }
+        continue;
+      }
+
+      if (!allowedExts.has(path.extname(entry.name))) {
+        continue;
+      }
+
+      const content = fs.readFileSync(fullPath, 'utf8');
+      if (!content.includes('WORKFLOW.md')) {
+        continue;
+      }
+
+      const lines = content.split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (line.includes('WORKFLOW.md')) {
+          results.push(`${relPath}:${index + 1}: ${line.trim()}`);
+        }
+      });
+    }
+  }
+
+  walk(rootDir);
+  return results;
+}
 
 describe('docs/WORKFLOW.md removal', () => {
   test('docs/WORKFLOW.md file does not exist', () => {
@@ -36,14 +74,7 @@ describe('docs/WORKFLOW.md removal', () => {
   });
 
   test('no active source file contains docs/WORKFLOW.md as a live reference', () => {
-    // Hardcoded grep command - no user input, safe from injection
-    const result = execSync(
-      'grep -rn "WORKFLOW\\.md" --include="*.js" --include="*.sh" --include="*.md" --include="*.json" --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=.git . || true',
-      { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
-    );
-
-    // Filter out allowed historical files
-    const lines = result.split('\n').filter(line => {
+    const lines = collectWorkflowReferences(ROOT).filter(line => {
       if (!line.trim()) return false;
       // Allow historical/research/plan files
       if (line.startsWith('./docs/plans/')) return false;

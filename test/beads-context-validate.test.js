@@ -1,22 +1,20 @@
 const { describe, test, expect } = require('bun:test');
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 
-const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'beads-context.sh');
+const ROOT = path.resolve(__dirname, '..');
+
+function shQuote(value) {
+  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
 
 /**
  * Helper: run beads-context.sh validate with a bd shim.
- *
- * Note: execSync is safe here — all arguments are test-controlled literals,
- * not user input. Shell invocation required to run bash script under test.
  */
 function runValidate(issueId, shimBehavior = {}) {
-  const tmpDir = os.tmpdir();
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-  const shimDir = path.join(tmpDir, `bd-shim-validate-${suffix}`);
+  const shimDir = path.join(ROOT, `.bd-shim-validate-${suffix}`);
   fs.mkdirSync(shimDir, { recursive: true });
   const shimPath = path.join(shimDir, 'bd');
 
@@ -32,61 +30,50 @@ function runValidate(issueId, shimBehavior = {}) {
   const commentsOutput = shimBehavior.comments || '';
   const showExitCode = shimBehavior.showExitCode || 0;
 
-  // Write comments to a temp file so the shim can cat it (avoids escaping issues)
   const commentsFile = path.join(shimDir, 'comments.txt');
-  // Expand \n to real newlines before writing
   fs.writeFileSync(commentsFile, commentsOutput.replace(/\\n/g, '\n'));
 
   const jsonFile = path.join(shimDir, 'show.json');
   fs.writeFileSync(jsonFile, showJson);
+  fs.writeFileSync(
+    shimPath,
+    `#!/usr/bin/env bash
+if [ "$1" = "show" ] && [ "$3" = "--json" ]; then
+  if [ "${showExitCode}" -ne 0 ]; then
+    echo "Error resolving issue: $2" >&2
+    exit ${showExitCode}
+  fi
+  cat ${shQuote(`./${path.basename(shimDir)}/show.json`)}
+  exit 0
+fi
+if [ "$1" = "comments" ] && [ "$2" = "list" ]; then
+  cat ${shQuote(`./${path.basename(shimDir)}/comments.txt`)}
+  exit 0
+fi
+echo "bd shim: $*"
+exit 0
+`,
+    { mode: 0o755 }
+  );
 
-  const shimContent = [
-    '#!/usr/bin/env bash',
-    'if [ "$1" = "show" ] && [ "$3" = "--json" ]; then',
-    `  if [ "${showExitCode}" -ne 0 ]; then`,
-    '    echo "Error resolving issue: $2" >&2',
-    `    exit ${showExitCode}`,
-    '  fi',
-    `  cat "${jsonFile.replace(/\\/g, '/')}"`,
-    '  exit 0',
-    'fi',
-    'if [ "$1" = "comments" ] && [ "$2" = "list" ]; then',
-    `  cat "${commentsFile.replace(/\\/g, '/')}"`,
-    '  exit 0',
-    'fi',
-    'echo "bd shim: $*"',
-    'exit 0',
-  ].join('\n');
+  const bashScript = `
+export PATH=${shQuote(`./${path.basename(shimDir)}`)}:"$PATH"
+bash scripts/beads-context.sh validate ${shQuote(issueId)}
+`;
 
-  fs.writeFileSync(shimPath, shimContent, { mode: 0o755 });
+  const result = spawnSync('bash', ['-lc', bashScript], {
+    cwd: ROOT,
+    env: process.env,
+    encoding: 'utf8',
+    timeout: 10000,
+  });
 
-  try {
-    execSync(`chmod +x "${shimPath}"`, { stdio: 'ignore' });
-  } catch (_e) { /* ignore */ }
+  try { fs.rmSync(shimDir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 
-  const fullEnv = {
-    ...process.env,
-    PATH: `${shimDir}${path.delimiter}${process.env.PATH}`,
+  return {
+    output: (result.stdout || '') + (result.stderr || ''),
+    exitCode: result.status,
   };
-
-  try {
-    const output = execSync(`bash "${SCRIPT}" validate ${issueId}`, {
-      env: fullEnv,
-      encoding: 'utf8',
-      timeout: 10000,
-    });
-
-    try { fs.rmSync(shimDir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
-
-    return { output, exitCode: 0 };
-  } catch (err) {
-    try { fs.rmSync(shimDir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
-
-    return {
-      output: (err.stdout || '') + (err.stderr || ''),
-      exitCode: err.status,
-    };
-  }
 }
 
 describe('beads-context.sh validate', () => {

@@ -18,6 +18,8 @@
  *   --skip-external      Skip external services configuration
  *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
  *   --all                Install for all available agents
+ *   --detect             Auto-detect configured agents for setup
+ *   --keep               Keep existing setup-managed files when possible
  *   --merge <mode>       Merge strategy for existing files (smart|preserve|replace)
  *   --type <type>        Workflow profile (critical|standard|simple|hotfix|docs|refactor)
  *   --interview          Force context interview (gather project info)
@@ -330,6 +332,8 @@ function showHelp() {
   console.log('                       Accepts: --agents claude cursor');
   console.log('                                --agents=claude,cursor');
   console.log('  --all                Install for all available agents');
+  console.log('  --detect             Auto-detect configured agents for setup');
+  console.log('  --keep               Keep existing setup-managed files when possible');
   console.log('  --merge <mode>       Merge strategy for existing AGENTS.md files');
   console.log('                       Options: smart (intelligent merge), preserve (keep existing),');
   console.log('                                replace (overwrite with new)');
@@ -356,6 +360,8 @@ function showHelp() {
   console.log('  npx forge setup --path=/home/user/app    # Same, different syntax');
   console.log('  npx forge setup --agents claude cursor   # Just these agents');
   console.log('  npx forge setup --agents=claude,cursor   # Same, different syntax');
+  console.log('  npx forge setup --detect                 # Auto-select detected agents');
+  console.log('  npx forge setup --agents claude --keep   # Preserve existing managed files');
   console.log('  npx forge setup --skip-external          # No service configuration');
   console.log('  npx forge setup --agents claude --quick  # Quick + specific agent');
   console.log('  npx forge setup --yes                    # Non-interactive, defaults to claude');
