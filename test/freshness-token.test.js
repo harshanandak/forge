@@ -14,6 +14,12 @@ const {
 // Counter for unique branch names across test runs (avoids collision in CI)
 let branchCounter = 0;
 
+function gitEnv() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
+  );
+}
+
 function git(repoDir, args) {
   return execFileSync('git', [
     `--git-dir=${path.join(repoDir, '.git')}`,
@@ -21,14 +27,16 @@ function git(repoDir, args) {
     ...args
   ], {
     encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: gitEnv()
   });
 }
 
 function initGitRepo(repoDir) {
   return execFileSync('git', ['init', '--initial-branch', 'main', repoDir], {
     encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: gitEnv()
   });
 }
 
