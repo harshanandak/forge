@@ -7,6 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const { resetCommands } = require('../lib/commands/commands-reset');
+const { syncCommands } = require('../scripts/sync-commands');
 
 let tmpDir;
 
@@ -76,5 +77,33 @@ describe('resetCommands', () => {
     for (const entry of [...result.reset, ...result.skipped]) {
       expect(entry.file).toMatch(/plan/);
     }
+  });
+
+  test('targeted reset does not rewrite unrelated command files', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'commands', 'dev.md'),
+      '---\ndescription: Dev a feature\n---\n\nDev body content.\n'
+    );
+
+    const { planned } = syncCommands({ repoRoot: tmpDir, dryRun: true, check: false });
+    const planEntry = planned.find((entry) => entry.agent === 'cursor' && entry.filename === 'plan.md');
+    const devEntry = planned.find((entry) => entry.agent === 'cursor' && entry.filename === 'dev.md');
+
+    expect(planEntry).toBeDefined();
+    expect(devEntry).toBeDefined();
+
+    fs.mkdirSync(path.dirname(planEntry.filePath), { recursive: true });
+    fs.writeFileSync(planEntry.filePath, 'customized plan command\n');
+    fs.writeFileSync(devEntry.filePath, 'customized dev command\n');
+
+    const result = resetCommands({ repoRoot: tmpDir, commandName: 'plan', dryRun: false });
+
+    expect(result.errors).toEqual([]);
+    expect(fs.readFileSync(planEntry.filePath, 'utf8')).toBe(planEntry.content);
+    expect(fs.readFileSync(devEntry.filePath, 'utf8')).toBe('customized dev command\n');
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(tmpDir, '.forge', 'sync-manifest.json'), 'utf8'));
+    expect(manifest.files).toContain('.cursor/commands/plan.md');
+    expect(manifest.files).toContain('.cursor/commands/dev.md');
   });
 });

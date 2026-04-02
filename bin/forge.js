@@ -98,20 +98,24 @@ Object.freeze(AGENTS);
 Object.values(AGENTS).forEach(agent => Object.freeze(agent));
 
 /**
- * Reads workflow command names from .claude/commands/*.md in the package directory.
+ * Reads workflow command names from the canonical commands directory, falling back
+ * to the legacy .claude/commands path when needed.
  * @returns {string[]} Command names (filenames without .md extension)
  */
 function getWorkflowCommands() {
-  const commandsDir = path.join(packageDir, '.claude', 'commands');
+  const canonicalDir = path.join(packageDir, 'commands');
+  const commandsDir = fs.existsSync(canonicalDir)
+    ? canonicalDir
+    : path.join(packageDir, '.claude', 'commands');
   try {
     return fs.readdirSync(commandsDir)
       .filter(f => f.endsWith('.md'))
       .map(f => f.replace(/\.md$/, ''));
   } catch (err) {
     if (err.code === 'ENOENT') {
-      console.warn(`Warning: .claude/commands directory not found at ${commandsDir}`);
+      console.warn(`Warning: commands directory not found at ${commandsDir}`);
     } else {
-      console.warn(`Warning: failed to read .claude/commands — ${err.code}: ${err.message}`);
+      console.warn(`Warning: failed to read commands — ${err.code}: ${err.message}`);
     }
     return [];
   }

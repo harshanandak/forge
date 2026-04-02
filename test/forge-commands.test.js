@@ -11,8 +11,10 @@ const { describe, test, expect } = require('bun:test');
 
 // Import getWorkflowCommands from lib/commands/setup.js (extracted from bin/forge.js)
 let getWorkflowCommands;
+let getCliWorkflowCommands;
 try {
   ({ getWorkflowCommands } = require('../lib/commands/setup.js'));
+  ({ getWorkflowCommands: getCliWorkflowCommands } = require('../bin/forge.js'));
 } catch (_e) {
   // Will fail in RED phase — expected
 }
@@ -79,6 +81,17 @@ describe('getWorkflowCommands', () => {
       console.warn = origWarn;
     }
   });
+
+  test('bin/forge.js also prefers commands/ over .claude/commands/', () => {
+    const commands = getCliWorkflowCommands();
+    const packageDir = path.resolve(__dirname, '..');
+    const expected = fs.readdirSync(path.join(packageDir, 'commands'))
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''))
+      .sort();
+
+    expect(commands.sort()).toEqual(expected);
+  });
 });
 
 describe('hardcoded command count and copyFile warning', () => {
@@ -97,6 +110,11 @@ describe('hardcoded command count and copyFile warning', () => {
     // should NOT exist — warning should always fire
     const hasDebugGate = /else if \(process\.env\.DEBUG\)\s*\{[^}]*Source file not found/.test(forgeSource);
     expect(hasDebugGate).toBe(false);
+  });
+
+  test('bin/forge.js source uses canonical commands/ fallback', () => {
+    expect(forgeSource).toContain("path.join(packageDir, 'commands')");
+    expect(forgeSource).toContain("fs.existsSync(canonicalDir)");
   });
 });
 

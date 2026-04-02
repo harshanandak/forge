@@ -331,6 +331,25 @@ function contentHash(content) {
  */
 
 /**
+ * Write the sync manifest for generated entries without rewriting command files.
+ *
+ * @param {string} repoRoot
+ * @param {SyncEntry[]} entries
+ */
+function writeSyncManifest(repoRoot, entries) {
+  const manifestDir = path.join(repoRoot, '.forge');
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestData = {
+    generatedAt: new Date().toISOString(),
+    files: entries.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
+  };
+  fs.writeFileSync(
+    path.join(manifestDir, 'sync-manifest.json'),
+    JSON.stringify(manifestData, null, 2) + '\n'
+  );
+}
+
+/**
  * Sync commands/*.md canonical source files to all agent directories.
  *
  * Modes:
@@ -470,16 +489,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
   // Write sync manifest — records every file generated so stale detection
   // can identify orphaned files without false-flagging custom files.
-  const manifestDir = path.join(repoRoot, '.forge');
-  fs.mkdirSync(manifestDir, { recursive: true });
-  const manifestData = {
-    generatedAt: new Date().toISOString(),
-    files: written.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
-  };
-  fs.writeFileSync(
-    path.join(manifestDir, 'sync-manifest.json'),
-    JSON.stringify(manifestData, null, 2) + '\n'
-  );
+  writeSyncManifest(repoRoot, written);
 
   return { written, overwritten };
 }
@@ -564,4 +574,12 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseFrontmatter, buildFile, AGENT_ADAPTERS, adaptForAgent, syncCommands, contentHash };
+module.exports = {
+  parseFrontmatter,
+  buildFile,
+  AGENT_ADAPTERS,
+  adaptForAgent,
+  syncCommands,
+  contentHash,
+  writeSyncManifest,
+};
