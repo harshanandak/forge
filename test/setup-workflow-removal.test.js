@@ -8,45 +8,56 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 
 function collectWorkflowReferences(rootDir) {
   const results = [];
-  const allowedDirs = new Set(['node_modules', '.worktrees', '.git']);
   const allowedExts = new Set(['.js', '.sh', '.md', '.json']);
+  const excludedPrefixes = [
+    '.git/',
+    '.worktrees/',
+    '.beads/',
+    'docs/plans/',
+    'docs/research/',
+    'node_modules/',
+    'test/',
+    'test-env/'
+  ];
 
-  function walk(currentDir) {
-    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
-      const fullPath = path.join(currentDir, entry.name);
-      const relPath = `.${path.sep}${path.relative(rootDir, fullPath)}`.replace(/\\/g, '/');
+  const trackedFiles = execFileSync(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard'],
+    { cwd: rootDir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+  )
+    .split(/\r?\n/)
+    .filter(Boolean);
 
-      if (entry.isDirectory()) {
-        if (!allowedDirs.has(entry.name)) {
-          walk(fullPath);
-        }
-        continue;
-      }
-
-      if (!allowedExts.has(path.extname(entry.name))) {
-        continue;
-      }
-
-      const content = fs.readFileSync(fullPath, 'utf8');
-      if (!content.includes('WORKFLOW.md')) {
-        continue;
-      }
-
-      const lines = content.split(/\r?\n/);
-      lines.forEach((line, index) => {
-        if (line.includes('WORKFLOW.md')) {
-          results.push(`${relPath}:${index + 1}: ${line.trim()}`);
-        }
-      });
+  for (const relativeFile of trackedFiles) {
+    const normalizedFile = relativeFile.replace(/\\/g, '/');
+    if (excludedPrefixes.some(prefix => normalizedFile.startsWith(prefix))) {
+      continue;
     }
+
+    if (!allowedExts.has(path.extname(normalizedFile))) {
+      continue;
+    }
+
+    const fullPath = path.join(rootDir, normalizedFile);
+    const content = fs.readFileSync(fullPath, 'utf8');
+    if (!content.includes('WORKFLOW.md')) {
+      continue;
+    }
+
+    const lines = content.split(/\r?\n/);
+    lines.forEach((line, index) => {
+      if (line.includes('WORKFLOW.md')) {
+        results.push(`./${normalizedFile}:${index + 1}: ${line.trim()}`);
+      }
+    });
   }
 
-  walk(rootDir);
   return results;
 }
 

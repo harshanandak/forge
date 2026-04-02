@@ -15,7 +15,18 @@ const {
 let branchCounter = 0;
 
 function git(repoDir, args) {
-  return execFileSync('git', ['-C', repoDir, ...args], {
+  return execFileSync('git', [
+    `--git-dir=${path.join(repoDir, '.git')}`,
+    `--work-tree=${repoDir}`,
+    ...args
+  ], {
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+}
+
+function initGitRepo(repoDir) {
+  return execFileSync('git', ['init', '--initial-branch', 'main', repoDir], {
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe']
   });
@@ -32,7 +43,7 @@ function createTempGitRepo() {
   const branchName = `feat/test-feature-${Date.now()}-${++branchCounter}`;
 
   // Initialize repo with 'main' as default branch
-  git(dir, ['init', '--initial-branch', 'main']);
+  initGitRepo(dir);
   git(dir, ['config', 'user.email', 'test@test.com']);
   git(dir, ['config', 'user.name', 'Test']);
 
@@ -156,7 +167,7 @@ describe('freshness-token', () => {
     test('throws descriptive error when git merge-base fails', () => {
       // Create a repo with no common ancestor to main (orphan branch)
       const orphanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-freshness-orphan-'));
-      git(orphanDir, ['init', '--initial-branch', 'main']);
+      initGitRepo(orphanDir);
       git(orphanDir, ['config', 'user.email', 'test@test.com']);
       git(orphanDir, ['config', 'user.name', 'Test']);
 
