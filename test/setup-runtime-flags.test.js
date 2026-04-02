@@ -60,4 +60,37 @@ describe('setup runtime flags', () => {
     expect(result.stdout).toContain('Keeping existing .claude/commands/ (--keep)');
     expect(fs.readFileSync(path.join(claudeDir, 'plan.md'), 'utf8')).toBe(sentinel);
   });
+
+  test('--agents accepts multiple space-separated values on the live CLI path', () => {
+    const tmpDir = makeTempDir();
+
+    const result = runSetup(['--agents', 'claude', 'cursor', '--dry-run'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('.claude/commands/plan.md');
+    expect(result.stdout).toContain('.cursor/commands/');
+  });
+
+  test('--dry-run shows workflow runtime assets that shipped commands require', () => {
+    const tmpDir = makeTempDir();
+
+    const result = runSetup(['--agents', 'claude', '--dry-run'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('scripts/smart-status.sh');
+    expect(result.stdout).toContain('scripts/forge-team/index.sh');
+    expect(result.stdout).toContain('.claude/scripts/greptile-resolve.sh');
+  });
+
+  test('setup scaffolds workflow runtime assets before reporting success', () => {
+    const tmpDir = makeTempDir();
+
+    const result = runSetup(['--agents', 'claude', '--skip-external'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'lib', 'sanitize.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'forge-team', 'index.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
+  });
 });

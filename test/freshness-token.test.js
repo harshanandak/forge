@@ -26,8 +26,13 @@ function withHookGitEnv(fn) {
   const gitEntryStat = fs.statSync(gitEntryPath);
   const currentGitDir = gitEntryStat.isDirectory()
     ? gitEntryPath
-    : fs.readFileSync(gitEntryPath, 'utf8').trim().replace(/^gitdir:\s*/, '');
-  const currentCommonDir = path.resolve(currentGitDir, '..', '..');
+    : path.resolve(
+      projectRoot,
+      fs.readFileSync(gitEntryPath, 'utf8').trim().replace(/^gitdir:\s*/, '')
+    );
+  const currentCommonDir = gitEntryStat.isDirectory()
+    ? currentGitDir
+    : path.resolve(currentGitDir, '..', '..');
   const previous = {
     GIT_DIR: process.env.GIT_DIR,
     GIT_WORK_TREE: process.env.GIT_WORK_TREE,
@@ -37,7 +42,7 @@ function withHookGitEnv(fn) {
 
   process.env.GIT_DIR = currentGitDir;
   process.env.GIT_WORK_TREE = projectRoot;
-  process.env.GIT_COMMON_DIR = gitEntryStat.isDirectory() ? currentGitDir : currentCommonDir;
+  process.env.GIT_COMMON_DIR = currentCommonDir;
   process.env.GIT_PREFIX = '';
 
   try {

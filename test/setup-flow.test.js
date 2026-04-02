@@ -36,10 +36,24 @@ describe('setup flow', () => {
     expect(typeof setup.getWorkflowCommands).toBe('function');
   });
 
+  test('setup.js exports workflow runtime asset helpers', () => {
+    const setup = require(setupPath);
+    expect(typeof setup.getWorkflowRuntimeAssets).toBe('function');
+    expect(typeof setup.findMissingWorkflowRuntimeAssets).toBe('function');
+  });
+
   test('getWorkflowCommands prefers commands/ over .claude/commands/', () => {
     // The source should show fallback logic
     expect(setupSource).toContain("path.join(packageDir, 'commands')");
     expect(setupSource).toContain('existsSync(canonicalDir)');
+  });
+
+  test('workflow runtime asset list covers shipped helper dependencies', () => {
+    const setup = require(setupPath);
+    const assets = setup.getWorkflowRuntimeAssets();
+    expect(assets).toContain('scripts/smart-status.sh');
+    expect(assets).toContain('scripts/forge-team/index.sh');
+    expect(assets).toContain('.claude/scripts/greptile-resolve.sh');
   });
 
   test('loadAndSetupCanonicalCommands is used in executeSetup', () => {
@@ -70,6 +84,18 @@ describe('parseSetupFlags', () => {
   test('parses --agents=value syntax', () => {
     const flags = parseSetupFlags(['--agents=cursor']);
     expect(flags.agents).toBe('cursor');
+  });
+
+  test('parses space-separated agents until the next flag', () => {
+    const flags = parseSetupFlags(['--agents', 'claude', 'cursor', '--keep']);
+    expect(flags.agents).toBe('claude,cursor');
+    expect(flags.keep).toBe(true);
+  });
+
+  test('does not consume the next flag as an agent token', () => {
+    const flags = parseSetupFlags(['--agents', 'claude', '--detect']);
+    expect(flags.agents).toBe('claude');
+    expect(flags.detect).toBe(true);
   });
 
   test('parses --all flag', () => {
@@ -133,6 +159,22 @@ describe('detectConfiguredAgents', () => {
     try {
       const agents = detectConfiguredAgents(tmpDir);
       expect(agents).toEqual([]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('findMissingWorkflowRuntimeAssets', () => {
+  const { findMissingWorkflowRuntimeAssets } = require(setupPath);
+
+  test('reports missing workflow assets for command-capable setups', () => {
+    const os = require('node:os');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runtime-assets-'));
+    try {
+      const missing = findMissingWorkflowRuntimeAssets(tmpDir, ['claude']);
+      expect(missing).toContain('scripts/smart-status.sh');
+      expect(missing).toContain('.claude/scripts/greptile-resolve.sh');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
