@@ -20,6 +20,36 @@ function gitEnv() {
   );
 }
 
+function withHookGitEnv(fn) {
+  const projectRoot = path.resolve(__dirname, '..');
+  const gitDirFile = fs.readFileSync(path.join(projectRoot, '.git'), 'utf8').trim();
+  const currentGitDir = gitDirFile.replace(/^gitdir:\s*/, '');
+  const currentCommonDir = path.resolve(currentGitDir, '..', '..');
+  const previous = {
+    GIT_DIR: process.env.GIT_DIR,
+    GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+    GIT_COMMON_DIR: process.env.GIT_COMMON_DIR,
+    GIT_PREFIX: process.env.GIT_PREFIX
+  };
+
+  process.env.GIT_DIR = currentGitDir;
+  process.env.GIT_WORK_TREE = projectRoot;
+  process.env.GIT_COMMON_DIR = currentCommonDir;
+  process.env.GIT_PREFIX = '';
+
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 function git(repoDir, args) {
   return execFileSync('git', [
     `--git-dir=${path.join(repoDir, '.git')}`,
@@ -88,7 +118,7 @@ describe('freshness-token', () => {
 
   describe('writeFreshnessToken / readFreshnessToken roundtrip', () => {
     test('write then read returns correct token data', () => {
-      const written = writeFreshnessToken(repo.dir);
+      const written = withHookGitEnv(() => writeFreshnessToken(repo.dir));
 
       expect(written).toBeDefined();
       expect(typeof written.timestamp).toBe('number');
@@ -105,7 +135,7 @@ describe('freshness-token', () => {
     });
 
     test('token file is written to .forge-freshness in projectRoot', () => {
-      writeFreshnessToken(repo.dir);
+      withHookGitEnv(() => writeFreshnessToken(repo.dir));
 
       const tokenPath = path.join(repo.dir, '.forge-freshness');
       expect(fs.existsSync(tokenPath)).toBe(true);
@@ -126,7 +156,7 @@ describe('freshness-token', () => {
     });
 
     test('returns true when base commit differs (rebased onto new main)', () => {
-      const token = writeFreshnessToken(repo.dir);
+      const token = withHookGitEnv(() => writeFreshnessToken(repo.dir));
 
       // Add a new commit to main
       git(repo.dir, ['checkout', 'main']);
@@ -138,7 +168,7 @@ describe('freshness-token', () => {
       git(repo.dir, ['checkout', repo.branchName]);
       git(repo.dir, ['rebase', 'main']);
 
-      const stale = isStale(token, repo.dir);
+      const stale = withHookGitEnv(() => isStale(token, repo.dir));
       expect(stale).toBe(true);
     });
 
@@ -191,7 +221,7 @@ describe('freshness-token', () => {
       git(orphanDir, ['commit', '-m', 'orphan commit']);
 
       try {
-        expect(() => writeFreshnessToken(orphanDir)).toThrow();
+        expect(() => withHookGitEnv(() => writeFreshnessToken(orphanDir))).toThrow();
       } finally {
         fs.rmSync(orphanDir, { recursive: true, force: true });
       }
