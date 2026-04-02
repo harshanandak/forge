@@ -5,7 +5,7 @@
  * - forge-8u6q: Remove dead code review tool constants
  * - forge-zs2u: Replace npx --yes with package manager detection in lint.js
  * - forge-iv1p: Remove postinstall, add runtime setup guard
- * - forge-cpnj: Wire executeSetup with loadAndSetupClaudeCommands
+ * - forge-cpnj: Wire executeSetup with loadAndSetupCanonicalCommands
  */
 
 const { describe, test, expect, beforeAll } = require('bun:test');
@@ -72,18 +72,18 @@ describe('P2 bug fixes integration', () => {
     expect(forgeSource).toMatch(/--yes/);
   });
 
-  // forge-cpnj: executeSetup wired with loadAndSetupClaudeCommands
+  // forge-cpnj: executeSetup wired with loadAndSetupCanonicalCommands
   // After extraction, executeSetup lives in lib/commands/setup.js
   test('lib/commands/setup.js contains executeSetup function', () => {
     expect(setupSource).toMatch(/function executeSetup/);
   });
 
-  test('lib/commands/setup.js uses loadAndSetupClaudeCommands in executeSetup context', () => {
-    // Extract the executeSetup function body and verify it references loadAndSetupClaudeCommands
+  test('lib/commands/setup.js uses loadAndSetupCanonicalCommands in executeSetup context', () => {
+    // Extract the executeSetup function body and verify it references loadAndSetupCanonicalCommands
     const execSetupMatch = setupSource.match(
       /function executeSetup[\s\S]*?(?=\n(?:async )?function |module\.exports|\n\/\*\*\n)/
     );
     expect(execSetupMatch).not.toBeNull();
-    expect(execSetupMatch[0]).toMatch(/loadAndSetupClaudeCommands/);
+    expect(execSetupMatch[0]).toMatch(/loadAndSetupCanonicalCommands/);
   });
 });

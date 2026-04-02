@@ -1,0 +1,653 @@
+# Forge Toolchain Reference
+
+Complete reference for all tools integrated with the Forge workflow.
+
+## Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        FORGE TOOLCHAIN                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────┐   ┌─────────────────────┐                     │
+│  │   BEADS     │   │  EXTERNAL SERVICES  │                     │
+│  │   (bd)      │   │                     │                     │
+│  │             │   │  Parallel AI        │                     │
+│  │ Git-backed  │   │  Greptile           │                     │
+│  │ Issue       │   │  SonarCloud         │                     │
+│  │ Tracking    │   │  GitHub CLI         │                     │
+│  └─────────────┘   └─────────────────────┘                     │
+│        │                     │                                 │
+│        └─────────────────────┘                                 │
+│                          │                                      │
+│                    ┌─────▼─────┐                                │
+│                    │   FORGE   │                                │
+│                    │  7-Stage  │                                │
+│                    │  Workflow │                                │
+│                    └───────────┘                                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Beads - Git-Backed Issue Tracking
+
+**Package**: `@beads/bd`
+**Repository**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
+**Purpose**: Distributed issue tracking designed for AI coding agents
+
+### Why Beads?
+
+- **Persists across sessions** - Issues survive context clearing, compaction, new chats
+- **Git-backed** - Version controlled, mergeable, team-shareable
+- **Dependency tracking** - Know what blocks what
+- **Ready detection** - `bd ready` finds unblocked work automatically
+- **AI-optimized** - JSON output, semantic compaction, audit trails
+
+### Installation
+
+**Auto-installation** (Recommended):
+```bash
+bunx forge setup
+# Prompts: "Install Beads? (y/n)"
+# Automatically installs and initializes
+# On Windows: uses PowerShell installer (npm @beads/bd has an EPERM bug on Windows)
+```
+
+**Manual installation**:
+```bash
+# macOS / Linux (global)
+bun add -g @beads/bd
+bd init
+
+# macOS / Linux (local)
+bun add -d @beads/bd
+bunx bd init
+
+# Windows (global) — use PowerShell installer, NOT npm/bun add -g
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+bd init
+
+# Or with bunx (macOS/Linux, no install needed)
+bunx @beads/bd init
+```
+
+> **Windows note**: The `npm install -g @beads/bd` postinstall script uses `Expand-Archive`, which triggers an EPERM file-locking error on Windows (issue #1031, closed "not planned"). Use the PowerShell installer above instead.
+
+### File Structure
+
+After `bd init`, creates `.beads/` directory:
+
+```
+.beads/
+├── issues.jsonl      # Issue data (git-tracked, one JSON per line)
+├── beads.db          # SQLite cache (git-ignored, fast queries)
+├── metadata.json     # Database metadata
+├── config.yaml       # User configuration
+├── interactions.jsonl # Agent audit log
+└── .gitignore        # Ignores beads.db
+```
+
+**Dual-database architecture**: JSONL for git versioning, SQLite for fast local queries. Background daemon keeps them in sync.
+
+### Complete Command Reference
+
+#### Initialization
+
+```bash
+bd init                    # Initialize in project
+bd init --stealth          # Local-only (don't commit to repo)
+bd init --contributor      # Contributor mode
+bd init --prefix PROJ      # Custom issue prefix (PROJ-xxx)
+```
+
+#### Issue Management
+
+```bash
+# Create issues
+bd create "Title"                           # Basic issue
+bd create "Title" --type feature            # With type (feature, bug, chore, etc.)
+bd create "Title" --priority 1              # With priority (0=critical, 4=backlog)
+bd create "Title" -p 0 -l "urgent,backend"  # P0 with labels
+
+# View issues
+bd show <id>                   # Detailed view with audit trail
+bd list                        # All issues
+bd list --status open          # Filter by status
+bd list --priority 1           # Filter by priority
+bd list --assignee bob         # Filter by assignee
+bd list --label bug            # Filter by label (AND logic)
+bd list --label-any bug,urgent # Filter by label (OR logic)
+bd list --type feature         # Filter by type
+bd list --title-contains "auth" # Search titles
+bd list --limit 10             # Limit results
+
+# Update issues
+bd update <id> --status in_progress     # Change status
+bd update <id> --priority 2             # Change priority
+bd update <id> --assignee bob           # Assign
+bd update <id> --title "New title"      # Update title
+bd update <id> --description "..."      # Update description
+bd update <id> --notes "..."            # Add notes
+bd update <id> --label-add urgent       # Add label
+
+# Complete issues
+bd close <id>                           # Close single issue
+bd close <id1> <id2> <id3>              # Close multiple (efficient)
+bd close <id> --reason "Completed auth" # Close with reason
+bd delete <id>                          # Delete issue
+bd delete <id> --cascade                # Delete with dependents
+```
+
+#### Workflow Commands
+
+```bash
+# Find work
+bd ready                        # Issues with NO open blockers (start here!)
+bd ready --priority 1           # Filter ready work by priority
+bd blocked                      # Issues that ARE blocked
+
+# Dependencies
+bd dep add <child> <parent>                    # child depends on parent (blocks)
+bd dep add <child> <parent> --type related     # Soft reference (no blocking)
+bd dep add <child> <parent> --type parent-child # Hierarchical
+bd dep remove <child> <parent>                 # Remove dependency
+bd dep tree <id>                               # Visualize dependency tree
+bd dep cycles                                  # Detect cycles
+
+# Comments
+bd comments <id>                # View comments
+bd comments <id> "Comment text" # Add comment
+
+# Git sync
+bd sync                         # Export to JSONL, commit, push
+bd sync --status                # Check sync status
+bd hooks install                # Install git hooks for auto-sync
+
+# Maintenance
+bd stats                        # Project statistics
+bd doctor                       # Check for issues
+bd admin compact --days 90      # Compact old closed issues
+```
+
+#### Issue Statuses
+
+- `open` - Not started
+- `in_progress` - Being worked on
+- `blocked` - Waiting on something
+- `completed` - Done
+- `on_hold` - Paused
+- `cancelled` - Won't do
+
+#### Priority Levels
+
+| Priority | Meaning | Usage |
+|----------|---------|-------|
+| 0 (P0) | Critical | Drop everything, fix now |
+| 1 (P1) | High | Do this sprint |
+| 2 (P2) | Medium | Planned work |
+| 3 (P3) | Low | Nice to have |
+| 4 (P4) | Backlog | Someday/maybe |
+
+#### Dependency Types
+
+| Type | Blocks Ready? | Use Case |
+|------|---------------|----------|
+| `blocks` | YES | Hard dependency |
+| `related` | NO | Soft reference |
+| `parent-child` | YES | Hierarchy |
+| `discovered-from` | NO | Found during work |
+
+### Session Workflow
+
+```bash
+# Start of session
+bd ready                    # What can I work on?
+bd show <id>                # Review the issue
+bd update <id> --status in_progress
+
+# During work
+bd comments <id> "Progress update"
+bd update <id> --notes "Found edge case"
+
+# End of session
+bd close <id>               # If done, or:
+bd update <id> --status blocked --comment "Needs API response"
+bd sync                     # Always sync at end!
+```
+
+---
+
+## MCP Servers
+
+### Context7 - Library Documentation
+
+**Package**: `@upstash/context7-mcp@2` (pin to major version, not `@latest`)
+**Purpose**: Up-to-date documentation and code examples for any programming library
+**Used in**: `/plan` stage (Phase 2 research); any library lookup
+
+Context7 provides current documentation that may be more recent than the AI's training data.
+
+**Installation**:
+
+**Claude Code**: Add to `.mcp.json` in your project root:
+
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "bunx",
+      "args": ["--bun", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+```
+
+**Cline (VSCode)**:
+1. Open VSCode Settings
+2. Search for "Cline MCP"
+3. Add Context7 server configuration
+
+**Cursor**: Check Cursor Settings → MCP Servers for configuration options
+
+**Other agents**: If your agent supports MCP, configure using the JSON format above
+
+**Usage**:
+```
+# The AI will automatically use Context7 when you ask about libraries
+"How do I use React Query's useMutation hook?"
+"What's the latest Next.js App Router API?"
+"Show me Supabase RLS policy examples"
+```
+
+**When to use Context7**:
+- Before implementing a library feature
+- When official docs may have changed since AI training
+- To verify API signatures and patterns
+- For current best practices
+
+### grep.app - Code Search
+
+**Package**: `@ai-tools-all/grep_app_mcp` (recommended) or `@galprz/grep-mcp`
+**Website**: [grep.app](https://grep.app)
+**Purpose**: Search across 1M+ public GitHub repositories for real-world code examples
+**Used in**: `/plan` stage (Phase 2 research); finding implementation patterns
+
+grep.app provides code search across public GitHub repositories to find real-world examples and patterns.
+
+**Installation (Claude Code)**:
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "bunx",
+      "args": ["--bun", "@upstash/context7-mcp@latest"]
+    },
+    "grep-app": {
+      "command": "bunx",
+      "args": ["--bun", "@ai-tools-all/grep_app_mcp"]
+    }
+  }
+}
+```
+
+**Usage**:
+```
+# The AI will use grep.app when you need real-world examples
+"Find examples of React useEffect cleanup patterns"
+"Show me how others implement JWT authentication in Express"
+"Search for rate limiting implementations in Node.js"
+```
+
+**When to use grep.app**:
+
+- Finding real-world implementation examples
+- Discovering coding patterns in production code
+- Validating implementation approaches
+- Learning from open source projects
+
+**Context7 vs grep.app**:
+
+| Tool           | Purpose                        | Use When                                  |
+|----------------|--------------------------------|-------------------------------------------|
+| **Context7**   | Official library documentation | You need API reference, official patterns |
+| **grep.app**   | Real code in the wild          | You want to see how others solve problems |
+
+---
+
+## External Services
+
+### Parallel AI - Web Research
+
+**Website**: [platform.parallel.ai](https://platform.parallel.ai)
+**Used in**: `/plan` stage (Phase 2 research)
+
+4 APIs for research:
+- **Search** - Web search with AI analysis
+- **Extract** - Scrape specific URLs
+- **Task** - Structured data enrichment
+- **Deep Research** - Multi-source analysis
+
+```bash
+# Setup
+# 1. Get key from https://platform.parallel.ai
+# 2. Add to .env.local
+PARALLEL_API_KEY=your-key
+
+# Test
+API_KEY=$(grep "^PARALLEL_API_KEY=" .env.local | cut -d= -f2)
+curl -s -X POST "https://api.parallel.ai/v1beta/search" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "parallel-beta: search-extract-2025-10-10" \
+  -d '{"objective": "Next.js authentication best practices 2026"}'
+```
+
+---
+
+## Code Review Tools
+
+Choose ONE code review tool based on your needs:
+
+| Tool | Pricing | Best For | Setup |
+|------|---------|----------|-------|
+| **GitHub Code Quality** | FREE | All GitHub repos | Built-in, zero setup |
+| **CodeRabbit** | FREE (OSS) | Open source projects | GitHub App |
+| **Greptile** | $99+/mo | Enterprise | API key |
+
+### Option 1: GitHub Code Quality (FREE, Recommended)
+
+**Status**: Built-in to GitHub
+**Used in**: `/review` stage
+
+Zero setup required - GitHub's code quality features are enabled by default.
+
+Features:
+- Automatic code scanning
+- Dependency vulnerability alerts
+- Secret scanning
+- Code navigation
+
+### Option 2: CodeRabbit (FREE for Open Source)
+
+**Website**: [coderabbit.ai](https://coderabbit.ai)
+**Used in**: `/review` stage
+
+AI-powered code review with deep context understanding.
+
+```bash
+# Setup
+# 1. Go to https://coderabbit.ai
+# 2. Install the GitHub App
+# 3. Enable for your repositories
+
+# Configuration (optional)
+# Create .coderabbit.yaml in repo root
+```
+
+### Option 3: Greptile (Paid - Enterprise)
+
+**Website**: [greptile.com](https://greptile.com)
+**Used in**: `/review` stage
+
+Enterprise-grade AI code review that understands your codebase.
+
+```bash
+# Setup
+# 1. Get key from https://app.greptile.com
+# 2. Add to .env.local
+GREPTILE_API_KEY=your-key
+
+# 3. Index repository (one-time)
+curl -X POST "https://api.greptile.com/v2/repositories" \
+  -H "Authorization: Bearer $GREPTILE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"remote": "github", "repository": "owner/repo"}'
+```
+
+---
+
+## Code Quality Tools
+
+Choose ONE code quality scanner based on your needs:
+
+| Tool | Pricing | Best For | Requirement |
+|------|---------|----------|-------------|
+| **ESLint** | FREE | All projects | Built-in |
+| **SonarCloud** | 50k LoC free | Cloud-first teams | API key |
+| **SonarQube Community** | FREE | Self-hosted, unlimited | Docker |
+
+### Option 1: ESLint Only (FREE, Recommended)
+
+**Status**: Built-in
+**Used in**: `/validate` stage
+
+No external server required - uses your project's linting configuration.
+
+```bash
+# Already configured via package.json or eslint.config.js
+bun run lint
+```
+
+### Option 2: SonarCloud (Cloud-Hosted)
+
+**Website**: [sonarcloud.io](https://sonarcloud.io)
+**Used in**: `/validate` stage
+**Free Tier**: 50,000 lines of code
+
+Static analysis for bugs, vulnerabilities, code smells.
+
+```bash
+# Setup
+# 1. Create project at https://sonarcloud.io
+# 2. Get token from Security settings
+# 3. Add to .env.local
+SONAR_TOKEN=your-token
+SONAR_ORGANIZATION=your-org
+SONAR_PROJECT_KEY=your-project
+
+# 4. Create sonar-project.properties
+echo "sonar.organization=$SONAR_ORGANIZATION
+sonar.projectKey=$SONAR_PROJECT_KEY
+sonar.sources=src" > sonar-project.properties
+
+# 5. Run analysis
+bunx sonarqube-scanner
+```
+
+### Option 3: SonarQube Community (Self-Hosted, FREE)
+
+**Website**: [sonarqube.org](https://www.sonarsource.com/products/sonarqube/)
+**Used in**: `/validate` stage
+**Pricing**: FREE, unlimited lines of code
+
+Self-hosted code quality analysis - no cloud dependency.
+
+```bash
+# Setup with Docker
+docker run -d --name sonarqube \
+  -p 9000:9000 \
+  sonarqube:community
+
+# Access at http://localhost:9000
+# Default credentials: admin/admin
+
+# Add to .env.local
+SONARQUBE_URL=http://localhost:9000
+SONARQUBE_TOKEN=your-token  # Generate in SonarQube UI
+
+# Create sonar-project.properties
+echo "sonar.host.url=$SONARQUBE_URL
+sonar.login=$SONARQUBE_TOKEN
+sonar.projectKey=your-project
+sonar.sources=src" > sonar-project.properties
+
+# Run analysis
+bunx sonarqube-scanner
+```
+
+**Docker Compose (Production)**:
+```yaml
+# docker-compose.yml
+version: '3'
+services:
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+
+volumes:
+  sonarqube_data:
+  sonarqube_logs:
+```
+
+---
+
+### GitHub CLI - PR Workflow
+
+**Installation**: [cli.github.com](https://cli.github.com)
+**Used in**: `/ship`, `/review`, `/premerge` stages
+
+```bash
+# Install
+# macOS: brew install gh
+# Windows: winget install GitHub.cli
+# Linux: sudo apt install gh
+
+# Authenticate
+gh auth login
+
+# Common commands
+gh pr create --title "..." --body "..."
+gh pr view <number>
+gh pr checks <number>
+gh pr merge <number> --squash --delete-branch
+gh issue create --title "..." --body "..."
+```
+
+---
+
+## Global CLI Tools
+
+### Beads (`bd`) — Minimum Version
+
+**Minimum version**: v0.49.x
+**Check installed version**:
+```bash
+bd --version
+```
+
+**Install / Update**:
+```bash
+# macOS / Linux
+bun add -g @beads/bd
+
+# Windows — use PowerShell installer (npm has EPERM bug)
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+```
+
+> **Why v0.49.x?** Earlier versions lack the `bd ready` dependency-aware query, `bd sync --status`, and the dual-database (JSONL + SQLite) architecture that Forge relies on.
+
+---
+
+## Integration with Forge Stages
+
+| Stage | Tools Used |
+|-------|------------|
+| `/status` | `bd ready`, `bd list`, `git status` |
+| `/plan` (Phase 2) | Parallel AI, Context7, grep.app, codebase exploration |
+| `/plan` | `bd create`, `git checkout -b` |
+| `/dev` | Tests, code, `bd update`, `/tasks save` |
+| `/validate` | Type check, lint, tests, SonarCloud |
+| `/ship` | `bd update --status done`, `gh pr create` |
+| `/review` | `gh pr view`, Greptile, SonarCloud |
+| `/premerge` | `bd sync`, doc updates, hand off PR |
+| `/verify` | Documentation cross-check |
+
+---
+
+## Quick Reference Card
+
+### Beads (Issue Tracking)
+
+```bash
+bd init                     # Initialize
+bd ready                    # Find unblocked work
+bd create "Title"           # Create issue
+bd show <id>                # View details
+bd update <id> --status X   # Update status
+bd dep add <a> <b>          # a depends on b
+bd close <id>               # Complete
+bd sync                     # Git sync
+```
+
+### GitHub CLI
+
+```bash
+gh auth login               # Authenticate
+gh pr create                # Create PR
+gh pr view <n>              # View PR
+gh pr checks <n>            # Check status
+gh pr merge <n> --squash    # Merge
+```
+
+---
+
+## Troubleshooting
+
+### Beads
+
+**"bd: command not found"**
+```bash
+# macOS / Linux
+bun add -g @beads/bd
+# Or use bunx @beads/bd <command>
+
+# Windows — use PowerShell installer
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+```
+
+**Windows EPERM error during `npm install -g @beads/bd`**
+```bash
+# npm @beads/bd has a known EPERM bug on Windows (Issue #1031)
+# Use the PowerShell installer instead:
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+```
+
+**"database locked"**
+```bash
+bd sync --force
+```
+
+**Issues not showing after git pull**
+```bash
+bd sync  # Re-imports from JSONL
+```
+
+### GitHub CLI
+
+**"gh: not authenticated"**
+```bash
+gh auth login
+gh auth status
+```
+
+---
+
+## Resources
+
+- **Beads**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
+- **Parallel AI**: [platform.parallel.ai](https://platform.parallel.ai)
+- **Greptile**: [greptile.com](https://greptile.com)
+- **SonarCloud**: [sonarcloud.io](https://sonarcloud.io)
+- **GitHub CLI**: [cli.github.com](https://cli.github.com)

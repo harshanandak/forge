@@ -180,8 +180,9 @@ describe('AGENT_ADAPTERS', () => {
     }
   });
 
-  test('claude-code is marked as skip (canonical)', () => {
-    expect(AGENT_ADAPTERS['claude-code'].skip).toBe(true);
+  test('claude-code is a normal adapter (not skipped)', () => {
+    expect(AGENT_ADAPTERS['claude-code'].skip).toBeUndefined();
+    expect(AGENT_ADAPTERS['claude-code'].dir).toBeDefined();
   });
 });
 
@@ -191,9 +192,11 @@ describe('adaptForAgent — Tier 1', () => {
   const fm = { description: 'Design intent', allowed_agents: 'claude' };
   const body = '\nPlan a feature from scratch.';
 
-  test('claude-code returns null (skipped)', () => {
+  test('claude-code returns adapted output (not skipped)', () => {
     const result = adaptForAgent('claude-code', fm, body, 'plan');
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result.dir).toBe('.claude/commands/');
+    expect(result.filename).toBe('plan.md');
   });
 
   // -- Cursor --
@@ -372,10 +375,11 @@ const { syncCommands } = require('../../scripts/sync-commands.js');
  */
 function createTempRepo(commands) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-sync-test-'));
-  const cmdDir = path.join(tmpDir, '.claude', 'commands');
-  fs.mkdirSync(cmdDir, { recursive: true });
+  // Create canonical commands/ directory (the source sync reads from)
+  const canonDir = path.join(tmpDir, 'commands');
+  fs.mkdirSync(canonDir, { recursive: true });
   for (const [name, content] of Object.entries(commands)) {
-    fs.writeFileSync(path.join(cmdDir, `${name}.md`), content);
+    fs.writeFileSync(path.join(canonDir, `${name}.md`), content);
   }
   return tmpDir;
 }
@@ -423,14 +427,14 @@ describe('syncCommands — dry-run mode', () => {
     }
   });
 
-  test('skips claude-code agent (canonical source)', () => {
+  test('includes claude-code as a normal output target', () => {
     const tmpDir = createTempRepo({
       plan: '---\ndescription: Plan\n---\n\nBody.',
     });
     try {
       const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
       const agentNames = result.planned.map((e) => e.agent);
-      expect(agentNames).not.toContain('claude-code');
+      expect(agentNames).toContain('claude-code');
     } finally {
       cleanupTempRepo(tmpDir);
     }
@@ -572,9 +576,9 @@ describe('syncCommands — stale file detection', () => {
     try {
       // Sync both commands
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Delete 'dev' from canonical source
-      fs.unlinkSync(path.join(tmpDir, '.claude', 'commands', 'dev.md'));
-      // Check should detect stale dev files
+      // Delete 'dev' from canonical source. Manifest-backed stale detection
+      // should now report the previously generated dev files as orphaned.
+      fs.unlinkSync(path.join(tmpDir, 'commands', 'dev.md'));
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
       expect(result.staleFiles.length).toBeGreaterThan(0);
       expect(result.inSync).toBe(false);

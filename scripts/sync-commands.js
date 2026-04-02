@@ -4,11 +4,16 @@
  * @module sync-commands
  *
  * Utility for parsing and rebuilding YAML frontmatter in
- * `.claude/commands/*.md` files.
+ * `commands/*.md` canonical source files.
+ *
+ * Note: This module uses the `yaml` package (not gray-matter) for frontmatter
+ * parsing because sync runs at build time and must not depend on gray-matter
+ * being installed in the target project. The hand-rolled parser is intentional.
  *
  * Exports:
  *   parseFrontmatter(content) -> { frontmatter: object, body: string }
  *   buildFile(frontmatter, body) -> string
+ *   contentHash(content) -> string
  */
 
 const YAML = require('yaml');
@@ -121,7 +126,7 @@ function buildFile(frontmatter, body) {
  * @property {string} baseDir - Base output directory for this agent (no sentinel needed)
  * @property {string} extension - File extension (e.g. '.md', '.prompt.md')
  * @property {(fm: Record<string, unknown>, commandName: string) => Record<string, unknown>} transformFrontmatter
- * @property {boolean} [skip] - If true, agent is canonical source (no sync needed)
+ * @property {boolean} [keepDescription] - If true, keep description field (used internally)
  */
 
 /**
@@ -200,7 +205,6 @@ const AGENT_ADAPTERS = {
     baseDir: '.claude/commands/',
     extension: '.md',
     transformFrontmatter: (fm) => ({ ...fm }),
-    skip: true,
   },
   cursor: {
     dir: () => '.cursor/commands/',
@@ -256,18 +260,13 @@ const AGENT_ADAPTERS = {
  * @param {Record<string, unknown>} frontmatter - Parsed frontmatter object
  * @param {string} body - Markdown body content (after frontmatter)
  * @param {string} commandName - Command name (e.g. 'plan', 'dev', 'status')
- * @returns {{ content: string, filename: string, dir: string } | null}
- *   null if the agent is skipped (canonical source)
+ * @returns {{ content: string, filename: string, dir: string }}
  * @throws {Error} If agentName is not a known agent
  */
 function adaptForAgent(agentName, frontmatter, body, commandName) {
   const adapter = AGENT_ADAPTERS[agentName];
   if (!adapter) {
     throw new Error(`Unknown agent: "${agentName}". Known agents: ${Object.keys(AGENT_ADAPTERS).join(', ')}`);
-  }
-
-  if (adapter.skip) {
-    return null;
   }
 
   const transformed = adapter.transformFrontmatter(frontmatter, commandName);
@@ -332,7 +331,26 @@ function contentHash(content) {
  */
 
 /**
- * Sync .claude/commands/*.md files to all non-skip agent directories.
+ * Write the sync manifest for generated entries without rewriting command files.
+ *
+ * @param {string} repoRoot
+ * @param {SyncEntry[]} entries
+ */
+function writeSyncManifest(repoRoot, entries) {
+  const manifestDir = path.join(repoRoot, '.forge');
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestData = {
+    generatedAt: new Date().toISOString(),
+    files: entries.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
+  };
+  fs.writeFileSync(
+    path.join(manifestDir, 'sync-manifest.json'),
+    JSON.stringify(manifestData, null, 2) + '\n'
+  );
+}
+
+/**
+ * Sync commands/*.md canonical source files to all agent directories.
  *
  * Modes:
  * - `dryRun: true` — returns planned writes without touching the filesystem
@@ -343,7 +361,7 @@ function contentHash(content) {
  * @returns {SyncResult}
  */
 function syncCommands({ dryRun, check, repoRoot }) {
-  const commandsDir = path.join(repoRoot, '.claude', 'commands');
+  const commandsDir = path.join(repoRoot, 'commands');
 
   // Read all .md files from the commands directory
   /** @type {string[]} */
@@ -366,9 +384,6 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
     for (const agentName of Object.keys(AGENT_ADAPTERS)) {
       const adapted = adaptForAgent(agentName, frontmatter, body, commandName);
-      if (adapted === null) {
-        continue; // skip canonical agent
-      }
 
       const targetDir = path.join(repoRoot, adapted.dir);
       const targetPath = path.join(targetDir, adapted.filename);
@@ -474,16 +489,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
   // Write sync manifest — records every file generated so stale detection
   // can identify orphaned files without false-flagging custom files.
-  const manifestDir = path.join(repoRoot, '.forge');
-  fs.mkdirSync(manifestDir, { recursive: true });
-  const manifestData = {
-    generatedAt: new Date().toISOString(),
-    files: written.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
-  };
-  fs.writeFileSync(
-    path.join(manifestDir, 'sync-manifest.json'),
-    JSON.stringify(manifestData, null, 2) + '\n'
-  );
+  writeSyncManifest(repoRoot, written);
 
   return { written, overwritten };
 }
@@ -506,7 +512,7 @@ if (require.main === module) {
 
   if (dryRun) {
     if (result.planned.length === 0) {
-      console.log('No command files found in .claude/commands/');
+      console.log('No command files found in commands/');
     } else {
       console.log('Dry run — files that would be generated:\n');
       for (const entry of result.planned) {
@@ -516,7 +522,7 @@ if (require.main === module) {
     }
   } else if (check) {
     if (result.empty) {
-      console.error('Error: no command files found in .claude/commands/ — cannot verify sync.');
+      console.error('Error: no command files found in commands/ — cannot verify sync.');
       process.exit(1);
     }
     if (result.manifestMissing) {
@@ -561,11 +567,19 @@ if (require.main === module) {
     }
 
     if (result.written.length === 0) {
-      console.log('No command files found in .claude/commands/');
+      console.log('No command files found in commands/');
     } else {
       console.log(`Synced ${result.written.length} file(s) across agents.`);
     }
   }
 }
 
-module.exports = { parseFrontmatter, buildFile, AGENT_ADAPTERS, adaptForAgent, syncCommands };
+module.exports = {
+  parseFrontmatter,
+  buildFile,
+  AGENT_ADAPTERS,
+  adaptForAgent,
+  syncCommands,
+  contentHash,
+  writeSyncManifest,
+};

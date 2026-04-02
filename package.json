@@ -44,7 +44,7 @@
     "globals": "^17.3.0",
     "js-yaml": "^4.1.1",
     "lefthook": "^2.1.4",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.3"
   },
   "keywords": [
     "ai",
@@ -76,6 +76,7 @@
     "bin/",
     "lib/",
     "skills/",
+    "commands/",
     ".claude/commands/",
     ".claude/rules/",
     ".claude/scripts/",
@@ -101,11 +102,14 @@
   ],
   "dependencies": {
     "@babel/parser": "^7.29.2",
-    "fastest-levenshtein": "^1.0.16"
+    "fastest-levenshtein": "^1.0.16",
+    "gray-matter": "^4.0.3"
   },
   "overrides": {
+    "brace-expansion": "5.0.5",
     "eslint": "^10.0.2",
     "flatted": "3.4.2",
+    "lodash": "4.18.1",
     "minimatch": "10.2.4"
   },
   "c8": {
