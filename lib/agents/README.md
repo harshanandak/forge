@@ -23,8 +23,21 @@ Each plugin file must follow this structure:
   "homepage": "https://...",  // OPTIONAL: Agent's homepage URL
   "capabilities": {           // OPTIONAL: Agent capabilities
     "commands": true,         // Supports commands
+    "rules": true,            // Supports rules/instructions
     "skills": true,           // Supports skills
-    "hooks": false            // Supports git hooks
+    "mcp": true,              // Supports MCP servers
+    "contextMode": true,      // Supports context isolation/modes
+    "hooks": {                // Supports hooks and blocking hooks
+      "blocking": false
+    }
+  },
+  "support": {                // OPTIONAL: Support quality metadata
+    "status": "supported",    // first-class | supported | compatibility | deprecated | unsupported
+    "surface": "cli-first",   // cli-first | editor-native | desktop-app | web-app | terminal-native | hybrid
+    "install": {
+      "required": true,       // Requires installation or setup
+      "repairRequired": false  // Can be repaired in place instead of reinstalled
+    }
   },
   "directories": {            // REQUIRED: Directory structure (at least one)
     "commands": ".your-agent/commands",
@@ -58,8 +71,26 @@ Each plugin file must follow this structure:
 - **description**: Short description of the agent
 - **homepage**: URL to agent's official website
 - **capabilities**: Object defining what the agent supports
+- **support**: Support tier and enforcement metadata
 - **files**: Important configuration file paths
 - **setup**: Installation and setup instructions
+
+### Normalized Capability Metadata
+
+`PluginManager` exposes a normalized capability block on each loaded plugin at `normalizedCapabilities`:
+
+- `nativeSurface`
+- `supportStatus`
+- `commands`
+- `rules`
+- `skills`
+- `mcp`
+- `contextMode`
+- `hooks.blocking`
+- `install.required`
+- `install.repairRequired`
+
+Legacy `capabilities.hooks: true/false` values are still accepted and normalized to `hooks.blocking`.
 
 ## Supported Agents
 
@@ -122,6 +153,8 @@ The PluginManager automatically validates all plugins on load:
 - **Type checking**: Fields must have correct types
 - **Unique IDs**: No duplicate plugin IDs allowed
 - **JSON syntax**: Files must be valid JSON
+- **Support metadata**: `support.status` must be one of `first-class`, `supported`, `compatibility`, `deprecated`, or `unsupported`
+- **Capability metadata**: `capabilities.hooks.blocking`, `capabilities.mcp`, `capabilities.contextMode`, and the other support flags must be booleans when present
 
 Run tests to validate your plugin:
 
@@ -191,6 +224,7 @@ Common validation errors:
 - `missing required field "id"`: Add the id field
 - `"directories" must be an object`: Ensure directories is an object, not array
 - `"version" must be a string`: Version must be in "x.y.z" format
+- `"support.status" must be one of ...`: Use a supported status value
 - `Plugin with ID "x" already exists`: Choose a unique ID
 
 ## License
