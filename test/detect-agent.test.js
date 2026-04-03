@@ -40,6 +40,33 @@ describe('detect-agent', () => {
         });
         expect(result.name).toBe('my-custom-agent');
       });
+
+      test('AI_AGENT=github-copilot normalizes to copilot', () => {
+        const result = detectActiveAgent({ AI_AGENT: 'github-copilot' });
+        expect(result).toEqual({
+          name: 'copilot',
+          source: 'env',
+          confidence: 'high',
+        });
+      });
+
+      test('AI_AGENT=roo-code normalizes to roo', () => {
+        const result = detectActiveAgent({ AI_AGENT: 'roo-code' });
+        expect(result).toEqual({
+          name: 'roo',
+          source: 'env',
+          confidence: 'high',
+        });
+      });
+
+      test('AI_AGENT=kilo normalizes to kilocode', () => {
+        const result = detectActiveAgent({ AI_AGENT: 'kilo' });
+        expect(result).toEqual({
+          name: 'kilocode',
+          source: 'env',
+          confidence: 'high',
+        });
+      });
     });
 
     describe('Layer 2: Agent-specific env vars', () => {
@@ -122,6 +149,15 @@ describe('detect-agent', () => {
         const result = detectActiveAgent({ OPENCODE_CLIENT: '1' });
         expect(result).toEqual({
           name: 'opencode',
+          source: 'env',
+          confidence: 'high',
+        });
+      });
+
+      test('COPILOT_MODEL detects copilot', () => {
+        const result = detectActiveAgent({ COPILOT_MODEL: '1' });
+        expect(result).toEqual({
+          name: 'copilot',
           source: 'env',
           confidence: 'high',
         });
@@ -224,16 +260,16 @@ describe('detect-agent', () => {
       expect(agents).toContain('cline');
     });
 
-    test('.roo/rules detects roo-code', async () => {
+    test('.roo/rules detects roo', async () => {
       await fs.promises.mkdir(path.join(tempDir, '.roo', 'rules'), { recursive: true });
       const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('roo-code');
+      expect(agents).toContain('roo');
     });
 
-    test('.roo directory detects roo-code', async () => {
+    test('.roo directory detects roo', async () => {
       await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
       const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('roo-code');
+      expect(agents).toContain('roo');
     });
 
     test('.kilocode detects kilocode', async () => {
@@ -265,13 +301,15 @@ describe('detect-agent', () => {
       await fs.promises.writeFile(path.join(tempDir, '.cursorrules'), '');
       await fs.promises.writeFile(path.join(tempDir, '.clinerules'), '');
       await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
+      await fs.promises.writeFile(path.join(tempDir, 'codex.md'), '');
 
       const agents = detectConfiguredAgents(tempDir);
       expect(agents).toContain('claude');
       expect(agents).toContain('cursor');
       expect(agents).toContain('cline');
-      expect(agents).toContain('roo-code');
-      expect(agents.length).toBe(4);
+      expect(agents).toContain('roo');
+      expect(agents).toContain('codex');
+      expect(agents.length).toBe(5);
     });
 
     test('does not return duplicate agent names', async () => {
