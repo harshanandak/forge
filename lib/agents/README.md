@@ -162,6 +162,17 @@ Run tests to validate your plugin:
 bun test test/plugins/
 ```
 
+### Parity Drift Validation
+
+`node scripts/check-agents.js` now validates more than command sync. It also checks parity-critical support claims:
+
+- invalid enforcement metadata under `support` and `capabilities`
+- plugins that claim command support without a Forge sync adapter
+- command directory declarations that do not match the sync adapter output path
+- `rules` or `skills` capabilities declared without a scaffold path in `directories`
+
+This is the guardrail for keeping agent support honest as vendor integrations evolve.
+
 ## Community Contributions
 
 We welcome community contributions for new AI coding agents!
