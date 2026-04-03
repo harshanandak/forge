@@ -139,6 +139,38 @@ describe('runtime health checks', () => {
     expect(result.checks.shell.available).toBe(false);
   });
 
+  test('Windows shell runtime must be executable, not just present on disk', () => {
+    const projectRoot = createProjectRoot();
+
+    const shellRuntime = resolveShellRuntime({
+      platform: 'win32',
+      candidates: ['C:\\Program Files\\Git\\bin\\bash.exe'],
+      _exists: () => true,
+      _canExecute: () => false
+    });
+
+    expect(shellRuntime.available).toBe(false);
+    expect(shellRuntime.state).toBe('unusable');
+    expect(shellRuntime.command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub(),
+      platform: 'win32',
+      shellRuntime
+    });
+
+    expect(result.healthy).toBe(false);
+    expect(result.hardStop).toBe(true);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'SHELL_RUNTIME_MISSING',
+        severity: 'hard-stop'
+      })
+    );
+    expect(result.checks.shell.available).toBe(false);
+    expect(result.checks.shell.state).toBe('unusable');
+  });
+
   test('healthy runtime passes with no hard-stop diagnostics', () => {
     const projectRoot = createProjectRoot();
 
