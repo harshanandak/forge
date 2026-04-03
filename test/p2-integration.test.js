@@ -5,7 +5,7 @@
  * - forge-8u6q: Remove dead code review tool constants
  * - forge-zs2u: Replace npx --yes with package manager detection in lint.js
  * - forge-iv1p: Remove postinstall, add runtime setup guard
- * - forge-cpnj: Wire executeSetup with loadAndSetupCanonicalCommands
+ * - forge-cpnj: Wire executeSetup with loadAndSetupClaudeCommands
  */
 
 const { describe, test, expect, beforeAll } = require('bun:test');
@@ -27,15 +27,12 @@ describe('P2 bug fixes integration', () => {
   /** @type {string} */
   let forgeSource;
   /** @type {string} */
-  let setupSource;
-  /** @type {string} */
   let lintSource;
   /** @type {object} */
   let packageJsonScripts;
 
   beforeAll(() => {
     forgeSource = readFile('bin/forge.js');
-    setupSource = readFile('lib/commands/setup.js');
     lintSource = readFile('scripts/lint.js');
     const pkg = JSON.parse(readFile('package.json'));
     packageJsonScripts = pkg.scripts || {};
@@ -72,18 +69,17 @@ describe('P2 bug fixes integration', () => {
     expect(forgeSource).toMatch(/--yes/);
   });
 
-  // forge-cpnj: executeSetup wired with loadAndSetupCanonicalCommands
-  // After extraction, executeSetup lives in lib/commands/setup.js
-  test('lib/commands/setup.js contains executeSetup function', () => {
-    expect(setupSource).toMatch(/function executeSetup/);
+  // forge-cpnj: executeSetup wired with loadAndSetupClaudeCommands
+  test('bin/forge.js contains executeSetup function', () => {
+    expect(forgeSource).toMatch(/function executeSetup/);
   });
 
-  test('lib/commands/setup.js uses loadAndSetupCanonicalCommands in executeSetup context', () => {
-    // Extract the executeSetup function body and verify it references loadAndSetupCanonicalCommands
-    const execSetupMatch = setupSource.match(
+  test('bin/forge.js uses loadAndSetupClaudeCommands in executeSetup context', () => {
+    // Extract the executeSetup function body and verify it references loadAndSetupClaudeCommands
+    const execSetupMatch = forgeSource.match(
       /function executeSetup[\s\S]*?(?=\n(?:async )?function |module\.exports|\n\/\*\*\n)/
     );
     expect(execSetupMatch).not.toBeNull();
-    expect(execSetupMatch[0]).toMatch(/loadAndSetupCanonicalCommands/);
+    expect(execSetupMatch[0]).toMatch(/loadAndSetupClaudeCommands/);
   });
 });

@@ -92,3 +92,6 @@ test-env/fixtures/*
 
 # Forge push nonce token (ephemeral one-time lefthook skip)
 .forge-push-token
+
+# Beads / Dolt files (added by bd init)
+*.db

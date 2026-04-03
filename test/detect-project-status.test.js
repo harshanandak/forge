@@ -3,9 +3,8 @@ const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
 describe('detectProjectStatus() feature gate', () => {
-  // detectProjectStatus was extracted from bin/forge.js to lib/commands/setup.js
-  const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
-  const content = fs.readFileSync(setupPath, 'utf-8');
+  const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+  const content = fs.readFileSync(forgePath, 'utf-8');
 
   // Extract just the detectProjectStatus function body for targeted assertions
   const fnStart = content.indexOf('async function detectProjectStatus()');

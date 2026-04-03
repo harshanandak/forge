@@ -5,12 +5,17 @@
  * Executable automation for Forge workflow stages
  */
 
-const path = require('node:path');
-const { loadCommands } = require('../lib/commands/_registry');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 
-// Load command registry — auto-discovers all command modules in lib/commands/
-const COMMANDS_DIR = path.join(__dirname, '..', 'lib', 'commands');
-const { commands: _registry } = loadCommands(COMMANDS_DIR);
+// Command handlers - connected to lib/commands/
+const HANDLERS = {
+	status: require('../lib/commands/status'),
+	plan: require('../lib/commands/plan'),
+	dev: require('../lib/commands/dev'),
+	validate: require('../lib/commands/validate'),
+	ship: require('../lib/commands/ship'),
+};
 
 const VALID_COMMANDS = [
 	'status',
@@ -206,48 +211,82 @@ async function main() { // NOSONAR S3776
 		console.log(`Executing: forge ${command}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`);
 		console.log('');
 
+		let result;
 		const positionalArgs = args.filter(a => !a.startsWith('--'));
 
-		// Build flags object from --key=value and --flag args
-		const flags = {};
-		for (const arg of args) {
-			if (!arg.startsWith('--')) continue;
-			const eqIdx = arg.indexOf('=');
-			if (eqIdx !== -1) {
-				flags[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
-			} else {
-				flags[arg] = true;
-			}
-		}
+		if (command === 'status') {
+			// Gather context from git + filesystem
+			const branch = (() => {
+				try { return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', timeout: 5000 }).trim(); }  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
+				catch (error_) { void error_; return 'master'; } // NOSONAR S2486 - intentional: non-git dirs fallback
+			})();
+			const context = {
+				branch,
+				researchDoc: fs.existsSync('docs/research') ? fs.readdirSync('docs/research').find(f => f.endsWith('.md')) : null,
+				plan: (() => {
+					if (!fs.existsSync('docs/plans')) return null;
+					const slug = branch.replace(/^(feat|fix|docs|refactor)\//, '');
+					return fs.readdirSync('docs/plans').find(f => f.endsWith('.md') && f.includes(slug)) || null;
+				})(),
+				tests: (() => { try { return fs.readdirSync('test').filter(f => f.endsWith('.test.js')); } catch (error_) { void error_; return []; } })(), // NOSONAR S2486 - intentional: missing test dir
+			};
+			const stageResult = HANDLERS.status.detectStage(context);
+			console.log(HANDLERS.status.formatStatus(stageResult));
 
-		// Resolve command name — 'check' is a backward-compat alias for 'validate'
-		const resolvedCommand = command === 'check' ? 'validate' : command;
-		if (command === 'check') console.warn('⚠ "forge check" is deprecated — use "forge validate"');
-
-		// Look up command in the auto-discovery registry
-		const registryEntry = _registry.get(resolvedCommand);
-
-		if (registryEntry) {
-			// Dispatch through registry handler
-			const result = await registryEntry.handler(positionalArgs, flags, process.cwd());
-
-			// Format output based on result shape
-			if (result.output) {
-				console.log(result.output);
-			} else if (result.success) {
-				const message = result.message || result.summary || result.phase || result.detectedPhase || '';
-				console.log(`✓ ${message}`);
+		} else if (command === 'plan') {
+			result = await HANDLERS.plan.executePlan(positionalArgs[0]);
+			if (result.success) {
+				console.log(`✓ Plan created: ${result.summary || result.branchName || ''}`);
 				if (result.beadsIssueId) console.log(`  Beads: ${result.beadsIssueId}`);
-				if (result.prUrl) console.log(`  PR: ${result.prUrl}`);
+			} else {
+				console.error(`✗ Plan failed: ${result.error}`);
+				process.exit(1);
+			}
+
+		} else if (command === 'dev') {
+			const featureName = positionalArgs[0] || 'feature';
+			const VALID_PHASES = ['RED', 'GREEN', 'REFACTOR'];
+			const phase = positionalArgs[1] ? positionalArgs[1].toUpperCase() : undefined;
+			if (phase && !VALID_PHASES.includes(phase)) {
+				console.error(`✗ Invalid phase '${positionalArgs[1]}'. Valid phases: red, green, refactor`);
+				process.exit(1);
+			}
+			result = await HANDLERS.dev.executeDev(featureName, { phase });
+			if (result.success) {
+				console.log(`✓ TDD Phase: ${result.phase || result.detectedPhase}`);
 				if (result.guidance) console.log('\n' + result.guidance);
 			} else {
-				const errorMsg = result.error || result.summary || 'Unknown error';
-				console.error(`✗ ${errorMsg}`);
+				console.error(`✗ Dev failed: ${result.error}`);
+				process.exit(1);
+			}
+
+		} else if (command === 'validate' || command === 'check') {
+			if (command === 'check') console.warn('⚠ "forge check" is deprecated — use "forge validate"');
+			result = await HANDLERS.validate.executeValidate();
+			if (result.success) {
+				console.log(`✓ ${result.summary}`);
+			} else {
+				console.error(`✗ ${result.summary}`);
 				if (result.failedChecks) console.error(`  Failed: ${result.failedChecks.join(', ')}`);
 				process.exit(1);
 			}
+
+		} else if (command === 'ship') {
+			const featureSlug = positionalArgs[0];
+			const title = positionalArgs[1];
+			const dryRun = args.includes('--dry-run');
+			result = await HANDLERS.ship.executeShip({ featureSlug, title, dryRun });
+			if (result.success) {
+				console.log(`✓ ${result.message}`);
+				if (result.prUrl) console.log(`  PR: ${result.prUrl}`);
+			} else {
+				console.error(`✗ Ship failed: ${result.error}`);
+				process.exit(1);
+			}
+
 		} else {
-			// Guided workflow stages (review, merge, verify) — not yet automated
+			// review, merge, verify - not yet implemented as automated CLI commands
+			// These stages require interactive AI assistance
 			const prRef = positionalArgs[0] ? ` ${positionalArgs[0]}` : '';
 			console.log(`ℹ️  '${command}' is a guided workflow stage.`);
 			console.log(`   Use your AI agent with the /${command}${prRef} slash command for interactive execution.`);

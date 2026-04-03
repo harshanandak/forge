@@ -5,12 +5,11 @@ const { describe, test, expect } = require('bun:test');
 const ROOT = path.join(__dirname, '..');
 
 describe('Stage naming consistency', () => {
-  describe('CURSOR_RULE in setup command', () => {
-    // CURSOR_RULE was extracted from bin/forge.js to lib/commands/setup.js
-    const setupSource = fs.readFileSync(path.join(ROOT, 'lib', 'commands', 'setup.js'), 'utf8');
+  describe('bin/forge.js CURSOR_RULE', () => {
+    const forgeSource = fs.readFileSync(path.join(ROOT, 'bin', 'forge.js'), 'utf8');
 
     // Extract the CURSOR_RULE template string
-    const cursorRuleMatch = setupSource.match(
+    const cursorRuleMatch = forgeSource.match(
       /const CURSOR_RULE = `([\s\S]*?)\n`;/
     );
     const cursorRule = cursorRuleMatch ? cursorRuleMatch[1] : '';

@@ -11,106 +11,36 @@ const {
   isStale
 } = require('../lib/freshness-token');
 
-// Counter for unique branch names across test runs (avoids collision in CI)
-let branchCounter = 0;
-
-function gitEnv() {
-  return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))
-  );
-}
-
-function withHookGitEnv(fn) {
-  const projectRoot = path.resolve(__dirname, '..');
-  const gitEntryPath = path.join(projectRoot, '.git');
-  const gitEntryStat = fs.statSync(gitEntryPath);
-  const currentGitDir = gitEntryStat.isDirectory()
-    ? gitEntryPath
-    : path.resolve(
-      projectRoot,
-      fs.readFileSync(gitEntryPath, 'utf8').trim().replace(/^gitdir:\s*/, '')
-    );
-  const currentCommonDir = gitEntryStat.isDirectory()
-    ? currentGitDir
-    : path.resolve(currentGitDir, '..', '..');
-  const previous = {
-    GIT_DIR: process.env.GIT_DIR,
-    GIT_WORK_TREE: process.env.GIT_WORK_TREE,
-    GIT_COMMON_DIR: process.env.GIT_COMMON_DIR,
-    GIT_PREFIX: process.env.GIT_PREFIX
-  };
-
-  process.env.GIT_DIR = currentGitDir;
-  process.env.GIT_WORK_TREE = projectRoot;
-  process.env.GIT_COMMON_DIR = currentCommonDir;
-  process.env.GIT_PREFIX = '';
-
-  try {
-    return fn();
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-}
-
-function git(repoDir, args) {
-  return execFileSync('git', [
-    `--git-dir=${path.join(repoDir, '.git')}`,
-    `--work-tree=${repoDir}`,
-    ...args
-  ], {
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: gitEnv()
-  });
-}
-
-function initGitRepo(repoDir) {
-  return execFileSync('git', ['init', '--initial-branch', 'main', repoDir], {
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: gitEnv()
-  });
-}
-
 /**
  * Creates a temporary git repo with a commit on main and a feature branch.
- * Uses a unique branch name per invocation to prevent collisions when
- * git state from a previous test run leaks (e.g., during CI push).
- * Returns { dir, cleanup, branchName }.
+ * Returns { dir, cleanup }.
  */
 function createTempGitRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-freshness-'));
-  const branchName = `feat/test-feature-${Date.now()}-${++branchCounter}`;
 
   // Initialize repo with 'main' as default branch
-  initGitRepo(dir);
-  git(dir, ['config', 'user.email', 'test@test.com']);
-  git(dir, ['config', 'user.name', 'Test']);
+  execFileSync('git', ['init', '--initial-branch', 'main'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
 
   // Create initial commit on main
   fs.writeFileSync(path.join(dir, 'README.md'), 'init');
-  git(dir, ['add', '.']);
-  git(dir, ['commit', '-m', 'initial commit']);
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: dir });
 
-  // Create and switch to feature branch (unique name per test)
-  git(dir, ['checkout', '-b', branchName]);
+  // Create and switch to feature branch
+  execFileSync('git', ['checkout', '-b', 'feat/test-feature'], { cwd: dir });
 
   // Add a commit on the feature branch so HEAD differs from main
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'feature work');
-  git(dir, ['add', '.']);
-  git(dir, ['commit', '-m', 'feature commit']);
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-m', 'feature commit'], { cwd: dir });
 
   const cleanup = () => {
     fs.rmSync(dir, { recursive: true, force: true });
   };
 
-  return { dir, cleanup, branchName };
+  return { dir, cleanup };
 }
 
 describe('freshness-token', () => {
@@ -126,11 +56,11 @@ describe('freshness-token', () => {
 
   describe('writeFreshnessToken / readFreshnessToken roundtrip', () => {
     test('write then read returns correct token data', () => {
-      const written = withHookGitEnv(() => writeFreshnessToken(repo.dir));
+      const written = writeFreshnessToken(repo.dir);
 
       expect(written).toBeDefined();
       expect(typeof written.timestamp).toBe('number');
-      expect(written.branch).toBe(repo.branchName);
+      expect(written.branch).toBe('feat/test-feature');
       expect(typeof written.baseCommit).toBe('string');
       expect(written.baseCommit.length).toBeGreaterThan(0);
 
@@ -143,7 +73,7 @@ describe('freshness-token', () => {
     });
 
     test('token file is written to .forge-freshness in projectRoot', () => {
-      withHookGitEnv(() => writeFreshnessToken(repo.dir));
+      writeFreshnessToken(repo.dir);
 
       const tokenPath = path.join(repo.dir, '.forge-freshness');
       expect(fs.existsSync(tokenPath)).toBe(true);
@@ -151,7 +81,7 @@ describe('freshness-token', () => {
       // Should be valid JSON
       const content = fs.readFileSync(tokenPath, 'utf8');
       const parsed = JSON.parse(content);
-      expect(parsed.branch).toBe(repo.branchName);
+      expect(parsed.branch).toBe('feat/test-feature');
     });
   });
 
@@ -164,19 +94,19 @@ describe('freshness-token', () => {
     });
 
     test('returns true when base commit differs (rebased onto new main)', () => {
-      const token = withHookGitEnv(() => writeFreshnessToken(repo.dir));
+      const token = writeFreshnessToken(repo.dir);
 
       // Add a new commit to main
-      git(repo.dir, ['checkout', 'main']);
+      execFileSync('git', ['checkout', 'main'], { cwd: repo.dir });
       fs.writeFileSync(path.join(repo.dir, 'new-on-main.txt'), 'new stuff');
-      git(repo.dir, ['add', '.']);
-      git(repo.dir, ['commit', '-m', 'main moved forward']);
+      execFileSync('git', ['add', '.'], { cwd: repo.dir });
+      execFileSync('git', ['commit', '-m', 'main moved forward'], { cwd: repo.dir });
 
       // Rebase feature branch onto new main tip — this changes merge-base
-      git(repo.dir, ['checkout', repo.branchName]);
-      git(repo.dir, ['rebase', 'main']);
+      execFileSync('git', ['checkout', 'feat/test-feature'], { cwd: repo.dir });
+      execFileSync('git', ['rebase', 'main'], { cwd: repo.dir });
 
-      const stale = withHookGitEnv(() => isStale(token, repo.dir));
+      const stale = isStale(token, repo.dir);
       expect(stale).toBe(true);
     });
 
@@ -213,23 +143,23 @@ describe('freshness-token', () => {
     test('throws descriptive error when git merge-base fails', () => {
       // Create a repo with no common ancestor to main (orphan branch)
       const orphanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-freshness-orphan-'));
-      initGitRepo(orphanDir);
-      git(orphanDir, ['config', 'user.email', 'test@test.com']);
-      git(orphanDir, ['config', 'user.name', 'Test']);
+      execFileSync('git', ['init', '--initial-branch', 'main'], { cwd: orphanDir });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: orphanDir });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: orphanDir });
 
       // Create initial commit on main
       fs.writeFileSync(path.join(orphanDir, 'README.md'), 'init');
-      git(orphanDir, ['add', '.']);
-      git(orphanDir, ['commit', '-m', 'initial']);
+      execFileSync('git', ['add', '.'], { cwd: orphanDir });
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: orphanDir });
 
       // Create orphan branch (no common ancestor with main)
-      git(orphanDir, ['checkout', '--orphan', 'orphan-branch']);
+      execFileSync('git', ['checkout', '--orphan', 'orphan-branch'], { cwd: orphanDir });
       fs.writeFileSync(path.join(orphanDir, 'orphan.txt'), 'orphan');
-      git(orphanDir, ['add', '.']);
-      git(orphanDir, ['commit', '-m', 'orphan commit']);
+      execFileSync('git', ['add', '.'], { cwd: orphanDir });
+      execFileSync('git', ['commit', '-m', 'orphan commit'], { cwd: orphanDir });
 
       try {
-        expect(() => withHookGitEnv(() => writeFreshnessToken(orphanDir))).toThrow();
+        expect(() => writeFreshnessToken(orphanDir)).toThrow();
       } finally {
         fs.rmSync(orphanDir, { recursive: true, force: true });
       }
@@ -241,7 +171,7 @@ describe('freshness-token', () => {
       // Create a token with a fake baseCommit
       const token = {
         timestamp: Date.now(),
-        branch: repo.branchName,
+        branch: 'feat/test-feature',
         baseCommit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
       };
 

@@ -3,12 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
-const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
 const lefthookPath = path.join(__dirname, '..', 'lefthook.yml');
 const mcpPath = path.join(__dirname, '..', '.mcp.json.example');
 
-const _forgeSource = fs.readFileSync(forgePath, 'utf8');
-const setupSource = fs.readFileSync(setupPath, 'utf8');
+const forgeSource = fs.readFileSync(forgePath, 'utf8');
 const lefthookSource = fs.readFileSync(lefthookPath, 'utf8');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -17,22 +15,22 @@ const lefthookSource = fs.readFileSync(lefthookPath, 'utf8');
 describe('forge-k6p: autoInstallLefthook cross-platform', () => {
   test('should NOT hardcode bun in autoInstallLefthook', () => {
     // The old broken code: execFileSync('bun', ['add', '-d', 'lefthook'])
-    expect(!setupSource.includes("execFileSync('bun', ['add', '-d', 'lefthook']")).toBeTruthy();
+    expect(!forgeSource.includes("execFileSync('bun', ['add', '-d', 'lefthook']")).toBeTruthy();
   });
 
   test('should use PKG_MANAGER in autoInstallLefthook', () => {
     // Find the autoInstallLefthook function body
-    const fnStart = setupSource.indexOf('function autoInstallLefthook()');
-    const fnEnd = setupSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = setupSource.slice(fnStart, fnEnd);
+    const fnStart = forgeSource.indexOf('function autoInstallLefthook()');
+    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
+    const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     expect(fnBody.includes('PKG_MANAGER')).toBeTruthy();
   });
 
   test('should have correct install flags per package manager in autoInstallLefthook', () => {
-    const fnStart = setupSource.indexOf('function autoInstallLefthook()');
-    const fnEnd = setupSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = setupSource.slice(fnStart, fnEnd);
+    const fnStart = forgeSource.indexOf('function autoInstallLefthook()');
+    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
+    const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     // Must handle bun/pnpm 'add' vs npm/yarn 'install'
     expect(fnBody.includes("'add'") || fnBody.includes('"add"')).toBeTruthy();
@@ -45,17 +43,17 @@ describe('forge-k6p: autoInstallLefthook cross-platform', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-63c: Windows Beads install via PowerShell', () => {
   test('autoSetupBeadsInQuickMode should detect Windows and use PowerShell', () => {
-    const fnStart = setupSource.indexOf('function autoSetupBeadsInQuickMode()');
-    const fnEnd = setupSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = setupSource.slice(fnStart, fnEnd);
+    const fnStart = forgeSource.indexOf('function autoSetupBeadsInQuickMode()');
+    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
+    const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     expect(fnBody.includes("process.platform === 'win32'") || fnBody.includes('isWindows')).toBeTruthy();
   });
 
   test('autoSetupBeadsInQuickMode should use powershell for Windows beads install', () => {
-    const fnStart = setupSource.indexOf('function autoSetupBeadsInQuickMode()');
-    const fnEnd = setupSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = setupSource.slice(fnStart, fnEnd);
+    const fnStart = forgeSource.indexOf('function autoSetupBeadsInQuickMode()');
+    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
+    const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     // Accepts either direct powershell/install.ps1 reference OR delegation to installBeadsOnWindows()
     // (the latter is preferred as it centralises the URL via BEADS_INSTALL_PS1_URL constant)
@@ -63,9 +61,9 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
   });
 
   test('installBeadsWithMethod should use PowerShell on Windows for global install', () => {
-    const fnStart = setupSource.indexOf('function installBeadsWithMethod(');
-    const fnEnd = setupSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = setupSource.slice(fnStart, fnEnd);
+    const fnStart = forgeSource.indexOf('function installBeadsWithMethod(');
+    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
+    const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     expect(fnBody.includes('win32') || fnBody.includes('powershell') || fnBody.includes('install.ps1')).toBeTruthy();
   });
@@ -76,11 +74,11 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-jxb: Error messages use PKG_MANAGER', () => {
   test('Beads install failure message should not hardcode bun add -g', () => {
-    expect(!setupSource.includes("'  Run manually: bun add -g @beads/bd && bd init'")).toBeTruthy();
+    expect(!forgeSource.includes("'  Run manually: bun add -g @beads/bd && bd init'")).toBeTruthy();
   });
 
   test('lefthook install message should not hardcode bun add -d', () => {
-    expect(!setupSource.includes("'  Run manually: bun add -d lefthook'")).toBeTruthy();
+    expect(!forgeSource.includes("'  Run manually: bun add -d lefthook'")).toBeTruthy();
   });
 });
 
@@ -89,9 +87,9 @@ describe('forge-jxb: Error messages use PKG_MANAGER', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-92t: Skills should show message when not installed', () => {
   test('autoSetupToolsInQuickMode should log when Skills is not installed', () => {
-    const fnStart = setupSource.indexOf('function autoSetupToolsInQuickMode()');
-    const fnEnd = setupSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = setupSource.slice(fnStart, fnEnd);
+    const fnStart = forgeSource.indexOf('function autoSetupToolsInQuickMode()');
+    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
+    const fnBody = forgeSource.slice(fnStart, fnEnd);
 
     expect(fnBody.includes('skills') || fnBody.includes('Skills')).toBeTruthy();
   });
@@ -103,11 +101,11 @@ describe('forge-92t: Skills should show message when not installed', () => {
 describe('forge-4zz: Post-install verification', () => {
   test('should verify Beads after install by running bd version', () => {
     // After install, should call safeExec or secureExecFileSync with bd version
-    expect(setupSource.includes("'bd', ['version']") ||
-      setupSource.includes('"bd", ["version"]') ||
-      setupSource.includes("safeExec('bd version')") ||
-      setupSource.includes('verifyBeadsInstall') ||
-      setupSource.includes('bd version')).toBeTruthy();
+    expect(forgeSource.includes("'bd', ['version']") ||
+      forgeSource.includes('"bd", ["version"]') ||
+      forgeSource.includes("safeExec('bd version')") ||
+      forgeSource.includes('verifyBeadsInstall') ||
+      forgeSource.includes('bd version')).toBeTruthy();
   });
 });
 

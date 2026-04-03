@@ -1,7 +1,7 @@
 /**
  * Tests for getWorkflowCommands() — filesystem-derived command list.
  *
- * Verifies that workflow commands are read from commands/*.md (canonical source)
+ * Verifies that workflow commands are read from .claude/commands/*.md
  * rather than hardcoded in an array.
  */
 
@@ -9,28 +9,23 @@ const path = require('path');
 const fs = require('fs');
 const { describe, test, expect } = require('bun:test');
 
-// Import getWorkflowCommands from lib/commands/setup.js (extracted from bin/forge.js)
+// We will import getWorkflowCommands from bin/forge.js once it is exported
 let getWorkflowCommands;
-let getCliWorkflowCommands;
 try {
-  ({ getWorkflowCommands } = require('../lib/commands/setup.js'));
-  ({ getWorkflowCommands: getCliWorkflowCommands } = require('../bin/forge.js'));
+  ({ getWorkflowCommands } = require('../bin/forge.js'));
 } catch (_e) {
   // Will fail in RED phase — expected
 }
 
 describe('getWorkflowCommands', () => {
-  test('returns an array of command names from commands/*.md', () => {
+  test('returns an array of command names from .claude/commands/*.md', () => {
     const commands = getWorkflowCommands();
     expect(Array.isArray(commands)).toBe(true);
     expect(commands.length).toBeGreaterThan(0);
 
-    // Should match the actual .md files in commands/ (canonical source)
+    // Should match the actual .md files in .claude/commands/
     const packageDir = path.resolve(__dirname, '..');
-    const canonicalDir = path.join(packageDir, 'commands');
-    const commandsDir = fs.existsSync(canonicalDir)
-      ? canonicalDir
-      : path.join(packageDir, '.claude', 'commands');
+    const commandsDir = path.join(packageDir, '.claude', 'commands');
     const expected = fs.readdirSync(commandsDir)
       .filter(f => f.endsWith('.md'))
       .map(f => f.replace(/\.md$/, ''))
@@ -41,12 +36,9 @@ describe('getWorkflowCommands', () => {
 
   test('filters out non-.md files', () => {
     const commands = getWorkflowCommands();
-    // Every returned name should correspond to a .md file in canonical source
+    // Every returned name should correspond to a .md file
     const packageDir = path.resolve(__dirname, '..');
-    const canonicalDir = path.join(packageDir, 'commands');
-    const commandsDir = fs.existsSync(canonicalDir)
-      ? canonicalDir
-      : path.join(packageDir, '.claude', 'commands');
+    const commandsDir = path.join(packageDir, '.claude', 'commands');
     for (const cmd of commands) {
       const mdPath = path.join(commandsDir, `${cmd}.md`);
       expect(fs.existsSync(mdPath)).toBe(true);
@@ -54,18 +46,12 @@ describe('getWorkflowCommands', () => {
   });
 
   test('returns empty array and warns when directory does not exist', () => {
-    // Mock readdirSync to throw for commands paths (both canonical and fallback)
+    // Mock readdirSync to throw only for .claude/commands path
     const origReaddir = fs.readdirSync;
-    const origExists = fs.existsSync;
     const warns = [];
     const origWarn = console.warn;
-    // Make canonical commands/ dir appear non-existent so it falls back
-    fs.existsSync = (p, ...rest) => {
-      if (String(p).endsWith('commands') && !String(p).includes('.claude')) return false;
-      return origExists(p, ...rest);
-    };
     fs.readdirSync = (dirPath, ...rest) => {
-      if (String(dirPath).includes('commands')) {
+      if (String(dirPath).includes('.claude') && String(dirPath).includes('commands')) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       }
       return origReaddir(dirPath, ...rest);
@@ -77,20 +63,8 @@ describe('getWorkflowCommands', () => {
       expect(warns.length).toBeGreaterThan(0);
     } finally {
       fs.readdirSync = origReaddir;
-      fs.existsSync = origExists;
       console.warn = origWarn;
     }
-  });
-
-  test('bin/forge.js also prefers commands/ over .claude/commands/', () => {
-    const commands = getCliWorkflowCommands();
-    const packageDir = path.resolve(__dirname, '..');
-    const expected = fs.readdirSync(path.join(packageDir, 'commands'))
-      .filter(f => f.endsWith('.md'))
-      .map(f => f.replace(/\.md$/, ''))
-      .sort();
-
-    expect(commands.sort()).toEqual(expected);
   });
 });
 
@@ -110,11 +84,6 @@ describe('hardcoded command count and copyFile warning', () => {
     // should NOT exist — warning should always fire
     const hasDebugGate = /else if \(process\.env\.DEBUG\)\s*\{[^}]*Source file not found/.test(forgeSource);
     expect(hasDebugGate).toBe(false);
-  });
-
-  test('bin/forge.js source uses canonical commands/ fallback', () => {
-    expect(forgeSource).toContain("path.join(packageDir, 'commands')");
-    expect(forgeSource).toContain("fs.existsSync(canonicalDir)");
   });
 });
 

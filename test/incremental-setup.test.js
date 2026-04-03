@@ -3,13 +3,10 @@ const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
 const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
-const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
 
 describe('Incremental setup with content-hash, agent detection, and --force flag', () => {
-  // Read forge.js and setup.js source for structural tests
+  // Read forge.js source once for all tests
   const forgeSource = fs.readFileSync(forgePath, 'utf-8');
-  // Setup functions were extracted from bin/forge.js to lib/commands/setup.js
-  const setupSource = fs.readFileSync(setupPath, 'utf-8');
 
   describe('--force flag parsing', () => {
     test('parseFlags initializes force: false in the flags object', () => {
@@ -27,65 +24,71 @@ describe('Incremental setup with content-hash, agent detection, and --force flag
 
   describe('agent auto-detection wiring', () => {
     test('detect-agent module is required', () => {
-      expect(setupSource).toContain("require('../detect-agent')");
+      expect(forgeSource).toContain("require('../lib/detect-agent')");
     });
 
     test('detectEnvironment is destructured from the require', () => {
-      expect(setupSource).toMatch(/detectEnvironment\b.*require/);
+      expect(forgeSource).toMatch(/detectEnvironment\b.*require\(['"]\.\.\/lib\/detect-agent['"]\)/);
     });
 
     test('detectEnvironment is called during setup flow', () => {
-      expect(setupSource).toContain('detectEnvironment(');
+      // Should be called somewhere in the interactive or quick setup
+      expect(forgeSource).toContain('detectEnvironment(');
     });
   });
 
   describe('content-hash wiring', () => {
     test('file-hash module is required', () => {
-      expect(setupSource).toContain("require('../file-hash')");
+      expect(forgeSource).toContain("require('../lib/file-hash')");
     });
 
     test('fileMatchesContent is destructured from the require', () => {
-      expect(setupSource).toMatch(/fileMatchesContent\b.*require/);
+      expect(forgeSource).toMatch(/fileMatchesContent\b.*require\(['"]\.\.\/lib\/file-hash['"]\)/);
     });
 
     test('fileMatchesContent is called in copyFile', () => {
-      const copyFileStart = setupSource.indexOf('function copyFile(');
-      const copyFileEnd = setupSource.indexOf('\nfunction ', copyFileStart + 1);
-      const copyFileBody = setupSource.slice(copyFileStart, copyFileEnd > copyFileStart ? copyFileEnd : undefined);
+      // Extract the copyFile function body (from "function copyFile" to next top-level function)
+      const copyFileStart = forgeSource.indexOf('function copyFile(');
+      const copyFileEnd = forgeSource.indexOf('\nfunction ', copyFileStart + 1);
+      const copyFileBody = forgeSource.slice(copyFileStart, copyFileEnd);
       expect(copyFileBody).toContain('fileMatchesContent');
     });
   });
 
   describe('action log wiring', () => {
     test('setup-action-log module is required', () => {
-      expect(setupSource).toContain("require('../setup-action-log')");
+      expect(forgeSource).toContain("require('../lib/setup-action-log')");
     });
 
     test('SetupActionLog is destructured from the require', () => {
-      expect(setupSource).toMatch(/SetupActionLog\b.*require/);
+      expect(forgeSource).toMatch(/SetupActionLog\b.*require\(['"]\.\.\/lib\/setup-action-log['"]\)/);
     });
 
     test('actionLog instance is created in a setup function', () => {
-      expect(setupSource).toContain('new SetupActionLog()');
+      expect(forgeSource).toContain('new SetupActionLog()');
     });
 
     test('actionLog.add is called to record file operations', () => {
-      expect(setupSource).toContain('actionLog.add(');
+      expect(forgeSource).toContain('actionLog.add(');
     });
   });
 
   describe('copyFile returns skip status for identical files', () => {
     test('copyFile function handles skipped status', () => {
-      const copyFileStart = setupSource.indexOf('function copyFile(');
-      const copyFileEnd = setupSource.indexOf('\nfunction ', copyFileStart + 1);
-      const copyFileBody = setupSource.slice(copyFileStart, copyFileEnd > copyFileStart ? copyFileEnd : undefined);
+      // The copyFile function should have a code path that returns a skip indicator
+      // when file content matches (unless --force)
+      const copyFileStart = forgeSource.indexOf('function copyFile(');
+      const copyFileEnd = forgeSource.indexOf('\nfunction ', copyFileStart + 1);
+      const copyFileBody = forgeSource.slice(copyFileStart, copyFileEnd);
       expect(copyFileBody).toContain('skipped');
     });
 
     test('copyFile respects force mode', () => {
-      const copyFileStart = setupSource.indexOf('function copyFile(');
-      const copyFileEnd = setupSource.indexOf('\nfunction ', copyFileStart + 1);
-      const copyFileBody = setupSource.slice(copyFileStart, copyFileEnd > copyFileStart ? copyFileEnd : undefined);
+      // The copyFile function should check force mode
+      const copyFileStart = forgeSource.indexOf('function copyFile(');
+      const copyFileEnd = forgeSource.indexOf('\nfunction ', copyFileStart + 1);
+      const copyFileBody = forgeSource.slice(copyFileStart, copyFileEnd);
+      // Should reference FORCE_MODE or forceMode
       expect(
         copyFileBody.includes('FORCE_MODE') || copyFileBody.includes('forceMode')
       ).toBe(true);

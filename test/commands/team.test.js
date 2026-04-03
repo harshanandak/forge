@@ -12,11 +12,9 @@ describe('forge team command', () => {
     expect(typeof handleTeam).toBe('function');
   });
 
-  test('team command is discoverable via registry', () => {
-    const { loadCommands } = require('../../lib/commands/_registry');
-    const commandsDir = path.join(__dirname, '..', '..', 'lib', 'commands');
-    const { commands } = loadCommands(commandsDir);
-    expect(commands.has('team')).toBe(true);
-    expect(typeof commands.get('team').handler).toBe('function');
+  test('bin/forge.js contains team command routing', () => {
+    const forgeJs = fs.readFileSync(path.join(__dirname, '..', '..', 'bin', 'forge.js'), 'utf8');
+    expect(forgeJs).toContain("'team'");
+    expect(forgeJs).toContain('handleTeam');
   });
 });

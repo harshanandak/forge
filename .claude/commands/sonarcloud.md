@@ -1,5 +1,8 @@
 ---
+name: SonarCloud Query
 description: Pull issues, metrics, quality gates, and analysis data from SonarCloud
+category: Code Quality
+tags: [sonarcloud, issues, metrics, quality]
 ---
 
 # SonarCloud Query Command

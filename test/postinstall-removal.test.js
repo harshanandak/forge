@@ -32,8 +32,8 @@ describe('first-run detection', () => {
   test('first-run check skips for setup command', () => {
     // The skip list should include 'setup'
     expect(forgeSource).toMatch(/setup/);
-    // Should have logic that skips the AGENTS.md check for setup (via !== exclusion)
-    expect(forgeSource).toMatch(/command\s*!==\s*['"]setup['"]/);
+    // Should have logic that skips the AGENTS.md check for setup
+    expect(forgeSource).toMatch(/command\s*===\s*['"]setup['"]/);
   });
 
   test('first-run check skips for help flags (--help, -h)', () => {

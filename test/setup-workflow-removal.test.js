@@ -8,58 +8,9 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-
-function collectWorkflowReferences(rootDir) {
-  const results = [];
-  const allowedExts = new Set(['.js', '.sh', '.md', '.json']);
-  const excludedPrefixes = [
-    '.git/',
-    '.worktrees/',
-    '.beads/',
-    'docs/plans/',
-    'docs/research/',
-    'node_modules/',
-    'test/',
-    'test-env/'
-  ];
-
-  const trackedFiles = execFileSync(
-    'git',
-    ['ls-files', '--cached', '--others', '--exclude-standard'],
-    { cwd: rootDir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-  )
-    .split(/\r?\n/)
-    .filter(Boolean);
-
-  for (const relativeFile of trackedFiles) {
-    const normalizedFile = relativeFile.replace(/\\/g, '/');
-    if (excludedPrefixes.some(prefix => normalizedFile.startsWith(prefix))) {
-      continue;
-    }
-
-    if (!allowedExts.has(path.extname(normalizedFile))) {
-      continue;
-    }
-
-    const fullPath = path.join(rootDir, normalizedFile);
-    const content = fs.readFileSync(fullPath, 'utf8');
-    if (!content.includes('WORKFLOW.md')) {
-      continue;
-    }
-
-    const lines = content.split(/\r?\n/);
-    lines.forEach((line, index) => {
-      if (line.includes('WORKFLOW.md')) {
-        results.push(`./${normalizedFile}:${index + 1}: ${line.trim()}`);
-      }
-    });
-  }
-
-  return results;
-}
 
 describe('docs/WORKFLOW.md removal', () => {
   test('docs/WORKFLOW.md file does not exist', () => {
@@ -85,7 +36,14 @@ describe('docs/WORKFLOW.md removal', () => {
   });
 
   test('no active source file contains docs/WORKFLOW.md as a live reference', () => {
-    const lines = collectWorkflowReferences(ROOT).filter(line => {
+    // Hardcoded grep command - no user input, safe from injection
+    const result = execSync(
+      'grep -rn "WORKFLOW\\.md" --include="*.js" --include="*.sh" --include="*.md" --include="*.json" --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=.git . || true',
+      { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
+    );
+
+    // Filter out allowed historical files
+    const lines = result.split('\n').filter(line => {
       if (!line.trim()) return false;
       // Allow historical/research/plan files
       if (line.startsWith('./docs/plans/')) return false;

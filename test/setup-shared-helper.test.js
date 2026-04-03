@@ -3,8 +3,8 @@ const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
 describe('executeSetup shared helper (forge-cpnj)', () => {
-  const setupPath = path.join(__dirname, '..', 'lib', 'commands', 'setup.js');
-  const content = fs.readFileSync(setupPath, 'utf-8');
+  const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+  const content = fs.readFileSync(forgePath, 'utf-8');
 
   test('executeSetup function exists', () => {
     expect(content).toContain('async function executeSetup(');
@@ -33,11 +33,11 @@ describe('executeSetup shared helper (forge-cpnj)', () => {
     expect(funcBody).not.toContain("agentKey !== 'claude'");
   });
 
-  test('executeSetup uses loadAndSetupCanonicalCommands when claude is in agents', () => {
+  test('executeSetup uses loadAndSetupClaudeCommands when claude is in agents', () => {
     const funcStart = content.indexOf('async function executeSetup(');
     expect(funcStart).toBeGreaterThan(-1);
     const funcBody = content.substring(funcStart, funcStart + 3000);
-    expect(funcBody).toContain('loadAndSetupCanonicalCommands');
+    expect(funcBody).toContain('loadAndSetupClaudeCommands');
   });
 
   test('executeSetup calls setupAgent for all agents without claude exclusion', () => {

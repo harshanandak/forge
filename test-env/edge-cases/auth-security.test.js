@@ -31,8 +31,8 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
         'utf-8'
       );
       assert.ok(
-        content.includes('process.exit(') && content.includes('return 1'),
-        'should exit with non-zero code to block push (returns 1 from check function, guard calls process.exit)'
+        content.includes('process.exit(1)'),
+        'should exit with code 1 to block push'
       );
     });
   });

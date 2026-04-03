@@ -1,32 +1,11 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const forgePath = path.join(__dirname, '..', '..', 'bin', 'forge.js');
-const setupPath = path.join(__dirname, '..', '..', 'lib', 'commands', 'setup.js');
 
 describe('bin/forge.js structure', () => {
   const source = fs.readFileSync(forgePath, 'utf8');
-
-  test('should wrap main() in IIFE with try-catch', () => {
-    expect(source.includes('(async () => {')).toBeTruthy();
-    expect(source.includes('await main()')).toBeTruthy();
-  });
-
-  test('should use require.main guard', () => {
-    expect(source.includes('require.main === module')).toBeTruthy();
-  });
-
-  test('should dispatch setup via registry', () => {
-    // Setup is now auto-discovered via lib/commands/setup.js
-    // bin/forge.js should NOT have the inline setup dispatch anymore
-    expect(source.includes("registry.commands.has(command)")).toBeTruthy();
-    expect(source.includes("require('../lib/commands/setup')")).toBeTruthy();
-  });
-});
-
-describe('lib/commands/setup.js structure', () => {
-  const source = fs.readFileSync(setupPath, 'utf8');
 
   test('should export helper functions for cognitive complexity', () => {
     // Verify extracted helpers exist as standalone functions
@@ -35,7 +14,7 @@ describe('lib/commands/setup.js structure', () => {
       'saveWorkflowTypeOverride',
       'displayExistingInstallation',
       'promptForOverwriteDecisions',
-      'loadAndSetupCanonicalCommands',
+      'loadAndSetupClaudeCommands',
       'setupSelectedAgents',
       'handleExternalServicesStep',
     ];
@@ -51,7 +30,7 @@ describe('lib/commands/setup.js structure', () => {
       'handleFlagsOverride(flags',
       'displayExistingInstallation(projectStatus)',
       'promptForOverwriteDecisions(question',
-      'loadAndSetupCanonicalCommands(selectedAgents',
+      'loadAndSetupClaudeCommands(selectedAgents',
       'setupSelectedAgents(selectedAgents',
       'handleExternalServicesStep(flags',
     ];
@@ -61,10 +40,22 @@ describe('lib/commands/setup.js structure', () => {
     }
   });
 
+  test('should wrap main() in IIFE with try-catch', () => {
+    expect(source.includes('(async () => {')).toBeTruthy();
+    expect(source.includes('await main()')).toBeTruthy();
+  });
+
+  test('should use require.main guard', () => {
+    expect(source.includes('require.main === module')).toBeTruthy();
+  });
+
   test('should have Phase 7A helper functions for complexity reduction', () => {
     // Helpers extracted to reduce cognitive complexity in Phase 7A
     const phase7aHelpers = [
       'installViaBunx',
+      'detectFromLockFile',
+      'detectFromCommand',
+      'validateCommonSecurity',
       'getSkillsInstallArgs',
       'installSkillsWithMethod',
     ];
@@ -94,7 +85,7 @@ describe('lib/commands/setup.js structure', () => {
     const quickSetupDelegations = [
       'autoInstallLefthook()',
       'autoSetupToolsInQuickMode()',
-      'loadAndSetupCanonicalCommands(selectedAgents)',
+      'loadAndSetupClaudeCommands(selectedAgents)',
       'setupSelectedAgents(selectedAgents, claudeCommands)',
       'configureDefaultExternalServices(skipExternal)',
     ];
@@ -120,5 +111,11 @@ describe('lib/commands/setup.js structure', () => {
     // Verify installBeadsWithMethod and installSkillsWithMethod use the shared helper
     expect(source.includes("installViaBunx('@beads/bd'")).toBeTruthy();
     expect(source.includes("installViaBunx('@forge/skills'")).toBeTruthy();
+  });
+
+  test('should use data-driven detection in detectPackageManager', () => {
+    // Verify detectPackageManager uses helper functions instead of repeated if-else
+    expect(source.includes("detectFromLockFile('bun'")).toBeTruthy();
+    expect(source.includes("detectFromCommand('npm'")).toBeTruthy();
   });
 });

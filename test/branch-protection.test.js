@@ -112,14 +112,12 @@ describe('scripts/branch-protection.js', () => {
   describe('Exit codes', () => {
     test('should exit with code 1 when blocking push', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
-      // The function returns exit codes; the guard calls process.exit()
-      expect(content.includes('return 1') || content.includes('process.exit(1)') || content.includes('exit(1)')).toBeTruthy();
+      expect(content.includes('process.exit(1)') || content.includes('exit(1)')).toBeTruthy();
     });
 
     test('should exit with code 0 when allowing push', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
-      // The function returns exit codes; the guard calls process.exit()
-      expect(content.includes('return 0') || content.includes('process.exit(0)') || content.includes('exit(0)')).toBeTruthy();
+      expect(content.includes('process.exit(0)') || content.includes('exit(0)') || !content.includes('process.exit')).toBeTruthy();
     });
   });
 

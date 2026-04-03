@@ -23,15 +23,6 @@ const { syncCommands } = require('../../scripts/sync-commands.js');
  */
 function createTempRepo(commands, plugins) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-check-test-'));
-
-  // Create canonical commands/ directory
-  const canonDir = path.join(tmpDir, 'commands');
-  fs.mkdirSync(canonDir, { recursive: true });
-  for (const [name, content] of Object.entries(commands)) {
-    fs.writeFileSync(path.join(canonDir, `${name}.md`), content);
-  }
-
-  // Also create .claude/commands/ for backward compat in tests
   const cmdDir = path.join(tmpDir, '.claude', 'commands');
   fs.mkdirSync(cmdDir, { recursive: true });
   for (const [name, content] of Object.entries(commands)) {
@@ -145,7 +136,6 @@ describe('checkAgents — sync check', () => {
       // Sync both commands
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Delete 'dev' from canonical source
-      fs.unlinkSync(path.join(tmpDir, 'commands', 'dev.md'));
       fs.unlinkSync(path.join(tmpDir, '.claude', 'commands', 'dev.md'));
 
       const result = checkAgents(tmpDir);

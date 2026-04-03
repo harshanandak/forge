@@ -75,38 +75,32 @@ function getWorktreesDir() {
 /**
  * Create a git worktree with a unique name for eval isolation.
  *
- * Uses --detach (no branch) to prevent commits inside the eval worktree
- * from leaking onto feature branches. Previously used `-b` which created
- * a named branch sharing the git object store — tests that ran
- * `git init` + `git commit` inside eval worktrees leaked rogue "initial commit"
- * entries that corrupted PRs (deleting 139K+ lines). See forge-8drs.
- *
  * @returns {Promise<{ path: string, branch: string }>}
  */
 async function createEvalWorktree() {
   const timestamp = Date.now();
   const pid = process.pid;
   const name = `eval-${timestamp}-${pid}`;
+  const branch = `eval-${timestamp}-${pid}`;
   const worktreesDir = getWorktreesDir();
   const wtPath = path.join(worktreesDir, name);
 
-  // CRITICAL: Use --detach to avoid creating a named branch.
-  // A detached HEAD cannot receive commits that leak to other branches.
-  execSync(`git worktree add --detach "${wtPath}" HEAD`, {
+  // Create the worktree with a detached HEAD first, then create branch
+  execSync(`git worktree add -b "${branch}" "${wtPath}" HEAD`, {
     cwd: getRepoRoot(),
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  activeEvalWorktrees.set(wtPath, name);
-  return { path: wtPath, branch: name };
+  activeEvalWorktrees.set(wtPath, branch);
+  return { path: wtPath, branch };
 }
 
 // ── destroyEvalWorktree ──────────────────────────────────────────────
 
 /**
- * Remove a worktree and its temporary branch (if any).
- * Succeeds even if the worktree is dirty or in detached HEAD state.
+ * Remove a worktree and its temporary branch.
+ * Succeeds even if the worktree is dirty.
  *
  * @param {string} worktreePath — absolute path to the worktree
  * @returns {Promise<void>}

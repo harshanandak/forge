@@ -44,7 +44,7 @@ function checkAgents(repoRoot) {
   }
 
   if (syncResult.empty) {
-    errors.push('No command files found in commands/ — cannot verify sync.');
+    errors.push('No command files found in .claude/commands/ — cannot verify sync.');
     return { errors, warnings };
   } else {
     if (syncResult.manifestMissing) {
