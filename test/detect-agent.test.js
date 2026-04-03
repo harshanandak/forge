@@ -7,6 +7,7 @@ const {
   detectActiveAgent,
   detectConfiguredAgents,
   detectEnvironment,
+  normalizeAgentId,
 } = require('../lib/detect-agent');
 
 describe('detect-agent', () => {
@@ -155,14 +156,13 @@ describe('detect-agent', () => {
       });
 
       test('COPILOT_MODEL detects copilot', () => {
-        const result = detectActiveAgent({ COPILOT_MODEL: '1' });
+        const result = detectActiveAgent({ COPILOT_MODEL: 'gpt-5' });
         expect(result).toEqual({
           name: 'copilot',
           source: 'env',
           confidence: 'high',
         });
       });
-
     });
 
     describe('Layer 3: VSCode path parsing', () => {
@@ -272,6 +272,18 @@ describe('detect-agent', () => {
       expect(agents).toContain('roo');
     });
 
+    test('.roorules detects roo', async () => {
+      await fs.promises.writeFile(path.join(tempDir, '.roorules'), '');
+      const agents = detectConfiguredAgents(tempDir);
+      expect(agents).toContain('roo');
+    });
+
+    test('.kilo.md detects kilocode', async () => {
+      await fs.promises.writeFile(path.join(tempDir, '.kilo.md'), '');
+      const agents = detectConfiguredAgents(tempDir);
+      expect(agents).toContain('kilocode');
+    });
+
     test('.kilocode detects kilocode', async () => {
       await fs.promises.writeFile(path.join(tempDir, '.kilocode'), '');
       const agents = detectConfiguredAgents(tempDir);
@@ -301,7 +313,7 @@ describe('detect-agent', () => {
       await fs.promises.writeFile(path.join(tempDir, '.cursorrules'), '');
       await fs.promises.writeFile(path.join(tempDir, '.clinerules'), '');
       await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
-      await fs.promises.writeFile(path.join(tempDir, 'codex.md'), '');
+      await fs.promises.mkdir(path.join(tempDir, '.codex'), { recursive: true });
 
       const agents = detectConfiguredAgents(tempDir);
       expect(agents).toContain('claude');
@@ -369,6 +381,23 @@ describe('detect-agent', () => {
         VSCODE_NLS_CONFIG: '{"appRoot":"/opt/Windsurf/resources/app"}',
       });
       expect(result.activeAgent).toBeNull();
+    });
+  });
+
+  describe('normalizeAgentId', () => {
+    test('maps legacy aliases to canonical ids', () => {
+      expect(normalizeAgentId('github-copilot')).toBe('copilot');
+      expect(normalizeAgentId('roo-code')).toBe('roo');
+      expect(normalizeAgentId('kilo')).toBe('kilocode');
+    });
+
+    test('preserves canonical ids', () => {
+      expect(normalizeAgentId('codex')).toBe('codex');
+      expect(normalizeAgentId('cursor')).toBe('cursor');
+    });
+
+    test('preserves unknown custom ids verbatim', () => {
+      expect(normalizeAgentId('My-Custom-Agent')).toBe('My-Custom-Agent');
     });
   });
 });
