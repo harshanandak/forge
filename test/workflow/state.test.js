@@ -119,7 +119,7 @@ describe('workflow state layer', () => {
 		});
 
 		expect(payload).toMatchObject({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			currentStage: 'dev',
 			completedStages: ['plan'],
 			skippedStages: [],
@@ -165,6 +165,7 @@ describe('workflow state layer', () => {
 
 	test('readWorkflowState preserves legacy standard workflows that reach verify', () => {
 		const result = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
 			currentStage: 'verify',
 			previousStage: 'premerge',
 			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge'],
@@ -180,6 +181,26 @@ describe('workflow state layer', () => {
 
 		expect(result.currentStage).toBe('verify');
 		expect(result.workflowDecisions.classification).toBe('standard');
+	});
+
+	test('readWorkflowState preserves schemaVersion 1 standard workflows with verify in completed stages', () => {
+		const result = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'verify',
+			previousStage: 'premerge',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy completed verify state',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.currentStage).toBe('verify');
+		expect(result.completedStages).toContain('verify');
 	});
 
 	test('readWorkflowState raises a descriptive error for malformed JSON', () => {
