@@ -197,7 +197,9 @@ describe('E2E: Full setup workflow', () => {
       expect(fs.existsSync(path.join(tempDir, 'AGENTS.md'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, '.github', 'copilot-instructions.md'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, '.cursor', 'rules', 'forge-workflow.mdc'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, '.kilo.md'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.kilocode', 'rules', 'workflow.md'))).toBeTruthy();
+      expect(fs.existsSync(path.join(tempDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, 'opencode.json'))).toBeTruthy();
     });
   });
@@ -361,7 +363,9 @@ describe('E2E: Full setup workflow', () => {
         '.cursor/rules/tdd-enforcement.mdc',
         '.cursor/rules/security-scanning.mdc',
         '.cursor/rules/documentation.mdc',
-        '.kilo.md',
+        '.kilocode/workflows/forge-workflow.md',
+        '.kilocode/rules/workflow.md',
+        '.kilocode/skills/forge-workflow/SKILL.md',
         'opencode.json',
         'docs/ARCHITECTURE.md',
         'docs/CONFIGURATION.md',

@@ -1,8 +1,8 @@
 /**
- * Tests for agent-parity gaps — verifies that all agents get equal treatment.
+ * Tests for agent command parity and explicit exceptions.
  *
- * Ensures that sync-commands.js generates files for ALL agents (no skip),
- * and that the canonical source is commands/ (not .claude/commands/).
+ * The canonical workflow source remains `.claude/commands/`, with Claude Code
+ * intentionally skipped during sync because it is the source adapter.
  */
 
 const fs = require('node:fs');
@@ -15,39 +15,35 @@ const clinePlugin = require('../lib/agents/cline.plugin.json');
 const rooPlugin = require('../lib/agents/roo.plugin.json');
 
 describe('agent parity gaps', () => {
-  test('no agent adapter has skip: true', () => {
-    for (const [_name, adapter] of Object.entries(AGENT_ADAPTERS)) {
-      expect(adapter.skip).not.toBe(true);
-    }
-  });
-
-  test('claude-code is a normal adapter (not skipped)', () => {
+  test('claude-code remains the canonical adapter and is intentionally skipped', () => {
     const adapter = AGENT_ADAPTERS['claude-code'];
     expect(adapter).toBeDefined();
-    expect(adapter.skip).toBeUndefined();
+    expect(adapter.skip).toBe(true);
     expect(typeof adapter.transformFrontmatter).toBe('function');
   });
 
-  test('sync generates files for claude-code agent', () => {
+  test('sync does not generate files for the canonical claude-code adapter', () => {
     const result = syncCommands({ dryRun: true, check: false, repoRoot });
-    const claudeEntries = result.planned.filter(e => e.agent === 'claude-code');
-    expect(claudeEntries.length).toBeGreaterThan(0);
+    const claudeEntries = result.planned.filter((entry) => entry.agent === 'claude-code');
+    expect(claudeEntries).toEqual([]);
   });
 
-  test('sync generates files for ALL registered agents', () => {
+  test('sync generates files for every non-skipped registered agent', () => {
     const result = syncCommands({ dryRun: true, check: false, repoRoot });
-    const agentsWithEntries = new Set(result.planned.map(e => e.agent));
+    const agentsWithEntries = new Set(result.planned.map((entry) => entry.agent));
     for (const agentName of Object.keys(AGENT_ADAPTERS)) {
-      expect(agentsWithEntries.has(agentName)).toBe(true);
+      if (AGENT_ADAPTERS[agentName].skip) {
+        expect(agentsWithEntries.has(agentName)).toBe(false);
+      } else {
+        expect(agentsWithEntries.has(agentName)).toBe(true);
+      }
     }
   });
 
-  test('canonical source is commands/ not .claude/commands/', () => {
-    // Verify by checking that syncCommands reads from commands/
-    const commandsDir = path.join(repoRoot, 'commands');
+  test('canonical source is .claude/commands/', () => {
+    const commandsDir = path.join(repoRoot, '.claude', 'commands');
     expect(fs.existsSync(commandsDir)).toBe(true);
 
-    // The sync should work with commands/ present
     const result = syncCommands({ dryRun: true, check: false, repoRoot });
     expect(result.planned.length).toBeGreaterThan(0);
   });
@@ -67,7 +63,7 @@ describe('agent parity gaps', () => {
     expect(typeof contentHash).toBe('function');
     const hash = contentHash('test content');
     expect(typeof hash).toBe('string');
-    expect(hash.length).toBe(64); // SHA-256 hex
+    expect(hash.length).toBe(64);
   });
 
   test('Roo and Cline are explicitly downgraded until native parity is proven', () => {

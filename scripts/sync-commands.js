@@ -312,6 +312,25 @@ function contentHash(content) {
 }
 
 /**
+ * Write the sync manifest for generated entries without rewriting command files.
+ *
+ * @param {string} repoRoot
+ * @param {SyncEntry[]} entries
+ */
+function writeSyncManifest(repoRoot, entries) {
+  const manifestDir = path.join(repoRoot, '.forge');
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestData = {
+    generatedAt: new Date().toISOString(),
+    files: entries.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
+  };
+  fs.writeFileSync(
+    path.join(manifestDir, 'sync-manifest.json'),
+    JSON.stringify(manifestData, null, 2) + '\n'
+  );
+}
+
+/**
  * @typedef {Object} SyncEntry
  * @property {string} agent - Agent slug
  * @property {string} dir - Relative directory path
@@ -475,16 +494,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
   // Write sync manifest — records every file generated so stale detection
   // can identify orphaned files without false-flagging custom files.
-  const manifestDir = path.join(repoRoot, '.forge');
-  fs.mkdirSync(manifestDir, { recursive: true });
-  const manifestData = {
-    generatedAt: new Date().toISOString(),
-    files: written.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
-  };
-  fs.writeFileSync(
-    path.join(manifestDir, 'sync-manifest.json'),
-    JSON.stringify(manifestData, null, 2) + '\n'
-  );
+  writeSyncManifest(repoRoot, written);
 
   return { written, overwritten };
 }
