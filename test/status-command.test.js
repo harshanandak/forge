@@ -64,6 +64,57 @@ describe('status command authoritative workflow state', () => {
     expect(result.output).toContain('Next after this: /validate');
   });
 
+  test('parseStatusInputs supports --flag=value forms', () => {
+    const workflowState = JSON.stringify(createWorkflowState('validate'));
+    const inputs = statusCommand.parseStatusInputs([
+      '--issue-id=forge-test',
+      `--workflow-state=${workflowState}`,
+      '--bd-comments=WorkflowState: {}',
+    ], {});
+
+    expect(inputs.issueId).toBe('forge-test');
+    expect(inputs.workflowState).toBe(workflowState);
+    expect(inputs.bdComments).toBe('WorkflowState: {}');
+  });
+
+  test('handler accepts --workflow-state=value syntax', async () => {
+    const workflowState = JSON.stringify(createWorkflowState('validate'));
+
+    const result = await statusCommand.handler(
+      [`--workflow-state=${workflowState}`],
+      {},
+      process.cwd()
+    );
+
+    expect(result.authoritative).toBe(true);
+    expect(result.stageId).toBe('validate');
+  });
+
+  test('handler preserves legacy standard verify as the next allowed stage from premerge', async () => {
+    const workflowState = JSON.stringify({
+      currentStage: 'premerge',
+      completedStages: ['plan', 'dev', 'validate', 'ship', 'review'],
+      skippedStages: [],
+      workflowDecisions: {
+        classification: 'standard',
+        reason: 'legacy standard workflow',
+        userOverride: false,
+        overrides: [],
+      },
+      parallelTracks: [],
+    });
+
+    const result = await statusCommand.handler(
+      [`--workflow-state=${workflowState}`],
+      {},
+      process.cwd()
+    );
+
+    expect(result.authoritative).toBe(true);
+    expect(result.nextCommand).toBe('verify');
+    expect(result.nextStages).toEqual(['verify']);
+  });
+
   test('handler does not fall back to heuristic stage detection when state is missing', async () => {
     const result = await statusCommand.handler([], {}, process.cwd());
     expect(result.missingWorkflowState).toBe(true);

@@ -1,6 +1,7 @@
 const { describe, test, expect } = require('bun:test');
 
 const { enforceStageEntry, parseOverride } = require('../../lib/workflow/enforce-stage');
+const { readWorkflowState } = require('../../lib/workflow/state');
 
 function createWorkflowState(currentStage = 'plan', classification = 'standard') {
   return {
@@ -113,5 +114,31 @@ describe('workflow enforce-stage', () => {
       fromStage: 'plan',
       toStage: 'ship'
     }));
+  });
+
+  test('enforceStageEntry allows legacy standard workflows to enter verify from premerge', async () => {
+    const legacyStandardState = readWorkflowState(JSON.stringify({
+      currentStage: 'premerge',
+      completedStages: ['plan', 'dev', 'validate', 'ship', 'review'],
+      skippedStages: [],
+      workflowDecisions: {
+        classification: 'standard',
+        reason: 'legacy standard workflow',
+        userOverride: false,
+        overrides: []
+      },
+      parallelTracks: []
+    }));
+
+    const result = await enforceStageEntry({
+      commandName: 'verify',
+      flags: {},
+      projectRoot: process.cwd(),
+      workflowState: legacyStandardState,
+      health: { healthy: true, hardStop: false, diagnostics: [] }
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.stage).toBe('verify');
   });
 });

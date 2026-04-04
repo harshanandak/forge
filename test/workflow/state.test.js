@@ -146,6 +146,46 @@ describe('workflow state layer', () => {
 		expect(readWorkflowState(writeWorkflowState(payload))).toEqual(payload);
 	});
 
+	test('readWorkflowState backfills missing legacy classification to standard', () => {
+		const result = readWorkflowState(JSON.stringify({
+			currentStage: 'dev',
+			completedStages: ['plan'],
+			skippedStages: [],
+			workflowDecisions: {
+				reason: 'legacy state',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.workflowDecisions.classification).toBe('standard');
+		expect(result.currentStage).toBe('dev');
+	});
+
+	test('readWorkflowState preserves legacy standard workflows that reach verify', () => {
+		const result = readWorkflowState(JSON.stringify({
+			currentStage: 'verify',
+			previousStage: 'premerge',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy standard workflow',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.currentStage).toBe('verify');
+		expect(result.workflowDecisions.classification).toBe('standard');
+	});
+
+	test('readWorkflowState raises a descriptive error for malformed JSON', () => {
+		expect(() => readWorkflowState('{"currentStage":"dev"')).toThrow(/Failed to parse workflow state/i);
+	});
+
 	test('requires explicit structured overrides before persistence', () => {
 		expect(() =>
 			serializeWorkflowState({
