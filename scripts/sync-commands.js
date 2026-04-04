@@ -296,6 +296,7 @@ function adaptForAgent(agentName, frontmatter, body, commandName) {
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { listCodexSkillEntries } = require('../lib/codex-skills');
 
 /**
  * Compute a content hash for change detection.
@@ -568,4 +569,13 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseFrontmatter, buildFile, AGENT_ADAPTERS, adaptForAgent, syncCommands };
+module.exports = {
+  parseFrontmatter,
+  buildFile,
+  AGENT_ADAPTERS,
+  adaptForAgent,
+  listCodexSkillEntries,
+  syncCommands,
+  contentHash,
+  writeSyncManifest,
+};

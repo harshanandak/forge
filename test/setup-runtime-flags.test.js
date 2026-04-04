@@ -154,6 +154,20 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
   });
 
+  test('setup scaffolds Codex stage skills under .codex/skills/<stage>/SKILL.md', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'dev', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'SKILL.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('`forge plan`');
+    expect(fs.readFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('# Plan');
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
+  });
+
   test('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
     expect(() => setupCommand.ensureWorkflowShellPolicy(['claude'], {
       platform: 'win32',

@@ -7,7 +7,23 @@
 
 const path = require('path');
 const fs = require('fs');
-const { describe, test, expect } = require('bun:test');
+const os = require('os');
+const { afterEach, describe, test, expect } = require('bun:test');
+const { listCodexSkillEntries } = require('../lib/codex-skills');
+
+const tempDirs = [];
+
+function makeTempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-codex-skills-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+});
 
 // We will import getWorkflowCommands from bin/forge.js once it is exported
 let getWorkflowCommands;
@@ -124,6 +140,49 @@ describe('agent count consistency', () => {
         expect(Number(match[1])).toBe(actualCount);
       }
     }
+  });
+});
+
+describe('Codex plugin metadata', () => {
+  const codexPlugin = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '..', 'lib', 'agents', 'codex.plugin.json'), 'utf-8')
+  );
+
+  test('declares Codex as a skills-backed adapter', () => {
+    expect(codexPlugin.capabilities.skills).toBe(true);
+    expect(codexPlugin.setup.createSkill).toBe(true);
+  });
+
+  test('keeps the Codex skill directory aligned with stage skills', () => {
+    expect(codexPlugin.directories.skills).toBe('.codex/skills');
+  });
+});
+
+describe('Codex skill entry generation', () => {
+  test('returns an empty list when canonical commands are missing', () => {
+    const tmpDir = makeTempDir();
+
+    expect(listCodexSkillEntries(tmpDir)).toEqual([]);
+  });
+
+  test('builds per-stage Codex skills from canonical commands', () => {
+    const tmpDir = makeTempDir();
+    const commandsDir = path.join(tmpDir, 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(commandsDir, 'plan.md'),
+      '---\ndescription: Plan workflow\nmode: code\n---\n# Plan\nUse Forge runtime.\n'
+    );
+
+    const entries = listCodexSkillEntries(tmpDir);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      commandName: 'plan',
+      dir: '.codex/skills/plan/',
+      filename: 'SKILL.md',
+      content: '---\ndescription: Plan workflow\n---\n> Forge stage adapter\n\nBefore executing this workflow, invoke `forge plan` so Forge can enforce stage order, runtime prerequisites, and override rules.\nIf Forge blocks the stage or asks for an explicit override payload, stop and resolve that first.\n\n# Plan\nUse Forge runtime.\n',
+    });
   });
 });
 
