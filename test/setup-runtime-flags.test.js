@@ -85,6 +85,11 @@ async function runSetup(args, cwd, env = {}) {
 
 function writeExecutable(filePath, content) {
   fs.writeFileSync(filePath, content, { mode: 0o755 });
+  if (process.platform === 'win32' && path.extname(filePath) === '') {
+    const base = path.basename(filePath);
+    const cmdPath = `${filePath}.cmd`;
+    fs.writeFileSync(cmdPath, `@echo off\r\nbash \"%~dp0\\${base}\" %*\r\n`, { mode: 0o755 });
+  }
 }
 
 afterEach(() => {
@@ -191,6 +196,21 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'rules', 'workflow.md'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, '.kilo.md'))).toBe(false);
+  });
+
+  test('checkPrerequisites allows missing gh during local scaffold-only setup', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        if (command === 'git --version') {
+          return 'git version 2.42.0';
+        }
+        return '';
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain('gh (GitHub CLI) - Install from https://cli.github.com (required later for GitHub-integrated workflow steps)');
   });
 
   test('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {

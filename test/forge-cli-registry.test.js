@@ -59,6 +59,22 @@ describe('CLI Registry Integration', () => {
       // worktree command with no subcommand should show usage or error
       expect(combined).toMatch(/worktree|usage|subcommand|create|remove/i);
     });
+
+    test('forge status prints successful command output', () => {
+      const workflowState = JSON.stringify({
+        id: 'bd-test',
+        currentStage: 'validate',
+        completedStages: ['plan', 'dev'],
+        skippedStages: [],
+        workflowDecisions: { classification: 'standard' },
+      });
+
+      const { stdout, status } = runForge(['status', '--workflow-state', workflowState]);
+
+      expect(status).toBe(0);
+      expect(stdout).toContain('Current Stage: validate - Validation');
+      expect(stdout).toContain('Source: authoritative workflow state');
+    });
   });
 
   describe('help includes registry commands', () => {

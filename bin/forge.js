@@ -4179,6 +4179,9 @@ async function main() {
         console.error(result.error || result.message || 'Command failed');
         process.exit(1);
       }
+      if (result && typeof result.output === 'string' && result.output.length > 0) {
+        process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);
+      }
     } catch (err) {
       console.error(`Error running '${command}':`, err.message);
       process.exit(1);
