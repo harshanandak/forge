@@ -15,7 +15,7 @@ function makeTempDir() {
 }
 
 async function runSetup(args, cwd, env = {}) {
-  const originalEnv = { INIT_CWD: process.env.INIT_CWD };
+  const originalEnv = { INIT_CWD: process.env.INIT_CWD, PATH: process.env.PATH, Path: process.env.Path };
   const originalLog = console.log;
   const originalWarn = console.warn;
   const originalError = console.error;
@@ -23,12 +23,20 @@ async function runSetup(args, cwd, env = {}) {
   const originalStderrWrite = process.stderr.write.bind(process.stderr);
   const stdout = [];
   const stderr = [];
+  const mockBinDir = path.join(cwd, '.mock-bin');
+
+  fs.mkdirSync(mockBinDir, { recursive: true });
+  writeExecutable(path.join(mockBinDir, 'bd'), '#!/usr/bin/env bash\necho \"bd 0.49.1\"\n');
+  writeExecutable(path.join(mockBinDir, 'gh'), '#!/usr/bin/env bash\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  echo \"Logged in\"\n  exit 0\nfi\necho \"gh version 2.81.0\"\n');
+  writeExecutable(path.join(mockBinDir, 'jq'), '#!/usr/bin/env bash\necho \"jq-1.8.1\"\n');
 
   for (const [key, value] of Object.entries(env)) {
     originalEnv[key] = process.env[key];
     process.env[key] = value;
   }
   process.env.INIT_CWD = cwd;
+  process.env.PATH = `${mockBinDir}${path.delimiter}${originalEnv.PATH || ''}`;
+  process.env.Path = process.env.PATH;
 
   console.log = (...parts) => stdout.push(parts.join(' '));
   console.warn = (...parts) => stderr.push(parts.join(' '));
