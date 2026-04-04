@@ -234,6 +234,10 @@ describe('GitHub Copilot config generation', () => {
     expect(fs.existsSync(testingPath)).toBeTruthy();
     expect(fs.existsSync(redPromptPath)).toBeTruthy();
     expect(fs.existsSync(greenPromptPath)).toBeTruthy();
+
+    const rootConfigContent = await fs.promises.readFile(rootConfigPath, 'utf-8');
+    expect(rootConfigContent.startsWith('<!-- This file is a copy of AGENTS.md.')).toBeFalsy();
+    expect(rootConfigContent.includes('GitHub Copilot')).toBeTruthy();
   });
 
   test('should declare Copilot parity against native instructions and prompts', () => {

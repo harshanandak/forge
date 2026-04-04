@@ -135,6 +135,10 @@ describe('AGENTS.md generation', () => {
     expect(fs.existsSync(opencodeJsonPath)).toBeTruthy();
     expect(fs.existsSync(planReviewPath)).toBeTruthy();
     expect(fs.existsSync(tddBuildPath)).toBeTruthy();
+
+    const opencodeJson = JSON.parse(await fs.promises.readFile(opencodeJsonPath, 'utf-8'));
+    expect(opencodeJson.$schema).toBe('https://opencode.ai/config.json');
+    expect(opencodeJson.agent).toBeTruthy();
   });
 
   test('should declare OpenCode parity against native config and agents', () => {
