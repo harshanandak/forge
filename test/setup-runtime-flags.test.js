@@ -3,6 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { afterEach, describe, expect, test } = require('bun:test');
 const setupCommand = require('../lib/commands/setup');
+const { checkLefthookStatus } = require('../lib/lefthook-check');
 const { detectHusky } = require('../lib/husky-migration');
 
 const tempDirs = [];
@@ -241,8 +242,8 @@ exit 1
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Installing lefthook dependencies (binary missing)');
+    expect(checkLefthookStatus(tmpDir).binaryAvailable).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook.cmd'))).toBe(true);
   });
 
   test('detectHusky resolves worktree gitdir pointer files when checking hooksPath', () => {
