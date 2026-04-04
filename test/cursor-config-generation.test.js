@@ -5,7 +5,7 @@ const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
-const { generateCursorConfig } = require('../lib/agents-config');
+const { generateCursorConfig, generateKiloConfig } = require('../lib/agents-config');
 
 describe('Cursor config generation', () => {
   let tempDir;
@@ -205,5 +205,24 @@ describe('Cursor config generation', () => {
 
     // Should mention TypeScript or bun (detected from package.json)
     expect(content.includes('TypeScript') || content.includes('bun')).toBeTruthy();
+  });
+
+  test('should create Kilo native .kilocode surfaces instead of legacy .kilo.md', async () => {
+    await generateKiloConfig(tempDir);
+
+    const workflowPath = path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md');
+    const rulesPath = path.join(tempDir, '.kilocode', 'rules', 'workflow.md');
+    const skillPath = path.join(tempDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md');
+    const legacyPath = path.join(tempDir, '.kilo.md');
+
+    expect(fs.existsSync(workflowPath)).toBeTruthy();
+    expect(fs.existsSync(rulesPath)).toBeTruthy();
+    expect(fs.existsSync(skillPath)).toBeTruthy();
+    expect(fs.existsSync(legacyPath)).toBeFalsy();
+
+    const workflowContent = await fs.promises.readFile(workflowPath, 'utf-8');
+    expect(workflowContent).toContain('/plan');
+    expect(workflowContent).toContain('/validate');
+    expect(workflowContent).toContain('Forge 7-Stage TDD Workflow');
   });
 });

@@ -52,24 +52,33 @@ describe('Agent detection', () => {
     expect(agents.includes('copilot')).toBeTruthy();
   });
 
-  test('should detect KiloCode when .kilo.md exists', async () => {
-    // Create .kilo.md file
-    await fs.promises.writeFile(
-      path.join(tempDir, '.kilo.md'),
-      '# Kilo instructions'
-    );
+  test('should detect KiloCode when current .kilocode workflows exist', async () => {
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'workflows'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'rules'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'skills', 'forge-workflow'), { recursive: true });
 
     const agents = await detectInstalledAgents(tempDir);
 
     expect(agents.includes('kilocode')).toBeTruthy();
   });
 
-  test('should detect KiloCode when .kilocode exists', async () => {
+  test('should not rely on legacy .kilo.md alone for KiloCode detection', async () => {
+    await fs.promises.writeFile(
+      path.join(tempDir, '.kilo.md'),
+      '# legacy Kilo instructions'
+    );
+
+    const agents = await detectInstalledAgents(tempDir);
+
+    expect(agents.includes('kilocode')).toBeFalsy();
+  });
+
+  test('should not detect KiloCode from a non-directory .kilocode path', async () => {
     await fs.promises.writeFile(path.join(tempDir, '.kilocode'), '');
 
     const agents = await detectInstalledAgents(tempDir);
 
-    expect(agents.includes('kilocode')).toBeTruthy();
+    expect(agents.includes('kilocode')).toBe(false);
   });
 
   test('should detect OpenCode when opencode.json exists', async () => {
@@ -116,6 +125,9 @@ describe('Agent detection', () => {
     await fs.promises.writeFile(path.join(tempDir, '.clinerules'), '');
     await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
     await fs.promises.mkdir(path.join(tempDir, '.codex'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'workflows'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'rules'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'skills', 'forge-workflow'), { recursive: true });
 
     const agents = await detectInstalledAgents(tempDir);
 
@@ -145,7 +157,9 @@ describe('Agent detection', () => {
       path.join(tempDir, '.github', 'copilot-instructions.md'),
       '# Copilot'
     );
-    await fs.promises.writeFile(path.join(tempDir, '.kilo.md'), '# Kilo');
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'workflows'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'rules'), { recursive: true });
+    await fs.promises.mkdir(path.join(tempDir, '.kilocode', 'skills', 'forge-workflow'), { recursive: true });
 
     const agents = await detectInstalledAgents(tempDir);
 

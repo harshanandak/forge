@@ -2,7 +2,7 @@
   "id": "kilocode",
   "name": "Kilo Code",
   "version": "1.0.0",
-  "description": "VS Code extension",
+  "description": "VS Code extension with native workflows, rules, and skills",
   "homepage": "https://marketplace.visualstudio.com/items?itemName=kilo-code",
   "capabilities": {
     "commands": true,
