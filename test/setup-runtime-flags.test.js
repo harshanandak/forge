@@ -35,7 +35,8 @@ async function runSetup(args, cwd, env = {}) {
     process.env[key] = value;
   }
   process.env.INIT_CWD = cwd;
-  process.env.PATH = `${mockBinDir}${path.delimiter}${originalEnv.PATH || ''}`;
+  const inheritedPath = process.env.PATH || process.env.Path || originalEnv.PATH || originalEnv.Path || '';
+  process.env.PATH = `${mockBinDir}${path.delimiter}${inheritedPath}`;
   process.env.Path = process.env.PATH;
 
   console.log = (...parts) => stdout.push(parts.join(' '));

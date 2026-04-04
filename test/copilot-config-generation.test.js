@@ -8,6 +8,7 @@ const os = require('node:os');
 const { generateCopilotConfig } = require('../lib/agents-config');
 const copilotPlugin = require('../lib/agents/copilot.plugin.json');
 const setupCommand = require('../lib/commands/setup');
+const { withMockSetupTools } = require('./helpers/setup-command-harness');
 
 describe('GitHub Copilot config generation', () => {
   let tempDir;
@@ -221,7 +222,9 @@ describe('GitHub Copilot config generation', () => {
       JSON.stringify({ name: 'copilot-native-test', version: '1.0.0' }, null, 2)
     );
 
-    await setupCommand.handler(['--agents', 'copilot', '--skip-external', '--yes'], {}, tempDir);
+    await withMockSetupTools(tempDir, () =>
+      setupCommand.handler(['--agents', 'copilot', '--skip-external', '--yes'], {}, tempDir)
+    );
 
     const rootConfigPath = path.join(tempDir, '.github', 'copilot-instructions.md');
     const instructionsPath = path.join(tempDir, '.github', 'instructions', 'typescript.instructions.md');

@@ -203,6 +203,41 @@ describe('workflow state layer', () => {
 		expect(result.completedStages).toContain('verify');
 	});
 
+	test('readWorkflowState preserves legacy override records with missing fields', () => {
+		const result = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'dev',
+			completedStages: ['plan'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy override state',
+				userOverride: false,
+				overrides: [
+					{
+						type: 'manual',
+						fromStage: null,
+						toStage: null,
+						reason: '',
+						actor: 'legacy-agent',
+						recordedAt: '2026-04-03T00:00:00.000Z',
+					},
+				],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.workflowDecisions.overrides).toEqual([
+			expect.objectContaining({
+				type: 'manual',
+				fromStage: null,
+				toStage: null,
+				reason: '',
+				actor: 'legacy-agent',
+			}),
+		]);
+	});
+
 	test('readWorkflowState raises a descriptive error for malformed JSON', () => {
 		expect(() => readWorkflowState('{"currentStage":"dev"')).toThrow(/Failed to parse workflow state/i);
 	});

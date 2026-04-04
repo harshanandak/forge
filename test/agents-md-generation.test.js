@@ -8,6 +8,7 @@ const os = require('node:os');
 const { generateAgentsMd } = require('../lib/agents-config');
 const opencodePlugin = require('../lib/agents/opencode.plugin.json');
 const setupCommand = require('../lib/commands/setup');
+const { withMockSetupTools } = require('./helpers/setup-command-harness');
 
 describe('AGENTS.md generation', () => {
   let tempDir;
@@ -126,7 +127,9 @@ describe('AGENTS.md generation', () => {
       JSON.stringify({ name: 'opencode-native-test', version: '1.0.0' }, null, 2)
     );
 
-    await setupCommand.handler(['--agents', 'opencode', '--skip-external', '--yes'], {}, tempDir);
+    await withMockSetupTools(tempDir, () =>
+      setupCommand.handler(['--agents', 'opencode', '--skip-external', '--yes'], {}, tempDir)
+    );
 
     const opencodeJsonPath = path.join(tempDir, 'opencode.json');
     const planReviewPath = path.join(tempDir, '.opencode', 'agents', 'plan-review.md');

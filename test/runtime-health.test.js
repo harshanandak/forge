@@ -190,6 +190,20 @@ describe('runtime health checks', () => {
     expect(result.checks.shell.available).toBe(true);
   });
 
+  test('absolute hooksPath that targets .lefthook/hooks is accepted as active', () => {
+    const projectRoot = createProjectRoot();
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: path.join(projectRoot, '.lefthook', 'hooks') }),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.state).toBe('active');
+  });
+
   test('missing project root falls back to process.cwd()', () => {
     const result = checkRuntimeHealth(undefined, {
       _exec: createExecStub(),
