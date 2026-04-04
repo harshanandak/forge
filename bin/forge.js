@@ -51,7 +51,8 @@ const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const { listTopics, getTopicContent } = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
-const { loadCommands } = require('../lib/commands/_registry');
+const { loadCommands, executeCommand } = require('../lib/commands/_registry');
+const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -4159,9 +4160,21 @@ async function main() {
 
   // Registry command dispatch — auto-discovered commands take priority
   if (registry.commands.has(command)) {
-    const cmd = registry.commands.get(command);
     try {
-      const result = await cmd.handler(args.slice(1), flags, projectRoot);
+      const result = await executeCommand(
+        registry.commands,
+        command,
+        args.slice(1),
+        flags,
+        projectRoot,
+        {
+          enforceStage: (context) => enforceStageEntry({
+            commandName: context.commandName,
+            flags: context.flags,
+            projectRoot: context.projectRoot,
+          }),
+        }
+      );
       if (result && !result.success) {
         console.error(result.error || result.message || 'Command failed');
         process.exit(1);

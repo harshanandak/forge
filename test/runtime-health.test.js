@@ -189,4 +189,16 @@ describe('runtime health checks', () => {
     expect(result.checks.jq.available).toBe(true);
     expect(result.checks.shell.available).toBe(true);
   });
+
+  test('missing project root falls back to process.cwd()', () => {
+    const result = checkRuntimeHealth(undefined, {
+      _exec: createExecStub(),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.checks.projectRoot).toBe(process.cwd());
+    expect(result.checks.lefthook).toBeDefined();
+    expect(result.checks.bd).toBeDefined();
+  });
 });

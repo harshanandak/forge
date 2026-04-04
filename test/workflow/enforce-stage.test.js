@@ -37,6 +37,12 @@ describe('workflow enforce-stage', () => {
     }));
   });
 
+  test('parseOverride raises a contextual error for malformed JSON', () => {
+    expect(() => parseOverride({
+      overrideStage: '{"fromStage":"plan"'
+    })).toThrow(/override-stage flag/i);
+  });
+
   test('enforceStageEntry blocks skipped transitions without an override', async () => {
     await expect(enforceStageEntry({
       commandName: 'ship',

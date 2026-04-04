@@ -9,6 +9,7 @@
 
 const { describe, test, expect } = require('bun:test');
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
@@ -70,6 +71,15 @@ describe('CLI Registry Integration', () => {
     test('forge --help includes "Additional commands" section', () => {
       const { stdout } = runForge(['--help']);
       expect(stdout).toContain('Additional commands');
+    });
+  });
+
+  describe('registry enforcement wiring', () => {
+    test('bin/forge.js routes registry commands through executeCommand', () => {
+      const source = fs.readFileSync(forgePath, 'utf8');
+
+      expect(source).toContain('executeCommand(');
+      expect(source).not.toContain("await cmd.handler(args.slice(1), flags, projectRoot)");
     });
   });
 

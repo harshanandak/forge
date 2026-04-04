@@ -69,4 +69,37 @@ describe('status command authoritative workflow state', () => {
     expect(result.missingWorkflowState).toBe(true);
     expect(result.output).toContain('No authoritative workflow state available');
   });
+
+  test('handler falls back gracefully when --workflow-state is malformed JSON', async () => {
+    const result = await statusCommand.handler(
+      ['--workflow-state', '{"currentStage":"dev"'],
+      {},
+      process.cwd()
+    );
+
+    expect(result.missingWorkflowState).toBe(true);
+    expect(result.output).toContain('No authoritative workflow state available');
+  });
+
+  test('handler falls back gracefully when bd is unavailable', async () => {
+    const originalPATH = process.env.PATH;
+    const originalPath = process.env.Path;
+
+    process.env.PATH = '';
+    process.env.Path = '';
+
+    try {
+      const result = await statusCommand.handler(
+        ['--issue-id', 'forge-test'],
+        {},
+        process.cwd()
+      );
+
+      expect(result.missingWorkflowState).toBe(true);
+      expect(result.output).toContain('No authoritative workflow state available');
+    } finally {
+      process.env.PATH = originalPATH;
+      process.env.Path = originalPath;
+    }
+  });
 });
