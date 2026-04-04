@@ -18,6 +18,26 @@ function createWorkflowState(currentStage = 'plan', classification = 'standard')
 }
 
 describe('workflow enforce-stage', () => {
+  test('parseOverride reads override payloads from raw CLI args', () => {
+    const result = parseOverride({}, [
+      '--override-stage',
+      JSON.stringify({
+        fromStage: 'plan',
+        toStage: 'ship',
+        reason: 'user override',
+        actor: 'user',
+        userOverride: true
+      })
+    ]);
+
+    expect(result).toEqual(expect.objectContaining({
+      fromStage: 'plan',
+      toStage: 'ship',
+      actor: 'user',
+      userOverride: true
+    }));
+  });
+
   test('parseOverride normalizes explicit override payloads', () => {
     const result = parseOverride({
       overrideStage: JSON.stringify({
@@ -65,5 +85,33 @@ describe('workflow enforce-stage', () => {
         diagnostics: [{ code: 'BD_MISSING', message: 'bd missing' }]
       }
     })).rejects.toThrow(/BD_MISSING/);
+  });
+
+  test('enforceStageEntry reads workflow-state and override payloads from raw CLI args', async () => {
+    const result = await enforceStageEntry({
+      commandName: 'ship',
+      args: [
+        '--workflow-state',
+        JSON.stringify(createWorkflowState('plan', 'standard')),
+        '--override-stage',
+        JSON.stringify({
+          fromStage: 'plan',
+          toStage: 'ship',
+          reason: 'user approved emergency bypass',
+          actor: 'user',
+          userOverride: true
+        })
+      ],
+      flags: {},
+      projectRoot: process.cwd(),
+      health: { healthy: true, hardStop: false, diagnostics: [] }
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.workflowState).toEqual(expect.objectContaining({ currentStage: 'plan' }));
+    expect(result.override).toEqual(expect.objectContaining({
+      fromStage: 'plan',
+      toStage: 'ship'
+    }));
   });
 });

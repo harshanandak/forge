@@ -97,6 +97,12 @@ describe('CLI Registry Integration', () => {
       expect(source).toContain('executeCommand(');
       expect(source).not.toContain("await cmd.handler(args.slice(1), flags, projectRoot)");
     });
+
+    test('bin/forge.js forwards raw CLI args into stage enforcement', () => {
+      const source = fs.readFileSync(forgePath, 'utf8');
+
+      expect(source).toContain('args: context.args');
+    });
   });
 
   describe('fallthrough for unknown commands', () => {

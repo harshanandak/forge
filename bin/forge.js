@@ -4170,6 +4170,7 @@ async function main() {
         {
           enforceStage: (context) => enforceStageEntry({
             commandName: context.commandName,
+            args: context.args,
             flags: context.flags,
             projectRoot: context.projectRoot,
           }),

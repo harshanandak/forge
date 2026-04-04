@@ -213,6 +213,35 @@ describe('setup runtime flags', () => {
     expect(result.warnings).toContain('gh (GitHub CLI) - Install from https://cli.github.com (required later for GitHub-integrated workflow steps)');
   });
 
+  test('checkPrerequisites requires jq when setup is preparing workflow-capable installs', () => {
+    const originalExit = process.exit;
+    const originalLog = console.log;
+    const logLines = [];
+
+    process.exit = (code) => {
+      throw new Error(`process.exit:${code}`);
+    };
+    console.log = (...parts) => logLines.push(parts.join(' '));
+
+    try {
+      expect(() => setupCommand.checkPrerequisites({
+        requireGithubCli: false,
+        requireJq: true,
+        commandRunner: (command) => {
+          if (command === 'git --version') {
+            return 'git version 2.42.0';
+          }
+          return '';
+        },
+      })).toThrow(/process\.exit:1/);
+    } finally {
+      process.exit = originalExit;
+      console.log = originalLog;
+    }
+
+    expect(logLines.join('\n')).toContain('jq - Install from https://jqlang.org/download/');
+  });
+
   test('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
     expect(() => setupCommand.ensureWorkflowShellPolicy(['claude'], {
       platform: 'win32',
