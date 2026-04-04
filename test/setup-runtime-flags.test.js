@@ -7,11 +7,20 @@ const { checkLefthookStatus } = require('../lib/lefthook-check');
 const { detectHusky } = require('../lib/husky-migration');
 
 const tempDirs = [];
+let serialQueue = Promise.resolve();
 
 function makeTempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-runtime-'));
   tempDirs.push(dir);
   return dir;
+}
+
+function serialTest(name, callback) {
+  test(name, () => {
+    const currentRun = serialQueue.then(() => callback());
+    serialQueue = currentRun.catch(() => {});
+    return currentRun;
+  });
 }
 
 async function runSetup(args, cwd, env = {}) {
@@ -108,7 +117,7 @@ afterEach(() => {
 });
 
 describe('setup runtime flags', () => {
-  test('--detect auto-selects configured agents on the setup handler path', async () => {
+  serialTest('--detect auto-selects configured agents on the setup handler path', async () => {
     const tmpDir = makeTempDir();
     fs.mkdirSync(path.join(tmpDir, '.cursor', 'rules'), { recursive: true });
 
@@ -121,7 +130,7 @@ describe('setup runtime flags', () => {
     expect(result.stdout).not.toContain('.claude/commands/plan.md');
   });
 
-  test('--keep preserves existing Claude commands at runtime', async () => {
+  serialTest('--keep preserves existing Claude commands at runtime', async () => {
     const tmpDir = makeTempDir();
     const claudeDir = path.join(tmpDir, '.claude', 'commands');
     fs.mkdirSync(claudeDir, { recursive: true });
@@ -136,7 +145,7 @@ describe('setup runtime flags', () => {
     expect(fs.readFileSync(path.join(claudeDir, 'plan.md'), 'utf8')).toBe(sentinel);
   });
 
-  test('--agents accepts multiple space-separated values on the setup handler path', async () => {
+  serialTest('--agents accepts multiple space-separated values on the setup handler path', async () => {
     const tmpDir = makeTempDir();
 
     const result = await runSetup(['--agents', 'claude', 'cursor', '--dry-run'], tmpDir);
@@ -146,7 +155,7 @@ describe('setup runtime flags', () => {
     expect(result.stdout).toContain('.cursor/commands/');
   });
 
-  test('--dry-run shows workflow runtime assets that shipped commands require', async () => {
+  serialTest('--dry-run shows workflow runtime assets that shipped commands require', async () => {
     const tmpDir = makeTempDir();
 
     const result = await runSetup(['--agents', 'claude', '--dry-run'], tmpDir);
@@ -157,7 +166,7 @@ describe('setup runtime flags', () => {
     expect(result.stdout).toContain('.claude/scripts/greptile-resolve.sh');
   });
 
-  test('setup scaffolds workflow runtime assets before reporting success', async () => {
+  serialTest('setup scaffolds workflow runtime assets before reporting success', async () => {
     const tmpDir = makeTempDir();
 
     const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir);
@@ -169,7 +178,7 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
   });
 
-  test('setup scaffolds Codex stage skills under .codex/skills/<stage>/SKILL.md', async () => {
+  serialTest('setup scaffolds Codex stage skills under .codex/skills/<stage>/SKILL.md', async () => {
     const tmpDir = makeTempDir();
 
     const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir);
@@ -183,7 +192,7 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
   });
 
-  test('setup scaffolds Cursor native rules through the real setup path', async () => {
+  serialTest('setup scaffolds Cursor native rules through the real setup path', async () => {
     const tmpDir = makeTempDir();
 
     const result = await runSetup(['--agents', 'cursor', '--skip-external'], tmpDir);
@@ -195,7 +204,7 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'documentation.mdc'))).toBe(true);
   });
 
-  test('setup scaffolds Kilo native surfaces through the real setup path', async () => {
+  serialTest('setup scaffolds Kilo native surfaces through the real setup path', async () => {
     const tmpDir = makeTempDir();
 
     const result = await runSetup(['--agents', 'kilocode', '--skip-external'], tmpDir);
@@ -207,7 +216,7 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.kilo.md'))).toBe(false);
   });
 
-  test('checkPrerequisites allows missing gh during local scaffold-only setup', () => {
+  serialTest('checkPrerequisites allows missing gh during local scaffold-only setup', () => {
     const result = setupCommand.checkPrerequisites({
       requireGithubCli: false,
       commandRunner: (command) => {
@@ -222,7 +231,7 @@ describe('setup runtime flags', () => {
     expect(result.warnings).toContain('gh (GitHub CLI) - Install from https://cli.github.com (required later for GitHub-integrated workflow steps)');
   });
 
-  test('checkPrerequisites requires jq when setup is preparing workflow-capable installs', () => {
+  serialTest('checkPrerequisites requires jq when setup is preparing workflow-capable installs', () => {
     const originalExit = process.exit;
     const originalLog = console.log;
     const logLines = [];
@@ -251,7 +260,7 @@ describe('setup runtime flags', () => {
     expect(logLines.join('\n')).toContain('jq - Install from https://jqlang.org/download/');
   });
 
-  test('checkPrerequisites requires bd when setup is preparing workflow-capable installs', () => {
+  serialTest('checkPrerequisites requires bd when setup is preparing workflow-capable installs', () => {
     const originalExit = process.exit;
     const originalLog = console.log;
     const logLines = [];
@@ -280,7 +289,7 @@ describe('setup runtime flags', () => {
     expect(logLines.join('\n')).toContain('bd (Beads CLI) - Install from https://github.com/steveyegge/beads');
   });
 
-  test('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
+  serialTest('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
     expect(() => setupCommand.ensureWorkflowShellPolicy(['claude'], {
       platform: 'win32',
       candidates: [],
@@ -288,7 +297,7 @@ describe('setup runtime flags', () => {
     })).toThrow(/Git Bash/i);
   });
 
-  test('setup repairs a declared lefthook dependency before reporting success', async () => {
+  serialTest('setup repairs a declared lefthook dependency before reporting success', async () => {
     const tmpDir = makeTempDir();
     const mockBinDir = path.join(tmpDir, '.mock-bin');
     fs.mkdirSync(mockBinDir, { recursive: true });
@@ -333,7 +342,7 @@ exit 1
     expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook'))).toBe(true);
   });
 
-  test('detectHusky resolves worktree gitdir pointer files when checking hooksPath', () => {
+  serialTest('detectHusky resolves worktree gitdir pointer files when checking hooksPath', () => {
     const tmpDir = makeTempDir();
     const gitDir = path.join(tmpDir, '.git-data', 'worktrees', 'feature-a');
 
