@@ -2,19 +2,22 @@
   "id": "opencode",
   "name": "OpenCode",
   "version": "1.0.0",
-  "description": "Open-source agent",
+  "description": "Open-source agent with native config and agent definitions",
   "homepage": "https://opencode.ai",
   "capabilities": {
     "commands": true,
-    "skills": true,
+    "skills": false,
     "hooks": false
   },
   "directories": {
     "commands": ".opencode/commands",
-    "skills": ".opencode/skills/forge-workflow"
+    "agents": ".opencode/agents"
+  },
+  "files": {
+    "rootConfig": "opencode.json"
   },
   "setup": {
     "copyCommands": true,
-    "createSkill": true
+    "customSetup": "opencode"
   }
 }
