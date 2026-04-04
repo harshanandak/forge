@@ -115,4 +115,26 @@ describe('stage enforcement middleware', () => {
       }
     })).rejects.toThrow(/BD_MISSING/);
   });
+
+  test('stage entry attempts safe runtime repair before hard-stopping', async () => {
+    const result = await enforceStageEntry({
+      commandName: 'dev',
+      flags: {},
+      projectRoot: process.cwd(),
+      workflowState: createWorkflowState('dev', 'standard'),
+      health: {
+        healthy: false,
+        hardStop: true,
+        diagnostics: [{ code: 'HOOKS_NOT_ACTIVE', message: 'hooks missing' }]
+      },
+      repairRuntime: async () => ({
+        healthy: true,
+        hardStop: false,
+        diagnostics: []
+      })
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.stage).toBe('dev');
+  });
 });

@@ -52,6 +52,23 @@ describe('detectHusky', () => {
     expect(result.found).toBe(true);
     expect(result.hasHooksPath).toBe(true);
   });
+
+  it('detects core.hooksPath when worktree .git is a pointer file', () => {
+    fs.mkdirSync(path.join(tmpDir, '.husky'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\n');
+
+    const gitDir = path.join(tmpDir, '.git-worktree');
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.git'), `gitdir: ${gitDir.replace(/\\/g, '/')}\n`);
+    fs.writeFileSync(
+      path.join(gitDir, 'config'),
+      '[core]\n\thooksPath = .husky\n'
+    );
+
+    const result = detectHusky(tmpDir);
+    expect(result.found).toBe(true);
+    expect(result.hasHooksPath).toBe(true);
+  });
 });
 
 describe('mapHuskyHooks', () => {

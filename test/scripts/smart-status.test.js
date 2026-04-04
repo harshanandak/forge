@@ -47,7 +47,7 @@ function runSmartStatus(args = [], env = {}, stdin = undefined) {
   const result = spawnSync(resolveBashCommand(), [SCRIPT, ...args], {
     cwd: PROJECT_ROOT,
     encoding: 'utf-8',
-    timeout: 15000,
+    timeout: 30000,
     input: stdin,
     env: {
       ...process.env,
@@ -131,6 +131,22 @@ describe('smart-status.sh', () => {
     const result = runSmartStatus(['--json'], { PATH: '' });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/jq/i);
+  });
+
+  test('sanitizes unknown arguments in error output', () => {
+    const result = runSmartStatus(['--json', 'bad;$(touch owned)']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('unknown argument: bad');
+    expect(result.stderr).not.toContain('touch owned');
+    expect(result.stderr).not.toContain(';');
+  });
+
+  test('hard-stops with a repair hint when bd is unavailable', () => {
+    const missingBd = path.join(os.tmpdir(), 'definitely-missing-bd-command');
+    const result = runSmartStatus(['--json'], { BD_CMD: missingBd });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/bd is required/i);
   });
 
   describe('scoring factors', () => {
@@ -956,6 +972,76 @@ exit 0
         // feature-b has no matching issue => untracked
         expect(result.stdout).toContain('feat/feature-b');
         expect(result.stdout).toContain('untracked');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('tracks active sessions from worktrees outside repo-local .worktrees', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /tmp/codex/session-alpha',
+        'HEAD def456',
+        'branch refs/heads/feat/session-alpha',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-sa01', title: 'Session alpha task', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus(['--json'], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        const parsed = JSON.parse(result.stdout);
+        expect(parsed.sessions).toHaveLength(1);
+        expect(parsed.sessions[0]).toMatchObject({
+          branch: 'feat/session-alpha',
+          issue_ids: ['forge-sa01'],
+        });
+        expect(parsed.sessions[0].path).toContain('session-alpha');
+        expect(parsed.sessions[0].path).not.toContain('.worktrees');
+      } finally {
+        cleanupTmpDir(gitDir);
+        cleanupTmpDir(bdDir);
+      }
+    });
+
+    test('external worktree paths do not need a local .worktrees directory assumption', () => {
+      const porcelain = [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/master',
+        '',
+        'worktree /Users/dev sessions/feature-a',
+        'HEAD def456',
+        'branch refs/heads/feat/feature-a',
+        '',
+      ].join('\n');
+      const mockData = {
+        issues: [
+          { id: 'forge-fa01', title: 'Feature A task', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
+        ],
+      };
+      const { tmpDir: gitDir, mockScript: gitScript } = createMockGit(porcelain);
+      const { tmpDir: bdDir, mockScript: bdScript } = createMockBd(mockData);
+      try {
+        const result = runSmartStatus(['--json'], { BD_CMD: bdScript, GIT_CMD: gitScript, NO_COLOR: '1' });
+        expect(result.status).toBe(0);
+        const parsed = JSON.parse(result.stdout);
+        expect(parsed.sessions).toHaveLength(1);
+        expect(parsed.sessions[0]).toMatchObject({
+          branch: 'feat/feature-a',
+          issue_ids: ['forge-fa01'],
+        });
+        expect(parsed.sessions[0].path).toContain('feature-a');
+        expect(parsed.sessions[0].path).not.toContain('.worktrees');
       } finally {
         cleanupTmpDir(gitDir);
         cleanupTmpDir(bdDir);

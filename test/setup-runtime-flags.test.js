@@ -1,0 +1,225 @@
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { afterEach, describe, expect, test } = require('bun:test');
+const setupCommand = require('../lib/commands/setup');
+const { detectHusky } = require('../lib/husky-migration');
+
+const tempDirs = [];
+
+function makeTempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-runtime-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+async function runSetup(args, cwd, env = {}) {
+  const originalEnv = { INIT_CWD: process.env.INIT_CWD };
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  const stdout = [];
+  const stderr = [];
+
+  for (const [key, value] of Object.entries(env)) {
+    originalEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
+  process.env.INIT_CWD = cwd;
+
+  console.log = (...parts) => stdout.push(parts.join(' '));
+  console.warn = (...parts) => stderr.push(parts.join(' '));
+  console.error = (...parts) => stderr.push(parts.join(' '));
+  process.stdout.write = ((chunk, encoding, callback) => {
+    stdout.push(typeof chunk === 'string' ? chunk : chunk.toString(encoding || 'utf8'));
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+  process.stderr.write = ((chunk, encoding, callback) => {
+    stderr.push(typeof chunk === 'string' ? chunk : chunk.toString(encoding || 'utf8'));
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+
+  try {
+    setupCommand._setState({
+      projectRoot: cwd,
+      FORCE_MODE: false,
+      VERBOSE_MODE: false,
+      NON_INTERACTIVE: false,
+      SYMLINK_ONLY: false,
+      SYNC_ENABLED: false,
+      PKG_MANAGER: 'npm',
+    });
+
+    await setupCommand.handler(args, {}, cwd);
+    return {
+      status: 0,
+      stdout: stdout.join(''),
+      stderr: stderr.join(''),
+    };
+  } catch (error) {
+    return {
+      status: 1,
+      stdout: stdout.join(''),
+      stderr: `${stderr.join('')}${error && error.message ? error.message : String(error)}`,
+    };
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+    console.error = originalError;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+function writeExecutable(filePath, content) {
+  fs.writeFileSync(filePath, content, { mode: 0o755 });
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+});
+
+describe('setup runtime flags', () => {
+  test('--detect auto-selects configured agents on the setup handler path', async () => {
+    const tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, '.cursor', 'rules'), { recursive: true });
+
+    const result = await runSetup(['--detect', '--dry-run'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Auto-detected agents (--detect): cursor');
+    expect(result.stdout).toContain('.cursor/commands/');
+    expect(result.stdout).not.toContain('.roo/commands/');
+    expect(result.stdout).not.toContain('.claude/commands/plan.md');
+  });
+
+  test('--keep preserves existing Claude commands at runtime', async () => {
+    const tmpDir = makeTempDir();
+    const claudeDir = path.join(tmpDir, '.claude', 'commands');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const sentinel = 'keep-this-command\n';
+    fs.writeFileSync(path.join(claudeDir, 'plan.md'), sentinel);
+    fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# existing\n');
+
+    const result = await runSetup(['--agents', 'claude', '--keep', '--skip-external'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Keeping existing .claude/commands/ (--keep)');
+    expect(fs.readFileSync(path.join(claudeDir, 'plan.md'), 'utf8')).toBe(sentinel);
+  });
+
+  test('--agents accepts multiple space-separated values on the setup handler path', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'claude', 'cursor', '--dry-run'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('.claude/commands/plan.md');
+    expect(result.stdout).toContain('.cursor/commands/');
+  });
+
+  test('--dry-run shows workflow runtime assets that shipped commands require', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'claude', '--dry-run'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('scripts/smart-status.sh');
+    expect(result.stdout).toContain('scripts/forge-team/index.sh');
+    expect(result.stdout).toContain('.claude/scripts/greptile-resolve.sh');
+  });
+
+  test('setup scaffolds workflow runtime assets before reporting success', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'lib', 'sanitize.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'forge-team', 'index.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
+  });
+
+  test('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
+    expect(() => setupCommand.ensureWorkflowShellPolicy(['claude'], {
+      platform: 'win32',
+      candidates: [],
+      _exists: () => false,
+    })).toThrow(/Git Bash/i);
+  });
+
+  test('setup repairs a declared lefthook dependency before reporting success', async () => {
+    const tmpDir = makeTempDir();
+    const mockBinDir = path.join(tmpDir, '.mock-bin');
+    fs.mkdirSync(mockBinDir, { recursive: true });
+
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({
+      name: 'repair-fixture',
+      version: '1.0.0',
+      devDependencies: {
+        lefthook: '^2.1.4',
+      },
+    }, null, 2));
+
+    writeExecutable(path.join(mockBinDir, 'npm'), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "install" ]]; then
+  mkdir -p "$INIT_CWD/node_modules/.bin"
+  printf '#!/usr/bin/env bash\\necho lefthook\\n' > "$INIT_CWD/node_modules/.bin/lefthook"
+  printf '@echo off\\r\\necho lefthook\\r\\n' > "$INIT_CWD/node_modules/.bin/lefthook.cmd"
+  chmod +x "$INIT_CWD/node_modules/.bin/lefthook"
+  exit 0
+fi
+echo "unexpected npm args: $*" >&2
+exit 1
+`);
+
+    writeExecutable(path.join(mockBinDir, 'npx'), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "lefthook" && "$2" == "install" ]]; then
+  exit 0
+fi
+echo "unexpected npx args: $*" >&2
+exit 1
+`);
+
+    const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir, {
+      PATH: `${mockBinDir}${path.delimiter}${process.env.PATH}`,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Installing lefthook dependencies (binary missing)');
+    expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook.cmd'))).toBe(true);
+  });
+
+  test('detectHusky resolves worktree gitdir pointer files when checking hooksPath', () => {
+    const tmpDir = makeTempDir();
+    const gitDir = path.join(tmpDir, '.git-data', 'worktrees', 'feature-a');
+
+    fs.mkdirSync(path.join(tmpDir, '.husky'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\n');
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, 'config'), '[core]\n\thooksPath = .husky\n');
+    fs.writeFileSync(path.join(tmpDir, '.git'), 'gitdir: .git-data/worktrees/feature-a\n');
+
+    const result = detectHusky(tmpDir);
+
+    expect(result.found).toBe(true);
+    expect(result.hasHooksPath).toBe(true);
+  });
+});
