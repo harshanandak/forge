@@ -76,6 +76,7 @@ function validatePluginParity(plugin, errors) {
 
   const capabilities = plugin.capabilities || {};
   const dirs = plugin.directories || {};
+  const supportStatus = plugin.support?.status;
 
   if (capabilities.commands) {
     const expectedDir = getExpectedCommandDir(plugin);
@@ -106,6 +107,20 @@ function validatePluginParity(plugin, errors) {
     errors.push(
       `Plugin "${plugin.name}" (${plugin.id}) declares skills capability but has no scaffold path configured.`
     );
+  }
+
+  if (supportStatus === 'deprecated' || supportStatus === 'unsupported') {
+    if (capabilities.skills) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) is ${supportStatus} but still declares skills parity.`
+      );
+    }
+
+    if (plugin.setup?.createSkill || dirs.skills) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) is ${supportStatus} but still scaffolds Forge skills.`
+      );
+    }
   }
 }
 

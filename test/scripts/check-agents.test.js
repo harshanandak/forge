@@ -252,6 +252,71 @@ describe('checkAgents — plugin catalog', () => {
     }
   });
 
+  test('reports error when deprecated plugin still claims skill parity', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    }, [
+      {
+        id: 'cline',
+        name: 'Cline',
+        version: '1.0.0',
+        capabilities: { commands: true, skills: true },
+        support: { status: 'deprecated', surface: 'editor-native' },
+        directories: {
+          workflows: '.cline/workflows',
+          skills: '.cline/skills/forge-workflow',
+        },
+        setup: {
+          createSkill: true,
+        },
+      },
+    ]);
+    try {
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+      fs.mkdirSync(path.join(tmpDir, '.cline', 'skills', 'forge-workflow'), { recursive: true });
+
+      const result = checkAgents(tmpDir);
+      expect(result.errors.some((e) => e.includes('deprecated') && e.includes('skills'))).toBe(true);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
+  test('accepts deprecated compatibility plugin when it only claims command parity', () => {
+    const tmpDir = createTempRepo({
+      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+    }, [
+      {
+        id: 'roo',
+        name: 'Roo Code',
+        version: '1.0.0',
+        capabilities: { commands: true, skills: false },
+        support: {
+          status: 'deprecated',
+          surface: 'editor-native',
+          install: { required: false, repairRequired: false },
+        },
+        directories: {
+          commands: '.roo/commands',
+        },
+        files: {
+          rootConfig: '.roorules',
+        },
+        setup: {
+          copyCommands: true,
+        },
+      },
+    ]);
+    try {
+      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+
+      const result = checkAgents(tmpDir);
+      expect(result.errors).toHaveLength(0);
+    } finally {
+      cleanupTempRepo(tmpDir);
+    }
+  });
+
   test('accepts plugin metadata when support tier, sync path, and scaffolds align', () => {
     const tmpDir = createTempRepo({
       plan: '---\ndescription: Plan\n---\n\nPlan body.',

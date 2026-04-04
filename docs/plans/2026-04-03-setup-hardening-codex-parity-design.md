@@ -192,12 +192,12 @@ Research across the repo and available primary sources supports a tiered model r
 7. **Cline**
    - Repo support largely reduces to converted workflow markdown and light config.
    - Official docs confirm auto-approve, MCP tools, and mode transitions, but the current Forge integration does not yet map that into a robust stage contract: [Cline Auto Approve & YOLO Mode](https://docs.cline.bot/features/yolo-mode), [Cline Memory Bank](https://docs.cline.bot/features/memory-bank).
-   - Candidate for removal if a stronger native contract is not practical.
+   - Current decision for this PR: keep only as a deprecated compatibility path that scaffolds converted workflow files, not first-class parity.
 
 8. **Roo**
    - Repo support is similar to Cline: converted commands plus naming inconsistencies and no stronger enforcement contract yet.
    - Official docs confirm MCP usage, modes, and both IDE/cloud surfaces: [Roo Code Docs](https://docs.roocode.com/).
-   - Candidate for removal unless its native modes and approval model can map cleanly into Forge enforcement.
+   - Current decision for this PR: keep only as a deprecated compatibility path that scaffolds converted workflow files, not first-class parity.
 
 ### Context Mode findings
 

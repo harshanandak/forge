@@ -6,15 +6,22 @@
   "homepage": "https://github.com/roocode/roo",
   "capabilities": {
     "commands": true,
-    "skills": true,
+    "skills": false,
     "hooks": false
   },
   "directories": {
-    "commands": ".roo/commands",
-    "skills": ".roo/skills/forge-workflow"
+    "commands": ".roo/commands"
   },
   "files": {
     "rootConfig": ".roorules"
+  },
+  "support": {
+    "status": "deprecated",
+    "surface": "editor-native",
+    "install": {
+      "required": false,
+      "repairRequired": false
+    }
   },
   "setup": {
     "copyCommands": true,
