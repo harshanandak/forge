@@ -168,6 +168,30 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
   });
 
+  test('setup scaffolds Cursor native rules through the real setup path', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'cursor', '--skip-external'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'forge-workflow.mdc'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'tdd-enforcement.mdc'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'security-scanning.mdc'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'documentation.mdc'))).toBe(true);
+  });
+
+  test('setup scaffolds Kilo native surfaces through the real setup path', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'kilocode', '--skip-external'], tmpDir);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'workflows', 'forge-workflow.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'rules', 'workflow.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.kilo.md'))).toBe(false);
+  });
+
   test('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
     expect(() => setupCommand.ensureWorkflowShellPolicy(['claude'], {
       platform: 'win32',
