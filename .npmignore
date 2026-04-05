@@ -43,5 +43,14 @@ packages/
 # Internal tracking
 .beads/
 
+# Nested node_modules inside agent dirs (not tracked in git, bloats local packs)
+node_modules/
+.kilocode/node_modules/
+.opencode/node_modules/
+.cursor/node_modules/
+.cline/node_modules/
+.roo/node_modules/
+.codex/node_modules/
+
 # Legacy
 openspec/

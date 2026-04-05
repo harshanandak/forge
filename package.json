@@ -1,6 +1,6 @@
 {
   "name": "forge-workflow",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "7-stage TDD workflow for ALL AI coding agents (Claude, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)",
   "bin": {
     "forge": "bin/forge.js",
@@ -81,11 +81,17 @@
     ".claude/scripts/",
     ".claude/skills/",
     ".cursor/",
+    "!.cursor/node_modules/",
     ".cline/",
+    "!.cline/node_modules/",
     ".roo/",
+    "!.roo/node_modules/",
     ".codex/",
+    "!.codex/node_modules/",
     ".kilocode/",
+    "!.kilocode/node_modules/",
     ".opencode/",
+    "!.opencode/node_modules/",
     "scripts/",
     ".github/prompts/",
     ".github/PLUGIN_TEMPLATE.json",
@@ -97,7 +103,9 @@
     "lefthook.yml",
     "AGENTS.md",
     "CLAUDE.md",
-    ".mcp.json.example"
+    ".mcp.json.example",
+    ".cursorrules",
+    "opencode.json"
   ],
   "dependencies": {
     "@babel/parser": "^7.29.2",
