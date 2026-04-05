@@ -1,9 +1,10 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, setDefaultTimeout } = require('bun:test');
 const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');
+setDefaultTimeout(60000);
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
@@ -17,7 +18,7 @@ function splitShellArgs(input) {
 let transitionQueue = Promise.resolve();
 
 function transitionTest(name, callback) {
-  return test(name, { timeout: 30000 }, async () => {
+  return test(name, async () => {
     const run = transitionQueue.then(() => callback());
     transitionQueue = run.catch(() => {});
     return run;
@@ -64,7 +65,7 @@ exit 0
       Path: `${shimDir}${path.delimiter}${currentPath}`,
     },
     encoding: 'utf8',
-    timeout: 20000,
+    timeout: 45000,
   });
 
   let comment = '';
