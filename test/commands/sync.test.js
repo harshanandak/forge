@@ -79,4 +79,23 @@ describe('forge sync command', () => {
     expect(result.synced).toBe(false);
     expect(result.error).toContain('push');
   });
+
+  test('returns graceful skip when Dolt sync remote is not configured', async () => {
+    const mod = require('../../lib/commands/sync');
+    const mockExec = (_cmd, args, _opts) => {
+      if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
+      if (args[0] === 'dolt' && args[1] === 'pull') {
+        throw new Error("failed to pull from origin/main: fatal: remote 'origin' not found");
+      }
+      throw new Error(`unexpected call: ${args.join(' ')}`);
+    };
+
+    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
+
+    expect(result).toEqual({
+      success: true,
+      synced: false,
+      message: 'Beads is installed but not initialized for sync in this worktree — skipping sync',
+    });
+  });
 });
