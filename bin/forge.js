@@ -2541,6 +2541,13 @@ function parseFlags() {
     sync: false,      // Scaffold Beads GitHub sync workflows (--sync)
   };
 
+  // Issue passthrough commands delegate all flags to bd.
+  // Skip global parsing so flags like --type, -p, --help reach the handler intact.
+  const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'issue'];
+  if (issuePassthroughCommands.includes(args[0])) {
+    return flags;
+  }
+
   for (let i = 0; i < args.length;) {
     const arg = args[i];
 

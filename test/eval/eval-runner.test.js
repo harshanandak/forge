@@ -1,4 +1,4 @@
-const { describe, test, expect, afterAll } = require('bun:test');
+const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('node:child_process');
@@ -13,78 +13,61 @@ const {
 // Root of the worktree we're running in
 const WORKTREE_ROOT = path.resolve(__dirname, '..', '..');
 
-// Track worktrees created during tests for cleanup
-const createdWorktrees = [];
+// Single shared worktree for all tests that just need a cwd
+let sharedWorktree = null;
 
-afterAll(() => {
-  // Cleanup any worktrees that tests didn't destroy
-  for (const wt of createdWorktrees) {
-    // Extract branch name from worktree path for cleanup
-    const branchName = path.basename(wt);
+beforeAll(async () => {
+  sharedWorktree = await createEvalWorktree();
+});
+
+afterAll(async () => {
+  if (sharedWorktree) {
     try {
-      // execSync is safe here — paths are generated internally, not from user input
-      execSync(`git worktree remove --force "${wt}"`, {
-        cwd: WORKTREE_ROOT,
-        stdio: 'pipe',
-      });
+      await destroyEvalWorktree(sharedWorktree.path);
     } catch (_err) {
-      // already removed — ignore
-    }
-    // Delete the eval branch (worktree removal doesn't clean up branches)
-    if (branchName.startsWith('eval-')) {
+      // Best-effort cleanup
+      const branchName = path.basename(sharedWorktree.path);
       try {
-        execSync(`git branch -D "${branchName}"`, {
-          cwd: WORKTREE_ROOT,
-          stdio: 'pipe',
+        // execSync is safe here — paths are generated internally, not from user input
+        execSync(`git worktree remove --force "${sharedWorktree.path}"`, {
+          cwd: WORKTREE_ROOT, stdio: 'pipe',
         });
-      } catch (_err) {
-        // already deleted — ignore
+      } catch (_e) { /* ignore */ }
+      if (branchName.startsWith('eval-')) {
+        try {
+          execSync(`git branch -D "${branchName}"`, {
+            cwd: WORKTREE_ROOT, stdio: 'pipe',
+          });
+        } catch (_e) { /* ignore */ }
       }
     }
   }
-  // Prune stale worktree references
   try {
     execSync('git worktree prune', { cwd: WORKTREE_ROOT, stdio: 'pipe' });
-  } catch (_err) {
-    // ignore
-  }
+  } catch (_err) { /* ignore */ }
 });
 
 describe('eval-runner', () => {
   // ── createEvalWorktree ──────────────────────────────────────────────
 
   describe('createEvalWorktree', () => {
-    test('creates a worktree and returns { path, branch }', async () => {
-      const result = await createEvalWorktree();
-      createdWorktrees.push(result.path);
-
-      expect(result).toBeDefined();
-      expect(typeof result.path).toBe('string');
-      expect(typeof result.branch).toBe('string');
-
-      // Path should exist on disk
-      expect(fs.existsSync(result.path)).toBe(true);
-
-      // Branch name should include eval- prefix
-      expect(result.branch).toMatch(/^eval-/);
+    test('creates a worktree and returns { path, branch }', () => {
+      // Validated via the shared worktree created in beforeAll
+      expect(sharedWorktree).toBeDefined();
+      expect(typeof sharedWorktree.path).toBe('string');
+      expect(typeof sharedWorktree.branch).toBe('string');
+      expect(fs.existsSync(sharedWorktree.path)).toBe(true);
+      expect(sharedWorktree.branch).toMatch(/^eval-/);
     });
 
-    test('worktree name includes timestamp pattern', async () => {
-      const result = await createEvalWorktree();
-      createdWorktrees.push(result.path);
-
-      const dirName = path.basename(result.path);
-      // Should match eval-<timestamp>-<pid> pattern
+    test('worktree name includes timestamp pattern', () => {
+      const dirName = path.basename(sharedWorktree.path);
       expect(dirName).toMatch(/^eval-\d+-\d+$/);
     });
 
-    test('worktree is a valid git worktree', async () => {
-      const result = await createEvalWorktree();
-      createdWorktrees.push(result.path);
-
-      // Should be recognized as a git repo
+    test('worktree is a valid git worktree', () => {
       const gitDir = execSync('git rev-parse --git-dir', {
-        cwd: result.path,
+        cwd: sharedWorktree.path,
         encoding: 'utf-8',
       }).trim();
       expect(gitDir).toBeTruthy();
@@ -95,38 +78,21 @@ describe('eval-runner', () => {
 
   describe('destroyEvalWorktree', () => {
     test('removes worktree and branch', async () => {
+      // Create a dedicated worktree just for this destruction test
       const wt = await createEvalWorktree();
       const wtPath = wt.path;
-      const _wtBranch = wt.branch;
 
-      // Worktree exists
       expect(fs.existsSync(wtPath)).toBe(true);
-
       await destroyEvalWorktree(wtPath);
-
-      // Directory should be gone
       expect(fs.existsSync(wtPath)).toBe(false);
-
-      // Branch deletion is best-effort — in worktree environments, git may
-      // retain branches that are checked out in other worktrees. Verify the
-      // worktree directory removal (above) as the primary assertion.
-      // Branch cleanup is verified by the afterAll hook.
     });
 
     test('succeeds even if worktree is in dirty state', async () => {
       const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
-      // Make the worktree dirty by creating an untracked file
       fs.writeFileSync(path.join(wt.path, 'dirty-file.txt'), 'dirty');
 
-      // Should not throw
       await destroyEvalWorktree(wt.path);
       expect(fs.existsSync(wt.path)).toBe(false);
-
-      // Remove from cleanup list since we already destroyed it
-      const idx = createdWorktrees.indexOf(wt.path);
-      if (idx !== -1) createdWorktrees.splice(idx, 1);
     });
   });
 
@@ -134,31 +100,21 @@ describe('eval-runner', () => {
 
   describe('resetWorktree', () => {
     test('removes untracked files after reset', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
-      // Create an untracked file
-      const untrackedFile = path.join(wt.path, 'untracked-test-file.txt');
+      const untrackedFile = path.join(sharedWorktree.path, 'untracked-test-file.txt');
       fs.writeFileSync(untrackedFile, 'should be removed');
       expect(fs.existsSync(untrackedFile)).toBe(true);
 
-      await resetWorktree(wt.path);
-
-      // Untracked file should be gone
+      await resetWorktree(sharedWorktree.path);
       expect(fs.existsSync(untrackedFile)).toBe(false);
     });
 
     test('restores modified tracked files after reset', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
-      // Find a tracked file to modify
-      const pkgJsonPath = path.join(wt.path, 'package.json');
+      const pkgJsonPath = path.join(sharedWorktree.path, 'package.json');
       if (fs.existsSync(pkgJsonPath)) {
         const original = fs.readFileSync(pkgJsonPath, 'utf-8');
         fs.writeFileSync(pkgJsonPath, '{"modified": true}');
 
-        await resetWorktree(wt.path);
+        await resetWorktree(sharedWorktree.path);
 
         const restored = fs.readFileSync(pkgJsonPath, 'utf-8');
         expect(restored).toBe(original);
@@ -170,15 +126,8 @@ describe('eval-runner', () => {
 
   describe('executeCommand', () => {
     test('sets FORGE_EVAL=1 in subprocess environment', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
       const result = await executeCommand(
-        '/test',
-        'dummy',
-        wt.path,
-        10000,
-        // Override: use node to print env instead of claude
+        '/test', 'dummy', sharedWorktree.path, 10000,
         ['node', '-e', 'console.log(JSON.stringify({ FORGE_EVAL: process.env.FORGE_EVAL }))']
       );
 
@@ -188,19 +137,12 @@ describe('eval-runner', () => {
     });
 
     test('strips CLAUDECODE env var from subprocess', async () => {
-      // Set CLAUDECODE in current process temporarily
       const original = process.env.CLAUDECODE;
       process.env.CLAUDECODE = 'should-be-stripped';
 
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
       try {
         const result = await executeCommand(
-          '/test',
-          'dummy',
-          wt.path,
-          10000,
+          '/test', 'dummy', sharedWorktree.path, 10000,
           ['node', '-e', 'console.log(JSON.stringify({ CLAUDECODE: process.env.CLAUDECODE || "undefined" }))']
         );
 
@@ -208,7 +150,6 @@ describe('eval-runner', () => {
         const env = JSON.parse(result.stdout.trim());
         expect(env.CLAUDECODE).toBe('undefined');
       } finally {
-        // Restore
         if (original !== undefined) {
           process.env.CLAUDECODE = original;
         } else {
@@ -218,14 +159,8 @@ describe('eval-runner', () => {
     });
 
     test('returns stdout, stderr, exitCode, timedOut for successful command', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
       const result = await executeCommand(
-        '/test',
-        'dummy',
-        wt.path,
-        10000,
+        '/test', 'dummy', sharedWorktree.path, 10000,
         ['node', '-e', 'process.stdout.write("hello"); process.stderr.write("world")']
       );
 
@@ -236,14 +171,8 @@ describe('eval-runner', () => {
     });
 
     test('returns non-zero exitCode for failing command', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
       const result = await executeCommand(
-        '/test',
-        'dummy',
-        wt.path,
-        10000,
+        '/test', 'dummy', sharedWorktree.path, 10000,
         ['node', '-e', 'process.exit(42)']
       );
 
@@ -252,40 +181,26 @@ describe('eval-runner', () => {
     });
 
     test('kills process and returns timedOut=true when timeout exceeded', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
       const start = Date.now();
       const result = await executeCommand(
-        '/test',
-        'dummy',
-        wt.path,
-        1000, // 1 second timeout
-        ['node', '-e', 'setTimeout(() => {}, 30000)'] // hangs for 30s
+        '/test', 'dummy', sharedWorktree.path, 1000,
+        ['node', '-e', 'setTimeout(() => {}, 30000)']
       );
       const elapsed = Date.now() - start;
 
       expect(result.timedOut).toBe(true);
-      // Should have been killed well before 30 seconds
       expect(elapsed).toBeLessThan(10000);
     });
 
     test('uses worktree path as cwd for subprocess', async () => {
-      const wt = await createEvalWorktree();
-      createdWorktrees.push(wt.path);
-
       const result = await executeCommand(
-        '/test',
-        'dummy',
-        wt.path,
-        10000,
+        '/test', 'dummy', sharedWorktree.path, 10000,
         ['node', '-e', 'console.log(process.cwd())']
       );
 
       expect(result.exitCode).toBe(0);
-      // Normalize paths for comparison (Windows path variations)
       const cwd = result.stdout.trim().replace(/\\/g, '/');
-      const expected = wt.path.replace(/\\/g, '/');
+      const expected = sharedWorktree.path.replace(/\\/g, '/');
       expect(cwd).toBe(expected);
     });
   });
