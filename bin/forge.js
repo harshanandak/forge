@@ -2572,9 +2572,17 @@ function parseFlags() {
       flags.merge = result.value;
       i = result.nextIndex;
     } else if (arg === '--type' || arg.startsWith('--type=')) {
-      const result = parseTypeFlag(args, i);
-      flags.type = result.value;
-      i = result.nextIndex;
+      // Issue subcommands (create, update, etc.) pass --type through to bd.
+      // Only parse --type as a workflow profile for non-issue commands.
+      const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'issue'];
+      if (issuePassthroughCommands.includes(args[0])) {
+        i++;
+        if (arg === '--type' && i < args.length) i++; // skip the value too
+      } else {
+        const result = parseTypeFlag(args, i);
+        flags.type = result.value;
+        i = result.nextIndex;
+      }
     } else if (arg === '--yes' || arg === '-y') {
       flags.yes = true;
       i++;

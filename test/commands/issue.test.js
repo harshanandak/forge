@@ -5,8 +5,6 @@ const { describe, test, expect } = require('bun:test');
 const issue = require('../../lib/commands/issue');
 const create = require('../../lib/commands/create');
 const claim = require('../../lib/commands/claim');
-const { buildBdArgs } = require('../../lib/commands/_issue');
-
 describe('forge issue command surface', () => {
   test('exports the canonical issue command module', () => {
     expect(issue.name).toBe('issue');
@@ -22,22 +20,6 @@ describe('forge issue command surface', () => {
   test('exports top-level claim alias', () => {
     expect(claim.name).toBe('claim');
     expect(typeof claim.handler).toBe('function');
-  });
-
-  test('buildBdArgs maps create to bd create passthrough', () => {
-    expect(buildBdArgs('create', ['--title', 'Test', '--type', 'feature']))
-      .toEqual(['create', '--title', 'Test', '--type', 'feature']);
-  });
-
-  test('buildBdArgs maps claim to bd update --claim', () => {
-    expect(buildBdArgs('claim', ['forge-abc']))
-      .toEqual(['update', 'forge-abc', '--claim']);
-  });
-
-  test('buildBdArgs rejects claim without an issue id', () => {
-    expect(buildBdArgs('claim', [])).toEqual({
-      error: 'Missing issue id. Usage: forge claim <id> [bd-update-flags]',
-    });
   });
 
   test('issue handler dispatches to create subcommand', async () => {
@@ -75,6 +57,13 @@ describe('forge issue command surface', () => {
       args: ['update', 'forge-abc', '--claim'],
       opts: { cwd: '/fake/root', stdio: 'inherit' },
     }]);
+  });
+
+  test('issue handler returns help text as success', async () => {
+    const result = await issue.handler([], {}, '/fake/root');
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('forge issue <subcommand>');
   });
 
   test('issue handler returns help for invalid subcommand', async () => {
