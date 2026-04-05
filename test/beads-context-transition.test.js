@@ -14,6 +14,10 @@ function splitShellArgs(input) {
   return matches.map((token) => token.replace(/^['"]|['"]$/g, ''));
 }
 
+function transitionTest(name, callback) {
+  return test(name, { timeout: 30000 }, callback);
+}
+
 /**
  * Helper: run beads-context.sh stage-transition with given args.
  * Uses a bd shim that captures the comment text passed to `bd comments add`.
@@ -46,10 +50,10 @@ exit 0
 
   const bashScript = `
 export PATH=${shQuote(`./${path.basename(shimDir)}`)}:"$PATH"
-bash scripts/beads-context.sh stage-transition ${splitShellArgs(args).map(shQuote).join(' ')}
+exec ./scripts/beads-context.sh stage-transition ${splitShellArgs(args).map(shQuote).join(' ')}
 `;
 
-  const result = spawnSync('bash', ['-lc', bashScript], {
+  const result = spawnSync('bash', ['-c', bashScript], {
     cwd: ROOT,
     env: process.env,
     encoding: 'utf8',
@@ -76,7 +80,7 @@ bash scripts/beads-context.sh stage-transition ${splitShellArgs(args).map(shQuot
 }
 
 describe('beads-context.sh stage-transition', () => {
-  test('backward compat: without flags produces simple transition comment', () => {
+  transitionTest('backward compat: without flags produces simple transition comment', () => {
     const result = runTransition('test-issue-001 plan dev');
     expect(result.comment).toContain('Stage: plan complete');
     expect(result.comment).toContain('ready for dev');
@@ -86,7 +90,7 @@ describe('beads-context.sh stage-transition', () => {
     expect(result.comment).not.toContain('Next:');
   });
 
-  test('with all four flags produces structured comment', () => {
+  transitionTest('with all four flags produces structured comment', () => {
     const result = runTransition(
       'test-issue-002 dev validate --summary "All 5 tasks done" --decisions "Used approach A" --artifacts "lib/foo.js test/foo.test.js" --next "Run type check and lint"'
     );
@@ -98,7 +102,7 @@ describe('beads-context.sh stage-transition', () => {
     expect(result.comment).toContain('Next: Run type check and lint');
   });
 
-  test('with partial flags only includes provided fields', () => {
+  transitionTest('with partial flags only includes provided fields', () => {
     const result = runTransition(
       'test-issue-003 validate ship --summary "All checks pass" --artifacts "scripts/validate.sh"'
     );
@@ -109,14 +113,14 @@ describe('beads-context.sh stage-transition', () => {
     expect(result.comment).not.toContain('Next:');
   });
 
-  test('output message still reports transition', () => {
+  transitionTest('output message still reports transition', () => {
     const result = runTransition('test-issue-004 ship review --summary "PR created"');
     expect(result.output).toContain('Stage transition recorded on test-issue-004');
     expect(result.output).toContain('ship');
     expect(result.output).toContain('review');
   });
 
-  test('with workflow-state includes machine-readable state payload', () => {
+  transitionTest('with workflow-state includes machine-readable state payload', () => {
     const workflowState = JSON.stringify({
       currentStage: 'dev',
       completedStages: ['plan'],

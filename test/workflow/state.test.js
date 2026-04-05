@@ -203,6 +203,32 @@ describe('workflow state layer', () => {
 		expect(result.completedStages).toContain('verify');
 	});
 
+	test('legacy standard verify states survive a read to write round-trip', () => {
+		const legacyState = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'verify',
+			previousStage: 'premerge',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy write compatibility',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(() => writeWorkflowState(legacyState)).not.toThrow();
+		expect(readWorkflowState(writeWorkflowState(legacyState))).toMatchObject({
+			currentStage: 'verify',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
+			workflowDecisions: {
+				classification: 'standard',
+			},
+		});
+	});
+
 	test('readWorkflowState preserves legacy override records with missing fields', () => {
 		const result = readWorkflowState(JSON.stringify({
 			schemaVersion: 1,

@@ -127,8 +127,8 @@ describe('AGENTS.md generation', () => {
       JSON.stringify({ name: 'opencode-native-test', version: '1.0.0' }, null, 2)
     );
 
-    await withMockSetupTools(tempDir, () =>
-      setupCommand.handler(['--agents', 'opencode', '--skip-external', '--yes'], {}, tempDir)
+    await withMockSetupTools(tempDir, (commandRunner) =>
+      setupCommand.handler(['--agents', 'opencode', '--skip-external', '--yes'], { commandRunner }, tempDir)
     );
 
     const opencodeJsonPath = path.join(tempDir, 'opencode.json');

@@ -222,8 +222,8 @@ describe('GitHub Copilot config generation', () => {
       JSON.stringify({ name: 'copilot-native-test', version: '1.0.0' }, null, 2)
     );
 
-    await withMockSetupTools(tempDir, () =>
-      setupCommand.handler(['--agents', 'copilot', '--skip-external', '--yes'], {}, tempDir)
+    await withMockSetupTools(tempDir, (commandRunner) =>
+      setupCommand.handler(['--agents', 'copilot', '--skip-external', '--yes'], { commandRunner }, tempDir)
     );
 
     const rootConfigPath = path.join(tempDir, '.github', 'copilot-instructions.md');

@@ -28,6 +28,25 @@ function prepareMockSetupTools(projectRoot) {
   return mockBinDir;
 }
 
+function createMockSetupCommandRunner() {
+  return (command) => {
+    switch (command) {
+      case 'git --version':
+        return 'git version 2.42.0';
+      case 'gh --version':
+        return 'gh version 2.81.0';
+      case 'gh auth status':
+        return 'Logged in';
+      case 'bd --version':
+        return 'bd 0.49.1';
+      case 'jq --version':
+        return 'jq-1.8.1';
+      default:
+        return '';
+    }
+  };
+}
+
 async function withMockSetupTools(projectRoot, callback) {
   const previousEnv = {
     INIT_CWD: process.env.INIT_CWD,
@@ -41,7 +60,7 @@ async function withMockSetupTools(projectRoot, callback) {
   process.env.Path = process.env.PATH;
 
   try {
-    return await callback();
+    return await callback(createMockSetupCommandRunner());
   } finally {
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) {
@@ -54,5 +73,6 @@ async function withMockSetupTools(projectRoot, callback) {
 }
 
 module.exports = {
+  createMockSetupCommandRunner,
   withMockSetupTools,
 };

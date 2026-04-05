@@ -5,6 +5,7 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const setupCommand = require('../lib/commands/setup');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
 const { detectHusky } = require('../lib/husky-migration');
+const { createMockSetupCommandRunner } = require('./helpers/setup-command-harness');
 
 const tempDirs = [];
 let serialQueue = Promise.resolve();
@@ -73,7 +74,7 @@ async function runSetup(args, cwd, env = {}) {
       PKG_MANAGER: 'npm',
     });
 
-    await setupCommand.handler(args, {}, cwd);
+    await setupCommand.handler(args, { commandRunner: createMockSetupCommandRunner() }, cwd);
     return {
       status: 0,
       stdout: stdout.join(''),
