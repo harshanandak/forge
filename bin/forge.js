@@ -2541,6 +2541,13 @@ function parseFlags() {
     sync: false,      // Scaffold Beads GitHub sync workflows (--sync)
   };
 
+  // Issue passthrough commands delegate all flags to bd.
+  // Skip global parsing so flags like --type, -p, --help reach the handler intact.
+  const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'issue'];
+  if (issuePassthroughCommands.includes(args[0])) {
+    return flags;
+  }
+
   for (let i = 0; i < args.length;) {
     const arg = args[i];
 
@@ -2572,17 +2579,9 @@ function parseFlags() {
       flags.merge = result.value;
       i = result.nextIndex;
     } else if (arg === '--type' || arg.startsWith('--type=')) {
-      // Issue subcommands (create, update, etc.) pass --type through to bd.
-      // Only parse --type as a workflow profile for non-issue commands.
-      const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'issue'];
-      if (issuePassthroughCommands.includes(args[0])) {
-        i++;
-        if (arg === '--type' && i < args.length) i++; // skip the value too
-      } else {
-        const result = parseTypeFlag(args, i);
-        flags.type = result.value;
-        i = result.nextIndex;
-      }
+      const result = parseTypeFlag(args, i);
+      flags.type = result.value;
+      i = result.nextIndex;
     } else if (arg === '--yes' || arg === '-y') {
       flags.yes = true;
       i++;
