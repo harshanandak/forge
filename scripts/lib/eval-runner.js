@@ -9,6 +9,7 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 const { execSync } = require('node:child_process');
 
 // ── active worktree tracking (cleanup on crash) ─────────────────────
@@ -16,6 +17,17 @@ const { execSync } = require('node:child_process');
 // Prevents orphaned eval-* branches when interrupted.
 // Note: execSync is safe here — all paths are internally generated, never user input.
 const activeEvalWorktrees = new Map(); // path -> branch
+
+/**
+ * Force-remove a directory that git worktree remove may leave behind (Windows).
+ */
+function forceRemoveDir(dirPath) {
+  try {
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    }
+  } catch (_err) { /* best-effort */ }
+}
 
 function cleanupActiveWorktrees() {
   if (activeEvalWorktrees.size === 0) return;
@@ -25,6 +37,7 @@ function cleanupActiveWorktrees() {
     try {
       execSync(`git worktree remove --force "${wtPath}"`, { cwd: repoRoot, stdio: 'pipe' });
     } catch (_err) { /* already removed */ }
+    forceRemoveDir(wtPath);
     if (branch && branch.startsWith('eval-')) {
       try {
         execSync(`git branch -D "${branch}"`, { cwd: repoRoot, stdio: 'pipe' });
@@ -33,6 +46,37 @@ function cleanupActiveWorktrees() {
   }
   try { execSync('git worktree prune', { cwd: repoRoot, stdio: 'pipe' }); } catch (_err) { /* ignore */ }
   activeEvalWorktrees.clear();
+}
+
+/**
+ * Remove stale eval-* directories left behind by crashed runs.
+ * Git has already forgotten them (worktree prune), but the directories persist on Windows.
+ */
+function cleanupStaleEvalWorktrees() {
+  try {
+    const worktreesDir = getWorktreesDir();
+    if (!fs.existsSync(worktreesDir)) return;
+
+    // Get the list of paths git still knows about
+    const repoRoot = getRepoRoot();
+    const knownRaw = execSync('git worktree list --porcelain', {
+      cwd: repoRoot, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const knownPaths = new Set(
+      knownRaw.split('\n')
+        .filter((l) => l.startsWith('worktree '))
+        .map((l) => l.slice('worktree '.length).replace(/\\/g, '/'))
+    );
+
+    const entries = fs.readdirSync(worktreesDir);
+    for (const entry of entries) {
+      if (!entry.startsWith('eval-')) continue;
+      const fullPath = path.join(worktreesDir, entry).replace(/\\/g, '/');
+      if (!knownPaths.has(fullPath)) {
+        forceRemoveDir(path.join(worktreesDir, entry));
+      }
+    }
+  } catch (_err) { /* best-effort — don't block eval creation */ }
 }
 
 process.on('exit', cleanupActiveWorktrees);
@@ -78,6 +122,9 @@ function getWorktreesDir() {
  * @returns {Promise<{ path: string, branch: string }>}
  */
 async function createEvalWorktree() {
+  // Self-heal: remove stale eval dirs from previous crashed runs
+  cleanupStaleEvalWorktrees();
+
   const timestamp = Date.now();
   const pid = process.pid;
   const name = `eval-${timestamp}-${pid}`;
@@ -127,6 +174,9 @@ async function destroyEvalWorktree(worktreePath) {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+
+  // Windows: git worktree remove often leaves the directory behind
+  forceRemoveDir(worktreePath);
 
   // Prune to clean up references
   execSync('git worktree prune', {
