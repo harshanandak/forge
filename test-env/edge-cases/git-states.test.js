@@ -1,7 +1,7 @@
 // Test: Git State Edge Cases
 // Validates git state warnings and blocking using git-state-checker.js
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 

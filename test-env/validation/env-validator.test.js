@@ -1,7 +1,7 @@
 // Test: Env Validator Helper
 // Tests for .env.local file validation and preservation
 
-const { describe, test, before, after } = require('node:test');
+const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

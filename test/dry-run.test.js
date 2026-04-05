@@ -3,6 +3,7 @@ const { ActionCollector } = require('../lib/setup-utils');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { prepareMockSetupTools } = require('./helpers/setup-command-harness');
 
 // Helper: create a unique temp directory for each test
 function makeTmpDir() {
@@ -21,6 +22,9 @@ function rmTmpDir(dir) {
 // Helper: run forge CLI as subprocess and capture output
 async function runForge(args, cwd) {
   const forgeBin = path.resolve(__dirname, '..', 'bin', 'forge.js');
+  const mockToolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-tools-'));
+  const mockBinDir = prepareMockSetupTools(mockToolsRoot);
+  const inheritedPath = process.env.PATH || process.env.Path || '';
   const proc = globalThis.Bun.spawn(['bun', 'run', forgeBin, ...args], {
     cwd,
     stdout: 'pipe',
@@ -29,12 +33,16 @@ async function runForge(args, cwd) {
       ...process.env,
       // Force non-interactive to avoid prompts
       CI: '1',
+      PATH: `${mockBinDir}${path.delimiter}${inheritedPath}`,
+      Path: `${mockBinDir}${path.delimiter}${inheritedPath}`,
     },
   });
 
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();
   const exitCode = await proc.exited;
+
+  rmTmpDir(mockToolsRoot);
 
   return { stdout, stderr, exitCode };
 }

@@ -563,9 +563,54 @@ cmd_auto_label() {
     echo "No label changes needed for PR #$pr_number"
   fi
 }
+collect_worktree_entries() {
+  local git_cmd porcelain current_path current_branch entries line separator
+  entries=""
+  current_path=""
+  current_branch=""
+  separator=$'\t'
+  git_cmd="${GIT_CMD:-git}"
+  porcelain="$("$git_cmd" worktree list --porcelain 2>/dev/null || true)"
+
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        current_path="${line#worktree }"
+        ;;
+      branch\ refs/heads/*)
+        current_branch="${line#branch refs/heads/}"
+        ;;
+      "")
+        if [[ -n "$current_path" ]]; then
+          if [[ -n "$entries" ]]; then
+            entries+=$'\n'
+          fi
+          entries+="${current_path}${separator}${current_branch}"
+        fi
+        current_path=""
+        current_branch=""
+        ;;
+    esac
+  done <<EOF
+$porcelain
+
+EOF
+
+  if [[ -n "$current_path" ]]; then
+    if [[ -n "$entries" ]]; then
+      entries+=$'\n'
+    fi
+    entries+="${current_path}${separator}${current_branch}"
+  fi
+
+  printf '%s' "$entries"
+}
+
 cmd_stale_worktrees() {
   local threshold_hours=48
-  local worktrees_dir=".worktrees"
+  local worktree_filter=""
+  local git_cmd
+  git_cmd="${GIT_CMD:-git}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -578,17 +623,19 @@ cmd_stale_worktrees() {
           return 1
         fi
         shift ;;
-      --dir=*) worktrees_dir="${1#--dir=}"; shift ;;
+      --dir=*) worktree_filter="${1#--dir=}"; shift ;;
       *) echo "Error: unknown flag '$1'" >&2; return 1 ;;
     esac
   done
 
   local repo_root
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root="."
-  local wt_path="$repo_root/$worktrees_dir"
+  repo_root="$("$git_cmd" rev-parse --show-toplevel 2>/dev/null)" || repo_root="."
 
-  if [[ ! -d "$wt_path" ]]; then
-    echo "No worktrees found (directory $worktrees_dir does not exist)"
+  local worktree_entries
+  worktree_entries="$(collect_worktree_entries)"
+
+  if [[ -z "$worktree_entries" ]]; then
+    echo "No worktrees found"
     return 0
   fi
 
@@ -596,28 +643,29 @@ cmd_stale_worktrees() {
   local found_any=0
   local stale_count=0
 
-  for entry in "$wt_path"/*/; do
-    [[ -d "$entry" ]] || continue
-    found_any=1
+  while IFS=$'\t' read -r entry_path entry_branch; do
+    [[ -n "$entry_path" ]] || continue
 
-    # Resolve real path and verify it's under repo root
-    local real_path
-    real_path="$(realpath "$entry" 2>/dev/null)" || continue
-    local real_root
-    real_root="$(realpath "$repo_root" 2>/dev/null)" || continue
-
-    if [[ "$real_path" != "$real_root/"* ]]; then
-      echo "WARNING: skipping symlink outside repo: $entry" >&2
+    if [[ "$entry_path" == "$repo_root" ]]; then
       continue
     fi
 
+    if [[ -n "$worktree_filter" ]] && [[ "$entry_path" != *"$worktree_filter"* ]]; then
+      continue
+    fi
+
+    found_any=1
+
     # Get last commit date
     local last_commit_date
-    last_commit_date="$(git -C "$entry" log -1 --format=%ci 2>/dev/null)" || continue
+    last_commit_date="$("$git_cmd" -C "$entry_path" log -1 --format=%ci 2>/dev/null)" || continue
 
     # Get branch name
-    local branch_name
-    branch_name="$(git -C "$entry" branch --show-current 2>/dev/null)" || branch_name="unknown"
+    local branch_name="${entry_branch:-}"
+    if [[ -z "$branch_name" ]]; then
+      branch_name="$("$git_cmd" -C "$entry_path" branch --show-current 2>/dev/null)" || branch_name="unknown"
+    fi
+    branch_name="${branch_name:-unknown}"
 
     # Calculate age in hours
     local last_epoch now_epoch
@@ -628,10 +676,12 @@ cmd_stale_worktrees() {
     if [[ "$age_hours" -ge "$threshold_hours" ]]; then
       stale_count=$((stale_count + 1))
       local dir_name
-      dir_name="$(basename "$entry")"
+      dir_name="$(basename "$entry_path")"
       echo "STALE: $dir_name (branch: $branch_name, last commit: ${age_hours}h ago)"
     fi
-  done
+  done <<EOF
+$worktree_entries
+EOF
 
   if [[ "$found_any" -eq 0 ]]; then
     echo "No worktrees found"

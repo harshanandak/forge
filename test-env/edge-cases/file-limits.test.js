@@ -1,7 +1,7 @@
 // Test: File Size Limit Edge Cases
 // Validates warnings for oversized files (non-blocking)
 
-const { describe, test, before, after } = require('node:test');
+const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

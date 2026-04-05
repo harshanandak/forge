@@ -6,6 +6,9 @@ const os = require('node:os');
 
 // Module under test
 const { generateCopilotConfig } = require('../lib/agents-config');
+const copilotPlugin = require('../lib/agents/copilot.plugin.json');
+const setupCommand = require('../lib/commands/setup');
+const { withMockSetupTools } = require('./helpers/setup-command-harness');
 
 describe('GitHub Copilot config generation', () => {
   let tempDir;
@@ -211,5 +214,40 @@ describe('GitHub Copilot config generation', () => {
 
     // Should mention OWASP or security
     expect(content.includes('OWASP') || content.includes('security') || content.includes('Security')).toBeTruthy();
+  });
+
+  test('should wire setup to native Copilot config paths', async () => {
+    await fs.promises.writeFile(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'copilot-native-test', version: '1.0.0' }, null, 2)
+    );
+
+    await withMockSetupTools(tempDir, (commandRunner) =>
+      setupCommand.handler(['--agents', 'copilot', '--skip-external', '--yes'], { commandRunner }, tempDir)
+    );
+
+    const rootConfigPath = path.join(tempDir, '.github', 'copilot-instructions.md');
+    const instructionsPath = path.join(tempDir, '.github', 'instructions', 'typescript.instructions.md');
+    const testingPath = path.join(tempDir, '.github', 'instructions', 'testing.instructions.md');
+    const redPromptPath = path.join(tempDir, '.github', 'prompts', 'red.prompt.md');
+    const greenPromptPath = path.join(tempDir, '.github', 'prompts', 'green.prompt.md');
+
+    expect(fs.existsSync(rootConfigPath)).toBeTruthy();
+    expect(fs.existsSync(instructionsPath)).toBeTruthy();
+    expect(fs.existsSync(testingPath)).toBeTruthy();
+    expect(fs.existsSync(redPromptPath)).toBeTruthy();
+    expect(fs.existsSync(greenPromptPath)).toBeTruthy();
+
+    const rootConfigContent = await fs.promises.readFile(rootConfigPath, 'utf-8');
+    expect(rootConfigContent.startsWith('<!-- This file is a copy of AGENTS.md.')).toBeFalsy();
+    expect(rootConfigContent.includes('GitHub Copilot')).toBeTruthy();
+  });
+
+  test('should declare Copilot parity against native instructions and prompts', () => {
+    expect(copilotPlugin.files.rootConfig).toBe('.github/copilot-instructions.md');
+    expect(copilotPlugin.directories.instructions).toBe('.github/instructions');
+    expect(copilotPlugin.directories.prompts).toBe('.github/prompts');
+    expect(copilotPlugin.capabilities.skills).toBe(false);
+    expect(copilotPlugin.setup.customSetup).toBe('copilot');
   });
 });

@@ -20,8 +20,24 @@
 
 set -euo pipefail
 
+# ── Source cross-dev awareness scripts ────────────────────────────────
+# file-index.sh: file_index_read for reading file index entries
+# sync-utils.sh: get_session_identity for current developer identity
+
+_SMART_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$_SMART_STATUS_DIR/lib/sanitize.sh" ]; then
+  source "$_SMART_STATUS_DIR/lib/sanitize.sh"
+fi
+if [ -f "$_SMART_STATUS_DIR/file-index.sh" ]; then
+  source "$_SMART_STATUS_DIR/file-index.sh"
+fi
+if [ -f "$_SMART_STATUS_DIR/sync-utils.sh" ]; then
+  source "$_SMART_STATUS_DIR/sync-utils.sh"
+fi
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+if ! declare -F sanitize >/dev/null; then
 # Sanitize a string: strip shell-injection patterns (OWASP A03)
 # Removes: double quotes, $(...), backticks, semicolons, and newlines
 sanitize() {
@@ -38,17 +54,6 @@ sanitize() {
   val="$(printf '%s' "$val" | tr '\n' ' ')"
   printf '%s' "$val"
 }
-
-# ── Source cross-dev awareness scripts ────────────────────────────────
-# file-index.sh: file_index_read for reading file index entries
-# sync-utils.sh: get_session_identity for current developer identity
-
-_SMART_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$_SMART_STATUS_DIR/file-index.sh" ]; then
-  source "$_SMART_STATUS_DIR/file-index.sh"
-fi
-if [ -f "$_SMART_STATUS_DIR/sync-utils.sh" ]; then
-  source "$_SMART_STATUS_DIR/sync-utils.sh"
 fi
 
 # ── Dependency check ────────────────────────────────────────────────────
@@ -117,6 +122,11 @@ done
 # not found" error, runs bd init --force + bd backup restore, then retries.
 # Capture stderr into variable (2>&1 redirects stderr to stdout for capture,
 # then >/dev/null discards original stdout so only errors remain).
+if ! command -v "$BD" >/dev/null 2>&1; then
+  echo "Error: bd is required but not found." >&2
+  exit 1
+fi
+
 _bd_list_err="$("$BD" list --json --limit 0 2>&1 >/dev/null || true)"
 if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
   # Derive prefix from repo root directory name (not pwd, which could be a subdirectory)

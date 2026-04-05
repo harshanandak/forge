@@ -1,7 +1,7 @@
 // Test: Prerequisites Validation Edge Cases
 // Validates checkPrerequisites() detection of missing tools and version constraints
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');

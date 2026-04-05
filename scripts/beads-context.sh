@@ -7,7 +7,7 @@
 #   set-acceptance   <issue-id> "<criteria-text>"
 #   update-progress  <issue-id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>
 #   parse-progress   <issue-id>
-#   stage-transition <issue-id> <completed-stage> <next-stage> [--summary "..."] [--decisions "..."] [--artifacts "..."] [--next "..."]
+#   stage-transition <issue-id> <completed-stage> <next-stage> [--summary "..."] [--decisions "..."] [--artifacts "..."] [--next "..."] [--workflow-state "{...}"]
 #   validate         <issue-id>
 #
 # Cross-platform: works on Windows (Git Bash), macOS, and Linux.
@@ -30,7 +30,7 @@ Subcommands:
   set-acceptance   <issue-id> "<criteria-text>"
   update-progress  <issue-id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>
   parse-progress   <issue-id>
-  stage-transition <issue-id> <completed-stage> <next-stage> [--summary "..."] [--decisions "..."] [--artifacts "..."] [--next "..."]
+  stage-transition <issue-id> <completed-stage> <next-stage> [--summary "..."] [--decisions "..."] [--artifacts "..."] [--next "..."] [--workflow-state "{...}"]
   validate         <issue-id>
 EOF
   exit 1
@@ -238,7 +238,7 @@ cmd_parse_progress() {
 
 cmd_stage_transition() {
   if [[ $# -lt 3 ]]; then
-    echo "Usage: beads-context.sh stage-transition <issue-id> <completed-stage> <next-stage> [--summary \"...\"] [--decisions \"...\"] [--artifacts \"...\"] [--next \"...\"]" >&2
+    echo "Usage: beads-context.sh stage-transition <issue-id> <completed-stage> <next-stage> [--summary \"...\"] [--decisions \"...\"] [--artifacts \"...\"] [--next \"...\"] [--workflow-state \"{...}\"]" >&2
     exit 1
   fi
 
@@ -250,7 +250,7 @@ cmd_stage_transition() {
   shift 3
 
   # Parse optional flags
-  local flag_summary="" flag_decisions="" flag_artifacts="" flag_next=""
+  local flag_summary="" flag_decisions="" flag_artifacts="" flag_next="" flag_workflow_state=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --summary)
@@ -268,6 +268,10 @@ cmd_stage_transition() {
       --next)
         shift
         flag_next="$(sanitize "${1:-}")"
+        ;;
+      --workflow-state)
+        shift
+        flag_workflow_state="$(sanitize_config_value "${1:-}")"
         ;;
       *)
         # Ignore unknown flags for forward compatibility
@@ -295,6 +299,10 @@ Artifacts: ${flag_artifacts}"
   if [[ -n "$flag_next" ]]; then
     comment="${comment}
 Next: ${flag_next}"
+  fi
+  if [[ -n "$flag_workflow_state" ]]; then
+    comment="${comment}
+WorkflowState: ${flag_workflow_state}"
   fi
 
   if ! bd_comment "$issue_id" "$comment" > /dev/null; then

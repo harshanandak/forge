@@ -1,9 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
-// Module under test
 const { generateKiloConfig, generateOpenCodeConfig } = require('../lib/agents-config');
 
 describe('Kilo Code config generation', () => {
@@ -19,52 +18,63 @@ describe('Kilo Code config generation', () => {
     }
   });
 
-  test('should create .kilo.md file', async () => {
+  test('should create native .kilocode workflow, rules, and skill files', async () => {
     await generateKiloConfig(tempDir);
 
-    const kiloMdPath = path.join(tempDir, '.kilo.md');
-    const exists = await fs.promises.access(kiloMdPath).then(() => true).catch(() => false);
+    const workflowPath = path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md');
+    const rulesPath = path.join(tempDir, '.kilocode', 'rules', 'workflow.md');
+    const skillPath = path.join(tempDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md');
+    const legacyPath = path.join(tempDir, '.kilo.md');
 
-    expect(exists).toBeTruthy();
+    expect(await fs.promises.access(workflowPath).then(() => true).catch(() => false)).toBeTruthy();
+    expect(await fs.promises.access(rulesPath).then(() => true).catch(() => false)).toBeTruthy();
+    expect(await fs.promises.access(skillPath).then(() => true).catch(() => false)).toBeTruthy();
+    expect(await fs.promises.access(legacyPath).then(() => true).catch(() => false)).toBeFalsy();
 
-    const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
-
-    // Should include Forge workflow
+    const content = await fs.promises.readFile(workflowPath, 'utf-8');
     expect(content.includes('Forge')).toBeTruthy();
     expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
-
-    // Should include all workflow stages
     expect(content.includes('/status')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();
     expect(content.includes('/validate')).toBeTruthy();
-
-    // Should include TDD guidance
     expect(content.includes('TDD')).toBeTruthy();
   });
 
-  test('should be plain markdown without frontmatter', async () => {
+  test('should generate markdown-based native Kilo surfaces', async () => {
     await generateKiloConfig(tempDir);
 
-    const kiloMdPath = path.join(tempDir, '.kilo.md');
-    const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
+    const workflowContent = await fs.promises.readFile(
+      path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md'),
+      'utf-8'
+    );
+    const rulesContent = await fs.promises.readFile(
+      path.join(tempDir, '.kilocode', 'rules', 'workflow.md'),
+      'utf-8'
+    );
+    const skillContent = await fs.promises.readFile(
+      path.join(tempDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md'),
+      'utf-8'
+    );
 
-    // Kilo uses plain markdown
-    expect(content.startsWith('#')).toBeTruthy();
+    expect(workflowContent.startsWith('---')).toBeTruthy();
+    expect(rulesContent.startsWith('---')).toBeTruthy();
+    expect(skillContent.startsWith('---')).toBeTruthy();
   });
 
-  test('should not overwrite existing .kilo.md by default', async () => {
-    const kiloMdPath = path.join(tempDir, '.kilo.md');
-    const existingContent = '# Custom Kilo Config\n\nDo not overwrite!';
-    await fs.promises.writeFile(kiloMdPath, existingContent);
+  test('should not overwrite existing native Kilo workflow by default', async () => {
+    const workflowPath = path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md');
+    const existingContent = '---\ndescription: "Custom Kilo workflow"\n---\n# Keep me';
+    await fs.promises.mkdir(path.dirname(workflowPath), { recursive: true });
+    await fs.promises.writeFile(workflowPath, existingContent);
 
     await generateKiloConfig(tempDir, { overwrite: false });
 
-    const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
+    const content = await fs.promises.readFile(workflowPath, 'utf-8');
     expect(content).toBe(existingContent);
   });
 
-  test('should include project metadata', async () => {
+  test('should include project metadata in native Kilo workflow', async () => {
     const packageJson = {
       name: 'test-project',
       dependencies: { typescript: '^5.0.0' },
@@ -74,8 +84,8 @@ describe('Kilo Code config generation', () => {
 
     await generateKiloConfig(tempDir);
 
-    const kiloMdPath = path.join(tempDir, '.kilo.md');
-    const content = await fs.promises.readFile(kiloMdPath, 'utf-8');
+    const workflowPath = path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md');
+    const content = await fs.promises.readFile(workflowPath, 'utf-8');
 
     expect(content.includes('TypeScript') || content.includes('bun')).toBeTruthy();
   });
@@ -103,8 +113,6 @@ describe('OpenCode config generation', () => {
     expect(exists).toBeTruthy();
 
     const content = await fs.promises.readFile(opencodeJsonPath, 'utf-8');
-
-    // Should be valid JSON
     const json = JSON.parse(content);
     expect(json).toBeTruthy();
   });
@@ -116,7 +124,6 @@ describe('OpenCode config generation', () => {
     const content = await fs.promises.readFile(opencodeJsonPath, 'utf-8');
     const json = JSON.parse(content);
 
-    // Should have agent or agents configuration
     expect(json.agent || json.agents).toBeTruthy();
   });
 
@@ -137,8 +144,7 @@ describe('OpenCode config generation', () => {
 
     expect(files.length > 0).toBeTruthy();
 
-    // Check for plan agent
-    const planAgent = files.find(f => f.includes('plan'));
+    const planAgent = files.find((file) => file.includes('plan'));
     expect(planAgent).toBeTruthy();
   });
 
@@ -152,11 +158,8 @@ describe('OpenCode config generation', () => {
 
     const content = await fs.promises.readFile(planAgentPath, 'utf-8');
 
-    // Should have frontmatter
     expect(content.startsWith('---')).toBeTruthy();
     expect(content.includes('description:')).toBeTruthy();
-
-    // Should mention planning
     expect(content.includes('plan') || content.includes('Plan')).toBeTruthy();
   });
 
@@ -178,7 +181,6 @@ describe('OpenCode config generation', () => {
     const content = await fs.promises.readFile(opencodeJsonPath, 'utf-8');
     const json = JSON.parse(content);
 
-    // Should have mcp_servers configuration
     expect(json.mcp_servers).toBeTruthy();
   });
 });

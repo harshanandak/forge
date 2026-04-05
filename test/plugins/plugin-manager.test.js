@@ -7,68 +7,39 @@ const {
 } = require('../../lib/plugin-manager');
 
 function makePlugin(overrides = {}) {
+  const directories = {
+    commands: '.example/commands',
+    ...(overrides.directories || {}),
+  };
+  const hooks = overrides.capabilities?.hooks ?? { blocking: true };
+  const capabilities = {
+    commands: true,
+    rules: true,
+    skills: false,
+    mcp: true,
+    contextMode: true,
+    ...(overrides.capabilities || {}),
+    hooks,
+  };
+  const support = {
+    status: 'supported',
+    surface: 'cli-first',
+    ...(overrides.support || {}),
+    install: {
+      required: true,
+      repairRequired: false,
+      ...(overrides.support?.install || {}),
+    },
+  };
+
   return {
     id: 'example-agent',
     name: 'Example Agent',
     version: '1.0.0',
-    directories: {
-      commands: '.example/commands',
-    },
-    capabilities: {
-      commands: true,
-      rules: true,
-      skills: false,
-      mcp: true,
-      contextMode: true,
-      hooks: { blocking: true },
-    },
-    support: {
-      status: 'supported',
-      surface: 'cli-first',
-      install: {
-        required: true,
-        repairRequired: false,
-      },
-    },
     ...overrides,
-    directories: {
-      ...{
-        commands: '.example/commands',
-      },
-      ...(overrides.directories || {}),
-    },
-    capabilities: {
-      ...{
-        commands: true,
-        rules: true,
-        skills: false,
-        mcp: true,
-        contextMode: true,
-        hooks: { blocking: true },
-      },
-      ...(overrides.capabilities || {}),
-      hooks: overrides.capabilities?.hooks ?? {
-        blocking: true,
-      },
-    },
-    support: {
-      ...{
-        status: 'supported',
-        surface: 'cli-first',
-        install: {
-          required: true,
-          repairRequired: false,
-        },
-      },
-      ...(overrides.support || {}),
-      install: {
-        ...{
-          required: true,
-          repairRequired: false,
-        },
-        ...(overrides.support?.install || {}),
-      },
-    },
+    directories,
+    capabilities,
+    support,
   };
 }
 

@@ -1,5 +1,5 @@
 /**
- * Tests for getWorkflowCommands() — filesystem-derived command list.
+ * Tests for getWorkflowCommands() and Codex skill generation.
  *
  * Verifies that workflow commands are read from .claude/commands/*.md
  * rather than hardcoded in an array.
@@ -7,14 +7,29 @@
 
 const path = require('path');
 const fs = require('fs');
-const { describe, test, expect } = require('bun:test');
+const os = require('os');
+const { afterEach, describe, test, expect } = require('bun:test');
+const { listCodexSkillEntries } = require('../lib/codex-skills');
 
-// We will import getWorkflowCommands from bin/forge.js once it is exported
+const tempDirs = [];
+
+function makeTempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-codex-skills-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+});
+
 let getWorkflowCommands;
 try {
   ({ getWorkflowCommands } = require('../bin/forge.js'));
 } catch (_e) {
-  // Will fail in RED phase — expected
+  // Expected during RED phases in earlier task history.
 }
 
 describe('getWorkflowCommands', () => {
@@ -23,12 +38,11 @@ describe('getWorkflowCommands', () => {
     expect(Array.isArray(commands)).toBe(true);
     expect(commands.length).toBeGreaterThan(0);
 
-    // Should match the actual .md files in .claude/commands/
     const packageDir = path.resolve(__dirname, '..');
     const commandsDir = path.join(packageDir, '.claude', 'commands');
     const expected = fs.readdirSync(commandsDir)
-      .filter(f => f.endsWith('.md'))
-      .map(f => f.replace(/\.md$/, ''))
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => file.replace(/\.md$/, ''))
       .sort();
 
     expect(commands.sort()).toEqual(expected);
@@ -36,17 +50,15 @@ describe('getWorkflowCommands', () => {
 
   test('filters out non-.md files', () => {
     const commands = getWorkflowCommands();
-    // Every returned name should correspond to a .md file
     const packageDir = path.resolve(__dirname, '..');
     const commandsDir = path.join(packageDir, '.claude', 'commands');
-    for (const cmd of commands) {
-      const mdPath = path.join(commandsDir, `${cmd}.md`);
+    for (const command of commands) {
+      const mdPath = path.join(commandsDir, `${command}.md`);
       expect(fs.existsSync(mdPath)).toBe(true);
     }
   });
 
   test('returns empty array and warns when directory does not exist', () => {
-    // Mock readdirSync to throw only for .claude/commands path
     const origReaddir = fs.readdirSync;
     const warns = [];
     const origWarn = console.warn;
@@ -80,8 +92,6 @@ describe('hardcoded command count and copyFile warning', () => {
   });
 
   test('copyFile missing-source warning is not gated behind DEBUG', () => {
-    // The pattern "else if (process.env.DEBUG) { ... Source file not found"
-    // should NOT exist — warning should always fire
     const hasDebugGate = /else if \(process\.env\.DEBUG\)\s*\{[^}]*Source file not found/.test(forgeSource);
     expect(hasDebugGate).toBe(false);
   });
@@ -98,14 +108,13 @@ describe('agent count consistency', () => {
   const agentsDir = path.resolve(__dirname, '..', 'lib', 'agents');
   let pluginFiles = [];
   try {
-    pluginFiles = fs.readdirSync(agentsDir).filter(f => f.endsWith('.plugin.json'));
+    pluginFiles = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.plugin.json'));
   } catch (_e) {
-    // lib/agents/ may not exist in all environments
+    // lib/agents may not exist in all environments.
   }
 
   test('package.json description mentions correct agent count or "all AI agents"', () => {
     const desc = packageJson.description;
-    // Must either say "ALL AI" (case-insensitive) or mention the actual plugin count
     const mentionsAll = /all ai/i.test(desc);
     const mentionsCount = desc.includes(String(pluginFiles.length));
     expect(mentionsAll || mentionsCount).toBe(true);
@@ -113,7 +122,6 @@ describe('agent count consistency', () => {
 
   test('README agent count is consistent with lib/agents/*.plugin.json count', () => {
     const actualCount = pluginFiles.length;
-    // Check all numeric agent count claims in README
     const countPatterns = [
       /works with \*\*(\d+) (?:AI )?(?:coding )?agents\*\*/i,
       /Multi-Agent.*?(\d+) agents/i,
@@ -124,6 +132,49 @@ describe('agent count consistency', () => {
         expect(Number(match[1])).toBe(actualCount);
       }
     }
+  });
+});
+
+describe('Codex plugin metadata', () => {
+  const codexPlugin = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '..', 'lib', 'agents', 'codex.plugin.json'), 'utf-8')
+  );
+
+  test('declares Codex as a skills-backed adapter', () => {
+    expect(codexPlugin.capabilities.skills).toBe(true);
+    expect(codexPlugin.setup.createSkill).toBe(true);
+  });
+
+  test('keeps the Codex skill directory aligned with stage skills', () => {
+    expect(codexPlugin.directories.skills).toBe('.codex/skills');
+  });
+});
+
+describe('Codex skill entry generation', () => {
+  test('returns an empty list when packaged Codex stage skills are missing', () => {
+    const tmpDir = makeTempDir();
+
+    expect(listCodexSkillEntries(tmpDir)).toEqual([]);
+  });
+
+  test('builds per-stage Codex skills from packaged skill sources', () => {
+    const tmpDir = makeTempDir();
+    const skillsDir = path.join(tmpDir, '.codex', 'skills', 'plan');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillsDir, 'SKILL.md'),
+      '---\ndescription: Plan workflow\nmode: code\n---\n# Plan\nUse Forge runtime.\n'
+    );
+
+    const entries = listCodexSkillEntries(tmpDir);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      commandName: 'plan',
+      dir: '.codex/skills/plan/',
+      filename: 'SKILL.md',
+      content: '---\ndescription: Plan workflow\nmode: code\n---\n\n> Forge stage adapter\n\nBefore executing this workflow, invoke `forge plan` so Forge can enforce stage order, runtime prerequisites, and override rules.\nIf Forge blocks the stage or asks for an explicit override payload, stop and resolve that first.\n# Plan\nUse Forge runtime.\n',
+    });
   });
 });
 

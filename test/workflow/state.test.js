@@ -3,6 +3,9 @@ const { describe, expect, test } = require('bun:test');
 const {
 	STAGE_IDS,
 	STAGE_MODEL,
+	WORKFLOW_STAGE_MATRIX,
+	WORKFLOW_TERMINAL_STAGES,
+	getWorkflowPath,
 } = require('../../lib/workflow/stages.js');
 
 const {
@@ -13,7 +16,7 @@ const {
 } = require('../../lib/workflow/state.js');
 
 describe('workflow state layer', () => {
-	test('exports canonical stage ids for all seven workflow stages', () => {
+	test('exports canonical stage ids and the documented workflow matrix', () => {
 		expect(STAGE_IDS).toEqual([
 			'plan',
 			'dev',
@@ -25,9 +28,28 @@ describe('workflow state layer', () => {
 		]);
 
 		expect(Object.keys(STAGE_MODEL)).toEqual(STAGE_IDS);
+		expect(getWorkflowPath('standard')).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'premerge']);
+		expect(getWorkflowPath('critical')).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify']);
+		expect(getWorkflowPath('refactor')).toEqual(['plan', 'dev', 'validate', 'ship', 'premerge']);
+		expect(getWorkflowPath('simple')).toEqual(['dev', 'validate', 'ship']);
+		expect(getWorkflowPath('hotfix')).toEqual(['dev', 'validate', 'ship']);
+		expect(getWorkflowPath('docs')).toEqual(['verify', 'ship']);
+		expect(WORKFLOW_STAGE_MATRIX.standard).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'premerge']);
+		expect(WORKFLOW_TERMINAL_STAGES).toEqual({
+			critical: 'verify',
+			standard: 'premerge',
+			refactor: 'premerge',
+			simple: 'ship',
+			hotfix: 'ship',
+			docs: 'ship',
+		});
+		expect(STAGE_MODEL.plan.workflows.standard.nextStages).toEqual(['dev']);
+		expect(STAGE_MODEL.verify.workflows.docs.nextStages).toEqual(['ship']);
+		expect(STAGE_MODEL.ship.workflows.standard.terminal).toBe(false);
+		expect(STAGE_MODEL.ship.workflows.simple.terminal).toBe(true);
 	});
 
-	test('rejects invalid workflow transitions', () => {
+	test('rejects invalid workflow transitions but accepts classification-aware routes', () => {
 		expect(() =>
 			serializeWorkflowState({
 				currentStage: 'ship',
@@ -43,6 +65,22 @@ describe('workflow state layer', () => {
 				parallelTracks: [],
 			}),
 		).toThrow(/invalid workflow transition/i);
+
+		expect(() =>
+			serializeWorkflowState({
+				currentStage: 'ship',
+				previousStage: 'verify',
+				completedStages: ['verify'],
+				skippedStages: [],
+				workflowDecisions: {
+					classification: 'docs',
+					reason: 'Docs workflow',
+					userOverride: false,
+					overrides: [],
+				},
+				parallelTracks: [],
+			}),
+		).not.toThrow();
 	});
 
 	test('serializes a valid transition into structured Beads metadata', () => {
@@ -81,14 +119,14 @@ describe('workflow state layer', () => {
 		});
 
 		expect(payload).toMatchObject({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			currentStage: 'dev',
 			completedStages: ['plan'],
 			skippedStages: [],
 			workflowDecisions: {
 				classification: 'standard',
 				reason: 'Promoted after plan approval',
-				userOverride: false,
+				userOverride: true,
 			},
 		});
 
@@ -108,7 +146,156 @@ describe('workflow state layer', () => {
 		expect(readWorkflowState(writeWorkflowState(payload))).toEqual(payload);
 	});
 
-	test('normalizes override records before persistence', () => {
+	test('readWorkflowState backfills missing legacy classification to standard', () => {
+		const result = readWorkflowState(JSON.stringify({
+			currentStage: 'dev',
+			completedStages: ['plan'],
+			skippedStages: [],
+			workflowDecisions: {
+				reason: 'legacy state',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.workflowDecisions.classification).toBe('standard');
+		expect(result.currentStage).toBe('dev');
+	});
+
+	test('readWorkflowState preserves legacy standard workflows that reach verify', () => {
+		const result = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'verify',
+			previousStage: 'premerge',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy standard workflow',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.currentStage).toBe('verify');
+		expect(result.workflowDecisions.classification).toBe('standard');
+	});
+
+	test('readWorkflowState preserves schemaVersion 1 standard workflows with verify in completed stages', () => {
+		const result = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'verify',
+			previousStage: 'premerge',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy completed verify state',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.currentStage).toBe('verify');
+		expect(result.completedStages).toContain('verify');
+	});
+
+	test('legacy standard verify states survive a read to write round-trip', () => {
+		const legacyState = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'verify',
+			previousStage: 'premerge',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy write compatibility',
+				userOverride: false,
+				overrides: [],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(() => writeWorkflowState(legacyState)).not.toThrow();
+		expect(readWorkflowState(writeWorkflowState(legacyState))).toMatchObject({
+			currentStage: 'verify',
+			completedStages: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
+			workflowDecisions: {
+				classification: 'standard',
+			},
+		});
+	});
+
+	test('readWorkflowState preserves legacy override records with missing fields', () => {
+		const result = readWorkflowState(JSON.stringify({
+			schemaVersion: 1,
+			currentStage: 'dev',
+			completedStages: ['plan'],
+			skippedStages: [],
+			workflowDecisions: {
+				classification: 'standard',
+				reason: 'legacy override state',
+				userOverride: false,
+				overrides: [
+					{
+						type: 'manual',
+						fromStage: null,
+						toStage: null,
+						reason: '',
+						actor: 'legacy-agent',
+						recordedAt: '2026-04-03T00:00:00.000Z',
+					},
+				],
+			},
+			parallelTracks: [],
+		}));
+
+		expect(result.workflowDecisions.overrides).toEqual([
+			expect.objectContaining({
+				type: 'manual',
+				fromStage: null,
+				toStage: null,
+				reason: '',
+				actor: 'legacy-agent',
+			}),
+		]);
+	});
+
+	test('readWorkflowState raises a descriptive error for malformed JSON', () => {
+		expect(() => readWorkflowState('{"currentStage":"dev"')).toThrow(/Failed to parse workflow state/i);
+	});
+
+	test('requires explicit structured overrides before persistence', () => {
+		expect(() =>
+			serializeWorkflowState({
+				currentStage: 'dev',
+				previousStage: 'plan',
+				completedStages: ['plan'],
+				skippedStages: [],
+				workflowDecisions: {
+					classification: 'standard',
+					reason: 'Attempted manual promotion',
+					userOverride: true,
+					overrides: [],
+				},
+				parallelTracks: [],
+			}),
+		).toThrow(/override record/i);
+
+		expect(() =>
+			normalizeOverrideRecord({
+				type: 'manual',
+				fromStage: 'plan',
+				toStage: 'dev',
+				reason: '   ',
+				actor: 'agent@host',
+				recordedAt: '2026-04-03T00:00:00.000Z',
+			}),
+		).toThrow(/override record/i);
+
 		const override = normalizeOverrideRecord({
 			type: 'manual',
 			fromStage: 'verify',
@@ -128,5 +315,54 @@ describe('workflow state layer', () => {
 			userOverride: true,
 			recordedAt: '2026-04-03T00:00:00.000Z',
 		});
+	});
+
+	test('rejects stages that are outside the selected workflow classification', () => {
+		expect(() =>
+			serializeWorkflowState({
+				currentStage: 'plan',
+				completedStages: [],
+				skippedStages: [],
+				workflowDecisions: {
+					classification: 'docs',
+					reason: 'Docs-only change',
+					userOverride: false,
+					overrides: [],
+				},
+				parallelTracks: [],
+			}),
+		).toThrow(/not valid for docs workflow/i);
+
+		expect(() =>
+			serializeWorkflowState({
+				currentStage: 'dev',
+				previousStage: 'plan',
+				completedStages: ['plan', 'verify'],
+				skippedStages: [],
+				workflowDecisions: {
+					classification: 'standard',
+					reason: 'Invalid completed stage list',
+					userOverride: false,
+					overrides: [],
+				},
+				parallelTracks: [],
+			}),
+		).toThrow(/completed stage verify is not valid for standard workflow/i);
+
+		expect(() =>
+			serializeWorkflowState({
+				currentStage: 'dev',
+				previousStage: 'plan',
+				completedStages: ['plan'],
+				skippedStages: ['verify'],
+				workflowDecisions: {
+					classification: 'standard',
+					reason: 'Invalid skipped stage list',
+					userOverride: false,
+					overrides: [],
+				},
+				parallelTracks: [],
+			}),
+		).toThrow(/skipped stage verify is not valid for standard workflow/i);
 	});
 });

@@ -12,6 +12,10 @@
  */
 
 const YAML = require('yaml');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { listCodexSkillEntries } = require('../lib/codex-skills');
 
 /**
  * Parse YAML frontmatter from a markdown string.
@@ -293,9 +297,14 @@ function adaptForAgent(agentName, frontmatter, body, commandName) {
 
 // ---- Sync logic -----------------------------------------------------------------
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+function resolveCanonicalCommandsDir(repoRoot) {
+  const candidates = [
+    path.join(repoRoot, 'commands'),
+    path.join(repoRoot, '.claude', 'commands'),
+  ];
+
+  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+}
 
 /**
  * Compute a content hash for change detection.
@@ -308,6 +317,25 @@ const crypto = require('crypto');
 function contentHash(content) {
   const normalized = content.replace(/\r\n/g, '\n');
   return crypto.createHash('sha256').update(normalized).digest('hex');
+}
+
+/**
+ * Write the sync manifest for generated entries without rewriting command files.
+ *
+ * @param {string} repoRoot
+ * @param {SyncEntry[]} entries
+ */
+function writeSyncManifest(repoRoot, entries) {
+  const manifestDir = path.join(repoRoot, '.forge');
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestData = {
+    generatedAt: new Date().toISOString(),
+    files: entries.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
+  };
+  fs.writeFileSync(
+    path.join(manifestDir, 'sync-manifest.json'),
+    JSON.stringify(manifestData, null, 2) + '\n'
+  );
 }
 
 /**
@@ -339,11 +367,11 @@ function contentHash(content) {
  * - `check: true` — compares generated content with existing files, reports mismatches
  * - default (both false) — writes files, creating directories as needed
  *
- * @param {{ dryRun: boolean, check: boolean, repoRoot: string }} options
+ * @param {{ dryRun: boolean, check: boolean, repoRoot: string, canonicalDir?: string | null }} options
  * @returns {SyncResult}
  */
-function syncCommands({ dryRun, check, repoRoot }) {
-  const commandsDir = path.join(repoRoot, '.claude', 'commands');
+function syncCommands({ dryRun, check, repoRoot, canonicalDir = null }) {
+  const commandsDir = canonicalDir || resolveCanonicalCommandsDir(repoRoot) || path.join(repoRoot, '.claude', 'commands');
 
   // Read all .md files from the commands directory
   /** @type {string[]} */
@@ -474,16 +502,7 @@ function syncCommands({ dryRun, check, repoRoot }) {
 
   // Write sync manifest — records every file generated so stale detection
   // can identify orphaned files without false-flagging custom files.
-  const manifestDir = path.join(repoRoot, '.forge');
-  fs.mkdirSync(manifestDir, { recursive: true });
-  const manifestData = {
-    generatedAt: new Date().toISOString(),
-    files: written.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
-  };
-  fs.writeFileSync(
-    path.join(manifestDir, 'sync-manifest.json'),
-    JSON.stringify(manifestData, null, 2) + '\n'
-  );
+  writeSyncManifest(repoRoot, written);
 
   return { written, overwritten };
 }
@@ -506,7 +525,7 @@ if (require.main === module) {
 
   if (dryRun) {
     if (result.planned.length === 0) {
-      console.log('No command files found in .claude/commands/');
+      console.log('No command files found in commands/ or .claude/commands/');
     } else {
       console.log('Dry run — files that would be generated:\n');
       for (const entry of result.planned) {
@@ -516,7 +535,7 @@ if (require.main === module) {
     }
   } else if (check) {
     if (result.empty) {
-      console.error('Error: no command files found in .claude/commands/ — cannot verify sync.');
+      console.error('Error: no command files found in commands/ or .claude/commands/ — cannot verify sync.');
       process.exit(1);
     }
     if (result.manifestMissing) {
@@ -561,11 +580,21 @@ if (require.main === module) {
     }
 
     if (result.written.length === 0) {
-      console.log('No command files found in .claude/commands/');
+      console.log('No command files found in commands/ or .claude/commands/');
     } else {
       console.log(`Synced ${result.written.length} file(s) across agents.`);
     }
   }
 }
 
-module.exports = { parseFrontmatter, buildFile, AGENT_ADAPTERS, adaptForAgent, syncCommands };
+module.exports = {
+  parseFrontmatter,
+  buildFile,
+  AGENT_ADAPTERS,
+  adaptForAgent,
+  listCodexSkillEntries,
+  syncCommands,
+  contentHash,
+  resolveCanonicalCommandsDir,
+  writeSyncManifest,
+};

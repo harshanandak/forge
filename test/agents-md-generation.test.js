@@ -6,6 +6,9 @@ const os = require('node:os');
 
 // Module under test
 const { generateAgentsMd } = require('../lib/agents-config');
+const opencodePlugin = require('../lib/agents/opencode.plugin.json');
+const setupCommand = require('../lib/commands/setup');
+const { withMockSetupTools } = require('./helpers/setup-command-harness');
 
 describe('AGENTS.md generation', () => {
   let tempDir;
@@ -116,5 +119,35 @@ describe('AGENTS.md generation', () => {
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
     expect(content.includes('MCP') || content.includes('Model Context Protocol')).toBeTruthy();
+  });
+
+  test('should wire setup to native OpenCode config paths', async () => {
+    await fs.promises.writeFile(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'opencode-native-test', version: '1.0.0' }, null, 2)
+    );
+
+    await withMockSetupTools(tempDir, (commandRunner) =>
+      setupCommand.handler(['--agents', 'opencode', '--skip-external', '--yes'], { commandRunner }, tempDir)
+    );
+
+    const opencodeJsonPath = path.join(tempDir, 'opencode.json');
+    const planReviewPath = path.join(tempDir, '.opencode', 'agents', 'plan-review.md');
+    const tddBuildPath = path.join(tempDir, '.opencode', 'agents', 'tdd-build.md');
+
+    expect(fs.existsSync(opencodeJsonPath)).toBeTruthy();
+    expect(fs.existsSync(planReviewPath)).toBeTruthy();
+    expect(fs.existsSync(tddBuildPath)).toBeTruthy();
+
+    const opencodeJson = JSON.parse(await fs.promises.readFile(opencodeJsonPath, 'utf-8'));
+    expect(opencodeJson.$schema).toBe('https://opencode.ai/config.json');
+    expect(opencodeJson.agent).toBeTruthy();
+  });
+
+  test('should declare OpenCode parity against native config and agents', () => {
+    expect(opencodePlugin.files.rootConfig).toBe('opencode.json');
+    expect(opencodePlugin.directories.agents).toBe('.opencode/agents');
+    expect(opencodePlugin.capabilities.skills).toBe(false);
+    expect(opencodePlugin.setup.customSetup).toBe('opencode');
   });
 });

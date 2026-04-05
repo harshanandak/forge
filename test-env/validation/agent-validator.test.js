@@ -1,7 +1,7 @@
 // Test: Agent Validator Helper
 // Tests for validating agent configurations
 
-const { describe, test, before, after } = require('node:test');
+const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

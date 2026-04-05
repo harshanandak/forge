@@ -2,23 +2,23 @@
   "id": "copilot",
   "name": "GitHub Copilot",
   "version": "1.0.0",
-  "description": "GitHub's AI assistant",
+  "description": "GitHub's AI assistant with native instructions and prompts",
   "homepage": "https://github.com/features/copilot",
   "capabilities": {
     "commands": true,
-    "skills": true,
+    "skills": false,
     "hooks": false
   },
   "directories": {
     "prompts": ".github/prompts",
-    "instructions": ".github/instructions",
-    "skills": ".github/skills/forge-workflow"
+    "instructions": ".github/instructions"
   },
   "files": {
     "rootConfig": ".github/copilot-instructions.md"
   },
   "setup": {
     "needsConversion": true,
-    "promptFormat": true
+    "promptFormat": true,
+    "customSetup": "copilot"
   }
 }

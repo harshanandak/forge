@@ -19,8 +19,110 @@
  */
 
 const { syncCommands } = require('./sync-commands');
+const { AGENT_ADAPTERS } = require('./sync-commands');
 const path = require('path');
 const fs = require('fs');
+const { validatePluginSchema } = require('../lib/plugin-manager');
+
+const SYNC_ADAPTER_BY_PLUGIN_ID = Object.freeze({
+  claude: 'claude-code',
+  cline: 'cline',
+  codex: 'codex',
+  copilot: 'github-copilot',
+  cursor: 'cursor',
+  kilocode: 'kilo-code',
+  opencode: 'opencode',
+  roo: 'roo-code',
+});
+
+function normalizeRelativeDir(dir) {
+  if (!dir) return null;
+  return String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function getDeclaredCommandDir(plugin) {
+  const dirs = plugin.directories || {};
+  return dirs.commands || dirs.workflows || dirs.prompts || dirs.skills || null;
+}
+
+function getExpectedCommandDir(plugin) {
+  const adapterId = SYNC_ADAPTER_BY_PLUGIN_ID[plugin.id];
+  if (!adapterId) {
+    return null;
+  }
+
+  const adapter = AGENT_ADAPTERS[adapterId];
+  if (!adapter) {
+    return null;
+  }
+
+  if (plugin.id === 'codex') {
+    return normalizeRelativeDir(plugin.directories?.skills || adapter.baseDir);
+  }
+
+  return normalizeRelativeDir(adapter.baseDir);
+}
+
+function validatePluginParity(plugin, errors) {
+  const validation = validatePluginSchema(plugin);
+  if (!validation.valid) {
+    const parityErrors = validation.errors.filter((error) =>
+      error.startsWith('"support') || error.startsWith('"capabilities')
+    );
+    parityErrors.forEach((error) => {
+      errors.push(`Plugin "${plugin.name || plugin.id}" (${plugin.id || 'unknown'}): ${error}`);
+    });
+  }
+
+  const capabilities = plugin.capabilities || {};
+  const dirs = plugin.directories || {};
+  const supportStatus = plugin.support?.status;
+
+  if (capabilities.commands) {
+    const expectedDir = getExpectedCommandDir(plugin);
+    const declaredDir = normalizeRelativeDir(getDeclaredCommandDir(plugin));
+
+    if (!expectedDir) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) declares commands support but has no Forge sync adapter.`
+      );
+    } else if (!declaredDir) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) declares commands support but has no command directory configured.`
+      );
+    } else if (declaredDir !== expectedDir) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) command directory "${declaredDir}" does not match sync output "${expectedDir}".`
+      );
+    }
+  }
+
+  if (capabilities.rules && !dirs.rules) {
+    errors.push(
+      `Plugin "${plugin.name}" (${plugin.id}) declares rules capability but has no scaffold path configured.`
+    );
+  }
+
+  if (capabilities.skills && !dirs.skills) {
+    errors.push(
+      `Plugin "${plugin.name}" (${plugin.id}) declares skills capability but has no scaffold path configured.`
+    );
+  }
+
+  if (supportStatus === 'deprecated' || supportStatus === 'unsupported') {
+    if (capabilities.skills) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) is ${supportStatus} but still declares skills parity.`
+      );
+    }
+
+    if (plugin.setup?.createSkill || dirs.skills) {
+      errors.push(
+        `Plugin "${plugin.name}" (${plugin.id}) is ${supportStatus} but still scaffolds Forge skills.`
+      );
+    }
+  }
+}
 
 /**
  * Validate all agent configs are complete and in sync.
@@ -89,6 +191,7 @@ function checkAgents(repoRoot) {
       try {
         const plugin = JSON.parse(fs.readFileSync(path.join(pluginDir, file), 'utf8'));
         plugins.push(plugin);
+        validatePluginParity(plugin, errors);
       } catch (_err) {
         errors.push(`Failed to parse plugin file: lib/agents/${file}`);
       }

@@ -9,7 +9,9 @@
 
 const { describe, test, expect } = require('bun:test');
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
+const { loadCommands } = require('../lib/commands/_registry');
 
 const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
 
@@ -42,6 +44,15 @@ function runForge(cliArgs, envOverrides = {}) {
 
 describe('CLI Registry Integration', () => {
   describe('registry command dispatch', () => {
+    test('real stage commands load into the registry', () => {
+      const { commands } = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+
+      expect(commands.has('plan')).toBe(true);
+      expect(commands.has('dev')).toBe(true);
+      expect(commands.has('validate')).toBe(true);
+      expect(commands.has('ship')).toBe(true);
+    });
+
     test('forge sync dispatches to registry (not unknown command)', () => {
       const { stdout, stderr, status } = runForge(['sync']);
       const combined = stdout + stderr;
@@ -58,6 +69,22 @@ describe('CLI Registry Integration', () => {
       // worktree command with no subcommand should show usage or error
       expect(combined).toMatch(/worktree|usage|subcommand|create|remove/i);
     });
+
+    test('forge status prints successful command output', () => {
+      const workflowState = JSON.stringify({
+        id: 'bd-test',
+        currentStage: 'validate',
+        completedStages: ['plan', 'dev'],
+        skippedStages: [],
+        workflowDecisions: { classification: 'standard' },
+      });
+
+      const { stdout, status } = runForge(['status', '--workflow-state', workflowState]);
+
+      expect(status).toBe(0);
+      expect(stdout).toContain('Current Stage: validate - Validation');
+      expect(stdout).toContain('Source: authoritative workflow state');
+    });
   });
 
   describe('help includes registry commands', () => {
@@ -73,6 +100,21 @@ describe('CLI Registry Integration', () => {
     });
   });
 
+  describe('registry enforcement wiring', () => {
+    test('bin/forge.js routes registry commands through executeCommand', () => {
+      const source = fs.readFileSync(forgePath, 'utf8');
+
+      expect(source).toContain('executeCommand(');
+      expect(source).not.toContain("await cmd.handler(args.slice(1), flags, projectRoot)");
+    });
+
+    test('bin/forge.js forwards raw CLI args into stage enforcement', () => {
+      const source = fs.readFileSync(forgePath, 'utf8');
+
+      expect(source).toContain('args: context.args');
+    });
+  });
+
   describe('fallthrough for unknown commands', () => {
     test('forge nonexistent falls through to existing behavior', () => {
       // An unknown command (not in registry, not setup/recommend/rollback)
@@ -84,6 +126,24 @@ describe('CLI Registry Integration', () => {
       // Should contain either setup prompt, minimal install, or similar
       // The key assertion: it did not crash with "unknown command" error from registry
       expect(status === 0 || combined.length > 0).toBe(true);
+    });
+  });
+
+  describe('non-registry stage enforcement', () => {
+    test('forge verify still invokes stage enforcement outside the registry', () => {
+      const workflowState = JSON.stringify({
+        id: 'bd-test',
+        currentStage: 'ship',
+        completedStages: ['plan', 'dev', 'validate'],
+        skippedStages: [],
+        workflowDecisions: { classification: 'critical' },
+      });
+
+      const { stdout, stderr, status } = runForge(['verify', '--workflow-state', workflowState]);
+      const combined = stdout + stderr;
+
+      expect(status).toBe(1);
+      expect(combined).toContain("Error running 'verify': Stage verify blocked by runtime prerequisites:");
     });
   });
 });

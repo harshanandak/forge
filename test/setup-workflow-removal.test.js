@@ -8,9 +8,41 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+
+function collectWorkflowReferences(rootDir) {
+  const matches = [];
+  const allowedExtensions = new Set(['.js', '.sh', '.md', '.json']);
+  const excludedDirs = new Set(['node_modules', '.worktrees', '.git']);
+  const stack = [rootDir];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = `./${path.relative(rootDir, absolutePath).replace(/\\/g, '/')}`;
+
+      if (entry.isDirectory()) {
+        if (!excludedDirs.has(entry.name)) {
+          stack.push(absolutePath);
+        }
+        continue;
+      }
+
+      if (!allowedExtensions.has(path.extname(entry.name))) {
+        continue;
+      }
+
+      const content = fs.readFileSync(absolutePath, 'utf8');
+      if (content.includes('WORKFLOW.md')) {
+        matches.push(relativePath);
+      }
+    }
+  }
+
+  return matches;
+}
 
 describe('docs/WORKFLOW.md removal', () => {
   test('docs/WORKFLOW.md file does not exist', () => {
@@ -36,21 +68,11 @@ describe('docs/WORKFLOW.md removal', () => {
   });
 
   test('no active source file contains docs/WORKFLOW.md as a live reference', () => {
-    // Hardcoded grep command - no user input, safe from injection
-    const result = execSync(
-      'grep -rn "WORKFLOW\\.md" --include="*.js" --include="*.sh" --include="*.md" --include="*.json" --exclude-dir=node_modules --exclude-dir=.worktrees --exclude-dir=.git . || true',
-      { cwd: ROOT, encoding: 'utf8', timeout: 30000 }
-    );
-
-    // Filter out allowed historical files
-    const lines = result.split('\n').filter(line => {
-      if (!line.trim()) return false;
+    const lines = collectWorkflowReferences(ROOT).filter((line) => {
       // Allow historical/research/plan files
       if (line.startsWith('./docs/plans/')) return false;
       if (line.startsWith('./docs/research/')) return false;
       if (line.startsWith('./CHANGELOG.md')) return false;
-      // Allow node_modules
-      if (line.includes('node_modules/')) return false;
       // Allow test files (may reference WORKFLOW.md in comments/assertions)
       if (line.startsWith('./test/')) return false;
       // Allow .beads/ internal data

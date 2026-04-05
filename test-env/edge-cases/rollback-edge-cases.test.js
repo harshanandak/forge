@@ -1,7 +1,7 @@
 // Test: Rollback Edge Cases and Security
 // Comprehensive edge case testing for rollback system validation
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 

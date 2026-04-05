@@ -1,7 +1,7 @@
 // Test: validateRollbackInput()
 // GREEN phase - Tests should pass with implementation
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
