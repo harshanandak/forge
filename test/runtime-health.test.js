@@ -204,6 +204,21 @@ describe('runtime health checks', () => {
     expect(result.checks.hooks.state).toBe('active');
   });
 
+  test('normalized relative hooksPath variants are accepted as active', () => {
+    const projectRoot = createProjectRoot();
+
+    for (const hooksPath of ['./.lefthook/hooks', '.lefthook/hooks/']) {
+      const result = checkRuntimeHealth(projectRoot, {
+        _exec: createExecStub({ hooksPath }),
+        platform: 'linux',
+        shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+      });
+
+      expect(result.hardStop).toBe(false);
+      expect(result.checks.hooks.active).toBe(true);
+    }
+  });
+
   test('missing project root falls back to process.cwd()', () => {
     const result = checkRuntimeHealth(undefined, {
       _exec: createExecStub(),

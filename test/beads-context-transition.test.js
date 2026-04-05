@@ -14,8 +14,14 @@ function splitShellArgs(input) {
   return matches.map((token) => token.replace(/^['"]|['"]$/g, ''));
 }
 
+let transitionQueue = Promise.resolve();
+
 function transitionTest(name, callback) {
-  return test(name, { timeout: 30000 }, callback);
+  return test(name, { timeout: 30000 }, async () => {
+    const run = transitionQueue.then(() => callback());
+    transitionQueue = run.catch(() => {});
+    return run;
+  });
 }
 
 /**
@@ -34,7 +40,8 @@ function runTransition(args, _env = {}) {
     shimPath,
     `#!/usr/bin/env bash
 if [ "$1" = "comments" ] && [ "$2" = "add" ]; then
-  printf '%s' "$4" > ${shQuote(`./${path.basename(shimDir)}/capture.txt`)}
+  last_arg="\${!#}"
+  printf '%s' "$last_arg" > ${shQuote(`./${path.basename(shimDir)}/capture.txt`)}
   echo "Comment added"
   exit 0
 fi
@@ -48,14 +55,14 @@ exit 0
     { mode: 0o755 }
   );
 
-  const bashScript = `
-export PATH=${shQuote(`./${path.basename(shimDir)}`)}:"$PATH"
-exec ./scripts/beads-context.sh stage-transition ${splitShellArgs(args).map(shQuote).join(' ')}
-`;
-
-  const result = spawnSync('bash', ['-c', bashScript], {
+  const currentPath = process.env.PATH || process.env.Path || '';
+  const result = spawnSync('bash', ['./scripts/beads-context.sh', 'stage-transition', ...splitShellArgs(args)], {
     cwd: ROOT,
-    env: process.env,
+    env: {
+      ...process.env,
+      PATH: `${shimDir}${path.delimiter}${currentPath}`,
+      Path: `${shimDir}${path.delimiter}${currentPath}`,
+    },
     encoding: 'utf8',
     timeout: 20000,
   });
