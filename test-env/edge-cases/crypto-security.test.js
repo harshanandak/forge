@@ -3,7 +3,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 

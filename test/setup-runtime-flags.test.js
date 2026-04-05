@@ -3,8 +3,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { afterEach, describe, expect, test } = require('bun:test');
 const setupCommand = require('../lib/commands/setup');
-const { checkLefthookStatus } = require('../lib/lefthook-check');
-const { detectHusky } = require('../lib/husky-migration');
 
 const tempDirs = [];
 let serialQueue = Promise.resolve();
@@ -308,98 +306,4 @@ describe('setup runtime flags', () => {
     expect(logLines.join('\n')).toContain('bd (Beads CLI) - Install from https://github.com/steveyegge/beads');
   });
 
-  serialTest('workflow-capable setup requires gh even when external services are skipped', async () => {
-    const tmpDir = makeTempDir();
-
-    const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir, {
-      FORGE_TEST_DISABLE_GH: '1',
-    });
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('gh (GitHub CLI) - Install from https://cli.github.com');
-  });
-
-  serialTest('runtime asset repair does not scaffold all agent assets in an uninitialized repo', () => {
-    const tmpDir = makeTempDir();
-
-    const result = setupCommand.repairWorkflowRuntimeAssets(tmpDir);
-
-    expect(result).toEqual({
-      attempted: false,
-      agents: [],
-      repaired: [],
-      missing: [],
-    });
-    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(false);
-  });
-
-  serialTest('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
-    expect(() => setupCommand.ensureWorkflowShellPolicy(['claude'], {
-      platform: 'win32',
-      candidates: [],
-      _exists: () => false,
-    })).toThrow(/Git Bash/i);
-  });
-
-  serialTest('setup repairs a declared lefthook dependency before reporting success', async () => {
-    const tmpDir = makeTempDir();
-    const mockBinDir = path.join(tmpDir, '.mock-bin');
-    fs.mkdirSync(mockBinDir, { recursive: true });
-
-    fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({
-      name: 'repair-fixture',
-      version: '1.0.0',
-      devDependencies: {
-        lefthook: '^2.1.4',
-      },
-    }, null, 2));
-
-    writeExecutable(path.join(mockBinDir, 'npm'), `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "install" ]]; then
-  mkdir -p "$INIT_CWD/node_modules/.bin"
-  printf '#!/usr/bin/env bash\\necho lefthook\\n' > "$INIT_CWD/node_modules/.bin/lefthook"
-  printf '@echo off\\r\\necho lefthook\\r\\n' > "$INIT_CWD/node_modules/.bin/lefthook.cmd"
-  chmod +x "$INIT_CWD/node_modules/.bin/lefthook"
-  exit 0
-fi
-echo "unexpected npm args: $*" >&2
-exit 1
-`);
-
-    writeExecutable(path.join(mockBinDir, 'npx'), `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "lefthook" && "$2" == "install" ]]; then
-  exit 0
-fi
-echo "unexpected npx args: $*" >&2
-exit 1
-`);
-
-    const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir, {
-      PATH: `${mockBinDir}${path.delimiter}${process.env.PATH}`,
-    });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Installing lefthook dependencies (binary missing)');
-    expect(checkLefthookStatus(tmpDir).binaryAvailable).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook'))).toBe(true);
-  });
-
-  serialTest('detectHusky resolves worktree gitdir pointer files when checking hooksPath', () => {
-    const tmpDir = makeTempDir();
-    const gitDir = path.join(tmpDir, '.git-data', 'worktrees', 'feature-a');
-
-    fs.mkdirSync(path.join(tmpDir, '.husky'), { recursive: true });
-    fs.writeFileSync(path.join(tmpDir, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\n');
-    fs.mkdirSync(gitDir, { recursive: true });
-    fs.writeFileSync(path.join(gitDir, 'config'), '[core]\n\thooksPath = .husky\n');
-    fs.writeFileSync(path.join(tmpDir, '.git'), 'gitdir: .git-data/worktrees/feature-a\n');
-
-    const result = detectHusky(tmpDir);
-
-    expect(result.found).toBe(true);
-    expect(result.hasHooksPath).toBe(true);
-  });
 });

@@ -1,7 +1,7 @@
 // Test: Invalid JSON and Schema Validation Edge Cases
 // Validates validatePluginSchema() handling of malformed and invalid plugin configs
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { validatePluginSchema } = require('../../lib/plugin-manager');
 

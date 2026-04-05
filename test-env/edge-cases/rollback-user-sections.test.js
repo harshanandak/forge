@@ -1,7 +1,7 @@
 // Test: USER Section Extraction and Preservation
 // Tests for extractUserSections() and preserveUserSections()
 
-const { describe, test, before, after } = require('node:test');
+const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');

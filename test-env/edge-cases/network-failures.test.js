@@ -1,7 +1,7 @@
 // Test: Network Failures and Retry Logic Edge Cases
 // Validates safeExecWithRetry() handling of network failures and retry mechanisms
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { execSync } = require('node:child_process');
 
@@ -10,6 +10,7 @@ function safeExecWithRetry(cmd, options = {}) {
   const maxRetries = options.maxRetries !== undefined ? options.maxRetries : 3;
   const initialDelay = options.initialDelay !== undefined ? options.initialDelay : 100;
   const maxDelay = options.maxDelay !== undefined ? options.maxDelay : 1000;
+  const onDelay = typeof options.onDelay === 'function' ? options.onDelay : null;
 
   let attempts = 0;
   let lastError = null;
@@ -28,6 +29,9 @@ function safeExecWithRetry(cmd, options = {}) {
 
       if (i < maxRetries) {
         const delay = Math.min(initialDelay * Math.pow(2, i), maxDelay);
+        if (onDelay) {
+          onDelay(delay, i + 1);
+        }
         const start = Date.now();
         while (Date.now() - start < delay) {}
       }
@@ -79,16 +83,15 @@ describe('network-failures-edge-cases', () => {
 
   describe('Max Retries and Delays', () => {
     test('should not exceed maxDelay', () => {
-      const startTime = Date.now();
+      const delays = [];
       const result = safeExecWithRetry('node -e "process.exit(1)"', {
         maxRetries: 3,
         initialDelay: 100,
-        maxDelay: 150
+        maxDelay: 150,
+        onDelay: delay => delays.push(delay)
       });
-      const duration = Date.now() - startTime;
       assert.strictEqual(result.attempts, 4, 'Should attempt 4 times (1 + 3 retries)');
-      // Increased tolerance to 2000ms to account for Windows process-spawn overhead under parallel test load
-      assert.ok(duration < 2000, 'Should respect maxDelay cap');
+      assert.deepStrictEqual(delays, [100, 150, 150], 'Should cap exponential backoff at maxDelay');
     });
 
     test('should handle zero retries', () => {

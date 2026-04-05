@@ -219,6 +219,22 @@ describe('runtime health checks', () => {
     }
   });
 
+  test('Windows hook-path comparisons are case-insensitive', () => {
+    const projectRoot = createProjectRoot();
+    const windowsRoot = projectRoot.replace(/\//g, '\\').toUpperCase();
+    const hooksPath = `${windowsRoot}\\.LEFTHOOK\\HOOKS`;
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.state).toBe('active');
+  });
+
   test('missing project root falls back to process.cwd()', () => {
     const result = checkRuntimeHealth(undefined, {
       _exec: createExecStub(),

@@ -1,7 +1,7 @@
 // Test: File Checker Validation Helper
 // Tests for file existence, content, and symlink validation
 
-const { describe, test, before, after } = require('node:test');
+const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

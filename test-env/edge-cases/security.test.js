@@ -2,7 +2,7 @@
 // Comprehensive security validation (shell injection, path traversal, unicode attacks)
 // Reuses patterns from test/rollback-edge-cases.test.js
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 

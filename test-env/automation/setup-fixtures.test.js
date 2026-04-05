@@ -1,7 +1,7 @@
 // Test: setup-fixtures.sh
 // Validates that all 15 test fixtures are created correctly
 
-const { describe, test } = require('node:test');
+const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

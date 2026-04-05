@@ -1,7 +1,10 @@
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { enforceStageEntry, parseOverride } = require('../../lib/workflow/enforce-stage');
-const { readWorkflowState } = require('../../lib/workflow/state');
+const { readWorkflowState, writeWorkflowState } = require('../../lib/workflow/state');
 
 function createWorkflowState(currentStage = 'plan', classification = 'standard') {
   return {
@@ -114,6 +117,34 @@ describe('workflow enforce-stage', () => {
       fromStage: 'plan',
       toStage: 'ship'
     }));
+  });
+
+  test('enforceStageEntry requires workflow state for non-plan stages', async () => {
+    await expect(enforceStageEntry({
+      commandName: 'ship',
+      flags: {},
+      projectRoot: process.cwd(),
+      health: { healthy: true, hardStop: false, diagnostics: [] }
+    })).rejects.toThrow(/requires authoritative workflow state/i);
+  });
+
+  test('enforceStageEntry reads workflow state from .forge-state.json when present', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-workflow-state-'));
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.forge-state.json'), writeWorkflowState(createWorkflowState('dev', 'standard')));
+
+      const result = await enforceStageEntry({
+        commandName: 'validate',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] }
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(result.workflowState).toEqual(expect.objectContaining({ currentStage: 'dev' }));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('enforceStageEntry allows legacy standard workflows to enter verify from premerge', async () => {
