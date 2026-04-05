@@ -53,6 +53,7 @@ const { listTopics, getTopicContent } = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
+const { normalizeStageId } = require('../lib/workflow/stages');
 
 // Load enhanced onboarding modules
 const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
@@ -4188,6 +4189,21 @@ async function main() {
       process.exit(1);
     }
     return;
+  }
+
+  const stageId = normalizeStageId(command);
+  if (stageId) {
+    try {
+      await enforceStageEntry({
+        commandName: stageId,
+        args: args.slice(1),
+        flags,
+        projectRoot,
+      });
+    } catch (err) {
+      console.error(`Error running '${command}':`, err.message);
+      process.exit(1);
+    }
   }
 
   if (command === 'setup') {
