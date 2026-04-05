@@ -22,9 +22,24 @@ function detectPackageManager() {
 const pkgManager = detectPackageManager();
 console.log(`🧪 Running test suite (${pkgManager} test)...`);
 
+// Strip git hook environment variables so child processes (especially tests
+// that create temp git repos) never accidentally operate on the real worktree.
+// During pre-push hooks, git sets GIT_DIR pointing to the repo — any test that
+// runs `git init` / `git commit` in a temp dir inherits this and silently
+// commits into the worktree instead, creating rogue "initial commit" that
+// deletes the entire codebase.
+const env = { ...process.env };
+for (const key of Object.keys(env)) {
+  if (key === 'GIT_DIR' || key === 'GIT_WORK_TREE' || key === 'GIT_INDEX_FILE'
+    || key === 'GIT_OBJECT_DIRECTORY' || key === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
+    || key === 'GIT_QUARANTINE_PATH') {
+    delete env[key];
+  }
+}
+
 // Use 'run test' to invoke the package.json script (which may include --timeout flags)
 // 'bun test' is a built-in that ignores package.json scripts
-const result = spawnSync(pkgManager, ['run', 'test'], { stdio: 'inherit', shell: isWindows });
+const result = spawnSync(pkgManager, ['run', 'test'], { stdio: 'inherit', shell: isWindows, env });
 
 if (result.error) {
   console.error('');

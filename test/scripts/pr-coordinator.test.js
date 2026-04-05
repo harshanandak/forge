@@ -44,10 +44,24 @@ function makeTempRepo() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pr-coordinator-'));
 }
 
+// Sanitized env: strip git hook variables so temp-repo git commands
+// never accidentally operate on the real worktree during pre-push hooks.
+const _cleanEnv = (() => {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  delete env.GIT_OBJECT_DIRECTORY;
+  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  delete env.GIT_QUARANTINE_PATH;
+  return env;
+})();
+
 function git(cwd, args) {
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
+    env: _cleanEnv,
   });
 
   if (result.status !== 0) {
