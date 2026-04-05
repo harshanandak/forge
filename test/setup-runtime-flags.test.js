@@ -5,7 +5,6 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const setupCommand = require('../lib/commands/setup');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
 const { detectHusky } = require('../lib/husky-migration');
-const { createMockSetupCommandRunner } = require('./helpers/setup-command-harness');
 
 const tempDirs = [];
 let serialQueue = Promise.resolve();
@@ -34,10 +33,29 @@ async function runSetup(args, cwd, env = {}) {
   const stdout = [];
   const stderr = [];
   const mockBinDir = path.join(cwd, '.mock-bin');
+  const disableGh = env.FORGE_TEST_DISABLE_GH === '1';
+  const commandRunner = (command) => {
+    switch (command) {
+      case 'git --version':
+        return 'git version 2.42.0';
+      case 'gh --version':
+        return disableGh ? '' : 'gh version 2.81.0';
+      case 'gh auth status':
+        return disableGh ? '' : 'Logged in';
+      case 'bd --version':
+        return 'bd 0.49.1';
+      case 'jq --version':
+        return 'jq-1.8.1';
+      default:
+        return '';
+    }
+  };
 
   fs.mkdirSync(mockBinDir, { recursive: true });
   writeExecutable(path.join(mockBinDir, 'bd'), '#!/usr/bin/env bash\necho \"bd 0.49.1\"\n');
-  writeExecutable(path.join(mockBinDir, 'gh'), '#!/usr/bin/env bash\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  echo \"Logged in\"\n  exit 0\nfi\necho \"gh version 2.81.0\"\n');
+  if (!disableGh) {
+    writeExecutable(path.join(mockBinDir, 'gh'), '#!/usr/bin/env bash\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  echo \"Logged in\"\n  exit 0\nfi\necho \"gh version 2.81.0\"\n');
+  }
   writeExecutable(path.join(mockBinDir, 'jq'), '#!/usr/bin/env bash\necho \"jq-1.8.1\"\n');
 
   for (const [key, value] of Object.entries(env)) {
@@ -74,7 +92,7 @@ async function runSetup(args, cwd, env = {}) {
       PKG_MANAGER: 'npm',
     });
 
-    await setupCommand.handler(args, { commandRunner: createMockSetupCommandRunner() }, cwd);
+    await setupCommand.handler(args, { commandRunner }, cwd);
     return {
       status: 0,
       stdout: stdout.join(''),
@@ -288,6 +306,32 @@ describe('setup runtime flags', () => {
     }
 
     expect(logLines.join('\n')).toContain('bd (Beads CLI) - Install from https://github.com/steveyegge/beads');
+  });
+
+  serialTest('workflow-capable setup requires gh even when external services are skipped', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir, {
+      FORGE_TEST_DISABLE_GH: '1',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('gh (GitHub CLI) - Install from https://cli.github.com');
+  });
+
+  serialTest('runtime asset repair does not scaffold all agent assets in an uninitialized repo', () => {
+    const tmpDir = makeTempDir();
+
+    const result = setupCommand.repairWorkflowRuntimeAssets(tmpDir);
+
+    expect(result).toEqual({
+      attempted: false,
+      agents: [],
+      repaired: [],
+      missing: [],
+    });
+    expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(false);
   });
 
   serialTest('workflow-backed setup requires an executable Git Bash runtime on Windows', () => {
