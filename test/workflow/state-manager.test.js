@@ -144,10 +144,21 @@ describe('state-manager', () => {
       }
     });
 
-    test('returns null when projectRoot is null', () => {
+    test('returns null when projectRoot is null and no Beads options', () => {
       const result = loadState(null);
       expect(result.state).toBeNull();
       expect(result.source).toBeNull();
+    });
+
+    test('falls back to Beads when projectRoot is null but comments provided', () => {
+      const state = createWorkflowState('dev', 'standard');
+      const compact = JSON.stringify(JSON.parse(writeWorkflowState(state)));
+      const comments = `WorkflowState: ${compact}`;
+
+      const result = loadState(null, { comments });
+      expect(result.state).not.toBeNull();
+      expect(result.state.currentStage).toBe('dev');
+      expect(result.source).toBe('beads');
     });
   });
 
