@@ -113,12 +113,32 @@ describe('state-manager', () => {
       }
     });
 
-    test('throws on malformed JSON in state file', () => {
+    test('falls back to Beads when state file is malformed', () => {
       const dir = createTmpDir();
       try {
         fs.writeFileSync(path.join(dir, WORKFLOW_STATE_FILENAME), '{bad json', 'utf8');
 
-        expect(() => loadState(dir)).toThrow();
+        const state = createWorkflowState('dev', 'standard');
+        const compact = JSON.stringify(JSON.parse(writeWorkflowState(state)));
+        const comments = `WorkflowState: ${compact}`;
+
+        const result = loadState(dir, { comments });
+        expect(result.state).not.toBeNull();
+        expect(result.state.currentStage).toBe('dev');
+        expect(result.source).toBe('beads');
+      } finally {
+        cleanTmpDir(dir);
+      }
+    });
+
+    test('returns null when state file is malformed and no Beads fallback', () => {
+      const dir = createTmpDir();
+      try {
+        fs.writeFileSync(path.join(dir, WORKFLOW_STATE_FILENAME), '{bad json', 'utf8');
+
+        const result = loadState(dir);
+        expect(result.state).toBeNull();
+        expect(result.source).toBeNull();
       } finally {
         cleanTmpDir(dir);
       }
@@ -130,6 +150,13 @@ describe('state-manager', () => {
       expect(result.source).toBeNull();
     });
   });
+
+  describe('saveState', () => {
+    test('throws when projectRoot is empty', () => {
+      const state = createWorkflowState('dev', 'standard');
+      expect(() => saveState('', state)).toThrow(/valid projectRoot/);
+      expect(() => saveState(null, state)).toThrow(/valid projectRoot/);
+    });
 
   describe('saveState', () => {
     test('saves valid state and re-reads matching result', () => {
@@ -277,6 +304,41 @@ describe('state-manager', () => {
 
         expect(result.transitioned).toBe(true);
         expect(result.newState.currentStage).toBe('ship');
+      } finally {
+        cleanTmpDir(dir);
+      }
+    });
+
+    test('override always records actual fromStage and toStage', () => {
+      const dir = createTmpDir();
+      try {
+        initializeState(dir, 'standard');
+        const result = transitionStage(dir, 'ship', {
+          override: {
+            type: 'manual',
+            fromStage: 'bogus',
+            toStage: 'bogus',
+            reason: 'test mismatch',
+            actor: 'test',
+          },
+        });
+
+        const override = result.newState.workflowDecisions.overrides.at(-1);
+        expect(override.fromStage).toBe('plan');
+        expect(override.toStage).toBe('ship');
+      } finally {
+        cleanTmpDir(dir);
+      }
+    });
+
+    test('previousState is a deep copy', () => {
+      const dir = createTmpDir();
+      try {
+        initializeState(dir, 'standard');
+        const result = transitionStage(dir, 'dev');
+
+        result.newState.completedStages.push('fake');
+        expect(result.previousState.completedStages).not.toContain('fake');
       } finally {
         cleanTmpDir(dir);
       }
