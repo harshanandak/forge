@@ -158,7 +158,6 @@ describe('state-manager', () => {
       expect(() => saveState(null, state)).toThrow(/valid projectRoot/);
     });
 
-  describe('saveState', () => {
     test('saves valid state and re-reads matching result', () => {
       const dir = createTmpDir();
       try {
