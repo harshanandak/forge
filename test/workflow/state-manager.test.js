@@ -366,6 +366,34 @@ describe('state-manager', () => {
       }
     });
 
+    test('preserves legacy schemaVersion 1 for premerge to verify transition', () => {
+      const dir = createTmpDir();
+      try {
+        // Legacy v1 standard workflow includes verify
+        const legacyState = {
+          schemaVersion: 1,
+          currentStage: 'premerge',
+          completedStages: ['plan', 'dev', 'validate', 'ship', 'review'],
+          skippedStages: [],
+          workflowDecisions: {
+            classification: 'standard',
+            reason: 'test',
+            userOverride: false,
+            overrides: [],
+          },
+          parallelTracks: [],
+        };
+        saveState(dir, legacyState);
+
+        const result = transitionStage(dir, 'verify');
+        expect(result.transitioned).toBe(true);
+        expect(result.newState.currentStage).toBe('verify');
+        expect(result.newState.schemaVersion).toBe(1);
+      } finally {
+        cleanTmpDir(dir);
+      }
+    });
+
     test('persists new state to file', () => {
       const dir = createTmpDir();
       try {
