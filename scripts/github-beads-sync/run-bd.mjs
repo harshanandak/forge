@@ -79,10 +79,12 @@ export function buildSearchArgs(query) {
  * @returns {string|null}
  */
 export function parseCreateOutput(stdout) {
-  const match = stdout.match(/Created issue:\s+(forge-[\w-]+)/);
+  // Match forge-xxx with optional dotted sub-IDs (e.g. forge-m1n8.6, forge-dq8j.1).
+  // \w in JS doesn't include '.', so the dotted sub-ID group is explicit.
+  const match = stdout.match(/Created issue:\s+(forge-[a-zA-Z0-9]+(?:\.[a-zA-Z0-9]+)*)/);
   if (match) return match[1];
   // Fallback: loose match for any forge-prefixed ID anywhere in output
-  const fallback = stdout.match(/(forge-[a-z0-9]+)/i);
+  const fallback = stdout.match(/(forge-[a-zA-Z0-9]+(?:\.[a-zA-Z0-9]+)*)/);
   return fallback ? fallback[1] : null;
 }
 

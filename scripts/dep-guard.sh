@@ -426,7 +426,7 @@ cmd_check_ripple_keyword_v1() {
 
     # Extract issue ID (forge-xxx pattern)
     local cand_id=""
-    cand_id="$(printf '%s' "$line" | grep -oE 'forge-[a-z0-9]+' | head -1)" || continue
+    cand_id="$(printf '%s' "$line" | grep -oE 'forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*' | head -1)" || continue
     [[ -z "$cand_id" ]] && continue
 
     # Skip the source issue itself
