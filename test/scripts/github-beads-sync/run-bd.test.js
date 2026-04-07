@@ -103,6 +103,44 @@ describe('parseCreateOutput', () => {
     expect(parseCreateOutput(stdout)).toBe('forge-1234');
   });
 
+  // Dotted sub-ID regression tests (forge-hpev)
+  test('extracts dotted beads sub-ID', () => {
+    const stdout = 'Created issue: forge-m1n8.6\n  Title: OpenCode parity adapter';
+    expect(parseCreateOutput(stdout)).toBe('forge-m1n8.6');
+  });
+
+  test('extracts dotted sub-ID from fallback regex path', () => {
+    // No "Created issue:" prefix — exercises the fallback match
+    const stdout = 'Updated forge-dq8j.1 status';
+    expect(parseCreateOutput(stdout)).toBe('forge-dq8j.1');
+  });
+
+  test('extracts dotted sub-ID with simple parent', () => {
+    const stdout = 'Created issue: forge-ujq.2';
+    expect(parseCreateOutput(stdout)).toBe('forge-ujq.2');
+  });
+
+  test('dotted sub-ID with trailing sentence period does not include the period', () => {
+    // A trailing period at end of sentence must not become part of the ID
+    const stdout = 'See forge-m1n8.6.';
+    expect(parseCreateOutput(stdout)).toBe('forge-m1n8.6');
+  });
+
+  test('plain ID with trailing sentence period does not include the period', () => {
+    const stdout = 'See forge-abc.';
+    expect(parseCreateOutput(stdout)).toBe('forge-abc');
+  });
+
+  test('dotted sub-ID inside parentheses extracts just the ID', () => {
+    const stdout = 'Resolved (forge-m1n8.6) earlier';
+    expect(parseCreateOutput(stdout)).toBe('forge-m1n8.6');
+  });
+
+  test('dotted sub-ID followed by comma extracts just the ID', () => {
+    const stdout = 'Applies to forge-dq8j.2, more details below';
+    expect(parseCreateOutput(stdout)).toBe('forge-dq8j.2');
+  });
+
   test('returns null for unexpected output', () => {
     expect(parseCreateOutput('unexpected output')).toBeNull();
   });
