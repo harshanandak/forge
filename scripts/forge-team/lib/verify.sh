@@ -75,7 +75,7 @@ _extract_beads_ids() {
   if [[ -z "$input" ]]; then
     return 0
   fi
-  printf '%s\n' "$input" | grep -oP '(forge-[a-z0-9]+)' || true
+  printf '%s\n' "$input" | grep -oP '(forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)' || true
 }
 
 # ── Public API ───────────────────────────────────────────────────────────

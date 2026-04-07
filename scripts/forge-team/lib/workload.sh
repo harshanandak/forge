@@ -95,7 +95,7 @@ _collect_issues() {
 
     # Extract issue id: first field like "forge-xxx" after optional icon
     local issue_id
-    issue_id="$(echo "$line" | grep -oE 'forge-[a-zA-Z0-9]+' | head -1)"
+    issue_id="$(echo "$line" | grep -oE 'forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*' | head -1)"
     [[ -z "$issue_id" ]] && continue
 
     # Get details via bd show

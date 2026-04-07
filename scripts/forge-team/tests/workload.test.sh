@@ -35,6 +35,7 @@ case "$1 $2" in
     echo "◐ forge-aaa · Feature A"
     echo "○ forge-bbb · Feature B"
     echo "◐ forge-ccc · Feature C"
+    echo "◐ forge-m1n8.6 · Sub-feature X (dotted ID)"
     ;;
   "show forge-aaa")
     echo "◐ forge-aaa · Feature A [● P2 · IN_PROGRESS]"
@@ -53,6 +54,19 @@ case "$1 $2" in
     echo ""
     echo "DEPENDS ON"
     echo "  → forge-aaa: Feature A"
+    ;;
+  "show forge-m1n8.6")
+    # Dotted sub-ID — bd show must receive the full ID including .6
+    echo "◐ forge-m1n8.6 · Sub-feature X [● P2 · IN_PROGRESS]"
+    echo "Owner: devthree"
+    echo "Updated: 2026-03-27T08:00:00Z"
+    ;;
+  "show forge-m1n8")
+    # Parent epic — if a buggy parser truncates forge-m1n8.6 to forge-m1n8,
+    # the workload would get this WRONG owner and trigger the guard below.
+    echo "◐ forge-m1n8 · PARENT EPIC (WRONG — dotted ID was truncated)"
+    echo "Owner: WRONG_OWNER_DO_NOT_USE"
+    echo "Updated: 2026-03-20T10:00:00Z"
     ;;
 esac
 MOCK
@@ -125,6 +139,11 @@ assert_contains "shows devtwo header" "Developer: devtwo" "$output"
 assert_contains "shows forge-aaa" "forge-aaa" "$output"
 assert_contains "shows forge-bbb" "forge-bbb" "$output"
 assert_contains "shows forge-ccc" "forge-ccc" "$output"
+# Dotted ID regression (forge-hpev): the full forge-m1n8.6 must be extracted,
+# not truncated to forge-m1n8. devthree owns the sub-issue, not WRONG_OWNER.
+assert_contains "shows devthree (dotted ID owner)" "Developer: devthree" "$output"
+assert_contains "shows dotted ID forge-m1n8.6 in full" "forge-m1n8.6" "$output"
+assert_not_contains "does NOT attribute to WRONG_OWNER (parent epic)" "WRONG_OWNER" "$output"
 
 # ── Test 2: --developer=devone filters correctly ─────────────────────────
 echo ""

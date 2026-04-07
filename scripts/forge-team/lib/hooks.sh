@@ -148,7 +148,7 @@ forge_team_sync() {
 
     # Extract issue id
     local issue_id
-    issue_id="$(echo "$line" | grep -oE 'forge-[a-zA-Z0-9]+' | head -1)"
+    issue_id="$(echo "$line" | grep -oE 'forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*' | head -1)"
     [[ -z "$issue_id" ]] && continue
 
     # Get details to check for github_issue state
