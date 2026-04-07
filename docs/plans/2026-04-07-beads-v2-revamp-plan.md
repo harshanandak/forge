@@ -70,7 +70,7 @@ Ship before v2 starts. 1 issue.
 - forge-m1n8.3 (hook + prerequisite + repair enforcement)
 - forge-m1n8.4 (agent capability schema)
 - forge-m1n8.5 (Codex/Cursor/Kilo adapters)
-- forge-m1n8.6 (OpenCode/Copilot adapters)
+- forge-m1n8.6 (OpenCode adapter — Copilot dropped 2026-04-07, see main strategy doc Section 0)
 - forge-hwjq (validate contract mismatches — SOLVED by consolidation)
 - forge-r6u3 (validate naming overload — SOLVED by consolidation)
 - forge-dq8j.2 (workflow enforcement real gates — WS13)

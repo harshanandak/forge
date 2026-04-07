@@ -66,8 +66,24 @@ bun add -d @beads/bd
 bunx bd init
 
 # Windows (global) — use PowerShell installer, NOT npm/bun add -g
-irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+#
+# ⚠️  SECURITY WARNING: The one-liner below pipes remote content directly to execution.
+#     If the upstream repo, CDN, or transit is compromised, this runs arbitrary code.
+#     Prefer the "download + inspect" flow below for supply-chain safety.
+#
+# RECOMMENDED (safer — download, inspect, then run):
+$installer = "$env:TEMP\beads-install.ps1"
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 -OutFile $installer
+# Open $installer in a text editor and review before running
+# Get-Content $installer | less     # or: notepad $installer
+& $installer                         # execute after inspection
 bd init
+
+# CONVENIENCE (unsafe — reviewed installer only, skip if you don't trust the source):
+# # See the safer download-then-inspect flow in the Beads install section.
+# UNSAFE one-liner (only use if you trust the source and have reviewed it previously):
+# irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 -OutFile $env:TEMP\beads-install.ps1; & $env:TEMP\beads-install.ps1
+# bd init
 
 # Or with bunx (macOS/Linux, no install needed)
 bunx @beads/bd init
@@ -553,7 +569,9 @@ bd --version
 bun add -g @beads/bd
 
 # Windows — use PowerShell installer (npm has EPERM bug)
-irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+# See the safer download-then-inspect flow in the Beads install section.
+# UNSAFE one-liner (only use if you trust the source and have reviewed it previously):
+# irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 -OutFile $env:TEMP\beads-install.ps1; & $env:TEMP\beads-install.ps1
 ```
 
 > **Why v0.49.x?** Earlier versions lack the `bd ready` dependency-aware query, `bd sync --status`, and the dual-database (JSONL + SQLite) architecture that Forge relies on.
@@ -614,14 +632,18 @@ bun add -g @beads/bd
 # Or use bunx @beads/bd <command>
 
 # Windows — use PowerShell installer
-irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+# See the safer download-then-inspect flow in the Beads install section.
+# UNSAFE one-liner (only use if you trust the source and have reviewed it previously):
+# irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 -OutFile $env:TEMP\beads-install.ps1; & $env:TEMP\beads-install.ps1
 ```
 
 **Windows EPERM error during `npm install -g @beads/bd`**
 ```bash
 # npm @beads/bd has a known EPERM bug on Windows (Issue #1031)
 # Use the PowerShell installer instead:
-irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
+# See the safer download-then-inspect flow in the Beads install section.
+# UNSAFE one-liner (only use if you trust the source and have reviewed it previously):
+# irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 -OutFile $env:TEMP\beads-install.ps1; & $env:TEMP\beads-install.ps1
 ```
 
 **"database locked"**

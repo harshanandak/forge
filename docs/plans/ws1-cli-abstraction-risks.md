@@ -415,23 +415,25 @@ Forge CLI abstraction replaces raw `bd`/`gh`/`git` commands across 6 agents (Cla
 ## I. Implementation Roadmap
 
 ### Phase 1: Foundation (Weeks 1-2)
-- [ ] A1-A2: gh CLI dependency checks (hard gates, auth validation)
-- [ ] C1: Multi-layer hook enforcement (instruction-based, MCP-based)
-- [ ] D1: PR idempotency, retry logic
-- [ ] F1-F2: Cross-platform path/shell handling
+- A1-A2: gh CLI dependency checks (hard gates, auth validation)
+- C1: Multi-layer hook enforcement (instruction-based, MCP-based)
+- D1: PR idempotency, retry logic
+- F1-F2: Cross-platform path/shell handling
 
 ### Phase 2: Migration (Weeks 3-4)
-- [ ] B1-B3: Agent instruction sync, setup validation
-- [ ] G1-G2: Backward compatibility layer (script migration, ID mapping)
+- B1-B3: Agent instruction sync, setup validation
+- G1-G2: Backward compatibility layer (script migration, ID mapping)
 
 ### Phase 3: Reliability (Weeks 5-6)
-- [ ] E1: Rebase error handling, conflict detection
-- [ ] Testing on all platforms (Windows, macOS, Linux)
+- E1: Rebase error handling, conflict detection
+- Testing on all platforms (Windows, macOS, Linux)
 
 ### Phase 4: Hardening (Weeks 7-8)
-- [ ] Smoke tests for all 6 agents
-- [ ] Failure mode testing (gh offline, auth expired, rate limited)
-- [ ] Agent instruction audit (grep for bd/gh raw commands)
+- Smoke tests for all 5 agents (Copilot dropped 2026-04-07)
+- Failure mode testing (gh offline, auth expired, rate limited)
+- Agent instruction audit (grep for bd/gh raw commands)
+
+> **Note**: These are a narrative phase breakdown, not tracked tasks. Actual task tracking uses `bd` — see the beads revamp plan at `docs/plans/2026-04-07-beads-v2-revamp-plan.md` for the WS1 issues (Wave 1-2 buckets).
 
 ---
 

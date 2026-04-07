@@ -56,7 +56,7 @@ Plan mode is inspired by SuperPowers' approach to structured AI workflows (100k 
 
 ## 1. Vision
 
-Forge v2 transforms from a Claude-Code-centric workflow harness into a **universal agent-agnostic development orchestrator** that works equally well across 6 AI coding agents, applies Anthropic's latest harness engineering patterns, and replaces fragile local-only infrastructure with robust cross-session, cross-machine, cross-agent state management.
+Forge v2 transforms from a Claude-Code-centric workflow harness into a **universal agent-agnostic development orchestrator** that works equally well across 5 AI coding agents, applies Anthropic's latest harness engineering patterns, and replaces fragile local-only infrastructure with robust cross-session, cross-machine, cross-agent state management.
 
 ### Supported Agents (5)
 
@@ -92,7 +92,7 @@ Tier 6: Agent-native features (skills, workflows, plugins)   -> Varies per agent
 **Problem**: 2,849 raw command references (1,796 bd, 420 gh, 633 git) across 25+ agent instruction files. Agents bypass forge and call raw tools directly.
 
 **Gap Analysis (verified by codebase grep)**:
-- 1,796 raw Beads commands — **eliminated by WS3** (forge-issues replaces beads entirely)
+- 1,796 raw Beads commands — **wrapped by WS3** (`forge issue` thin-wrapper routes to `bd` under the hood, preserving all 50+ beads commands while giving agents a stable forge CLI surface)
 - 420 raw GitHub CLI commands — need `forge pr` wrappers
 - 633 raw git commands — partially wrapped (forge push/test exist), need `forge info/rebase`
 - 9 raw package manager commands — already wrapped (forge test, forge push)
@@ -431,7 +431,7 @@ This directly addresses the pain point of "2-line review fix → 6-8 minute cycl
 
 #### WS1 Known Limitations & Blockers
 
-*Full risk inventories: [ws1-cli-abstraction-risks.md](ws1-cli-abstraction-risks.md), [ws1-forge-pr-risks.md](ws1-forge-pr-risks.md), [ws1-hook-enforcement-risks.md](ws1-hook-enforcement-risks.md), [ws1-agent-migration-risks.md](ws1-agent-migration-risks.md), [ws1-cross-platform-risks.md](ws1-cross-platform-risks.md)*
+*Full risk inventories: [ws1-cli-abstraction-risks.md](ws1-cli-abstraction-risks.md), [ws1-forge-pr-risks.md](ws1-forge-pr-risks.md), [ws1-hook-enforcement-risks.md](ws1-hook-enforcement-risks.md), [ws1-cross-platform-risks.md](ws1-cross-platform-risks.md). Agent migration risks (2,849 raw refs, Codex/Kilo/OpenCode config generators missing, CI validation needed) are captured inline in this section and in the Beads evaluator synthesis report — the originating research agent ran in read-only mode and the standalone ws1-agent-migration-risks.md file was not persisted.*
 
 **7 Blockers (all solvable)**:
 
@@ -965,7 +965,7 @@ The 5 documented upstream bugs (from `2026-03-22-upstream-beads-issues.md`):
 
 Forking beads, fixing these, filing upstream PRs — and using the fork until they merge — eliminates the workaround tax permanently. ~200-500 LOC of Go.
 
-**Pairs with**: [forge-team-pivot-research.md](docs/plans/forge-team-pivot-research.md) if a Go-experienced contributor is available.
+**Pairs with**: a future forge-team pivot research doc (not yet written) — specifically relevant if a Go-experienced contributor is available to maintain the upstream beads fork.
 
 #### What's preserved
 
@@ -1009,7 +1009,7 @@ Each component is independently togglable. No "all or nothing" risk. The wrapper
 
 **This section was the original WS3 proposal to build a forge-issues MCP server from scratch (8-22 weeks). It was rejected after evaluator synthesis identified that it would lose 50+ beads commands, inherit the same WSL/Windows binary problem via better-sqlite3, and break the skill ecosystem. Replaced with the thin-wrapper approach in WS3 above (4-5 weeks).**
 
-**For the historical reasoning, see [v2-evaluator-synthesis.md](v2-evaluator-synthesis.md) and [beads-vs-forge-issues-honest-eval.md](beads-vs-forge-issues-honest-eval.md).**
+**For the historical reasoning, see [v2-evaluator-synthesis.md](v2-evaluator-synthesis.md). The beads-vs-forge-issues honest evaluator ran in read-only mode and its findings are inlined in v2-evaluator-synthesis.md (the "WS3 Bombshell" section) rather than as a standalone file.**
 
 _(deleted — see above)_
 

@@ -145,7 +145,18 @@ When entering /validate, ALL this remains unless manually cleared. By /ship, the
 
 **Action**: Implement a `--prune` flag for stage transitions.
 
-Example: `bash scripts/beads-context.sh stage-transition <id> dev validate --prune-before dev`
+Example (with all required flags — `--prune-before` is an additional flag on top of the standard required ones):
+
+```bash
+bash scripts/beads-context.sh stage-transition <id> dev validate \
+  --summary "Dev phase complete: N tasks implemented, all tests passing" \
+  --decisions "Used approach X over Y because Z" \
+  --artifacts "src/foo.ts, test/foo.test.ts, commit abc123" \
+  --next "Validate stage should focus on lint + eval rubric" \
+  --prune-before dev
+```
+
+The `--summary`, `--decisions`, `--artifacts`, and `--next` flags are **required** for any stage transition. The `--prune-before` flag is optional — it tells forge to strip prior-stage context from the conversation to recover tokens before validate begins.
 
 **Estimated savings**: 50-100KB per boundary (3-5 stages = 150-500KB recovered)
 
