@@ -77,12 +77,33 @@ _status_icon() {
   esac
 }
 
+_json_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
 # _collect_issues — Gather all open/in_progress issues with details
 # Outputs lines: id|title|status|owner|updated|depends_on
 _collect_issues() {
   local bd_cmd="${BD_CMD:-bd}"
   local list_output
-  list_output="$("$bd_cmd" list --status=open,in_progress 2>/dev/null)" || return 1
+
+  # beads 0.62 rejects comma-separated status filters, so fall back to
+  # separate queries when the combined form fails.
+  list_output="$("$bd_cmd" list --status=open,in_progress 2>/dev/null || true)"
+  if [[ -z "$list_output" ]] || [[ -z "$(echo "$list_output" | tr -d '[:space:]')" ]]; then
+    list_output="$(
+      {
+        "$bd_cmd" list --status=open 2>/dev/null || true
+        "$bd_cmd" list --status=in_progress 2>/dev/null || true
+      } | awk 'NF && !seen[$0]++'
+    )"
+  fi
 
   # Filter empty lines
   if [[ -z "$list_output" ]] || [[ -z "$(echo "$list_output" | tr -d '[:space:]')" ]]; then
@@ -141,9 +162,10 @@ cmd_workload() {
 
   # Parse arguments
   while [[ $# -gt 0 ]]; do
-    case "$1" in
+    local arg="${1%$'\r'}"
+    case "$arg" in
       --developer=*)
-        filter_developer="${1#--developer=}"
+        filter_developer="${arg#--developer=}"
         shift
         ;;
       --me)
@@ -160,11 +182,11 @@ cmd_workload() {
         shift
         ;;
       --format=*)
-        _workload_error "Unsupported format: ${1#--format=}"
+        _workload_error "Unsupported format: ${arg#--format=}"
         return 1
         ;;
       *)
-        _workload_error "Unknown argument: $1"
+        _workload_error "Unknown argument: $arg"
         return 1
         ;;
     esac
@@ -232,16 +254,13 @@ cmd_workload() {
       [[ -n "$stale_flag" ]] && stale_bool="true"
       local blocked_ids=""
       [[ -n "$depends_on" ]] && blocked_ids="$depends_on"
-
-      # Use jq to build safe JSON
-      jq -n -c \
-        --arg id "$issue_id" \
-        --arg title "$title" \
-        --arg status "$status" \
-        --arg updated "$updated" \
-        --argjson stale "$stale_bool" \
-        --arg blocked_by "$blocked_ids" \
-        '{id: $id, title: $title, status: $status, updated: $updated, stale: $stale, blocked_by: $blocked_by}' \
+      printf '{"id":"%s","title":"%s","status":"%s","updated":"%s","stale":%s,"blocked_by":"%s"}\n' \
+        "$(_json_escape "$issue_id")" \
+        "$(_json_escape "$title")" \
+        "$(_json_escape "$status")" \
+        "$(_json_escape "$updated")" \
+        "$stale_bool" \
+        "$(_json_escape "$blocked_ids")" \
         >> "$work_dir/json/${owner}"
     fi
   done <<< "$issues_data"
@@ -260,22 +279,30 @@ cmd_workload() {
   # Output
   if [[ "$format" == "json" ]]; then
     # Build JSON object: { "devone": [...], "devtwo": [...] }
-    local json_result="{"
-    local first=true
+    local first_dev="true"
+    printf '{'
     for dev_file in "$work_dir/json"/*; do
       local dev_name
       dev_name="$(basename "$dev_file")"
-      local issues_array
-      issues_array="$(jq -s '.' "$dev_file")"
-      if [[ "$first" == "true" ]]; then
-        first=false
+      local first_issue="true"
+      if [[ "$first_dev" == "true" ]]; then
+        first_dev="false"
       else
-        json_result+=","
+        printf ','
       fi
-      json_result+="$(jq -n -c --arg dev "$dev_name" --argjson issues "$issues_array" '{($dev): $issues}' | sed 's/^{//' | sed 's/}$//')"
+      printf '"%s":[' "$(_json_escape "$dev_name")"
+      while IFS= read -r issue_json; do
+        [[ -z "$issue_json" ]] && continue
+        if [[ "$first_issue" == "true" ]]; then
+          first_issue="false"
+        else
+          printf ','
+        fi
+        printf '%s' "$issue_json"
+      done < "$dev_file"
+      printf ']'
     done
-    json_result+="}"
-    echo "$json_result"
+    printf '}\n'
   else
     local first_dev=true
     for dev_file in "$work_dir/devs"/*; do

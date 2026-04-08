@@ -77,6 +77,13 @@ if [ -n "$_jq_version" ]; then
   fi
 fi
 
+# On Windows/WSL we may be invoking jq.exe, which emits CRLF and breaks
+# numeric comparisons like `[ "$count" -gt 0 ]`. Strip trailing CRs from
+# all jq output after the dependency/version checks above.
+jq() {
+  command jq "$@" | tr -d '\r'
+}
+
 # ── Configuration ───────────────────────────────────────────────────────
 
 BD="${BD_CMD:-bd}"

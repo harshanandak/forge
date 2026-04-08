@@ -22,7 +22,12 @@ function serialTest(name, callback) {
 }
 
 async function runSetup(args, cwd, env = {}) {
-  const originalEnv = { INIT_CWD: process.env.INIT_CWD, PATH: process.env.PATH, Path: process.env.Path };
+  const originalEnv = {
+    INIT_CWD: process.env.INIT_CWD,
+    PATH: process.env.PATH,
+    Path: process.env.Path,
+    CODEX_HOME: process.env.CODEX_HOME,
+  };
   const originalLog = console.log;
   const originalWarn = console.warn;
   const originalError = console.error;
@@ -195,18 +200,37 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
   });
 
-  serialTest('setup scaffolds Codex stage skills under .codex/skills/<stage>/SKILL.md', async () => {
+  serialTest('setup installs Codex stage skills into CODEX_HOME/skills/<stage>/SKILL.md', async () => {
     const tmpDir = makeTempDir();
+    const codexHome = path.join(tmpDir, '.codex-home');
 
-    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir);
+    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir, {
+      CODEX_HOME: codexHome,
+    });
 
     expect(result.status).toBe(0);
-    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'dev', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'SKILL.md'))).toBe(false);
-    expect(fs.readFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('`forge plan`');
-    expect(fs.readFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('# Plan');
+    expect(fs.existsSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(codexHome, 'skills', 'dev', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('`forge plan`');
+    expect(fs.readFileSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('# Plan');
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
+    expect(result.stdout).toContain('Installed: Codex stage skills');
+    expect(result.stdout).not.toContain('Created: Codex stage skills');
+  });
+
+  serialTest('setup reports partial Codex setup when discoverable skills cannot be installed', async () => {
+    const tmpDir = makeTempDir();
+    const codexHomeFile = path.join(tmpDir, 'codex-home-file');
+    fs.writeFileSync(codexHomeFile, 'not-a-directory');
+
+    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir, {
+      CODEX_HOME: codexHomeFile,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Forge setup partially complete');
+    expect(result.stdout).toContain('Codex repo instructions installed, but skills are not discoverable in this environment');
   });
 
   serialTest('setup scaffolds Cursor native rules through the real setup path', async () => {

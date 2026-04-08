@@ -10,7 +10,8 @@
     "hooks": false
   },
   "directories": {
-    "skills": ".codex/skills"
+    "skills": ".codex/skills",
+    "globalSkills": "$CODEX_HOME/skills"
   },
   "setup": {
     "copyRules": false,
