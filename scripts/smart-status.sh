@@ -68,7 +68,9 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # Warn if jq < 1.6 (fromdateiso8601 and sub/2 require 1.6+)
-_jq_version="$(jq --version 2>/dev/null | sed 's/jq-//')" || true
+# Strip CR here as well because Windows jq.exe (or a CRLF-emitting wrapper in
+# tests) can affect the version probe before the jq() shim is defined below.
+_jq_version="$(command jq --version 2>/dev/null | tr -d '\r' | sed 's/jq-//')" || true
 if [ -n "$_jq_version" ]; then
   _jq_major="${_jq_version%%.*}"
   _jq_minor="${_jq_version#*.}"; _jq_minor="${_jq_minor%%.*}"
