@@ -92,11 +92,13 @@ _json_escape() {
 _collect_issues() {
   local bd_cmd="${BD_CMD:-bd}"
   local list_output
+  local combined_exit=0
 
   # beads 0.62 rejects comma-separated status filters, so fall back to
   # separate queries when the combined form fails.
-  list_output="$("$bd_cmd" list --status=open,in_progress 2>/dev/null || true)"
-  if [[ -z "$list_output" ]] || [[ -z "$(echo "$list_output" | tr -d '[:space:]')" ]]; then
+  list_output="$("$bd_cmd" list --status=open,in_progress 2>/dev/null)"
+  combined_exit=$?
+  if [[ "$combined_exit" -ne 0 ]]; then
     list_output="$(
       {
         "$bd_cmd" list --status=open 2>/dev/null || true
@@ -106,7 +108,7 @@ _collect_issues() {
   fi
 
   # Filter empty lines
-  if [[ -z "$list_output" ]] || [[ -z "$(echo "$list_output" | tr -d '[:space:]')" ]]; then
+  if [[ -z "$list_output" ]] || [[ -z "$(printf '%s' "$list_output" | tr -d '[:space:]')" ]]; then
     return 0
   fi
 

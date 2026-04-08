@@ -31,6 +31,9 @@ chmod +x "$mock_dir/gh"
 cat > "$mock_dir/bd" << 'MOCK'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "list --status=open,in_progress")
+    exit 1
+    ;;
   "list --status=open")
     echo "○ forge-bbb · Feature B"
     ;;
@@ -78,11 +81,14 @@ chmod +x "$mock_dir/bd"
 cat > "$mock_dir/bd-empty" << 'MOCK'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "list --status=open")
+  "list --status=open,in_progress")
     echo ""
     ;;
+  "list --status=open")
+    echo "○ forge-should-not-appear · Open fallback sentinel"
+    ;;
   "list --status=in_progress")
-    echo ""
+    echo "◐ forge-should-not-appear-2 · In-progress fallback sentinel"
     ;;
 esac
 MOCK
@@ -182,6 +188,7 @@ rc=0
 output="$(cmd_workload 2>/dev/null)" || rc=$?
 assert_exit "exits 0" 0 "$rc"
 assert_contains "shows no active work message" "No active work" "$output"
+assert_not_contains "does not fall back when combined query succeeds with no issues" "forge-should-not-appear" "$output"
 export BD_CMD="$mock_dir/bd"
 
 # ── Test 5: Stale assignment flagged (>48h) ──────────────────────────────

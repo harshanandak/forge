@@ -29,6 +29,6 @@ describe('Task 6: Codex plugin', () => {
   test('plugin declares the global Codex install target separately from packaged skill sources', () => {
     const plugin = JSON.parse(fs.readFileSync(path.join(root, 'lib/agents/codex.plugin.json'), 'utf8'));
     expect(plugin.directories.skills).toBe('.codex/skills');
-    expect(plugin.directories.globalSkills).toBe('$CODEX_HOME/skills');
+    expect(plugin.installTargets.skills).toBe('$CODEX_HOME/skills');
   });
 });

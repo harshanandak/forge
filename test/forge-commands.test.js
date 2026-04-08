@@ -151,7 +151,7 @@ describe('Codex plugin metadata', () => {
 
   test('keeps the packaged Codex skill source and global install target aligned', () => {
     expect(codexPlugin.directories.skills).toBe('.codex/skills');
-    expect(codexPlugin.directories.globalSkills).toBe('$CODEX_HOME/skills');
+    expect(codexPlugin.installTargets.skills).toBe('$CODEX_HOME/skills');
   });
 });
 

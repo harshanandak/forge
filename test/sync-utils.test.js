@@ -79,4 +79,16 @@ exit 0
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("sync skipped, Beads Dolt remote 'origin' is not configured");
   });
+
+  test('auto-sync warns clearly when bd is unavailable', () => {
+    const repoDir = makeTempDir();
+    fs.mkdirSync(path.join(repoDir, '.beads'), { recursive: true });
+
+    const result = runSyncUtils('auto-sync', {
+      BD_CMD: toBashPath(path.join(repoDir, 'definitely-missing-bd')),
+    }, repoDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("sync skipped, unable to inspect Beads Dolt remotes");
+  });
 });

@@ -212,6 +212,7 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(codexHome, 'skills', 'dev', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '$CODEX_HOME', 'skills'))).toBe(false);
     expect(fs.readFileSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('`forge plan`');
     expect(fs.readFileSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('# Plan');
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
