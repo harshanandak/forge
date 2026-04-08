@@ -271,6 +271,28 @@ _run_sync() {
   fi
 }
 
+_has_dolt_origin_remote() {
+  local remote_list=""
+  local bd_cmd="${BD_CMD:-bd}"
+  local remote_status=0
+
+  if ! command -v "$bd_cmd" >/dev/null 2>&1; then
+    return 2
+  fi
+
+  remote_list="$("$bd_cmd" dolt remote list 2>/dev/null | tr -d '\r')"
+  remote_status=$?
+  if [[ "$remote_status" -ne 0 ]]; then
+    return 2
+  fi
+
+  if [[ -z "$remote_list" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$remote_list" | awk 'NF { print $1 }' | grep -qx 'origin'
+}
+
 # Environment overrides (for testing):
 #   BD_SYNC_CMD — single command to run instead of default pull+push (e.g. "echo mock-sync")
 #   FILE_INDEX_ROOT — root directory for file-index.sh (default: repo_dir)
@@ -280,6 +302,18 @@ auto_sync() {
 
   # Ensure .beads directory exists
   mkdir -p "$repo_dir/.beads"
+
+  if _has_dolt_origin_remote; then
+    :
+  else
+    local remote_status=$?
+    if [[ "$remote_status" -eq 2 ]]; then
+      echo "Warning: sync skipped, unable to inspect Beads Dolt remotes (is 'bd' installed and configured?)." >&2
+    else
+      echo "Warning: sync skipped, Beads Dolt remote 'origin' is not configured (run 'bd dolt remote add origin <url>')." >&2
+    fi
+    return 0
+  fi
 
   # Run sync — helper function avoids eval while supporting compound default
   if _run_sync >/dev/null 2>&1; then

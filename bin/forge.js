@@ -139,7 +139,7 @@ function loadAgentsFromPlugins() {
     agents[id] = {
       name: plugin.name,
       description: plugin.description || '',
-      dirs: Object.values(plugin.directories || {}),
+      dirs: getRepoRelativePluginDirectories(plugin),
       hasCommands: plugin.capabilities?.commands || plugin.setup?.copyCommands || false,
       hasSkill: plugin.capabilities?.skills || plugin.setup?.createSkill || false,
       linkFile: plugin.files?.rootConfig || '',
@@ -151,6 +151,17 @@ function loadAgentsFromPlugins() {
   });
 
   return agents;
+}
+
+function isRepoRelativePluginPath(candidate) {
+  return typeof candidate === 'string'
+    && candidate.length > 0
+    && !path.isAbsolute(candidate)
+    && !/^[~$%]/.test(candidate);
+}
+
+function getRepoRelativePluginDirectories(plugin) {
+  return Object.values(plugin.directories || {}).filter(isRepoRelativePluginPath);
 }
 
 // Agent definitions - loaded from plugin system
