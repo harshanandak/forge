@@ -7,6 +7,7 @@ describe('CI Workflow Configuration', () => {
   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf-8');
   const workflow = yaml.parse(workflowContent);
+  const synchronizeSkipCondition = "github.event_name != 'pull_request' || github.event.action != 'synchronize'";
 
   describe('Coverage Job', () => {
     test('should have a separate coverage job', () => {
@@ -105,6 +106,40 @@ describe('CI Workflow Configuration', () => {
       expect(!test.needs).toBeTruthy();
       expect(!coverage.needs).toBeTruthy();
       expect(!e2e.needs).toBeTruthy();
+    });
+  });
+
+  describe('Follow-up PR Pushes', () => {
+    test('workflow cancels older in-progress runs for the same PR or ref', () => {
+      expect(workflow.concurrency).toBeTruthy();
+      expect(workflow.concurrency.group).toContain('github.event.pull_request.number || github.ref');
+      expect(workflow.concurrency['cancel-in-progress']).toBe(true);
+    });
+
+    test('followup-tests job exists for synchronize events', () => {
+      expect(workflow.jobs['followup-tests']).toBeTruthy();
+      expect(workflow.jobs['followup-tests'].if).toBe("github.event_name == 'pull_request' && github.event.action == 'synchronize'");
+    });
+
+    test('followup-tests job runs on a single ubuntu runner', () => {
+      const followup = workflow.jobs['followup-tests'];
+      expect(followup['runs-on']).toBe('ubuntu-latest');
+      expect(!followup.strategy).toBeTruthy();
+    });
+
+    test('followup-tests resolves affected targets before running tests', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const stepNames = followup.steps.map(s => s.name);
+      expect(stepNames.includes('Resolve affected test targets')).toBeTruthy();
+      expect(stepNames.includes('Run targeted unit tests')).toBeTruthy();
+      expect(stepNames.includes('Run single-platform unit suite fallback')).toBeTruthy();
+    });
+
+    test('full matrix, coverage, e2e, and dashboard skip synchronize events', () => {
+      expect(workflow.jobs.test.if).toBe(synchronizeSkipCondition);
+      expect(workflow.jobs.coverage.if).toBe(synchronizeSkipCondition);
+      expect(workflow.jobs.e2e.if).toBe(synchronizeSkipCondition);
+      expect(workflow.jobs.dashboard.if).toBe(synchronizeSkipCondition);
     });
   });
 

@@ -30,9 +30,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test Suite
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize'
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -81,8 +86,118 @@ jobs:
           echo "✓ Edge case tests completed" >> $GITHUB_STEP_SUMMARY
           echo "✓ Automation tests completed" >> $GITHUB_STEP_SUMMARY
 
+  followup-tests:
+    name: Targeted PR Tests
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.5
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Setup test fixtures
+        run: bash test-env/automation/setup-fixtures.sh --force
+
+      - name: Resolve affected test targets
+        id: affected
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+          mapfile -t changed_files < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          declare -A seen=()
+          test_targets=()
+          run_edge_cases=false
+
+          add_target() {
+            local target="$1"
+            if [[ -n "$target" && -f "$target" && -z "${seen[$target]:-}" ]]; then
+              seen["$target"]=1
+              test_targets+=("$target")
+            fi
+          }
+
+          for file in "${changed_files[@]}"; do
+            case "$file" in
+              test-env/*|test/e2e/*)
+                run_edge_cases=true
+                ;;
+              test/*.test.js|test/**/*.test.js)
+                add_target "$file"
+                ;;
+              lib/*.js|lib/**/*.js)
+                candidate="test/${file#lib/}"
+                add_target "${candidate%.js}.test.js"
+                ;;
+              scripts/*.js|scripts/**/*.js)
+                relative="${file#scripts/}"
+                add_target "test/scripts/${relative%.js}.test.js"
+                add_target "test/${relative%.js}.test.js"
+                ;;
+              .github/workflows/*)
+                workflow_name="$(basename "${file%.*}")"
+                add_target "test/workflows/${workflow_name}.test.js"
+                add_target "test/ci-workflow.test.js"
+                ;;
+              package.json|bun.lockb|pnpm-lock.yaml|yarn.lock|package-lock.json|packages/*)
+                echo "mode=full" >> "$GITHUB_OUTPUT"
+                echo "run_edge_cases=true" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
+          done
+
+          if [[ "${#test_targets[@]}" -gt 0 ]]; then
+            {
+              echo "mode=targeted"
+              echo "targets<<EOF"
+              printf '%s\n' "${test_targets[@]}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "run_edge_cases=${run_edge_cases}" >> "$GITHUB_OUTPUT"
+
+      - name: Run targeted unit tests
+        if: steps.affected.outputs.mode == 'targeted'
+        shell: bash
+        run: |
+          mapfile -t test_targets <<'EOF'
+          ${{ steps.affected.outputs.targets }}
+          EOF
+          bun test "${test_targets[@]}"
+
+      - name: Run single-platform unit suite fallback
+        if: steps.affected.outputs.mode == 'full'
+        run: bun test test/
+
+      - name: Run affected edge-case tests
+        if: steps.affected.outputs.run_edge_cases == 'true'
+        run: node --test test-env/**/*.test.js || true
+
   coverage:
     name: Code Coverage
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize'
     runs-on: ubuntu-latest
 
     steps:
@@ -131,6 +246,7 @@ jobs:
 
   e2e:
     name: E2E Tests
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize'
     runs-on: ubuntu-latest
 
     steps:
@@ -211,6 +327,7 @@ jobs:
 
   dashboard:
     name: Test Dashboard
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize'
     runs-on: ubuntu-latest
     needs: [test, coverage]
 

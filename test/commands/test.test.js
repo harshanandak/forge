@@ -28,11 +28,15 @@ try {
  * @param {string} [opts.packageJson] - JSON string for package.json readFileSync
  * @returns {Object} Stubbed fs
  */
-function makeFsStub({ lockfile = null, packageJson = '{}' } = {}) {
+function makeFsStub({ lockfile = null, packageJson = '{}', existingPaths = [] } = {}) {
+	const normalize = (value) => String(value).replace(/\\/g, '/');
+	const knownPaths = new Set(existingPaths.map(normalize));
 	return {
 		existsSync: (p) => {
-			if (lockfile && String(p).endsWith(lockfile)) return true;
-			if (String(p).endsWith('package.json') && packageJson) return true;
+			const normalized = normalize(p);
+			if (lockfile && normalized.endsWith(lockfile)) return true;
+			if (normalized.endsWith('package.json') && packageJson) return true;
+			if (knownPaths.has(normalized)) return true;
 			return false;
 		},
 		readFileSync: (p, _enc) => {
@@ -252,7 +256,12 @@ describe('forge test command', () => {
 		test('maps changed source files to test files', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {
-				fs: makeFsStub(),
+				fs: makeFsStub({
+					existingPaths: [
+						'/fake/root/test/foo.test.js',
+						'/fake/root/test/bar.test.js',
+					],
+				}),
 				execFileSync: makeExecFileSync({
 					mergeBaseOutput: 'abc123',
 					gitDiffOutput: 'lib/foo.js\nlib/bar.js\n',
@@ -322,7 +331,9 @@ describe('forge test command', () => {
 		test('skips non-lib files in affected mapping', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {
-				fs: makeFsStub(),
+				fs: makeFsStub({
+					existingPaths: ['/fake/root/test/foo.test.js'],
+				}),
 				execFileSync: makeExecFileSync({
 					gitDiffOutput: 'README.md\nlib/foo.js\ndocs/bar.md\n',
 				}),
@@ -347,6 +358,44 @@ describe('forge test command', () => {
 
 			// Falls back to 'run test' (no specific files)
 			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
+		});
+
+		test('runs changed test files directly when they are edited', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: ['/fake/root/test/commands/ship.test.js'],
+				}),
+				execFileSync: makeExecFileSync({
+					gitDiffOutput: 'test/commands/ship.test.js\n',
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual(['run', 'test', 'test/commands/ship.test.js']);
+		});
+
+		test('maps workflow changes to workflow tests when they exist', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: [
+						'/fake/root/test/ci-workflow.test.js',
+						'/fake/root/test/workflows/size-check.test.js',
+					],
+				}),
+				execFileSync: makeExecFileSync({
+					gitDiffOutput: '.github/workflows/size-check.yml\n',
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual([
+				'run',
+				'test',
+				'test/ci-workflow.test.js',
+				'test/workflows/size-check.test.js',
+			]);
 		});
 	});
 });
