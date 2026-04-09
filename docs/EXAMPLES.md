@@ -109,7 +109,7 @@ git commit -m "feat: add health check endpoint"
 /status
 
 # If Beads installed:
-bd create "SQL injection in search endpoint" \
+forge create "SQL injection in search endpoint" \
   --type bug \
   --priority 0 \
   --label "security,critical"
@@ -224,7 +224,7 @@ OWASP A03:2021 Injection"
 # ═══════════════════════════════════════════════════════════
 /status
 
-bd create "Extract auth logic to service" \
+forge create "Extract auth logic to service" \
   --type chore \
   --priority 2
 
@@ -337,35 +337,35 @@ Team of 3 developers:
 # PROJECT SETUP (Once per project)
 # ═══════════════════════════════════════════════════════════
 bd init --prefix SHOP
-bd sync  # Commit .beads/ to git
+forge sync  # Sync initial Beads state
 
 # ═══════════════════════════════════════════════════════════
 # ALICE: Payment Integration
 # ═══════════════════════════════════════════════════════════
 
 # Morning: Check what's available
-bd ready
+forge ready
 # Output:
 # SHOP-1: Payment integration (ready)
 # SHOP-3: Admin dashboard (ready)
 
 # Claim work
-bd update SHOP-1 --status in_progress
+forge claim SHOP-1
 /status
 /plan stripe-payment-integration
 /dev
 
 # Midday: Progress update
-bd comments SHOP-1 "Stripe SDK integrated, working on webhooks"
+bd comments add SHOP-1 "Stripe SDK integrated, working on webhooks"
 
 # Afternoon: Blocked on API keys
-bd update SHOP-1 --status blocked --comment "Need production Stripe API keys"
+forge update SHOP-1 --status blocked --comment "Need production Stripe API keys"
 
 # Create dependency
-bd create "Get Stripe API keys from DevOps" --type chore --priority 1
+forge create "Get Stripe API keys from DevOps" --type chore --priority 1
 bd dep add SHOP-1 SHOP-5  # SHOP-1 depends on SHOP-5
 
-bd sync  # Push to git
+forge sync  # Push Beads state
 
 # ═══════════════════════════════════════════════════════════
 # BOB: Email Notifications (Same Time)
@@ -373,24 +373,24 @@ bd sync  # Push to git
 
 # Morning: Pull latest, check work
 git pull
-bd sync  # Sync with Alice's updates
+forge sync  # Sync with Alice's updates
 
-bd ready
+forge ready
 # Output:
 # SHOP-3: Admin dashboard (ready)
 # SHOP-2: Email notifications (ready)
 
 # Claim different feature
-bd update SHOP-2 --status in_progress
+forge claim SHOP-2
 /plan email-notifications
 /dev
 
 # No conflicts with Alice (different files)
 
 # End of day: Complete
-bd close SHOP-2 --reason "Implemented with SendGrid"
+forge close SHOP-2 --reason "Implemented with SendGrid"
 /ship
-bd sync
+forge sync
 
 # ═══════════════════════════════════════════════════════════
 # CHARLIE: Admin Dashboard (Next Day)
@@ -398,17 +398,17 @@ bd sync
 
 # Morning: Check dependencies
 git pull
-bd sync
+forge sync
 
-bd show SHOP-3
+forge show SHOP-3
 # Output:
 # Status: ready
 # Depends on: (none)
 
-bd update SHOP-3 --status in_progress
+forge claim SHOP-3
 
 # Discovers overlap with Bob's work
-bd comments SHOP-3 "Need Bob's email service for user notifications"
+bd comments add SHOP-3 "Need Bob's email service for user notifications"
 bd dep add SHOP-3 SHOP-2  # SHOP-3 depends on SHOP-2
 
 # Bob's work already merged, so can proceed
@@ -428,7 +428,7 @@ bd blocked
 # SHOP-1: Payment integration (blocked by SHOP-5)
 
 # Find work with no blockers:
-bd ready
+forge ready
 
 # See full project status:
 bd stats
@@ -440,7 +440,7 @@ bd stats
 # Done: 4
 
 # Always sync at end of session:
-bd sync
+forge sync
 ```
 
 **Result**: Team can work in parallel, track dependencies, and avoid conflicts.
@@ -465,8 +465,8 @@ bd sync
 
 ### 4. Team Collaboration
 - Beads tracks dependencies
-- `bd ready` finds available work
-- `bd sync` at end of every session
+- `forge ready` finds available work
+- `forge sync` at end of every session
 - Comments keep teammates informed
 
 ---

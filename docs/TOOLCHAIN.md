@@ -42,7 +42,7 @@ Complete reference for all tools integrated with the Forge workflow.
 - **Persists across sessions** - Issues survive context clearing, compaction, new chats
 - **Git-backed** - Version controlled, mergeable, team-shareable
 - **Dependency tracking** - Know what blocks what
-- **Ready detection** - `bd ready` finds unblocked work automatically
+- **Ready detection** - `forge ready` finds unblocked work automatically
 - **AI-optimized** - JSON output, semantic compaction, audit trails
 
 ### Installation
@@ -91,6 +91,11 @@ After `bd init`, creates `.beads/` directory:
 
 **Dual-database architecture**: JSONL for git versioning, SQLite for fast local queries. Background daemon keeps them in sync.
 
+For day-to-day issue workflows, prefer the Forge wrapper commands (`forge ready`,
+`forge create`, `forge update`, `forge close`, `forge sync`). Use `bd` directly
+for Beads capabilities Forge does not wrap yet, such as `bd init`, `bd comments`,
+`bd dep`, `bd blocked`, and `bd dolt *`.
+
 ### Complete Command Reference
 
 #### Initialization
@@ -106,36 +111,36 @@ bd init --prefix PROJ      # Custom issue prefix (PROJ-xxx)
 
 ```bash
 # Create issues
-bd create "Title"                           # Basic issue
-bd create "Title" --type feature            # With type (feature, bug, chore, etc.)
-bd create "Title" --priority 1              # With priority (0=critical, 4=backlog)
-bd create "Title" -p 0 -l "urgent,backend"  # P0 with labels
+forge create "Title"                           # Basic issue
+forge create "Title" --type feature            # With type (feature, bug, chore, etc.)
+forge create "Title" --priority 1              # With priority (0=critical, 4=backlog)
+forge create "Title" -p 0 -l "urgent,backend"  # P0 with labels
 
 # View issues
-bd show <id>                   # Detailed view with audit trail
-bd list                        # All issues
-bd list --status open          # Filter by status
-bd list --priority 1           # Filter by priority
-bd list --assignee bob         # Filter by assignee
-bd list --label bug            # Filter by label (AND logic)
-bd list --label-any bug,urgent # Filter by label (OR logic)
-bd list --type feature         # Filter by type
-bd list --title-contains "auth" # Search titles
-bd list --limit 10             # Limit results
+forge show <id>                   # Detailed view with audit trail
+forge list                        # All issues
+forge list --status open          # Filter by status
+forge list --priority 1           # Filter by priority
+forge list --assignee bob         # Filter by assignee
+forge list --label bug            # Filter by label (AND logic)
+forge list --label-any bug,urgent # Filter by label (OR logic)
+forge list --type feature         # Filter by type
+forge list --title-contains "auth" # Search titles
+forge list --limit 10             # Limit results
 
 # Update issues
-bd update <id> --status in_progress     # Change status
-bd update <id> --priority 2             # Change priority
-bd update <id> --assignee bob           # Assign
-bd update <id> --title "New title"      # Update title
-bd update <id> --description "..."      # Update description
-bd update <id> --notes "..."            # Add notes
-bd update <id> --label-add urgent       # Add label
+forge claim <id>                        # Claim work (sets in_progress)
+forge update <id> --priority 2          # Change priority
+forge update <id> --assignee bob        # Assign
+forge update <id> --title "New title"   # Update title
+forge update <id> --description "..."   # Update description
+forge update <id> --notes "..."         # Add notes
+forge update <id> --add-label urgent    # Add label
 
 # Complete issues
-bd close <id>                           # Close single issue
-bd close <id1> <id2> <id3>              # Close multiple (efficient)
-bd close <id> --reason "Completed auth" # Close with reason
+forge close <id>                           # Close single issue
+forge close <id1> <id2> <id3>              # Close multiple (efficient)
+forge close <id> --reason "Completed auth" # Close with reason
 bd delete <id>                          # Delete issue
 bd delete <id> --cascade                # Delete with dependents
 ```
@@ -144,8 +149,8 @@ bd delete <id> --cascade                # Delete with dependents
 
 ```bash
 # Find work
-bd ready                        # Issues with NO open blockers (start here!)
-bd ready --priority 1           # Filter ready work by priority
+forge ready                     # Issues with NO open blockers (start here!)
+forge ready --priority 1        # Filter ready work by priority
 bd blocked                      # Issues that ARE blocked
 
 # Dependencies
@@ -158,11 +163,11 @@ bd dep cycles                                  # Detect cycles
 
 # Comments
 bd comments <id>                # View comments
-bd comments <id> "Comment text" # Add comment
+bd comments add <id> "Comment text" # Add comment
 
 # Git sync
-bd sync                         # Export to JSONL, commit, push
-bd sync --status                # Check sync status
+forge sync                      # Pull + push Beads state through the Forge wrapper
+bd dolt status                  # Check Dolt sync/server status
 bd hooks install                # Install git hooks for auto-sync
 
 # Maintenance
@@ -203,18 +208,18 @@ bd admin compact --days 90      # Compact old closed issues
 
 ```bash
 # Start of session
-bd ready                    # What can I work on?
-bd show <id>                # Review the issue
-bd update <id> --status in_progress
+forge ready                 # What can I work on?
+forge show <id>             # Review the issue
+forge claim <id>
 
 # During work
-bd comments <id> "Progress update"
-bd update <id> --notes "Found edge case"
+bd comments add <id> "Progress update"
+forge update <id> --notes "Found edge case"
 
 # End of session
-bd close <id>               # If done, or:
-bd update <id> --status blocked --comment "Needs API response"
-bd sync                     # Always sync at end!
+forge close <id>            # If done, or:
+forge update <id> --status blocked --comment "Needs API response"
+forge sync                  # Always sync at end!
 ```
 
 ---
@@ -556,7 +561,10 @@ bun add -g @beads/bd
 irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 ```
 
-> **Why v0.49.x?** Earlier versions lack the `bd ready` dependency-aware query, `bd sync --status`, and the dual-database (JSONL + SQLite) architecture that Forge relies on.
+> **Why Forge + Beads?** Forge wraps the supported day-to-day issue workflow
+> (`forge ready`, `forge create`, `forge close`, `forge sync`) while Beads
+> remains the underlying store for initialization, dependencies, comments, and
+> Dolt-backed sync internals.
 
 ---
 
@@ -564,14 +572,14 @@ irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 
 | Stage | Tools Used |
 |-------|------------|
-| `/status` | `bd ready`, `bd list`, `git status` |
+| `/status` | `forge ready`, `forge list`, `git status` |
 | `/plan` (Phase 2) | Parallel AI, Context7, grep.app, codebase exploration |
-| `/plan` | `bd create`, `git checkout -b` |
-| `/dev` | Tests, code, `bd update`, `/tasks save` |
+| `/plan` | `forge create`, `git checkout -b` |
+| `/dev` | Tests, code, `forge update`, `/tasks save` |
 | `/validate` | Type check, lint, tests, SonarCloud |
-| `/ship` | `bd update --status done`, `gh pr create` |
+| `/ship` | `forge close`, `gh pr create` |
 | `/review` | `gh pr view`, Greptile, SonarCloud |
-| `/premerge` | `bd sync`, doc updates, hand off PR |
+| `/premerge` | `forge sync`, doc updates, hand off PR |
 | `/verify` | Documentation cross-check |
 
 ---
@@ -582,13 +590,13 @@ irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 
 ```bash
 bd init                     # Initialize
-bd ready                    # Find unblocked work
-bd create "Title"           # Create issue
-bd show <id>                # View details
-bd update <id> --status X   # Update status
+forge ready                 # Find unblocked work
+forge create "Title"        # Create issue
+forge show <id>             # View details
+forge update <id> --status X   # Update status
 bd dep add <a> <b>          # a depends on b
-bd close <id>               # Complete
-bd sync                     # Git sync
+forge close <id>            # Complete
+forge sync                  # Beads sync
 ```
 
 ### GitHub CLI
@@ -626,12 +634,12 @@ irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 
 **"database locked"**
 ```bash
-bd sync --force
+forge sync
 ```
 
 **Issues not showing after git pull**
 ```bash
-bd sync  # Re-imports from JSONL
+forge sync  # Re-syncs Beads state through the Forge wrapper
 ```
 
 ### GitHub CLI

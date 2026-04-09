@@ -2394,7 +2394,7 @@ function displaySetupSummary(selectedAgents) {
 
   // Beads status
   if (isBeadsInitialized()) {
-    console.log('  ✓ Beads initialized - Track work: bd ready');
+    console.log('  ✓ Beads initialized - Track work: forge ready');
   } else if (checkForBeads()) {
     console.log('  ! Beads available - Run: bd init');
   } else {
@@ -3347,7 +3347,7 @@ async function setupProjectTools(rl, question) {
   console.log('');
   console.log('• Beads - Git-backed issue tracking');
   console.log('  Persists tasks across sessions, tracks dependencies.');
-  console.log('  Command: bd ready, bd create, bd close');
+  console.log('  Command: forge ready, forge create, forge close');
   console.log('');
   console.log('• Skills - Universal SKILL.md management');
   console.log('  Manage AI agent skills across all agents.');

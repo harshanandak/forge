@@ -291,8 +291,8 @@ All PRs tracked in Beads with proper dependencies:
 | PR8 | forge-dwm | Blocked | P3 | PR7 |
 | ~~Skills CLI~~ | ~~forge-mlm~~ | ~~Absorbed into PR5.5 + PR6 + PR8~~ | — | — |
 
-**View all issues**: `bd list`
-**View ready work**: `bd ready`
+**View all issues**: `forge list`
+**View ready work**: `forge ready`
 **View blocked issues**: `bd blocked`
 
 ### Git Workflow
@@ -348,7 +348,7 @@ Each PR is self-contained and can be rolled back independently:
 ## Resources
 
 - **Master Plan**: `docs/plans/*.md`
-- **Beads Issues**: `bd list` or `bd show <issue-id>`
+- **Beads Issues**: `forge list` or `forge show <issue-id>`
 - **Workflow Guide**: [AGENTS.md](../AGENTS.md)
 - **Architecture Docs**: Coming in PR0 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 
