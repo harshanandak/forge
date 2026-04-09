@@ -231,6 +231,7 @@ describe('Validate Command - Validation Orchestration', () => {
 
 		test('should skip tracked symlinks in Git-indexed scans', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-symlink-paths-'));
+			const outsideTargetPath = path.join(os.tmpdir(), `forge-validate-symlink-target-${Date.now()}.txt`);
 			try {
 				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
 				fs.writeFileSync(
@@ -238,13 +239,13 @@ describe('Validate Command - Validation Orchestration', () => {
 					'console.log("safe");\n',
 				);
 				fs.writeFileSync(
-					path.join(tmpDir, 'outside-target.txt'),
+					outsideTargetPath,
 					'<<<<<<< HEAD\noutside\n=======\noutside\n>>>>>>> branch\n',
 				);
 
 				try {
 					fs.symlinkSync(
-						path.join(tmpDir, 'outside-target.txt'),
+						outsideTargetPath,
 						path.join(tmpDir, 'linked.txt'),
 					);
 				} catch (error) {
@@ -265,6 +266,7 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(result.checks.conflictMarkers.files).toEqual([]);
 			} finally {
 				fs.rmSync(tmpDir, { recursive: true, force: true });
+				fs.rmSync(outsideTargetPath, { force: true });
 			}
 		});
 
