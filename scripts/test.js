@@ -51,6 +51,7 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
   let runTestEnv = false;
   let runE2E = false;
   let hasUnmappedFiles = false;
+  const hasUnknownChangedFiles = changedFiles.length === 0 && testTargets.length === 0;
 
   for (const file of changedFiles) {
     if (PACKAGE_LEVEL_PATHS.has(file) || file.startsWith('packages/')) {
@@ -85,8 +86,9 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
   return {
     changedFiles,
     hasUnmappedFiles,
+    hasUnknownChangedFiles,
     runE2E,
-    runFullSuite: runFullSuite || hasUnmappedFiles,
+    runFullSuite: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles,
     runTestEnv,
     testTargets,
   };
@@ -119,7 +121,9 @@ function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
     if (plan.runFullSuite) {
       const reason = plan.hasUnmappedFiles
         ? 'unmapped pushed files require full unit coverage'
-        : 'package-level changes detected';
+        : plan.hasUnknownChangedFiles
+          ? 'changed files could not be resolved safely'
+          : 'package-level changes detected';
       console.log(`  Mode: full suite (${reason})`);
       const status = runCommand(pkgManager, ['run', 'test'], { env }, spawnSync);
       if (status !== 0) return status;

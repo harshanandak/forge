@@ -113,6 +113,17 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([]);
   });
 
+  test('classifyPushTests falls back to full suite when changed files cannot be resolved', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: '',
+      useUpstream: false,
+    }));
+
+    expect(plan.hasUnknownChangedFiles).toBe(true);
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.testTargets).toEqual([]);
+  });
+
   test('runPrePushTests runs targeted tests instead of the full suite when possible', () => {
     const spawnSync = makeSpawnSync(0);
     const status = runPrePushTests(repoRoot, {
@@ -158,6 +169,24 @@ describe('scripts/test pre-push runner', () => {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'scripts/sync-utils.sh\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+    expect(spawnSync.calls[0].command).toBe('bun');
+    expect(spawnSync.calls[0].args).toEqual(['run', 'test']);
+  });
+
+  test('runPrePushTests falls back to the full unit suite when diff-base resolution yields no changed files', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: '',
+        useUpstream: false,
       }),
       pkgManager: 'bun',
       spawnSync,
