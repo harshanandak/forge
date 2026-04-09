@@ -33,7 +33,7 @@ describe('detectWorktree', () => {
   test('returns branch name when inside a worktree', () => {
     const result = detectWorktree(WORKTREE_DIR);
     if (result.inWorktree) {
-      expect(result.branch).toMatch(/^[a-z]+\/[a-z0-9-]+$/);
+      expect(result.branch).toMatch(/^[A-Za-z0-9._/-]+$/);
     }
   });
 

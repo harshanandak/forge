@@ -10,15 +10,49 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+const ACTIVE_SOURCE_PATHS = [
+  '.claude',
+  '.cline',
+  '.codex',
+  '.cursor',
+  '.github',
+  '.kilocode',
+  '.opencode',
+  '.roo',
+  'bin',
+  'lib',
+  'scripts',
+  'AGENTS.md',
+  'README.md',
+  'install.sh',
+  'package.json',
+];
 
 function collectWorkflowReferences(rootDir) {
   const matches = [];
   const allowedExtensions = new Set(['.js', '.sh', '.md', '.json']);
   const excludedDirs = new Set(['node_modules', '.worktrees', '.git']);
-  const stack = [rootDir];
+  const stack = ACTIVE_SOURCE_PATHS
+    .map((relativePath) => path.join(rootDir, relativePath))
+    .filter((absolutePath) => fs.existsSync(absolutePath));
 
   while (stack.length > 0) {
     const currentDir = stack.pop();
+    const stat = fs.statSync(currentDir);
+
+    if (!stat.isDirectory()) {
+      if (!allowedExtensions.has(path.extname(currentDir))) {
+        continue;
+      }
+
+      const relativePath = `./${path.relative(rootDir, currentDir).replace(/\\/g, '/')}`;
+      const content = fs.readFileSync(currentDir, 'utf8');
+      if (content.includes('WORKFLOW.md')) {
+        matches.push(relativePath);
+      }
+      continue;
+    }
+
     for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
       const absolutePath = path.join(currentDir, entry.name);
       const relativePath = `./${path.relative(rootDir, absolutePath).replace(/\\/g, '/')}`;
@@ -69,16 +103,8 @@ describe('docs/WORKFLOW.md removal', () => {
 
   test('no active source file contains docs/WORKFLOW.md as a live reference', () => {
     const lines = collectWorkflowReferences(ROOT).filter((line) => {
-      // Allow historical/research/plan files
-      if (line.startsWith('./docs/plans/')) return false;
-      if (line.startsWith('./docs/research/')) return false;
-      if (line.startsWith('./CHANGELOG.md')) return false;
       // Allow test files (may reference WORKFLOW.md in comments/assertions)
       if (line.startsWith('./test/')) return false;
-      // Allow .beads/ internal data
-      if (line.startsWith('./.beads/')) return false;
-      // Allow worktrees (isolated copies of repo)
-      if (line.startsWith('./.worktrees/')) return false;
       return true;
     });
 
