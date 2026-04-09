@@ -357,4 +357,28 @@ describe('setup runtime flags', () => {
     );
   });
 
+  serialTest('checkPrerequisites warns when Beads Dolt remotes cannot be inspected', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Unable to inspect Beads Dolt remotes. Sync may remain local until 'origin' is configured and bd dolt remote list succeeds."
+    );
+  });
+
 });

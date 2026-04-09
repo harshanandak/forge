@@ -126,6 +126,34 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('should skip hidden directories that are not explicitly allowlisted', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-dotdirs-'));
+			try {
+				fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, '.github'), { recursive: true });
+				fs.writeFileSync(
+					path.join(tmpDir, '.hidden', 'ignored.js'),
+					'<<<<<<< HEAD\nignore me\n=======\nignore me too\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, '.github', 'workflow.yml'),
+					'<<<<<<< HEAD\nscan me\n=======\nscan me too\n>>>>>>> branch\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: path.join('.github', 'workflow.yml') }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should run all checks in sequence', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-sequence-'));
 			try {

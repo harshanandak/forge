@@ -254,7 +254,7 @@ No test scenarios section.`;
 			expect(result.error).toContain('not PR-ready');
 		});
 
-		test.skip('should create PR with generated body', async () => {
+		test.skip('forge-g11n: should create PR with generated body', async () => {
 			const prBody = '## Summary\n\nTest PR body';
 			const result = await createPR({
 				title: 'feat: test feature',

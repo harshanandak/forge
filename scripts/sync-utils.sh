@@ -293,7 +293,7 @@ _has_dolt_remote() {
     return 1
   fi
 
-  printf '%s\n' "$remote_list" | awk 'NF { print $1 }' | grep -qx "$remote_name"
+  printf '%s\n' "$remote_list" | awk 'NF { print $1 }' | grep -Fqx -- "$remote_name"
 }
 
 # Environment overrides (for testing):
