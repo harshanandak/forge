@@ -80,7 +80,7 @@ describe('GitHub → Beads Workflow Validation', () => {
     });
 
     it('should use SHA-pinned actions/checkout action', () => {
-      expect(workflowContent).toContain('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683');
+      expect(workflowContent).toMatch(/actions\/checkout@[a-f0-9]{40}/);
     });
 
     it('should install Beads CLI via pinned binary download', () => {

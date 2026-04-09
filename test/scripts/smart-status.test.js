@@ -1145,6 +1145,9 @@ elif [[ "$1" == "rev-parse" ]]; then
   # Support DEFAULT_BRANCH auto-detection: say master exists
   if [[ "$3" == "master" ]]; then exit 0; fi
   exit 1
+elif [[ "$1" == "--version" ]]; then
+  echo "git version 2.42.0"
+  exit 0
 elif [[ "$1" == "diff" ]]; then
   # Extract branch: git diff <base>...<branch> --name-only --
   BRANCH="\${2#master...}"
@@ -1153,6 +1156,8 @@ elif [[ "$1" == "diff" ]]; then
 ${diffCases}
     *) echo "" ;;
   esac
+  exit 0
+elif [[ "$1" == "merge-tree" ]]; then
   exit 0
 fi
 command git "$@"
