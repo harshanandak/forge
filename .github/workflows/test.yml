@@ -125,7 +125,9 @@ jobs:
 
           declare -A seen=()
           test_targets=()
-          run_edge_cases=false
+          run_test_env=false
+          run_e2e=false
+          unmapped_files=false
 
           add_target() {
             local target="$1"
@@ -137,8 +139,11 @@ jobs:
 
           for file in "${changed_files[@]}"; do
             case "$file" in
-              test-env/*|test/e2e/*)
-                run_edge_cases=true
+              test-env/*)
+                run_test_env=true
+                ;;
+              test/e2e/*)
+                run_e2e=true
                 ;;
               test/*.test.js|test/**/*.test.js)
                 add_target "$file"
@@ -159,13 +164,19 @@ jobs:
                 ;;
               package.json|bun.lockb|pnpm-lock.yaml|yarn.lock|package-lock.json|packages/*)
                 echo "mode=full" >> "$GITHUB_OUTPUT"
-                echo "run_edge_cases=true" >> "$GITHUB_OUTPUT"
+                echo "run_test_env=true" >> "$GITHUB_OUTPUT"
+                echo "run_e2e=true" >> "$GITHUB_OUTPUT"
                 exit 0
+                ;;
+              *)
+                unmapped_files=true
                 ;;
             esac
           done
 
-          if [[ "${#test_targets[@]}" -gt 0 ]]; then
+          if [[ "$unmapped_files" == "true" ]]; then
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          elif [[ "${#test_targets[@]}" -gt 0 ]]; then
             {
               echo "mode=targeted"
               echo "targets<<EOF"
@@ -176,7 +187,8 @@ jobs:
             echo "mode=full" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "run_edge_cases=${run_edge_cases}" >> "$GITHUB_OUTPUT"
+          echo "run_test_env=${run_test_env}" >> "$GITHUB_OUTPUT"
+          echo "run_e2e=${run_e2e}" >> "$GITHUB_OUTPUT"
 
       - name: Run targeted unit tests
         if: steps.affected.outputs.mode == 'targeted'
@@ -191,8 +203,12 @@ jobs:
         if: steps.affected.outputs.mode == 'full'
         run: bun test test/
 
+      - name: Run affected e2e tests
+        if: steps.affected.outputs.run_e2e == 'true'
+        run: bun test test/e2e/
+
       - name: Run affected edge-case tests
-        if: steps.affected.outputs.run_edge_cases == 'true'
+        if: steps.affected.outputs.run_test_env == 'true'
         run: node --test test-env/**/*.test.js || true
 
   coverage:

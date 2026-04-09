@@ -133,6 +133,27 @@ describe('CI Workflow Configuration', () => {
       expect(stepNames.includes('Resolve affected test targets')).toBeTruthy();
       expect(stepNames.includes('Run targeted unit tests')).toBeTruthy();
       expect(stepNames.includes('Run single-platform unit suite fallback')).toBeTruthy();
+      expect(stepNames.includes('Run affected e2e tests')).toBeTruthy();
+      expect(stepNames.includes('Run affected edge-case tests')).toBeTruthy();
+    });
+
+    test('followup-tests falls back to full mode for unmapped changed files', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const resolveStep = followup.steps.find((step) => step.name === 'Resolve affected test targets');
+      expect(resolveStep).toBeTruthy();
+      expect(resolveStep.run.includes('unmapped_files=false')).toBeTruthy();
+      expect(resolveStep.run.includes('unmapped_files=true')).toBeTruthy();
+      expect(resolveStep.run.includes('if [[ "$unmapped_files" == "true" ]]')).toBeTruthy();
+    });
+
+    test('followup-tests tracks e2e and test-env changes separately', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const resolveStep = followup.steps.find((step) => step.name === 'Resolve affected test targets');
+      expect(resolveStep).toBeTruthy();
+      expect(resolveStep.run.includes('run_test_env=false')).toBeTruthy();
+      expect(resolveStep.run.includes('run_e2e=false')).toBeTruthy();
+      expect(resolveStep.run.includes('test-env/*')).toBeTruthy();
+      expect(resolveStep.run.includes('test/e2e/*')).toBeTruthy();
     });
 
     test('full matrix, coverage, e2e, and dashboard skip synchronize events', () => {
