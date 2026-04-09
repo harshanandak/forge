@@ -331,4 +331,149 @@ describe('setup runtime flags', () => {
     expect(logLines.join('\n')).toContain('bd (Beads CLI) - Install from https://github.com/steveyegge/beads');
   });
 
+  serialTest('checkPrerequisites warns when the Beads Dolt origin remote is not configured', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'No remotes configured.';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'origin' is not configured. Sync will remain local until you run: bd dolt remote add origin <url>"
+    );
+  });
+
+  serialTest('checkPrerequisites warns when Beads Dolt remotes cannot be inspected', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Unable to inspect Beads Dolt remotes. Sync may remain local until 'origin' is configured and bd dolt remote list succeeds."
+    );
+  });
+
+  serialTest('checkPrerequisites uses BD_SYNC_REMOTE when warning about missing Beads remotes', () => {
+    const result = setupCommand.checkPrerequisites({
+      env: { BD_SYNC_REMOTE: 'upstream' },
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'origin https://example.com/repo';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'upstream' is not configured. Sync will remain local until you run: bd dolt remote add upstream <url>"
+    );
+  });
+
+  serialTest('checkPrerequisites uses .beads config sync remote before falling back to origin', () => {
+    const tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.beads', 'config.json'),
+      JSON.stringify({ sync_remote: 'upstream' }, null, 2)
+    );
+
+    const result = setupCommand.checkPrerequisites({
+      projectDir: tmpDir,
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'origin https://example.com/repo';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'upstream' is not configured. Sync will remain local until you run: bd dolt remote add upstream <url>"
+    );
+  });
+
+  serialTest('checkPrerequisites reads sync remote from .beads config.yaml without regex backtracking', () => {
+    const tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.beads', 'config.yaml'),
+      'database:\n  backend: dolt\nsync-remote: "upstream" # preferred remote\n'
+    );
+
+    const result = setupCommand.checkPrerequisites({
+      projectDir: tmpDir,
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'origin https://example.com/repo';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'upstream' is not configured. Sync will remain local until you run: bd dolt remote add upstream <url>"
+    );
+  });
+
 });

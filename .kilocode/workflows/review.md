@@ -299,10 +299,13 @@ git push
 ### Step 9: Verify ALL Checks Pass
 
 ```bash
-# Wait for checks to complete
+# Check status immediately, then poll for at most 60 seconds
 gh pr checks <pr-number>
 
-# Ensure all status checks are green:
+# If checks are still pending after 60 seconds: STOP and tell the user to return
+# when CI finishes or new review feedback appears.
+#
+# Ensure all completed status checks are green:
 # ✓ GitHub Actions workflows
 # ✓ Greptile review (no unresolved critical comments)
 # ✓ SonarCloud quality gate

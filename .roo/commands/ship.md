@@ -185,9 +185,10 @@ bash scripts/forge-team/index.sh verify 2>&1 || true
   - Beads linked: forge-xyz
   - Implementation details in collapsible section
 
-⏸️  PR created, awaiting automated checks (Greptile, SonarCloud, GitHub Actions)
+⏸️  PR created, checks started (Greptile, SonarCloud, GitHub Actions)
+   Poll for up to 60 seconds. If checks are still pending, stop here.
 
-Next: /review <pr-number> (after automated checks complete)
+Next: /review <pr-number> (when automated checks complete or new feedback appears)
 ```
 
 ## Integration with Workflow
@@ -209,5 +210,5 @@ Stage 7: /verify     → Post-merge CI check on main
 - **Fill every section**: Even if "N/A" — empty/missing sections cause review friction
 - **Include "Closes beads-xxx"**: Required for auto-close in /verify
 - **Concrete data only**: Test counts, file paths, commit SHAs — not placeholder text
-- **Wait for checks**: Let GitHub Actions, Greptile, SonarCloud run
+- **Poll briefly, then stop**: Check PR status for up to 60 seconds, then hand off if checks are still pending
 - **NO auto-merge**: Always wait for /review phase

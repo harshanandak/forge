@@ -131,7 +131,7 @@ bash .claude/scripts/greptile-resolve.sh stats <pr-number>
 
 **Should show**: "✓ All Greptile threads resolved!"
 
-### Step 4: Push Changes & Wait for Re-review
+### Step 4: Push Changes & Poll Briefly for Re-review
 
 ```bash
 git push
@@ -188,7 +188,7 @@ $ git push
 - **Reply to EACH comment thread** using the script (not as separate PR comment)
 - **Mark EACH thread as resolved** after fixing using the script
 - **Track progress** (X of Y fixed) in your notes
-- **Wait for Greptile re-review** after pushing fixes
+- **Poll for Greptile re-review for at most 60 seconds** after pushing fixes, then stop and hand off if it is still pending
 - **Use comment ID for replies**, thread ID for resolving
 - **Commit fixes BEFORE replying** so you can reference commit SHA
 
@@ -251,7 +251,7 @@ The `/review` command should now include these steps:
    - Fix each issue
    - Reply and resolve systematically
 3. Verify all threads resolved before declaring review complete
-4. Push changes and wait for Greptile re-review
+4. Push changes and poll briefly for Greptile re-review
 
 ---
 
@@ -271,7 +271,7 @@ The `/review` command should now include these steps:
 
 ### Greptile score not updating after fixes
 **Cause**: Must push commits to trigger re-analysis
-**Solution**: `git push` and wait 2-3 minutes for Greptile re-scan
+**Solution**: `git push`, check once immediately, and poll for up to 60 seconds. If Greptile is still pending after that, stop and wait for the user to resume later.
 
 ---
 

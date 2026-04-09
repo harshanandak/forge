@@ -271,8 +271,10 @@ _run_sync() {
   fi
 }
 
-_has_dolt_origin_remote() {
+_has_dolt_remote() {
+  local remote_name="${1:-origin}"
   local remote_list=""
+  local raw_output=""
   local bd_cmd="${BD_CMD:-bd}"
   local remote_status=0
 
@@ -280,17 +282,18 @@ _has_dolt_origin_remote() {
     return 2
   fi
 
-  remote_list="$("$bd_cmd" dolt remote list 2>/dev/null | tr -d '\r')"
+  raw_output="$("$bd_cmd" dolt remote list 2>/dev/null)"
   remote_status=$?
   if [[ "$remote_status" -ne 0 ]]; then
     return 2
   fi
+  remote_list="$(printf '%s' "$raw_output" | tr -d '\r')"
 
   if [[ -z "$remote_list" ]]; then
     return 1
   fi
 
-  printf '%s\n' "$remote_list" | awk 'NF { print $1 }' | grep -qx 'origin'
+  printf '%s\n' "$remote_list" | awk 'NF { print $1 }' | grep -Fqx -- "$remote_name"
 }
 
 # Environment overrides (for testing):
@@ -299,18 +302,20 @@ _has_dolt_origin_remote() {
 auto_sync() {
   local repo_dir="${1:-.}"
   local last_sync_file="$repo_dir/.beads/.last-sync"
+  local sync_remote
+  sync_remote="$(get_sync_remote "$repo_dir")"
 
   # Ensure .beads directory exists
   mkdir -p "$repo_dir/.beads"
 
-  if _has_dolt_origin_remote; then
+  if _has_dolt_remote "$sync_remote"; then
     :
   else
     local remote_status=$?
     if [[ "$remote_status" -eq 2 ]]; then
       echo "Warning: sync skipped, unable to inspect Beads Dolt remotes (is 'bd' installed and configured?)." >&2
     else
-      echo "Warning: sync skipped, Beads Dolt remote 'origin' is not configured (run 'bd dolt remote add origin <url>')." >&2
+      echo "Warning: sync skipped, Beads Dolt remote '$sync_remote' is not configured (run 'bd dolt remote add $sync_remote <url>')." >&2
     fi
     return 0
   fi
