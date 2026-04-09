@@ -274,6 +274,7 @@ _run_sync() {
 _has_dolt_remote() {
   local remote_name="${1:-origin}"
   local remote_list=""
+  local raw_output=""
   local bd_cmd="${BD_CMD:-bd}"
   local remote_status=0
 
@@ -281,11 +282,12 @@ _has_dolt_remote() {
     return 2
   fi
 
-  remote_list="$("$bd_cmd" dolt remote list 2>/dev/null | tr -d '\r')"
+  raw_output="$("$bd_cmd" dolt remote list 2>/dev/null)"
   remote_status=$?
   if [[ "$remote_status" -ne 0 ]]; then
     return 2
   fi
+  remote_list="$(printf '%s' "$raw_output" | tr -d '\r')"
 
   if [[ -z "$remote_list" ]]; then
     return 1

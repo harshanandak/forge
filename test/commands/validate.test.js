@@ -106,6 +106,26 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('should ignore standalone separator lines that are not full conflict blocks', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-separators-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'notes.md'),
+					'Heading\n=======\nBody copy\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(true);
+				expect(result.checks.conflictMarkers.files).toEqual([]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should run all checks in sequence', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-sequence-'));
 			try {

@@ -92,6 +92,28 @@ exit 0
     expect(result.stderr).toContain("sync skipped, unable to inspect Beads Dolt remotes");
   });
 
+  test('auto-sync reports inspect failure when bd remote listing exits non-zero', () => {
+    const repoDir = makeTempDir();
+    fs.mkdirSync(path.join(repoDir, '.beads'), { recursive: true });
+
+    const mockBin = makeTempDir();
+    const mockBd = path.join(mockBin, 'bd');
+    writeExecutable(mockBd, `#!/usr/bin/env bash
+if [[ "$1 $2 $3" == "dolt remote list" ]]; then
+  exit 2
+fi
+exit 0
+`);
+
+    const result = runSyncUtils('auto-sync', {
+      BD_CMD: toBashPath(mockBd),
+    }, repoDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("sync skipped, unable to inspect Beads Dolt remotes");
+    expect(result.stderr).not.toContain("is not configured");
+  });
+
   test('auto-sync honors the configured sync remote name', () => {
     const repoDir = makeTempDir();
     fs.mkdirSync(path.join(repoDir, '.beads'), { recursive: true });

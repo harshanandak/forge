@@ -7,6 +7,7 @@ const {
 	createPR,
 	executeShip,
 	getBranchReadiness,
+	resolveBaseRemote,
 	resolveBaseBranch,
 } = require('../../lib/commands/ship.js');
 
@@ -197,6 +198,21 @@ No test scenarios section.`;
 	});
 
 	describe('Create PR via gh CLI', () => {
+		test('should prefer upstream as the base remote when present', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+					return 'https://github.com/base/repo.git\n';
+				}
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+					return 'https://github.com/fork/repo.git\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			expect(resolveBaseRemote(exec, process.cwd())).toBe('upstream');
+		});
+
 		test('should detect the default base branch from origin/HEAD', () => {
 			const exec = (command, args) => {
 				expect(command).toBe('git');
@@ -204,27 +220,37 @@ No test scenarios section.`;
 				return 'refs/remotes/origin/main\n';
 			};
 
-			expect(resolveBaseBranch(exec, process.cwd())).toBe('main');
+			expect(resolveBaseBranch(exec, process.cwd(), 'origin')).toBe('main');
 		});
 
-		test('should report when the current branch has no diff against the base branch', () => {
+		test('should report when the current branch has no tree diff against the base branch', () => {
 			const exec = (command, args) => {
 				expect(command).toBe('git');
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+					return 'https://github.com/base/repo.git\n';
+				}
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+					return 'https://github.com/fork/repo.git\n';
+				}
 				if (args[0] === 'symbolic-ref') {
-					return 'refs/remotes/origin/master\n';
+					return 'refs/remotes/upstream/master\n';
 				}
 				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
 					return 'feat/setup-hardening-codex-parity\n';
 				}
 				if (args[0] === 'rev-list') {
-					return '0\t0\n';
+					return '0\t2\n';
+				}
+				if (args[0] === 'diff') {
+					return '';
 				}
 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
 			};
 
 			const result = getBranchReadiness({ exec, cwd: process.cwd() });
 			expect(result.ready).toBe(false);
-			expect(result.error).toContain('has no diff against origin/master');
+			expect(result.baseRemote).toBe('upstream');
+			expect(result.error).toContain('has no diff against upstream/master');
 			expect(result.error).toContain('not PR-ready');
 		});
 
@@ -269,6 +295,9 @@ No test scenarios section.`;
 				if (command === 'gh' && args[0] === '--version') {
 					return 'gh version 2.81.0\n';
 				}
+				if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+					return 'https://github.com/base/repo.git\n';
+				}
 				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') {
 					return '.git\n';
 				}
@@ -276,13 +305,16 @@ No test scenarios section.`;
 					return 'https://github.com/owner/repo.git\n';
 				}
 				if (command === 'git' && args[0] === 'symbolic-ref') {
-					return 'refs/remotes/origin/master\n';
+					return 'refs/remotes/upstream/master\n';
 				}
 				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
 					return 'feat/setup-hardening-codex-parity\n';
 				}
 				if (command === 'git' && args[0] === 'rev-list') {
-					return '0\t0\n';
+					return '0\t2\n';
+				}
+				if (command === 'git' && args[0] === 'diff') {
+					return '';
 				}
 				throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
 			};
@@ -295,7 +327,7 @@ No test scenarios section.`;
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.error).toContain('has no diff against origin/master');
+			expect(result.error).toContain('has no diff against upstream/master');
 		});
 	});
 
