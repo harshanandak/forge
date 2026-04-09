@@ -156,6 +156,15 @@ describe('CI Workflow Configuration', () => {
       expect(resolveStep.run.includes('test/e2e/*')).toBeTruthy();
     });
 
+    test('followup-tests runs edge-case checks for library and script changes', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const resolveStep = followup.steps.find((step) => step.name === 'Resolve affected test targets');
+      expect(resolveStep).toBeTruthy();
+      expect(resolveStep.run.includes('lib/*.js|lib/**/*.js')).toBeTruthy();
+      expect(resolveStep.run.includes('scripts/*.js|scripts/**/*.js')).toBeTruthy();
+      expect(resolveStep.run.includes('run_test_env=true')).toBeTruthy();
+    });
+
     test('full matrix, coverage, e2e, and dashboard skip synchronize events', () => {
       expect(workflow.jobs.test.if).toBe(synchronizeSkipCondition);
       expect(workflow.jobs.coverage.if).toBe(synchronizeSkipCondition);

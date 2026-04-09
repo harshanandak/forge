@@ -149,10 +149,12 @@ jobs:
                 add_target "$file"
                 ;;
               lib/*.js|lib/**/*.js)
+                run_test_env=true
                 candidate="test/${file#lib/}"
                 add_target "${candidate%.js}.test.js"
                 ;;
               scripts/*.js|scripts/**/*.js)
+                run_test_env=true
                 relative="${file#scripts/}"
                 add_target "test/scripts/${relative%.js}.test.js"
                 add_target "test/${relative%.js}.test.js"
@@ -170,6 +172,7 @@ jobs:
                 ;;
               *)
                 unmapped_files=true
+                run_test_env=true
                 ;;
             esac
           done

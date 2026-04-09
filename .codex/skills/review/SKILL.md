@@ -297,13 +297,14 @@ git push
 
 ### Step 9: Verify ALL Checks Pass
 
-Poll PR checks for at most 60 seconds total after pushing fixes. If checks are still pending after that cap, stop and tell the user to return with `/review <pr-number>` once the PR checks finish. Do not idle in long polling loops.
-
 ```bash
-# Check current status immediately, then poll briefly if needed
+# Check status immediately, then poll for at most 60 seconds
 gh pr checks <pr-number>
 
-# Ensure all status checks are green:
+# If checks are still pending after 60 seconds: STOP and tell the user to return
+# when CI finishes or new review feedback appears.
+#
+# Ensure all completed status checks are green:
 # ✓ GitHub Actions workflows
 # ✓ Greptile review (no unresolved critical comments)
 # ✓ SonarCloud quality gate
@@ -365,7 +366,7 @@ Next: /premerge <pr-number>
 Do NOT declare /review complete until:
 1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
 2. ALL human reviewer comments are either resolved or have a reply with explanation
-3. gh pr checks <pr-number> shows all checks passing, or you stopped after the 60-second poll cap and handed off cleanly
+3. gh pr checks <pr-number> shows all checks passing
 4. Context check: Run `bash scripts/beads-context.sh validate <id>` and address any warnings
 5. Stage transition: Run the following → exit 0 confirmed:
    bash scripts/beads-context.sh stage-transition <id> review premerge \
@@ -443,7 +444,7 @@ Stage 7: /verify     → Post-merge CI check on main
 - **Reply inline to Greptile**: Respond to each comment directly
 - **Post summary response**: Address Greptile's overall assessment
 - **Use sonarcloud skill**: Don't just check the web UI
-- **Verify all checks with a 60-second cap**: If checks stay pending longer, stop and wait for the user to resume later
+- **Verify all checks**: Ensure everything is green before /premerge
 - **Update Beads**: Keep issue status current
 - **Research if needed**: Use WebSearch for unclear suggestions
 - **Document fixes**: Clear commit messages for all fixes

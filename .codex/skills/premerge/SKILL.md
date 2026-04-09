@@ -94,7 +94,7 @@ git commit -m "docs: update documentation for <feature-name>
 git push
 ```
 
-⚠️  **After pushing**: CI will re-trigger (Greptile, SonarCloud, etc.). Poll for at most 60 seconds. If checks are still pending after that, stop and tell the user to return with `/premerge <pr-number>` once the PR checks finish. If new Greptile comments appear on the doc changes, run `/review <pr-number>` again.
+⚠️  **After pushing**: CI will re-trigger (Greptile, SonarCloud, etc.). Poll for up to 60 seconds. If checks are still pending after that, stop and ask the user to return to `/premerge <pr-number>` later. If new Greptile comments appear on the doc changes, run `/review <pr-number>` again.
 
 ### Step 4: Sync Beads
 
@@ -153,7 +153,7 @@ Do NOT suggest merging.
   - README.md: Features list updated
   - CLAUDE.md: USER section updated with new pattern
   - Committed: docs: update documentation for auth-refresh
-✓ CI re-triggered after doc push — all checks still passing
+✓ CI re-triggered after doc push — checks passed within the 60 second poll window
 ✓ Beads synced
 
 ✅ PR #89 is ready to merge
