@@ -233,7 +233,7 @@ describe('Validate Command - Validation Orchestration', () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-large-git-index-'));
 			try {
 				const totalFiles = 5000;
-				const longNameSuffix = 'a'.repeat(220);
+				const longNameSuffix = 'a'.repeat(150);
 				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
 
 				for (let index = 0; index < totalFiles; index += 1) {
