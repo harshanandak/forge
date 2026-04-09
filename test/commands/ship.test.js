@@ -219,6 +219,30 @@ No test scenarios section.`;
 			expect(resolveBaseRemote(exec, process.cwd())).toBe('upstream');
 		});
 
+		test('should use quiet git probe options during base remote resolution', () => {
+			const probeOptions = [];
+			const exec = (command, args, options) => {
+				expect(command).toBe('git');
+				probeOptions.push(options);
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+					throw new Error('missing upstream');
+				}
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+					return 'https://github.com/fork/repo.git\n';
+				}
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+					throw new Error('missing origin HEAD');
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/origin/main') {
+					return 'refs/remotes/origin/main\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			expect(resolveBaseRemote(exec, process.cwd())).toBe('origin');
+			expect(probeOptions.every((options) => options && options.stdio === 'pipe')).toBe(true);
+		});
+
 		test('should fall back to origin when upstream has no fetched tracking refs', () => {
 			const exec = (command, args) => {
 				expect(command).toBe('git');
@@ -332,6 +356,9 @@ No test scenarios section.`;
 				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
 					return 'feat/setup-hardening-codex-parity\n';
 				}
+				if (args[0] === 'fetch' && args[3] === 'upstream') {
+					return '';
+				}
 				if (args[0] === 'rev-list') {
 					return '0\t2\n';
 				}
@@ -346,6 +373,66 @@ No test scenarios section.`;
 			expect(result.baseRemote).toBe('upstream');
 			expect(result.error).toContain('has no diff against upstream/master');
 			expect(result.error).toContain('not PR-ready');
+		});
+
+		test('should refresh the selected base ref before readiness checks', () => {
+			const execCalls = [];
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				execCalls.push(args);
+				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+					return 'feat/ship-refresh\n';
+				}
+				if (args[0] === 'fetch' && args[3] === 'origin') {
+					return '';
+				}
+				if (args[0] === 'rev-list') {
+					return '0\t1\n';
+				}
+				if (args[0] === 'diff') {
+					const error = new Error('diff detected');
+					error.status = 1;
+					throw error;
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			const result = getBranchReadiness({
+				exec,
+				cwd: process.cwd(),
+				baseRemote: 'origin',
+				baseBranch: 'main',
+			});
+
+			expect(result.ready).toBe(true);
+			const fetchIndex = execCalls.findIndex((args) => args[0] === 'fetch');
+			const revListIndex = execCalls.findIndex((args) => args[0] === 'rev-list');
+			expect(fetchIndex).toBeGreaterThanOrEqual(0);
+			expect(revListIndex).toBeGreaterThan(fetchIndex);
+		});
+
+		test('should fail readiness when refreshing the base ref fails', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+					return 'feat/ship-refresh\n';
+				}
+				if (args[0] === 'fetch' && args[3] === 'origin') {
+					throw new Error('network unavailable');
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			const result = getBranchReadiness({
+				exec,
+				cwd: process.cwd(),
+				baseRemote: 'origin',
+				baseBranch: 'main',
+			});
+
+			expect(result.ready).toBe(false);
+			expect(result.error).toContain('Unable to refresh origin/main before comparing branch readiness');
+			expect(result.error).toContain('network unavailable');
 		});
 
 		test.skip('forge-g11n: should create PR with generated body', async () => {
@@ -406,6 +493,9 @@ No test scenarios section.`;
 				}
 				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
 					return 'feat/setup-hardening-codex-parity\n';
+				}
+				if (command === 'git' && args[0] === 'fetch' && args[3] === 'upstream') {
+					return '';
 				}
 				if (command === 'git' && args[0] === 'rev-list') {
 					return '0\t2\n';
