@@ -101,6 +101,18 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runE2E).toBe(true);
   });
 
+  test('classifyPushTests falls back to full suite for unmapped pushed files', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'scripts/sync-utils.sh\n',
+    }));
+
+    expect(plan.hasUnmappedFiles).toBe(true);
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.runTestEnv).toBe(false);
+    expect(plan.runE2E).toBe(false);
+    expect(plan.testTargets).toEqual([]);
+  });
+
   test('runPrePushTests runs targeted tests instead of the full suite when possible', () => {
     const spawnSync = makeSpawnSync(0);
     const status = runPrePushTests(repoRoot, {
@@ -138,5 +150,22 @@ describe('scripts/test pre-push runner', () => {
       'test/command-sync-check.test.js',
       'test/structural/command-sync.test.js',
     ]);
+  });
+
+  test('runPrePushTests falls back to the full unit suite for unmapped pushed files', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'scripts/sync-utils.sh\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+    expect(spawnSync.calls[0].command).toBe('bun');
+    expect(spawnSync.calls[0].args).toEqual(['run', 'test']);
   });
 });

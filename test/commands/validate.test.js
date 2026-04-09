@@ -182,6 +182,28 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('should flag orphaned closing conflict markers', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-orphaned-closing-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'orphaned.md'),
+					'Normal content\n>>>>>>> feature-branch\nMore content\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: 'orphaned.md', line: 2 }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should run all checks in sequence', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-sequence-'));
 			try {

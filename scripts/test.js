@@ -50,6 +50,7 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
   let runFullSuite = false;
   let runTestEnv = false;
   let runE2E = false;
+  let hasUnmappedFiles = false;
 
   for (const file of changedFiles) {
     if (PACKAGE_LEVEL_PATHS.has(file) || file.startsWith('packages/')) {
@@ -71,13 +72,21 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
 
     if ((file.startsWith('lib/') || file.startsWith('scripts/')) && file.endsWith('.js')) {
       runTestEnv = true;
+      continue;
     }
+
+    if (file.startsWith('test/') || file.startsWith('.github/workflows/') || file.startsWith('.claude/commands/')) {
+      continue;
+    }
+
+    hasUnmappedFiles = true;
   }
 
   return {
     changedFiles,
+    hasUnmappedFiles,
     runE2E,
-    runFullSuite,
+    runFullSuite: runFullSuite || hasUnmappedFiles,
     runTestEnv,
     testTargets,
   };
@@ -108,15 +117,16 @@ function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
 
   try {
     if (plan.runFullSuite) {
-      console.log('  Mode: full suite (package-level changes detected)');
+      const reason = plan.hasUnmappedFiles
+        ? 'unmapped pushed files require full unit coverage'
+        : 'package-level changes detected';
+      console.log(`  Mode: full suite (${reason})`);
       const status = runCommand(pkgManager, ['run', 'test'], { env }, spawnSync);
       if (status !== 0) return status;
     } else if (plan.testTargets.length > 0) {
       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
       const status = runCommand(pkgManager, ['run', 'test', ...plan.testTargets], { env }, spawnSync);
       if (status !== 0) return status;
-    } else {
-      console.log('  Mode: no mapped unit tests for pushed files');
     }
 
     if (plan.runE2E) {
