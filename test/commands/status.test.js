@@ -1,4 +1,7 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
 	detectStage,
 	analyzeBranch,
@@ -7,6 +10,7 @@ const {
 	analyzeChecks,
 	analyzeBeads,
 	formatStatus,
+	resolveWorkflowState,
 } = require('../../lib/commands/status.js');
 
 describe('Status Command - Stage Detection', () => {
@@ -295,6 +299,82 @@ describe('Status Command - Stage Detection', () => {
 			});
 			expect(output).toMatch(/manual verification suggested/i);
 			expect(output).toMatch(/conflicting signals/i);
+		});
+	});
+
+	describe('resolveWorkflowState with state-manager', () => {
+		function makeTmpStateDir(stateObj) {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-test-'));
+			fs.writeFileSync(
+				path.join(tmpDir, '.forge-state.json'),
+				JSON.stringify(stateObj, null, 2),
+				'utf8',
+			);
+			return tmpDir;
+		}
+
+		test('resolveWorkflowState reads from .forge-state.json when present', () => {
+			const tmpDir = makeTmpStateDir({
+				schemaVersion: 2,
+				currentStage: 'dev',
+				completedStages: ['plan'],
+				skippedStages: [],
+				workflowDecisions: {
+					classification: 'standard',
+					reason: 'test',
+					userOverride: false,
+					overrides: [],
+				},
+				parallelTracks: [],
+			});
+
+			try {
+				const { workflowState, fallbackReason } = resolveWorkflowState({
+					projectRoot: tmpDir,
+				});
+
+				expect(fallbackReason).toBeNull();
+				expect(workflowState).not.toBeNull();
+				expect(workflowState.currentStage).toBe('dev');
+				expect(workflowState.completedStages).toContain('plan');
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('file state takes priority over Beads comments', () => {
+			const tmpDir = makeTmpStateDir({
+				schemaVersion: 2,
+				currentStage: 'validate',
+				completedStages: ['plan', 'dev'],
+				skippedStages: [],
+				workflowDecisions: {
+					classification: 'standard',
+					reason: 'test',
+					userOverride: false,
+					overrides: [],
+				},
+				parallelTracks: [],
+			});
+
+			const beadsComments = [
+				'WorkflowState: {"schemaVersion":2,"currentStage":"plan","completedStages":[],"skippedStages":[],"workflowDecisions":{"classification":"standard","reason":"test","userOverride":false,"overrides":[]},"parallelTracks":[]}',
+			].join('\n');
+
+			try {
+				const { workflowState, fallbackReason } = resolveWorkflowState({
+					projectRoot: tmpDir,
+					bdComments: beadsComments,
+				});
+
+				expect(fallbackReason).toBeNull();
+				expect(workflowState).not.toBeNull();
+				// File says validate, comments say plan — file wins
+				expect(workflowState.currentStage).toBe('validate');
+				expect(workflowState.completedStages).toContain('dev');
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
 		});
 	});
 });

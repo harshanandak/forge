@@ -1,12 +1,18 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, setDefaultTimeout } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {
 	runTypeCheck,
 	runLint,
 	runSecurityScan,
 	runAllTests,
+	scanForConflictMarkers,
 	executeValidate,
 	executeDebugMode,
 } = require('../../lib/commands/validate.js');
+
+setDefaultTimeout(15000);
 
 describe('Validate Command - Validation Orchestration', () => {
 	describe('Type checking', () => {
@@ -77,32 +83,169 @@ describe('Validate Command - Validation Orchestration', () => {
 	});
 
 	describe('Full validate orchestration', () => {
+		test('should fail fast when conflict markers are present', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-conflicts-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'broken.js'),
+					'<<<<<<< HEAD\nconst a = 1;\n=======\nconst a = 2;\n>>>>>>> branch\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.failedChecks).toContain('conflictMarkers');
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: 'broken.js' }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should ignore standalone separator lines that are not full conflict blocks', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-separators-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'notes.md'),
+					'Heading\n=======\nBody copy\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(true);
+				expect(result.checks.conflictMarkers.files).toEqual([]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should skip hidden directories that are not explicitly allowlisted while scanning tracked dotdirs', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-dotdirs-'));
+			try {
+				fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, '.github'), { recursive: true });
+				fs.writeFileSync(
+					path.join(tmpDir, '.hidden', 'ignored.js'),
+					'<<<<<<< HEAD\nignore me\n=======\nignore me too\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, '.forge', 'tracked.md'),
+					'<<<<<<< HEAD\ntracked dotdir\n=======\ntracked dotdir updated\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, '.github', 'workflow.yml'),
+					'<<<<<<< HEAD\nscan me\n=======\nscan me too\n>>>>>>> branch\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: path.join('.forge', 'tracked.md') }),
+					expect.objectContaining({ path: path.join('.github', 'workflow.yml') }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should flag unterminated conflict marker blocks', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-partial-conflicts-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'partial.js'),
+					'<<<<<<< HEAD\nconst a = 1;\n=======\nconst a = 2;\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: 'partial.js', line: 1 }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should flag orphaned closing conflict markers', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-orphaned-closing-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'orphaned.md'),
+					'Normal content\n>>>>>>> feature-branch\nMore content\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: 'orphaned.md', line: 2 }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should run all checks in sequence', async () => {
-			// Skip heavy checks (lint/security/tests call real CLI tools)
-			// typeCheck gracefully skips if no tsconfig.json is present
-			const result = await executeValidate({ skip: ['lint', 'security', 'tests'] });
-			expect(typeof result.success).toBe('boolean');
-			expect(result.checks).toBeTruthy();
-			expect('typeCheck' in result.checks).toBeTruthy();
-			expect(typeof result.summary).toBe('string');
-			expect(typeof result.duration).toBe('number');
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-sequence-'));
+			try {
+				// Skip heavy checks (lint/security/tests call real CLI tools).
+				// Use an empty temp root so conflict-marker scanning stays deterministic and fast.
+				const result = await executeValidate({ rootDir: tmpDir, skip: ['lint', 'security', 'tests'] });
+				expect(typeof result.success).toBe('boolean');
+				expect(result.checks).toBeTruthy();
+				expect('conflictMarkers' in result.checks).toBeTruthy();
+				expect('typeCheck' in result.checks).toBeTruthy();
+				expect(typeof result.summary).toBe('string');
+				expect(typeof result.duration).toBe('number');
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
 		});
 
 		test('should return summary of all checks', async () => {
-			const result = await executeValidate({ skip: ['lint', 'security', 'tests'] });
-			expect(result.summary).toBeTruthy();
-			expect(typeof result.summary).toBe('string');
-			expect(result.summary.length > 0).toBeTruthy();
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-summary-'));
+			try {
+				const result = await executeValidate({ rootDir: tmpDir, skip: ['lint', 'security', 'tests'] });
+				expect(result.summary).toBeTruthy();
+				expect(typeof result.summary).toBe('string');
+				expect(result.summary.length > 0).toBeTruthy();
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
 		});
 
 		test('should fail if any critical check fails', async () => {
-			const result = await executeValidate({ skip: ['lint', 'security', 'tests'] });
-			if (!result.success) {
-				expect(Array.isArray(result.failedChecks)).toBeTruthy();
-				expect(result.failedChecks.length > 0).toBeTruthy();
-			} else {
-				expect(result.success).toBe(true);
-				expect(!result.failedChecks || result.failedChecks.length === 0).toBeTruthy();
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-critical-'));
+			try {
+				const result = await executeValidate({ rootDir: tmpDir, skip: ['lint', 'security', 'tests'] });
+				if (!result.success) {
+					expect(Array.isArray(result.failedChecks)).toBeTruthy();
+					expect(result.failedChecks.length > 0).toBeTruthy();
+				} else {
+					expect(result.success).toBe(true);
+					expect(!result.failedChecks || result.failedChecks.length === 0).toBeTruthy();
+				}
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
 			}
 		});
 
@@ -165,6 +308,10 @@ describe('Validate Command - Validation Orchestration', () => {
 		test('should export executeValidate function', () => {
 			const { executeValidate } = require('../../lib/commands/validate.js');
 			expect(typeof executeValidate).toBe('function');
+		});
+
+		test('should export scanForConflictMarkers function', () => {
+			expect(typeof scanForConflictMarkers).toBe('function');
 		});
 	});
 

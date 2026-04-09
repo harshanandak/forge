@@ -32,9 +32,15 @@ cat > "$mock_dir/bd" << 'MOCK'
 #!/usr/bin/env bash
 case "$1 $2" in
   "list --status=open,in_progress")
-    echo "◐ forge-aaa · Feature A"
+    exit 1
+    ;;
+  "list --status=open")
     echo "○ forge-bbb · Feature B"
+    ;;
+  "list --status=in_progress")
+    echo "◐ forge-aaa · Feature A"
     echo "◐ forge-ccc · Feature C"
+    echo "◐ forge-m1n8.6 · Sub-feature X (dotted ID)"
     ;;
   "show forge-aaa")
     echo "◐ forge-aaa · Feature A [● P2 · IN_PROGRESS]"
@@ -54,6 +60,19 @@ case "$1 $2" in
     echo "DEPENDS ON"
     echo "  → forge-aaa: Feature A"
     ;;
+  "show forge-m1n8.6")
+    # Dotted sub-ID — bd show must receive the full ID including .6
+    echo "◐ forge-m1n8.6 · Sub-feature X [● P2 · IN_PROGRESS]"
+    echo "Owner: devthree"
+    echo "Updated: 2026-03-27T08:00:00Z"
+    ;;
+  "show forge-m1n8")
+    # Parent epic — if a buggy parser truncates forge-m1n8.6 to forge-m1n8,
+    # the workload would get this WRONG owner and trigger the guard below.
+    echo "◐ forge-m1n8 · PARENT EPIC (WRONG — dotted ID was truncated)"
+    echo "Owner: WRONG_OWNER_DO_NOT_USE"
+    echo "Updated: 2026-03-20T10:00:00Z"
+    ;;
 esac
 MOCK
 chmod +x "$mock_dir/bd"
@@ -64,6 +83,12 @@ cat > "$mock_dir/bd-empty" << 'MOCK'
 case "$1 $2" in
   "list --status=open,in_progress")
     echo ""
+    ;;
+  "list --status=open")
+    echo "○ forge-should-not-appear · Open fallback sentinel"
+    ;;
+  "list --status=in_progress")
+    echo "◐ forge-should-not-appear-2 · In-progress fallback sentinel"
     ;;
 esac
 MOCK
@@ -125,6 +150,11 @@ assert_contains "shows devtwo header" "Developer: devtwo" "$output"
 assert_contains "shows forge-aaa" "forge-aaa" "$output"
 assert_contains "shows forge-bbb" "forge-bbb" "$output"
 assert_contains "shows forge-ccc" "forge-ccc" "$output"
+# Dotted ID regression (forge-hpev): the full forge-m1n8.6 must be extracted,
+# not truncated to forge-m1n8. devthree owns the sub-issue, not WRONG_OWNER.
+assert_contains "shows devthree (dotted ID owner)" "Developer: devthree" "$output"
+assert_contains "shows dotted ID forge-m1n8.6 in full" "forge-m1n8.6" "$output"
+assert_not_contains "does NOT attribute to WRONG_OWNER (parent epic)" "WRONG_OWNER" "$output"
 
 # ── Test 2: --developer=devone filters correctly ─────────────────────────
 echo ""
@@ -158,6 +188,7 @@ rc=0
 output="$(cmd_workload 2>/dev/null)" || rc=$?
 assert_exit "exits 0" 0 "$rc"
 assert_contains "shows no active work message" "No active work" "$output"
+assert_not_contains "does not fall back when combined query succeeds with no issues" "forge-should-not-appear" "$output"
 export BD_CMD="$mock_dir/bd"
 
 # ── Test 5: Stale assignment flagged (>48h) ──────────────────────────────
@@ -178,18 +209,18 @@ rc=0
 output="$(cmd_workload --format=json 2>/dev/null)" || rc=$?
 assert_exit "exits 0" 0 "$rc"
 # Validate it's parseable JSON
-if echo "$output" | jq . >/dev/null 2>&1; then
+if echo "$output" | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"));' >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  PASS: output is valid JSON"
 else
   FAIL=$((FAIL + 1)); echo "  FAIL: output is not valid JSON: $output"
 fi
 # Check JSON has developer keys
-if echo "$output" | jq -e '.devone' >/dev/null 2>&1; then
+if echo "$output" | node -e 'const data = JSON.parse(require("fs").readFileSync(0, "utf8")); process.exit(data.devone ? 0 : 1);' >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  PASS: JSON contains devone key"
 else
   FAIL=$((FAIL + 1)); echo "  FAIL: JSON missing devone key"
 fi
-if echo "$output" | jq -e '.devtwo' >/dev/null 2>&1; then
+if echo "$output" | node -e 'const data = JSON.parse(require("fs").readFileSync(0, "utf8")); process.exit(data.devtwo ? 0 : 1);' >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  PASS: JSON contains devtwo key"
 else
   FAIL=$((FAIL + 1)); echo "  FAIL: JSON missing devtwo key"

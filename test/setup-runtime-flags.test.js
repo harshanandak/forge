@@ -22,7 +22,12 @@ function serialTest(name, callback) {
 }
 
 async function runSetup(args, cwd, env = {}) {
-  const originalEnv = { INIT_CWD: process.env.INIT_CWD, PATH: process.env.PATH, Path: process.env.Path };
+  const originalEnv = {
+    INIT_CWD: process.env.INIT_CWD,
+    PATH: process.env.PATH,
+    Path: process.env.Path,
+    CODEX_HOME: process.env.CODEX_HOME,
+  };
   const originalLog = console.log;
   const originalWarn = console.warn;
   const originalError = console.error;
@@ -195,18 +200,38 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
   });
 
-  serialTest('setup scaffolds Codex stage skills under .codex/skills/<stage>/SKILL.md', async () => {
+  serialTest('setup installs Codex stage skills into CODEX_HOME/skills/<stage>/SKILL.md', async () => {
     const tmpDir = makeTempDir();
+    const codexHome = path.join(tmpDir, '.codex-home');
 
-    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir);
+    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir, {
+      CODEX_HOME: codexHome,
+    });
 
     expect(result.status).toBe(0);
-    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'dev', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'SKILL.md'))).toBe(false);
-    expect(fs.readFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('`forge plan`');
-    expect(fs.readFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('# Plan');
+    expect(fs.existsSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(codexHome, 'skills', 'dev', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '$CODEX_HOME', 'skills'))).toBe(false);
+    expect(fs.readFileSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('`forge plan`');
+    expect(fs.readFileSync(path.join(codexHome, 'skills', 'plan', 'SKILL.md'), 'utf8')).toContain('# Plan');
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
+    expect(result.stdout).toContain('Installed: Codex stage skills');
+    expect(result.stdout).not.toContain('Created: Codex stage skills');
+  });
+
+  serialTest('setup reports partial Codex setup when discoverable skills cannot be installed', async () => {
+    const tmpDir = makeTempDir();
+    const codexHomeFile = path.join(tmpDir, 'codex-home-file');
+    fs.writeFileSync(codexHomeFile, 'not-a-directory');
+
+    const result = await runSetup(['--agents', 'codex', '--skip-external'], tmpDir, {
+      CODEX_HOME: codexHomeFile,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Forge setup partially complete');
+    expect(result.stdout).toContain('Codex repo instructions installed, but skills are not discoverable in this environment');
   });
 
   serialTest('setup scaffolds Cursor native rules through the real setup path', async () => {
@@ -304,6 +329,151 @@ describe('setup runtime flags', () => {
     }
 
     expect(logLines.join('\n')).toContain('bd (Beads CLI) - Install from https://github.com/steveyegge/beads');
+  });
+
+  serialTest('checkPrerequisites warns when the Beads Dolt origin remote is not configured', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'No remotes configured.';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'origin' is not configured. Sync will remain local until you run: bd dolt remote add origin <url>"
+    );
+  });
+
+  serialTest('checkPrerequisites warns when Beads Dolt remotes cannot be inspected', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Unable to inspect Beads Dolt remotes. Sync may remain local until 'origin' is configured and bd dolt remote list succeeds."
+    );
+  });
+
+  serialTest('checkPrerequisites uses BD_SYNC_REMOTE when warning about missing Beads remotes', () => {
+    const result = setupCommand.checkPrerequisites({
+      env: { BD_SYNC_REMOTE: 'upstream' },
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'origin https://example.com/repo';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'upstream' is not configured. Sync will remain local until you run: bd dolt remote add upstream <url>"
+    );
+  });
+
+  serialTest('checkPrerequisites uses .beads config sync remote before falling back to origin', () => {
+    const tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.beads', 'config.json'),
+      JSON.stringify({ sync_remote: 'upstream' }, null, 2)
+    );
+
+    const result = setupCommand.checkPrerequisites({
+      projectDir: tmpDir,
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'origin https://example.com/repo';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'upstream' is not configured. Sync will remain local until you run: bd dolt remote add upstream <url>"
+    );
+  });
+
+  serialTest('checkPrerequisites reads sync remote from .beads config.yaml without regex backtracking', () => {
+    const tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.beads', 'config.yaml'),
+      'database:\n  backend: dolt\nsync-remote: "upstream" # preferred remote\n'
+    );
+
+    const result = setupCommand.checkPrerequisites({
+      projectDir: tmpDir,
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'origin https://example.com/repo';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'upstream' is not configured. Sync will remain local until you run: bd dolt remote add upstream <url>"
+    );
   });
 
 });

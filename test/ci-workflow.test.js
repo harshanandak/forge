@@ -7,6 +7,7 @@ describe('CI Workflow Configuration', () => {
   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf-8');
   const workflow = yaml.parse(workflowContent);
+  const synchronizeSkipCondition = "github.event_name != 'pull_request' || github.event.action != 'synchronize'";
 
   describe('Coverage Job', () => {
     test('should have a separate coverage job', () => {
@@ -105,6 +106,70 @@ describe('CI Workflow Configuration', () => {
       expect(!test.needs).toBeTruthy();
       expect(!coverage.needs).toBeTruthy();
       expect(!e2e.needs).toBeTruthy();
+    });
+  });
+
+  describe('Follow-up PR Pushes', () => {
+    test('workflow cancels older in-progress runs for the same PR or ref', () => {
+      expect(workflow.concurrency).toBeTruthy();
+      expect(workflow.concurrency.group).toContain('github.event.pull_request.number || github.ref');
+      expect(workflow.concurrency['cancel-in-progress']).toBe(true);
+    });
+
+    test('followup-tests job exists for synchronize events', () => {
+      expect(workflow.jobs['followup-tests']).toBeTruthy();
+      expect(workflow.jobs['followup-tests'].if).toBe("github.event_name == 'pull_request' && github.event.action == 'synchronize'");
+    });
+
+    test('followup-tests job runs on a single ubuntu runner', () => {
+      const followup = workflow.jobs['followup-tests'];
+      expect(followup['runs-on']).toBe('ubuntu-latest');
+      expect(!followup.strategy).toBeTruthy();
+    });
+
+    test('followup-tests resolves affected targets before running tests', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const stepNames = followup.steps.map(s => s.name);
+      expect(stepNames.includes('Resolve affected test targets')).toBeTruthy();
+      expect(stepNames.includes('Run targeted unit tests')).toBeTruthy();
+      expect(stepNames.includes('Run single-platform unit suite fallback')).toBeTruthy();
+      expect(stepNames.includes('Run affected e2e tests')).toBeTruthy();
+      expect(stepNames.includes('Run affected edge-case tests')).toBeTruthy();
+    });
+
+    test('followup-tests falls back to full mode for unmapped changed files', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const resolveStep = followup.steps.find((step) => step.name === 'Resolve affected test targets');
+      expect(resolveStep).toBeTruthy();
+      expect(resolveStep.run.includes('unmapped_files=false')).toBeTruthy();
+      expect(resolveStep.run.includes('unmapped_files=true')).toBeTruthy();
+      expect(resolveStep.run.includes('if [[ "$unmapped_files" == "true" ]]')).toBeTruthy();
+    });
+
+    test('followup-tests tracks e2e and test-env changes separately', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const resolveStep = followup.steps.find((step) => step.name === 'Resolve affected test targets');
+      expect(resolveStep).toBeTruthy();
+      expect(resolveStep.run.includes('run_test_env=false')).toBeTruthy();
+      expect(resolveStep.run.includes('run_e2e=false')).toBeTruthy();
+      expect(resolveStep.run.includes('test-env/*')).toBeTruthy();
+      expect(resolveStep.run.includes('test/e2e/*')).toBeTruthy();
+    });
+
+    test('followup-tests runs edge-case checks for library and script changes', () => {
+      const followup = workflow.jobs['followup-tests'];
+      const resolveStep = followup.steps.find((step) => step.name === 'Resolve affected test targets');
+      expect(resolveStep).toBeTruthy();
+      expect(resolveStep.run.includes('lib/*.js|lib/**/*.js')).toBeTruthy();
+      expect(resolveStep.run.includes('scripts/*.js|scripts/**/*.js')).toBeTruthy();
+      expect(resolveStep.run.includes('run_test_env=true')).toBeTruthy();
+    });
+
+    test('full matrix, coverage, e2e, and dashboard skip synchronize events', () => {
+      expect(workflow.jobs.test.if).toBe(synchronizeSkipCondition);
+      expect(workflow.jobs.coverage.if).toBe(synchronizeSkipCondition);
+      expect(workflow.jobs.e2e.if).toBe(synchronizeSkipCondition);
+      expect(workflow.jobs.dashboard.if).toBe(synchronizeSkipCondition);
     });
   });
 

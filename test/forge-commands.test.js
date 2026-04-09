@@ -9,7 +9,11 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { afterEach, describe, test, expect } = require('bun:test');
-const { listCodexSkillEntries } = require('../lib/codex-skills');
+const {
+  buildCodexSkillInstallPlan,
+  formatCodexSkillsInstallDir,
+  listCodexSkillEntries,
+} = require('../lib/codex-skills');
 
 const tempDirs = [];
 
@@ -145,8 +149,9 @@ describe('Codex plugin metadata', () => {
     expect(codexPlugin.setup.createSkill).toBe(true);
   });
 
-  test('keeps the Codex skill directory aligned with stage skills', () => {
+  test('keeps the packaged Codex skill source and global install target aligned', () => {
     expect(codexPlugin.directories.skills).toBe('.codex/skills');
+    expect(codexPlugin.installTargets.skills).toBe('$CODEX_HOME/skills');
   });
 });
 
@@ -171,10 +176,30 @@ describe('Codex skill entry generation', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toEqual({
       commandName: 'plan',
-      dir: '.codex/skills/plan/',
       filename: 'SKILL.md',
       content: '---\ndescription: Plan workflow\nmode: code\n---\n\n> Forge stage adapter\n\nBefore executing this workflow, invoke `forge plan` so Forge can enforce stage order, runtime prerequisites, and override rules.\nIf Forge blocks the stage or asks for an explicit override payload, stop and resolve that first.\n# Plan\nUse Forge runtime.\n',
     });
+  });
+
+  test('builds a global Codex install plan under CODEX_HOME/skills', () => {
+    const tmpDir = makeTempDir();
+    const codexHome = path.join(tmpDir, '.codex-home');
+    const skillsDir = path.join(tmpDir, '.codex', 'skills', 'status');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillsDir, 'SKILL.md'),
+      '---\ndescription: Status workflow\nmode: code\n---\n# Status\nUse Forge runtime.\n'
+    );
+
+    const plan = buildCodexSkillInstallPlan(tmpDir, {
+      env: { CODEX_HOME: codexHome },
+      homeDir: tmpDir,
+    });
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0].absolutePath).toBe(path.join(codexHome, 'skills', 'status', 'SKILL.md'));
+    expect(plan[0].displayPath).toBe('$CODEX_HOME/skills/status/SKILL.md');
+    expect(formatCodexSkillsInstallDir({ env: { CODEX_HOME: codexHome }, homeDir: tmpDir })).toBe('$CODEX_HOME/skills');
   });
 });
 

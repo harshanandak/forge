@@ -69,6 +69,14 @@ describe('setup summary renderer', () => {
       expect(lines.length).toBeLessThanOrEqual(3);
     });
 
+    test('should report partial completion when setup has warnings', () => {
+      const log = new SetupActionLog();
+      log.add('AGENTS.md', 'created');
+
+      const output = renderSetupSummary(log, ['codex'], false, { status: 'partial' });
+      expect(output).toContain('Forge setup partially complete');
+    });
+
     test('should omit zero-count actions from the counts line', () => {
       const log = new SetupActionLog();
       log.add('.claude/settings.json', 'created');

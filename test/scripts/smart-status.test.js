@@ -25,6 +25,7 @@ setDefaultTimeout(20000);
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'smart-status.sh');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const GIT_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe';
+const SYSTEM_PATH = process.env.PATH || process.env.Path || '';
 
 function resolveBashCommand() {
   if (process.env.BASH_CMD) {
@@ -36,6 +37,30 @@ function resolveBashCommand() {
   return 'bash';
 }
 
+function toBashPath(filePath) {
+  if (process.platform !== 'win32') {
+    return filePath;
+  }
+  return filePath.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
+}
+
+function resolveBashPathEnv() {
+  const probe = spawnSync(resolveBashCommand(), ['-lc', 'printf %s "$PATH"'], {
+    encoding: 'utf8',
+  });
+  return (probe.stdout || '').trim() || SYSTEM_PATH;
+}
+
+const BASH_PATH_ENV = resolveBashPathEnv();
+
+function normalizeBashEnv(env = {}) {
+  return {
+    ...env,
+    ...(env.BD_CMD ? { BD_CMD: toBashPath(env.BD_CMD) } : {}),
+    ...(env.GIT_CMD ? { GIT_CMD: toBashPath(env.GIT_CMD) } : {}),
+  };
+}
+
 /**
  * Run the smart-status script with given arguments.
  * @param {string[]} args - CLI arguments
@@ -44,18 +69,23 @@ function resolveBashCommand() {
  * @returns {{ status: number|null, stdout: string, stderr: string }}
  */
 function runSmartStatus(args = [], env = {}, stdin = undefined) {
-  const result = spawnSync(resolveBashCommand(), [SCRIPT, ...args], {
+  const mergedEnv = {
+    ...process.env,
+    // Default GIT_CMD to 'true' (outputs nothing) so tests don't pick up
+    // real worktrees. Session detection tests override this with a mock.
+    GIT_CMD: 'true',
+    ...normalizeBashEnv(env),
+  };
+  if (process.platform === 'win32' && env.PATH) {
+    mergedEnv.Path = env.PATH;
+  }
+
+  const result = spawnSync(resolveBashCommand(), [toBashPath(SCRIPT), ...args], {
     cwd: PROJECT_ROOT,
     encoding: 'utf-8',
     timeout: 30000,
     input: stdin,
-    env: {
-      ...process.env,
-      // Default GIT_CMD to 'true' (outputs nothing) so tests don't pick up
-      // real worktrees. Session detection tests override this with a mock.
-      GIT_CMD: 'true',
-      ...env,
-    },
+    env: mergedEnv,
   });
   return {
     status: result.status,
@@ -114,6 +144,23 @@ function cleanupTmpDir(tmpDir) {
   }
 }
 
+function createCrLfJqWrapper() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-jq-'));
+  const wrapperPath = path.join(tmpDir, 'jq');
+  const probe = spawnSync(resolveBashCommand(), ['-lc', 'command -v jq'], {
+    encoding: 'utf8',
+  });
+  const realJq = process.env.TEST_REAL_JQ
+    || (probe.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+    || 'jq';
+  const scriptContent = `#!/usr/bin/env bash
+REAL_JQ="${realJq}"
+"$REAL_JQ" "$@" | awk '{ printf "%s\\r\\n", $0 }'
+`;
+  fs.writeFileSync(wrapperPath, scriptContent, { mode: 0o755 });
+  return { tmpDir, wrapperPath };
+}
+
 // Generate ISO date string N days ago
 function daysAgo(n) {
   const d = new Date();
@@ -148,6 +195,29 @@ describe('smart-status.sh', () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/bd is required/i);
   });
+
+  test('strips CRLF from jq output so arithmetic comparisons do not warn', () => {
+    const mockData = {
+      issues: [
+        { id: 'crlf', title: 'CRLF-safe issue', priority: 2, type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+      ],
+    };
+    const { tmpDir: bdTmpDir, mockScript: bdScript } = createMockBd(mockData);
+    const { tmpDir: jqTmpDir } = createCrLfJqWrapper();
+    try {
+      const result = runSmartStatus([], {
+        BD_CMD: toBashPath(bdScript),
+        PATH: `${toBashPath(jqTmpDir)}:${BASH_PATH_ENV}`,
+        NO_COLOR: '1',
+      });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain('integer expression expected');
+      expect(result.stdout).toContain('crlf');
+    } finally {
+      cleanupTmpDir(bdTmpDir);
+        cleanupTmpDir(jqTmpDir);
+      }
+    });
 
   describe('scoring factors', () => {
     test('priority_weight: P0=5 > P1=4 > P2=3 > P3=2 > P4=1', () => {

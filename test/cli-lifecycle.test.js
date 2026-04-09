@@ -9,8 +9,15 @@ const forgeBin = path.resolve(__dirname, '..', 'bin', 'forge.js');
 /**
  * Helper: run forge CLI and capture stdout+stderr.
  * Uses a temp dir with AGENTS.md so the first-run check passes.
+ *
+ * @param {string[]} args - CLI args to pass to forge
+ * @param {Object} [options]
+ * @param {string} [options.cwd] - Working directory (defaults to a new temp dir)
+ * @param {number} [options.timeoutMs=10000] - Inner execFileSync timeout. Increase
+ *   for commands that do heavy I/O on Windows (e.g. `forge reinstall --force`
+ *   which chains resetHard + full setup).
  */
-function runForge(args, { cwd } = {}) {
+function runForge(args, { cwd, timeoutMs = 10000 } = {}) {
   const tmpDir = cwd || fs.mkdtempSync(path.join(os.tmpdir(), 'cli-lifecycle-test-'));
 
   // Create AGENTS.md so first-run detection doesn't block us
@@ -22,7 +29,7 @@ function runForge(args, { cwd } = {}) {
     const result = execFileSync('node', [forgeBin, ...args], {
       cwd: tmpDir,
       encoding: 'utf-8',
-      timeout: 10000,
+      timeout: timeoutMs,
       env: { ...process.env, INIT_CWD: tmpDir },
     });
     return { stdout: result, stderr: '', exitCode: 0 };
@@ -108,13 +115,17 @@ describe('CLI lifecycle commands', () => {
       fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, '.forge', 'setup-state.json'), '{}', 'utf-8');
 
-      const result = runForge(['reinstall', '--force'], { cwd: tmpDir });
+      // `forge reinstall --force` chains resetHard + full setup flow
+      // (handleSetupCommand with claude agent). On Windows CI that can exceed
+      // the default 10s execFileSync timeout — bump the inner timeout to 55s
+      // so it completes before bun test's outer 60s test-case timeout fires.
+      const result = runForge(['reinstall', '--force'], { cwd: tmpDir, timeoutMs: 55000 });
       const _output = result.stdout + result.stderr;
 
       // .forge should be removed (hard reset part)
       expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    }, 30000);
+    }, 60000);
   });
 });
