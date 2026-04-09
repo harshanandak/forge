@@ -210,6 +210,9 @@ No test scenarios section.`;
 				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
 					return 'refs/remotes/upstream/main\n';
 				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/main') {
+					return 'refs/remotes/upstream/main\n';
+				}
 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
 			};
 
@@ -243,14 +246,72 @@ No test scenarios section.`;
 			expect(resolveBaseRemote(exec, process.cwd())).toBe('origin');
 		});
 
+		test('should fall back to origin when upstream HEAD points to a missing ref', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+					return 'https://github.com/base/repo.git\n';
+				}
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+					return 'https://github.com/fork/repo.git\n';
+				}
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+					return 'refs/remotes/upstream/trunk\n';
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/trunk') {
+					throw new Error('missing upstream trunk');
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/main') {
+					throw new Error('missing upstream main');
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/master') {
+					throw new Error('missing upstream master');
+				}
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+					return 'refs/remotes/origin/main\n';
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/origin/main') {
+					return 'refs/remotes/origin/main\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			expect(resolveBaseRemote(exec, process.cwd())).toBe('origin');
+		});
+
 		test('should detect the default base branch from origin/HEAD', () => {
 			const exec = (command, args) => {
 				expect(command).toBe('git');
-				expect(args).toEqual(['symbolic-ref', 'refs/remotes/origin/HEAD']);
-				return 'refs/remotes/origin/main\n';
+				if (args[0] === 'symbolic-ref') {
+					expect(args).toEqual(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+					return 'refs/remotes/origin/main\n';
+				}
+				if (args[0] === 'rev-parse') {
+					expect(args).toEqual(['rev-parse', '--verify', 'refs/remotes/origin/main']);
+					return 'refs/remotes/origin/main\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
 			};
 
 			expect(resolveBaseBranch(exec, process.cwd(), 'origin')).toBe('main');
+		});
+
+		test('should ignore a stale remote HEAD target and fall back to main', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+					return 'refs/remotes/upstream/trunk\n';
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/trunk') {
+					throw new Error('missing upstream trunk');
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/main') {
+					return 'refs/remotes/upstream/main\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			expect(resolveBaseBranch(exec, process.cwd(), 'upstream')).toBe('main');
 		});
 
 		test('should report when the current branch has no tree diff against the base branch', () => {
@@ -263,6 +324,9 @@ No test scenarios section.`;
 					return 'https://github.com/fork/repo.git\n';
 				}
 				if (args[0] === 'symbolic-ref') {
+					return 'refs/remotes/upstream/master\n';
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/master') {
 					return 'refs/remotes/upstream/master\n';
 				}
 				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
@@ -335,6 +399,9 @@ No test scenarios section.`;
 					return 'https://github.com/owner/repo.git\n';
 				}
 				if (command === 'git' && args[0] === 'symbolic-ref') {
+					return 'refs/remotes/upstream/master\n';
+				}
+				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/master') {
 					return 'refs/remotes/upstream/master\n';
 				}
 				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
