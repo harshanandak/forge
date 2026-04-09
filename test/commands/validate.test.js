@@ -201,6 +201,70 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('should preserve leading whitespace in Git-indexed file paths', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-whitespace-paths-'));
+			try {
+				const spacedFile = ' leadingspace.js';
+				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+				fs.writeFileSync(
+					path.join(tmpDir, spacedFile),
+					'<<<<<<< HEAD\nwhitespace path\n=======\nwhitespace path updated\n>>>>>>> branch\n',
+				);
+				execFileSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'ignore' });
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: spacedFile }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should skip tracked symlinks in Git-indexed scans', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-symlink-paths-'));
+			try {
+				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+				fs.writeFileSync(
+					path.join(tmpDir, 'tracked.js'),
+					'console.log("safe");\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, 'outside-target.txt'),
+					'<<<<<<< HEAD\noutside\n=======\noutside\n>>>>>>> branch\n',
+				);
+
+				try {
+					fs.symlinkSync(
+						path.join(tmpDir, 'outside-target.txt'),
+						path.join(tmpDir, 'linked.txt'),
+					);
+				} catch (error) {
+					if (error && (error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'UNKNOWN')) {
+						return;
+					}
+					throw error;
+				}
+
+				execFileSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'ignore' });
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(true);
+				expect(result.checks.conflictMarkers.files).toEqual([]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
 		test('should flag unterminated conflict marker blocks', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-partial-conflicts-'));
 			try {
