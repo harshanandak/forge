@@ -115,8 +115,8 @@ describe('scripts/test pre-push runner', () => {
     expect(status).toBe(0);
     expect(spawnSync.calls[0].command).toBe('bun');
     expect(spawnSync.calls[0].args).toEqual(['run', 'test', 'test/commands/ship.test.js']);
-    expect(spawnSync.calls[1].command).toBe('node');
-    expect(spawnSync.calls[1].args).toEqual(['--test', 'test-env/**/*.test.js']);
+    expect(spawnSync.calls[1].command).toBe('bun');
+    expect(spawnSync.calls[1].args).toEqual(['test', 'test-env/']);
   });
 
   test('runPrePushTests skips broad unit tests when only canonical command docs changed', () => {

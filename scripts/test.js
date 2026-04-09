@@ -127,7 +127,7 @@ function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
 
     if (plan.runTestEnv) {
       console.log('  Extra: running affected edge-case tests');
-      const status = runCommand('node', ['--test', 'test-env/**/*.test.js'], { env }, spawnSync);
+      const status = runCommand('bun', ['test', 'test-env/'], { env }, spawnSync);
       if (status !== 0) return status;
     }
 
