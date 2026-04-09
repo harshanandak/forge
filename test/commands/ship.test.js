@@ -6,6 +6,8 @@ const {
 	generatePRBody,
 	createPR,
 	executeShip,
+	getBranchReadiness,
+	resolveBaseBranch,
 } = require('../../lib/commands/ship.js');
 
 describe('Ship Command - PR Creation', () => {
@@ -195,6 +197,37 @@ No test scenarios section.`;
 	});
 
 	describe('Create PR via gh CLI', () => {
+		test('should detect the default base branch from origin/HEAD', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				expect(args).toEqual(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+				return 'refs/remotes/origin/main\n';
+			};
+
+			expect(resolveBaseBranch(exec, process.cwd())).toBe('main');
+		});
+
+		test('should report when the current branch has no diff against the base branch', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				if (args[0] === 'symbolic-ref') {
+					return 'refs/remotes/origin/master\n';
+				}
+				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+					return 'feat/setup-hardening-codex-parity\n';
+				}
+				if (args[0] === 'rev-list') {
+					return '0\t0\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			const result = getBranchReadiness({ exec, cwd: process.cwd() });
+			expect(result.ready).toBe(false);
+			expect(result.error).toContain('has no diff against origin/master');
+			expect(result.error).toContain('not PR-ready');
+		});
+
 		test.skip('should create PR with generated body', async () => {
 			const prBody = '## Summary\n\nTest PR body';
 			const result = await createPR({
@@ -229,6 +262,40 @@ No test scenarios section.`;
 
 			// Should fail validation
 			expect(result.success === false || result.error).toBeTruthy();
+		});
+
+		test('should refuse to create a PR when the branch has no diff against base', async () => {
+			const exec = (command, args) => {
+				if (command === 'gh' && args[0] === '--version') {
+					return 'gh version 2.81.0\n';
+				}
+				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') {
+					return '.git\n';
+				}
+				if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') {
+					return 'https://github.com/owner/repo.git\n';
+				}
+				if (command === 'git' && args[0] === 'symbolic-ref') {
+					return 'refs/remotes/origin/master\n';
+				}
+				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+					return 'feat/setup-hardening-codex-parity\n';
+				}
+				if (command === 'git' && args[0] === 'rev-list') {
+					return '0\t0\n';
+				}
+				throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+			};
+
+			const result = await createPR({
+				title: 'feat: test feature branch readiness',
+				body: 'Test body',
+				dryRun: true,
+				exec,
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain('has no diff against origin/master');
 		});
 	});
 

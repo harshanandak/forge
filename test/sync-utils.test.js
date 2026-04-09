@@ -91,4 +91,32 @@ exit 0
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("sync skipped, unable to inspect Beads Dolt remotes");
   });
+
+  test('auto-sync honors the configured sync remote name', () => {
+    const repoDir = makeTempDir();
+    fs.mkdirSync(path.join(repoDir, '.beads'), { recursive: true });
+
+    const mockBin = makeTempDir();
+    const mockBd = path.join(mockBin, 'bd');
+    writeExecutable(mockBd, `#!/usr/bin/env bash
+if [[ "$1 $2 $3" == "dolt remote list" ]]; then
+  echo "upstream file:///tmp/forge-beads"
+  exit 0
+fi
+if [[ "$1 $2" == "dolt pull" || "$1 $2" == "dolt push" ]]; then
+  exit 0
+fi
+exit 0
+`);
+
+    const result = runSyncUtils('auto-sync', {
+      BD_CMD: toBashPath(mockBd),
+      BD_SYNC_REMOTE: 'upstream',
+      BD_SYNC_CMD: 'true',
+    }, repoDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(fs.existsSync(path.join(repoDir, '.beads', '.last-sync'))).toBe(true);
+  });
 });

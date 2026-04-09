@@ -331,4 +331,30 @@ describe('setup runtime flags', () => {
     expect(logLines.join('\n')).toContain('bd (Beads CLI) - Install from https://github.com/steveyegge/beads');
   });
 
+  serialTest('checkPrerequisites warns when the Beads Dolt origin remote is not configured', () => {
+    const result = setupCommand.checkPrerequisites({
+      requireBeadsCli: true,
+      requireGithubCli: false,
+      commandRunner: (command) => {
+        switch (command) {
+          case 'git --version':
+            return 'git version 2.42.0';
+          case 'bd --version':
+            return 'bd 0.49.1';
+          case 'bd dolt remote list':
+            return 'No remotes configured.';
+          case 'jq --version':
+            return 'jq-1.8.1';
+          default:
+            return '';
+        }
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      "Beads Dolt remote 'origin' is not configured. Sync will remain local until you run: bd dolt remote add origin <url>"
+    );
+  });
+
 });
