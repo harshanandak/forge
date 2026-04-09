@@ -328,6 +328,30 @@ describe('forge test command', () => {
 			expect(diffCall.args).not.toContain('abc123...HEAD');
 		});
 
+		test('uses upstream diff when requested for push-hook style runs', async () => {
+			const execCalls = [];
+			const execStub = (cmd, args, _opts) => {
+				execCalls.push({ cmd, args });
+				if (cmd === 'git' && args.includes('@{upstream}')) return 'origin/feature-branch';
+				if (cmd === 'git' && args[0] === 'diff') return 'lib/x.js\n';
+				return '';
+			};
+
+			await testCommand.handler([], { affected: true, sinceUpstream: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: ['/fake/root/test/x.test.js'],
+				}),
+				execFileSync: execStub,
+				spawnSync: makeSpawnSync(),
+			});
+
+			const diffCall = execCalls.find(
+				(c) => c.cmd === 'git' && c.args[0] === 'diff',
+			);
+			expect(diffCall).toBeDefined();
+			expect(diffCall.args).toContain('origin/feature-branch...HEAD');
+		});
+
 		test('skips non-lib files in affected mapping', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {
@@ -395,6 +419,29 @@ describe('forge test command', () => {
 				'test',
 				'test/ci-workflow.test.js',
 				'test/workflows/size-check.test.js',
+			]);
+		});
+
+		test('maps canonical command edits to command sync tests', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: [
+						'/fake/root/test/command-sync-check.test.js',
+						'/fake/root/test/structural/command-sync.test.js',
+					],
+				}),
+				execFileSync: makeExecFileSync({
+					gitDiffOutput: '.claude/commands/review.md\n',
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual([
+				'run',
+				'test',
+				'test/command-sync-check.test.js',
+				'test/structural/command-sync.test.js',
 			]);
 		});
 	});

@@ -1,0 +1,142 @@
+'use strict';
+
+const { describe, expect, test } = require('bun:test');
+const path = require('node:path');
+
+const {
+  classifyPushTests,
+  runPrePushTests,
+  stripGitHookEnv,
+} = require('../../scripts/test');
+
+const repoRoot = path.resolve(__dirname, '../..');
+
+function makeExecFileSync({
+  changedFiles = '',
+  upstream = 'origin/fix/t3-worktree-guardrails',
+  useUpstream = true,
+} = {}) {
+  return (cmd, args, _opts) => {
+    if (cmd !== 'git') {
+      throw new Error(`Unexpected command: ${cmd}`);
+    }
+
+    if (args[0] === 'rev-parse' && args.includes('@{upstream}')) {
+      if (!useUpstream) {
+        throw new Error('no upstream');
+      }
+      return upstream;
+    }
+
+    if (args[0] === 'diff') {
+      return changedFiles;
+    }
+
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+      return 'origin/master';
+    }
+
+    if (args[0] === 'merge-base') {
+      return 'abc123';
+    }
+
+    return '';
+  };
+}
+
+function makeSpawnSync(exitCode = 0) {
+  const calls = [];
+  const fn = (command, args, options) => {
+    calls.push({ args, command, options });
+    return { status: exitCode };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+describe('scripts/test pre-push runner', () => {
+  test('stripGitHookEnv removes git hook environment variables', () => {
+    const env = stripGitHookEnv({
+      GIT_DIR: '.git',
+      GIT_WORK_TREE: '.',
+      GIT_INDEX_FILE: 'index',
+      PATH: '/bin',
+    });
+
+    expect(env.GIT_DIR).toBeUndefined();
+    expect(env.GIT_WORK_TREE).toBeUndefined();
+    expect(env.GIT_INDEX_FILE).toBeUndefined();
+    expect(env.PATH).toBe('/bin');
+  });
+
+  test('classifyPushTests selects targeted unit tests and edge-case suite for lib changes', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'lib/commands/ship.js\n',
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.runTestEnv).toBe(true);
+    expect(plan.runE2E).toBe(false);
+    expect(plan.testTargets).toContain('test/commands/ship.test.js');
+  });
+
+  test('classifyPushTests maps canonical command edits to command sync checks', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: '.claude/commands/ship.md\n',
+    }));
+
+    expect(plan.testTargets).toEqual([
+      'test/command-sync-check.test.js',
+      'test/structural/command-sync.test.js',
+    ]);
+  });
+
+  test('classifyPushTests falls back to full suite for package-level changes', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'package.json\n',
+    }));
+
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.runTestEnv).toBe(true);
+    expect(plan.runE2E).toBe(true);
+  });
+
+  test('runPrePushTests runs targeted tests instead of the full suite when possible', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'lib/commands/ship.js\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls[0].command).toBe('bun');
+    expect(spawnSync.calls[0].args).toEqual(['run', 'test', 'test/commands/ship.test.js']);
+    expect(spawnSync.calls[1].command).toBe('node');
+    expect(spawnSync.calls[1].args).toEqual(['--test', 'test-env/**/*.test.js']);
+  });
+
+  test('runPrePushTests skips broad unit tests when only canonical command docs changed', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: '.claude/commands/review.md\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+    expect(spawnSync.calls[0].args).toEqual([
+      'run',
+      'test',
+      'test/command-sync-check.test.js',
+      'test/structural/command-sync.test.js',
+    ]);
+  });
+});
