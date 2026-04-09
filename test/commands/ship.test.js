@@ -207,10 +207,40 @@ No test scenarios section.`;
 				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
 					return 'https://github.com/fork/repo.git\n';
 				}
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+					return 'refs/remotes/upstream/main\n';
+				}
 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
 			};
 
 			expect(resolveBaseRemote(exec, process.cwd())).toBe('upstream');
+		});
+
+		test('should fall back to origin when upstream has no fetched tracking refs', () => {
+			const exec = (command, args) => {
+				expect(command).toBe('git');
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+					return 'https://github.com/base/repo.git\n';
+				}
+				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+					return 'https://github.com/fork/repo.git\n';
+				}
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+					throw new Error('missing upstream HEAD');
+				}
+				if (args[0] === 'rev-parse' && args[2] === 'refs/remotes/upstream/main') {
+					throw new Error('missing upstream main');
+				}
+				if (args[0] === 'rev-parse' && args[2] === 'refs/remotes/upstream/master') {
+					throw new Error('missing upstream master');
+				}
+				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+					return 'refs/remotes/origin/main\n';
+				}
+				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+			};
+
+			expect(resolveBaseRemote(exec, process.cwd())).toBe('origin');
 		});
 
 		test('should detect the default base branch from origin/HEAD', () => {
