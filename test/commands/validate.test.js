@@ -126,14 +126,19 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test('should skip hidden directories that are not explicitly allowlisted', async () => {
+		test('should skip hidden directories that are not explicitly allowlisted while scanning tracked dotdirs', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-dotdirs-'));
 			try {
 				fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
 				fs.mkdirSync(path.join(tmpDir, '.github'), { recursive: true });
 				fs.writeFileSync(
 					path.join(tmpDir, '.hidden', 'ignored.js'),
 					'<<<<<<< HEAD\nignore me\n=======\nignore me too\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, '.forge', 'tracked.md'),
+					'<<<<<<< HEAD\ntracked dotdir\n=======\ntracked dotdir updated\n>>>>>>> branch\n',
 				);
 				fs.writeFileSync(
 					path.join(tmpDir, '.github', 'workflow.yml'),
@@ -147,7 +152,30 @@ describe('Validate Command - Validation Orchestration', () => {
 
 				expect(result.success).toBe(false);
 				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: path.join('.forge', 'tracked.md') }),
 					expect.objectContaining({ path: path.join('.github', 'workflow.yml') }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should flag unterminated conflict marker blocks', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-partial-conflicts-'));
+			try {
+				fs.writeFileSync(
+					path.join(tmpDir, 'partial.js'),
+					'<<<<<<< HEAD\nconst a = 1;\n=======\nconst a = 2;\n',
+				);
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: 'partial.js', line: 1 }),
 				]);
 			} finally {
 				fs.rmSync(tmpDir, { recursive: true, force: true });
