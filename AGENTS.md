@@ -232,15 +232,15 @@ This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full 
 ### Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+forge ready           # Find available work
+forge show <id>       # View issue details
+forge claim <id>      # Claim work
+forge close <id>      # Complete work
 ```
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — these are approved artifacts consumed by `/dev`, but `bd` remains the source of truth for issue state. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/BEADS_GITHUB_SYNC.md`).
+- Use `forge` as the routine command surface for bd-backed issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — these are approved artifacts consumed by `/dev`, but Beads (`bd`) remains the source of truth for issue state and IDs. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/BEADS_GITHUB_SYNC.md`).
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
@@ -255,10 +255,10 @@ bd close <id>         # Complete work
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
-   git pull --rebase
-   bd dolt push   # requires Dolt-backed Beads — run 'bd init' if missing
-   git push
-   git status  # MUST show "up to date with origin"
+    git pull --rebase
+    forge sync     # wraps the supported Beads sync flow when Beads is configured
+    git push
+    git status  # MUST show "up to date with origin"
    ```
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed

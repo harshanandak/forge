@@ -3,9 +3,13 @@
 Automatic synchronization between GitHub Issues and Beads issue tracking.
 
 **GitHub Issues** = human/team/public interface.
-**Beads** = AI agent engine (`bd ready`, `bd close`).
+**Beads** = issue engine behind Forge (`forge ready`, `forge close`).
 
 Neither side needs to know about the other. Contributors file issues on GitHub; AI agents pick up work via Beads. Status changes propagate automatically.
+
+For human and agent workflows, prefer the Forge wrapper commands (`forge ready`,
+`forge create`, `forge close`, `forge sync`). The workflow automation shown below
+still calls `bd` directly as an internal implementation detail.
 
 ---
 
@@ -48,7 +52,7 @@ sequenceDiagram
     participant WF as GitHub Actions
     participant GH as GitHub Issues
 
-    AI->>BD: bd close forge-abc
+    AI->>BD: forge close forge-abc
     BD->>Repo: Update issues.jsonl
     AI->>Repo: git push
     Repo->>WF: push trigger (paths: .beads/**)

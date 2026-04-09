@@ -402,13 +402,19 @@ gh auth login
 /premerge <pr>             # Complete docs, hand off PR
 /verify                    # Post-merge health check
 
-# Beads commands (optional)
-bd init                    # Initialize tracking
-bd ready                   # Find ready work
-bd create "title"          # Create issue
-bd update <id> --status X  # Update status
-bd sync                    # Sync with git
+# Issue commands (via Forge)
+bd init                    # Initialize Beads tracking
+forge ready                # Find ready work
+forge create "title"       # Create issue
+forge update <id> --status X  # Update status
+forge sync                 # Sync Beads state
 ```
+
+For advanced Beads operations that Forge does not wrap yet, use `bd` directly for
+`bd comments`, `bd dep`, and `bd dolt`.
+
+Forge is the preferred command surface for routine workflows, but Beads (`bd`)
+remains the underlying source of truth for issue state and IDs.
 
 ---
 
