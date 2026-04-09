@@ -161,10 +161,12 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
-		test('should preserve skip rules when scanning Git-indexed files', async () => {
+		test('should skip ignored directories and non-allowlisted dotdirs when scanning Git-listed files', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-git-fast-path-'));
 			try {
 				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+				execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: tmpDir, stdio: 'ignore' });
+				execFileSync('git', ['config', 'user.email', 'forge@example.com'], { cwd: tmpDir, stdio: 'ignore' });
 				fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
 				fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
 				fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
@@ -186,6 +188,7 @@ describe('Validate Command - Validation Orchestration', () => {
 					'<<<<<<< HEAD\ndist\n=======\ndist\n>>>>>>> branch\n',
 				);
 				execFileSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'ignore' });
+				execFileSync('git', ['commit', '-m', 'seed tracked files'], { cwd: tmpDir, stdio: 'ignore' });
 
 				const result = await executeValidate({
 					rootDir: tmpDir,
