@@ -1,4 +1,5 @@
 const { describe, test, expect, setDefaultTimeout } = require('bun:test');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -154,6 +155,46 @@ describe('Validate Command - Validation Orchestration', () => {
 				expect(result.checks.conflictMarkers.files).toEqual([
 					expect.objectContaining({ path: path.join('.forge', 'tracked.md') }),
 					expect.objectContaining({ path: path.join('.github', 'workflow.yml') }),
+				]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should preserve skip rules when scanning Git-indexed files', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-git-fast-path-'));
+			try {
+				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+				fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, '.hidden'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, '.forge'), { recursive: true });
+				fs.mkdirSync(path.join(tmpDir, 'dist'), { recursive: true });
+				fs.writeFileSync(
+					path.join(tmpDir, '.beads', 'metadata.json'),
+					'<<<<<<< HEAD\nbeads\n=======\nbeads\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, '.hidden', 'ignored.js'),
+					'<<<<<<< HEAD\nhidden\n=======\nhidden\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, '.forge', 'tracked.md'),
+					'<<<<<<< HEAD\ntracked dotdir\n=======\ntracked dotdir updated\n>>>>>>> branch\n',
+				);
+				fs.writeFileSync(
+					path.join(tmpDir, 'dist', 'bundle.js'),
+					'<<<<<<< HEAD\ndist\n=======\ndist\n>>>>>>> branch\n',
+				);
+				execFileSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'ignore' });
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(false);
+				expect(result.checks.conflictMarkers.files).toEqual([
+					expect.objectContaining({ path: path.join('.forge', 'tracked.md') }),
 				]);
 			} finally {
 				fs.rmSync(tmpDir, { recursive: true, force: true });

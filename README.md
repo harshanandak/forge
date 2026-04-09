@@ -413,6 +413,9 @@ forge sync                 # Sync Beads state
 For advanced Beads operations that Forge does not wrap yet, use `bd` directly for
 `bd comments`, `bd dep`, and `bd dolt`.
 
+Forge is the preferred command surface for routine workflows, but Beads (`bd`)
+remains the underlying source of truth for issue state and IDs.
+
 ---
 
 ## License
