@@ -232,6 +232,18 @@ describe('status command beads snapshot helpers', () => {
     expect(snapshot.activeAssigned.map(issue => issue.id)).toEqual(['forge-a']);
   });
 
+  test('readBeadsSnapshot matches owner email case-insensitively for active assignment', () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-a', title: 'Mine active', status: 'in_progress', owner: 'HarshaNandak@Users.Noreply.GitHub.com' },
+    ], {
+      email: 'harshanandak@users.noreply.github.com',
+    });
+
+    const snapshot = readBeadsSnapshot(repoRoot);
+
+    expect(snapshot.activeAssigned.map(issue => issue.id)).toEqual(['forge-a']);
+  });
+
   test('readBeadsSnapshot filters ready issues to open work with no unresolved dependencies', () => {
     const repoRoot = createTempBeadsRepo([
       { id: 'forge-ready', title: 'Ready', status: 'open', dependency_count: 0, updated_at: '2026-04-10T08:00:00Z' },
@@ -265,6 +277,17 @@ describe('status command beads snapshot helpers', () => {
     const snapshot = readBeadsSnapshot(repoRoot);
 
     expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-dated', 'forge-undated']);
+  });
+
+  test('readBeadsSnapshot treats invalid completion timestamps as the oldest entries', () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-invalid', title: 'Invalid completion', status: 'closed', updated_at: 'not-a-date' },
+      { id: 'forge-dated', title: 'Dated completion', status: 'closed', updated_at: '2026-04-10T08:00:00Z' },
+    ]);
+
+    const snapshot = readBeadsSnapshot(repoRoot);
+
+    expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-dated', 'forge-invalid']);
   });
 
   test('readBeadsSnapshot ignores malformed JSONL rows and keeps the latest issue record', () => {
