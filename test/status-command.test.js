@@ -256,6 +256,17 @@ describe('status command beads snapshot helpers', () => {
     expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-new', 'forge-old']);
   });
 
+  test('readBeadsSnapshot treats missing completion timestamps as the oldest entries', () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-undated', title: 'Undated completion', status: 'closed' },
+      { id: 'forge-dated', title: 'Dated completion', status: 'closed', updated_at: '2026-04-10T08:00:00Z' },
+    ]);
+
+    const snapshot = readBeadsSnapshot(repoRoot);
+
+    expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-dated', 'forge-undated']);
+  });
+
   test('readBeadsSnapshot ignores malformed JSONL rows and keeps the latest issue record', () => {
     const repoRoot = createTempBeadsRepo([]);
     fs.writeFileSync(
@@ -325,6 +336,37 @@ describe('status command workflow discovery', () => {
 
     expect(result.stageId).toBe('dev');
     expect(result.output).toContain('Development (dev)');
+  });
+
+  test('zero-arg status matches branch slug against exact design-path slugs only', async () => {
+    const repoRoot = createTempBeadsRepo([
+      {
+        id: 'forge-plan',
+        title: 'Exact slug match',
+        status: 'in_progress',
+        owner: 'harshanandak@users.noreply.github.com',
+        design: '5 tasks | docs/plans/2026-04-10-plan-tasks.md',
+        comments: [{ text: `WorkflowState: ${JSON.stringify(createWorkflowState('dev'))}` }],
+        updated_at: '2026-04-10T08:00:00Z',
+      },
+      {
+        id: 'forge-planning',
+        title: 'Substring-only match',
+        status: 'in_progress',
+        owner: 'harshanandak@users.noreply.github.com',
+        design: '5 tasks | docs/plans/2026-04-10-task-planning-tasks.md',
+        comments: [{ text: `WorkflowState: ${JSON.stringify(createWorkflowState('validate'))}` }],
+        updated_at: '2026-04-10T07:00:00Z',
+      },
+    ], {
+      branch: 'feat/plan',
+    });
+
+    const result = await statusCommand.handler([], {}, repoRoot);
+
+    expect(result.stageId).toBe('dev');
+    expect(result.output).toContain('Development (dev)');
+    expect(result.output).not.toContain('Validation (validate)');
   });
 
   test('zero-arg status falls back to the single active assigned issue when no slug match exists', async () => {
@@ -434,6 +476,46 @@ describe('status command zero-arg presentation', () => {
     expect(result.output).toContain('Ready');
     expect(result.output).toContain('Recent Completions');
     expect(result.output).toContain('none');
+  });
+
+  test('zero-arg status caps ready and completion sections for readability', async () => {
+    const readyIssues = Array.from({ length: 6 }, (_value, index) => ({
+      id: `forge-ready-${index + 1}`,
+      title: `Ready ${index + 1}`,
+      status: 'open',
+      dependency_count: 0,
+      updated_at: `2026-04-0${Math.min(index + 1, 9)}T08:00:00Z`,
+    }));
+    const completedIssues = Array.from({ length: 6 }, (_value, index) => ({
+      id: `forge-done-${index + 1}`,
+      title: `Done ${index + 1}`,
+      status: 'closed',
+      updated_at: `2026-04-1${Math.min(index, 9)}T08:00:00Z`,
+    }));
+    const repoRoot = createTempBeadsRepo([
+      {
+        id: 'forge-active',
+        title: 'Active issue',
+        status: 'in_progress',
+        owner: 'harshanandak@users.noreply.github.com',
+        design: '5 tasks | docs/plans/2026-04-10-forge-status-personal-focus-tasks.md',
+        comments: [{ text: `WorkflowState: ${JSON.stringify(createWorkflowState('dev'))}` }],
+        updated_at: '2026-04-10T08:00:00Z',
+      },
+      ...readyIssues,
+      ...completedIssues,
+    ], {
+      branch: 'feat/forge-status-personal-focus',
+    });
+
+    const result = await statusCommand.handler([], {}, repoRoot);
+
+    expect(result.output).toContain('...and 1 more');
+    expect(result.output).toContain('forge-ready-5');
+    expect(result.output).not.toContain('forge-ready-6 Ready 6');
+    expect(result.output).toContain('forge-done-6');
+    expect(result.output).toContain('forge-done-2');
+    expect(result.output).not.toContain('forge-done-1 Done 1');
   });
 
   test('explicit workflow-state output preserves the authoritative stage-only format', async () => {
