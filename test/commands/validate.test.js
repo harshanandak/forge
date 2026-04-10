@@ -253,7 +253,7 @@ describe('Validate Command - Validation Orchestration', () => {
 			} finally {
 				fs.rmSync(tmpDir, { recursive: true, force: true });
 			}
-		});
+		}, 60000 /* extend timeout: staging 5 000 files can be slow on CI */);
 
 		test('should skip tracked symlinks in Git-indexed scans', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-symlink-paths-'));
