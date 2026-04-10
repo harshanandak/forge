@@ -9,6 +9,7 @@ const {
   WORKFLOW_STATE_FILENAME,
   extractWorkflowStateFromComments,
   loadState,
+  readBeadsIssue,
   readWorkflowStateFromBeads,
   saveState,
   initializeState,
@@ -472,6 +473,18 @@ describe('state-manager', () => {
       const result = readWorkflowStateFromBeads('forge-test', { comments });
       expect(result).not.toBeNull();
       expect(result.currentStage).toBe('validate');
+    });
+  });
+
+  describe('readBeadsIssue', () => {
+    test('returns null when bd show fails', () => {
+      const result = readBeadsIssue('forge-test', {
+        _execFileSync: () => {
+          throw new Error('bd failed');
+        },
+      });
+
+      expect(result).toBeNull();
     });
   });
 });

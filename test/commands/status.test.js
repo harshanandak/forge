@@ -9,9 +9,25 @@ const {
 	analyzePR,
 	analyzeChecks,
 	analyzeBeads,
+	detectRepoContext,
 	formatStatus,
 	resolveWorkflowState,
 } = require('../../lib/commands/status.js');
+
+function createTempRepo(options = {}) {
+	const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-context-'));
+	fs.writeFileSync(path.join(repoRoot, 'README.md'), '# temp repo\n', 'utf8');
+	require('child_process').execFileSync('git', ['init'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+	require('child_process').execFileSync('git', ['config', 'user.email', 'harshanandak@users.noreply.github.com'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+	require('child_process').execFileSync('git', ['config', 'user.name', 'Harsha Nanda'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+	if (options.branch) {
+		require('child_process').execFileSync('git', ['checkout', '-b', options.branch], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+	}
+	if (options.dirty) {
+		fs.writeFileSync(path.join(repoRoot, 'dirty.txt'), 'dirty\n', 'utf8');
+	}
+	return repoRoot;
+}
 
 describe('Status Command - Stage Detection', () => {
 	describe('detectStage', () => {
@@ -238,6 +254,15 @@ describe('Status Command - Stage Detection', () => {
 			const factors = analyzeBeads({ status: 'in_progress', type: 'feature' });
 			expect(factors.hasActiveIssue).toBe(true);
 			expect(factors.issueStatus).toBe('in_progress');
+		});
+
+		test('detectRepoContext returns branch and working tree summary for zero-arg status', () => {
+			const repoRoot = createTempRepo({ branch: 'feat/context-check', dirty: true });
+			const context = detectRepoContext(repoRoot);
+			expect(context.branch).toBe('feat/context-check');
+			expect(typeof context.inWorktree).toBe('boolean');
+			expect(context.workingTree.clean).toBe(false);
+			expect(context.workingTree.summary).toMatch(/uncommitted change/);
 		});
 	});
 

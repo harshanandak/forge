@@ -37,4 +37,9 @@ describe("/status command — smart-status integration", () => {
       expect(agentContent).toContain("smart-status.sh");
     }
   });
+
+  it("does not instruct users to pass --workflow-state or --issue-id for status discovery", () => {
+    expect(content).not.toContain("--workflow-state");
+    expect(content).not.toContain("--issue-id");
+  });
 });
