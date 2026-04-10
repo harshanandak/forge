@@ -60,7 +60,10 @@ jobs:
       - name: Export backup snapshot
         env:
           BEADS_DIR: ${{ github.workspace }}/.beads
-        run: bd backup --force
+        run: |
+          bd backup --force
+          mkdir -p .github/beads-snapshots
+          cp .beads/backup/issues.jsonl .github/beads-snapshots/issues.jsonl
 
       - name: Commit and push changes
         env:
@@ -69,8 +72,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage beads and mapping changes
-          git add .beads/ .github/beads-mapping.json || true
+          # Stage beads state, mapping changes, and the tracked issue snapshot
+          git add .beads/ .github/beads-mapping.json .github/beads-snapshots/issues.jsonl || true
 
           # Only commit if there are changes
           if git diff --cached --quiet; then

@@ -108,7 +108,11 @@ describe('GitHub → Beads Workflow Validation', () => {
     });
 
     it('should export a backup snapshot via bd backup --force', () => {
-      expect(workflowContent).toContain('run: bd backup --force');
+      expect(workflowContent).toContain('bd backup --force');
+    });
+
+    it('should copy the exported issue snapshot into a tracked workflow path', () => {
+      expect(workflowContent).toContain('.github/beads-snapshots/issues.jsonl');
     });
 
     it('should not reference live .beads/issues.jsonl directly', () => {
@@ -126,8 +130,8 @@ describe('GitHub → Beads Workflow Validation', () => {
       expect(workflowContent).toContain('git pull --rebase');
     });
 
-    it('should stage both .beads/ and .github/beads-mapping.json', () => {
-      expect(workflowContent).toContain('git add .beads/ .github/beads-mapping.json || true');
+    it('should stage beads state, mapping, and the tracked issue snapshot', () => {
+      expect(workflowContent).toContain('git add .beads/ .github/beads-mapping.json .github/beads-snapshots/issues.jsonl || true');
     });
 
     it('should check for staged changes before committing', () => {

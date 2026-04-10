@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - '.beads/**'
+      - '.github/beads-snapshots/issues.jsonl'
 
 # Serialize with forward-sync to prevent race conditions
 concurrency:
@@ -40,14 +41,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # Get old and new exported issue snapshots from .beads/backup/issues.jsonl
+          # Get old and new tracked issue snapshots from .github/beads-snapshots/issues.jsonl
           # Use github.event.before (pre-push SHA) to catch multi-commit pushes
           if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
             OLD_CONTENT=""
           else
-            OLD_CONTENT=$(git show "$BEFORE_SHA":.beads/backup/issues.jsonl 2>/dev/null || echo "")
+            OLD_CONTENT=$(git show "$BEFORE_SHA":.github/beads-snapshots/issues.jsonl 2>/dev/null || echo "")
           fi
-          NEW_CONTENT=$(cat .beads/backup/issues.jsonl 2>/dev/null || echo "")
+          NEW_CONTENT=$(cat .github/beads-snapshots/issues.jsonl 2>/dev/null || echo "")
 
           # Export via temp files to avoid shell injection
           printf '%s' "$OLD_CONTENT" > /tmp/old-issues.jsonl

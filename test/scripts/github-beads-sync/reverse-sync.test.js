@@ -235,7 +235,7 @@ describe('loop guard', () => {
   });
 
   test('workflow compares exported backup snapshots instead of live issues.jsonl', () => {
-    expect(workflowContent).toContain('.beads/backup/issues.jsonl');
+    expect(workflowContent).toContain('.github/beads-snapshots/issues.jsonl');
     expect(workflowContent).not.toContain('NEW_CONTENT=$(cat .beads/issues.jsonl');
   });
 });

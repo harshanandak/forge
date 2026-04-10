@@ -140,6 +140,10 @@ describe('beads-upgrade-smoke.sh', () => {
     expect(summary.ok).toBe(true);
     expect(summary.failedStep).toBeNull();
     expect([...summary.cleanup.closedIssueIds].sort()).toEqual(['forge-smoke-1', 'forge-smoke-2']);
+    expect(summary.commands.every((command) => typeof command.stdoutPath === 'string')).toBe(true);
+    expect(summary.commands.every((command) => typeof command.stderrPath === 'string')).toBe(true);
+    expect(summary.commands.every((command) => !Object.hasOwn(command, 'stdout'))).toBe(true);
+    expect(summary.commands.every((command) => !Object.hasOwn(command, 'stderr'))).toBe(true);
     expect(summary.commands.map((command) => command.step)).toEqual([
       'create-primary',
       'create-dependent',
@@ -155,7 +159,7 @@ describe('beads-upgrade-smoke.sh', () => {
     expect(calls).toEqual([
       'create --title=Beads upgrade smoke primary --type=task --priority=4',
       'create --title=Beads upgrade smoke dependent --type=task --priority=4',
-      'list --json --limit=0',
+      'list --json --limit=50',
       'show forge-smoke-1 --json',
       'dep add forge-smoke-1 forge-smoke-2',
       'close forge-smoke-2 --reason=Beads upgrade smoke cleanup',
@@ -185,6 +189,8 @@ describe('beads-upgrade-smoke.sh', () => {
     const summary = JSON.parse(fs.readFileSync(path.join(artifactDir, 'summary.json'), 'utf8'));
     expect(summary.ok).toBe(false);
     expect(summary.failedStep).toBe('sync');
+    expect(summary.commands.every((command) => typeof command.stdoutPath === 'string')).toBe(true);
+    expect(summary.commands.every((command) => typeof command.stderrPath === 'string')).toBe(true);
     expect(summary.commands.map((command) => command.step)).toEqual([
       'create-primary',
       'create-dependent',

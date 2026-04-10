@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 const BACKUP_FILES = [
   'issues.jsonl',
@@ -369,7 +370,7 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 
-if (import.meta.url === pathToFileUrl(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(error.message);
     if (error.parity) {
@@ -377,14 +378,4 @@ if (import.meta.url === pathToFileUrl(process.argv[1]).href) {
     }
     process.exitCode = 1;
   });
-}
-
-function pathToFileUrl(filePath) {
-  const resolved = path.resolve(filePath);
-  const url = new URL('file://');
-  url.pathname = resolved.replaceAll(path.sep, '/');
-  if (!url.pathname.startsWith('/')) {
-    url.pathname = `/${url.pathname}`;
-  }
-  return url;
 }

@@ -2,6 +2,7 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 const SUBJECT_PATH = path.join(
@@ -255,5 +256,21 @@ describe('beads migrate to dolt contract', () => {
       events: 3,
       config: 2,
     });
+  });
+
+  test('cli help still runs when the script path contains spaces', () => {
+    const dirWithSpace = makeTmpDir().replace(/beads-migrate-to-dolt-/, 'beads migrate to dolt ');
+    fs.renameSync(projectRoot, dirWithSpace);
+    projectRoot = dirWithSpace;
+
+    const copiedScript = path.join(projectRoot, 'beads-migrate-to-dolt.mjs');
+    fs.copyFileSync(SUBJECT_PATH, copiedScript);
+
+    const stdout = execFileSync(process.execPath, [copiedScript, '--help'], {
+      encoding: 'utf8',
+      cwd: projectRoot,
+    });
+
+    expect(stdout).toContain('Usage: beads-migrate-to-dolt');
   });
 });

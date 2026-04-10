@@ -31,22 +31,36 @@ append_command() {
   local command_name="$2"
   local command_text="$3"
   local exit_code="$4"
-  local stdout_text="$5"
-  local stderr_text="$6"
+  local stdout_path="$5"
+  local stderr_path="$6"
 
   "${NODE_CMD}" -e '
     const fs = require("node:fs");
-    const [logPath, step, commandName, commandText, exitCode, stdoutText, stderrText] = process.argv.slice(1);
+    const [logPath, step, commandName, commandText, exitCode, stdoutPath, stderrPath] = process.argv.slice(1);
     const entry = {
       step,
       commandName,
       commandText,
       exitCode: Number(exitCode),
-      stdout: stdoutText,
-      stderr: stderrText,
+      stdoutPath,
+      stderrPath,
     };
     fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
-  ' "${COMMAND_LOG_PATH}" "${step}" "${command_name}" "${command_text}" "${exit_code}" "${stdout_text}" "${stderr_text}"
+  ' "${COMMAND_LOG_PATH}" "${step}" "${command_name}" "${command_text}" "${exit_code}" "${stdout_path}" "${stderr_path}"
+}
+
+read_output_snippet() {
+  local file_path="$1"
+  if [[ ! -f "${file_path}" ]]; then
+    return 0
+  fi
+
+  "${NODE_CMD}" -e '
+    const fs = require("node:fs");
+    const [filePath] = process.argv.slice(1);
+    const text = fs.readFileSync(filePath, "utf8");
+    process.stdout.write(text.slice(0, 4096));
+  ' "${file_path}"
 }
 
 write_summary() {
@@ -89,7 +103,7 @@ run_bd_step() {
   local command_name="$2"
   shift 2
 
-  local stdout_file stderr_file exit_code stdout_text stderr_text command_text
+  local stdout_file stderr_file exit_code command_text
   stdout_file="${ARTIFACT_DIR}/$(printf '%s' "${step}" | tr '[:upper:]' '[:lower:]').stdout"
   stderr_file="${ARTIFACT_DIR}/$(printf '%s' "${step}" | tr '[:upper:]' '[:lower:]').stderr"
   command_text="$*"
@@ -100,17 +114,18 @@ run_bd_step() {
     exit_code=$?
   fi
 
-  stdout_text="$(cat "${stdout_file}" 2>/dev/null || true)"
-  stderr_text="$(cat "${stderr_file}" 2>/dev/null || true)"
-  append_command "${step}" "${command_name}" "${command_text}" "${exit_code}" "${stdout_text}" "${stderr_text}"
+  append_command "${step}" "${command_name}" "${command_text}" "${exit_code}" "${stdout_file}" "${stderr_file}"
 
   if [[ "${exit_code}" -ne 0 ]]; then
     failed_step="${command_name}"
+    local stderr_text stdout_text
+    stderr_text="$(read_output_snippet "${stderr_file}")"
+    stdout_text="$(read_output_snippet "${stdout_file}")"
     failure_message="${stderr_text:-${stdout_text:-${command_text}}}"
     return "${exit_code}"
   fi
 
-  printf '%s' "${stdout_text}"
+  cat "${stdout_file}"
 }
 
 is_closed_issue() {
@@ -164,7 +179,7 @@ dependent_issue_id="$(parse_issue_id "${dependent_output}")" || {
 }
 created_issue_ids+=("${dependent_issue_id}")
 
-run_bd_step "list" "list" list --json --limit=0 >/dev/null || {
+run_bd_step "list" "list" list --json --limit=50 >/dev/null || {
   rollback_unclosed_issues
   write_summary "false"
   exit 1

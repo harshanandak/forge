@@ -121,6 +121,27 @@ describe('templateWorkflows', () => {
     expect(result).not.toContain('BD_VERSION="1.0.0"');
   });
 
+  test('only rewrites known Forge-managed BD_VERSION placeholders', () => {
+    const yamlContent = [
+      'name: Beads Sync',
+      'on:',
+      '  push:',
+      '    branches: [master]',
+      'jobs:',
+      '  sync:',
+      '    env:',
+      '      BD_VERSION="2.3.4"',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, 'sync.yml'), yamlContent);
+
+    templateWorkflows(tmpDir, 'develop', '1.0.0');
+
+    const result = fs.readFileSync(path.join(tmpDir, 'sync.yml'), 'utf8');
+    expect(result).toContain('branches: [develop]');
+    expect(result).toContain('BD_VERSION="2.3.4"');
+  });
+
   test('handles multiple YAML files in the directory', () => {
     const yaml1 = 'on:\n  push:\n    branches: [master]\nenv:\n  BD_VERSION="1.0.0"';
     const yaml2 = 'on:\n  pull_request:\n    branches: [master]\nenv:\n  BD_VERSION="1.0.0"';
