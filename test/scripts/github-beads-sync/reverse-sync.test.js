@@ -233,4 +233,9 @@ describe('loop guard', () => {
   test('workflow uses github.event.before for pre-push comparison', () => {
     expect(workflowContent).toContain('github.event.before');
   });
+
+  test('workflow compares exported backup snapshots instead of live issues.jsonl', () => {
+    expect(workflowContent).toContain('.beads/backup/issues.jsonl');
+    expect(workflowContent).not.toContain('NEW_CONTENT=$(cat .beads/issues.jsonl');
+  });
 });

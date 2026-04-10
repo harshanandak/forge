@@ -84,7 +84,9 @@ describe('GitHub → Beads Workflow Validation', () => {
     });
 
     it('should install Beads CLI via pinned binary download', () => {
-      expect(workflowContent).toContain('Install Beads CLI (pinned to v0.49.1)');
+      expect(workflowContent).toContain('Install Beads CLI (pinned to v1.0.0)');
+      expect(workflowContent).toContain('BD_VERSION="1.0.0"');
+      expect(workflowContent).not.toContain('BD_VERSION="0.49.1"');
     });
 
     it('should checkout with fetch-depth: 0 for push', () => {
@@ -103,6 +105,14 @@ describe('GitHub → Beads Workflow Validation', () => {
 
     it('should pass GITHUB_REPOSITORY environment variable', () => {
       expect(workflowContent).toContain('GITHUB_REPOSITORY: ${{ github.repository }}');
+    });
+
+    it('should export a backup snapshot via bd backup --force', () => {
+      expect(workflowContent).toContain('run: bd backup --force');
+    });
+
+    it('should not reference live .beads/issues.jsonl directly', () => {
+      expect(workflowContent).not.toContain('.beads/issues.jsonl');
     });
   });
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * CLI entry point for Beads → GitHub reverse sync.
- * Usage: node reverse-sync-cli.mjs <old-jsonl-path> <new-jsonl-path>
+ * Usage: node reverse-sync-cli.mjs <old-snapshot-jsonl-path> <new-snapshot-jsonl-path>
  *
  * @module scripts/github-beads-sync/reverse-sync-cli
  */
@@ -13,7 +13,7 @@ const oldPath = process.argv[2];
 const newPath = process.argv[3];
 
 if (!oldPath || !newPath) {
-  console.error('Usage: node reverse-sync-cli.mjs <old-jsonl-path> <new-jsonl-path>');
+  console.error('Usage: node reverse-sync-cli.mjs <old-snapshot-jsonl-path> <new-snapshot-jsonl-path>');
   process.exit(1);
 }
 

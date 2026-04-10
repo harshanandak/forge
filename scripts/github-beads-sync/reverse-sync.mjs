@@ -1,6 +1,6 @@
 /**
  * Reverse sync: Beads → GitHub.
- * When a Beads issue is closed (via git push updating .beads/),
+ * When a Beads issue is closed (via git push updating exported issue snapshots),
  * close the linked GitHub issue.
  *
  * @module scripts/github-beads-sync/reverse-sync
@@ -33,8 +33,8 @@ function parseJsonlLines(lines) {
  * Only detects transitions: issue must exist in oldLines as non-closed,
  * and appear in newLines as "closed".
  *
- * @param {string[]} oldLines - JSONL lines from previous .beads/issues.jsonl
- * @param {string[]} newLines - JSONL lines from current .beads/issues.jsonl
+ * @param {string[]} oldLines - JSONL lines from a previous exported issue snapshot
+ * @param {string[]} newLines - JSONL lines from a current exported issue snapshot
  * @returns {Array<{id: string, description: string}>} Issues that transitioned to closed
  */
 export function detectClosedIssues(oldLines, newLines) {
@@ -93,11 +93,11 @@ export function closeGitHubIssue(owner, repo, issueNumber) {
 
 /**
  * Handle Beads-to-GitHub reverse sync.
- * Detects issues that transitioned to closed in .beads/issues.jsonl
+ * Detects issues that transitioned to closed in exported issue snapshot JSONL
  * and closes the linked GitHub issues.
  *
- * @param {string} oldContent - Previous .beads/issues.jsonl content
- * @param {string} newContent - Current .beads/issues.jsonl content
+ * @param {string} oldContent - Previous exported issue snapshot content
+ * @param {string} newContent - Current exported issue snapshot content
  * @param {object} [deps] - Dependency injection
  * @param {Function} [deps.closeGitHubIssue] - Override for testing
  * @returns {{closed: Array, skipped: Array, errors: Array}}

@@ -40,14 +40,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # Get old and new versions of .beads/issues.jsonl
+          # Get old and new exported issue snapshots from .beads/backup/issues.jsonl
           # Use github.event.before (pre-push SHA) to catch multi-commit pushes
           if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
             OLD_CONTENT=""
           else
-            OLD_CONTENT=$(git show "$BEFORE_SHA":.beads/issues.jsonl 2>/dev/null || echo "")
+            OLD_CONTENT=$(git show "$BEFORE_SHA":.beads/backup/issues.jsonl 2>/dev/null || echo "")
           fi
-          NEW_CONTENT=$(cat .beads/issues.jsonl 2>/dev/null || echo "")
+          NEW_CONTENT=$(cat .beads/backup/issues.jsonl 2>/dev/null || echo "")
 
           # Export via temp files to avoid shell injection
           printf '%s' "$OLD_CONTENT" > /tmp/old-issues.jsonl
