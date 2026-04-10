@@ -229,6 +229,32 @@ describe('Validate Command - Validation Orchestration', () => {
 			}
 		});
 
+		test('should handle large Git-indexed file lists without overflowing the default exec buffer', async () => {
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-large-git-index-'));
+			try {
+				const totalFiles = 5000;
+				const longNameSuffix = 'a'.repeat(150);
+				execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+
+				for (let index = 0; index < totalFiles; index += 1) {
+					const fileName = `${String(index).padStart(5, '0')}-${longNameSuffix}.js`;
+					fs.writeFileSync(path.join(tmpDir, fileName), 'console.log("safe");\n');
+				}
+
+				execFileSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'ignore' });
+
+				const result = await executeValidate({
+					rootDir: tmpDir,
+					skip: ['typeCheck', 'lint', 'security', 'tests'],
+				});
+
+				expect(result.success).toBe(true);
+				expect(result.checks.conflictMarkers.files).toEqual([]);
+			} finally {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			}
+		}, 60000 /* extend timeout: staging 5 000 files can be slow on CI */);
+
 		test('should skip tracked symlinks in Git-indexed scans', async () => {
 			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-symlink-paths-'));
 			const outsideTargetPath = path.join(os.tmpdir(), `forge-validate-symlink-target-${Date.now()}.txt`);

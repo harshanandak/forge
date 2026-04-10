@@ -561,6 +561,16 @@ cmd_check_ripple() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d)"
+  # On Windows/Git Bash, normalize to a mixed-mode path so both bash file I/O
+  # and Node.js resolve to the same physical location (cygpath -m → C:/...).
+  # Preserve the original POSIX path if conversion fails or returns empty.
+  if command -v cygpath &>/dev/null; then
+    local mixed_tmp_dir
+    mixed_tmp_dir="$(cygpath -m "$tmp_dir" 2>/dev/null)" || true
+    if [[ -n "$mixed_tmp_dir" && -d "$mixed_tmp_dir" ]]; then
+      tmp_dir="$mixed_tmp_dir"
+    fi
+  fi
   trap 'rm -rf "$tmp_dir"' RETURN
 
   printf '%s' "$src_json" > "${tmp_dir}/current.json"
