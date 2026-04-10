@@ -99,6 +99,16 @@ describe('status command authoritative workflow state', () => {
     expect(result.completedStages).toEqual(['plan', 'dev']);
   });
 
+  test('extractWorkflowStateFromComments tolerates relaxed WorkflowState comment payloads', () => {
+    const comments = 'WorkflowState: {currentStage:dev,completedStages:[plan],skippedStages:[],workflowDecisions:{classification:standard,reason:zero-arg';
+
+    const result = statusCommand.extractWorkflowStateFromComments(comments);
+
+    expect(result.currentStage).toBe('dev');
+    expect(result.completedStages).toEqual(['plan']);
+    expect(result.workflowDecisions.classification).toBe('standard');
+  });
+
   test('handler resolves authoritative state from Beads comments when issue id is provided', async () => {
     const comments =
       'Stage: plan complete → ready for dev\n' +
