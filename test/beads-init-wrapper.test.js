@@ -105,9 +105,9 @@ describe('safeBeadsInit — full init flow', () => {
     const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
     expect(gitignoreContent).toContain('dolt/');
 
-    // issues.jsonl should be pre-seeded
+    // issues.jsonl should no longer be pre-seeded
     const jsonlPath = path.join(tmpDir, '.beads', 'issues.jsonl');
-    expect(fs.existsSync(jsonlPath)).toBe(true);
+    expect(fs.existsSync(jsonlPath)).toBe(false);
   });
 
   test('calls execBdInit with the project root', () => {

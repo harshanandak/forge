@@ -20,8 +20,8 @@ function prepareMockSetupTools(projectRoot) {
   fs.mkdirSync(mockBinDir, { recursive: true });
   writeExecutable(
     path.join(mockBinDir, 'bd'),
-    '#!/usr/bin/env bash\necho "bd 0.49.1"\n',
-    '@echo off\r\necho bd 0.49.1\r\n'
+    '#!/usr/bin/env bash\necho "bd 1.0.0"\n',
+    '@echo off\r\necho bd 1.0.0\r\n'
   );
   writeExecutable(
     path.join(mockBinDir, 'gh'),
@@ -46,7 +46,7 @@ function createMockSetupCommandRunner() {
       case 'gh auth status':
         return 'Logged in';
       case 'bd --version':
-        return 'bd 0.49.1';
+        return 'bd 1.0.0';
       case 'jq --version':
         return 'jq-1.8.1';
       default:

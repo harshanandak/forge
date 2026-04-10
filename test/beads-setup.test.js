@@ -167,7 +167,6 @@ describe('isBeadsInitialized', () => {
   test('returns false when .beads/ exists but config.yaml is missing', () => {
     const beadsDir = path.join(tmpDir, '.beads');
     fs.mkdirSync(beadsDir, { recursive: true });
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
     expect(isBeadsInitialized(tmpDir)).toBe(false);
   });
 
@@ -175,18 +174,17 @@ describe('isBeadsInitialized', () => {
     const beadsDir = path.join(tmpDir, '.beads');
     fs.mkdirSync(beadsDir, { recursive: true });
     fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'database:\n  backend: dolt\n');
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
     expect(isBeadsInitialized(tmpDir)).toBe(false);
   });
 
-  test('returns false when issues.jsonl is missing', () => {
+  test('returns true when issues.jsonl is missing but Dolt config is present', () => {
     const beadsDir = path.join(tmpDir, '.beads');
     fs.mkdirSync(beadsDir, { recursive: true });
     fs.writeFileSync(
       path.join(beadsDir, 'config.yaml'),
-      'issue-prefix: my-proj\n'
+      'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
-    expect(isBeadsInitialized(tmpDir)).toBe(false);
+    expect(isBeadsInitialized(tmpDir)).toBe(true);
   });
 
   test('returns true for properly configured directory', () => {
@@ -196,13 +194,12 @@ describe('isBeadsInitialized', () => {
       path.join(beadsDir, 'config.yaml'),
       'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
     expect(isBeadsInitialized(tmpDir)).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// preSeedJsonl
+// preSeedJsonl legacy shim
 // ---------------------------------------------------------------------------
 describe('preSeedJsonl', () => {
   let tmpDir;
@@ -214,16 +211,15 @@ describe('preSeedJsonl', () => {
     rmrf(tmpDir);
   });
 
-  test('creates issues.jsonl if missing', () => {
+  test('does not create issues.jsonl if missing', () => {
     fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
     preSeedJsonl(tmpDir);
 
     const jsonlPath = path.join(tmpDir, '.beads', 'issues.jsonl');
-    expect(fs.existsSync(jsonlPath)).toBe(true);
-    expect(fs.readFileSync(jsonlPath, 'utf8')).toBe('');
+    expect(fs.existsSync(jsonlPath)).toBe(false);
   });
 
-  test('leaves existing issues.jsonl untouched', () => {
+  test('leaves existing issues.jsonl untouched when present', () => {
     const beadsDir = path.join(tmpDir, '.beads');
     fs.mkdirSync(beadsDir, { recursive: true });
     const jsonlPath = path.join(beadsDir, 'issues.jsonl');
@@ -236,11 +232,9 @@ describe('preSeedJsonl', () => {
     );
   });
 
-  test('creates .beads/ directory if it does not exist', () => {
+  test('does not create .beads/ directory if it does not exist', () => {
     preSeedJsonl(tmpDir);
 
-    expect(fs.existsSync(path.join(tmpDir, '.beads', 'issues.jsonl'))).toBe(
-      true
-    );
+    expect(fs.existsSync(path.join(tmpDir, '.beads'))).toBe(false);
   });
 });

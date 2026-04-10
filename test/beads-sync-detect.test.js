@@ -72,12 +72,12 @@ describe('detectBeadsVersion', () => {
     expect(result).toBe('0.52.0');
   });
 
-  test('falls back to 0.49.1 when bd is not installed', () => {
+  test('falls back to 1.0.0 when bd is not installed', () => {
     const mockExec = (_cmd, _args, _opts) => {
       throw new Error('command not found: bd');
     };
     const result = detectBeadsVersion({ _exec: mockExec });
-    expect(result).toBe('0.49.1');
+    expect(result).toBe('1.0.0');
   });
 });
 
@@ -105,7 +105,7 @@ describe('templateWorkflows', () => {
       '  sync:',
       '    runs-on: ubuntu-latest',
       '    env:',
-      '      BD_VERSION="0.49.1"',
+      '      BD_VERSION="1.0.0"',
       '    steps:',
       '      - uses: actions/checkout@v4',
     ].join('\n');
@@ -118,12 +118,12 @@ describe('templateWorkflows', () => {
     expect(result).toContain('branches: [develop]');
     expect(result).not.toContain('branches: [master]');
     expect(result).toContain('BD_VERSION="0.52.0"');
-    expect(result).not.toContain('BD_VERSION="0.49.1"');
+    expect(result).not.toContain('BD_VERSION="1.0.0"');
   });
 
   test('handles multiple YAML files in the directory', () => {
-    const yaml1 = 'on:\n  push:\n    branches: [master]\nenv:\n  BD_VERSION="0.49.1"';
-    const yaml2 = 'on:\n  pull_request:\n    branches: [master]\nenv:\n  BD_VERSION="0.49.1"';
+    const yaml1 = 'on:\n  push:\n    branches: [master]\nenv:\n  BD_VERSION="1.0.0"';
+    const yaml2 = 'on:\n  pull_request:\n    branches: [master]\nenv:\n  BD_VERSION="1.0.0"';
 
     fs.writeFileSync(path.join(tmpDir, 'ci.yml'), yaml1);
     fs.writeFileSync(path.join(tmpDir, 'deploy.yaml'), yaml2);

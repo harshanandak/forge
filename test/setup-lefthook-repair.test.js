@@ -45,7 +45,7 @@ async function runSetup(args, cwd, env = {}) {
       case 'gh auth status':
         return 'Logged in';
       case 'bd --version':
-        return 'bd 0.49.1';
+        return 'bd 1.0.0';
       case 'jq --version':
         return 'jq-1.8.1';
       default:
@@ -54,7 +54,7 @@ async function runSetup(args, cwd, env = {}) {
   };
 
   fs.mkdirSync(mockBinDir, { recursive: true });
-  writeExecutable(path.join(mockBinDir, 'bd'), '#!/usr/bin/env bash\necho "bd 0.49.1"\n');
+  writeExecutable(path.join(mockBinDir, 'bd'), '#!/usr/bin/env bash\necho "bd 1.0.0"\n');
   writeExecutable(path.join(mockBinDir, 'gh'), '#!/usr/bin/env bash\nif [ "$1" = "auth" ] && [ "$2" = "status" ]; then\n  echo "Logged in"\n  exit 0\nfi\necho "gh version 2.81.0"\n');
   writeExecutable(path.join(mockBinDir, 'jq'), '#!/usr/bin/env bash\necho "jq-1.8.1"\n');
 

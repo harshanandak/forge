@@ -17,3 +17,12 @@
 **Route**: PROCEED
 **Choice made**: Use the installed Beads CLI as the default import mechanism inside the wrapper: `bd init --force` in an isolated migrated workspace, `bd backup restore <legacy-backup-dir>`, then `bd backup --force` to emit a fresh export for parity verification. Keep the import step injectable so tests do not depend on a live Dolt server and we can still swap to the upstream shell script later if needed.
 **Status**: RESOLVED
+
+## Decision 3
+**Date**: 2026-04-10
+**Task**: Task 3 — Remove Legacy Setup And Scaffold Assumptions
+**Gap**: The design doc says Forge should stop requiring `.beads/issues.jsonl`, but it does not spell out what initialization signal should replace that check or what fallback version the scaffold should use when `bd --version` is unavailable.
+**Score**: 3 / 14
+**Route**: PROCEED
+**Choice made**: Treat Beads as initialized when `.beads/config.yaml` contains both `issue-prefix:` and `backend: dolt`, make `preSeedJsonl()` a no-op compatibility shim, and use `1.0.0` as the repo’s current default scaffold fallback while also broadening workflow templating to replace any semver-shaped `BD_VERSION="x.y.z"` placeholder.
+**Status**: RESOLVED
