@@ -52,7 +52,7 @@ describe('safeBeadsInit — idempotent skip', () => {
       path.join(beadsDir, 'config.yaml'),
       'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
     setupFakeGitHooks(tmpDir);
 
     const result = safeBeadsInit(tmpDir, { execBdInit: () => {} });
@@ -84,6 +84,27 @@ describe('safeBeadsInit — idempotent skip', () => {
     expect(result.reason).toContain('already initialized');
     expect(bdInitCalled).toBe(false);
     expect(fs.readFileSync(path.join(beadsDir, 'config.yaml'), 'utf8')).toContain('backend: sqlite');
+  });
+
+  test('does not treat a partial Dolt config write as initialized after a failed setup attempt', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(beadsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: partial-proj\ndatabase:\n  backend: dolt\n',
+    );
+    setupFakeGitHooks(tmpDir);
+
+    let bdInitCalled = false;
+    const result = safeBeadsInit(tmpDir, {
+      execBdInit: () => {
+        bdInitCalled = true;
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(bdInitCalled).toBe(true);
   });
 });
 
@@ -429,7 +450,7 @@ describe('safeBeadsInit — return shape', () => {
       path.join(beadsDir, 'config.yaml'),
       'issue-prefix: proj\ndatabase:\n  backend: dolt\n'
     );
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
 
     const result = safeBeadsInit(tmpDir, { execBdInit: () => {} });
 
