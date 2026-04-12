@@ -8,6 +8,9 @@ ARTIFACT_DIR="${BEADS_UPGRADE_SMOKE_ARTIFACT_DIR:-${PROJECT_ROOT}/.artifacts/bea
 COMMAND_LOG_PATH="${ARTIFACT_DIR}/commands.jsonl"
 SUMMARY_PATH="${ARTIFACT_DIR}/summary.json"
 CLEANUP_REASON="Beads upgrade smoke cleanup"
+SMOKE_RUN_ID="${BEADS_UPGRADE_SMOKE_RUN_ID:-$(date +%s)-$$}"
+PRIMARY_ISSUE_TITLE="Beads upgrade smoke primary (${SMOKE_RUN_ID})"
+DEPENDENT_ISSUE_TITLE="Beads upgrade smoke dependent (${SMOKE_RUN_ID})"
 
 mkdir -p "${ARTIFACT_DIR}"
 : > "${COMMAND_LOG_PATH}"
@@ -198,23 +201,23 @@ handle_issue_id_parse_failure() {
   exit 1
 }
 
-primary_output="$(run_bd_step "create-primary" "create" create --title="Beads upgrade smoke primary" --type=task --priority=4)" || {
+primary_output="$(run_bd_step "create-primary" "create" create --title="${PRIMARY_ISSUE_TITLE}" --type=task --priority=4)" || {
   rollback_unclosed_issues
   write_summary "false"
   exit 1
 }
 primary_issue_id="$(parse_issue_id "${primary_output}")" || {
-  handle_issue_id_parse_failure "Beads upgrade smoke primary" "Could not parse primary smoke issue ID"
+  handle_issue_id_parse_failure "${PRIMARY_ISSUE_TITLE}" "Could not parse primary smoke issue ID"
 }
 created_issue_ids+=("${primary_issue_id}")
 
-dependent_output="$(run_bd_step "create-dependent" "create" create --title="Beads upgrade smoke dependent" --type=task --priority=4)" || {
+dependent_output="$(run_bd_step "create-dependent" "create" create --title="${DEPENDENT_ISSUE_TITLE}" --type=task --priority=4)" || {
   rollback_unclosed_issues
   write_summary "false"
   exit 1
 }
 dependent_issue_id="$(parse_issue_id "${dependent_output}")" || {
-  handle_issue_id_parse_failure "Beads upgrade smoke dependent" "Could not parse dependent smoke issue ID"
+  handle_issue_id_parse_failure "${DEPENDENT_ISSUE_TITLE}" "Could not parse dependent smoke issue ID"
 }
 created_issue_ids+=("${dependent_issue_id}")
 

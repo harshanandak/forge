@@ -49,6 +49,7 @@ LOG_PATH="\${MOCK_BD_LOG_PATH:?}"
 FAIL_STEP="\${MOCK_BD_FAIL_STEP:-}"
 CREATE_COUNT_FILE="\${MOCK_BD_CREATE_COUNT_FILE:-}"
 UNPARSEABLE_CREATE_ON="\${MOCK_BD_UNPARSEABLE_CREATE_ON:-}"
+LIST_JSON="\${MOCK_BD_LIST_JSON:-}"
 
 printf '%s\\n' "$*" >> "$LOG_PATH"
 
@@ -80,7 +81,11 @@ case "$1" in
     fi
     ;;
   list)
-    printf '[{"id":"forge-smoke-1","title":"Beads upgrade smoke primary"},{"id":"forge-smoke-2","title":"Beads upgrade smoke dependent"}]\\n'
+    if [[ -n "$LIST_JSON" ]]; then
+      printf '%s\\n' "$LIST_JSON"
+    else
+      printf '[{"id":"forge-smoke-1","title":"Beads upgrade smoke primary"},{"id":"forge-smoke-2","title":"Beads upgrade smoke dependent"}]\\n'
+    fi
     ;;
   show)
     printf '{"id":"%s","status":"open"}\\n' "$2"
@@ -139,6 +144,7 @@ describe('beads-upgrade-smoke.sh', () => {
     const result = runSmoke(repoDir, {
       BD_CMD: toBashPath(mockBd),
       BEADS_UPGRADE_SMOKE_ARTIFACT_DIR: toBashPath(artifactDir),
+      BEADS_UPGRADE_SMOKE_RUN_ID: 'test-run',
       MOCK_BD_LOG_PATH: toBashPath(logPath),
       MOCK_BD_CREATE_COUNT_FILE: toBashPath(createCountFile),
     });
@@ -166,8 +172,8 @@ describe('beads-upgrade-smoke.sh', () => {
 
     const calls = fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/);
     expect(calls).toEqual([
-      'create --title=Beads upgrade smoke primary --type=task --priority=4',
-      'create --title=Beads upgrade smoke dependent --type=task --priority=4',
+      'create --title=Beads upgrade smoke primary (test-run) --type=task --priority=4',
+      'create --title=Beads upgrade smoke dependent (test-run) --type=task --priority=4',
       'list --json --limit=50',
       'show forge-smoke-1 --json',
       'dep add forge-smoke-1 forge-smoke-2',
@@ -188,6 +194,7 @@ describe('beads-upgrade-smoke.sh', () => {
     const result = runSmoke(repoDir, {
       BD_CMD: toBashPath(mockBd),
       BEADS_UPGRADE_SMOKE_ARTIFACT_DIR: toBashPath(artifactDir),
+      BEADS_UPGRADE_SMOKE_RUN_ID: 'test-run',
       MOCK_BD_LOG_PATH: toBashPath(logPath),
       MOCK_BD_CREATE_COUNT_FILE: toBashPath(createCountFile),
       MOCK_BD_FAIL_STEP: 'sync',
@@ -225,12 +232,19 @@ describe('beads-upgrade-smoke.sh', () => {
     const artifactDir = path.join(repoDir, '.artifacts', 'beads-upgrade-smoke');
     const createCountFile = path.join(repoDir, 'create-count.txt');
     const { mockBd, logPath } = createMockBd();
+    const smokeTitle = 'Beads upgrade smoke primary (test-run)';
+    const listJson = JSON.stringify([
+      { id: 'forge-stale-1', title: 'Beads upgrade smoke primary' },
+      { id: 'forge-smoke-1', title: smokeTitle },
+    ]);
 
     const result = runSmoke(repoDir, {
       BD_CMD: toBashPath(mockBd),
       BEADS_UPGRADE_SMOKE_ARTIFACT_DIR: toBashPath(artifactDir),
+      BEADS_UPGRADE_SMOKE_RUN_ID: 'test-run',
       MOCK_BD_LOG_PATH: toBashPath(logPath),
       MOCK_BD_CREATE_COUNT_FILE: toBashPath(createCountFile),
+      MOCK_BD_LIST_JSON: listJson,
       MOCK_BD_UNPARSEABLE_CREATE_ON: '1',
     });
 
@@ -244,8 +258,9 @@ describe('beads-upgrade-smoke.sh', () => {
     expect(summary.cleanup.closedIssueIds).toEqual(['forge-smoke-1']);
 
     const calls = fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/);
-    expect(calls).toContain('create --title=Beads upgrade smoke primary --type=task --priority=4');
+    expect(calls).toContain('create --title=Beads upgrade smoke primary (test-run) --type=task --priority=4');
     expect(calls).toContain('list --json --limit=50');
     expect(calls).toContain('close forge-smoke-1 --reason=Beads upgrade smoke cleanup');
+    expect(calls).not.toContain('close forge-stale-1 --reason=Beads upgrade smoke cleanup');
   });
 });
