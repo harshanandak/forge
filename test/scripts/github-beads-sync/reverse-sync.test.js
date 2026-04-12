@@ -234,8 +234,10 @@ describe('loop guard', () => {
     expect(workflowContent).toContain('github.event.before');
   });
 
-  test('workflow compares exported backup snapshots instead of live issues.jsonl', () => {
-    expect(workflowContent).toContain('.github/beads-snapshots/issues.jsonl');
+  test('workflow regenerates before/after snapshots from beads state before reverse sync', () => {
+    expect(workflowContent).toContain('git archive "$BEFORE_SHA" .beads');
+    expect(workflowContent).toContain('BEADS_DIR="$repo_root/.beads" bd backup --force');
+    expect(workflowContent).toContain('node scripts/github-beads-sync/reverse-sync-cli.mjs "$OLD_SNAPSHOT_PATH" "$NEW_SNAPSHOT_PATH"');
     expect(workflowContent).not.toContain('NEW_CONTENT=$(cat .beads/issues.jsonl');
   });
 });
