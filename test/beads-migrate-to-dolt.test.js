@@ -35,13 +35,27 @@ function rmrf(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-function seedLegacyRepo(projectRoot) {
+function seedLegacyRepo(projectRoot, options = {}) {
+  const {
+    withBackup = true,
+    mirrorLiveBackupFiles = false,
+  } = options;
   const beadsDir = path.join(projectRoot, '.beads');
   const backupDir = path.join(beadsDir, 'backup');
-  fs.mkdirSync(backupDir, { recursive: true });
+  fs.mkdirSync(beadsDir, { recursive: true });
 
-  for (const file of BACKUP_FILES) {
-    fs.copyFileSync(path.join(FIXTURE_ROOT, file), path.join(backupDir, file));
+  if (withBackup) {
+    fs.mkdirSync(backupDir, { recursive: true });
+
+    for (const file of BACKUP_FILES) {
+      fs.copyFileSync(path.join(FIXTURE_ROOT, file), path.join(backupDir, file));
+    }
+  }
+
+  if (mirrorLiveBackupFiles) {
+    for (const file of BACKUP_FILES) {
+      fs.copyFileSync(path.join(FIXTURE_ROOT, file), path.join(beadsDir, file));
+    }
   }
 
   fs.writeFileSync(
@@ -90,6 +104,7 @@ function readJsonl(filePath) {
 function makeImportStub({ mismatchIssue = false } = {}) {
   return async ({ sourceDir, migratedDir, exportDir }) => {
     fs.mkdirSync(migratedDir, { recursive: true });
+    fs.mkdirSync(path.join(migratedDir, '.beads'), { recursive: true });
     copyBackupSet(sourceDir, exportDir, mismatchIssue
       ? {
           'issues.jsonl':
@@ -101,6 +116,16 @@ function makeImportStub({ mismatchIssue = false } = {}) {
               .join('\n') + '\n',
         }
       : {});
+    fs.writeFileSync(
+      path.join(migratedDir, '.beads', 'config.yaml'),
+      'issue-prefix: forge\ndatabase:\n  backend: dolt\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(migratedDir, '.beads', 'MIGRATED.txt'),
+      'migrated-state\n',
+      'utf8',
+    );
 
     fs.writeFileSync(
       path.join(migratedDir, 'migration-manifest.json'),
@@ -167,10 +192,33 @@ describe('beads migrate to dolt contract', () => {
     ]);
 
     const directParity = await subject.verifyMigrationParity({
-      legacyBackupDir: seeded.legacyBackupDir,
+      legacyBackupDir: result.legacyBackupDir,
       exportDir: seeded.exportDir,
     });
     expect(directParity).toEqual(result.parity);
+  });
+
+  test('runLegacyBeadsMigration replaces the live .beads state after a verified migration', async () => {
+    const subject = await loadSubject();
+    const seeded = seedLegacyRepo(projectRoot);
+
+    const result = await subject.runLegacyBeadsMigration({
+      projectRoot,
+      legacyBackupDir: seeded.legacyBackupDir,
+      snapshotRoot: seeded.snapshotRoot,
+      migratedDir: seeded.migratedDir,
+      exportDir: seeded.exportDir,
+      importBackup: makeImportStub(),
+    });
+
+    expect(result.status).toBe('migrated');
+    expect(fs.readFileSync(path.join(seeded.beadsDir, 'config.yaml'), 'utf8')).toContain(
+      'backend: dolt',
+    );
+    expect(fs.readFileSync(path.join(seeded.beadsDir, 'MIGRATED.txt'), 'utf8')).toBe(
+      'migrated-state\n',
+    );
+    expect(fs.existsSync(path.join(seeded.beadsDir, 'beads.db'))).toBe(false);
   });
 
   test('runLegacyBeadsMigration restores the original .beads state when parity verification fails after import', async () => {
@@ -236,6 +284,34 @@ describe('beads migrate to dolt contract', () => {
       migratedDir: seeded.migratedDir,
     });
     expect(importerCalled).toBe(false);
+  });
+
+  test('runLegacyBeadsMigration falls back to live legacy JSONL when the backup directory is missing', async () => {
+    const subject = await loadSubject();
+    const seeded = seedLegacyRepo(projectRoot, {
+      withBackup: false,
+      mirrorLiveBackupFiles: true,
+    });
+    let importSourceDir = null;
+
+    const result = await subject.runLegacyBeadsMigration({
+      projectRoot,
+      legacyBackupDir: seeded.legacyBackupDir,
+      snapshotRoot: seeded.snapshotRoot,
+      migratedDir: seeded.migratedDir,
+      exportDir: seeded.exportDir,
+      importBackup: async ({ sourceDir, migratedDir, exportDir }) => {
+        importSourceDir = sourceDir;
+        return makeImportStub()({ sourceDir, migratedDir, exportDir });
+      },
+    });
+
+    expect(result.status).toBe('migrated');
+    expect(importSourceDir).not.toBeNull();
+    expect(importSourceDir).not.toBe(seeded.legacyBackupDir);
+    expect(fs.existsSync(path.join(importSourceDir, 'issues.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(importSourceDir, 'config.jsonl'))).toBe(true);
+    expect(result.parity.ok).toBe(true);
   });
 
   test('fixtures stay parseable and match the expected legacy counts', () => {

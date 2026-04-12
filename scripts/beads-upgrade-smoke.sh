@@ -23,7 +23,35 @@ parse_issue_id() {
     printf '%s' "${BASH_REMATCH[1]}"
     return 0
   fi
+  if [[ "${output}" =~ \"id\"[[:space:]]*:[[:space:]]*\"([[:alnum:]-]+)\" ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
   return 1
+}
+
+find_issue_id_by_title() {
+  local issue_title="$1"
+  local list_output
+  list_output="$("${BD_CMD}" list --json --limit=50 2>/dev/null)" || return 1
+
+  "${NODE_CMD}" -e '
+    const fs = require("node:fs");
+    const [issueTitle] = process.argv.slice(1);
+    try {
+      const rows = JSON.parse(fs.readFileSync(0, "utf8"));
+      if (!Array.isArray(rows)) {
+        process.exit(1);
+      }
+      const match = rows.find((row) => row && row.title === issueTitle && typeof row.id === "string");
+      if (!match) {
+        process.exit(1);
+      }
+      process.stdout.write(match.id);
+    } catch {
+      process.exit(1);
+    }
+  ' "${issue_title}" <<< "${list_output}"
 }
 
 append_command() {
@@ -152,16 +180,31 @@ rollback_unclosed_issues() {
   done
 }
 
+handle_issue_id_parse_failure() {
+  local issue_title="$1"
+  local message="$2"
+  local recovered_issue_id=""
+
+  failed_step="create"
+  failure_message="${message}"
+
+  recovered_issue_id="$(find_issue_id_by_title "${issue_title}" || true)"
+  if [[ -n "${recovered_issue_id}" ]]; then
+    created_issue_ids+=("${recovered_issue_id}")
+  fi
+
+  rollback_unclosed_issues
+  write_summary "false"
+  exit 1
+}
+
 primary_output="$(run_bd_step "create-primary" "create" create --title="Beads upgrade smoke primary" --type=task --priority=4)" || {
   rollback_unclosed_issues
   write_summary "false"
   exit 1
 }
 primary_issue_id="$(parse_issue_id "${primary_output}")" || {
-  failed_step="create"
-  failure_message="Could not parse primary smoke issue ID"
-  write_summary "false"
-  exit 1
+  handle_issue_id_parse_failure "Beads upgrade smoke primary" "Could not parse primary smoke issue ID"
 }
 created_issue_ids+=("${primary_issue_id}")
 
@@ -171,11 +214,7 @@ dependent_output="$(run_bd_step "create-dependent" "create" create --title="Bead
   exit 1
 }
 dependent_issue_id="$(parse_issue_id "${dependent_output}")" || {
-  failed_step="create"
-  failure_message="Could not parse dependent smoke issue ID"
-  rollback_unclosed_issues
-  write_summary "false"
-  exit 1
+  handle_issue_id_parse_failure "Beads upgrade smoke dependent" "Could not parse dependent smoke issue ID"
 }
 created_issue_ids+=("${dependent_issue_id}")
 

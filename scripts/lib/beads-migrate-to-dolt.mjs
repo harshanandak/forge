@@ -46,6 +46,15 @@ function ensureBackupShape(legacyBackupDir) {
   }
 }
 
+function hasCompleteBackupShape(legacyBackupDir) {
+  try {
+    ensureBackupShape(legacyBackupDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function loadBackupData(backupDir) {
   ensureBackupShape(backupDir);
   return {
@@ -155,6 +164,45 @@ function snapshotCurrentBeads(projectRoot, snapshotRoot, now = new Date()) {
   return snapshotDir;
 }
 
+function materializeLegacyBackupDir({ legacyBackupDir, snapshotDir }) {
+  const snapshotBeadsDir = path.join(snapshotDir, 'current-beads');
+  const synthesizedBackupDir = path.join(snapshotDir, 'legacy-backup');
+  const preferBackupDir = hasCompleteBackupShape(legacyBackupDir);
+  fs.mkdirSync(synthesizedBackupDir, { recursive: true });
+
+  for (const file of BACKUP_FILES) {
+    const backupCandidate = path.join(legacyBackupDir, file);
+    const liveCandidate = path.join(snapshotBeadsDir, file);
+    const sourcePath = preferBackupDir && fs.existsSync(backupCandidate) ? backupCandidate : liveCandidate;
+    if (!fs.existsSync(sourcePath)) {
+      throw new Error(`Missing legacy backup file: ${file}`);
+    }
+    fs.copyFileSync(sourcePath, path.join(synthesizedBackupDir, file));
+  }
+
+  return synthesizedBackupDir;
+}
+
+function applyMigratedBeadsState({ projectRoot, migratedDir }) {
+  const liveBeadsDir = path.join(projectRoot, '.beads');
+  const migratedBeadsDir = path.join(migratedDir, '.beads');
+  const stagedBeadsDir = path.join(projectRoot, `.beads.next-${Date.now()}`);
+
+  if (!fs.existsSync(migratedBeadsDir) || !fs.statSync(migratedBeadsDir).isDirectory()) {
+    throw new Error(`Migrated Beads directory not found: ${migratedBeadsDir}`);
+  }
+
+  fs.rmSync(stagedBeadsDir, { recursive: true, force: true });
+  fs.cpSync(migratedBeadsDir, stagedBeadsDir, { recursive: true });
+  fs.rmSync(liveBeadsDir, { recursive: true, force: true });
+  fs.renameSync(stagedBeadsDir, liveBeadsDir);
+
+  return {
+    liveBeadsDir,
+    migratedBeadsDir,
+  };
+}
+
 export async function rollbackLegacyBeadsMigration({ projectRoot, snapshotDir }) {
   const liveBeadsDir = path.join(projectRoot, '.beads');
   const snapshotBeadsDir = path.join(snapshotDir, 'current-beads');
@@ -254,21 +302,24 @@ export async function runLegacyBeadsMigration(options) {
     };
   }
 
-  ensureBackupShape(legacyBackupDir);
   const snapshotDir = snapshotCurrentBeads(projectRoot, snapshotRoot, now);
+  const resolvedLegacyBackupDir = materializeLegacyBackupDir({
+    legacyBackupDir,
+    snapshotDir,
+  });
   let rolledBack = false;
 
   try {
     const importResult = await importBackup({
       projectRoot,
-      sourceDir: legacyBackupDir,
+      sourceDir: resolvedLegacyBackupDir,
       migratedDir,
       exportDir,
       snapshotDir,
     });
 
     const parity = await verifyMigrationParity({
-      legacyBackupDir,
+      legacyBackupDir: resolvedLegacyBackupDir,
       exportDir,
     });
 
@@ -283,11 +334,18 @@ export async function runLegacyBeadsMigration(options) {
       throw error;
     }
 
+    const appliedState = applyMigratedBeadsState({
+      projectRoot,
+      migratedDir,
+    });
+
     writeManifest(manifestPath, {
       status: 'migrated',
       createdAt: now.toISOString(),
       snapshotDir,
+      legacyBackupDir: resolvedLegacyBackupDir,
       parity,
+      appliedState,
       importResult: importResult || null,
     });
 
@@ -296,6 +354,8 @@ export async function runLegacyBeadsMigration(options) {
       snapshotDir,
       migratedDir,
       exportDir,
+      legacyBackupDir: resolvedLegacyBackupDir,
+      appliedState,
       parity,
       importResult: importResult || null,
     };

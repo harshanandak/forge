@@ -48,6 +48,7 @@ set -euo pipefail
 LOG_PATH="\${MOCK_BD_LOG_PATH:?}"
 FAIL_STEP="\${MOCK_BD_FAIL_STEP:-}"
 CREATE_COUNT_FILE="\${MOCK_BD_CREATE_COUNT_FILE:-}"
+UNPARSEABLE_CREATE_ON="\${MOCK_BD_UNPARSEABLE_CREATE_ON:-}"
 
 printf '%s\\n' "$*" >> "$LOG_PATH"
 
@@ -65,13 +66,21 @@ case "$1" in
       fi
       count=$((count + 1))
       printf '%s' "$count" > "$CREATE_COUNT_FILE"
-      echo "Created issue: forge-smoke-$count"
+      title="Beads upgrade smoke primary"
+      if [[ "$count" -eq 2 ]]; then
+        title="Beads upgrade smoke dependent"
+      fi
+      if [[ -n "$UNPARSEABLE_CREATE_ON" && "$count" -eq "$UNPARSEABLE_CREATE_ON" ]]; then
+        echo "created smoke issue output changed for $title"
+      else
+        echo "Created issue: forge-smoke-$count"
+      fi
     else
       echo "Created issue: forge-smoke-1"
     fi
     ;;
   list)
-    printf '[{"id":"forge-smoke-1"},{"id":"forge-smoke-2"}]\\n'
+    printf '[{"id":"forge-smoke-1","title":"Beads upgrade smoke primary"},{"id":"forge-smoke-2","title":"Beads upgrade smoke dependent"}]\\n'
     ;;
   show)
     printf '{"id":"%s","status":"open"}\\n' "$2"
@@ -207,5 +216,36 @@ describe('beads-upgrade-smoke.sh', () => {
 
     const calls = fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/);
     expect(calls[calls.length - 1]).toBe('sync');
+  });
+
+  test('rolls back the created primary issue when create output cannot be parsed', () => {
+    const repoDir = makeTempDir();
+    fs.mkdirSync(path.join(repoDir, '.beads'), { recursive: true });
+
+    const artifactDir = path.join(repoDir, '.artifacts', 'beads-upgrade-smoke');
+    const createCountFile = path.join(repoDir, 'create-count.txt');
+    const { mockBd, logPath } = createMockBd();
+
+    const result = runSmoke(repoDir, {
+      BD_CMD: toBashPath(mockBd),
+      BEADS_UPGRADE_SMOKE_ARTIFACT_DIR: toBashPath(artifactDir),
+      MOCK_BD_LOG_PATH: toBashPath(logPath),
+      MOCK_BD_CREATE_COUNT_FILE: toBashPath(createCountFile),
+      MOCK_BD_UNPARSEABLE_CREATE_ON: '1',
+    });
+
+    expect(result.status).toBe(1);
+
+    const summary = JSON.parse(fs.readFileSync(path.join(artifactDir, 'summary.json'), 'utf8'));
+    expect(summary.ok).toBe(false);
+    expect(summary.failedStep).toBe('create');
+    expect(summary.failureMessage).toContain('Could not parse primary smoke issue ID');
+    expect(summary.cleanup.createdIssueIds).toEqual(['forge-smoke-1']);
+    expect(summary.cleanup.closedIssueIds).toEqual(['forge-smoke-1']);
+
+    const calls = fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/);
+    expect(calls).toContain('create --title=Beads upgrade smoke primary --type=task --priority=4');
+    expect(calls).toContain('list --json --limit=50');
+    expect(calls).toContain('close forge-smoke-1 --reason=Beads upgrade smoke cleanup');
   });
 });
