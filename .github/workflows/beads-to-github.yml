@@ -60,8 +60,11 @@ jobs:
             local output_path="$2"
 
             BEADS_DIR="$repo_root/.beads" bd init 2>/dev/null || true
-            BEADS_DIR="$repo_root/.beads" bd backup --force
-            cp "$repo_root/.beads/backup/issues.jsonl" "$output_path"
+            if BEADS_DIR="$repo_root/.beads" bd backup --force 2>/dev/null; then
+              cp "$repo_root/.beads/backup/issues.jsonl" "$output_path"
+            else
+              : > "$output_path"
+            fi
           }
 
           # Rebuild the current snapshot from the pushed Beads state so local bd close

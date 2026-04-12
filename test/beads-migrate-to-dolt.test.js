@@ -101,21 +101,27 @@ function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
-function makeImportStub({ mismatchIssue = false } = {}) {
+function makeImportStub({ mismatchIssue = false, issueRecordMutator = null } = {}) {
   return async ({ sourceDir, migratedDir, exportDir }) => {
     fs.mkdirSync(migratedDir, { recursive: true });
     fs.mkdirSync(path.join(migratedDir, '.beads'), { recursive: true });
-    copyBackupSet(sourceDir, exportDir, mismatchIssue
-      ? {
-          'issues.jsonl':
-            fs
-              .readFileSync(path.join(sourceDir, 'issues.jsonl'), 'utf8')
-              .split(/\r?\n/)
-              .filter(Boolean)
-              .slice(0, 1)
-              .join('\n') + '\n',
-        }
-      : {});
+    const exportOverrides = {};
+
+    if (mismatchIssue) {
+      exportOverrides['issues.jsonl'] =
+        fs
+          .readFileSync(path.join(sourceDir, 'issues.jsonl'), 'utf8')
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .slice(0, 1)
+          .join('\n') + '\n';
+    } else if (issueRecordMutator) {
+      const issues = readJsonl(path.join(sourceDir, 'issues.jsonl'));
+      issues[0] = issueRecordMutator({ ...issues[0] });
+      exportOverrides['issues.jsonl'] = `${issues.map((issue) => JSON.stringify(issue)).join('\n')}\n`;
+    }
+
+    copyBackupSet(sourceDir, exportDir, exportOverrides);
     fs.writeFileSync(
       path.join(migratedDir, '.beads', 'config.yaml'),
       'issue-prefix: forge\ndatabase:\n  backend: dolt\n',
@@ -141,6 +147,57 @@ function makeImportStub({ mismatchIssue = false } = {}) {
 
 async function loadSubject() {
   return import(`${pathToFileURL(SUBJECT_PATH).href}?t=${Date.now()}`);
+}
+
+function createFakeBdCommand(rootDir) {
+  const logPath = path.join(rootDir, 'fake-bd-log.jsonl');
+  const scriptPath = path.join(rootDir, 'fake-bd.js');
+  const cmdPath = path.join(rootDir, 'fake-bd.cmd');
+
+  fs.mkdirSync(rootDir, { recursive: true });
+  fs.writeFileSync(
+    scriptPath,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      'const args = process.argv.slice(2);',
+      'const logPath = process.env.FAKE_BD_LOG_PATH;',
+      'const beadsDir = process.env.BEADS_DIR || path.join(process.cwd(), \'.beads\');',
+      "fs.mkdirSync(path.dirname(logPath), { recursive: true });",
+      "fs.appendFileSync(logPath, `${JSON.stringify({ args, cwd: process.cwd(), beadsDir })}\\n`);",
+      'fs.mkdirSync(beadsDir, { recursive: true });',
+      "if (args[0] === 'init') {",
+      "  fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'issue-prefix: forge\\ndatabase:\\n  backend: dolt\\n', 'utf8');",
+      '  process.exit(0);',
+      '}',
+      "if (args[0] === 'backup' && args[1] === 'restore') {",
+      '  const sourceDir = args[2];',
+      "  const backupDir = path.join(beadsDir, 'backup');",
+      '  fs.mkdirSync(backupDir, { recursive: true });',
+      '  for (const entry of fs.readdirSync(sourceDir)) {',
+      '    const sourcePath = path.join(sourceDir, entry);',
+      '    if (fs.statSync(sourcePath).isFile()) {',
+      '      fs.copyFileSync(sourcePath, path.join(backupDir, entry));',
+      '    }',
+      '  }',
+      '  process.exit(0);',
+      '}',
+      "if (args[0] === 'backup' && args[1] === '--force') {",
+      "  fs.mkdirSync(path.join(beadsDir, 'backup'), { recursive: true });",
+      '  process.exit(0);',
+      '}',
+      'process.exit(0);',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  fs.writeFileSync(
+    cmdPath,
+    `@echo off\r\n"${process.execPath}" "%~dp0fake-bd.js" %*\r\n`,
+    'utf8',
+  );
+
+  return { cmdPath, logPath };
 }
 
 describe('beads migrate to dolt contract', () => {
@@ -254,6 +311,39 @@ describe('beads migrate to dolt contract', () => {
 
     const snapshotEntries = fs.readdirSync(seeded.snapshotRoot);
     expect(snapshotEntries.length).toBeGreaterThan(0);
+  });
+
+  test('runLegacyBeadsMigration rejects semantic issue drift even when ids and counts still match', async () => {
+    const subject = await loadSubject();
+    const seeded = seedLegacyRepo(projectRoot);
+    const originalConfig = fs.readFileSync(path.join(seeded.beadsDir, 'config.yaml'), 'utf8');
+    let thrown = null;
+
+    try {
+      await subject.runLegacyBeadsMigration({
+        projectRoot,
+        legacyBackupDir: seeded.legacyBackupDir,
+        snapshotRoot: seeded.snapshotRoot,
+        migratedDir: seeded.migratedDir,
+        exportDir: seeded.exportDir,
+        importBackup: makeImportStub({
+          issueRecordMutator: (issue) => ({
+            ...issue,
+            title: `${issue.title} (drifted)`,
+          }),
+        }),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).not.toBeNull();
+    expect(thrown.message).toMatch(/parity verification failed/i);
+    expect(thrown.parity.ok).toBe(false);
+    expect(thrown.parity.recordMismatches).toContain('issues');
+    expect(fs.readFileSync(path.join(seeded.beadsDir, 'config.yaml'), 'utf8')).toBe(
+      originalConfig,
+    );
   });
 
   test('runLegacyBeadsMigration is rerun-safe and skips when a prior migration manifest already exists', async () => {
@@ -390,5 +480,45 @@ describe('beads migrate to dolt contract', () => {
     expect(options.snapshotRoot).toBe(path.join(externalRoot, '.beads-migration-snapshots'));
     expect(options.migratedDir).toBe(path.join(externalRoot, '.beads-migrated'));
     expect(options.exportDir).toBe(path.join(externalRoot, '.beads-migrated-export'));
+  });
+
+  test('defaultImportBackup pins BEADS_DIR to the migrated workspace instead of inheriting ambient state', async () => {
+    const subject = await loadSubject();
+    const seeded = seedLegacyRepo(projectRoot);
+    const fakeBdRoot = path.join(projectRoot, 'fake-bd');
+    const { cmdPath, logPath } = createFakeBdCommand(fakeBdRoot);
+    const originalBdCmd = process.env.BD_CMD;
+    const originalBeadsDir = process.env.BEADS_DIR;
+    const originalFakeBdLogPath = process.env.FAKE_BD_LOG_PATH;
+
+    process.env.BD_CMD = cmdPath;
+    process.env.BEADS_DIR = path.join(projectRoot, 'ambient-live-beads');
+    process.env.FAKE_BD_LOG_PATH = logPath;
+
+    try {
+      await subject.defaultImportBackup({
+        projectRoot,
+        sourceDir: seeded.legacyBackupDir,
+        migratedDir: seeded.migratedDir,
+        exportDir: seeded.exportDir,
+      });
+    } finally {
+      if (originalBdCmd === undefined) delete process.env.BD_CMD;
+      else process.env.BD_CMD = originalBdCmd;
+
+      if (originalBeadsDir === undefined) delete process.env.BEADS_DIR;
+      else process.env.BEADS_DIR = originalBeadsDir;
+
+      if (originalFakeBdLogPath === undefined) delete process.env.FAKE_BD_LOG_PATH;
+      else process.env.FAKE_BD_LOG_PATH = originalFakeBdLogPath;
+    }
+
+    const bdInvocations = readJsonl(logPath);
+    expect(bdInvocations.map((entry) => entry.beadsDir)).toEqual([
+      path.join(seeded.migratedDir, '.beads'),
+      path.join(seeded.migratedDir, '.beads'),
+      path.join(seeded.migratedDir, '.beads'),
+    ]);
+    expect(fs.existsSync(path.join(seeded.exportDir, 'issues.jsonl'))).toBe(true);
   });
 });

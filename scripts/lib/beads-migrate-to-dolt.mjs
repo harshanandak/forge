@@ -63,6 +63,28 @@ function setDifference(left, right) {
   return left.filter((item) => !rightSet.has(item));
 }
 
+function normalizeRecord(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeRecord(entry));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, normalizeRecord(value[key])]),
+    );
+  }
+  return value;
+}
+
+function stableSerializeRecord(record) {
+  return JSON.stringify(normalizeRecord(record));
+}
+
+function arraysEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function collectParity(data) {
   return {
     counts: {
@@ -79,6 +101,14 @@ function collectParity(data) {
       .sort(),
     commentIds: data.comments.map((comment) => comment.id).sort(),
     configKeys: data.config.map((entry) => entry.key).sort(),
+    issueRecords: data.issues.map((issue) => stableSerializeRecord(issue)).sort(),
+    labelRecords: data.labels.map((label) => stableSerializeRecord(label)).sort(),
+    dependencyRecords: data.dependencies
+      .map((dependency) => stableSerializeRecord(dependency))
+      .sort(),
+    commentRecords: data.comments.map((comment) => stableSerializeRecord(comment)).sort(),
+    eventRecords: data.events.map((event) => stableSerializeRecord(event)).sort(),
+    configRecords: data.config.map((entry) => stableSerializeRecord(entry)).sort(),
   };
 }
 
@@ -99,6 +129,20 @@ function summarizeParityMismatch(parity) {
   if (parity.missingConfigKeys.length > 0 || parity.extraConfigKeys.length > 0) {
     parts.push('config keys differ');
   }
+  const recordMismatchMessages = {
+    issues: 'issue records differ',
+    labels: 'label records differ',
+    dependencies: 'dependency records differ',
+    comments: 'comment records differ',
+    events: 'event records differ',
+    config: 'config records differ',
+  };
+  for (const kind of parity.recordMismatches || []) {
+    const message = recordMismatchMessages[kind];
+    if (message && !parts.includes(message)) {
+      parts.push(message);
+    }
+  }
   if (parts.length === 0) {
     parts.push('record counts differ');
   }
@@ -108,20 +152,31 @@ function summarizeParityMismatch(parity) {
 export async function verifyMigrationParity({ legacyBackupDir, exportDir }) {
   const source = collectParity(loadBackupData(legacyBackupDir));
   const exported = collectParity(loadBackupData(exportDir));
+  const recordMismatches = Object.entries({
+    issues: arraysEqual(source.issueRecords, exported.issueRecords),
+    labels: arraysEqual(source.labelRecords, exported.labelRecords),
+    dependencies: arraysEqual(source.dependencyRecords, exported.dependencyRecords),
+    comments: arraysEqual(source.commentRecords, exported.commentRecords),
+    events: arraysEqual(source.eventRecords, exported.eventRecords),
+    config: arraysEqual(source.configRecords, exported.configRecords),
+  })
+    .filter(([, match]) => !match)
+    .map(([kind]) => kind);
 
   const parity = {
     ok:
-      JSON.stringify(source.counts) === JSON.stringify(exported.counts) &&
-      JSON.stringify(source.issueIds) === JSON.stringify(exported.issueIds) &&
-      JSON.stringify(source.dependencyEdges) ===
-        JSON.stringify(exported.dependencyEdges) &&
-      JSON.stringify(source.commentIds) === JSON.stringify(exported.commentIds) &&
-      JSON.stringify(source.configKeys) === JSON.stringify(exported.configKeys),
+      arraysEqual(source.counts, exported.counts) &&
+      arraysEqual(source.issueIds, exported.issueIds) &&
+      arraysEqual(source.dependencyEdges, exported.dependencyEdges) &&
+      arraysEqual(source.commentIds, exported.commentIds) &&
+      arraysEqual(source.configKeys, exported.configKeys) &&
+      recordMismatches.length === 0,
     counts: source.counts,
     issueIds: source.issueIds,
     dependencyEdges: source.dependencyEdges,
     commentIds: source.commentIds,
     configKeys: source.configKeys,
+    recordMismatches,
     missingIssueIds: setDifference(source.issueIds, exported.issueIds),
     extraIssueIds: setDifference(exported.issueIds, source.issueIds),
     missingDependencyEdges: setDifference(
@@ -235,7 +290,7 @@ function inferPrefix(projectRoot) {
   return sanitizePrefix(path.basename(projectRoot) || 'beads');
 }
 
-function defaultImportBackup({
+export function defaultImportBackup({
   projectRoot,
   sourceDir,
   migratedDir,
@@ -251,6 +306,7 @@ function defaultImportBackup({
     encoding: 'utf8',
     env: {
       ...process.env,
+      BEADS_DIR: path.join(migratedDir, '.beads'),
     },
   };
 

@@ -240,4 +240,9 @@ describe('loop guard', () => {
     expect(workflowContent).toContain('node scripts/github-beads-sync/reverse-sync-cli.mjs "$OLD_SNAPSHOT_PATH" "$NEW_SNAPSHOT_PATH"');
     expect(workflowContent).not.toContain('NEW_CONTENT=$(cat .beads/issues.jsonl');
   });
+
+  test('workflow falls back to an empty snapshot when a historical .beads tree cannot export a backup', () => {
+    expect(workflowContent).toContain('if BEADS_DIR="$repo_root/.beads" bd backup --force 2>/dev/null; then');
+    expect(workflowContent).toContain(': > "$output_path"');
+  });
 });
