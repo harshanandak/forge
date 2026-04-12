@@ -152,7 +152,9 @@ async function loadSubject() {
 function createFakeBdCommand(rootDir) {
   const logPath = path.join(rootDir, 'fake-bd-log.jsonl');
   const scriptPath = path.join(rootDir, 'fake-bd.js');
-  const cmdPath = path.join(rootDir, 'fake-bd.cmd');
+  const cmdPath = process.platform === 'win32'
+    ? path.join(rootDir, 'fake-bd.cmd')
+    : path.join(rootDir, 'fake-bd');
 
   fs.mkdirSync(rootDir, { recursive: true });
   fs.writeFileSync(
@@ -191,11 +193,20 @@ function createFakeBdCommand(rootDir) {
     ].join('\n'),
     'utf8',
   );
-  fs.writeFileSync(
-    cmdPath,
-    `@echo off\r\n"${process.execPath}" "%~dp0fake-bd.js" %*\r\n`,
-    'utf8',
-  );
+  if (process.platform === 'win32') {
+    fs.writeFileSync(
+      cmdPath,
+      `@echo off\r\n"${process.execPath}" "%~dp0fake-bd.js" %*\r\n`,
+      'utf8',
+    );
+  } else {
+    fs.writeFileSync(
+      cmdPath,
+      `#!/usr/bin/env bash\n"${process.execPath}" "${scriptPath}" "$@"\n`,
+      'utf8',
+    );
+    fs.chmodSync(cmdPath, 0o755);
+  }
 
   return { cmdPath, logPath };
 }
