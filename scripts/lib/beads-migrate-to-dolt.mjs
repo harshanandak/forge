@@ -46,15 +46,6 @@ function ensureBackupShape(legacyBackupDir) {
   }
 }
 
-function hasCompleteBackupShape(legacyBackupDir) {
-  try {
-    ensureBackupShape(legacyBackupDir);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function loadBackupData(backupDir) {
   ensureBackupShape(backupDir);
   return {
@@ -167,13 +158,12 @@ function snapshotCurrentBeads(projectRoot, snapshotRoot, now = new Date()) {
 function materializeLegacyBackupDir({ legacyBackupDir, snapshotDir }) {
   const snapshotBeadsDir = path.join(snapshotDir, 'current-beads');
   const synthesizedBackupDir = path.join(snapshotDir, 'legacy-backup');
-  const preferBackupDir = hasCompleteBackupShape(legacyBackupDir);
   fs.mkdirSync(synthesizedBackupDir, { recursive: true });
 
   for (const file of BACKUP_FILES) {
     const backupCandidate = path.join(legacyBackupDir, file);
     const liveCandidate = path.join(snapshotBeadsDir, file);
-    const sourcePath = preferBackupDir && fs.existsSync(backupCandidate) ? backupCandidate : liveCandidate;
+    const sourcePath = fs.existsSync(liveCandidate) ? liveCandidate : backupCandidate;
     if (!fs.existsSync(sourcePath)) {
       throw new Error(`Missing legacy backup file: ${file}`);
     }

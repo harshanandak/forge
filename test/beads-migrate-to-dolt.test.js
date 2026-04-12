@@ -314,6 +314,34 @@ describe('beads migrate to dolt contract', () => {
     expect(result.parity.ok).toBe(true);
   });
 
+  test('runLegacyBeadsMigration prefers the live snapshot when backup JSONL is stale', async () => {
+    const subject = await loadSubject();
+    const seeded = seedLegacyRepo(projectRoot, {
+      withBackup: true,
+      mirrorLiveBackupFiles: true,
+    });
+    const liveIssues = fs.readFileSync(path.join(seeded.beadsDir, 'issues.jsonl'), 'utf8');
+    const staleIssues = `${fs.readFileSync(path.join(FIXTURE_ROOT, 'issues.jsonl'), 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(0, 1)
+      .join('\n')}\n`;
+    fs.writeFileSync(path.join(seeded.legacyBackupDir, 'issues.jsonl'), staleIssues, 'utf8');
+
+    const result = await subject.runLegacyBeadsMigration({
+      projectRoot,
+      legacyBackupDir: seeded.legacyBackupDir,
+      snapshotRoot: seeded.snapshotRoot,
+      migratedDir: seeded.migratedDir,
+      exportDir: seeded.exportDir,
+      importBackup: makeImportStub(),
+    });
+
+    expect(result.status).toBe('migrated');
+    expect(result.parity.issueIds).toEqual(['forge-aa1', 'forge-bb2']);
+    expect(fs.readFileSync(path.join(result.legacyBackupDir, 'issues.jsonl'), 'utf8')).toBe(liveIssues);
+  });
+
   test('fixtures stay parseable and match the expected legacy counts', () => {
     const counts = {
       issues: readJsonl(path.join(FIXTURE_ROOT, 'issues.jsonl')).length,
