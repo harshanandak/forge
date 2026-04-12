@@ -187,6 +187,17 @@ describe('isBeadsInitialized', () => {
     expect(isBeadsInitialized(tmpDir)).toBe(true);
   });
 
+  test('returns true for a legacy SQLite config so setup does not overwrite existing tracker state', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(beadsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: legacy-proj\ndatabase:\n  backend: sqlite\n',
+    );
+    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '{"id":"legacy-1"}\n');
+    expect(isBeadsInitialized(tmpDir)).toBe(true);
+  });
+
   test('returns true for properly configured directory', () => {
     const beadsDir = path.join(tmpDir, '.beads');
     fs.mkdirSync(beadsDir, { recursive: true });

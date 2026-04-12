@@ -377,4 +377,18 @@ describe('beads migrate to dolt contract', () => {
 
     expect(stdout).toContain('Usage: beads-migrate-to-dolt');
   });
+
+  test('parseCliArgs recomputes default migration paths when --project-root is provided', async () => {
+    const subject = await loadSubject();
+    const externalRoot = path.join(projectRoot, 'external-project');
+    fs.mkdirSync(externalRoot, { recursive: true });
+
+    const options = subject.parseCliArgs(['--project-root', externalRoot], projectRoot);
+
+    expect(options.projectRoot).toBe(externalRoot);
+    expect(options.legacyBackupDir).toBe(path.join(externalRoot, '.beads', 'backup'));
+    expect(options.snapshotRoot).toBe(path.join(externalRoot, '.beads-migration-snapshots'));
+    expect(options.migratedDir).toBe(path.join(externalRoot, '.beads-migrated'));
+    expect(options.exportDir).toBe(path.join(externalRoot, '.beads-migrated-export'));
+  });
 });

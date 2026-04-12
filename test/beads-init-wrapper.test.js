@@ -61,6 +61,30 @@ describe('safeBeadsInit — idempotent skip', () => {
     expect(result.skipped).toBe(true);
     expect(result.reason).toContain('already initialized');
   });
+
+  test('skips bd init for a legacy SQLite config to preserve existing beads state before migration', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(beadsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: legacy-proj\ndatabase:\n  backend: sqlite\n'
+    );
+    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '{"id":"legacy-1"}\n');
+    setupFakeGitHooks(tmpDir);
+
+    let bdInitCalled = false;
+    const result = safeBeadsInit(tmpDir, {
+      execBdInit: () => {
+        bdInitCalled = true;
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toContain('already initialized');
+    expect(bdInitCalled).toBe(false);
+    expect(fs.readFileSync(path.join(beadsDir, 'config.yaml'), 'utf8')).toContain('backend: sqlite');
+  });
 });
 
 // ---------------------------------------------------------------------------

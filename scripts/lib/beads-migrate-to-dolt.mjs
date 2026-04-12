@@ -193,6 +193,15 @@ function applyMigratedBeadsState({ projectRoot, migratedDir }) {
   };
 }
 
+function defaultCliPaths(projectRoot) {
+  return {
+    legacyBackupDir: path.join(projectRoot, '.beads', 'backup'),
+    snapshotRoot: path.join(projectRoot, '.beads-migration-snapshots'),
+    migratedDir: path.join(projectRoot, '.beads-migrated'),
+    exportDir: path.join(projectRoot, '.beads-migrated-export'),
+  };
+}
+
 export async function rollbackLegacyBeadsMigration({ projectRoot, snapshotDir }) {
   const liveBeadsDir = path.join(projectRoot, '.beads');
   const snapshotBeadsDir = path.join(snapshotDir, 'current-beads');
@@ -357,32 +366,39 @@ export async function runLegacyBeadsMigration(options) {
   }
 }
 
-function parseCliArgs(argv, cwd = process.cwd()) {
+export function parseCliArgs(argv, cwd = process.cwd()) {
   const options = {
     projectRoot: cwd,
-    legacyBackupDir: path.join(cwd, '.beads', 'backup'),
-    snapshotRoot: path.join(cwd, '.beads-migration-snapshots'),
-    migratedDir: path.join(cwd, '.beads-migrated'),
-    exportDir: path.join(cwd, '.beads-migrated-export'),
+    ...defaultCliPaths(cwd),
   };
+  const explicitPathFlags = new Set();
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     switch (arg) {
       case '--project-root':
         options.projectRoot = path.resolve(argv[++i]);
+        for (const [key, value] of Object.entries(defaultCliPaths(options.projectRoot))) {
+          if (!explicitPathFlags.has(key)) {
+            options[key] = value;
+          }
+        }
         break;
       case '--legacy-backup-dir':
         options.legacyBackupDir = path.resolve(argv[++i]);
+        explicitPathFlags.add('legacyBackupDir');
         break;
       case '--snapshot-root':
         options.snapshotRoot = path.resolve(argv[++i]);
+        explicitPathFlags.add('snapshotRoot');
         break;
       case '--migrated-dir':
         options.migratedDir = path.resolve(argv[++i]);
+        explicitPathFlags.add('migratedDir');
         break;
       case '--export-dir':
         options.exportDir = path.resolve(argv[++i]);
+        explicitPathFlags.add('exportDir');
         break;
       case '-h':
       case '--help':
