@@ -53,6 +53,7 @@ describe('safeBeadsInit — idempotent skip', () => {
       'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
     fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+    fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads init marker\n');
     setupFakeGitHooks(tmpDir);
 
     const result = safeBeadsInit(tmpDir, { execBdInit: () => {} });
@@ -451,6 +452,7 @@ describe('safeBeadsInit — return shape', () => {
       'issue-prefix: proj\ndatabase:\n  backend: dolt\n'
     );
     fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+    fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads init marker\n');
 
     const result = safeBeadsInit(tmpDir, { execBdInit: () => {} });
 

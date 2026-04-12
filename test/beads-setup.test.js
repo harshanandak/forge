@@ -187,7 +187,7 @@ describe('isBeadsInitialized', () => {
     expect(isBeadsInitialized(tmpDir)).toBe(false);
   });
 
-  test('returns true when Dolt config and metadata marker are present', () => {
+  test('returns false when only one Dolt marker is present', () => {
     const beadsDir = path.join(tmpDir, '.beads');
     fs.mkdirSync(beadsDir, { recursive: true });
     fs.writeFileSync(
@@ -195,6 +195,18 @@ describe('isBeadsInitialized', () => {
       'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
     fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+    expect(isBeadsInitialized(tmpDir)).toBe(false);
+  });
+
+  test('returns true when Dolt config and multiple init markers are present', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(beadsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
+    );
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+    fs.mkdirSync(path.join(beadsDir, 'hooks'), { recursive: true });
     expect(isBeadsInitialized(tmpDir)).toBe(true);
   });
 
@@ -216,6 +228,7 @@ describe('isBeadsInitialized', () => {
       path.join(beadsDir, 'config.yaml'),
       'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
     fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads repo marker\n');
     expect(isBeadsInitialized(tmpDir)).toBe(true);
   });
