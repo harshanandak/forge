@@ -18,7 +18,7 @@ describe('TOOLCHAIN.md beads upgrade documentation', () => {
   test('rejects the legacy SQLite dual-database setup guidance', () => {
     const content = readFileSync(toolchainPath, 'utf8');
 
-    expect(content).not.toMatch(/0\\.49|v0\\./i);
+    expect(content).not.toMatch(/0\.49|v0\./i);
     expect(content).not.toContain('Dual-database architecture');
     expect(content).not.toContain('beads.db');
     expect(content).not.toContain('SQLite cache');
