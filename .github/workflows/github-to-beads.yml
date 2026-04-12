@@ -30,9 +30,9 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2
 
-      - name: Install Beads CLI (pinned to v0.49.1)
+      - name: Install Beads CLI (pinned to v1.0.0)
         run: |
-          BD_VERSION="0.49.1"
+          BD_VERSION="1.0.0"
           BD_URL="https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"
           mkdir -p "$HOME/.local/bin"
           curl -fsSL "$BD_URL" | tar -xz -C "$HOME/.local/bin" bd
@@ -43,7 +43,7 @@ jobs:
           BEADS_DIR: ${{ github.workspace }}/.beads
         run: |
           bd --version
-          # Initialize SQLite DB from JSONL on fresh checkout
+          # Initialize the current Dolt-backed layout on fresh checkout
           bd init 2>/dev/null || true
 
       - name: Run sync
@@ -57,10 +57,13 @@ jobs:
         run: |
           node scripts/github-beads-sync/index.mjs "$SYNC_ACTION"
 
-      - name: Export database to JSONL
+      - name: Export backup snapshot
         env:
           BEADS_DIR: ${{ github.workspace }}/.beads
-        run: bd sync
+        run: |
+          bd backup --force
+          mkdir -p .github/beads-snapshots
+          cp .beads/backup/issues.jsonl .github/beads-snapshots/issues.jsonl
 
       - name: Commit and push changes
         env:
@@ -69,8 +72,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage beads and mapping changes
-          git add .beads/ .github/beads-mapping.json || true
+          # Stage beads state, mapping changes, and the tracked issue snapshot
+          git add .beads/ .github/beads-mapping.json .github/beads-snapshots/issues.jsonl || true
 
           # Only commit if there are changes
           if git diff --cached --quiet; then

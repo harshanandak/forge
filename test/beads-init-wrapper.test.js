@@ -52,7 +52,8 @@ describe('safeBeadsInit — idempotent skip', () => {
       path.join(beadsDir, 'config.yaml'),
       'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n'
     );
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+    fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads init marker\n');
     setupFakeGitHooks(tmpDir);
 
     const result = safeBeadsInit(tmpDir, { execBdInit: () => {} });
@@ -60,6 +61,51 @@ describe('safeBeadsInit — idempotent skip', () => {
     expect(result.success).toBe(true);
     expect(result.skipped).toBe(true);
     expect(result.reason).toContain('already initialized');
+  });
+
+  test('skips bd init for a legacy SQLite config to preserve existing beads state before migration', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(beadsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: legacy-proj\ndatabase:\n  backend: sqlite\n'
+    );
+    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '{"id":"legacy-1"}\n');
+    setupFakeGitHooks(tmpDir);
+
+    let bdInitCalled = false;
+    const result = safeBeadsInit(tmpDir, {
+      execBdInit: () => {
+        bdInitCalled = true;
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toContain('already initialized');
+    expect(bdInitCalled).toBe(false);
+    expect(fs.readFileSync(path.join(beadsDir, 'config.yaml'), 'utf8')).toContain('backend: sqlite');
+  });
+
+  test('does not treat a partial Dolt config write as initialized after a failed setup attempt', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(beadsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: partial-proj\ndatabase:\n  backend: dolt\n',
+    );
+    setupFakeGitHooks(tmpDir);
+
+    let bdInitCalled = false;
+    const result = safeBeadsInit(tmpDir, {
+      execBdInit: () => {
+        bdInitCalled = true;
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(bdInitCalled).toBe(true);
   });
 });
 
@@ -105,9 +151,9 @@ describe('safeBeadsInit — full init flow', () => {
     const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
     expect(gitignoreContent).toContain('dolt/');
 
-    // issues.jsonl should be pre-seeded
+    // issues.jsonl should no longer be pre-seeded
     const jsonlPath = path.join(tmpDir, '.beads', 'issues.jsonl');
-    expect(fs.existsSync(jsonlPath)).toBe(true);
+    expect(fs.existsSync(jsonlPath)).toBe(false);
   });
 
   test('calls execBdInit with the project root', () => {
@@ -405,7 +451,8 @@ describe('safeBeadsInit — return shape', () => {
       path.join(beadsDir, 'config.yaml'),
       'issue-prefix: proj\ndatabase:\n  backend: dolt\n'
     );
-    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+    fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads init marker\n');
 
     const result = safeBeadsInit(tmpDir, { execBdInit: () => {} });
 

@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - '.beads/**'
+      - '.github/beads-snapshots/issues.jsonl'
 
 # Serialize with forward-sync to prevent race conditions
 concurrency:
@@ -34,23 +35,55 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Beads CLI (pinned to v1.0.0)
+        if: env.SKIP != 'true'
+        run: |
+          BD_VERSION="1.0.0"
+          BD_URL="https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "$BD_URL" | tar -xz -C "$HOME/.local/bin" bd
+          chmod +x "$HOME/.local/bin/bd"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Detect and close
         if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # Get old and new versions of .beads/issues.jsonl
-          # Use github.event.before (pre-push SHA) to catch multi-commit pushes
+          OLD_SNAPSHOT_PATH="$RUNNER_TEMP/old-issues.jsonl"
+          NEW_SNAPSHOT_PATH="$RUNNER_TEMP/new-issues.jsonl"
+          BEFORE_WORKTREE="$RUNNER_TEMP/beads-before"
+
+          generate_snapshot() {
+            local repo_root="$1"
+            local output_path="$2"
+
+            BEADS_DIR="$repo_root/.beads" bd init 2>/dev/null || true
+            if BEADS_DIR="$repo_root/.beads" bd backup --force 2>/dev/null; then
+              cp "$repo_root/.beads/backup/issues.jsonl" "$output_path"
+            else
+              : > "$output_path"
+            fi
+          }
+
+          # Rebuild the current snapshot from the pushed Beads state so local bd close
+          # transitions are reflected even when the tracked snapshot file was not updated.
+          generate_snapshot "$GITHUB_WORKSPACE" "$NEW_SNAPSHOT_PATH"
+
+          # Use github.event.before (pre-push SHA) to catch multi-commit pushes.
+          # Rebuild the previous snapshot from that tree's Beads state when possible.
           if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
-            OLD_CONTENT=""
+            : > "$OLD_SNAPSHOT_PATH"
+          elif git cat-file -e "$BEFORE_SHA:.beads" 2>/dev/null; then
+            rm -rf "$BEFORE_WORKTREE"
+            mkdir -p "$BEFORE_WORKTREE"
+            git archive "$BEFORE_SHA" .beads | tar -x -C "$BEFORE_WORKTREE"
+            generate_snapshot "$BEFORE_WORKTREE" "$OLD_SNAPSHOT_PATH"
           else
-            OLD_CONTENT=$(git show "$BEFORE_SHA":.beads/issues.jsonl 2>/dev/null || echo "")
+            # Fallback for historical commits that predate tracked .beads state.
+            OLD_CONTENT=$(git show "$BEFORE_SHA":.github/beads-snapshots/issues.jsonl 2>/dev/null || echo "")
+            printf '%s' "$OLD_CONTENT" > "$OLD_SNAPSHOT_PATH"
           fi
-          NEW_CONTENT=$(cat .beads/issues.jsonl 2>/dev/null || echo "")
 
-          # Export via temp files to avoid shell injection
-          printf '%s' "$OLD_CONTENT" > /tmp/old-issues.jsonl
-          printf '%s' "$NEW_CONTENT" > /tmp/new-issues.jsonl
-
-          node scripts/github-beads-sync/reverse-sync-cli.mjs /tmp/old-issues.jsonl /tmp/new-issues.jsonl
+          node scripts/github-beads-sync/reverse-sync-cli.mjs "$OLD_SNAPSHOT_PATH" "$NEW_SNAPSHOT_PATH"

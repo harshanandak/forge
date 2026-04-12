@@ -31,185 +31,149 @@ Complete reference for all tools integrated with the Forge workflow.
 
 ---
 
-## Beads - Git-Backed Issue Tracking
+## Beads - Dolt-Backed Issue Tracking
 
-**Package**: `@beads/bd`
-**Repository**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
+**Package**: `@beads/bd`  
+**Repository**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)  
 **Purpose**: Distributed issue tracking designed for AI coding agents
 
-### Why Beads?
+### Current Forge Target
 
-- **Persists across sessions** - Issues survive context clearing, compaction, new chats
-- **Git-backed** - Version controlled, mergeable, team-shareable
-- **Dependency tracking** - Know what blocks what
-- **Ready detection** - `forge ready` finds unblocked work automatically
-- **AI-optimized** - JSON output, semantic compaction, audit trails
+- Forge now targets the stable Beads `v1.0.0` release for repo setup and CI.
+- Routine team sync still goes through `forge sync`.
+- Use `bd` directly for Beads features Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, `bd blocked`, `bd backup`, and `bd dolt *`.
 
-### Installation
+### Install or Update Beads
 
-**Auto-installation** (Recommended):
+**Recommended**:
 ```bash
 bunx forge setup
-# Prompts: "Install Beads? (y/n)"
-# Automatically installs and initializes
-# On Windows: uses PowerShell installer (npm @beads/bd has an EPERM bug on Windows)
+bd --version
 ```
 
-**Manual installation**:
+**Manual install**:
 ```bash
-# macOS / Linux (global)
-bun add -g @beads/bd
-bd init
-
-# macOS / Linux (local)
-bun add -d @beads/bd
-bunx bd init
-
-# Windows (global) — use PowerShell installer, NOT npm/bun add -g
+# Windows
 irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
-bd init
+bd --version
 
-# Or with bunx (macOS/Linux, no install needed)
-bunx @beads/bd init
+# CI / pinned Linux install
+BD_VERSION="1.0.0"
+BD_URL="https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"
+mkdir -p "$HOME/.local/bin"
+curl -fsSL "$BD_URL" | tar -xz -C "$HOME/.local/bin" bd
+chmod +x "$HOME/.local/bin/bd"
 ```
 
-> **Windows note**: The `npm install -g @beads/bd` postinstall script uses `Expand-Archive`, which triggers an EPERM file-locking error on Windows (issue #1031, closed "not planned"). Use the PowerShell installer above instead.
+Verify the installed CLI before using it:
 
-### File Structure
-
-After `bd init`, creates `.beads/` directory:
-
+```bash
+bd --version
+bd doctor
 ```
+
+### Supported Repo Layout
+
+Forge treats `.beads/` as the repo-local Beads home directory. The layout in this repository currently includes:
+
+```text
 .beads/
-├── issues.jsonl      # Issue data (git-tracked, one JSON per line)
-├── beads.db          # SQLite cache (git-ignored, fast queries)
-├── metadata.json     # Database metadata
-├── config.yaml       # User configuration
-├── interactions.jsonl # Agent audit log
-└── .gitignore        # Ignores beads.db
+├── config.yaml
+├── issues.jsonl
+├── metadata.json
+├── team-map.jsonl
+├── hooks/
+└── .gitignore
 ```
 
-**Dual-database architecture**: JSONL for git versioning, SQLite for fast local queries. Background daemon keeps them in sync.
+Legacy local database cache files are no longer part of the supported Forge setup instructions. When you need JSONL snapshots for migration verification or CI diffing, generate them explicitly with `bd backup --force`.
 
-For day-to-day issue workflows, prefer the Forge wrapper commands (`forge ready`,
-`forge create`, `forge update`, `forge close`, `forge sync`). Use `bd` directly
-for Beads capabilities Forge does not wrap yet, such as `bd init`, `bd comments`,
-`bd dep`, `bd blocked`, and `bd dolt *`.
+### Migrate Legacy SQLite Data
 
-### Complete Command Reference
-
-#### Initialization
+Use the repo wrapper instead of hand-editing `.beads/`:
 
 ```bash
-bd init                    # Initialize in project
-bd init --stealth          # Local-only (don't commit to repo)
-bd init --contributor      # Contributor mode
-bd init --prefix PROJ      # Custom issue prefix (PROJ-xxx)
+bash scripts/beads-migrate-to-dolt.sh
 ```
 
-#### Issue Management
+Default paths used by the wrapper:
+
+- `--project-root`: current working directory
+- `--legacy-backup-dir`: `.beads/backup`
+- `--snapshot-root`: `.beads-migration-snapshots`
+- `--migrated-dir`: `.beads-migrated`
+- `--export-dir`: `.beads-migrated-export`
+
+What the wrapper does:
+
+1. Snapshots the current `.beads/` directory into `.beads-migration-snapshots/<timestamp>/current-beads`.
+2. Restores the legacy JSONL backup into a fresh migrated workspace.
+3. Exports a fresh backup snapshot for parity verification.
+4. Verifies issue IDs, dependency edges, comment IDs, config keys, and record counts.
+5. Writes `.beads-migrated/migration-manifest.json` on success.
+
+rollback behavior:
+
+- The wrapper automatically restores the pre-migration `.beads/` snapshot if parity verification fails.
+- If you need to inspect or restore manually, use the timestamped snapshot under `.beads-migration-snapshots/`.
+
+See the script help for explicit path overrides:
 
 ```bash
-# Create issues
-forge create "Title"                           # Basic issue
-forge create "Title" --type feature            # With type (feature, bug, chore, etc.)
-forge create "Title" --priority 1              # With priority (0=critical, 4=backlog)
-forge create "Title" -p 0 -l "urgent,backend"  # P0 with labels
-
-# View issues
-forge show <id>                   # Detailed view with audit trail
-forge list                        # All issues
-forge list --status open          # Filter by status
-forge list --priority 1           # Filter by priority
-forge list --assignee bob         # Filter by assignee
-forge list --label bug            # Filter by label (AND logic)
-forge list --label-any bug,urgent # Filter by label (OR logic)
-forge list --type feature         # Filter by type
-forge list --title-contains "auth" # Search titles
-forge list --limit 10             # Limit results
-
-# Update issues
-forge claim <id>                        # Claim work (sets in_progress)
-forge update <id> --priority 2          # Change priority
-forge update <id> --assignee bob        # Assign
-forge update <id> --title "New title"   # Update title
-forge update <id> --description "..."   # Update description
-forge update <id> --notes "..."         # Add notes
-forge update <id> --add-label urgent    # Add label
-
-# Complete issues
-forge close <id>                           # Close single issue
-forge close <id1> <id2> <id3>              # Close multiple (efficient)
-forge close <id> --reason "Completed auth" # Close with reason
-bd delete <id>                          # Delete issue
-bd delete <id> --cascade                # Delete with dependents
+bash scripts/beads-migrate-to-dolt.sh --help
 ```
 
-#### Workflow Commands
+### Post-Upgrade Smoke Verification
+
+Run the repo smoke harness after upgrading:
+
+```bash
+bash scripts/beads-upgrade-smoke.sh
+```
+
+The harness records a machine-readable summary at `.artifacts/beads-upgrade-smoke/summary.json` by default and exercises this sequence:
+
+1. `bd create` primary smoke issue
+2. `bd create` dependent smoke issue
+3. `bd list --json --limit=0`
+4. `bd show <id> --json`
+5. `bd dep add <child> <parent>`
+6. `bd close <id>` cleanup for both smoke issues
+7. `bd sync` compatibility check
+
+If any command fails, the summary captures `failedStep`, command output, and cleanup state. This is intentional: the harness does not silently substitute a different command for `bd sync`.
+
+### Day-to-Day Commands
 
 ```bash
 # Find work
-forge ready                     # Issues with NO open blockers (start here!)
-forge ready --priority 1        # Filter ready work by priority
-bd blocked                      # Issues that ARE blocked
+forge ready
+forge show <id>
+forge claim <id>
 
-# Dependencies
-bd dep add <child> <parent>                    # child depends on parent (blocks)
-bd dep add <child> <parent> --type related     # Soft reference (no blocking)
-bd dep add <child> <parent> --type parent-child # Hierarchical
-bd dep remove <child> <parent>                 # Remove dependency
-bd dep tree <id>                               # Visualize dependency tree
-bd dep cycles                                  # Detect cycles
+# Issue operations
+forge create "Title"
+forge list
+forge update <id> --priority 2
+forge close <id>
 
-# Comments
-bd comments <id>                # View comments
-bd comments add <id> "Comment text" # Add comment
+# Direct beads operations
+bd comments add <id> "Progress update"
+bd dep add <child> <parent>
+bd dep cycles
+bd backup --force
+bd dolt status
 
-# Git sync
-forge sync                      # Pull + push Beads state through the Forge wrapper
-bd dolt status                  # Check Dolt sync/server status
-bd hooks install                # Install git hooks for auto-sync
-
-# Maintenance
-bd stats                        # Project statistics
-bd doctor                       # Check for issues
-bd admin compact --days 90      # Compact old closed issues
+# Routine repo sync
+forge sync
 ```
-
-#### Issue Statuses
-
-- `open` - Not started
-- `in_progress` - Being worked on
-- `blocked` - Waiting on something
-- `completed` - Done
-- `on_hold` - Paused
-- `cancelled` - Won't do
-
-#### Priority Levels
-
-| Priority | Meaning | Usage |
-|----------|---------|-------|
-| 0 (P0) | Critical | Drop everything, fix now |
-| 1 (P1) | High | Do this sprint |
-| 2 (P2) | Medium | Planned work |
-| 3 (P3) | Low | Nice to have |
-| 4 (P4) | Backlog | Someday/maybe |
-
-#### Dependency Types
-
-| Type | Blocks Ready? | Use Case |
-|------|---------------|----------|
-| `blocks` | YES | Hard dependency |
-| `related` | NO | Soft reference |
-| `parent-child` | YES | Hierarchy |
-| `discovered-from` | NO | Found during work |
 
 ### Session Workflow
 
 ```bash
 # Start of session
-forge ready                 # What can I work on?
-forge show <id>             # Review the issue
+forge ready
+forge show <id>
 forge claim <id>
 
 # During work
@@ -217,9 +181,8 @@ bd comments add <id> "Progress update"
 forge update <id> --notes "Found edge case"
 
 # End of session
-forge close <id>            # If done, or:
-forge update <id> --status blocked --comment "Needs API response"
-forge sync                  # Always sync at end!
+forge close <id>
+forge sync
 ```
 
 ---
@@ -546,7 +509,7 @@ gh issue create --title "..." --body "..."
 
 ### Beads (`bd`) — Minimum Version
 
-**Minimum version**: v0.49.x
+**Recommended stable version**: `v1.0.0`
 **Check installed version**:
 ```bash
 bd --version
@@ -554,8 +517,8 @@ bd --version
 
 **Install / Update**:
 ```bash
-# macOS / Linux
-bun add -g @beads/bd
+# Recommended
+bunx forge setup
 
 # Windows — use PowerShell installer (npm has EPERM bug)
 irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
@@ -596,7 +559,9 @@ forge show <id>             # View details
 forge update <id> --status X   # Update status
 bd dep add <a> <b>          # a depends on b
 forge close <id>            # Complete
-forge sync                  # Beads sync
+forge sync                  # Routine repo sync
+bash scripts/beads-migrate-to-dolt.sh
+bash scripts/beads-upgrade-smoke.sh
 ```
 
 ### GitHub CLI
