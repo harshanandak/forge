@@ -226,6 +226,24 @@ describe('forge issue service contract', () => {
     });
   });
 
+  test('default beads backend treats empty show payloads as not-found failures', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      runBdCommand: async () => ({
+        code: 0,
+        stdout: '[]',
+        stderr: '',
+      }),
+    });
+
+    await expect(backend.show(['forge-missing', '--json'], { projectRoot: '/repo' })).resolves.toEqual({
+      success: false,
+      error: 'Issue not found: forge-missing',
+    });
+  });
+
   test('default beads backend bypasses init checks for bd help passthrough', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
     const calls = [];
@@ -309,5 +327,57 @@ describe('forge issue service contract', () => {
       { stream: 'stdout', chunk: 'visible stdout\n' },
       { stream: 'stderr', chunk: 'visible stderr\n' },
     ]);
+  });
+
+  test('default beads backend does not emit captured stdout before returning it', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const writes = [];
+    let childRef;
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      spawn: (_command, _args, _options) => {
+        const events = {};
+        const stdoutHandlers = {};
+        const stderrHandlers = {};
+        childRef = {
+          stdout: {
+            setEncoding() {},
+            on(event, handler) {
+              stdoutHandlers[event] = handler;
+            },
+          },
+          stderr: {
+            setEncoding() {},
+            on(event, handler) {
+              stderrHandlers[event] = handler;
+            },
+          },
+          on(event, handler) {
+            events[event] = handler;
+          },
+          emitSuccess() {
+            stdoutHandlers.data?.('captured stdout\n');
+            events.close?.(0);
+          },
+        };
+
+        return childRef;
+      },
+      stdout: { write: chunk => writes.push({ stream: 'stdout', chunk }) },
+      stderr: { write: chunk => writes.push({ stream: 'stderr', chunk }) },
+    });
+
+    const promise = backend.create(['--help'], { projectRoot: '/repo' });
+    childRef.emitSuccess();
+
+    await expect(promise).resolves.toEqual({
+      success: true,
+      operation: 'create',
+      output: 'captured stdout\n',
+      stderr: '',
+    });
+
+    expect(writes).toEqual([]);
   });
 });
