@@ -15,7 +15,7 @@ This wave is intentionally narrow. It establishes the command shape and backend 
 
 ## Success Criteria
 
-1. `lib/commands/issues.js` exists and auto-registers through [`lib/commands/_registry.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/commands/_registry.js:60) without any `bin/forge.js` changes.
+1. `lib/commands/issues.js` exists and auto-registers through `lib/commands/_registry.js` without any `bin/forge.js` changes.
 2. A new Forge-owned issue service module exists in a new file and exposes a pluggable backend contract for `create`, `list`, `show`, `close`, and `update`.
 3. The default backend for this wave delegates to the `bd` CLI, but the command module itself does not build `bd` argv directly.
 4. `forge issues list`, `forge issues create`, `forge issues show <id>`, and `forge issues close <id>` work through the new service surface, with `update` implemented in the backend contract even if it is not advertised as the headline UX path.
@@ -24,11 +24,11 @@ This wave is intentionally narrow. It establishes the command shape and backend 
 
 ## Out Of Scope
 
-- Replacing the existing singular [`lib/commands/issue.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/commands/issue.js:1) or the legacy top-level aliases (`forge create`, `forge show`, `forge close`, `forge list`) in this wave.
+- Replacing the existing singular `lib/commands/issue.js` or the legacy top-level aliases (`forge create`, `forge show`, `forge close`, `forge list`) in this wave.
 - Implementing GitHub Issues, Linear, or Jira backends.
 - Implementing sync queues, reconciliation rules, import flows, or shared-memory features from the broader `forge-f3lx` epic.
 - Modifying `lib/commands/worktree.js`, `lib/commands/setup.js`, or `lib/beads-health-check.js`.
-- Modifying internals of [`lib/beads-setup.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/beads-setup.js:348); only its exported API may be consumed.
+- Modifying internals of `lib/beads-setup.js`; only its exported API may be consumed.
 
 ## Approach Selected
 
@@ -66,7 +66,7 @@ runIssueOperation(operation, rawArgs, projectRoot, deps)
 
 Why this approach:
 
-- The current implementation in [`lib/commands/_issue.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/commands/_issue.js:1) shells out to `bd` directly from the command layer, which is fast to wire but is the wrong ownership boundary for v2.
+- The current implementation in `lib/commands/_issue.js` shells out to `bd` directly from the command layer, which is fast to wire but is the wrong ownership boundary for v2.
 - The v2 strategy doc explicitly calls for `issueCore.create()` to sit behind both CLI and MCP entrypoints and for Forge to wrap Beads as a backend/cache rather than exposing `bd` as the real API.
 - A new plural command avoids collisions with the legacy singular command surface and satisfies the user constraint to keep this wave's code in new files.
 
@@ -116,15 +116,15 @@ Use the repo's `/dev` decision-gate rubric.
 
 ### Current Repo Findings
 
-- [`lib/commands/_registry.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/commands/_registry.js:60) auto-discovers `.js` files in `lib/commands/` and requires only `{ name, description, handler }`.
-- [`lib/commands/_issue.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/commands/_issue.js:1) already provides a legacy command surface for `forge issue`, `forge create`, `forge update`, `forge claim`, `forge close`, `forge show`, `forge list`, and `forge ready`.
-- Existing tests already cover the legacy surface in [`test/commands/issue.test.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/test/commands/issue.test.js:1) and [`test/commands/_issue.test.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/test/commands/_issue.test.js:1).
-- [`lib/beads-setup.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/lib/beads-setup.js:348) exports `sanitizePrefix`, `writeBeadsConfig`, `writeBeadsGitignore`, `isBeadsInitialized`, `preSeedJsonl`, and `safeBeadsInit`.
+- `lib/commands/_registry.js` auto-discovers `.js` files in `lib/commands/` and requires only `{ name, description, handler }`.
+- `lib/commands/_issue.js` already provides a legacy command surface for `forge issue`, `forge create`, `forge update`, `forge claim`, `forge close`, `forge show`, `forge list`, and `forge ready`.
+- Existing tests already cover the legacy surface in `test/commands/issue.test.js` and `test/commands/_issue.test.js`.
+- `lib/beads-setup.js` exports `sanitizePrefix`, `writeBeadsConfig`, `writeBeadsGitignore`, `isBeadsInitialized`, `preSeedJsonl`, and `safeBeadsInit`.
 
 ### V2 Strategy Findings
 
-- [`docs/plans/2026-04-06-forge-v2-unified-strategy.md`](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/docs/plans/2026-04-06-forge-v2-unified-strategy.md:292) requires CLI/MCP parity through a shared issue core.
-- The same strategy doc defines a future-friendly `IssueBackend` shape with Beads, GitHub Issues, Linear, and Jira adapters ([line 940](C:/Users/harsha_befach/Downloads/forge/.worktrees/forge-f3lx-issues/docs/plans/2026-04-06-forge-v2-unified-strategy.md:940)).
+- `docs/plans/2026-04-06-forge-v2-unified-strategy.md` requires CLI/MCP parity through a shared issue core.
+- The same strategy doc defines a future-friendly `IssueBackend` shape with Beads, GitHub Issues, Linear, and Jira adapters (see `docs/plans/2026-04-06-forge-v2-unified-strategy.md`, around line 940).
 - The current wave only needs the Beads-backed default plus the abstraction seam; cloud-agent GitHub fallback belongs to later work.
 
 ### Planning Preconditions

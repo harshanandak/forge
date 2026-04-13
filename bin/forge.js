@@ -2554,7 +2554,7 @@ function parseFlags() {
 
   // Issue passthrough commands delegate all flags to bd.
   // Skip global parsing so flags like --type, -p, --help reach the handler intact.
-  const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'issue'];
+  const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'issue', 'issues'];
   if (issuePassthroughCommands.includes(args[0])) {
     return flags;
   }

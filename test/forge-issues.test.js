@@ -127,46 +127,46 @@ describe('forge issue service contract', () => {
       isBeadsInitialized: () => true,
       execFileSync: (command, args, options) => {
         calls.push({ command, args, options });
-        return '';
+        return `mocked ${args[0]} output`;
       },
     });
 
     await expect(backend.create(['--title', 'New issue'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'create' });
+      .resolves.toEqual({ success: true, operation: 'create', output: 'mocked create output' });
     await expect(backend.list(['--json'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'list' });
+      .resolves.toEqual({ success: true, operation: 'list', output: 'mocked list output' });
     await expect(backend.show(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'show' });
+      .resolves.toEqual({ success: true, operation: 'show', output: 'mocked show output' });
     await expect(backend.close(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'close' });
+      .resolves.toEqual({ success: true, operation: 'close', output: 'mocked close output' });
     await expect(backend.update(['forge-1', '--title', 'Renamed'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'update' });
+      .resolves.toEqual({ success: true, operation: 'update', output: 'mocked update output' });
 
     expect(calls).toEqual([
       {
         command: 'bd',
         args: ['create', '--title', 'New issue'],
-        options: { cwd: '/repo', stdio: 'inherit' },
+        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
       },
       {
         command: 'bd',
         args: ['list', '--json'],
-        options: { cwd: '/repo', stdio: 'inherit' },
+        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
       },
       {
         command: 'bd',
         args: ['show', 'forge-1'],
-        options: { cwd: '/repo', stdio: 'inherit' },
+        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
       },
       {
         command: 'bd',
         args: ['close', 'forge-1'],
-        options: { cwd: '/repo', stdio: 'inherit' },
+        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
       },
       {
         command: 'bd',
         args: ['update', 'forge-1', '--title', 'Renamed'],
-        options: { cwd: '/repo', stdio: 'inherit' },
+        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
       },
     ]);
   });
