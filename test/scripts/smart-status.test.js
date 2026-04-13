@@ -293,6 +293,34 @@ describe('smart-status.sh', () => {
     }
   });
 
+  test('falls back to the repo basename when .beads/metadata.json is malformed', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'malformed-metadata-'));
+    const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
+      repoRoot,
+      databaseName: 'forge-shared-db',
+    });
+
+    try {
+      fs.writeFileSync(path.join(repoRoot, '.beads', 'metadata.json'), '{"dolt_database":');
+      const fallbackPrefix = path.basename(repoRoot)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+      const result = runSmartStatus(['--json'], {
+        BD_CMD: bdScript,
+        GIT_CMD: gitScript,
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(capturePath, 'utf8')).toContain(`--prefix ${fallbackPrefix}`);
+      expect(fs.readFileSync(capturePath, 'utf8')).not.toContain('forge-shared-db');
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(repoRoot);
+    }
+  });
+
   describe('scoring factors', () => {
     test('priority_weight: P0=5 > P1=4 > P2=3 > P3=2 > P4=1', () => {
       const mockData = {

@@ -176,6 +176,45 @@ describe('forge worktree command', () => {
     expect(result.beadsWarning).toContain('initialized fresh');
   });
 
+  test('create keeps going with a warning when EPERM fallback cannot run bd init', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const calls = [];
+    const mockExec = (cmd, args, _opts) => {
+      calls.push({ cmd, args });
+      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'bd' && args[0] === 'init') {
+        throw new Error('spawn bd ENOENT');
+      }
+      if (cmd === 'bd' && args[0] === '--version') {
+        throw new Error('spawn bd ENOENT');
+      }
+      return Buffer.from('');
+    };
+    const mockSpawn = () => ({ status: 0 });
+    const mockFs = {
+      mkdirSync: () => {},
+      existsSync: (p) => p.endsWith('.beads'),
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+      readdirSync: (_p) => [],
+    };
+
+    const result = await mod.handler(
+      ['create', 'missing-bd'], {}, '/fake/root',
+      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
+    );
+
+    expect(result.success).toBe(true);
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force']
+    });
+    expect(result.beadsWarning).toContain('fresh init failed');
+  });
+
   // (e) create: skips beads setup when .beads doesn't exist
   test('create skips beads setup when .beads does not exist', async () => {
     const mod = require('../../lib/commands/worktree');
