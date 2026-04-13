@@ -188,4 +188,18 @@ describe('forge issue service contract', () => {
       error: 'Beads (bd) command not found. Install or initialize Beads before using forge issues.',
     });
   });
+
+  test('default beads backend treats zero-exit bd soft failures as forge-level errors', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      execFileSync: () => 'Error resolving/updating forge-missing: issue not found',
+    });
+
+    await expect(backend.update(['forge-missing', '--title', 'Renamed'], { projectRoot: '/repo' })).resolves.toEqual({
+      success: false,
+      error: 'Error resolving/updating forge-missing: issue not found',
+    });
+  });
 });
