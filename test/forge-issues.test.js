@@ -125,9 +125,9 @@ describe('forge issue service contract', () => {
 
     const backend = createBeadsIssueBackend({
       isBeadsInitialized: () => true,
-      execFileSync: (command, args, options) => {
-        calls.push({ command, args, options });
-        return `mocked ${args[0]} output`;
+      runBdCommand: async (args, projectRoot) => {
+        calls.push({ args, projectRoot });
+        return { code: 0, stdout: `mocked ${args[0]} output`, stderr: '' };
       },
     });
 
@@ -144,29 +144,24 @@ describe('forge issue service contract', () => {
 
     expect(calls).toEqual([
       {
-        command: 'bd',
         args: ['create', '--title', 'New issue'],
-        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+        projectRoot: '/repo',
       },
       {
-        command: 'bd',
         args: ['list', '--json'],
-        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+        projectRoot: '/repo',
       },
       {
-        command: 'bd',
         args: ['show', 'forge-1'],
-        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+        projectRoot: '/repo',
       },
       {
-        command: 'bd',
         args: ['close', 'forge-1'],
-        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+        projectRoot: '/repo',
       },
       {
-        command: 'bd',
         args: ['update', 'forge-1', '--title', 'Renamed'],
-        options: { cwd: '/repo', stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' },
+        projectRoot: '/repo',
       },
     ]);
   });
@@ -176,7 +171,7 @@ describe('forge issue service contract', () => {
 
     const backend = createBeadsIssueBackend({
       isBeadsInitialized: () => true,
-      execFileSync: () => {
+      runBdCommand: async () => {
         const error = new Error('spawn bd ENOENT');
         error.code = 'ENOENT';
         throw error;
@@ -194,12 +189,44 @@ describe('forge issue service contract', () => {
 
     const backend = createBeadsIssueBackend({
       isBeadsInitialized: () => true,
-      execFileSync: () => 'Error resolving/updating forge-missing: issue not found',
+      runBdCommand: async () => ({
+        code: 0,
+        stdout: 'Error resolving/updating forge-missing: issue not found',
+        stderr: '',
+      }),
     });
 
     await expect(backend.update(['forge-missing', '--title', 'Renamed'], { projectRoot: '/repo' })).resolves.toEqual({
       success: false,
       error: 'Error resolving/updating forge-missing: issue not found',
     });
+  });
+
+  test('default beads backend bypasses init checks for bd help passthrough', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const calls = [];
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => false,
+      runBdCommand: async (args, projectRoot) => {
+        calls.push({ args, projectRoot });
+        return {
+          code: 0,
+          stdout: 'bd create help output',
+          stderr: '',
+        };
+      },
+    });
+
+    await expect(backend.create(['--help'], { projectRoot: '/repo' })).resolves.toEqual({
+      success: true,
+      operation: 'create',
+      output: 'bd create help output',
+    });
+
+    expect(calls).toEqual([{
+      args: ['create', '--help'],
+      projectRoot: '/repo',
+    }]);
   });
 });
