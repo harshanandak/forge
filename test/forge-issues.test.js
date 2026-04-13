@@ -81,6 +81,30 @@ describe('forge issue service contract', () => {
     });
   });
 
+  test('preserves backend method binding during operation dispatch', async () => {
+    const { createIssueService } = require('../lib/forge-issues');
+
+    class TestBackend {
+      constructor() {
+        this.prefix = 'backend-bound';
+      }
+
+      async show(args) {
+        return {
+          success: true,
+          output: `${this.prefix}:${args[0]}`,
+        };
+      }
+    }
+
+    const service = createIssueService({ backend: new TestBackend() });
+
+    await expect(service.run('show', ['forge-123'], { projectRoot: '/repo' })).resolves.toEqual({
+      success: true,
+      output: 'backend-bound:forge-123',
+    });
+  });
+
   test('uses dependency injection in the top-level operation runner', async () => {
     const { runIssueOperation } = require('../lib/forge-issues');
     const calls = [];
@@ -132,15 +156,15 @@ describe('forge issue service contract', () => {
     });
 
     await expect(backend.create(['--title', 'New issue'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'create', output: 'mocked create output' });
+      .resolves.toEqual({ success: true, operation: 'create', output: 'mocked create output', stderr: '' });
     await expect(backend.list(['--json'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'list', output: 'mocked list output' });
+      .resolves.toEqual({ success: true, operation: 'list', output: 'mocked list output', stderr: '' });
     await expect(backend.show(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'show', output: 'mocked show output' });
+      .resolves.toEqual({ success: true, operation: 'show', output: 'mocked show output', stderr: '' });
     await expect(backend.close(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'close', output: 'mocked close output' });
+      .resolves.toEqual({ success: true, operation: 'close', output: 'mocked close output', stderr: '' });
     await expect(backend.update(['forge-1', '--title', 'Renamed'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'update', output: 'mocked update output' });
+      .resolves.toEqual({ success: true, operation: 'update', output: 'mocked update output', stderr: '' });
 
     expect(calls).toEqual([
       {
@@ -222,11 +246,68 @@ describe('forge issue service contract', () => {
       success: true,
       operation: 'create',
       output: 'bd create help output',
+      stderr: '',
     });
 
     expect(calls).toEqual([{
       args: ['create', '--help'],
       projectRoot: '/repo',
     }]);
+  });
+
+  test('default beads backend streams successful stderr passthrough output', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const writes = [];
+    let childRef;
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      spawn: (_command, _args, _options) => {
+        const events = {};
+        const stdoutHandlers = {};
+        const stderrHandlers = {};
+        childRef = {
+          stdout: {
+            setEncoding() {},
+            on(event, handler) {
+              stdoutHandlers[event] = handler;
+            },
+          },
+          stderr: {
+            setEncoding() {},
+            on(event, handler) {
+              stderrHandlers[event] = handler;
+            },
+          },
+          on(event, handler) {
+            events[event] = handler;
+          },
+          emitSuccess() {
+            stdoutHandlers.data?.('visible stdout\n');
+            stderrHandlers.data?.('visible stderr\n');
+            events.close?.(0);
+          },
+        };
+
+        return childRef;
+      },
+      stdout: { write: chunk => writes.push({ stream: 'stdout', chunk }) },
+      stderr: { write: chunk => writes.push({ stream: 'stderr', chunk }) },
+    });
+
+    const promise = backend.list([], { projectRoot: '/repo' });
+    childRef.emitSuccess();
+
+    await expect(promise).resolves.toEqual({
+      success: true,
+      operation: 'list',
+      output: '',
+      stderr: '',
+    });
+
+    expect(writes).toEqual([
+      { stream: 'stdout', chunk: 'visible stdout\n' },
+      { stream: 'stderr', chunk: 'visible stderr\n' },
+    ]);
   });
 });
