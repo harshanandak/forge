@@ -35,7 +35,7 @@ describe('forge issues command', () => {
     expect(result.error).toContain('forge issues <subcommand>');
   });
 
-  test('dispatches create, list, show, and close through the issue service', async () => {
+  test('dispatches create, list, show, close, and update through the issue service', async () => {
     const issues = require('../../lib/commands/issues');
     const calls = [];
     const runIssueOperation = async (operation, args, projectRoot, deps) => {
@@ -51,8 +51,10 @@ describe('forge issues command', () => {
       .resolves.toEqual({ success: true, operation: 'show' });
     await expect(issues.handler(['close', 'forge-1'], {}, '/repo', { runIssueOperation }))
       .resolves.toEqual({ success: true, operation: 'close' });
+    await expect(issues.handler(['update', 'forge-1', '--title', 'Renamed'], {}, '/repo', { runIssueOperation }))
+      .resolves.toEqual({ success: true, operation: 'update' });
 
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     expect(calls[0]).toEqual({
       operation: 'create',
       args: ['--title', 'New'],
@@ -62,6 +64,12 @@ describe('forge issues command', () => {
     expect(calls[3]).toEqual({
       operation: 'close',
       args: ['forge-1'],
+      projectRoot: '/repo',
+      deps: { runIssueOperation },
+    });
+    expect(calls[4]).toEqual({
+      operation: 'update',
+      args: ['forge-1', '--title', 'Renamed'],
       projectRoot: '/repo',
       deps: { runIssueOperation },
     });
