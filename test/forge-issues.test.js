@@ -105,4 +105,87 @@ describe('forge issue service contract', () => {
       },
     }]);
   });
+
+  test('default beads backend rejects issue operations when beads is not initialized', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => false,
+    });
+
+    await expect(backend.list([], { projectRoot: '/repo' })).resolves.toEqual({
+      success: false,
+      error: 'Beads is not initialized in this project. Run forge setup before using forge issues.',
+    });
+  });
+
+  test('default beads backend executes bd with mapped arguments', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const calls = [];
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      execFileSync: (command, args, options) => {
+        calls.push({ command, args, options });
+        return '';
+      },
+    });
+
+    await expect(backend.create(['--title', 'New issue'], { projectRoot: '/repo' }))
+      .resolves.toEqual({ success: true, operation: 'create' });
+    await expect(backend.list(['--json'], { projectRoot: '/repo' }))
+      .resolves.toEqual({ success: true, operation: 'list' });
+    await expect(backend.show(['forge-1'], { projectRoot: '/repo' }))
+      .resolves.toEqual({ success: true, operation: 'show' });
+    await expect(backend.close(['forge-1'], { projectRoot: '/repo' }))
+      .resolves.toEqual({ success: true, operation: 'close' });
+    await expect(backend.update(['forge-1', '--title', 'Renamed'], { projectRoot: '/repo' }))
+      .resolves.toEqual({ success: true, operation: 'update' });
+
+    expect(calls).toEqual([
+      {
+        command: 'bd',
+        args: ['create', '--title', 'New issue'],
+        options: { cwd: '/repo', stdio: 'inherit' },
+      },
+      {
+        command: 'bd',
+        args: ['list', '--json'],
+        options: { cwd: '/repo', stdio: 'inherit' },
+      },
+      {
+        command: 'bd',
+        args: ['show', 'forge-1'],
+        options: { cwd: '/repo', stdio: 'inherit' },
+      },
+      {
+        command: 'bd',
+        args: ['close', 'forge-1'],
+        options: { cwd: '/repo', stdio: 'inherit' },
+      },
+      {
+        command: 'bd',
+        args: ['update', 'forge-1', '--title', 'Renamed'],
+        options: { cwd: '/repo', stdio: 'inherit' },
+      },
+    ]);
+  });
+
+  test('default beads backend translates missing bd binary into a forge-level error', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      execFileSync: () => {
+        const error = new Error('spawn bd ENOENT');
+        error.code = 'ENOENT';
+        throw error;
+      },
+    });
+
+    await expect(backend.show(['forge-1'], { projectRoot: '/repo' })).resolves.toEqual({
+      success: false,
+      error: 'Beads (bd) command not found. Install or initialize Beads before using forge issues.',
+    });
+  });
 });
