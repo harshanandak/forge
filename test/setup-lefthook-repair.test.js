@@ -171,4 +171,37 @@ exit 1
     expect(checkLefthookStatus(tmpDir).binaryAvailable).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, 'node_modules', '.bin', 'lefthook'))).toBe(true);
   });
+
+  test('setup emits a hard actionable warning when declared lefthook cannot be repaired in the worktree', async () => {
+    const tmpDir = makeTempDir();
+    const mockBinDir = path.join(tmpDir, '.mock-bin');
+    fs.mkdirSync(mockBinDir, { recursive: true });
+
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({
+      name: 'repair-warning-fixture',
+      version: '1.0.0',
+      devDependencies: {
+        lefthook: '^2.1.4',
+      },
+    }, null, 2));
+
+    writeExecutable(path.join(mockBinDir, 'npm'), `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "install" ]; then
+  echo "install failed" >&2
+  exit 1
+fi
+echo "unexpected npm args: $*" >&2
+exit 1
+`);
+
+    const result = await runSetup(['--agents', 'claude', '--skip-external'], tmpDir, {
+      PATH: `${mockBinDir}${path.delimiter}${process.env.PATH || ''}`,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Installing lefthook dependencies (binary missing)');
+    expect(result.stderr).toContain('raw git push remains unsafe in this worktree');
+    expect(result.stdout).toContain('Run npm install in this worktree');
+  });
 });

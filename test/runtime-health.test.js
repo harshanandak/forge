@@ -71,6 +71,30 @@ describe('runtime health checks', () => {
     expect(result.checks.lefthook.state).toBe('missing-dependency');
   });
 
+  test('missing lefthook binary produces a hard-stop diagnostic with the worktree repair hint', () => {
+    const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
+
+    const lefthookStatus = checkLefthookStatus(projectRoot);
+    expect(lefthookStatus.state).toBe('missing-binary');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub(),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.healthy).toBe(false);
+    expect(result.hardStop).toBe(true);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'LEFTHOOK_MISSING',
+        severity: 'hard-stop'
+      })
+    );
+    expect(result.checks.lefthook.state).toBe('missing-binary');
+    expect(result.checks.lefthook.message).toContain('bun install');
+  });
+
   test('missing bd produces a hard-stop diagnostic', () => {
     const projectRoot = createProjectRoot();
 
