@@ -51,6 +51,13 @@ describe('CLI Registry Integration', () => {
       expect(commands.has('dev')).toBe(true);
       expect(commands.has('validate')).toBe(true);
       expect(commands.has('ship')).toBe(true);
+    }, 15000);
+
+    test('legacy and plural issue commands coexist in the registry', () => {
+      const { commands } = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+
+      expect(commands.has('issue')).toBe(true);
+      expect(commands.has('issues')).toBe(true);
     });
 
     test('forge sync dispatches to registry (not unknown command)', () => {
