@@ -20,15 +20,15 @@ This command helps you understand the current state of the project before starti
 
 ```bash
 # Sync team state before showing status
-bash scripts/sync-utils.sh auto-sync
+forge sync
 ```
 
 ### Step 1: Smart Status (ranked issues with conflict detection)
 
 ```bash
-bash scripts/smart-status.sh
+forge status
 ```
-This script dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed — the script handles everything.
+This command dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed.
 
 For full context on any issue: `bd show <id>`
 
@@ -77,10 +77,10 @@ Show current developer's active work and team overview:
 
 ```bash
 # Show my active issues
-bash scripts/forge-team/index.sh workload --me 2>&1 || true
+forge team workload --me 2>&1 || true
 
 # One-line team summary
-bash scripts/forge-team/index.sh dashboard 2>&1 | head -5 || true
+forge team dashboard 2>&1 | head -5 || true
 ```
 
 ## Next Steps

@@ -72,7 +72,7 @@ Before starting the per-task loop, check for cross-developer conflicts:
 
 ```bash
 # Auto-sync to get latest team state
-bash scripts/sync-utils.sh auto-sync
+forge sync
 
 # Check for conflicts with the current beads issue
 bash scripts/conflict-detect.sh --issue <beads-id>

@@ -54,7 +54,7 @@ Before proceeding to Phase 1, check for cross-developer conflicts:
 
 ```bash
 # Auto-sync to get latest team state
-bash scripts/sync-utils.sh auto-sync
+forge sync
 
 # Check for conflicts with this issue's planned work area
 bash scripts/conflict-detect.sh --issue <beads-id>
@@ -104,7 +104,7 @@ If merge conflicts or unmet dependencies are found:
 Before starting planning, verify team identity is mapped:
 
 ```bash
-bash scripts/forge-team/index.sh verify 2>&1 || true
+forge team verify 2>&1 || true
 ```
 
 If verify reports issues, address them before proceeding (the output will include `FORGE_AGENT_7f3a:PROMPT:` directives with exact commands to run).
