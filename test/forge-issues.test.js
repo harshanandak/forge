@@ -1,6 +1,9 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 describe('forge issue service contract', () => {
   test('exports service factory and operation runner', () => {
@@ -436,9 +439,16 @@ describe('forge issue service contract', () => {
   test('runBdCommand uses Windows bd command candidates until one succeeds', async () => {
     const { runBdCommand } = require('../lib/forge-issues');
     const calls = [];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-candidates-'));
+    const cmdPath = path.join(tempDir, 'bd.cmd');
+    const exePath = path.join(tempDir, 'bd.exe');
+
+    fs.writeFileSync(cmdPath, '@echo off\r\n', 'utf8');
+    fs.writeFileSync(exePath, '', 'utf8');
 
     const result = await runBdCommand('create', ['create', '--help'], '/repo', {
       platform: 'win32',
+      env: { PATH: tempDir },
       spawn: (command, _args, _options) => {
         calls.push(command);
         const events = {};
@@ -446,7 +456,7 @@ describe('forge issue service contract', () => {
         const stderrHandlers = {};
 
         queueMicrotask(() => {
-          if (command === 'bd.exe') {
+          if (command === cmdPath) {
             const error = new Error('spawn bd ENOENT');
             error.code = 'ENOENT';
             events.error?.(error);
@@ -482,6 +492,6 @@ describe('forge issue service contract', () => {
       stdout: 'BD CREATE HELP\n',
       stderr: '',
     });
-    expect(calls).toEqual(['bd.exe', 'bd']);
+    expect(calls).toEqual([cmdPath, exePath]);
   });
 });
