@@ -446,7 +446,7 @@ describe('forge issue service contract', () => {
         const stderrHandlers = {};
 
         queueMicrotask(() => {
-          if (command === 'bd.cmd') {
+          if (command === 'bd.exe') {
             const error = new Error('spawn bd ENOENT');
             error.code = 'ENOENT';
             events.error?.(error);
@@ -482,6 +482,6 @@ describe('forge issue service contract', () => {
       stdout: 'BD CREATE HELP\n',
       stderr: '',
     });
-    expect(calls).toEqual(['bd.cmd', 'bd.exe']);
+    expect(calls).toEqual(['bd.exe', 'bd']);
   });
 });
