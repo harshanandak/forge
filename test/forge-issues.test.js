@@ -244,6 +244,58 @@ describe('forge issue service contract', () => {
     });
   });
 
+  test('default beads backend captures successful show output for downstream consumers', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const writes = [];
+    let childRef;
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      spawn: (_command, _args, _options) => {
+        const events = {};
+        const stdoutHandlers = {};
+        const stderrHandlers = {};
+        childRef = {
+          stdout: {
+            setEncoding() {},
+            on(event, handler) {
+              stdoutHandlers[event] = handler;
+            },
+          },
+          stderr: {
+            setEncoding() {},
+            on(event, handler) {
+              stderrHandlers[event] = handler;
+            },
+          },
+          on(event, handler) {
+            events[event] = handler;
+          },
+          emitSuccess() {
+            stdoutHandlers.data?.('{"id":"forge-1"}');
+            events.close?.(0);
+          },
+        };
+
+        return childRef;
+      },
+      stdout: { write: chunk => writes.push({ stream: 'stdout', chunk }) },
+      stderr: { write: chunk => writes.push({ stream: 'stderr', chunk }) },
+    });
+
+    const promise = backend.show(['forge-1', '--json'], { projectRoot: '/repo' });
+    childRef.emitSuccess();
+
+    await expect(promise).resolves.toEqual({
+      success: true,
+      operation: 'show',
+      output: '{"id":"forge-1"}',
+      stderr: '',
+    });
+
+    expect(writes).toEqual([]);
+  });
+
   test('default beads backend bypasses init checks for bd help passthrough', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
     const calls = [];
