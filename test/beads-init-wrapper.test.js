@@ -2,6 +2,7 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('node:child_process');
 
 const { safeBeadsInit } = require('../lib/beads-setup');
 
@@ -243,6 +244,47 @@ describe('safeBeadsInit — hooks preservation', () => {
     if (fs.existsSync(hooksDir)) {
       const files = fs.readdirSync(hooksDir);
       expect(files.length).toBe(0);
+    }
+  });
+
+  test('restores the effective hooks path when called from a git worktree', () => {
+    const mainRepo = makeTmpDir();
+    const worktreeDir = path.join(mainRepo, 'parallel-worktree');
+
+    try {
+      execFileSync('git', ['init'], { cwd: mainRepo, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.name', 'Forge Tests'], { cwd: mainRepo, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.email', 'forge-tests@example.com'], { cwd: mainRepo, stdio: 'pipe' });
+      fs.writeFileSync(path.join(mainRepo, 'README.md'), 'seed\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: mainRepo, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'seed'], { cwd: mainRepo, stdio: 'pipe' });
+      execFileSync('git', ['worktree', 'add', worktreeDir, '-b', 'feat/test-hooks'], { cwd: mainRepo, stdio: 'pipe' });
+
+      const hooksDir = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
+        cwd: worktreeDir,
+        encoding: 'utf8',
+        stdio: 'pipe'
+      }).trim();
+      fs.mkdirSync(hooksDir, { recursive: true });
+      fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\necho "keep me"', { mode: 0o755 });
+
+      safeBeadsInit(worktreeDir, {
+        prefix: 'proj',
+        execBdInit: (root) => {
+          const effectiveHooksDir = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
+            cwd: root,
+            encoding: 'utf8',
+            stdio: 'pipe'
+          }).trim();
+          fs.writeFileSync(path.join(effectiveHooksDir, 'pre-push'), '#!/bin/sh\nbd hook pre-push', { mode: 0o755 });
+        }
+      });
+
+      expect(fs.readFileSync(path.join(hooksDir, 'pre-push'), 'utf8'))
+        .toBe('#!/bin/sh\necho "keep me"');
+    } finally {
+      rmrf(worktreeDir);
+      rmrf(mainRepo);
     }
   });
 });

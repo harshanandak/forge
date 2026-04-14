@@ -47,6 +47,7 @@ describe('bootstrapBeads', () => {
 
   test('passes metadata-derived database name to bd init during EPERM fallback', () => {
     const calls = [];
+    let safeInitCall;
     const mockExec = (cmd, args) => {
       calls.push({ cmd, args });
       if (cmd === 'bd' && args[0] === 'init') {
@@ -84,6 +85,11 @@ describe('bootstrapBeads', () => {
       _fs: mockFs,
       _platform: 'linux',
       mainProjectRoot: '/main',
+      _safeBeadsInit: (root, options) => {
+        safeInitCall = { root, options };
+        options.execBdInit(root);
+        return { success: true, skipped: false, warnings: [], errors: [] };
+      }
     });
 
     expect(result).toEqual({
@@ -91,6 +97,7 @@ describe('bootstrapBeads', () => {
       strategy: 'fresh-init',
       warning: 'Beads bootstrap initialized fresh (no backup found)'
     });
+    expect(safeInitCall.root).toBe('/worktree');
     expect(calls).toContainEqual({
       cmd: 'bd',
       args: ['init', '--force', '--database', 'forge-shared-db']
