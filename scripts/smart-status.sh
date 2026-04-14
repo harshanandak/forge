@@ -138,9 +138,17 @@ fi
 
 _bd_list_err="$("$BD" list --json --limit 0 2>&1 >/dev/null || true)"
 if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
-  # Derive prefix from repo root directory name (not pwd, which could be a subdirectory)
   _repo_root="$("$GIT" rev-parse --show-toplevel 2>/dev/null || pwd)"
-  _bd_prefix="$(basename "$_repo_root" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
+  _metadata_path="$_repo_root/.beads/metadata.json"
+  _bd_prefix=""
+  if [ -f "$_metadata_path" ]; then
+    if _metadata_prefix="$(jq -r '(.dolt_database // "") | strings' "$_metadata_path" 2>/dev/null)"; then
+      _bd_prefix="$(printf '%s' "$_metadata_prefix" | tr -d '\r')"
+    fi
+  fi
+  if [ -z "$_bd_prefix" ]; then
+    _bd_prefix="$(basename "$_repo_root" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
+  fi
   echo "Beads database not found — attempting auto-recovery..." >&2
   if "$BD" init --force --prefix "$_bd_prefix" >/dev/null 2>&1; then
     if [ -d "$_repo_root/.beads/backup" ] && ls "$_repo_root/.beads/backup"/*.jsonl >/dev/null 2>&1; then

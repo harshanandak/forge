@@ -1,6 +1,18 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const path = require('path');
+
+function createMockSafeBeadsInit() {
+  return (root, options) => {
+    try {
+      options.execBdInit(root);
+      return { success: true, skipped: false, warnings: [], errors: [] };
+    } catch (error) {
+      return { success: false, skipped: false, warnings: [], errors: [error.message] };
+    }
+  };
+}
 
 // ---------------------------------------------------------------------------
 // forge worktree command — test/forge-worktree.test.js
@@ -93,11 +105,12 @@ describe('forge worktree command', () => {
     expect(symlinkCalls[0].type).toBe('junction');
   });
 
-  // (d) create: falls back to copy on EPERM
-  test('create falls back to copy when symlink throws EPERM', async () => {
+  // (d) create: falls back to backup restore on EPERM
+  test('create restores from backup when symlink throws EPERM', async () => {
     const mod = require('../../lib/commands/worktree');
-    let copyCalled = false;
+    const calls = [];
     const mockExec = (cmd, args, _opts) => {
+      calls.push({ cmd, args });
       if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
       if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
       return Buffer.from('');
@@ -111,17 +124,124 @@ describe('forge worktree command', () => {
         err.code = 'EPERM';
         throw err;
       },
-      readdirSync: (_p) => ['issue-abc.json', 'daemon.lock', 'config.json'],
-      cpSync: () => { copyCalled = true; },
+      readdirSync: (_p) => ['issues.jsonl'],
+      cpSync: () => {
+        throw new Error('copy fallback should not be used');
+      },
     };
 
     const result = await mod.handler(
       ['create', 'perm-test'], {}, '/fake/root',
-      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
+      {
+        _exec: mockExec,
+        _spawn: mockSpawn,
+        _fs: mockFs,
+        _platform: 'linux',
+        _safeBeadsInit: createMockSafeBeadsInit()
+      }
     );
 
     expect(result.success).toBe(true);
-    expect(copyCalled).toBe(true);
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force']
+    });
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['backup', 'restore', path.resolve('/fake/root', '.beads', 'backup')]
+    });
+    expect(result.beadsWarning).toContain('restored from backup');
+  });
+
+  test('create warns after fresh init when backup restore is unavailable', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const calls = [];
+    const mockExec = (cmd, args, _opts) => {
+      calls.push({ cmd, args });
+      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'bd' && args[0] === '--version') return Buffer.from('beads 1.0.0\n');
+      if (cmd === 'bd' && args[0] === 'backup' && args[1] === 'restore') {
+        throw new Error('no backup files found');
+      }
+      return Buffer.from('');
+    };
+    const mockSpawn = () => ({ status: 0 });
+    const mockFs = {
+      mkdirSync: () => {},
+      existsSync: (p) => p.endsWith('.beads'),
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+      readdirSync: (_p) => [],
+      cpSync: () => {
+        throw new Error('copy fallback should not be used');
+      },
+    };
+
+    const result = await mod.handler(
+      ['create', 'fresh-init'], {}, '/fake/root',
+      {
+        _exec: mockExec,
+        _spawn: mockSpawn,
+        _fs: mockFs,
+        _platform: 'linux',
+        _safeBeadsInit: createMockSafeBeadsInit()
+      }
+    );
+
+    expect(result.success).toBe(true);
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force']
+    });
+    expect(result.beadsWarning).toContain('initialized fresh');
+  });
+
+  test('create keeps going with a warning when EPERM fallback cannot run bd init', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const calls = [];
+    const mockExec = (cmd, args, _opts) => {
+      calls.push({ cmd, args });
+      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'bd' && args[0] === 'init') {
+        throw new Error('spawn bd ENOENT');
+      }
+      if (cmd === 'bd' && args[0] === '--version') {
+        throw new Error('spawn bd ENOENT');
+      }
+      return Buffer.from('');
+    };
+    const mockSpawn = () => ({ status: 0 });
+    const mockFs = {
+      mkdirSync: () => {},
+      existsSync: (p) => p.endsWith('.beads'),
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+      readdirSync: (_p) => [],
+    };
+
+    const result = await mod.handler(
+      ['create', 'missing-bd'], {}, '/fake/root',
+      {
+        _exec: mockExec,
+        _spawn: mockSpawn,
+        _fs: mockFs,
+        _platform: 'linux',
+        _safeBeadsInit: createMockSafeBeadsInit()
+      }
+    );
+
+    expect(result.success).toBe(true);
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force']
+    });
+    expect(result.beadsWarning).toContain('fresh init failed');
   });
 
   // (e) create: skips beads setup when .beads doesn't exist

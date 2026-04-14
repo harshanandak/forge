@@ -8,7 +8,8 @@ const {
   writeBeadsConfig,
   writeBeadsGitignore,
   isBeadsInitialized,
-  preSeedJsonl
+  preSeedJsonl,
+  readBeadsDatabaseName
 } = require('../lib/beads-setup');
 
 /**
@@ -272,5 +273,45 @@ describe('preSeedJsonl', () => {
     preSeedJsonl(tmpDir);
 
     expect(fs.existsSync(path.join(tmpDir, '.beads'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readBeadsDatabaseName
+// ---------------------------------------------------------------------------
+describe('readBeadsDatabaseName', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fs.mkdirSync(path.join(tmpDir, '.beads'), { recursive: true });
+  });
+  afterEach(() => {
+    rmrf(tmpDir);
+  });
+
+  test('prefers dolt_database from metadata.json', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.beads', 'metadata.json'),
+      JSON.stringify({ database: 'dolt', dolt_database: 'forge-shared' }, null, 2),
+    );
+
+    expect(readBeadsDatabaseName(tmpDir)).toBe('forge-shared');
+  });
+
+  test('falls back to database when dolt_database is absent', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.beads', 'metadata.json'),
+      JSON.stringify({ database: 'forge-fallback' }, null, 2),
+    );
+
+    expect(readBeadsDatabaseName(tmpDir)).toBe('forge-fallback');
+  });
+
+  test('returns null when metadata.json is missing or malformed', () => {
+    expect(readBeadsDatabaseName(tmpDir)).toBeNull();
+
+    fs.writeFileSync(path.join(tmpDir, '.beads', 'metadata.json'), '{not-json');
+    expect(readBeadsDatabaseName(tmpDir)).toBeNull();
   });
 });

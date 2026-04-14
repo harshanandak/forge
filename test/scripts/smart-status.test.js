@@ -161,6 +161,58 @@ REAL_JQ="${realJq}"
   return { tmpDir, wrapperPath };
 }
 
+function createMetadataRecoveryMocks({ repoRoot, databaseName, metadata }) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-recovery-'));
+  const bdScript = path.join(tmpDir, 'bd');
+  const gitScript = path.join(tmpDir, 'git');
+  const capturePath = path.join(tmpDir, 'init-args.txt');
+  const restoredFlag = path.join(tmpDir, 'restored.flag');
+
+  fs.mkdirSync(path.join(repoRoot, '.beads', 'backup'), { recursive: true });
+  fs.writeFileSync(
+    path.join(repoRoot, '.beads', 'metadata.json'),
+    JSON.stringify(metadata || { database: 'dolt', dolt_database: databaseName }, null, 2),
+  );
+  fs.writeFileSync(path.join(repoRoot, '.beads', 'backup', 'issues.jsonl'), '{"id":"forge-1"}\n');
+
+  fs.writeFileSync(bdScript, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "list" ]]; then
+  if [[ -f ${JSON.stringify(toBashPath(restoredFlag))} ]]; then
+    echo "[]"
+    exit 0
+  fi
+  echo "database repo-root not found" >&2
+  exit 1
+fi
+if [[ "$1" == "init" ]]; then
+  printf '%s' "$*" > ${JSON.stringify(toBashPath(capturePath))}
+  exit 0
+fi
+if [[ "$1" == "backup" && "$2" == "restore" ]]; then
+  touch ${JSON.stringify(toBashPath(restoredFlag))}
+  exit 0
+fi
+if [[ "$1" == "children" ]]; then
+  echo "[]"
+  exit 0
+fi
+echo "[]"
+`, { mode: 0o755 });
+
+  fs.writeFileSync(gitScript, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "rev-parse" && "$2" == "--show-toplevel" ]]; then
+  printf '%s\\n' ${JSON.stringify(toBashPath(repoRoot))}
+  exit 0
+fi
+echo "unexpected git args: $*" >&2
+exit 1
+`, { mode: 0o755 });
+
+  return { tmpDir, bdScript, gitScript, capturePath };
+}
+
 // Generate ISO date string N days ago
 function daysAgo(n) {
   const d = new Date();
@@ -218,6 +270,83 @@ describe('smart-status.sh', () => {
         cleanupTmpDir(jqTmpDir);
       }
     });
+
+  test('uses .beads/metadata.json dolt_database for auto-recovery instead of the repo basename', () => {
+    const repoRoot = fs.mkdtempSync(path.join(PROJECT_ROOT, '.tmp-basename-mismatch-'));
+    const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
+      repoRoot,
+      databaseName: 'forge-shared-db',
+    });
+
+    try {
+      const result = runSmartStatus(['--json'], {
+        BD_CMD: bdScript,
+        GIT_CMD: gitScript,
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(capturePath, 'utf8')).toContain('--prefix forge-shared-db');
+      expect(fs.readFileSync(capturePath, 'utf8')).not.toContain(path.basename(repoRoot));
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(repoRoot);
+    }
+  });
+
+  test('falls back to the repo basename when .beads/metadata.json is malformed', () => {
+    const repoRoot = fs.mkdtempSync(path.join(PROJECT_ROOT, '.tmp-malformed-metadata-'));
+    const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
+      repoRoot,
+      databaseName: 'forge-shared-db',
+    });
+
+    try {
+      fs.writeFileSync(path.join(repoRoot, '.beads', 'metadata.json'), '{"dolt_database":');
+      const fallbackPrefix = path.basename(repoRoot)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+      const result = runSmartStatus(['--json'], {
+        BD_CMD: bdScript,
+        GIT_CMD: gitScript,
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(capturePath, 'utf8')).toContain(`--prefix ${fallbackPrefix}`);
+      expect(fs.readFileSync(capturePath, 'utf8')).not.toContain('forge-shared-db');
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(repoRoot);
+    }
+  });
+
+  test('falls back to the repo basename when metadata only has the backend database field', () => {
+    const repoRoot = fs.mkdtempSync(path.join(PROJECT_ROOT, '.tmp-backend-only-metadata-'));
+    const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
+      repoRoot,
+      metadata: { database: 'dolt' },
+    });
+
+    try {
+      const fallbackPrefix = path.basename(repoRoot)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+      const result = runSmartStatus(['--json'], {
+        BD_CMD: bdScript,
+        GIT_CMD: gitScript,
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(capturePath, 'utf8')).toContain(`--prefix ${fallbackPrefix}`);
+      expect(fs.readFileSync(capturePath, 'utf8')).not.toContain('--prefix dolt');
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(repoRoot);
+    }
+  });
 
   describe('scoring factors', () => {
     test('priority_weight: P0=5 > P1=4 > P2=3 > P3=2 > P4=1', () => {
