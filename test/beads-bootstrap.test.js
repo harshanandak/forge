@@ -226,6 +226,63 @@ describe('bootstrapBeads', () => {
     expect(calls).toEqual([]);
   });
 
+  test('clears a stale bootstrap-backup directory before staging the current .beads state', () => {
+    const calls = [];
+    const renames = [];
+    const removed = [];
+    const backupPath = path.resolve('/worktree', '.beads.bootstrap-backup');
+    const mockExec = (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === 'git' && args[0] === 'rev-parse') {
+        return '.git';
+      }
+      throw new Error(`unexpected exec ${cmd}`);
+    };
+    const existing = new Set([
+      path.resolve('/main', '.beads'),
+      path.resolve('/worktree', '.beads'),
+      backupPath,
+    ]);
+    const mockFs = {
+      existsSync: (targetPath) => existing.has(targetPath),
+      renameSync: (fromPath, toPath) => {
+        renames.push([fromPath, toPath]);
+        existing.delete(fromPath);
+        existing.add(toPath);
+      },
+      rmSync: (targetPath) => {
+        removed.push(targetPath);
+        existing.delete(targetPath);
+      },
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+      readdirSync: () => [],
+    };
+
+    const result = bootstrapBeads('/worktree', {
+      _exec: mockExec,
+      _fs: mockFs,
+      _platform: 'linux',
+      mainProjectRoot: '/main',
+      _safeBeadsInit: () => ({ success: true, skipped: true, warnings: [], errors: [] })
+    });
+
+    expect(result).toEqual({
+      success: true,
+      strategy: 'existing-state',
+      warning: 'Beads bootstrap reused existing initialized state'
+    });
+    expect(removed).toEqual([backupPath]);
+    expect(renames).toEqual([
+      [path.resolve('/worktree', '.beads'), backupPath],
+      [backupPath, path.resolve('/worktree', '.beads')]
+    ]);
+    expect(calls).toEqual([]);
+  });
+
   test('skips backup restore when safeBeadsInit reports existing initialized state', () => {
     const calls = [];
     const mockExec = (cmd, args) => {
