@@ -129,6 +129,45 @@ describe('beadsHealthCheck', () => {
     expect(result.warning).toContain('sync');
   });
 
+  test('preserves bootstrap warning when sync also fails after recovery', () => {
+    const projectRoot = setupTmpDir([
+      JSON.stringify({ id: 'forge-0001', title: 'Setup verification', status: 'open' })
+    ]);
+    let createAttempts = 0;
+
+    const mockExec = (cmd, args, _opts) => {
+      const subcommand = args[0];
+      if (subcommand === 'create') {
+        createAttempts += 1;
+        if (createAttempts === 1) {
+          throw new Error('database forge-shared-db not found');
+        }
+        return 'Created issue: forge-0001\n';
+      }
+      if (subcommand === 'close') {
+        return 'Closed issue: forge-0001\n';
+      }
+      if (subcommand === 'sync') {
+        throw new Error('fatal: no remote configured');
+      }
+      return '';
+    };
+
+    const result = beadsHealthCheck(projectRoot, {
+      _exec: mockExec,
+      _bootstrap: () => ({
+        success: true,
+        strategy: 'fresh-init',
+        warning: 'Beads bootstrap initialized fresh (no backup found)'
+      })
+    });
+
+    expect(result.healthy).toBe(true);
+    expect(result.failedStep).toBeNull();
+    expect(result.warning).toContain('bootstrap warning: Beads bootstrap initialized fresh');
+    expect(result.warning).toContain('bd sync warning: fatal: no remote configured');
+  });
+
   test('cleanup removes only the test issue line from JSONL', () => {
     const issueLines = [
       JSON.stringify({ id: 'forge-0042', title: 'Setup verification', status: 'open' }),
