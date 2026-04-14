@@ -11,6 +11,7 @@ const { describe, test, expect } = require('bun:test');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { loadCommands } = require('../lib/commands/_registry');
 
 const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
@@ -53,6 +54,13 @@ describe('CLI Registry Integration', () => {
       expect(commands.has('ship')).toBe(true);
     });
 
+    test('legacy and plural issue commands coexist in the registry', () => {
+      const { commands } = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+
+      expect(commands.has('issue')).toBe(true);
+      expect(commands.has('issues')).toBe(true);
+    });
+
     test('forge sync dispatches to registry (not unknown command)', () => {
       const { stdout, stderr, status } = runForge(['sync']);
       const combined = stdout + stderr;
@@ -84,6 +92,34 @@ describe('CLI Registry Integration', () => {
       expect(status).toBe(0);
       expect(stdout).toContain('Current Stage: validate - Validation');
       expect(stdout).toContain('Source: authoritative workflow state');
+    });
+
+    test('forge issues create --help reaches the issues handler instead of global help parsing', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-help-'));
+      const fakeBd = path.join(tempDir, process.platform === 'win32' ? 'bd.cmd' : 'bd');
+
+      fs.writeFileSync(
+        fakeBd,
+        process.platform === 'win32'
+          ? '@echo off\r\necho BD CREATE HELP\r\n'
+          : '#!/bin/sh\necho BD CREATE HELP\n',
+        'utf8'
+      );
+
+      if (process.platform !== 'win32') {
+        fs.chmodSync(fakeBd, 0o755);
+      }
+
+      const { stdout, stderr, status } = runForge(
+        ['issues', 'create', '--help'],
+        { PATH: `${tempDir}${path.delimiter}${process.env.PATH}` }
+      );
+
+      const combined = stdout + stderr;
+      expect(status).toBe(0);
+      expect(combined).toContain('BD CREATE HELP');
+      expect(combined).not.toContain('Usage:');
+      expect(combined).not.toContain('npx forge setup');
     });
   });
 
