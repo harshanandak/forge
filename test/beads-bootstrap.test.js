@@ -45,6 +45,58 @@ describe('bootstrapBeads', () => {
     });
   });
 
+  test('passes metadata-derived database name to bd init during EPERM fallback', () => {
+    const calls = [];
+    const mockExec = (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === 'bd' && args[0] === 'init') {
+        return '';
+      }
+      if (cmd === 'git' && args[0] === 'rev-parse') {
+        return '.git';
+      }
+      throw new Error(`unexpected exec ${cmd}`);
+    };
+    const mockFs = {
+      existsSync: (targetPath) => {
+        return [
+          path.resolve('/main', '.beads'),
+          path.resolve('/main', '.beads', 'metadata.json')
+        ].includes(targetPath);
+      },
+      readFileSync: (targetPath) => {
+        if (targetPath === path.resolve('/main', '.beads', 'metadata.json')) {
+          return JSON.stringify({ dolt_database: 'forge-shared-db' });
+        }
+        throw new Error(`unexpected read ${targetPath}`);
+      },
+      readdirSync: () => [],
+      rmSync: () => {},
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+    };
+
+    const result = bootstrapBeads('/worktree', {
+      _exec: mockExec,
+      _fs: mockFs,
+      _platform: 'linux',
+      mainProjectRoot: '/main',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      strategy: 'fresh-init',
+      warning: 'Beads bootstrap initialized fresh (no backup found)'
+    });
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force', '--database', 'forge-shared-db']
+    });
+  });
+
   test('restores an existing .beads directory when symlink bootstrap fails with a non-EPERM error', () => {
     const calls = [];
     const renames = [];
