@@ -432,4 +432,56 @@ describe('forge issue service contract', () => {
 
     expect(writes).toEqual([]);
   });
+
+  test('runBdCommand uses Windows bd command candidates until one succeeds', async () => {
+    const { runBdCommand } = require('../lib/forge-issues');
+    const calls = [];
+
+    const result = await runBdCommand('create', ['create', '--help'], '/repo', {
+      platform: 'win32',
+      spawn: (command, _args, _options) => {
+        calls.push(command);
+        const events = {};
+        const stdoutHandlers = {};
+        const stderrHandlers = {};
+
+        queueMicrotask(() => {
+          if (command === 'bd.cmd') {
+            const error = new Error('spawn bd ENOENT');
+            error.code = 'ENOENT';
+            events.error?.(error);
+            return;
+          }
+
+          stdoutHandlers.data?.('BD CREATE HELP\n');
+          events.close?.(0);
+        });
+
+        return {
+          stdout: {
+            setEncoding() {},
+            on(event, handler) {
+              stdoutHandlers[event] = handler;
+            },
+          },
+          stderr: {
+            setEncoding() {},
+            on(event, handler) {
+              stderrHandlers[event] = handler;
+            },
+          },
+          on(event, handler) {
+            events[event] = handler;
+          },
+        };
+      },
+    });
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: 'BD CREATE HELP\n',
+      stderr: '',
+    });
+    expect(calls).toEqual(['bd.cmd', 'bd.exe']);
+  });
 });
