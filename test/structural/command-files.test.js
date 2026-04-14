@@ -202,4 +202,42 @@ describe('dead reference checks', () => {
     const hits = findMatches(/9-stage|nine.stage/i);
     expect(hits).toEqual([]);
   });
+
+  test('canonical command docs use Forge wrappers for supported team-state commands', () => {
+    const wrapperExpectations = [
+      {
+        pattern: /bash scripts\/sync-utils\.sh auto-sync/,
+        replacement: 'forge sync',
+      },
+      {
+        pattern: /bash scripts\/smart-status\.sh/,
+        replacement: 'forge status',
+      },
+      {
+        pattern: /bash scripts\/forge-team\/index\.sh sync/,
+        replacement: 'forge team sync',
+      },
+      {
+        pattern: /bash scripts\/forge-team\/index\.sh verify/,
+        replacement: 'forge team verify',
+      },
+      {
+        pattern: /bash scripts\/forge-team\/index\.sh workload --me/,
+        replacement: 'forge team workload --me',
+      },
+      {
+        pattern: /bash scripts\/forge-team\/index\.sh dashboard/,
+        replacement: 'forge team dashboard',
+      },
+    ];
+
+    const violations = [];
+    for (const { pattern, replacement } of wrapperExpectations) {
+      for (const hit of findMatches(pattern)) {
+        violations.push(`${hit} -> use "${replacement}"`);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
 });
