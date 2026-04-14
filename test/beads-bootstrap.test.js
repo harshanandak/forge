@@ -4,6 +4,17 @@ const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 const { bootstrapBeads, isRecoverableBeadsError } = require('../lib/beads-bootstrap');
 
+function createMockSafeBeadsInit() {
+  return (root, options) => {
+    try {
+      options.execBdInit(root);
+      return { success: true, skipped: false, warnings: [], errors: [] };
+    } catch (error) {
+      return { success: false, skipped: false, warnings: [], errors: [error.message] };
+    }
+  };
+}
+
 describe('bootstrapBeads', () => {
   test('returns a warning instead of throwing when EPERM fallback cannot run bd init', () => {
     const calls = [];
@@ -32,6 +43,7 @@ describe('bootstrapBeads', () => {
       _fs: mockFs,
       _platform: 'linux',
       mainProjectRoot: '/main',
+      _safeBeadsInit: createMockSafeBeadsInit(),
     });
 
     expect(result).toEqual({
@@ -104,6 +116,66 @@ describe('bootstrapBeads', () => {
     });
   });
 
+  test('does not treat metadata.database backend field as the recovery database name', () => {
+    const calls = [];
+    const mockExec = (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === 'bd' && args[0] === 'init') {
+        return '';
+      }
+      if (cmd === 'git' && args[0] === 'rev-parse') {
+        return '.git';
+      }
+      throw new Error(`unexpected exec ${cmd}`);
+    };
+    const mockFs = {
+      existsSync: (targetPath) => {
+        return [
+          path.resolve('/main', '.beads'),
+          path.resolve('/main', '.beads', 'metadata.json')
+        ].includes(targetPath);
+      },
+      readFileSync: (targetPath) => {
+        if (targetPath === path.resolve('/main', '.beads', 'metadata.json')) {
+          return JSON.stringify({ database: 'dolt' });
+        }
+        throw new Error(`unexpected read ${targetPath}`);
+      },
+      readdirSync: () => [],
+      rmSync: () => {},
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+    };
+
+    const result = bootstrapBeads('/worktree', {
+      _exec: mockExec,
+      _fs: mockFs,
+      _platform: 'linux',
+      mainProjectRoot: '/main',
+      _safeBeadsInit: (root, options) => {
+        options.execBdInit(root);
+        return { success: true, skipped: false, warnings: [], errors: [] };
+      }
+    });
+
+    expect(result).toEqual({
+      success: true,
+      strategy: 'fresh-init',
+      warning: 'Beads bootstrap initialized fresh (no backup found)'
+    });
+    expect(calls).toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force']
+    });
+    expect(calls).not.toContainEqual({
+      cmd: 'bd',
+      args: ['init', '--force', '--database', 'dolt']
+    });
+  });
+
   test('restores an existing .beads directory when symlink bootstrap fails with a non-EPERM error', () => {
     const calls = [];
     const renames = [];
@@ -152,6 +224,54 @@ describe('bootstrapBeads', () => {
     expect(removed).toEqual([]);
     expect(existing.has(path.resolve('/worktree', '.beads'))).toBe(true);
     expect(calls).toEqual([]);
+  });
+
+  test('skips backup restore when safeBeadsInit reports existing initialized state', () => {
+    const calls = [];
+    const mockExec = (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === 'git' && args[0] === 'rev-parse') {
+        return '.git';
+      }
+      if (cmd === 'bd' && args[0] === 'backup' && args[1] === 'restore') {
+        throw new Error('backup restore should not run');
+      }
+      return '';
+    };
+    const mockFs = {
+      existsSync: (targetPath) => {
+        return [
+          path.resolve('/main', '.beads'),
+          path.resolve('/worktree', '.beads')
+        ].includes(targetPath);
+      },
+      renameSync: () => {},
+      rmSync: () => {},
+      symlinkSync: () => {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      },
+      readdirSync: () => ['issues.jsonl'],
+    };
+
+    const result = bootstrapBeads('/worktree', {
+      _exec: mockExec,
+      _fs: mockFs,
+      _platform: 'linux',
+      mainProjectRoot: '/main',
+      _safeBeadsInit: () => ({ success: true, skipped: true, warnings: [], errors: [] })
+    });
+
+    expect(result).toEqual({
+      success: true,
+      strategy: 'existing-state',
+      warning: 'Beads bootstrap reused existing initialized state'
+    });
+    expect(calls).not.toContainEqual({
+      cmd: 'bd',
+      args: ['backup', 'restore', path.resolve('/main', '.beads', 'backup')]
+    });
   });
 });
 

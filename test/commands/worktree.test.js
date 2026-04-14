@@ -3,6 +3,17 @@
 const { describe, test, expect } = require('bun:test');
 const path = require('path');
 
+function createMockSafeBeadsInit() {
+  return (root, options) => {
+    try {
+      options.execBdInit(root);
+      return { success: true, skipped: false, warnings: [], errors: [] };
+    } catch (error) {
+      return { success: false, skipped: false, warnings: [], errors: [error.message] };
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
 // forge worktree command — test/forge-worktree.test.js
 // ---------------------------------------------------------------------------
@@ -121,7 +132,13 @@ describe('forge worktree command', () => {
 
     const result = await mod.handler(
       ['create', 'perm-test'], {}, '/fake/root',
-      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
+      {
+        _exec: mockExec,
+        _spawn: mockSpawn,
+        _fs: mockFs,
+        _platform: 'linux',
+        _safeBeadsInit: createMockSafeBeadsInit()
+      }
     );
 
     expect(result.success).toBe(true);
@@ -165,7 +182,13 @@ describe('forge worktree command', () => {
 
     const result = await mod.handler(
       ['create', 'fresh-init'], {}, '/fake/root',
-      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
+      {
+        _exec: mockExec,
+        _spawn: mockSpawn,
+        _fs: mockFs,
+        _platform: 'linux',
+        _safeBeadsInit: createMockSafeBeadsInit()
+      }
     );
 
     expect(result.success).toBe(true);
@@ -204,7 +227,13 @@ describe('forge worktree command', () => {
 
     const result = await mod.handler(
       ['create', 'missing-bd'], {}, '/fake/root',
-      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
+      {
+        _exec: mockExec,
+        _spawn: mockSpawn,
+        _fs: mockFs,
+        _platform: 'linux',
+        _safeBeadsInit: createMockSafeBeadsInit()
+      }
     );
 
     expect(result.success).toBe(true);

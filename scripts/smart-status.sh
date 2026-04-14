@@ -142,7 +142,7 @@ if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
   _metadata_path="$_repo_root/.beads/metadata.json"
   _bd_prefix=""
   if [ -f "$_metadata_path" ]; then
-    if _metadata_prefix="$(jq -r '(.dolt_database // .database // "") | strings' "$_metadata_path" 2>/dev/null)"; then
+    if _metadata_prefix="$(jq -r '(.dolt_database // "") | strings' "$_metadata_path" 2>/dev/null)"; then
       _bd_prefix="$(printf '%s' "$_metadata_prefix" | tr -d '\r')"
     fi
   fi

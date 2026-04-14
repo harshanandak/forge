@@ -161,7 +161,7 @@ REAL_JQ="${realJq}"
   return { tmpDir, wrapperPath };
 }
 
-function createMetadataRecoveryMocks({ repoRoot, databaseName }) {
+function createMetadataRecoveryMocks({ repoRoot, databaseName, metadata }) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-recovery-'));
   const bdScript = path.join(tmpDir, 'bd');
   const gitScript = path.join(tmpDir, 'git');
@@ -171,7 +171,7 @@ function createMetadataRecoveryMocks({ repoRoot, databaseName }) {
   fs.mkdirSync(path.join(repoRoot, '.beads', 'backup'), { recursive: true });
   fs.writeFileSync(
     path.join(repoRoot, '.beads', 'metadata.json'),
-    JSON.stringify({ database: 'dolt', dolt_database: databaseName }, null, 2),
+    JSON.stringify(metadata || { database: 'dolt', dolt_database: databaseName }, null, 2),
   );
   fs.writeFileSync(path.join(repoRoot, '.beads', 'backup', 'issues.jsonl'), '{"id":"forge-1"}\n');
 
@@ -272,7 +272,7 @@ describe('smart-status.sh', () => {
     });
 
   test('uses .beads/metadata.json dolt_database for auto-recovery instead of the repo basename', () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'basename-mismatch-'));
+    const repoRoot = fs.mkdtempSync(path.join(PROJECT_ROOT, '.tmp-basename-mismatch-'));
     const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
       repoRoot,
       databaseName: 'forge-shared-db',
@@ -294,7 +294,7 @@ describe('smart-status.sh', () => {
   });
 
   test('falls back to the repo basename when .beads/metadata.json is malformed', () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'malformed-metadata-'));
+    const repoRoot = fs.mkdtempSync(path.join(PROJECT_ROOT, '.tmp-malformed-metadata-'));
     const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
       repoRoot,
       databaseName: 'forge-shared-db',
@@ -315,6 +315,33 @@ describe('smart-status.sh', () => {
       expect(result.status).toBe(0);
       expect(fs.readFileSync(capturePath, 'utf8')).toContain(`--prefix ${fallbackPrefix}`);
       expect(fs.readFileSync(capturePath, 'utf8')).not.toContain('forge-shared-db');
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(repoRoot);
+    }
+  });
+
+  test('falls back to the repo basename when metadata only has the backend database field', () => {
+    const repoRoot = fs.mkdtempSync(path.join(PROJECT_ROOT, '.tmp-backend-only-metadata-'));
+    const { tmpDir, bdScript, gitScript, capturePath } = createMetadataRecoveryMocks({
+      repoRoot,
+      metadata: { database: 'dolt' },
+    });
+
+    try {
+      const fallbackPrefix = path.basename(repoRoot)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+      const result = runSmartStatus(['--json'], {
+        BD_CMD: bdScript,
+        GIT_CMD: gitScript,
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(capturePath, 'utf8')).toContain(`--prefix ${fallbackPrefix}`);
+      expect(fs.readFileSync(capturePath, 'utf8')).not.toContain('--prefix dolt');
     } finally {
       cleanupTmpDir(tmpDir);
       cleanupTmpDir(repoRoot);
