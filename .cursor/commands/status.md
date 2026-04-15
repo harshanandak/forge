@@ -17,7 +17,7 @@ This command helps you understand the current state of the project before starti
 
 ```bash
 # Sync team state before showing status
-forge sync
+forge sync || true
 ```
 
 ### Step 1: Smart Status (ranked issues with conflict detection)

@@ -556,6 +556,28 @@ describe('forge issue service contract', () => {
     ]);
   });
 
+  test('getBdCommandCandidates uses win32 path joining for injected Windows overrides off-host', () => {
+    const { getBdCommandCandidates } = require('../lib/forge-issues');
+    const seen = [];
+
+    const candidates = getBdCommandCandidates({
+      platform: 'win32',
+      env: { PATH: 'C:\\tools;D:\\bin' },
+      existsSync: candidate => {
+        seen.push(candidate);
+        return candidate === 'C:\\tools\\bd.exe';
+      },
+    });
+
+    expect(seen).toEqual([
+      'C:\\tools\\bd.exe',
+      'C:\\tools\\bd.cmd',
+      'D:\\bin\\bd.exe',
+      'D:\\bin\\bd.cmd',
+    ]);
+    expect(candidates).toEqual(['C:\\tools\\bd.exe', 'bd.exe', 'bd']);
+  });
+
   test('runBdCommand falls back when a Windows cmd shim is not directly spawnable', async () => {
     const { runBdCommand } = require('../lib/forge-issues');
     const calls = [];
