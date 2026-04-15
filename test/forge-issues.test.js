@@ -133,6 +133,61 @@ describe('forge issue service contract', () => {
     }]);
   });
 
+  test('top-level operation runner forwards injected Windows platform and PATH overrides', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const calls = [];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-run-issue-win32-'));
+
+    try {
+      const exePath = path.join(tempDir, 'bd.exe');
+      fs.writeFileSync(exePath, '', 'utf8');
+
+      const result = await runIssueOperation('create', ['--help'], '/repo', {
+        platform: 'win32',
+        env: { PATH: tempDir },
+        spawn: (command, _args, _options) => {
+          calls.push(command);
+          const events = {};
+          const stdoutHandlers = {};
+          const stderrHandlers = {};
+
+          queueMicrotask(() => {
+            stdoutHandlers.data?.('BD CREATE HELP\n');
+            events.close?.(0);
+          });
+
+          return {
+            stdout: {
+              setEncoding() {},
+              on(event, handler) {
+                stdoutHandlers[event] = handler;
+              },
+            },
+            stderr: {
+              setEncoding() {},
+              on(event, handler) {
+                stderrHandlers[event] = handler;
+              },
+            },
+            on(event, handler) {
+              events[event] = handler;
+            },
+          };
+        },
+      });
+
+      expect(result).toEqual({
+        success: true,
+        operation: 'create',
+        output: 'BD CREATE HELP\n',
+        stderr: '',
+      });
+      expect(calls).toEqual([exePath]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('default beads backend rejects issue operations when beads is not initialized', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
 
