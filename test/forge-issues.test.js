@@ -436,7 +436,7 @@ describe('forge issue service contract', () => {
     expect(writes).toEqual([]);
   });
 
-  test('runBdCommand uses Windows bd command candidates until one succeeds', async () => {
+  test('runBdCommand prefers Windows exe candidates before cmd shims', async () => {
     const { runBdCommand } = require('../lib/forge-issues');
     const calls = [];
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-candidates-'));
@@ -457,13 +457,6 @@ describe('forge issue service contract', () => {
           const stderrHandlers = {};
 
           queueMicrotask(() => {
-            if (command === cmdPath) {
-              const error = new Error('spawn bd ENOENT');
-              error.code = 'ENOENT';
-              events.error?.(error);
-              return;
-            }
-
             stdoutHandlers.data?.('BD CREATE HELP\n');
             events.close?.(0);
           });
@@ -493,7 +486,7 @@ describe('forge issue service contract', () => {
         stdout: 'BD CREATE HELP\n',
         stderr: '',
       });
-      expect(calls).toEqual([cmdPath, exePath]);
+      expect(calls).toEqual([exePath]);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -506,5 +499,58 @@ describe('forge issue service contract', () => {
       'C:\\tools',
       'D:\\bin',
     ]);
+  });
+
+  test('runBdCommand falls back when a Windows cmd shim is not directly spawnable', async () => {
+    const { runBdCommand } = require('../lib/forge-issues');
+    const calls = [];
+
+    const result = await runBdCommand('create', ['create', '--help'], '/repo', {
+      platform: 'win32',
+      commandCandidates: ['C:\\tools\\bd.cmd', 'bd.exe'],
+      spawn: (command, _args, _options) => {
+        calls.push(command);
+        const events = {};
+        const stdoutHandlers = {};
+        const stderrHandlers = {};
+
+        queueMicrotask(() => {
+          if (command.endsWith('.cmd')) {
+            const error = new Error('spawn bd.cmd EINVAL');
+            error.code = 'EINVAL';
+            events.error?.(error);
+            return;
+          }
+
+          stdoutHandlers.data?.('BD CREATE HELP\n');
+          events.close?.(0);
+        });
+
+        return {
+          stdout: {
+            setEncoding() {},
+            on(event, handler) {
+              stdoutHandlers[event] = handler;
+            },
+          },
+          stderr: {
+            setEncoding() {},
+            on(event, handler) {
+              stderrHandlers[event] = handler;
+            },
+          },
+          on(event, handler) {
+            events[event] = handler;
+          },
+        };
+      },
+    });
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: 'BD CREATE HELP\n',
+      stderr: '',
+    });
+    expect(calls).toEqual(['C:\\tools\\bd.cmd', 'bd.exe']);
   });
 });

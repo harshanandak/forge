@@ -207,7 +207,7 @@ describe('dead reference checks', () => {
     const wrapperExpectations = [
       {
         pattern: /bash scripts\/sync-utils\.sh auto-sync/,
-        replacement: 'forge sync',
+        replacement: 'forge sync || true',
       },
       {
         pattern: /bash scripts\/smart-status\.sh/,
