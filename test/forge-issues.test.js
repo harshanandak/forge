@@ -440,58 +440,71 @@ describe('forge issue service contract', () => {
     const { runBdCommand } = require('../lib/forge-issues');
     const calls = [];
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-candidates-'));
-    const cmdPath = path.join(tempDir, 'bd.cmd');
-    const exePath = path.join(tempDir, 'bd.exe');
+    try {
+      const cmdPath = path.join(tempDir, 'bd.cmd');
+      const exePath = path.join(tempDir, 'bd.exe');
 
-    fs.writeFileSync(cmdPath, '@echo off\r\n', 'utf8');
-    fs.writeFileSync(exePath, '', 'utf8');
+      fs.writeFileSync(cmdPath, '@echo off\r\n', 'utf8');
+      fs.writeFileSync(exePath, '', 'utf8');
 
-    const result = await runBdCommand('create', ['create', '--help'], '/repo', {
-      platform: 'win32',
-      env: { PATH: tempDir },
-      spawn: (command, _args, _options) => {
-        calls.push(command);
-        const events = {};
-        const stdoutHandlers = {};
-        const stderrHandlers = {};
+      const result = await runBdCommand('create', ['create', '--help'], '/repo', {
+        platform: 'win32',
+        env: { PATH: tempDir },
+        spawn: (command, _args, _options) => {
+          calls.push(command);
+          const events = {};
+          const stdoutHandlers = {};
+          const stderrHandlers = {};
 
-        queueMicrotask(() => {
-          if (command === cmdPath) {
-            const error = new Error('spawn bd ENOENT');
-            error.code = 'ENOENT';
-            events.error?.(error);
-            return;
-          }
+          queueMicrotask(() => {
+            if (command === cmdPath) {
+              const error = new Error('spawn bd ENOENT');
+              error.code = 'ENOENT';
+              events.error?.(error);
+              return;
+            }
 
-          stdoutHandlers.data?.('BD CREATE HELP\n');
-          events.close?.(0);
-        });
+            stdoutHandlers.data?.('BD CREATE HELP\n');
+            events.close?.(0);
+          });
 
-        return {
-          stdout: {
-            setEncoding() {},
-            on(event, handler) {
-              stdoutHandlers[event] = handler;
+          return {
+            stdout: {
+              setEncoding() {},
+              on(event, handler) {
+                stdoutHandlers[event] = handler;
+              },
             },
-          },
-          stderr: {
-            setEncoding() {},
-            on(event, handler) {
-              stderrHandlers[event] = handler;
+            stderr: {
+              setEncoding() {},
+              on(event, handler) {
+                stderrHandlers[event] = handler;
+              },
             },
-          },
-          on(event, handler) {
-            events[event] = handler;
-          },
-        };
-      },
-    });
+            on(event, handler) {
+              events[event] = handler;
+            },
+          };
+        },
+      });
 
-    expect(result).toEqual({
-      code: 0,
-      stdout: 'BD CREATE HELP\n',
-      stderr: '',
-    });
-    expect(calls).toEqual([cmdPath, exePath]);
+      expect(result).toEqual({
+        code: 0,
+        stdout: 'BD CREATE HELP\n',
+        stderr: '',
+      });
+      expect(calls).toEqual([cmdPath, exePath]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('getPathEntries honors Windows PATH delimiters for injected win32 behavior', () => {
+    const { getPathEntries } = require('../lib/forge-issues');
+
+    expect(getPathEntries({ PATH: 'C:\\tools;D:\\bin' }, ';')).toEqual([
+      'C:\\tools',
+      'D:\\bin',
+    ]);
   });
 });
