@@ -578,6 +578,28 @@ describe('forge issue service contract', () => {
     expect(candidates).toEqual(['C:\\tools\\bd.exe', 'bd.exe', 'bd']);
   });
 
+  test('getBdCommandCandidates preserves POSIX temp paths while simulating win32', () => {
+    const { getBdCommandCandidates } = require('../lib/forge-issues');
+    const seen = [];
+
+    const candidates = getBdCommandCandidates({
+      platform: 'win32',
+      env: { PATH: '/tmp/forge-bin;/tmp/other-bin' },
+      existsSync: candidate => {
+        seen.push(candidate);
+        return candidate === '/tmp/forge-bin/bd.exe';
+      },
+    });
+
+    expect(seen).toEqual([
+      '/tmp/forge-bin/bd.exe',
+      '/tmp/forge-bin/bd.cmd',
+      '/tmp/other-bin/bd.exe',
+      '/tmp/other-bin/bd.cmd',
+    ]);
+    expect(candidates).toEqual(['/tmp/forge-bin/bd.exe', 'bd.exe', 'bd']);
+  });
+
   test('runBdCommand falls back when a Windows cmd shim is not directly spawnable', async () => {
     const { runBdCommand } = require('../lib/forge-issues');
     const calls = [];

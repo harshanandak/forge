@@ -54,7 +54,7 @@ Before proceeding to Phase 1, check for cross-developer conflicts:
 
 ```bash
 # Auto-sync to get latest team state
-forge sync
+forge sync || true
 
 # Check for conflicts with this issue's planned work area
 bash scripts/conflict-detect.sh --issue <beads-id>
