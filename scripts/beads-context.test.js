@@ -470,7 +470,7 @@ describe('/dev command integration with beads-context.sh', () => {
 	});
 });
 
-describe('/status command integration with forge status', () => {
+describe('/status command integration with smart-status', () => {
 	const STATUS_MD_PATH = path.join(
 		__dirname,
 		'..',
@@ -484,9 +484,8 @@ describe('/status command integration with forge status', () => {
 		statusContent = fs.readFileSync(STATUS_MD_PATH, 'utf-8');
 	});
 
-	test('status.md should reference forge status as the primary status command', () => {
-		expect(statusContent).toContain('forge status');
-		expect(statusContent).not.toContain('bash scripts/smart-status.sh');
+	test('status.md should reference smart-status.sh as the primary status command', () => {
+		expect(statusContent).toContain('bash scripts/smart-status.sh');
 	});
 
 	test('status.md should include hint to use bd show for full context', () => {

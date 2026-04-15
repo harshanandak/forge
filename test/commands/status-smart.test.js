@@ -4,13 +4,12 @@ const { join } = require("node:path");
 
 const ROOT = join(__dirname, "../..");
 
-describe("/status command - forge status integration", () => {
+describe("/status command - smart-status integration", () => {
   const statusPath = join(ROOT, ".claude/commands/status.md");
   const content = readFileSync(statusPath, "utf-8");
 
-  it("references forge status as the primary status command", () => {
-    expect(content).toContain("forge status");
-    expect(content).not.toContain("bash scripts/smart-status.sh");
+  it("references smart-status.sh as the primary status command", () => {
+    expect(content).toContain("bash scripts/smart-status.sh");
   });
 
   it("does NOT use 'bd list --status in_progress' as the primary step", () => {
@@ -27,14 +26,13 @@ describe("/status command - forge status integration", () => {
     expect(content).toContain("git log");
   });
 
-  it("agent copies (.cursor, .roo) also reference forge status", () => {
+  it("agent copies (.cursor, .roo) also reference smart-status.sh", () => {
     const agentDirs = [".cursor", ".roo"];
     for (const dir of agentDirs) {
       const agentPath = join(ROOT, dir, "commands/status.md");
       expect(existsSync(agentPath)).toBe(true);
       const agentContent = readFileSync(agentPath, "utf-8");
-      expect(agentContent).toContain("forge status");
-      expect(agentContent).not.toContain("bash scripts/smart-status.sh");
+      expect(agentContent).toContain("bash scripts/smart-status.sh");
     }
   });
 

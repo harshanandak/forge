@@ -28,7 +28,7 @@ forge sync || true
 ### Step 1: Smart Status (ranked issues with conflict detection)
 
 ```bash
-forge status
+bash scripts/smart-status.sh
 ```
 This command dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed.
 
