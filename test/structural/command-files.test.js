@@ -210,10 +210,6 @@ describe('dead reference checks', () => {
         replacement: 'forge sync || true',
       },
       {
-        pattern: /bash scripts\/smart-status\.sh/,
-        replacement: 'forge status',
-      },
-      {
         pattern: /bash scripts\/forge-team\/index\.sh sync/,
         replacement: 'forge team sync',
       },
