@@ -470,7 +470,7 @@ describe('/dev command integration with beads-context.sh', () => {
 	});
 });
 
-describe('/status command integration with smart-status.sh', () => {
+describe('/status command integration with smart-status', () => {
 	const STATUS_MD_PATH = path.join(
 		__dirname,
 		'..',
@@ -485,7 +485,7 @@ describe('/status command integration with smart-status.sh', () => {
 	});
 
 	test('status.md should reference smart-status.sh as the primary status command', () => {
-		expect(statusContent).toContain('smart-status.sh');
+		expect(statusContent).toContain('bash scripts/smart-status.sh');
 	});
 
 	test('status.md should include hint to use bd show for full context', () => {

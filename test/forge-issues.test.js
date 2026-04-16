@@ -1,6 +1,9 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 describe('forge issue service contract', () => {
   test('exports service factory and operation runner', () => {
@@ -128,6 +131,61 @@ describe('forge issue service contract', () => {
         deps: { createService: expect.any(Function), marker: 'injected' },
       },
     }]);
+  });
+
+  test('top-level operation runner forwards injected Windows platform and PATH overrides', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const calls = [];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-run-issue-win32-'));
+
+    try {
+      const exePath = path.join(tempDir, 'bd.exe');
+      fs.writeFileSync(exePath, '', 'utf8');
+
+      const result = await runIssueOperation('create', ['--help'], '/repo', {
+        platform: 'win32',
+        env: { PATH: tempDir },
+        spawn: (command, _args, _options) => {
+          calls.push(command);
+          const events = {};
+          const stdoutHandlers = {};
+          const stderrHandlers = {};
+
+          queueMicrotask(() => {
+            stdoutHandlers.data?.('BD CREATE HELP\n');
+            events.close?.(0);
+          });
+
+          return {
+            stdout: {
+              setEncoding() {},
+              on(event, handler) {
+                stdoutHandlers[event] = handler;
+              },
+            },
+            stderr: {
+              setEncoding() {},
+              on(event, handler) {
+                stderrHandlers[event] = handler;
+              },
+            },
+            on(event, handler) {
+              events[event] = handler;
+            },
+          };
+        },
+      });
+
+      expect(result).toEqual({
+        success: true,
+        operation: 'create',
+        output: 'BD CREATE HELP\n',
+        stderr: '',
+      });
+      expect(calls).toEqual([exePath]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('default beads backend rejects issue operations when beads is not initialized', async () => {
@@ -433,12 +491,122 @@ describe('forge issue service contract', () => {
     expect(writes).toEqual([]);
   });
 
-  test('runBdCommand uses Windows bd command candidates until one succeeds', async () => {
+  test('runBdCommand prefers Windows exe candidates before cmd shims', async () => {
+    const { runBdCommand } = require('../lib/forge-issues');
+    const calls = [];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-candidates-'));
+    try {
+      const cmdPath = path.join(tempDir, 'bd.cmd');
+      const exePath = path.join(tempDir, 'bd.exe');
+
+      fs.writeFileSync(cmdPath, '@echo off\r\n', 'utf8');
+      fs.writeFileSync(exePath, '', 'utf8');
+
+      const result = await runBdCommand('create', ['create', '--help'], '/repo', {
+        platform: 'win32',
+        env: { PATH: tempDir },
+        spawn: (command, _args, _options) => {
+          calls.push(command);
+          const events = {};
+          const stdoutHandlers = {};
+          const stderrHandlers = {};
+
+          queueMicrotask(() => {
+            stdoutHandlers.data?.('BD CREATE HELP\n');
+            events.close?.(0);
+          });
+
+          return {
+            stdout: {
+              setEncoding() {},
+              on(event, handler) {
+                stdoutHandlers[event] = handler;
+              },
+            },
+            stderr: {
+              setEncoding() {},
+              on(event, handler) {
+                stderrHandlers[event] = handler;
+              },
+            },
+            on(event, handler) {
+              events[event] = handler;
+            },
+          };
+        },
+      });
+
+      expect(result).toEqual({
+        code: 0,
+        stdout: 'BD CREATE HELP\n',
+        stderr: '',
+      });
+      expect(calls).toEqual([exePath]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('getPathEntries honors Windows PATH delimiters for injected win32 behavior', () => {
+    const { getPathEntries } = require('../lib/forge-issues');
+
+    expect(getPathEntries({ PATH: 'C:\\tools;D:\\bin' }, ';')).toEqual([
+      'C:\\tools',
+      'D:\\bin',
+    ]);
+  });
+
+  test('getBdCommandCandidates uses win32 path joining for injected Windows overrides off-host', () => {
+    const { getBdCommandCandidates } = require('../lib/forge-issues');
+    const seen = [];
+
+    const candidates = getBdCommandCandidates({
+      platform: 'win32',
+      env: { PATH: 'C:\\tools;D:\\bin' },
+      existsSync: candidate => {
+        seen.push(candidate);
+        return candidate === 'C:\\tools\\bd.exe';
+      },
+    });
+
+    expect(seen).toEqual([
+      'C:\\tools\\bd.exe',
+      'C:\\tools\\bd.cmd',
+      'D:\\bin\\bd.exe',
+      'D:\\bin\\bd.cmd',
+    ]);
+    expect(candidates).toEqual(['C:\\tools\\bd.exe', 'bd.exe', 'bd']);
+  });
+
+  test('getBdCommandCandidates preserves POSIX temp paths while simulating win32', () => {
+    const { getBdCommandCandidates } = require('../lib/forge-issues');
+    const seen = [];
+
+    const candidates = getBdCommandCandidates({
+      platform: 'win32',
+      env: { PATH: '/tmp/forge-bin;/tmp/other-bin' },
+      existsSync: candidate => {
+        seen.push(candidate);
+        return candidate === '/tmp/forge-bin/bd.exe';
+      },
+    });
+
+    expect(seen).toEqual([
+      '/tmp/forge-bin/bd.exe',
+      '/tmp/forge-bin/bd.cmd',
+      '/tmp/other-bin/bd.exe',
+      '/tmp/other-bin/bd.cmd',
+    ]);
+    expect(candidates).toEqual(['/tmp/forge-bin/bd.exe', 'bd.exe', 'bd']);
+  });
+
+  test('runBdCommand falls back when a Windows cmd shim is not directly spawnable', async () => {
     const { runBdCommand } = require('../lib/forge-issues');
     const calls = [];
 
     const result = await runBdCommand('create', ['create', '--help'], '/repo', {
       platform: 'win32',
+      commandCandidates: ['C:\\tools\\bd.cmd', 'bd.exe'],
       spawn: (command, _args, _options) => {
         calls.push(command);
         const events = {};
@@ -446,9 +614,9 @@ describe('forge issue service contract', () => {
         const stderrHandlers = {};
 
         queueMicrotask(() => {
-          if (command === 'bd.exe') {
-            const error = new Error('spawn bd ENOENT');
-            error.code = 'ENOENT';
+          if (command.endsWith('.cmd')) {
+            const error = new Error('spawn bd.cmd EINVAL');
+            error.code = 'EINVAL';
             events.error?.(error);
             return;
           }
@@ -482,6 +650,6 @@ describe('forge issue service contract', () => {
       stdout: 'BD CREATE HELP\n',
       stderr: '',
     });
-    expect(calls).toEqual(['bd.exe', 'bd']);
+    expect(calls).toEqual(['C:\\tools\\bd.cmd', 'bd.exe']);
   });
 });

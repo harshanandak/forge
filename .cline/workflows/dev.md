@@ -66,8 +66,8 @@ Do NOT write any code until ALL confirmed:
 Before starting the per-task loop, check for cross-developer conflicts:
 
 ```bash
-# Auto-sync to get latest team state
-bash scripts/sync-utils.sh auto-sync
+# Auto-sync to get latest team state (non-blocking)
+forge sync || true
 
 # Check for conflicts with the current beads issue
 bash scripts/conflict-detect.sh --issue <beads-id>
