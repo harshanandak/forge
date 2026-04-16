@@ -4,35 +4,59 @@
  * Test Quality Dashboard — collects test metrics into a JSON summary.
  *
  * Usage:
- *   node scripts/test-dashboard.js           # Human-readable output
- *   node scripts/test-dashboard.js --json    # JSON output (for CI/tests)
+ *   node scripts/test-dashboard.js
+ *   node scripts/test-dashboard.js --json
+ *   node scripts/test-dashboard.js --profiles-dir test-results/profiles
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
 const rootDir = path.join(__dirname, '..');
 
+function parseArgs(argv) {
+  const args = {
+    json: argv.includes('--json'),
+    profilesDir: path.join(rootDir, 'test-results'),
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--profiles-dir') {
+      args.profilesDir = path.resolve(rootDir, argv[index + 1]);
+    }
+  }
+
+  return args;
+}
+
+function walk(dir, extension) {
+  if (!fs.existsSync(dir)) return [];
+  const results = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const absolute = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walk(absolute, extension));
+      continue;
+    }
+    if (absolute.endsWith(extension)) {
+      results.push(absolute);
+    }
+  }
+  return results;
+}
+
 function getTestCount() {
-  // Count test cases by scanning test files for test() calls
-  // This avoids running the full test suite (which would be slow/recursive)
   const testDirs = [
     path.join(rootDir, 'test'),
     path.join(rootDir, 'test-env'),
-    path.join(rootDir, 'packages', 'skills', 'test')
+    path.join(rootDir, 'packages', 'skills', 'test'),
   ];
   let count = 0;
   for (const dir of testDirs) {
-    if (!fs.existsSync(dir)) continue;
-    const files = fs.readdirSync(dir, { recursive: true });
-    for (const file of files) {
-      const filePath = path.join(dir, String(file));
-      if (!filePath.endsWith('.test.js') && !filePath.endsWith('.spec.js')) continue;
-      if (!fs.statSync(filePath).isFile()) continue;
-      const content = fs.readFileSync(filePath, 'utf-8');
-      // Count test() and it() calls (excluding test.skip)
-      const testMatches = content.match(/\btest\s*\(/g) || [];
+    for (const file of walk(dir, '.js')) {
+      if (!file.endsWith('.test.js') && !file.endsWith('.spec.js')) continue;
+      const content = fs.readFileSync(file, 'utf-8');
+      const testMatches = content.match(/\btest(?:\.skip|\.todo|\.if|\.skipIf)?\s*\(/g) || [];
       const itMatches = content.match(/\bit\s*\(/g) || [];
       const skipMatches = content.match(/\btest\.skip\s*\(/g) || [];
       count += testMatches.length + itMatches.length - skipMatches.length;
@@ -46,24 +70,14 @@ function getCoverageThreshold() {
   return pkg.c8 ? pkg.c8.lines : 0;
 }
 
-function getEslintWarnings() {
-  // We enforce --max-warnings 0 in pre-push hooks (lefthook.yml),
-  // so this is always 0 when code passes CI. Report 0 to avoid
-  // slow ESLint execution during dashboard generation.
-  return 0;
-}
-
 function getSkippedTestCount() {
-  try {
-    const output = execFileSync('grep', ['-r', 'test.skip', 'test/', 'test-env/'], {
-      cwd: rootDir,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    return output.trim().split('\n').filter(Boolean).length;
-  } catch (_e) {
-    return 0;
+  let skipped = 0;
+  for (const file of walk(path.join(rootDir, 'test'), '.js').concat(walk(path.join(rootDir, 'test-env'), '.js'))) {
+    if (!file.endsWith('.test.js') && !file.endsWith('.spec.js')) continue;
+    const content = fs.readFileSync(file, 'utf8');
+    skipped += (content.match(/\btest\.skip\s*\(/g) || []).length;
   }
+  return skipped;
 }
 
 function getMutationScore() {
@@ -71,37 +85,78 @@ function getMutationScore() {
   if (!fs.existsSync(reportPath)) return null;
   try {
     const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
-    if (report.schemaVersion) {
-      // Stryker v8+ JSON report format
-      const files = Object.values(report.files || {});
-      let killed = 0;
-      let total = 0;
-      for (const file of files) {
-        for (const mutant of (file.mutants || [])) {
-          total++;
-          if (mutant.status === 'Killed') killed++;
-        }
+    const files = Object.values(report.files || {});
+    let killed = 0;
+    let total = 0;
+    for (const file of files) {
+      for (const mutant of (file.mutants || [])) {
+        total += 1;
+        if (mutant.status === 'Killed') killed += 1;
       }
-      return total > 0 ? Math.round((killed / total) * 100) : null;
     }
-    return null;
-  } catch (_e) {
+    return total > 0 ? Math.round((killed / total) * 100) : null;
+  } catch (_error) {
     return null;
   }
 }
 
+function getProfileMetrics(profilesDir) {
+  const files = walk(profilesDir, '.json').filter((file) => file.endsWith('.profile.json'));
+  if (files.length === 0) {
+    return {
+      suiteDurationMs: 0,
+      slowestFiles: [],
+      timedOutFiles: [],
+      integrationSkipped: true,
+    };
+  }
+
+  const slowest = new Map();
+  const timedOut = new Set();
+  let suiteDurationMs = 0;
+  let integrationSkipped = false;
+
+  for (const file of files) {
+    const profile = JSON.parse(fs.readFileSync(file, 'utf8'));
+    suiteDurationMs += profile.suiteDurationMs || 0;
+    integrationSkipped = integrationSkipped || Boolean(profile.integrationSkipped);
+
+    for (const entry of profile.slowestFiles || []) {
+      slowest.set(entry.file, Math.max(slowest.get(entry.file) || 0, entry.durationMs || 0));
+    }
+
+    for (const timedOutFile of profile.timedOutFiles || []) {
+      timedOut.add(timedOutFile);
+    }
+  }
+
+  return {
+    suiteDurationMs,
+    slowestFiles: Array.from(slowest.entries())
+      .map(([file, durationMs]) => ({ file, durationMs }))
+      .sort((left, right) => right.durationMs - left.durationMs)
+      .slice(0, 10),
+    timedOutFiles: Array.from(timedOut).sort((left, right) => left.localeCompare(right)),
+    integrationSkipped,
+  };
+}
+
+const args = parseArgs(process.argv.slice(2));
+const profileMetrics = getProfileMetrics(args.profilesDir);
 const dashboard = {
   testCount: getTestCount(),
   coverageThreshold: getCoverageThreshold(),
-  eslintWarnings: getEslintWarnings(),
+  eslintWarnings: 0,
   skippedTests: getSkippedTestCount(),
   mutationScore: getMutationScore(),
-  timestamp: new Date().toISOString()
+  suiteDurationMs: profileMetrics.suiteDurationMs,
+  slowestFiles: profileMetrics.slowestFiles,
+  timedOutFiles: profileMetrics.timedOutFiles,
+  integrationSkipped: profileMetrics.integrationSkipped,
+  timestamp: new Date().toISOString(),
 };
 
-const jsonMode = process.argv.includes('--json');
-
-if (jsonMode) {
+if (args.json) {
   process.stdout.write(JSON.stringify(dashboard));
 } else {
   console.log('\n  Test Quality Dashboard');
@@ -110,14 +165,22 @@ if (jsonMode) {
   console.log(`  Coverage threshold: ${dashboard.coverageThreshold}%`);
   console.log(`  ESLint warnings:    ${dashboard.eslintWarnings}`);
   console.log(`  Skipped tests:      ${dashboard.skippedTests}`);
-  console.log(`  Mutation score:     ${dashboard.mutationScore !== null ? dashboard.mutationScore + '%' : 'N/A (run test:mutation first)'}`);
+  console.log(`  Suite duration:     ${dashboard.suiteDurationMs}ms`);
+  console.log(`  Timed out files:    ${dashboard.timedOutFiles.length}`);
+  console.log(`  Integration skipped:${dashboard.integrationSkipped ? ' yes' : ' no'}`);
+  console.log(`  Mutation score:     ${dashboard.mutationScore !== null ? `${dashboard.mutationScore}%` : 'N/A (run test:mutation first)'}`);
   console.log(`  Generated:          ${dashboard.timestamp}`);
+  if (dashboard.slowestFiles.length > 0) {
+    console.log('\n  Slowest files:');
+    for (const entry of dashboard.slowestFiles) {
+      console.log(`   - ${entry.file}: ${entry.durationMs}ms`);
+    }
+  }
   console.log('');
 
-  // Write results file
   const outputPath = path.join(rootDir, 'test-dashboard.json');
   fs.writeFileSync(outputPath, JSON.stringify(dashboard, null, 2));
-  console.log(`  Results saved to: test-dashboard.json\n`);
+  console.log('  Results saved to: test-dashboard.json\n');
 }
 
 module.exports = dashboard;

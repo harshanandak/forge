@@ -1,12 +1,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const os = require('node:os');
+const crypto = require('node:crypto');
 
 // Integration tests for enhanced onboarding
 // Tests the complete flow from CLI to file generation
 
 describe('Enhanced Onboarding Integration', () => {
-  const scratchDir = path.join(__dirname, '..', '..', 'scratchpad', 'integration-tests');
+  const scratchDir = path.join(os.tmpdir(), `forge-integration-${process.pid}-${crypto.randomUUID()}`);
 
   beforeEach(async () => {
     // Create clean test directory

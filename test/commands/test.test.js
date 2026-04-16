@@ -444,5 +444,55 @@ describe('forge test command', () => {
 				'test/structural/command-sync.test.js',
 			]);
 		});
+
+		test('maps mirrored agent assets to sync-oriented tests', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: [
+						'/fake/root/test/agent-gaps.test.js',
+						'/fake/root/test/command-sync-check.test.js',
+						'/fake/root/test/scripts/check-agents.test.js',
+						'/fake/root/test/structural/command-sync.test.js',
+					],
+				}),
+				execFileSync: makeExecFileSync({
+					gitDiffOutput: '.cursor/commands/review.md\n.forge/sync-manifest.json\n',
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual([
+				'run',
+				'test',
+				'test/agent-gaps.test.js',
+				'test/command-sync-check.test.js',
+				'test/scripts/check-agents.test.js',
+				'test/structural/command-sync.test.js',
+			]);
+		});
+
+		test('maps agentic workflow changes to behavioral sync tests', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: [
+						'/fake/root/test/scripts/behavioral-judge.test.js',
+						'/fake/root/test/structural/agentic-workflow-sync.test.js',
+					],
+				}),
+				execFileSync: makeExecFileSync({
+					gitDiffOutput: '.github/agentic-workflows/behavioral-test.md\n',
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual([
+				'run',
+				'test',
+				'test/scripts/behavioral-judge.test.js',
+				'test/structural/agentic-workflow-sync.test.js',
+			]);
+		});
 	});
 });

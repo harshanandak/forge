@@ -15,6 +15,7 @@
     "test:setup": "bash test-env/automation/setup-fixtures.sh",
     "test:all": "bun run test:setup && bun test",
     "test:coverage": "c8 --check-coverage bun test",
+    "test:ci:shard": "node scripts/test-ci-shard.js",
     "typecheck": "echo 'No TypeScript in project - skipping type check'",
     "lint": "eslint . --max-warnings 0",
     "check": "bash scripts/validate.sh",
@@ -24,7 +25,11 @@
     "validate:yaml": "find . \\( -name '*.yml' -o -name '*.yaml' \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && bun x js-yaml \"$file\" > /dev/null || exit 1; done",
     "test:mutation": "npx stryker run",
     "test:benchmark": "node scripts/benchmark.js",
-    "test:dashboard": "node scripts/test-dashboard.js"
+    "test:dashboard": "node scripts/test-dashboard.js",
+    "test:profile": "node scripts/test-profile.js --input-dir test-results --output test-results/test-profile.json --label local",
+    "test:randomized": "bun test --randomize",
+    "test:rerun": "bun test --rerun-each 2",
+    "agentic:sync": "node scripts/sync-agentic-workflow.js"
   },
   "peerDependencies": {
     "lefthook": "^1.0.0"

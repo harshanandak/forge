@@ -39,6 +39,8 @@ benchmark-results.json
 
 # Test dashboard
 test-dashboard.json
+test-results/
+!test-results/.gitkeep
 
 # Temporary files
 *.tmp
