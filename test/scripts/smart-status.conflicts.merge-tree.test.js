@@ -6,7 +6,7 @@ const { createMockGitTier2, twoBranchPorcelain } = require('./smart-status.confl
 setDefaultTimeout(20000);
 
 describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
-  test('shows !! Merge conflict for real conflicts (exit 1)', () => {
+  test.concurrent('shows !! Merge conflict for real conflicts (exit 1)', () => {
     const branchFiles = {
       'feat/alpha': ['shared.js', 'alpha-only.js'],
       'feat/beta': ['shared.js', 'beta-only.js'],
@@ -33,7 +33,7 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     }
   });
 
-  test('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', () => {
+  test.concurrent('keeps ! Conflict risk for file-overlap-only (exit 0, no real conflict)', () => {
     const branchFiles = {
       'feat/alpha': ['shared.js', 'alpha-only.js'],
       'feat/beta': ['shared.js', 'beta-only.js'],
@@ -60,7 +60,7 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     }
   });
 
-  test('skips Tier 2 silently when git version < 2.38', () => {
+  test.concurrent('skips Tier 2 silently when git version < 2.38', () => {
     const branchFiles = {
       'feat/alpha': ['shared.js'],
       'feat/beta': ['shared.js'],
@@ -84,7 +84,7 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     }
   });
 
-  test('JSON output includes merge_conflicts field for real conflicts', () => {
+  test.concurrent('JSON output includes merge_conflicts field for real conflicts', () => {
     const branchFiles = {
       'feat/alpha': ['shared.js'],
       'feat/beta': ['shared.js'],
@@ -116,7 +116,7 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     }
   });
 
-  test('no merge_conflicts when git >= 2.38 but no real conflicts', () => {
+  test.concurrent('no merge_conflicts when git >= 2.38 but no real conflicts', () => {
     const branchFiles = {
       'feat/alpha': ['shared.js'],
       'feat/beta': ['shared.js'],

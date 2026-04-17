@@ -6,7 +6,7 @@ const { createMockGitWithDiff } = require('./smart-status.conflicts.helpers');
 setDefaultTimeout(20000);
 
 describe('smart-status.sh > file-level conflict detection', () => {
-  test('shows Changed: line with files for each active session branch', () => {
+  test.concurrent('shows Changed: line with files for each active session branch', () => {
     const porcelain = [
       'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
       'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
@@ -40,7 +40,7 @@ describe('smart-status.sh > file-level conflict detection', () => {
     }
   });
 
-  test('truncates to 3 files with +N more', () => {
+  test.concurrent('truncates to 3 files with +N more', () => {
     const porcelain = [
       'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
       'worktree /repo/.worktrees/big', 'HEAD def456', 'branch refs/heads/feat/big', '',
@@ -73,7 +73,7 @@ describe('smart-status.sh > file-level conflict detection', () => {
     }
   });
 
-  test('shows conflict risk when branches share files', () => {
+  test.concurrent('shows conflict risk when branches share files', () => {
     const porcelain = [
       'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
       'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
@@ -102,7 +102,7 @@ describe('smart-status.sh > file-level conflict detection', () => {
     }
   });
 
-  test('no conflict risk when branches have no overlapping files', () => {
+  test.concurrent('no conflict risk when branches have no overlapping files', () => {
     const porcelain = [
       'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
       'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
@@ -130,7 +130,7 @@ describe('smart-status.sh > file-level conflict detection', () => {
     }
   });
 
-  test('no Changed line for branch with no changed files', () => {
+  test.concurrent('no Changed line for branch with no changed files', () => {
     const porcelain = [
       'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
       'worktree /repo/.worktrees/empty', 'HEAD def456', 'branch refs/heads/feat/empty', '',
