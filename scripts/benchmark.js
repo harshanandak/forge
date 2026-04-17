@@ -1,85 +1,276 @@
 #!/usr/bin/env node
 
-/**
- * Performance benchmark script for Forge CLI.
- * Measures CLI startup time, autoDetect, and detectFramework performance.
- *
- * Usage:
- *   node scripts/benchmark.js           # Human-readable output
- *   node scripts/benchmark.js --json    # JSON output (for CI/tests)
- */
-
-const { execFileSync } = require('node:child_process');
-const { performance } = require('node:perf_hooks');
-const path = require('node:path');
+const { spawnSync: defaultSpawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const path = require('node:path');
+const { performance } = require('node:perf_hooks');
+
+const { buildProfile, parseJUnitFiles } = require('./test-profile');
 
 const rootDir = path.join(__dirname, '..');
-const ITERATIONS = 3;
+const DEFAULT_OUTPUT = path.join(rootDir, 'test-results', 'benchmark-results.json');
+const DEFAULT_PROFILE_DIR = path.join(rootDir, 'test-results', 'benchmark-profiles');
+const DEFAULT_SAMPLES = 3;
+const DEFAULT_JUNIT_PATH = path.join(rootDir, 'test-results', 'test-results.xml');
 
-function benchmarkCLIStartup() {
-  const times = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const start = performance.now();
-    execFileSync('node', [path.join(rootDir, 'bin', 'forge.js'), '--help'], {
-      cwd: rootDir,
-      encoding: 'utf-8',
-      timeout: 10000,
-      stdio: 'pipe'
-    });
-    times.push(performance.now() - start);
-  }
-  const mean = times.reduce((a, b) => a + b, 0) / times.length;
-  return { name: 'CLI startup (--help)', mean: Math.round(mean), unit: 'ms', samples: ITERATIONS };
-}
-
-function benchmarkAutoDetect() {
-  const { autoDetect } = require(path.join(rootDir, 'lib', 'project-discovery.js'));
-  const times = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const start = performance.now();
-    autoDetect(rootDir);
-    times.push(performance.now() - start);
-  }
-  const mean = times.reduce((a, b) => a + b, 0) / times.length;
-  return { name: 'autoDetect()', mean: Math.round(mean), unit: 'ms', samples: ITERATIONS };
-}
-
-function benchmarkDetectFramework() {
-  const { detectFramework } = require(path.join(rootDir, 'lib', 'project-discovery.js'));
-  const times = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const start = performance.now();
-    detectFramework(rootDir);
-    times.push(performance.now() - start);
-  }
-  const mean = times.reduce((a, b) => a + b, 0) / times.length;
-  return { name: 'detectFramework()', mean: Math.round(mean), unit: 'ms', samples: ITERATIONS };
-}
-
-const results = [
-  benchmarkCLIStartup(),
-  benchmarkAutoDetect(),
-  benchmarkDetectFramework()
+const BENCHMARK_GROUPS = [
+  {
+    id: 'pre-push-runner',
+    label: 'Pre-push runner slice',
+    command: ['bun', 'test', 'test/scripts/test-runner.test.js'],
+  },
+  {
+    id: 'validation-core',
+    label: 'Validation core slice',
+    command: [
+      'bun',
+      'test',
+      'test/scripts/test-profile.test.js',
+      'test/scripts/test-ci-shard.test.js',
+      'test/scripts/test-runner.test.js',
+    ],
+  },
+  {
+    id: 'hotspot-shell',
+    label: 'Hotspot shell slice',
+    command: [
+      'bun',
+      'test',
+      'test/scripts/smart-status.conflicts.files.test.js',
+      'test/scripts/smart-status.conflicts.merge-tree.test.js',
+      'test/scripts/dep-guard.check-ripple.basic.test.js',
+    ],
+  },
 ];
 
-const jsonMode = process.argv.includes('--json');
+function parseArgs(argv) {
+  const args = {
+    groups: [],
+    json: false,
+    output: DEFAULT_OUTPUT,
+    profileDir: DEFAULT_PROFILE_DIR,
+    samples: DEFAULT_SAMPLES,
+  };
 
-if (jsonMode) {
-  process.stdout.write(JSON.stringify(results));
-} else {
-  console.log('\n  Forge Performance Benchmarks');
-  console.log('  ===========================\n');
-  for (const r of results) {
-    const status = r.mean < 1000 ? 'PASS' : r.mean < 3000 ? 'WARN' : 'SLOW';
-    console.log(`  ${status}  ${r.name}: ${r.mean}${r.unit} (${r.samples} samples)`);
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    const next = argv[index + 1];
+
+    if (current === '--json') args.json = true;
+    if (current === '--output') args.output = next;
+    if (current === '--profile-dir') args.profileDir = next;
+    if (current === '--samples') args.samples = Number.parseInt(next, 10) || DEFAULT_SAMPLES;
+    if (current === '--group') args.groups.push(next);
   }
-  console.log('');
 
-  // Write results file
-  const outputPath = path.join(rootDir, 'benchmark-results.json');
-  fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
-  console.log(`  Results saved to: benchmark-results.json\n`);
+  return args;
 }
 
-module.exports = results;
+function resolveGroups(groupIds = []) {
+  if (groupIds.length === 0) {
+    return BENCHMARK_GROUPS.map((group) => ({ ...group, command: [...group.command] }));
+  }
+
+  const byId = new Map(BENCHMARK_GROUPS.map((group) => [group.id, group]));
+  const resolved = [];
+  for (const id of groupIds) {
+    const match = byId.get(id);
+    if (!match) {
+      throw new Error(`Unknown benchmark group: ${id}`);
+    }
+    resolved.push({ ...match, command: [...match.command] });
+  }
+  return resolved;
+}
+
+function roundMs(value) {
+  return Math.round(value);
+}
+
+function calculateMedian(values) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return roundMs((sorted[middle - 1] + sorted[middle]) / 2);
+  }
+  return sorted[middle];
+}
+
+function summarizeSamples(samplesMs) {
+  const total = samplesMs.reduce((sum, value) => sum + value, 0);
+  return {
+    maxMs: Math.max(...samplesMs),
+    meanMs: roundMs(total / samplesMs.length),
+    medianMs: calculateMedian(samplesMs),
+    minMs: Math.min(...samplesMs),
+    samplesMs,
+  };
+}
+
+function buildJUnitCommand(command, junitPath) {
+  const [binary, subcommand, ...rest] = command;
+  if (binary === 'bun' && subcommand === 'test') {
+    return [
+      binary,
+      subcommand,
+      ...rest,
+      '--reporter=junit',
+      '--reporter-outfile',
+      junitPath,
+    ];
+  }
+  return [...command];
+}
+
+function runCommand(command, options = {}, spawnSync = defaultSpawnSync) {
+  const [binary, ...args] = command;
+  const result = spawnSync(binary, args, {
+    cwd: rootDir,
+    encoding: 'utf8',
+    stdio: 'pipe',
+    ...options,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(result.stderr || `Command failed: ${command.join(' ')}`);
+  }
+
+  return result;
+}
+
+function materializeJUnitFile(expectedPath) {
+  if (fs.existsSync(expectedPath)) {
+    return expectedPath;
+  }
+
+  if (fs.existsSync(DEFAULT_JUNIT_PATH)) {
+    fs.mkdirSync(path.dirname(expectedPath), { recursive: true });
+    fs.copyFileSync(DEFAULT_JUNIT_PATH, expectedPath);
+    return expectedPath;
+  }
+
+  throw new Error(`Benchmark run did not produce JUnit output at ${expectedPath}`);
+}
+
+function buildGroupProfile(group, xmlFiles) {
+  const metrics = parseJUnitFiles(xmlFiles);
+  return buildProfile({
+    integrationSkipped: true,
+    label: `benchmark-${group.id}`,
+  }, metrics);
+}
+
+function runBenchmarkGroup(group, options = {}) {
+  const profileDir = path.resolve(rootDir, options.profileDir || DEFAULT_PROFILE_DIR);
+  const samples = options.samples || DEFAULT_SAMPLES;
+  const spawnSync = options.spawnSync || defaultSpawnSync;
+
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const xmlFiles = [];
+  const samplesMs = [];
+
+  for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
+    const junitPath = path.join(profileDir, `${group.id}.sample-${sampleIndex + 1}.xml`);
+    fs.rmSync(junitPath, { force: true });
+    fs.rmSync(DEFAULT_JUNIT_PATH, { force: true });
+    const command = buildJUnitCommand(group.command, junitPath);
+    const start = performance.now();
+    runCommand(command, {}, spawnSync);
+    samplesMs.push(roundMs(performance.now() - start));
+    xmlFiles.push(materializeJUnitFile(junitPath));
+  }
+
+  const summary = summarizeSamples(samplesMs);
+  const profile = buildGroupProfile(group, xmlFiles);
+  const profilePath = path.join(profileDir, `${group.id}.profile.json`);
+  fs.writeFileSync(profilePath, JSON.stringify(profile, null, 2));
+
+  return {
+    command: group.command.join(' '),
+    groupId: group.id,
+    groupLabel: group.label,
+    profilePath: path.relative(rootDir, profilePath).replace(/\\/g, '/'),
+    samples,
+    ...summary,
+  };
+}
+
+function buildBenchmarkResults(groups, results, timestamp = new Date().toISOString()) {
+  const totalMedianMs = results.reduce((sum, result) => sum + result.medianMs, 0);
+  const slowestGroup = [...results]
+    .sort((left, right) => right.medianMs - left.medianMs || left.groupId.localeCompare(right.groupId))[0] || null;
+
+  return {
+    groups: results,
+    requestedGroups: groups.map((group) => group.id),
+    samples: results[0]?.samples || DEFAULT_SAMPLES,
+    slowestGroup: slowestGroup
+      ? { groupId: slowestGroup.groupId, groupLabel: slowestGroup.groupLabel, medianMs: slowestGroup.medianMs }
+      : null,
+    timestamp,
+    totalMedianMs,
+  };
+}
+
+function formatResultLine(result) {
+  return `  ${result.groupLabel}: median ${result.medianMs}ms (min ${result.minMs}ms, max ${result.maxMs}ms)`;
+}
+
+function main(argv = process.argv.slice(2), deps = {}) {
+  const args = parseArgs(argv);
+  const groups = resolveGroups(args.groups);
+  const results = groups.map((group) => runBenchmarkGroup(group, {
+    profileDir: args.profileDir,
+    samples: args.samples,
+    spawnSync: deps.spawnSync,
+  }));
+
+  const payload = buildBenchmarkResults(groups, results);
+  const outputPath = path.resolve(rootDir, args.output || DEFAULT_OUTPUT);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(payload));
+    return payload;
+  }
+
+  console.log('\n  Forge Test Benchmark Baselines');
+  console.log('  =============================\n');
+  for (const result of results) {
+    console.log(formatResultLine(result));
+  }
+  console.log(`\n  Total median: ${payload.totalMedianMs}ms`);
+  console.log(`  Results saved to: ${path.relative(rootDir, outputPath).replace(/\\/g, '/')}\n`);
+  return payload;
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  BENCHMARK_GROUPS,
+  DEFAULT_OUTPUT,
+  DEFAULT_PROFILE_DIR,
+  DEFAULT_SAMPLES,
+  buildBenchmarkResults,
+  buildGroupProfile,
+  buildJUnitCommand,
+  calculateMedian,
+  formatResultLine,
+  main,
+  parseArgs,
+  resolveGroups,
+  roundMs,
+  materializeJUnitFile,
+  runBenchmarkGroup,
+  runCommand,
+  summarizeSamples,
+};

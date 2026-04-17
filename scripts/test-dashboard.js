@@ -141,9 +141,47 @@ function getProfileMetrics(profilesDir) {
   };
 }
 
+function getBenchmarkMetrics(profilesDir) {
+  const files = walk(profilesDir, '.json').filter((file) => path.basename(file) === 'benchmark-results.json');
+  if (files.length === 0) {
+    return {
+      groupCount: 0,
+      groups: [],
+      slowestGroup: null,
+      totalMedianMs: 0,
+    };
+  }
+
+  try {
+    const benchmark = JSON.parse(fs.readFileSync(files.sort((left, right) => right.localeCompare(left))[0], 'utf8'));
+    const groups = Array.isArray(benchmark.groups)
+      ? benchmark.groups.map((group) => ({
+        groupId: group.groupId,
+        groupLabel: group.groupLabel,
+        medianMs: group.medianMs || 0,
+      }))
+      : [];
+    return {
+      groupCount: groups.length,
+      groups,
+      slowestGroup: benchmark.slowestGroup || null,
+      totalMedianMs: benchmark.totalMedianMs || groups.reduce((sum, group) => sum + group.medianMs, 0),
+    };
+  } catch (_error) {
+    return {
+      groupCount: 0,
+      groups: [],
+      slowestGroup: null,
+      totalMedianMs: 0,
+    };
+  }
+}
+
 const args = parseArgs(process.argv.slice(2));
 const profileMetrics = getProfileMetrics(args.profilesDir);
+const benchmarkMetrics = getBenchmarkMetrics(args.profilesDir);
 const dashboard = {
+  benchmarks: benchmarkMetrics,
   testCount: getTestCount(),
   coverageThreshold: getCoverageThreshold(),
   eslintWarnings: 0,
@@ -169,11 +207,20 @@ if (args.json) {
   console.log(`  Timed out files:    ${dashboard.timedOutFiles.length}`);
   console.log(`  Integration skipped:${dashboard.integrationSkipped ? ' yes' : ' no'}`);
   console.log(`  Mutation score:     ${dashboard.mutationScore !== null ? `${dashboard.mutationScore}%` : 'N/A (run test:mutation first)'}`);
+  if (dashboard.benchmarks.groupCount > 0) {
+    console.log(`  Benchmarks:         ${dashboard.benchmarks.groupCount} groups (${dashboard.benchmarks.totalMedianMs}ms median total)`);
+  }
   console.log(`  Generated:          ${dashboard.timestamp}`);
   if (dashboard.slowestFiles.length > 0) {
     console.log('\n  Slowest files:');
     for (const entry of dashboard.slowestFiles) {
       console.log(`   - ${entry.file}: ${entry.durationMs}ms`);
+    }
+  }
+  if (dashboard.benchmarks.groupCount > 0) {
+    console.log('\n  Benchmark medians:');
+    for (const entry of dashboard.benchmarks.groups) {
+      console.log(`   - ${entry.groupLabel}: ${entry.medianMs}ms`);
     }
   }
   console.log('');
