@@ -16,15 +16,15 @@ describe('smart-status.sh > file-level conflict detection', () => {
       ],
     });
     scenarios = {
-      changedLines: createMockGitWithDiff([
+      changedAndEmpty: createMockGitWithDiff([
         'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
         'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
-        'worktree /repo/.worktrees/beta', 'HEAD ghi789', 'branch refs/heads/feat/beta', '',
+        'worktree /repo/.worktrees/empty', 'HEAD ghi789', 'branch refs/heads/feat/empty', '',
       ].join('\n'), {
         'feat/alpha': ['src/a.js', 'src/b.js'],
-        'feat/beta': ['src/c.js'],
+        'feat/empty': [],
       }),
-      truncated: createMockGitWithDiff([
+      truncatedNoConflict: createMockGitWithDiff([
         'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
         'worktree /repo/.worktrees/big', 'HEAD def456', 'branch refs/heads/feat/big', '',
         'worktree /repo/.worktrees/other', 'HEAD ghi789', 'branch refs/heads/feat/other', '',
@@ -40,22 +40,6 @@ describe('smart-status.sh > file-level conflict detection', () => {
         'feat/alpha': ['shared.js', 'alpha-only.js'],
         'feat/beta': ['shared.js', 'beta-only.js'],
       }),
-      isolated: createMockGitWithDiff([
-        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
-        'worktree /repo/.worktrees/alpha', 'HEAD def456', 'branch refs/heads/feat/alpha', '',
-        'worktree /repo/.worktrees/beta', 'HEAD ghi789', 'branch refs/heads/feat/beta', '',
-      ].join('\n'), {
-        'feat/alpha': ['alpha.js'],
-        'feat/beta': ['beta.js'],
-      }),
-      emptyBranch: createMockGitWithDiff([
-        'worktree /repo', 'HEAD abc123', 'branch refs/heads/master', '',
-        'worktree /repo/.worktrees/empty', 'HEAD def456', 'branch refs/heads/feat/empty', '',
-        'worktree /repo/.worktrees/full', 'HEAD ghi789', 'branch refs/heads/feat/full', '',
-      ].join('\n'), {
-        'feat/empty': [],
-        'feat/full': ['a.js'],
-      }),
     };
   });
 
@@ -66,23 +50,24 @@ describe('smart-status.sh > file-level conflict detection', () => {
     }
   });
 
-  test.concurrent('shows Changed: line with files for each active session branch', () => {
+  test.concurrent('shows Changed lines for active branches and omits them for empty branches', () => {
     const result = runSmartStatus([], {
-      BD_CMD: mockBd.mockScript, GIT_CMD: scenarios.changedLines.mockScript, NO_COLOR: '1',
+      BD_CMD: mockBd.mockScript, GIT_CMD: scenarios.changedAndEmpty.mockScript, NO_COLOR: '1',
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('ACTIVE SESSIONS');
     expect(result.stdout).toContain('feat/alpha');
+    expect(result.stdout).toContain('feat/empty');
     expect(result.stdout).toContain('Changed:');
     expect(result.stdout).toContain('src/a.js');
     expect(result.stdout).toContain('src/b.js');
-    expect(result.stdout).toContain('feat/beta');
-    expect(result.stdout).toContain('src/c.js');
+    expect(result.stdout).not.toContain('feat/empty\n    Changed:');
+    expect(result.stdout).not.toMatch(/[Cc]onflict risk/);
   });
 
-  test.concurrent('truncates to 3 files with +N more', () => {
+  test.concurrent('truncates to 3 files with +N more and skips conflict warnings for isolated branches', () => {
     const result = runSmartStatus([], {
-      BD_CMD: mockBd.mockScript, GIT_CMD: scenarios.truncated.mockScript, NO_COLOR: '1',
+      BD_CMD: mockBd.mockScript, GIT_CMD: scenarios.truncatedNoConflict.mockScript, NO_COLOR: '1',
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('f1.js');
@@ -91,6 +76,7 @@ describe('smart-status.sh > file-level conflict detection', () => {
     expect(result.stdout).toContain('+2 more');
     expect(result.stdout).not.toContain('f4.js');
     expect(result.stdout).not.toContain('f5.js');
+    expect(result.stdout).not.toMatch(/[Cc]onflict risk/);
   });
 
   test.concurrent('shows conflict risk when branches share files', () => {
@@ -102,20 +88,4 @@ describe('smart-status.sh > file-level conflict detection', () => {
     expect(result.stdout).toContain('shared.js');
   });
 
-  test.concurrent('no conflict risk when branches have no overlapping files', () => {
-    const result = runSmartStatus([], {
-      BD_CMD: mockBd.mockScript, GIT_CMD: scenarios.isolated.mockScript, NO_COLOR: '1',
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout).not.toMatch(/[Cc]onflict risk/);
-  });
-
-  test.concurrent('no Changed line for branch with no changed files', () => {
-    const result = runSmartStatus([], {
-      BD_CMD: mockBd.mockScript, GIT_CMD: scenarios.emptyBranch.mockScript, NO_COLOR: '1',
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('feat/full');
-    expect(result.stdout).toContain('a.js');
-  });
 });
