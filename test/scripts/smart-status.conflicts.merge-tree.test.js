@@ -1,4 +1,4 @@
-const { describe, test, expect, setDefaultTimeout } = require('bun:test');
+const { describe, test, expect, setDefaultTimeout, beforeAll, afterAll } = require('bun:test');
 
 const { cleanupTmpDir, createMockBd, daysAgo, runSmartStatus } = require('./smart-status.helpers');
 const { createMockGitTier2, twoBranchPorcelain } = require('./smart-status.conflicts.helpers');
@@ -6,6 +6,20 @@ const { createMockGitTier2, twoBranchPorcelain } = require('./smart-status.confl
 setDefaultTimeout(20000);
 
 describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
+  let mockBd;
+
+  beforeAll(() => {
+    mockBd = createMockBd({
+      issues: [
+        { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
+      ],
+    });
+  });
+
+  afterAll(() => {
+    cleanupTmpDir(mockBd?.tmpDir);
+  });
+
   test.concurrent('shows !! Merge conflict for real conflicts (exit 1)', () => {
     const branchFiles = {
       'feat/alpha': ['shared.js', 'alpha-only.js'],
@@ -14,11 +28,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     const mergeTreeResults = {
       'feat/alpha feat/beta': { exitCode: 1, output: 'shared.js' },
     };
-    const mockBd = createMockBd({
-      issues: [
-        { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
-      ],
-    });
     const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
     try {
       const result = runSmartStatus([], {
@@ -28,7 +37,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
       expect(result.stdout).toContain('!! Merge conflict');
       expect(result.stdout).toContain('shared.js');
     } finally {
-      cleanupTmpDir(mockBd.tmpDir);
       cleanupTmpDir(mockGit.tmpDir);
     }
   });
@@ -41,11 +49,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     const mergeTreeResults = {
       'feat/alpha feat/beta': { exitCode: 0, output: '' },
     };
-    const mockBd = createMockBd({
-      issues: [
-        { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
-      ],
-    });
     const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
     try {
       const result = runSmartStatus([], {
@@ -55,7 +58,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
       expect(result.stdout).toMatch(/! Conflict risk/);
       expect(result.stdout).not.toContain('!! Merge conflict');
     } finally {
-      cleanupTmpDir(mockBd.tmpDir);
       cleanupTmpDir(mockGit.tmpDir);
     }
   });
@@ -65,11 +67,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
       'feat/alpha': ['shared.js'],
       'feat/beta': ['shared.js'],
     };
-    const mockBd = createMockBd({
-      issues: [
-        { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
-      ],
-    });
     const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.37.1', {});
     try {
       const result = runSmartStatus([], {
@@ -79,7 +76,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
       expect(result.stdout).toMatch(/! Conflict risk/);
       expect(result.stdout).not.toContain('!! Merge conflict');
     } finally {
-      cleanupTmpDir(mockBd.tmpDir);
       cleanupTmpDir(mockGit.tmpDir);
     }
   });
@@ -92,11 +88,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     const mergeTreeResults = {
       'feat/alpha feat/beta': { exitCode: 1, output: 'shared.js' },
     };
-    const mockBd = createMockBd({
-      issues: [
-        { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
-      ],
-    });
     const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
     try {
       const result = runSmartStatus(['--json'], {
@@ -111,7 +102,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
       expect(allConflicts[0]).toHaveProperty('files');
       expect(allConflicts[0].files).toContain('shared.js');
     } finally {
-      cleanupTmpDir(mockBd.tmpDir);
       cleanupTmpDir(mockGit.tmpDir);
     }
   });
@@ -124,11 +114,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
     const mergeTreeResults = {
       'feat/alpha feat/beta': { exitCode: 0, output: '' },
     };
-    const mockBd = createMockBd({
-      issues: [
-        { id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
-      ],
-    });
     const mockGit = createMockGitTier2(twoBranchPorcelain, branchFiles, 'git version 2.45.0', mergeTreeResults);
     try {
       const result = runSmartStatus(['--json'], {
@@ -139,7 +124,6 @@ describe('smart-status.sh > tier-2 merge-tree conflict detection', () => {
       const allConflicts = parsed.sessions.flatMap(s => s.merge_conflicts || []);
       expect(allConflicts.length).toBe(0);
     } finally {
-      cleanupTmpDir(mockBd.tmpDir);
       cleanupTmpDir(mockGit.tmpDir);
     }
   });
