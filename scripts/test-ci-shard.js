@@ -7,6 +7,7 @@ const { spawnSync } = require('node:child_process');
 const rootDir = path.join(__dirname, '..');
 const testDir = path.join(rootDir, 'test');
 const reportDir = path.join(rootDir, 'test-results');
+const PROFILE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 const DEFAULT_SMOKE_FILES = [
   'test/cli-flags.test.js',
@@ -18,7 +19,7 @@ const DEFAULT_SMOKE_FILES = [
 ];
 
 function parseArgs(argv) {
-  const args = { mode: 'shard', label: 'unit' };
+  const args = { label: 'unit', mode: 'shard' };
 
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
@@ -53,11 +54,101 @@ function ensureFilesExist(files) {
   return files.filter((file) => fs.existsSync(path.join(rootDir, file)));
 }
 
-function selectShard(files, shardIndex, shardTotal) {
+function normalizePath(file) {
+  return (file || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '');
+}
+
+function selectModuloShard(files, shardIndex, shardTotal) {
   if (!Number.isInteger(shardIndex) || !Number.isInteger(shardTotal) || shardTotal < 1) {
     throw new Error(`Invalid shard args: index=${shardIndex} total=${shardTotal}`);
   }
   return files.filter((_, index) => index % shardTotal === shardIndex);
+}
+
+function listProfileFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((entry) => entry.endsWith('.profile.json'))
+    .map((entry) => path.join(dir, entry));
+}
+
+function readNewestProfile(dir, { now = Date.now(), maxAgeMs = PROFILE_MAX_AGE_MS } = {}) {
+  const candidates = [];
+  for (const file of listProfileFiles(dir)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const timestamp = Date.parse(parsed.timestamp || '');
+      if (!Number.isFinite(timestamp)) continue;
+      if ((now - timestamp) > maxAgeMs) continue;
+      candidates.push({ file, profile: parsed, timestamp });
+    } catch (_error) {
+      // Ignore invalid profile files and fall back to deterministic sharding.
+    }
+  }
+
+  candidates.sort((left, right) => right.timestamp - left.timestamp || left.file.localeCompare(right.file));
+  return candidates[0]?.profile || null;
+}
+
+function createDurationMap(profile) {
+  const durationMap = new Map();
+  for (const entry of profile?.slowestFiles || []) {
+    if (!entry || typeof entry.file !== 'string') continue;
+    durationMap.set(normalizePath(entry.file), Number(entry.durationMs) || 0);
+  }
+  return durationMap;
+}
+
+function selectRuntimeBalancedShard(files, shardIndex, shardTotal, durationMap) {
+  if (!Number.isInteger(shardIndex) || !Number.isInteger(shardTotal) || shardTotal < 1) {
+    throw new Error(`Invalid shard args: index=${shardIndex} total=${shardTotal}`);
+  }
+
+  const shards = Array.from({ length: shardTotal }, (_, index) => ({
+    files: [],
+    index,
+    totalDurationMs: 0,
+  }));
+  const weightedFiles = files
+    .map((file) => ({
+      durationMs: durationMap.get(normalizePath(file)) || 0,
+      file,
+    }))
+    .sort((left, right) => right.durationMs - left.durationMs || left.file.localeCompare(right.file));
+
+  for (const entry of weightedFiles) {
+    const targetShard = shards
+      .slice()
+      .sort((left, right) => left.totalDurationMs - right.totalDurationMs
+        || left.files.length - right.files.length
+        || left.index - right.index)[0];
+    targetShard.files.push(entry.file);
+    targetShard.totalDurationMs += entry.durationMs;
+  }
+
+  return shards[shardIndex].files.sort((left, right) => left.localeCompare(right));
+}
+
+function selectShard(files, shardIndex, shardTotal, durationMap = new Map()) {
+  if (durationMap.size === 0) {
+    return selectModuloShard(files, shardIndex, shardTotal);
+  }
+  return selectRuntimeBalancedShard(files, shardIndex, shardTotal, durationMap);
+}
+
+function getShardPlan(args, { allUnitTests, durationMap }) {
+  if (args.mode === 'smoke') {
+    return {
+      files: ensureFilesExist(DEFAULT_SMOKE_FILES),
+      source: 'smoke',
+    };
+  }
+
+  const effectiveDurationMap = durationMap || createDurationMap(readNewestProfile(reportDir));
+  return {
+    files: selectShard(allUnitTests, args.shardIndex, args.shardTotal, effectiveDurationMap),
+    source: effectiveDurationMap && effectiveDurationMap.size > 0 ? 'runtime-balanced' : 'modulo',
+  };
 }
 
 function runTests(label, files) {
@@ -82,19 +173,18 @@ function runTests(label, files) {
   return result.status ?? 1;
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2));
+function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const allUnitTests = walkTests(testDir).sort((left, right) => left.localeCompare(right));
-  const files = args.mode === 'smoke'
-    ? ensureFilesExist(DEFAULT_SMOKE_FILES)
-    : selectShard(allUnitTests, args.shardIndex, args.shardTotal);
+  const plan = getShardPlan(args, { allUnitTests });
+  const files = plan.files;
 
   if (files.length === 0) {
     console.log(`No test files selected for ${args.label}`);
     return 0;
   }
 
-  console.log(`Selected ${files.length} test file(s) for ${args.label}`);
+  console.log(`Selected ${files.length} test file(s) for ${args.label} via ${plan.source}`);
   for (const file of files) {
     console.log(` - ${file}`);
   }
@@ -102,4 +192,24 @@ function main() {
   return runTests(args.label, files);
 }
 
-process.exit(main());
+if (require.main === module) {
+  process.exit(main());
+}
+
+module.exports = {
+  DEFAULT_SMOKE_FILES,
+  PROFILE_MAX_AGE_MS,
+  createDurationMap,
+  ensureFilesExist,
+  getShardPlan,
+  listProfileFiles,
+  main,
+  normalizePath,
+  parseArgs,
+  readNewestProfile,
+  runTests,
+  selectModuloShard,
+  selectRuntimeBalancedShard,
+  selectShard,
+  walkTests,
+};

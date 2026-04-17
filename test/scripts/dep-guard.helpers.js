@@ -9,17 +9,26 @@ setDefaultTimeout(15000);
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'dep-guard.sh');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const GIT_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe';
+const MOCK_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-guard-mocks-'));
+let cachedBashCommand;
+let mockFileSequence = 0;
 
 function resolveBashCommand() {
+  if (cachedBashCommand) {
+    return cachedBashCommand;
+  }
   if (process.env.BASH_CMD) {
-    return process.env.BASH_CMD;
+    cachedBashCommand = process.env.BASH_CMD;
+    return cachedBashCommand;
   }
 
   if (process.platform === 'win32' && fs.existsSync(GIT_BASH_PATH)) {
-    return GIT_BASH_PATH;
+    cachedBashCommand = GIT_BASH_PATH;
+    return cachedBashCommand;
   }
 
-  return 'bash';
+  cachedBashCommand = 'bash';
+  return cachedBashCommand;
 }
 
 function runDepGuard(args = [], env = {}, cwd = PROJECT_ROOT) {
@@ -42,10 +51,8 @@ function runDepGuard(args = [], env = {}, cwd = PROJECT_ROOT) {
 }
 
 function createMockBd(scriptContent) {
-  const mockPath = path.join(
-    os.tmpdir(),
-    `mock-bd-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`,
-  );
+  mockFileSequence += 1;
+  const mockPath = path.join(MOCK_ROOT, `mock-bd-${process.pid}-${mockFileSequence}.sh`);
   fs.writeFileSync(mockPath, `#!/usr/bin/env bash\n${scriptContent}\n`, { mode: 0o755 });
 
   try {

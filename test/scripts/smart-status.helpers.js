@@ -7,15 +7,23 @@ const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'smart-status.sh');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const GIT_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe';
 const SYSTEM_PATH = process.env.PATH || process.env.Path || '';
+let cachedBashCommand;
+let cachedRealJq;
 
 function resolveBashCommand() {
+  if (cachedBashCommand) {
+    return cachedBashCommand;
+  }
   if (process.env.BASH_CMD) {
-    return process.env.BASH_CMD;
+    cachedBashCommand = process.env.BASH_CMD;
+    return cachedBashCommand;
   }
   if (process.platform === 'win32' && fs.existsSync(GIT_BASH_PATH)) {
-    return GIT_BASH_PATH;
+    cachedBashCommand = GIT_BASH_PATH;
+    return cachedBashCommand;
   }
-  return 'bash';
+  cachedBashCommand = 'bash';
+  return cachedBashCommand;
 }
 
 function toBashPath(filePath) {
@@ -110,14 +118,16 @@ function cleanupTmpDir(tmpDir) {
 function createCrLfJqWrapper() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-jq-'));
   const wrapperPath = path.join(tmpDir, 'jq');
-  const probe = spawnSync(resolveBashCommand(), ['-lc', 'command -v jq'], {
-    encoding: 'utf8',
-  });
-  const realJq = process.env.TEST_REAL_JQ
-    || (probe.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-    || 'jq';
+  if (!cachedRealJq) {
+    const probe = spawnSync(resolveBashCommand(), ['-lc', 'command -v jq'], {
+      encoding: 'utf8',
+    });
+    cachedRealJq = process.env.TEST_REAL_JQ
+      || (probe.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+      || 'jq';
+  }
   const scriptContent = `#!/usr/bin/env bash
-REAL_JQ="${realJq}"
+REAL_JQ="${cachedRealJq}"
 "$REAL_JQ" "$@" | awk '{ printf "%s\\r\\n", $0 }'
 `;
   fs.writeFileSync(wrapperPath, scriptContent, { mode: 0o755 });
