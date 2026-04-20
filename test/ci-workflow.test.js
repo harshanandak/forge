@@ -28,8 +28,9 @@ describe('CI Workflow Configuration', () => {
     test('followup-tests resolves affected targets through the shared execution planner', () => {
       expect(workflowContent.includes('name: Resolve affected test targets')).toBe(true);
       expect(workflowContent.includes('buildTestExecutionPlan')).toBe(true);
+      expect(workflowContent.includes("const effectiveMode = plan.mode === 'targeted' && plan.testTargets.length === 0")).toBe(true);
       expect(workflowContent.includes('run_workflow_tests=${plan.runWorkflowTests}')).toBe(true);
-      expect(workflowContent.includes('mode=${plan.mode}')).toBe(true);
+      expect(workflowContent.includes('mode=${effectiveMode}')).toBe(true);
     });
 
     test('followup-tests still runs targeted, fallback, e2e, and edge-case steps', () => {
