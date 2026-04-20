@@ -132,11 +132,15 @@ function accumulateFileMetrics(store, file, durationMs) {
   store.set(file, (store.get(file) || 0) + durationMs);
 }
 
-function finalizeTopFiles(fileDurations) {
+function finalizeFileDurations(fileDurations, limit = Infinity) {
   return Array.from(fileDurations.entries())
     .map(([file, durationMs]) => ({ durationMs, file }))
     .sort((left, right) => right.durationMs - left.durationMs || left.file.localeCompare(right.file))
-    .slice(0, 10);
+    .slice(0, limit);
+}
+
+function finalizeTopFiles(fileDurations, limit = 10) {
+  return finalizeFileDurations(fileDurations, limit);
 }
 
 function finalizePathBuckets(pathBuckets, bucketFiles) {
@@ -214,6 +218,7 @@ function parseJUnitFiles(files) {
 
   return {
     fixtureHeavy: finalizeSignalMetrics(fixtureHeavyMetrics, fixtureHeavyFileDurations),
+    allFileDurations: finalizeFileDurations(fileDurations),
     pathBuckets: finalizePathBuckets(pathBuckets, bucketFiles),
     shellHeavy: finalizeSignalMetrics(shellHeavyMetrics, shellHeavyFileDurations),
     slowestFiles: finalizeTopFiles(fileDurations),
@@ -224,6 +229,7 @@ function parseJUnitFiles(files) {
 
 function buildProfile(args, metrics, timestamp = new Date().toISOString()) {
   return {
+    allFileDurations: metrics.allFileDurations || [],
     fixtureHeavy: metrics.fixtureHeavy || createSignalMetrics(),
     integrationSkipped: args.integrationSkipped !== false,
     label: args.label,
@@ -261,6 +267,7 @@ module.exports = {
   accumulateFileMetrics,
   buildProfile,
   classifyTestcase,
+  finalizeFileDurations,
   main,
   normalizePathForProfile,
   parseArgs,

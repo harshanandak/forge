@@ -121,7 +121,10 @@ function getProfileMetrics(profilesDir) {
     suiteDurationMs += profile.suiteDurationMs || 0;
     integrationSkipped = integrationSkipped || Boolean(profile.integrationSkipped);
 
-    for (const entry of profile.slowestFiles || []) {
+    const entries = Array.isArray(profile.allFileDurations) && profile.allFileDurations.length > 0
+      ? profile.allFileDurations
+      : profile.slowestFiles || [];
+    for (const entry of entries) {
       slowest.set(entry.file, Math.max(slowest.get(entry.file) || 0, entry.durationMs || 0));
     }
 

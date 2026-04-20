@@ -50,6 +50,16 @@ describe('scripts/test-profile.js', () => {
     const metrics = parseJUnitFiles([path.join(dir, 'profile.xml')]);
 
     expect(metrics.suiteDurationMs).toBe(3500);
+    expect(metrics.allFileDurations).toEqual([
+      {
+        durationMs: 2300,
+        file: 'test/e2e/fixtures/setup.test.js',
+      },
+      {
+        durationMs: 1200,
+        file: 'test/scripts/smart-status.basics.test.js',
+      },
+    ]);
     expect(metrics.slowestFiles[0]).toEqual({
       durationMs: 2300,
       file: 'test/e2e/fixtures/setup.test.js',
@@ -69,6 +79,7 @@ describe('scripts/test-profile.js', () => {
     const profile = buildProfile({ integrationSkipped: true, label: 'local' }, parseJUnitFiles([]), '2026-04-17T00:00:00.000Z');
 
     expect(profile).toMatchObject({
+      allFileDurations: [],
       fixtureHeavy: {
         durationMs: 0,
         matchedFiles: 0,
@@ -117,6 +128,12 @@ describe('scripts/test-profile.js', () => {
     const written = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
     const printed = JSON.parse(chunks.join(''));
     expect(written.label).toBe('cli');
+    expect(written.allFileDurations).toEqual([
+      {
+        durationMs: 1000,
+        file: 'test/commands/test.test.js',
+      },
+    ]);
     expect(written.pathBuckets.commands).toEqual({ durationMs: 1000, files: 1, testCases: 1 });
     expect(written.shellHeavy.matchedFiles).toBe(1);
     expect(printed).toEqual(written);

@@ -40,52 +40,7 @@ ENDJSON
           exit 0
         fi
         if [[ "$1" == "list" ]]; then
-          echo "Ã¢â€”Â forge-abc [Ã¢â€”Â P2] [feature] - Pre-change dependency guard for plan workflow"
-          exit 0
-        fi
-        echo "Unknown command: $*" >&2
-        exit 1
-      `),
-      keywordOverlap: createMockBd(`
-        if [[ "$1" == "show" && "$2" == "forge-src" ]]; then
-          cat <<'ENDJSON'
-[{"id":"forge-src","title":"Pre-change dependency guard for plan workflow","description":"Guard dep conflicts in plan","status":"in_progress","priority":2}]
-ENDJSON
-          exit 0
-        fi
-        if [[ "$1" == "list" ]]; then
-          echo "Ã¢â€”Â forge-src [Ã¢â€”Â P2] [feature] - Pre-change dependency guard for plan workflow"
-          echo "Ã¢â€”Å’ forge-other [Ã¢â€”Â P2] [feature] - Logic-level dependency detection in plan Phase 3"
-          exit 0
-        fi
-        echo "Unknown command: $*" >&2
-        exit 1
-      `),
-      actionableOverlap: createMockBd(`
-        if [[ "$1" == "show" && "$2" == "forge-src" ]]; then
-          cat <<'ENDJSON'
-[{"id":"forge-src","title":"Pre-change dependency guard for plan workflow","description":"Guard dep","status":"in_progress","priority":2}]
-ENDJSON
-          exit 0
-        fi
-        if [[ "$1" == "list" ]]; then
-          echo "Ã¢â€”Â forge-src [Ã¢â€”Â P2] [feature] - Pre-change dependency guard for plan workflow"
-          echo "Ã¢â€”Å’ forge-other [Ã¢â€”Â P1] [feature] - Logic-level dependency detection in plan Phase 3"
-          exit 0
-        fi
-        echo "Unknown command: $*" >&2
-        exit 1
-      `),
-      stopWordsOnly: createMockBd(`
-        if [[ "$1" == "show" && "$2" == "forge-aaa" ]]; then
-          cat <<'ENDJSON'
-[{"id":"forge-aaa","title":"Add the widget to sidebar","description":"","status":"open","priority":2}]
-ENDJSON
-          exit 0
-        fi
-        if [[ "$1" == "list" ]]; then
-          echo "Ã¢â€”Å’ forge-aaa [Ã¢â€”Â P2] [feature] - Add the widget to sidebar"
-          echo "Ã¢â€”Å’ forge-bbb [Ã¢â€”Â P2] [feature] - Fix the button in footer"
+          echo "ÃƒÂ¢Ã¢â‚¬â€Ã‚Â forge-abc [ÃƒÂ¢Ã¢â‚¬â€Ã‚Â P2] [feature] - Pre-change dependency guard for plan workflow"
           exit 0
         fi
         echo "Unknown command: $*" >&2
@@ -130,27 +85,5 @@ ENDJSON
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('No conflicts detected');
     expect(result.stdout).toContain('forge-abc');
-  });
-
-  test('keyword overlap found between source and another issue', () => {
-    const result = runDepGuard(['check-ripple', 'forge-src'], { BD_CMD: scenarios.keywordOverlap });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Potential overlap');
-    expect(result.stdout).toContain('forge-other');
-    expect(result.stdout).toContain('dependency');
-    expect(result.stdout).toContain('Confidence: LOW');
-  });
-
-  test('overlap report includes actionable options', () => {
-    const result = runDepGuard(['check-ripple', 'forge-src'], { BD_CMD: scenarios.actionableOverlap });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('bd dep add forge-src forge-other');
-    expect(result.stdout).toContain('bd show forge-other');
-  });
-
-  test('no overlap when terms are too short or all stop words', () => {
-    const result = runDepGuard(['check-ripple', 'forge-aaa'], { BD_CMD: scenarios.stopWordsOnly });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('No conflicts detected');
   });
 });

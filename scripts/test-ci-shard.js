@@ -5,7 +5,6 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const rootDir = path.join(__dirname, '..');
-const testDir = path.join(rootDir, 'test');
 const reportDir = path.join(rootDir, 'test-results');
 const PROFILE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -34,12 +33,30 @@ function parseArgs(argv) {
   return args;
 }
 
+function getUnitTestRoots() {
+  const roots = [path.join(rootDir, 'test')];
+  const packagesDir = path.join(rootDir, 'packages');
+  if (!fs.existsSync(packagesDir)) {
+    return roots.filter((dir) => fs.existsSync(dir));
+  }
+
+  for (const entry of fs.readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const testRoot = path.join(packagesDir, entry.name, 'test');
+    if (fs.existsSync(testRoot)) {
+      roots.push(testRoot);
+    }
+  }
+
+  return roots;
+}
+
 function walkTests(dir) {
   const results = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const absolute = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (absolute === path.join(testDir, 'e2e')) continue;
+      if (absolute === path.join(rootDir, 'test', 'e2e')) continue;
       results.push(...walkTests(absolute));
       continue;
     }
@@ -48,6 +65,12 @@ function walkTests(dir) {
     results.push(path.relative(rootDir, absolute).replace(/\\/g, '/'));
   }
   return results;
+}
+
+function listAllUnitTests() {
+  return getUnitTestRoots()
+    .flatMap((dir) => walkTests(dir))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function ensureFilesExist(files) {
@@ -92,7 +115,10 @@ function readNewestProfile(dir, { now = Date.now(), maxAgeMs = PROFILE_MAX_AGE_M
 
 function createDurationMap(profile) {
   const durationMap = new Map();
-  for (const entry of profile?.slowestFiles || []) {
+  const entries = Array.isArray(profile?.allFileDurations) && profile.allFileDurations.length > 0
+    ? profile.allFileDurations
+    : profile?.slowestFiles || [];
+  for (const entry of entries) {
     if (!entry || typeof entry.file !== 'string') continue;
     durationMap.set(normalizePath(entry.file), Number(entry.durationMs) || 0);
   }
@@ -175,7 +201,7 @@ function runTests(label, files) {
 
 function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  const allUnitTests = walkTests(testDir).sort((left, right) => left.localeCompare(right));
+  const allUnitTests = listAllUnitTests();
   const plan = getShardPlan(args, { allUnitTests });
   const files = plan.files;
 
@@ -208,6 +234,8 @@ module.exports = {
   parseArgs,
   readNewestProfile,
   runTests,
+  getUnitTestRoots,
+  listAllUnitTests,
   selectModuloShard,
   selectRuntimeBalancedShard,
   selectShard,

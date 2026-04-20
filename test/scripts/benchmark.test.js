@@ -79,6 +79,11 @@ describe('scripts/benchmark.js', () => {
     expect(() => resolveGroups(['missing-group'])).toThrow(/Unknown benchmark group/);
   });
 
+  test('benchmark groups include whole-suite and validate command lanes', () => {
+    expect(BENCHMARK_GROUPS.some((group) => group.id === 'full-suite' && group.command.join(' ') === 'bun test')).toBe(true);
+    expect(BENCHMARK_GROUPS.some((group) => group.id === 'validate' && group.command.join(' ') === 'bash scripts/validate.sh')).toBe(true);
+  });
+
   test('calculateMedian and summarizeSamples use median-of-three semantics', () => {
     expect(calculateMedian([100, 300, 200])).toBe(200);
     expect(summarizeSamples([100, 300, 200])).toEqual({

@@ -207,8 +207,8 @@ describe('scripts/test pre-push runner', () => {
 
     expect(status).toBe(0);
     expect(spawnSync.calls).toHaveLength(1);
-    expect(spawnSync.calls[0].command).toBe('bun');
-    expect(spawnSync.calls[0].args).toEqual(['run', 'test']);
+    expect(spawnSync.calls[0].command).toBe('node');
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
   test('runLocalValidationTests reuses the same targeted runner path', () => {
@@ -246,7 +246,7 @@ describe('scripts/test pre-push runner', () => {
 
     expect(status).toBe(0);
     expect(spawnSync.calls).toHaveLength(1);
-    expect(spawnSync.calls[0].command).toBe('bun');
-    expect(spawnSync.calls[0].args).toEqual(['run', 'test']);
+    expect(spawnSync.calls[0].command).toBe('node');
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 });

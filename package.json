@@ -25,6 +25,8 @@
     "validate:yaml": "find . \\( -name '*.yml' -o -name '*.yaml' \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && bun x js-yaml \"$file\" > /dev/null || exit 1; done",
     "test:mutation": "npx stryker run",
     "test:benchmark": "node scripts/benchmark.js --output test-results/benchmark-results.json --profile-dir test-results/benchmark-profiles",
+    "test:benchmark:full": "node scripts/benchmark.js --output test-results/benchmark-full-results.json --profile-dir test-results/benchmark-full-profiles --group full-suite --group validate",
+    "test:full:parallel": "node scripts/test-full-suite.js",
     "test:dashboard": "node scripts/test-dashboard.js",
     "test:profile": "node scripts/test-profile.js --input-dir test-results --output test-results/test-profile.json --label local",
     "test:randomized": "bun test --randomize",

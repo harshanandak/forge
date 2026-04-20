@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smart-status.sh — Workflow intelligence scoring engine
+# smart-status.sh â€” Workflow intelligence scoring engine
 #
 # Reads issues via `bd list --json --limit 0`, computes a composite score
 # for each issue, and outputs them sorted by score descending.
@@ -11,20 +11,21 @@
 #   smart-status.sh [--json]
 #
 # Environment:
-#   BD_CMD  — override the bd command (for testing with mocks)
-#   GIT_CMD — override the git command (for testing with mocks)
-#   DEFAULT_BRANCH — override the default branch name (default: auto-detect)
+#   BD_CMD  â€” override the bd command (for testing with mocks)
+#   GIT_CMD â€” override the git command (for testing with mocks)
+#   DEFAULT_BRANCH â€” override the default branch name (default: auto-detect)
 #
 # Cross-platform: bash 3.2 compatible (no associative arrays, no mapfile).
 # OWASP A03: All variables quoted, sanitize() strips injection patterns.
 
 set -euo pipefail
 
-# ── Source cross-dev awareness scripts ────────────────────────────────
+# â”€â”€ Source cross-dev awareness scripts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # file-index.sh: file_index_read for reading file index entries
 # sync-utils.sh: get_session_identity for current developer identity
 
 _SMART_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODE_CMD="${NODE_CMD:-node}"
 if [ -f "$_SMART_STATUS_DIR/lib/sanitize.sh" ]; then
   source "$_SMART_STATUS_DIR/lib/sanitize.sh"
 fi
@@ -35,7 +36,7 @@ if [ -f "$_SMART_STATUS_DIR/sync-utils.sh" ]; then
   source "$_SMART_STATUS_DIR/sync-utils.sh"
 fi
 
-# ── Helpers ──────────────────────────────────────────────────────────────
+# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if ! declare -F sanitize >/dev/null; then
 # Sanitize a string: strip shell-injection patterns (OWASP A03)
@@ -56,7 +57,7 @@ sanitize() {
 }
 fi
 
-# ── Dependency check ────────────────────────────────────────────────────
+# â”€â”€ Dependency check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if ! command -v jq &>/dev/null; then
   echo "Error: jq is required but not found." >&2
@@ -75,7 +76,7 @@ if [ -n "$_jq_version" ]; then
   _jq_major="${_jq_version%%.*}"
   _jq_minor="${_jq_version#*.}"; _jq_minor="${_jq_minor%%.*}"
   if [ "${_jq_major:-0}" -lt 1 ] || { [ "${_jq_major:-0}" -eq 1 ] && [ "${_jq_minor:-0}" -lt 6 ]; }; then
-    echo "Warning: jq $_jq_version detected — staleness features require jq 1.6+. Team Activity may not display." >&2
+    echo "Warning: jq $_jq_version detected â€” staleness features require jq 1.6+. Team Activity may not display." >&2
   fi
 fi
 
@@ -86,7 +87,7 @@ jq() {
   command jq "$@" | tr -d '\r'
 }
 
-# ── Configuration ───────────────────────────────────────────────────────
+# â”€â”€ Configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 BD="${BD_CMD:-bd}"
 GIT="${GIT_CMD:-git}"
@@ -103,7 +104,7 @@ else
   BASE_BRANCH="master"
 fi
 
-# Parse arguments (bash 3.2 compatible — no associative arrays)
+# Parse arguments (bash 3.2 compatible â€” no associative arrays)
 for arg in "$@"; do
   case "$arg" in
     --json) JSON_MODE=1 ;;
@@ -124,7 +125,7 @@ for arg in "$@"; do
   esac
 done
 
-# ── Fetch issues ────────────────────────────────────────────────────────
+# â”€â”€ Fetch issues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Auto-recover beads database if Dolt server lost the database (e.g. branch
 # switch, fresh clone, server restart).  Checks for the specific "database
@@ -149,7 +150,7 @@ if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
   if [ -z "$_bd_prefix" ]; then
     _bd_prefix="$(basename "$_repo_root" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
   fi
-  echo "Beads database not found — attempting auto-recovery..." >&2
+  echo "Beads database not found â€” attempting auto-recovery..." >&2
   if "$BD" init --force --prefix "$_bd_prefix" >/dev/null 2>&1; then
     if [ -d "$_repo_root/.beads/backup" ] && ls "$_repo_root/.beads/backup"/*.jsonl >/dev/null 2>&1; then
       "$BD" backup restore >/dev/null 2>&1 && echo "Beads: restored from backup." >&2 || echo "Beads: backup restore failed." >&2
@@ -157,7 +158,7 @@ if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
       echo "Beads: initialized fresh (no backup found)." >&2
     fi
   else
-    echo "Beads: auto-recovery failed — run 'bd doctor' manually." >&2
+    echo "Beads: auto-recovery failed â€” run 'bd doctor' manually." >&2
   fi
 fi
 
@@ -173,7 +174,7 @@ if [ "$(printf '%s' "$ISSUES_JSON" | jq 'length')" = "0" ]; then
   exit 0
 fi
 
-# ── Identify epics and fetch their children ─────────────────────────────
+# â”€â”€ Identify epics and fetch their children â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Extract epic IDs (type == "epic")
 EPIC_IDS="$(printf '%s' "$ISSUES_JSON" | jq -r '.[] | select(.type == "epic") | .id')"
@@ -181,7 +182,7 @@ EPIC_IDS="$(printf '%s' "$ISSUES_JSON" | jq -r '.[] | select(.type == "epic") | 
 # Build a JSON object mapping epic_id -> { closed, total }
 EPIC_STATS="{}"
 if [ -n "$EPIC_IDS" ]; then
-  # Process each epic (bash 3.2 compatible — read line by line)
+  # Process each epic (bash 3.2 compatible â€” read line by line)
   while IFS= read -r epic_id; do
     [ -z "$epic_id" ] && continue
     CHILDREN_JSON="$("$BD" children "$epic_id" --json 2>/dev/null || echo '[]')"
@@ -193,92 +194,16 @@ $EPIC_IDS
 EOF
 fi
 
-# ── Score issues with jq ────────────────────────────────────────────────
+# â”€â”€ Score issues via shared JS helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS" '
-  # First pass: build reverse dependency map (who does each issue unblock?)
-  # For each issue X, find all issues Y where Y.dependencies[].depends_on_id == X.id
-  (reduce .[] as $dep_issue ({};
-    reduce ($dep_issue.dependencies // [] | .[]) as $dep (.;
-      .[$dep.depends_on_id] += [$dep_issue.id]
-    )
-  )) as $dependents_map |
+if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
+  echo "Error: node is required but not found." >&2
+  exit 1
+fi
 
-  [.[] | . as $issue |
+SCORED_JSON="$(printf '{"issues":%s,"epicStats":%s}' "$ISSUES_JSON" "$EPIC_STATS" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-score.js")"
 
-    # Priority weight: P0=5, P1=4, P2=3, P3=2, P4=1, default=1
-    # Normalize priority to number (beads 0.62+ sends numbers, older sends strings)
-    ((.priority // 2) | if type == "string" then
-      (if . == "P0" then 0 elif . == "P1" then 1 elif . == "P2" then 2 elif . == "P3" then 3 elif . == "P4" then 4 else 5 end)
-    else . end) as $pri_num |
-    (if $pri_num == 0 then 5
-     elif $pri_num == 1 then 4
-     elif $pri_num == 2 then 3
-     elif $pri_num == 3 then 2
-     elif $pri_num == 4 then 1
-     else 1 end) as $priority_weight |
-
-    # Unblock chain: dependent_count + 1 (min 1).
-    # NOTE: dependent_count is the authoritative server-side count. The "Unblocks:"
-    # annotation (computed below from local response) may show fewer items when
-    # bd list omits closed or filtered-out issues. This is an intentional trade-off.
-    (((.dependent_count // 0) + 1) | if . < 1 then 1 else . end) as $unblock_chain |
-
-    # Type weight: bug=1.2, feature=1.0, task=0.8, default=1.0
-    # Handle null type from beads 0.62+
-    (if (.type // "task") == "bug" then 1.2
-     elif (.type // "task") == "feature" then 1.0
-     elif (.type // "task") == "task" then 0.8
-     else 1.0 end) as $type_weight |
-
-    # Status boost: in_progress=1.5, open=1.0, default=1.0
-    (if .status == "in_progress" then 1.5
-     elif .status == "open" then 1.0
-     else 1.0 end) as $status_boost |
-
-    # Epic proximity: if issue has parent_id that is an epic, compute
-    # 1.0 + (closed_siblings / total_siblings) * 0.5
-    (if (.parent_id // "") != "" and ($epic_stats[.parent_id] // null) != null then
-       $epic_stats[.parent_id] as $es |
-       if $es.total > 0 then
-         1.0 + (($es.closed / $es.total) * 0.5)
-       else 1.0 end
-     else 1.0 end) as $epic_proximity |
-
-    # Staleness boost based on updated_at
-    # 0-7d=1.0, 7-14d=1.1, 14-30d=1.2, 30+d=1.5
-    # Truncate to first 19 chars (YYYY-MM-DDTHH:MM:SS) + "Z" for fromdateiso8601.
-    # Handles fractional seconds (.NNN), timezone offsets (+05:30), or both.
-    (if .updated_at then
-       ((.updated_at[:19] + "Z") | fromdateiso8601) as $ts |
-       ((now - $ts) / 86400) as $days |
-       if $days >= 30 then 1.5
-       elif $days >= 14 then 1.2
-       elif $days >= 7 then 1.1
-       else 1.0 end
-     else 1.0 end) as $staleness_boost |
-
-    # Composite score
-    ($priority_weight * $unblock_chain * $type_weight * $status_boost * $epic_proximity * $staleness_boost) as $score |
-
-    # Compute dependents list (which issues does this one unblock?)
-    ($dependents_map[$issue.id] // []) as $dependents_list |
-
-    # Output scored issue
-    $issue + {
-      score: ($score * 100 | round / 100),
-      priority_weight: $priority_weight,
-      unblock_chain: $unblock_chain,
-      type_weight: $type_weight,
-      status_boost: $status_boost,
-      epic_proximity: (($epic_proximity * 100 | round) / 100),
-      staleness_boost: $staleness_boost,
-      dependents: $dependents_list
-    }
-  ] | sort_by(-.score)
-')"
-
-# ── Session detection ─────────────────────────────────────────────────
+# â”€â”€ Session detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Parse git worktree list --porcelain to find active sessions
 # Format: blocks separated by blank lines, each block has:
@@ -288,198 +213,51 @@ SCORED_JSON="$(printf '%s' "$ISSUES_JSON" | jq --argjson epic_stats "$EPIC_STATS
 
 WORKTREE_PORCELAIN="$("$GIT" worktree list --porcelain 2>/dev/null || echo '')"
 
-# Collect non-default-branch worktree branches and paths
-# Stored as newline-delimited "branch<TAB>path" entries — safe for paths with |, spaces, etc.
-SESSION_ENTRIES=""
-SESSION_COUNT=0
 
-_wt_path=""
-_wt_branch=""
-while IFS= read -r line; do
-  case "$line" in
-    worktree\ *)
-      _wt_path="${line#worktree }"
-      ;;
-    branch\ *)
-      _wt_branch="${line#branch refs/heads/}"
-      ;;
-    "")
-      # End of block — process if we have a branch that is not the default branch
-      if [ -n "$_wt_branch" ] && [ "$_wt_branch" != "$BASE_BRANCH" ]; then
-        SESSION_COUNT=$((SESSION_COUNT + 1))
-        if [ -n "$SESSION_ENTRIES" ]; then
-          SESSION_ENTRIES="${SESSION_ENTRIES}
-${_wt_branch}	${_wt_path}"
-        else
-          SESSION_ENTRIES="${_wt_branch}	${_wt_path}"
-        fi
-      fi
-      _wt_path=""
-      _wt_branch=""
-      ;;
-  esac
-done <<EOF
-${WORKTREE_PORCELAIN}
-
-EOF
-
-# Get in-progress issues for matching (only if we have sessions)
+# Build session/conflict data with the shared JS helper so the shell layer
+# only performs command execution and rendering.
 IN_PROGRESS_JSON="[]"
-if [ "$SESSION_COUNT" -gt 0 ]; then
+if [ -n "$WORKTREE_PORCELAIN" ]; then
   IN_PROGRESS_JSON="$("$BD" list --status in_progress --json --limit 0 2>/dev/null || echo '')"
-  # Fallback: only if bd command failed (empty output), not if result is legitimately empty array
   if [ -z "$IN_PROGRESS_JSON" ] || ! printf '%s' "$IN_PROGRESS_JSON" | jq empty 2>/dev/null; then
     IN_PROGRESS_JSON="$(printf '%s' "$ISSUES_JSON" | jq '[.[] | select(.status == "in_progress")]')"
   fi
 fi
 
-# Build sessions data: for each branch, find matching in-progress issues
-# Match by: branch slug (after feat/, fix/, docs/) appears in issue title (case-insensitive, hyphen-to-space)
-SESSIONS_JSON="[]"
-if [ "$SESSION_COUNT" -gt 0 ]; then
-  # Process each session (newline-delimited "branch<TAB>path" entries)
-  while IFS='	' read -r _branch _path; do
-    [ -z "$_branch" ] && continue
+SESSIONS_JSON="$(printf '{"baseBranch":%s,"worktreePorcelain":%s,"inProgressIssues":%s}' \
+  "$(printf '%s' "$BASE_BRANCH" | jq -R '.')" \
+  "$(printf '%s' "$WORKTREE_PORCELAIN" | jq -Rs '.')" \
+  "$IN_PROGRESS_JSON" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-sessions.js")"
+SESSION_COUNT="$(printf '%s' "$SESSIONS_JSON" | jq 'length')"
 
-    # Extract slug from branch name (strip any <prefix>/ convention)
-    _slug="$_branch"
-    case "$_slug" in
-      */*) _slug="${_slug##*/}" ;;
-    esac
-
-    # Convert slug hyphens to spaces for title matching
-    _slug_spaces="$(printf '%s' "$_slug" | tr '-' ' ')"
-
-    # Find matching in-progress issues: title contains slug words (case-insensitive)
-    _matched_ids="$(printf '%s' "$IN_PROGRESS_JSON" | jq -r --arg slug "$_slug_spaces" '
-      [.[] | select(
-        (.title | ascii_downcase | contains($slug | ascii_downcase))
-      ) | .id] | join(",")
-    ')"
-
-    _issue_count=0
-    if [ -n "$_matched_ids" ]; then
-      # Count commas + 1
-      _issue_count="$(printf '%s' "$_matched_ids" | tr -cd ',' | wc -c)"
-      _issue_count=$((_issue_count + 1))
-    fi
-
-    # Build session JSON entry
-    if [ -n "$_matched_ids" ]; then
-      _ids_json="$(printf '%s' "$_matched_ids" | jq -R 'split(",")')"
-    else
-      _ids_json="[]"
-    fi
-
-    SESSIONS_JSON="$(printf '%s' "$SESSIONS_JSON" | jq \
-      --arg branch "$_branch" \
-      --arg path "$_path" \
-      --argjson ids "$_ids_json" \
-      --argjson count "$_issue_count" \
-      '. + [{branch: $branch, path: $path, issue_ids: $ids, issue_count: $count}]'
-    )"
-
-  done <<SESSIONS_EOF
-$SESSION_ENTRIES
-SESSIONS_EOF
-fi
-
-# ── File-level conflict detection ────────────────────────────────────────
-# For each active worktree branch, get changed files via:
-#   git diff <base-branch>...<branch> --name-only --
-# Uses -- separator to prevent argument injection (OWASP A03)
-
-# ALL_BRANCH_FILES: newline-delimited list of "branch<TAB>file1<TAB>file2..."
-ALL_BRANCH_FILES=""
 if [ "$SESSION_COUNT" -ge 2 ]; then
-  # Read branches from SESSION_ENTRIES (newline-delimited "branch<TAB>path")
-  while IFS='	' read -r _branch _path; do
+  BRANCH_FILES_JSON="[]"
+  _session_branches="$(printf '%s' "$SESSIONS_JSON" | jq -r '.[].branch')"
+  while IFS= read -r _branch; do
     [ -z "$_branch" ] && continue
-
-    # Get changed files for this branch vs BASE_BRANCH (-- prevents injection)
     _files="$("$GIT" diff "${BASE_BRANCH}...${_branch}" --name-only -- 2>/dev/null || echo '')"
-    # Collapse to tab-delimited (tabs can't appear in filenames), strip empty lines
-    _files_csv="$(printf '%s' "$_files" | tr '\n' '\t' | sed 's/\t$//' | sed 's/^\t//')"
-
-    if [ -n "$ALL_BRANCH_FILES" ]; then
-      ALL_BRANCH_FILES="${ALL_BRANCH_FILES}
-${_branch}:${_files_csv}"
-    else
-      ALL_BRANCH_FILES="${_branch}:${_files_csv}"
-    fi
-  done <<CONFLICT_EOF
-$SESSION_ENTRIES
-CONFLICT_EOF
-
-  # Build conflict map: find files that appear in multiple branches
-  # and add changed_files + conflicts to SESSIONS_JSON
-  while IFS= read -r _entry; do
-    [ -z "$_entry" ] && continue
-    _branch="${_entry%%:*}"
-    _files_csv="${_entry#*:}"
-
-    # Convert tab-delimited files to JSON array
-    if [ -n "$_files_csv" ]; then
-      _files_json="$(printf '%s' "$_files_csv" | jq -R 'split("\t")')"
-    else
-      _files_json="[]"
-    fi
-
-    # Find conflicts: files in this branch that also appear in other branches
-    _conflicts_json="[]"
-    while IFS= read -r _other_entry; do
-      [ -z "$_other_entry" ] && continue
-      _other_branch="${_other_entry%%:*}"
-      _other_files="${_other_entry#*:}"
-
-      # Skip self
-      [ "$_other_branch" = "$_branch" ] && continue
-      [ -z "$_other_files" ] && continue
-
-      # Find intersection
-      _other_json="$(printf '%s' "$_other_files" | jq -R 'split("\t")')"
-      _overlap="$(jq -n --argjson a "$_files_json" --argjson b "$_other_json" \
-        '[$a[] as $f | select($b | index($f))] | unique')"
-      _overlap_len="$(printf '%s' "$_overlap" | jq 'length')"
-      if [ "$_overlap_len" -gt 0 ]; then
-        _conflicts_json="$(jq -n \
-          --argjson existing "$_conflicts_json" \
-          --arg other_branch "$_other_branch" \
-          --argjson files "$_overlap" \
-          '$existing + [{branch: $other_branch, files: $files}]')"
-      fi
-    done <<INNER_EOF
-$ALL_BRANCH_FILES
-INNER_EOF
-
-    # Update SESSIONS_JSON: add changed_files and conflicts to matching branch entry
-    SESSIONS_JSON="$(printf '%s' "$SESSIONS_JSON" | jq \
+    _files_json="$(printf '%s' "$_files" | jq -R -s 'split("\n") | map(select(length > 0))')"
+    BRANCH_FILES_JSON="$(printf '%s' "$BRANCH_FILES_JSON" | jq \
       --arg branch "$_branch" \
       --argjson files "$_files_json" \
-      --argjson conflicts "$_conflicts_json" \
-      '[.[] | if .branch == $branch then . + {changed_files: $files, conflicts: $conflicts} else . end]'
+      '. + [{branch: $branch, files: $files}]'
     )"
-  done <<OUTER_EOF
-$ALL_BRANCH_FILES
-OUTER_EOF
-fi
+  done <<BRANCHEOF
+$_session_branches
+BRANCHEOF
 
-# ── Tier 2: git merge-tree conflict detection ──────────────────────────
-# If git >= 2.38 and there are file overlaps from Tier 1, run merge-tree
-# to detect actual merge conflicts vs mere file overlap.
+  SESSIONS_JSON="$(printf '{"sessions":%s,"branchFiles":%s}' "$SESSIONS_JSON" "$BRANCH_FILES_JSON" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-sessions.js")"
+fi
 
 TIER2_ENABLED=0
 if [ "$SESSION_COUNT" -ge 2 ]; then
-  # Check git version >= 2.38 (merge-tree --write-tree requires it)
   _git_ver="$("$GIT" --version 2>/dev/null || echo '')"
   _git_major=0
   _git_minor=0
-  # Parse "git version X.Y.Z..." -> extract major and minor
   _ver_nums="${_git_ver#git version }"
   _git_major="${_ver_nums%%.*}"
   _ver_rest="${_ver_nums#*.}"
   _git_minor="${_ver_rest%%.*}"
-  # Validate they are numbers
   case "$_git_major" in ''|*[!0-9]*) _git_major=0 ;; esac
   case "$_git_minor" in ''|*[!0-9]*) _git_minor=0 ;; esac
 
@@ -488,78 +266,37 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
   fi
 fi
 
-# For each pair of branches with file overlaps, run merge-tree
 if [ "$TIER2_ENABLED" = "1" ]; then
-  # Collect all branch pairs that have conflicts in SESSIONS_JSON
   _conflict_pairs="$(printf '%s' "$SESSIONS_JSON" | jq -r '
     [.[] | select((.conflicts // []) | length > 0) |
       .branch as $b |
       .conflicts[] |
-      [$b, .branch] | sort | join(" ")
+      [$b, .branch] | sort | join("\t")
     ] | unique | .[]
   ')"
 
   if [ -n "$_conflict_pairs" ]; then
-    # Process each unique pair
-    while IFS= read -r _pair; do
-      [ -z "$_pair" ] && continue
-      _b1="${_pair%% *}"
-      _b2="${_pair#* }"
-
-      # Run merge-tree; exit 1 = actual conflict, exit 0 = clean merge
+    MERGE_TREE_RESULTS_JSON="[]"
+    while IFS='	' read -r _b1 _b2; do
+      [ -z "$_b1" ] && continue
+      [ -z "$_b2" ] && continue
       _mt_output=""
       _mt_exit=0
       _mt_output="$("$GIT" merge-tree --write-tree --name-only --no-messages -- "$_b1" "$_b2" 2>/dev/null)" || _mt_exit=$?
-
-      if [ "$_mt_exit" -ne 0 ] && [ -n "$_mt_output" ]; then
-        # Real conflict detected — parse conflicted file names
-        # merge-tree outputs a tree SHA on first line, then filenames
-        # With --name-only, conflicted files are listed after the SHA line
-        _conflict_files=""
-        _line_num=0
-        while IFS= read -r _cf_line; do
-          _line_num=$((_line_num + 1))
-          # Skip the first line (tree SHA output from merge-tree)
-          if [ "$_line_num" -eq 1 ]; then continue; fi
-          # Skip empty lines
-          if [ -z "$_cf_line" ]; then continue; fi
-          if [ -n "$_conflict_files" ]; then
-            _conflict_files="${_conflict_files}	${_cf_line}"
-          else
-            _conflict_files="${_cf_line}"
-          fi
-        done <<MTEOF
-$_mt_output
-MTEOF
-
-        if [ -n "$_conflict_files" ]; then
-          _cf_json="$(printf '%s' "$_conflict_files" | jq -R 'split("\t")')"
-
-          # Add merge_conflicts to both branches in SESSIONS_JSON
-          for _target_branch in "$_b1" "$_b2"; do
-            _other_branch="$_b1"
-            [ "$_target_branch" = "$_b1" ] && _other_branch="$_b2"
-
-            SESSIONS_JSON="$(printf '%s' "$SESSIONS_JSON" | jq \
-              --arg branch "$_target_branch" \
-              --arg other "$_other_branch" \
-              --argjson files "$_cf_json" \
-              '[.[] | if .branch == $branch then
-                . + {merge_conflicts: ((.merge_conflicts // []) + [{branch: $other, files: $files}])}
-              else . end]'
-            )"
-          done
-        fi
-      fi
+      MERGE_TREE_RESULTS_JSON="$(printf '%s' "$MERGE_TREE_RESULTS_JSON" | jq \
+        --arg left "$_b1" \
+        --arg right "$_b2" \
+        --arg output "$_mt_output" \
+        --argjson exitCode "$_mt_exit" \
+        '. + [{left: $left, right: $right, exitCode: $exitCode, output: $output}]'
+      )"
     done <<PAIRSEOF
 $_conflict_pairs
 PAIRSEOF
+
+    SESSIONS_JSON="$(printf '{"sessions":%s,"mergeTreeResults":%s}' "$SESSIONS_JSON" "$MERGE_TREE_RESULTS_JSON" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-sessions.js")"
   fi
 fi
-
-# ── Cross-developer team activity ────────────────────────────────────────
-# Read file index entries from all developers, identify OTHER developers'
-# in-progress work, compute module overlaps, and flag stale claims.
 
 TEAM_ACTIVITY_JSON="[]"
 
@@ -628,7 +365,7 @@ if command -v file_index_read &>/dev/null && command -v get_session_identity &>/
   fi
 fi
 
-# ── Output ──────────────────────────────────────────────────────────────
+# â”€â”€ Output â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if [ "$JSON_MODE" = "1" ]; then
   # Always output consistent shape: {sessions: [...], issues: [...], team_activity: [...]}
@@ -645,7 +382,7 @@ else
     C_RED=$'\033[31m' C_DIM=$'\033[2m' C_BOLD=$'\033[1m' C_CYAN=$'\033[36m'
   fi
 
-  # ── Active Sessions (before grouped output) ──
+  # â”€â”€ Active Sessions (before grouped output) â”€â”€
   if [ "$SESSION_COUNT" -gt 0 ]; then
     printf '%s%s=== ACTIVE SESSIONS ===%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
     printf '%s' "$SESSIONS_JSON" | jq -r '.[] |
@@ -695,10 +432,10 @@ else
     printf '\n'
   fi
 
-  # ── Team Activity (cross-developer visibility) ──
+  # â”€â”€ Team Activity (cross-developer visibility) â”€â”€
   _ta_len="$(printf '%s' "$TEAM_ACTIVITY_JSON" | jq 'length')"
   if [ "$_ta_len" -gt 0 ]; then
-    printf '%s%s── Team Activity ──────────────────────────────────────%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
+    printf '%s%sâ”€â”€ Team Activity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
     printf '%s' "$TEAM_ACTIVITY_JSON" | jq -r '
       .[] |
       .developer as $dev |
@@ -715,7 +452,7 @@ else
         else
           "    " + $iid + " (in_progress)" +
             (if ($mods | length) > 0 then
-              " — touching " + ($mods | join(", "))
+              " â€” touching " + ($mods | join(", "))
             else "" end)
         end),
         # Overlap or no-overlap line

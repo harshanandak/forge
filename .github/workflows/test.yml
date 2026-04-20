@@ -85,6 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         shard-index: [0, 1, 2, 3]
     steps:
@@ -106,6 +107,12 @@ jobs:
         run: bun run test:ci:shard -- --mode shard --shard-index ${{ matrix.shard-index }} --shard-total 4 --label unit-shard-${{ matrix.shard-index }}
       - name: Build unit shard profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/unit-shard-${{ matrix.shard-index }}.profile.json --label unit-shard-${{ matrix.shard-index }} --integration-skipped true
+      - name: Publish unit shard summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); const lines = ['## Unit Shard Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms', 'Integration skipped: ' + (d.integrationSkipped ? 'yes' : 'no')]; if (d.slowestFiles.length) { lines.push('', 'Slowest files:'); for (const entry of d.slowestFiles.slice(0, 5)) lines.push('- ' + entry.file + ': ' + entry.durationMs + 'ms'); } console.log(lines.join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload unit shard artifacts
         uses: actions/upload-artifact@v7
         if: always()
@@ -135,6 +142,12 @@ jobs:
         run: bun run test:ci:shard -- --mode smoke --label windows-smoke
       - name: Build Windows smoke profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/windows-smoke.profile.json --label windows-smoke --integration-skipped true
+      - name: Publish Windows smoke summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); console.log(['## Windows Smoke Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms'].join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Windows smoke artifacts
         uses: actions/upload-artifact@v7
         if: always()
@@ -164,6 +177,12 @@ jobs:
         run: bun run test:ci:shard -- --mode smoke --label macos-smoke
       - name: Build macOS smoke profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/macos-smoke.profile.json --label macos-smoke --integration-skipped true
+      - name: Publish macOS smoke summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); console.log(['## macOS Smoke Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms'].join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload macOS smoke artifacts
         uses: actions/upload-artifact@v7
         if: always()
@@ -257,6 +276,12 @@ jobs:
         run: node --test test-env/**/*.test.js || true
       - name: Build followup profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/followup.profile.json --label followup-tests --integration-skipped true
+      - name: Publish followup summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); const lines = ['## Follow-up Test Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms']; if (d.slowestFiles.length) { lines.push('', 'Slowest files:'); for (const entry of d.slowestFiles.slice(0, 5)) lines.push('- ' + entry.file + ': ' + entry.durationMs + 'ms'); } console.log(lines.join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload followup artifacts
         uses: actions/upload-artifact@v7
         if: always()
@@ -288,6 +313,12 @@ jobs:
         run: bun test --coverage test/ --reporter=junit --reporter-outfile test-results/coverage.xml
       - name: Build coverage profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/coverage.profile.json --label coverage --integration-skipped true
+      - name: Publish coverage runtime summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); const lines = ['## Coverage Runtime Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms']; if (d.slowestFiles.length) { lines.push('', 'Slowest files:'); for (const entry of d.slowestFiles.slice(0, 5)) lines.push('- ' + entry.file + ': ' + entry.durationMs + 'ms'); } console.log(lines.join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v7
         if: always()
@@ -330,6 +361,12 @@ jobs:
         run: bun test test/e2e/ --reporter=junit --reporter-outfile test-results/e2e.xml
       - name: Build E2E profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/e2e.profile.json --label e2e --integration-skipped true
+      - name: Publish E2E runtime summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); const lines = ['## E2E Runtime Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms']; if (d.slowestFiles.length) { lines.push('', 'Slowest files:'); for (const entry of d.slowestFiles.slice(0, 5)) lines.push('- ' + entry.file + ': ' + entry.durationMs + 'ms'); } console.log(lines.join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload E2E artifacts
         uses: actions/upload-artifact@v7
         if: always()
@@ -361,6 +398,12 @@ jobs:
         run: bun test scripts/beads-context.test.js --reporter=junit --reporter-outfile test-results/beads-integration.xml
       - name: Build Beads integration profile
         run: node scripts/test-profile.js --input-dir test-results --output test-results/beads-integration.profile.json --label beads-integration --integration-skipped false
+      - name: Publish Beads integration summary
+        if: always()
+        shell: bash
+        run: |
+          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
+          node -e "const d = JSON.parse(process.argv[1]); const lines = ['## Beads Integration Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms', 'Integration skipped: ' + (d.integrationSkipped ? 'yes' : 'no')]; if (d.slowestFiles.length) { lines.push('', 'Slowest files:'); for (const entry of d.slowestFiles.slice(0, 5)) lines.push('- ' + entry.file + ': ' + entry.durationMs + 'ms'); } console.log(lines.join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Beads integration artifacts
         uses: actions/upload-artifact@v7
         if: always()

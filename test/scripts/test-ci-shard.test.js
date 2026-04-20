@@ -9,6 +9,7 @@ const {
   PROFILE_MAX_AGE_MS,
   createDurationMap,
   getShardPlan,
+  listAllUnitTests,
   readNewestProfile,
   selectModuloShard,
   selectRuntimeBalancedShard,
@@ -42,17 +43,36 @@ describe('scripts/test-ci-shard.js', () => {
       timestamp: '2026-03-01T00:00:00.000Z',
     }));
     fs.writeFileSync(path.join(dir, 'fresh.profile.json'), JSON.stringify({
-      slowestFiles: [{ durationMs: 1234, file: 'test/fresh.test.js' }],
+      allFileDurations: [{ durationMs: 1234, file: 'test/fresh.test.js' }],
       timestamp: '2026-04-17T10:00:00.000Z',
     }));
 
     const profile = readNewestProfile(dir, { maxAgeMs: PROFILE_MAX_AGE_MS, now });
-    expect(profile.slowestFiles[0]).toEqual({ durationMs: 1234, file: 'test/fresh.test.js' });
+    expect(profile.allFileDurations[0]).toEqual({ durationMs: 1234, file: 'test/fresh.test.js' });
+  });
+
+  test('createDurationMap prefers full file durations when available', () => {
+    const durationMap = createDurationMap({
+      allFileDurations: [
+        { durationMs: 9000, file: 'test/slow-a.test.js' },
+        { durationMs: 8000, file: 'test/slow-b.test.js' },
+        { durationMs: 2000, file: 'test/fast-c.test.js' },
+        { durationMs: 1000, file: 'test/fast-d.test.js' },
+      ],
+      slowestFiles: [
+        { durationMs: 9000, file: 'test/slow-a.test.js' },
+      ],
+    });
+
+    expect(durationMap.get('test/slow-a.test.js')).toBe(9000);
+    expect(durationMap.get('test/slow-b.test.js')).toBe(8000);
+    expect(durationMap.get('test/fast-c.test.js')).toBe(2000);
+    expect(durationMap.get('test/fast-d.test.js')).toBe(1000);
   });
 
   test('runtime-balanced sharding distributes weighted files deterministically', () => {
     const durationMap = createDurationMap({
-      slowestFiles: [
+      allFileDurations: [
         { durationMs: 9000, file: 'test/slow-a.test.js' },
         { durationMs: 8000, file: 'test/slow-b.test.js' },
         { durationMs: 2000, file: 'test/fast-c.test.js' },
@@ -87,5 +107,11 @@ describe('scripts/test-ci-shard.js', () => {
 
     expect(plan.source).toBe('runtime-balanced');
     expect(plan.files).toEqual(['test/a.test.js']);
+  });
+
+  test('listAllUnitTests includes package test roots for shard planning', () => {
+    const files = listAllUnitTests();
+    expect(files).toContain('packages/skills/test/agents.test.js');
+    expect(files).toContain('test/agent-detection.test.js');
   });
 });

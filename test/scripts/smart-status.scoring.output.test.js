@@ -14,6 +14,8 @@ const {
 
 setDefaultTimeout(20000);
 
+const ansiEscapePrefix = '\u001b[';
+
 describe('smart-status.sh', () => {
   describe('grouped output and display behavior', () => {
     let groupedMock;
@@ -162,11 +164,11 @@ describe('smart-status.sh', () => {
 
     test('NO_COLOR disables ANSI escape codes', () => {
       expect(groupedResult.status).toBe(0);
-      expect(groupedResult.stdout).not.toMatch(/\x1b\[/);
+      expect(groupedResult.stdout.includes(ansiEscapePrefix)).toBe(false);
     });
 
     test('colors are present when NO_COLOR is not set', () => {
-      expect(colorStdout).toMatch(/\x1b\[/);
+      expect(colorStdout.includes(ansiEscapePrefix)).toBe(true);
     });
 
     test('epic proximity boosts issues near completion', () => {

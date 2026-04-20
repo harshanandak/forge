@@ -15,6 +15,11 @@ const DEFAULT_JUNIT_PATH = path.join(rootDir, 'test-results', 'test-results.xml'
 
 const BENCHMARK_GROUPS = [
   {
+    id: 'full-suite',
+    label: 'Whole suite',
+    command: ['bun', 'test'],
+  },
+  {
     id: 'pre-push-runner',
     label: 'Pre-push runner slice',
     command: ['bun', 'test', 'test/scripts/test-runner.test.js'],
@@ -40,6 +45,11 @@ const BENCHMARK_GROUPS = [
       'test/scripts/smart-status.conflicts.merge-tree.test.js',
       'test/scripts/dep-guard.check-ripple.basic.test.js',
     ],
+  },
+  {
+    id: 'validate',
+    label: 'Validate command',
+    command: ['bash', 'scripts/validate.sh'],
   },
 ];
 
