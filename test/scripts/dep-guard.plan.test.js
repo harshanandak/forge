@@ -27,6 +27,7 @@ describe('plan.md integration', () => {
   test('Phase 3 HARD-GATE includes dep-guard store-contracts check', () => {
     const content = fs.readFileSync(planMdPath, 'utf-8');
     const hardGateIdx = content.indexOf('HARD-GATE: /plan exit');
+    expect(hardGateIdx).toBeGreaterThanOrEqual(0);
     const afterHardGate = content.substring(hardGateIdx);
     expect(afterHardGate).toContain('dep-guard');
   });

@@ -2,18 +2,20 @@
 name: "Forge Workflow Behavioral Test"
 description: "Weekly AI behavioral test: verifies forge /plan phase compliance"
 on:
-  - schedule: "0 3 * * SUN"
-  - workflow_dispatch:
-      inputs:
-        calibrate:
-          description: "Run 4-prompt calibration mode"
-          type: boolean
-          default: false
-  - workflow_run:
-      workflows: ["detect-command-file-changes"]
-      types: [completed]
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      calibrate:
+        description: "Run 4-prompt calibration mode"
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: ["detect-command-file-changes"]
+    types: [completed]
+    branches: [master]
 engine:
-  type: claude
+  id: claude
   model: claude-sonnet-4-6
   max-turns: 20
 timeout-minutes: 30
@@ -24,15 +26,19 @@ safe-outputs:
   allowed-domains: [default-safe-outputs]
   max-patch-size: 512
   max-bot-mentions: 2
+permissions:
+  actions: read
+  contents: read
+  issues: read
 secrets:
   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
   GH_AW_CI_TRIGGER_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}
 tools:
-  - github:
-      toolsets: [repos, issues, actions]
-  - bash
-  - edit
+  github:
+    toolsets: [repos, issues, actions]
+  bash: true
+  edit:
 ---
 
 # Forge Workflow Behavioral Test

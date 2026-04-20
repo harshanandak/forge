@@ -60,6 +60,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures (Unix)
         if: runner.os != 'Windows'
         run: bash test-env/automation/setup-fixtures.sh --force
@@ -101,6 +103,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures
         run: bash test-env/automation/setup-fixtures.sh --force
       - name: Run unit shard
@@ -138,6 +142,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run Windows smoke tests
         run: bun run test:ci:shard -- --mode smoke --label windows-smoke
       - name: Build Windows smoke profile
@@ -173,6 +179,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run macOS smoke tests
         run: bun run test:ci:shard -- --mode smoke --label macos-smoke
       - name: Build macOS smoke profile
@@ -210,6 +218,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures
         run: bash test-env/automation/setup-fixtures.sh --force
       - name: Resolve affected test targets
@@ -241,8 +251,11 @@ jobs:
           };
 
           const plan = buildTestExecutionPlan(process.cwd(), execStub, { sinceUpstream: true });
+          const effectiveMode = plan.mode === 'targeted' && plan.testTargets.length === 0
+            ? 'full'
+            : plan.mode;
           const lines = [
-            `mode=${plan.mode}`,
+            `mode=${effectiveMode}`,
             `reason=${plan.reason}`,
             `run_test_env=${plan.runTestEnv}`,
             `run_e2e=${plan.runE2E}`,
@@ -307,6 +320,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures
         run: bash test-env/automation/setup-fixtures.sh --force
       - name: Run tests with coverage
@@ -331,14 +346,16 @@ jobs:
       - name: Coverage summary
         if: always()
         run: |
-          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Coverage thresholds: 80% (lines, branches, functions, statements)" >> $GITHUB_STEP_SUMMARY
-          if [ -f coverage/coverage-summary.json ]; then
-            echo "Coverage report generated" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Coverage report not found" >> $GITHUB_STEP_SUMMARY
-          fi
+          {
+            echo "## Coverage Report"
+            echo ""
+            echo "Coverage thresholds: 80% (lines, branches, functions, statements)"
+            if [ -f "coverage/coverage-summary.json" ]; then
+              echo "Coverage report generated"
+            else
+              echo "Coverage report not found"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     name: E2E Tests
@@ -357,6 +374,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run E2E tests
         run: bun test test/e2e/ --reporter=junit --reporter-outfile test-results/e2e.xml
       - name: Build E2E profile
@@ -394,6 +413,8 @@ jobs:
           bun-version: 1.2.5
       - name: Install dependencies
         run: bun install
+      - name: Ensure test-results directory
+        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run Beads integration tests
         run: bun test scripts/beads-context.test.js --reporter=junit --reporter-outfile test-results/beads-integration.xml
       - name: Build Beads integration profile

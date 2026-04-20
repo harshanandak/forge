@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smart-status.sh â€” Workflow intelligence scoring engine
+# smart-status.sh Ã¢â‚¬â€ Workflow intelligence scoring engine
 #
 # Reads issues via `bd list --json --limit 0`, computes a composite score
 # for each issue, and outputs them sorted by score descending.
@@ -11,16 +11,16 @@
 #   smart-status.sh [--json]
 #
 # Environment:
-#   BD_CMD  â€” override the bd command (for testing with mocks)
-#   GIT_CMD â€” override the git command (for testing with mocks)
-#   DEFAULT_BRANCH â€” override the default branch name (default: auto-detect)
+#   BD_CMD  Ã¢â‚¬â€ override the bd command (for testing with mocks)
+#   GIT_CMD Ã¢â‚¬â€ override the git command (for testing with mocks)
+#   DEFAULT_BRANCH Ã¢â‚¬â€ override the default branch name (default: auto-detect)
 #
 # Cross-platform: bash 3.2 compatible (no associative arrays, no mapfile).
 # OWASP A03: All variables quoted, sanitize() strips injection patterns.
 
 set -euo pipefail
 
-# â”€â”€ Source cross-dev awareness scripts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Source cross-dev awareness scripts Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # file-index.sh: file_index_read for reading file index entries
 # sync-utils.sh: get_session_identity for current developer identity
 
@@ -36,7 +36,7 @@ if [ -f "$_SMART_STATUS_DIR/sync-utils.sh" ]; then
   source "$_SMART_STATUS_DIR/sync-utils.sh"
 fi
 
-# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 if ! declare -F sanitize >/dev/null; then
 # Sanitize a string: strip shell-injection patterns (OWASP A03)
@@ -57,7 +57,7 @@ sanitize() {
 }
 fi
 
-# â”€â”€ Dependency check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Dependency check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 if ! command -v jq &>/dev/null; then
   echo "Error: jq is required but not found." >&2
@@ -76,7 +76,7 @@ if [ -n "$_jq_version" ]; then
   _jq_major="${_jq_version%%.*}"
   _jq_minor="${_jq_version#*.}"; _jq_minor="${_jq_minor%%.*}"
   if [ "${_jq_major:-0}" -lt 1 ] || { [ "${_jq_major:-0}" -eq 1 ] && [ "${_jq_minor:-0}" -lt 6 ]; }; then
-    echo "Warning: jq $_jq_version detected â€” staleness features require jq 1.6+. Team Activity may not display." >&2
+    echo "Warning: jq $_jq_version detected - staleness features require jq 1.6+. Team Activity may not display." >&2
   fi
 fi
 
@@ -87,7 +87,7 @@ jq() {
   command jq "$@" | tr -d '\r'
 }
 
-# â”€â”€ Configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Configuration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 BD="${BD_CMD:-bd}"
 GIT="${GIT_CMD:-git}"
@@ -104,7 +104,7 @@ else
   BASE_BRANCH="master"
 fi
 
-# Parse arguments (bash 3.2 compatible â€” no associative arrays)
+# Parse arguments (bash 3.2 compatible Ã¢â‚¬â€ no associative arrays)
 for arg in "$@"; do
   case "$arg" in
     --json) JSON_MODE=1 ;;
@@ -125,7 +125,7 @@ for arg in "$@"; do
   esac
 done
 
-# â”€â”€ Fetch issues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Fetch issues Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 # Auto-recover beads database if Dolt server lost the database (e.g. branch
 # switch, fresh clone, server restart).  Checks for the specific "database
@@ -150,7 +150,7 @@ if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
   if [ -z "$_bd_prefix" ]; then
     _bd_prefix="$(basename "$_repo_root" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
   fi
-  echo "Beads database not found â€” attempting auto-recovery..." >&2
+  echo "Beads database not found - attempting auto-recovery..." >&2
   if "$BD" init --force --prefix "$_bd_prefix" >/dev/null 2>&1; then
     if [ -d "$_repo_root/.beads/backup" ] && ls "$_repo_root/.beads/backup"/*.jsonl >/dev/null 2>&1; then
       "$BD" backup restore >/dev/null 2>&1 && echo "Beads: restored from backup." >&2 || echo "Beads: backup restore failed." >&2
@@ -158,7 +158,7 @@ if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
       echo "Beads: initialized fresh (no backup found)." >&2
     fi
   else
-    echo "Beads: auto-recovery failed â€” run 'bd doctor' manually." >&2
+    echo "Beads: auto-recovery failed - run 'bd doctor' manually." >&2
   fi
 fi
 
@@ -174,7 +174,7 @@ if [ "$(printf '%s' "$ISSUES_JSON" | jq 'length')" = "0" ]; then
   exit 0
 fi
 
-# â”€â”€ Identify epics and fetch their children â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Identify epics and fetch their children Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 # Extract epic IDs (type == "epic")
 EPIC_IDS="$(printf '%s' "$ISSUES_JSON" | jq -r '.[] | select(.type == "epic") | .id')"
@@ -182,7 +182,7 @@ EPIC_IDS="$(printf '%s' "$ISSUES_JSON" | jq -r '.[] | select(.type == "epic") | 
 # Build a JSON object mapping epic_id -> { closed, total }
 EPIC_STATS="{}"
 if [ -n "$EPIC_IDS" ]; then
-  # Process each epic (bash 3.2 compatible â€” read line by line)
+  # Process each epic (bash 3.2 compatible Ã¢â‚¬â€ read line by line)
   while IFS= read -r epic_id; do
     [ -z "$epic_id" ] && continue
     CHILDREN_JSON="$("$BD" children "$epic_id" --json 2>/dev/null || echo '[]')"
@@ -194,7 +194,7 @@ $EPIC_IDS
 EOF
 fi
 
-# â”€â”€ Score issues via shared JS helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Score issues via shared JS helper Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
   echo "Error: node is required but not found." >&2
@@ -203,7 +203,7 @@ fi
 
 SCORED_JSON="$(printf '{"issues":%s,"epicStats":%s}' "$ISSUES_JSON" "$EPIC_STATS" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-score.js")"
 
-# â”€â”€ Session detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Session detection Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 # Parse git worktree list --porcelain to find active sessions
 # Format: blocks separated by blank lines, each block has:
@@ -365,7 +365,7 @@ if command -v file_index_read &>/dev/null && command -v get_session_identity &>/
   fi
 fi
 
-# â”€â”€ Output â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Output Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 if [ "$JSON_MODE" = "1" ]; then
   # Always output consistent shape: {sessions: [...], issues: [...], team_activity: [...]}
@@ -382,7 +382,7 @@ else
     C_RED=$'\033[31m' C_DIM=$'\033[2m' C_BOLD=$'\033[1m' C_CYAN=$'\033[36m'
   fi
 
-  # â”€â”€ Active Sessions (before grouped output) â”€â”€
+  # Ã¢â€â‚¬Ã¢â€â‚¬ Active Sessions (before grouped output) Ã¢â€â‚¬Ã¢â€â‚¬
   if [ "$SESSION_COUNT" -gt 0 ]; then
     printf '%s%s=== ACTIVE SESSIONS ===%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
     printf '%s' "$SESSIONS_JSON" | jq -r '.[] |
@@ -432,10 +432,10 @@ else
     printf '\n'
   fi
 
-  # â”€â”€ Team Activity (cross-developer visibility) â”€â”€
+  # Ã¢â€â‚¬Ã¢â€â‚¬ Team Activity (cross-developer visibility) Ã¢â€â‚¬Ã¢â€â‚¬
   _ta_len="$(printf '%s' "$TEAM_ACTIVITY_JSON" | jq 'length')"
   if [ "$_ta_len" -gt 0 ]; then
-    printf '%s%sâ”€â”€ Team Activity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
+    printf '%s%s--- Team Activity ----------------------------------------%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
     printf '%s' "$TEAM_ACTIVITY_JSON" | jq -r '
       .[] |
       .developer as $dev |
@@ -452,7 +452,7 @@ else
         else
           "    " + $iid + " (in_progress)" +
             (if ($mods | length) > 0 then
-              " â€” touching " + ($mods | join(", "))
+              " - touching " + ($mods | join(", "))
             else "" end)
         end),
         # Overlap or no-overlap line

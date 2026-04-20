@@ -17,8 +17,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
-      - name: Sync active workflow files
-        run: node scripts/sync-agentic-workflow.js
+      - name: Check active workflow files are synced
+        run: node scripts/sync-agentic-workflow.js --check
       - name: Install gh-aw CLI
         run: |
           if gh extension list | grep -q 'gh-aw'; then
@@ -34,3 +34,4 @@ jobs:
         run: |
           test -f .github/workflows/behavioral-test.md
           test -f .github/workflows/behavioral-test.lock.yml
+          git diff --exit-code -- .github/workflows/behavioral-test.md .github/workflows/behavioral-test.lock.yml

@@ -1,10 +1,32 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+function resolveRealGit() {
+  if (process.env.TEST_REAL_GIT) {
+    return process.env.TEST_REAL_GIT;
+  }
+
+  const command = process.platform === 'win32' ? 'where.exe' : 'which';
+  const probe = spawnSync(command, ['git'], { encoding: 'utf8' });
+  if (probe.status === 0) {
+    const resolved = (probe.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return 'git';
+}
 
 function createMockGitWithDiff(porcelainOutput, branchFiles) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-conflict-'));
   const mockScript = path.join(tmpDir, 'git');
+  const realGit = resolveRealGit();
   const diffCases = Object.entries(branchFiles).map(([branch, files]) => {
     if (files.length === 0) return `    "${branch}") echo "" ;;`;
     const fileList = files.join('\\n');
@@ -33,15 +55,16 @@ ${diffCases}
 elif [[ "$1" == "merge-tree" ]]; then
   exit 0
 fi
-command git "$@"
+exec "$REAL_GIT" "$@"
 `;
   fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
-  return { tmpDir, mockScript };
+  return { tmpDir, mockScript, realGit };
 }
 
 function createMockGitTier2(porcelainOutput, branchFiles, gitVersion, mergeTreeResults) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-tier2-'));
   const mockScript = path.join(tmpDir, 'git');
+  const realGit = resolveRealGit();
   const diffCases = Object.entries(branchFiles).map(([branch, files]) => {
     if (files.length === 0) return `    "${branch}") echo "" ;;`;
     const fileList = files.join('\\n');
@@ -95,10 +118,10 @@ elif [ "$1" = "merge-tree" ]; then
 ${mergeCases}
   exit 0
 fi
-command git "$@"
+exec "$REAL_GIT" "$@"
 `;
   fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
-  return { tmpDir, mockScript };
+  return { tmpDir, mockScript, realGit };
 }
 
 const twoBranchPorcelain = [

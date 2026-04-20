@@ -47,6 +47,7 @@ function normalizeBashEnv(env = {}) {
     ...env,
     ...(env.BD_CMD ? { BD_CMD: toBashPath(env.BD_CMD) } : {}),
     ...(env.GIT_CMD ? { GIT_CMD: toBashPath(env.GIT_CMD) } : {}),
+    ...(env.REAL_GIT ? { REAL_GIT: toBashPath(env.REAL_GIT) } : {}),
   };
 }
 

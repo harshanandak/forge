@@ -108,6 +108,15 @@ function calculateMedian(values) {
 }
 
 function summarizeSamples(samplesMs) {
+  if (samplesMs.length === 0) {
+    return {
+      maxMs: 0,
+      meanMs: 0,
+      medianMs: 0,
+      minMs: 0,
+      samplesMs: [],
+    };
+  }
   const total = samplesMs.reduce((sum, value) => sum + value, 0);
   return {
     maxMs: Math.max(...samplesMs),

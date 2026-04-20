@@ -71,8 +71,13 @@ function getCoverageThreshold() {
 }
 
 function getSkippedTestCount() {
+  const testDirs = [
+    path.join(rootDir, 'test'),
+    path.join(rootDir, 'test-env'),
+    path.join(rootDir, 'packages', 'skills', 'test'),
+  ];
   let skipped = 0;
-  for (const file of walk(path.join(rootDir, 'test'), '.js').concat(walk(path.join(rootDir, 'test-env'), '.js'))) {
+  for (const file of testDirs.flatMap((dir) => walk(dir, '.js'))) {
     if (!file.endsWith('.test.js') && !file.endsWith('.spec.js')) continue;
     const content = fs.readFileSync(file, 'utf8');
     skipped += (content.match(/\btest\.skip\s*\(/g) || []).length;
@@ -117,18 +122,36 @@ function getProfileMetrics(profilesDir) {
   let integrationSkipped = false;
 
   for (const file of files) {
-    const profile = JSON.parse(fs.readFileSync(file, 'utf8'));
+    let profile;
+    try {
+      profile = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (error) {
+      console.warn(`Skipping malformed profile ${path.relative(rootDir, file)}: ${error.message}`);
+      continue;
+    }
+
+    if (!profile || typeof profile !== 'object') {
+      console.warn(`Skipping invalid profile ${path.relative(rootDir, file)}: expected object`);
+      continue;
+    }
+
     suiteDurationMs += profile.suiteDurationMs || 0;
     integrationSkipped = integrationSkipped || Boolean(profile.integrationSkipped);
 
     const entries = Array.isArray(profile.allFileDurations) && profile.allFileDurations.length > 0
       ? profile.allFileDurations
-      : profile.slowestFiles || [];
+      : Array.isArray(profile.slowestFiles) ? profile.slowestFiles : [];
     for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || typeof entry.file !== 'string') {
+        continue;
+      }
       slowest.set(entry.file, Math.max(slowest.get(entry.file) || 0, entry.durationMs || 0));
     }
 
-    for (const timedOutFile of profile.timedOutFiles || []) {
+    for (const timedOutFile of Array.isArray(profile.timedOutFiles) ? profile.timedOutFiles : []) {
+      if (typeof timedOutFile !== 'string' || !timedOutFile) {
+        continue;
+      }
       timedOut.add(timedOutFile);
     }
   }

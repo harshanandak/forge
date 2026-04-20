@@ -46,6 +46,7 @@ describe('smart-status.sh > file-level conflict detection smoke', () => {
 		const result = runSmartStatus([], {
 			BD_CMD: mockBd.mockScript,
 			GIT_CMD: scenarios.truncatedNoConflict.mockScript,
+			REAL_GIT: scenarios.truncatedNoConflict.realGit,
 			NO_COLOR: '1',
 		});
 
@@ -62,6 +63,7 @@ describe('smart-status.sh > file-level conflict detection smoke', () => {
 		const result = runSmartStatus([], {
 			BD_CMD: mockBd.mockScript,
 			GIT_CMD: scenarios.overlap.mockScript,
+			REAL_GIT: scenarios.overlap.realGit,
 			NO_COLOR: '1',
 		});
 

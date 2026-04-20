@@ -22,7 +22,9 @@ describe('scripts/dep-guard.sh > find-consumers', () => {
 
   test('leading-hyphen pattern is not interpreted as grep flag', () => {
     const result = runDepGuard(['find-consumers', '--version']);
+    expect(result.status).toBe(0);
     expect(result.stdout).not.toMatch(/grep|GNU|ripgrep/i);
+    expect(result.stderr ?? '').not.toMatch(/grep|GNU|ripgrep/i);
   });
 
   test('self-exclusion: dep-guard.sh is not a matched file', () => {

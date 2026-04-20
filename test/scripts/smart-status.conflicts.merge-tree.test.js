@@ -42,6 +42,7 @@ describe('smart-status.sh > merge-tree conflict detection smoke', () => {
 		const result = runSmartStatus([], {
 			BD_CMD: mockBd.mockScript,
 			GIT_CMD: scenarios.realConflict.mockScript,
+			REAL_GIT: scenarios.realConflict.realGit,
 			NO_COLOR: '1',
 		});
 
@@ -54,6 +55,7 @@ describe('smart-status.sh > merge-tree conflict detection smoke', () => {
 		const result = runSmartStatus(['--json'], {
 			BD_CMD: mockBd.mockScript,
 			GIT_CMD: scenarios.jsonNoConflict.mockScript,
+			REAL_GIT: scenarios.jsonNoConflict.realGit,
 			NO_COLOR: '1',
 		});
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dep-guard.sh â€” Dependency-guard helper for pre-change impact analysis.
+# dep-guard.sh Ã¢â‚¬â€ Dependency-guard helper for pre-change impact analysis.
 #
 # Subcommands:
 #   find-consumers     <file-path>                Find files that import/require a given module
@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_CMD="${NODE_CMD:-node}"
 source "$SCRIPT_DIR/lib/sanitize.sh"
 
-# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 usage() {
   cat >&2 <<'EOF'
@@ -226,15 +226,15 @@ run_phase3_analyzer() {
     "${in_progress_json:-[]}" \
     "$(printf '%s' "$task_file" | jq -R '.')" \
     "$(printf '%s' "$repository_root" | jq -R '.')" \
-    | node "$analyzer_script" --stdin
+    | "$NODE_CMD" "$analyzer_script" --stdin
 }
 
 render_phase3_review() {
   local renderer_script="${DEP_GUARD_RENDER_SCRIPT:-scripts/dep-guard-render-review.js}"
-  node "$renderer_script"
+  "$NODE_CMD" "$renderer_script"
 }
 
-# â”€â”€ Subcommands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Subcommands Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 cmd_find_consumers() {
   if [[ $# -lt 1 || -z "$1" ]]; then
@@ -282,11 +282,11 @@ cmd_check_ripple_keyword_v1() {
   local issue_id
   issue_id="$(sanitize "$1")"
 
-  # â”€â”€ Step 1: Validate issue exists â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 1: Validate issue exists Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   local src_json
   src_json="$(bd_show_json "$issue_id")"
 
-  # â”€â”€ Step 2: Extract source title â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 2: Extract source title Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   local src_title=""
   if command -v jq &>/dev/null; then
     src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
@@ -297,15 +297,15 @@ cmd_check_ripple_keyword_v1() {
   fi
 
   if [[ -z "$src_title" ]]; then
-    echo "âš ï¸  Warning: could not extract title for ${issue_id} â€” ripple check skipped" >&2
+    echo "Warning: could not extract title for ${issue_id} - ripple check skipped" >&2
     return 0
   fi
 
   echo ""
-  printf '%s\n' "ðŸ“‹ Ripple check for ${issue_id}..."
+  printf '%s\n' "Ripple check for ${issue_id}..."
   echo ""
 
-  # â”€â”€ Step 3: Collect active issues â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 3: Collect active issues Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   # Run bd list for open and in_progress separately, combine results
   local list_output=""
   local open_list=""
@@ -329,13 +329,13 @@ cmd_check_ripple_keyword_v1() {
   fi
 
   if [[ -z "$list_output" ]]; then
-    echo "âš ï¸  Warning: could not fetch active issue list â€” ripple check skipped" >&2
+    echo "Warning: could not fetch active issue list - ripple check skipped" >&2
     return 0
   fi
 
-  # â”€â”€ Step 4: Parse each active issue (excluding source) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  # Format: â—‹ forge-xxx [â— P2] [feature] - Title of the issue
-  #         â— forge-yyy [â— P1] [task] - Another issue title
+  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 4: Parse each active issue (excluding source) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  # Format: Ã¢â€”â€¹ forge-xxx [Ã¢â€”Â P2] [feature] - Title of the issue
+  #         Ã¢â€”Â forge-yyy [Ã¢â€”Â P1] [task] - Another issue title
   if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
     echo "Error: node is required but not found." >&2
     exit 1
@@ -370,7 +370,7 @@ cmd_check_ripple() {
   fi
 
   if [[ -z "$src_title" ]]; then
-    echo "âš ï¸  Warning: could not extract title for ${issue_id} â€” ripple check skipped" >&2
+    echo "Warning: could not extract title for ${issue_id} - ripple check skipped" >&2
     return 0
   fi
 
@@ -385,7 +385,7 @@ cmd_check_ripple() {
   local task_file=""
   task_file="$(extract_task_file_from_design "$design_text" || true)"
   if [[ -z "$task_file" || ! -f "$task_file" ]]; then
-    echo "âš ï¸  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+    echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
     cmd_check_ripple_keyword_v1 "$issue_id"
     return 0
   fi
@@ -396,7 +396,7 @@ cmd_check_ripple() {
   in_progress_json="$(${BD_CMD:-bd} list --status=in_progress --json 2>/dev/null)" || true
 
   if [[ -z "$open_json" && -z "$in_progress_json" ]]; then
-    echo "âš ï¸  Warning: could not fetch active issue list â€” ripple check skipped" >&2
+    echo "Warning: could not fetch active issue list - ripple check skipped" >&2
     return 0
   fi
 
@@ -437,7 +437,7 @@ cmd_apply_decision() {
     die "Failed to add dependency ${dependent_issue} -> ${depends_on_issue}"
   }
 
-  # Check for cycles â€” use exit code as primary signal
+  # Check for cycles Ã¢â‚¬â€ use exit code as primary signal
   if ! ${BD_CMD:-bd} dep cycles &>/dev/null; then
     rollback_dependency "$dependent_issue" "$depends_on_issue"
     die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
@@ -535,7 +535,7 @@ cmd_extract_contracts() {
   local all_contracts=""
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    # New task block â€” flush previous
+    # New task block Ã¢â‚¬â€ flush previous
     if [[ "$line" =~ ^##\ Task ]]; then
       local _emitted
       _emitted="$(emit_contracts "$current_files" "$current_what")"
@@ -590,7 +590,7 @@ cmd_extract_contracts() {
   printf '%s\n' "$contracts"
 }
 
-# â”€â”€ Main dispatcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Ã¢â€â‚¬Ã¢â€â‚¬ Main dispatcher Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 if [[ $# -lt 1 ]]; then
   usage
