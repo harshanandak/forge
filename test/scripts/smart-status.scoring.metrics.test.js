@@ -39,7 +39,7 @@ describe('lib/smart-status/scoring.js', () => {
   });
 
   describe('scoring factors', () => {
-    test.concurrent('priority_weight: P0=5 > P1=4 > P2=3 > P3=2 > P4=1', () => {
+    test('priority_weight: P0=5 > P1=4 > P2=3 > P3=2 > P4=1', () => {
       expect(factorScored.find((issue) => issue.id === 'p0').priority_weight).toBe(5);
       expect(factorScored.find((issue) => issue.id === 'p2').priority_weight).toBe(3);
       expect(factorScored.find((issue) => issue.id === 'p4').priority_weight).toBe(1);
@@ -49,9 +49,9 @@ describe('lib/smart-status/scoring.js', () => {
         .toBeLessThan(factorScored.findIndex((issue) => issue.id === 'p4'));
     });
 
-    test.concurrent('type_weight: bug=1.2 > feature=1.0 > task=0.8', () => {
+    test('type_weight: bug=1.2 > feature=1.0 > task=0.8', () => {
       expect(factorScored.find((issue) => issue.id === 'bug1').type_weight).toBe(1.2);
-      expect(factorScored.find((issue) => issue.id === 'feat1').type_weight).toBe(1.0);
+      expect(factorScored.find((issue) => issue.id === 'feat1').type_weight).toBe(1);
       expect(factorScored.find((issue) => issue.id === 'task1').type_weight).toBe(0.8);
       expect(factorScored.findIndex((issue) => issue.id === 'bug1'))
         .toBeLessThan(factorScored.findIndex((issue) => issue.id === 'feat1'));
@@ -59,24 +59,24 @@ describe('lib/smart-status/scoring.js', () => {
         .toBeLessThan(factorScored.findIndex((issue) => issue.id === 'task1'));
     });
 
-    test.concurrent('status_boost: in_progress=1.5 > open=1.0', () => {
+    test('status_boost: in_progress=1.5 > open=1.0', () => {
       expect(factorScored.find((issue) => issue.id === 'wip1').status_boost).toBe(1.5);
-      expect(factorScored.find((issue) => issue.id === 'open1').status_boost).toBe(1.0);
+      expect(factorScored.find((issue) => issue.id === 'open1').status_boost).toBe(1);
       expect(factorScored.findIndex((issue) => issue.id === 'wip1'))
         .toBeLessThan(factorScored.findIndex((issue) => issue.id === 'open1'));
     });
 
-    test.concurrent('unblock_chain: higher dependent_count scores higher', () => {
+    test('unblock_chain: higher dependent_count scores higher', () => {
       expect(factorScored.find((issue) => issue.id === 'high').unblock_chain).toBe(6);
       expect(factorScored.find((issue) => issue.id === 'low').unblock_chain).toBe(1);
       expect(factorScored.findIndex((issue) => issue.id === 'high'))
         .toBeLessThan(factorScored.findIndex((issue) => issue.id === 'low'));
     });
 
-    test.concurrent('staleness_boost: older issues score higher', () => {
+    test('staleness_boost: older issues score higher', () => {
       expect(factorScored.find((issue) => issue.id === 'stale').staleness_boost).toBe(1.5);
       expect(factorScored.find((issue) => issue.id === 'medium').staleness_boost).toBe(1.2);
-      expect(factorScored.find((issue) => issue.id === 'fresh').staleness_boost).toBe(1.0);
+      expect(factorScored.find((issue) => issue.id === 'fresh').staleness_boost).toBe(1);
       expect(factorScored.findIndex((issue) => issue.id === 'stale'))
         .toBeLessThan(factorScored.findIndex((issue) => issue.id === 'medium'));
       expect(factorScored.findIndex((issue) => issue.id === 'medium'))
@@ -85,7 +85,7 @@ describe('lib/smart-status/scoring.js', () => {
   });
 
   describe('composite scoring and sorting', () => {
-    test.concurrent('sorts by composite score descending with mixed factors', () => {
+    test('sorts by composite score descending with mixed factors', () => {
       expect(compositeScored.length).toBe(3);
       expect(compositeScored[0].id).toBe('z');
       expect(compositeScored[1].id).toBe('x');
@@ -98,7 +98,7 @@ describe('lib/smart-status/scoring.js', () => {
       expect(compositeScored[0]).toHaveProperty('staleness_boost');
     });
 
-    test.concurrent('each scored item includes score breakdown fields', () => {
+    test('each scored item includes score breakdown fields', () => {
       expect(breakdownItem.priority_weight).toBe(3);
       expect(breakdownItem.unblock_chain).toBe(3);
       expect(breakdownItem.type_weight).toBe(1.2);

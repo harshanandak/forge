@@ -37,52 +37,52 @@ describe('smart-status edge cases', () => {
   });
 
   describe('edge cases', () => {
-    test.concurrent('empty issue list returns empty array', () => {
+    test('empty issue list returns empty array', () => {
       expect(emptyScored).toEqual([]);
     });
 
-    test.concurrent('single issue returns array with one scored item', () => {
+    test('single issue returns array with one scored item', () => {
       expect(singleScored.length).toBe(1);
       expect(singleScored[0].id).toBe('solo');
       expect(singleScored[0].priority_weight).toBe(2);
-      expect(singleScored[0].type_weight).toBe(1.0);
-      expect(singleScored[0].status_boost).toBe(1.0);
-      expect(singleScored[0].staleness_boost).toBe(1.0);
+      expect(singleScored[0].type_weight).toBe(1);
+      expect(singleScored[0].status_boost).toBe(1);
+      expect(singleScored[0].staleness_boost).toBe(1);
     });
 
-    test.concurrent('missing dependent_count defaults to 0 (chain=1)', () => {
+    test('missing dependent_count defaults to 0 (chain=1)', () => {
       expect(combinedJsonScored.find((issue) => issue.id === 'nodeps').unblock_chain).toBe(1);
     });
 
-    test.concurrent('unknown priority defaults to weight 1', () => {
+    test('unknown priority defaults to weight 1', () => {
       expect(combinedJsonScored.find((issue) => issue.id === 'unk-priority').priority_weight).toBe(1);
     });
 
-    test.concurrent('numeric priority 2 gets same weight as P2', () => {
+    test('numeric priority 2 gets same weight as P2', () => {
       expect(combinedJsonScored.find((issue) => issue.id === 'num-pri').priority_weight).toBe(3);
     });
 
-    test.concurrent('numeric priority 4 is grouped into BACKLOG', () => {
+    test('numeric priority 4 is grouped into BACKLOG', () => {
       expect(combinedTextResult.status).toBe(0);
       expect(combinedTextResult.stdout).toContain('BACKLOG');
     });
 
-    test.concurrent('null type defaults to task weight 0.8', () => {
+    test('null type defaults to task weight 0.8', () => {
       expect(combinedJsonScored.find((issue) => issue.id === 'null-type').type_weight).toBe(0.8);
     });
 
-    test.concurrent('numeric priority displays with P prefix in output', () => {
+    test('numeric priority displays with P prefix in output', () => {
       expect(combinedTextResult.status).toBe(0);
       expect(combinedTextResult.stdout).toContain('(P2 bug)');
       expect(combinedTextResult.stdout).not.toContain('(2 bug)');
     });
 
-    test.concurrent('unknown type defaults to weight 1.0', () => {
-      expect(combinedJsonScored.find((issue) => issue.id === 'unknown-type').type_weight).toBe(1.0);
+    test('unknown type defaults to weight 1.0', () => {
+      expect(combinedJsonScored.find((issue) => issue.id === 'unknown-type').type_weight).toBe(1);
     });
 
-    test.concurrent('unknown status defaults to boost 1.0', () => {
-      expect(combinedJsonScored.find((issue) => issue.id === 'unknown-status').status_boost).toBe(1.0);
+    test('unknown status defaults to boost 1.0', () => {
+      expect(combinedJsonScored.find((issue) => issue.id === 'unknown-status').status_boost).toBe(1);
     });
   });
 });
