@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dep-guard.sh Ã¢â‚¬â€ Dependency-guard helper for pre-change impact analysis.
+# dep-guard.sh -- Dependency-guard helper for pre-change impact analysis.
 #
 # Subcommands:
 #   find-consumers     <file-path>                Find files that import/require a given module
@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_CMD="${NODE_CMD:-node}"
 source "$SCRIPT_DIR/lib/sanitize.sh"
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ---- Helpers ----------------------------------------------------------------
 
 usage() {
   cat >&2 <<'EOF'
@@ -234,7 +234,7 @@ render_phase3_review() {
   "$NODE_CMD" "$renderer_script"
 }
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Subcommands Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ---- Subcommands ------------------------------------------------------------
 
 cmd_find_consumers() {
   if [[ $# -lt 1 || -z "$1" ]]; then
@@ -282,11 +282,11 @@ cmd_check_ripple_keyword_v1() {
   local issue_id
   issue_id="$(sanitize "$1")"
 
-  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 1: Validate issue exists Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  # ---- Step 1: Validate issue exists ----------------------------------------
   local src_json
   src_json="$(bd_show_json "$issue_id")"
 
-  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 2: Extract source title Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  # ---- Step 2: Extract source title ----------------------------------------
   local src_title=""
   if command -v jq &>/dev/null; then
     src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
@@ -305,7 +305,7 @@ cmd_check_ripple_keyword_v1() {
   printf '%s\n' "Ripple check for ${issue_id}..."
   echo ""
 
-  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 3: Collect active issues Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  # ---- Step 3: Collect active issues ---------------------------------------
   # Run bd list for open and in_progress separately, combine results
   local list_output=""
   local open_list=""
@@ -333,9 +333,9 @@ cmd_check_ripple_keyword_v1() {
     return 0
   fi
 
-  # Ã¢â€â‚¬Ã¢â€â‚¬ Step 4: Parse each active issue (excluding source) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-  # Format: Ã¢â€”â€¹ forge-xxx [Ã¢â€”Â P2] [feature] - Title of the issue
-  #         Ã¢â€”Â forge-yyy [Ã¢â€”Â P1] [task] - Another issue title
+  # ---- Step 4: Parse each active issue (excluding source) ------------------
+  # Format: - forge-xxx [P2] [feature] - Title of the issue
+  #         - forge-yyy [P1] [task] - Another issue title
   if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
     echo "Error: ${NODE_CMD} is required but not found." >&2
     exit 1
@@ -437,7 +437,7 @@ cmd_apply_decision() {
     die "Failed to add dependency ${dependent_issue} -> ${depends_on_issue}"
   }
 
-  # Check for cycles Ã¢â‚¬â€ use exit code as primary signal
+  # Check for cycles -- use exit code as primary signal
   if ! ${BD_CMD:-bd} dep cycles &>/dev/null; then
     rollback_dependency "$dependent_issue" "$depends_on_issue"
     die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
@@ -535,7 +535,7 @@ cmd_extract_contracts() {
   local all_contracts=""
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    # New task block Ã¢â‚¬â€ flush previous
+    # New task block -- flush previous
     if [[ "$line" =~ ^##\ Task ]]; then
       local _emitted
       _emitted="$(emit_contracts "$current_files" "$current_what")"
@@ -590,7 +590,7 @@ cmd_extract_contracts() {
   printf '%s\n' "$contracts"
 }
 
-# Ã¢â€â‚¬Ã¢â€â‚¬ Main dispatcher Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# ---- Main dispatcher --------------------------------------------------------
 
 if [[ $# -lt 1 ]]; then
   usage

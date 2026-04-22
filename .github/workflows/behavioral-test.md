@@ -155,7 +155,8 @@ Do not evaluate /dev, /validate, /ship, or any other stage. Score only what `/pl
 
 You must produce:
 1. A Phase 1 Q&A exchange (at minimum 3 questions and 3 answers)
-2. A design doc with all required sections
+2. A design doc with all required sections, written to a concrete `docs/plans/<generated-file-name>`
+   artifact path that you record as `DESIGN_DOC_PATH`
 3. A Phase 3 task list with TDD steps
 
 Collect the Q&A context — you will include it in the judge prompt (Loophole Fix 8).
@@ -182,7 +183,7 @@ If TDD coverage is ≤ 50%, the TDD dimension score is capped at 0.
 Verify that the design doc file (if written to disk) has a commit timestamp within the current
 workflow run window. A pre-existing stale file does not satisfy the blocker. Check via:
 ```bash
-git log --follow --format="%ai" -1 -- docs/plans/ | head -1
+git log --follow --format="%ai" -1 -- "$DESIGN_DOC_PATH" | head -1
 ```
 Compare the timestamp to the current UTC time. If the file is older than 24 hours, record
 `staleFileWarning: true`.
@@ -360,10 +361,15 @@ git config user.name "gh-aw-behavioral-test"
 git config user.email "gh-aw@forge.internal"
 git add .github/behavioral-test-scores.json
 git commit -m "chore: behavioral test run <runId> — <classification> (<totalScore>/45)"
+push_ok=0
 for i in 1 2 3; do
-  git push https://x-access-token:${GH_AW_CI_TRIGGER_TOKEN}@github.com/${{ github.repository }}.git HEAD:master && break
+  if git push https://x-access-token:${GH_AW_CI_TRIGGER_TOKEN}@github.com/${{ github.repository }}.git HEAD:master; then
+    push_ok=1
+    break
+  fi
   git pull --rebase https://x-access-token:${GH_AW_CI_TRIGGER_TOKEN}@github.com/${{ github.repository }}.git master
 done
+[ "$push_ok" -eq 1 ] || { echo "Failed to push scores after 3 attempts"; exit 1; }
 ```
 
 ---

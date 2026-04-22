@@ -66,6 +66,8 @@ describe('agentic-workflow sync checks', () => {
     const content = fs.readFileSync(ciWorkflowPath, 'utf8');
     expect(content).toContain('scripts/sync-agentic-workflow.js');
     expect(content).toContain('gh aw trial');
+    expect(content).toContain('--yes');
+    expect(content).toContain('--ignore-space-at-eol');
   });
 
   test('detect-command-file-changes.yml exists (created in Task 8)', () => {

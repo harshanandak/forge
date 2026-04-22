@@ -43,6 +43,7 @@ function listAllFullSuiteTests() {
   const roots = [
     ...getUnitTestRoots(),
     path.join(rootDir, 'test-env'),
+    path.join(rootDir, 'scripts'),
   ].filter((dir, index, array) => fs.existsSync(dir) && array.indexOf(dir) === index);
 
   const files = [];
