@@ -29,7 +29,7 @@ jobs:
       - name: Compile active workflow
         run: gh aw compile --validate --strict .github/workflows/behavioral-test.md
       - name: Trial active workflow
-        run: gh aw trial .github/workflows/behavioral-test.md --dry-run
+        run: gh aw trial ./.github/workflows/behavioral-test.md --dry-run
       - name: Verify compiled workflow artifacts exist
         run: |
           test -f .github/workflows/behavioral-test.md

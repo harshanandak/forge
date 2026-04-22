@@ -98,6 +98,25 @@ describe('smart-status conflict helpers', () => {
 		]);
 	});
 
+	test('computeFileConflicts ignores malformed branch file payloads', () => {
+		const sessions = [
+			{ branch: 'feat/alpha', path: '/repo/.worktrees/alpha', issue_ids: [], issue_count: 0 },
+		];
+
+		expect(computeFileConflicts(sessions, [
+			{ branch: 'feat/alpha', files: 'shared.js' },
+		])).toEqual([
+			{
+				branch: 'feat/alpha',
+				path: '/repo/.worktrees/alpha',
+				issue_ids: [],
+				issue_count: 0,
+				changed_files: [],
+				conflicts: [],
+			},
+		]);
+	});
+
 	test('parseMergeTreeNameOnly skips the synthetic tree SHA and empty lines', () => {
 		const output = [
 			'abc123def456abc123def456abc123def456abc1234',
@@ -163,5 +182,27 @@ describe('smart-status conflict helpers', () => {
 				merge_conflicts: [{ branch: 'feat/alpha', files: ['shared.js'] }],
 			},
 		]);
+	});
+
+	test('applyMergeTreeConflicts ignores merge-tree error exit codes', () => {
+		const sessions = [
+			{
+				branch: 'feat/alpha',
+				path: '/repo/.worktrees/alpha',
+				issue_ids: [],
+				issue_count: 0,
+				changed_files: ['shared.js'],
+				conflicts: [],
+			},
+		];
+
+		expect(applyMergeTreeConflicts(sessions, [
+			{
+				left: 'feat/alpha',
+				right: 'feat/beta',
+				exitCode: 2,
+				output: ['abc123def456abc123def456abc123def456abc1234', 'shared.js'].join('\n'),
+			},
+		])).toEqual(sessions);
 	});
 });

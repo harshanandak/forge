@@ -61,7 +61,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures (Unix)
         if: runner.os != 'Windows'
         run: bash test-env/automation/setup-fixtures.sh --force
@@ -104,7 +105,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures
         run: bash test-env/automation/setup-fixtures.sh --force
       - name: Run unit shard
@@ -143,7 +145,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run Windows smoke tests
         run: bun run test:ci:shard -- --mode smoke --label windows-smoke
       - name: Build Windows smoke profile
@@ -180,7 +183,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run macOS smoke tests
         run: bun run test:ci:shard -- --mode smoke --label macos-smoke
       - name: Build macOS smoke profile
@@ -219,7 +223,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures
         run: bash test-env/automation/setup-fixtures.sh --force
       - name: Resolve affected test targets
@@ -321,7 +326,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Setup test fixtures
         run: bash test-env/automation/setup-fixtures.sh --force
       - name: Run tests with coverage
@@ -375,7 +381,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run E2E tests
         run: bun test test/e2e/ --reporter=junit --reporter-outfile test-results/e2e.xml
       - name: Build E2E profile
@@ -414,7 +421,8 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Ensure test-results directory
-        run: node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
       - name: Run Beads integration tests
         run: bun test scripts/beads-context.test.js --reporter=junit --reporter-outfile test-results/beads-integration.xml
       - name: Build Beads integration profile

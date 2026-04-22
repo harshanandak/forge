@@ -337,7 +337,7 @@ cmd_check_ripple_keyword_v1() {
   # Format: Ã¢â€”â€¹ forge-xxx [Ã¢â€”Â P2] [feature] - Title of the issue
   #         Ã¢â€”Â forge-yyy [Ã¢â€”Â P1] [task] - Another issue title
   if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
-    echo "Error: node is required but not found." >&2
+    echo "Error: ${NODE_CMD} is required but not found." >&2
     exit 1
   fi
 

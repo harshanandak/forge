@@ -176,5 +176,11 @@ describe('smart-status.sh', () => {
       expect(child).toBeDefined();
       expect(child.epic_proximity).toBeCloseTo(1.4, 1);
     });
+
+    test('parseIssues rejects malformed issue envelopes', () => {
+      expect(() => parseIssues(JSON.stringify({ issues: { id: 'bad-shape' } }))).toThrow(
+        /Expected \{sessions, issues\} envelope/,
+      );
+    });
   });
 });

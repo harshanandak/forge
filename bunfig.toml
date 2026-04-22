@@ -3,6 +3,3 @@
 # Some tests invoke bd CLI which requires Dolt server startup
 timeout = 15000
 concurrentTestGlob = "test/scripts/concurrent-*.test.js"
-
-[test.reporter]
-junit = "test-results/test-results.xml"

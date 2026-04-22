@@ -12,6 +12,7 @@ const {
   calculateMedian,
   formatResultLine,
   main,
+  materializeJUnitFiles,
   parseArgs,
   resolveGroups,
   runBenchmarkGroup,
@@ -186,5 +187,25 @@ describe('scripts/benchmark.js', () => {
       medianMs: 700,
       minMs: 500,
     })).toBe('  Hotspot shell slice: median 700ms (min 500ms, max 900ms)');
+  });
+
+  test('materializeJUnitFiles copies every changed XML artifact for multi-lane commands', () => {
+    const profileDir = makeTempDir();
+    const expectedPath = path.join(profileDir, 'validate.sample-1.xml');
+    const sourceDir = makeTempDir();
+    const primaryPath = path.join(sourceDir, 'followup.xml');
+    const secondaryPath = path.join(sourceDir, 'coverage.xml');
+
+    fs.writeFileSync(primaryPath, '<testsuites/>', 'utf8');
+    fs.writeFileSync(secondaryPath, '<testsuites/>', 'utf8');
+
+    const files = materializeJUnitFiles(expectedPath, [primaryPath, secondaryPath]);
+
+    expect(files).toEqual([
+      expectedPath,
+      path.join(profileDir, 'validate.sample-1.2.xml'),
+    ]);
+    expect(fs.readFileSync(expectedPath, 'utf8')).toBe('<testsuites/>');
+    expect(fs.readFileSync(path.join(profileDir, 'validate.sample-1.2.xml'), 'utf8')).toBe('<testsuites/>');
   });
 });

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 
-const { buildProfile, parseJUnitFiles } = require('./test-profile');
+const { buildProfile, parseJUnitFiles, walk } = require('./test-profile');
 
 const rootDir = path.join(__dirname, '..');
 const DEFAULT_OUTPUT = path.join(rootDir, 'test-results', 'benchmark-results.json');
@@ -176,6 +176,76 @@ function materializeJUnitFile(expectedPath) {
   throw new Error(`Benchmark run did not produce JUnit output at ${expectedPath}`);
 }
 
+function removeMaterializedOutputs(expectedPath) {
+	const directory = path.dirname(expectedPath);
+	const extension = path.extname(expectedPath);
+	const basename = path.basename(expectedPath, extension);
+
+	if (!fs.existsSync(directory)) {
+		return;
+	}
+
+	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+		if (!entry.isFile() || !entry.name.endsWith(extension)) {
+			continue;
+		}
+
+		if (entry.name === `${basename}${extension}` || entry.name.startsWith(`${basename}.`)) {
+			fs.rmSync(path.join(directory, entry.name), { force: true });
+		}
+	}
+}
+
+function indexXmlFiles(directory) {
+	return new Map(
+		walk(directory, '.xml').map((filePath) => {
+			const stats = fs.statSync(filePath);
+			return [filePath, `${stats.size}:${stats.mtimeMs}`];
+		}),
+	);
+}
+
+function listChangedXmlFiles(directory, beforeIndex) {
+	return walk(directory, '.xml')
+		.filter((filePath) => {
+			const stats = fs.statSync(filePath);
+			const fingerprint = `${stats.size}:${stats.mtimeMs}`;
+			return beforeIndex.get(filePath) !== fingerprint;
+		})
+		.sort((left, right) => left.localeCompare(right));
+}
+
+function materializeJUnitFiles(expectedPath, sourceFiles) {
+	const uniqueSources = [];
+	const seen = new Set();
+
+	for (const sourceFile of sourceFiles) {
+		if (typeof sourceFile !== 'string' || seen.has(sourceFile) || !fs.existsSync(sourceFile)) {
+			continue;
+		}
+		seen.add(sourceFile);
+		uniqueSources.push(sourceFile);
+	}
+
+	if (uniqueSources.length === 0) {
+		return [materializeJUnitFile(expectedPath)];
+	}
+
+	return uniqueSources.map((sourceFile, index) => {
+		const destination = index === 0
+			? expectedPath
+			: expectedPath.replace(/\.xml$/, `.${index + 1}.xml`);
+
+		if (sourceFile === destination) {
+			return destination;
+		}
+
+		fs.mkdirSync(path.dirname(destination), { recursive: true });
+		fs.copyFileSync(sourceFile, destination);
+		return destination;
+	});
+}
+
 function buildGroupProfile(group, xmlFiles) {
   const metrics = parseJUnitFiles(xmlFiles);
   return buildProfile({
@@ -196,13 +266,18 @@ function runBenchmarkGroup(group, options = {}) {
 
   for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
     const junitPath = path.join(profileDir, `${group.id}.sample-${sampleIndex + 1}.xml`);
-    fs.rmSync(junitPath, { force: true });
+    removeMaterializedOutputs(junitPath);
     fs.rmSync(DEFAULT_JUNIT_PATH, { force: true });
+    const beforeXmlFiles = indexXmlFiles(path.join(rootDir, 'test-results'));
     const command = buildJUnitCommand(group.command, junitPath);
     const start = performance.now();
     runCommand(command, {}, spawnSync);
     samplesMs.push(roundMs(performance.now() - start));
-    xmlFiles.push(materializeJUnitFile(junitPath));
+    const changedXmlFiles = listChangedXmlFiles(path.join(rootDir, 'test-results'), beforeXmlFiles);
+    xmlFiles.push(...materializeJUnitFiles(junitPath, [
+      fs.existsSync(junitPath) ? junitPath : null,
+      ...changedXmlFiles,
+    ]));
   }
 
   const summary = summarizeSamples(samplesMs);
@@ -289,6 +364,7 @@ module.exports = {
   resolveGroups,
   roundMs,
   materializeJUnitFile,
+  materializeJUnitFiles,
   runBenchmarkGroup,
   runCommand,
   summarizeSamples,

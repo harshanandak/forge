@@ -360,7 +360,10 @@ git config user.name "gh-aw-behavioral-test"
 git config user.email "gh-aw@forge.internal"
 git add .github/behavioral-test-scores.json
 git commit -m "chore: behavioral test run <runId> — <classification> (<totalScore>/45)"
-git push https://x-access-token:${GH_AW_CI_TRIGGER_TOKEN}@github.com/${{ github.repository }}.git HEAD:master
+for i in 1 2 3; do
+  git push https://x-access-token:${GH_AW_CI_TRIGGER_TOKEN}@github.com/${{ github.repository }}.git HEAD:master && break
+  git pull --rebase https://x-access-token:${GH_AW_CI_TRIGGER_TOKEN}@github.com/${{ github.repository }}.git master
+done
 ```
 
 ---
