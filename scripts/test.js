@@ -44,6 +44,7 @@ const isWindows = process.platform === 'win32';
  * @property {string[]} changedFiles
  * @property {boolean} hasUnmappedFiles
  * @property {boolean} hasUnknownChangedFiles
+ * @property {boolean} hasZeroResolvedTests
  * @property {'targeted'|'full'} mode
  * @property {string} reason
  * @property {boolean} runE2E
@@ -134,10 +135,19 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     hasUnmappedFiles = true;
   }
 
+  const hasZeroResolvedTests = changedFiles.length > 0
+    && testTargets.length === 0
+    && !runFullSuite
+    && !runTestEnv
+    && !runE2E
+    && !runWorkflowTests;
+
   const reason = hasUnmappedFiles
     ? 'unmapped pushed files require full unit coverage'
     : hasUnknownChangedFiles
       ? 'changed files could not be resolved safely'
+      : hasZeroResolvedTests
+        ? 'known changes did not resolve runnable tests'
       : runFullSuite
         ? 'package-level changes detected'
         : 'known changes mapped to targeted tests';
@@ -146,10 +156,11 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     changedFiles,
     hasUnmappedFiles,
     hasUnknownChangedFiles,
-    mode: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles ? 'full' : 'targeted',
+    hasZeroResolvedTests,
+    mode: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests ? 'full' : 'targeted',
     reason,
     runE2E,
-    runFullSuite: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles,
+    runFullSuite: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests,
     runTestEnv,
     runWorkflowTests,
     testTargets,

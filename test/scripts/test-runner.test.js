@@ -144,6 +144,19 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([]);
   });
 
+  test('buildTestExecutionPlan falls back to the full suite when known changes resolve zero runnable tests', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'test/scripts/smart-status.helpers.js\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.hasZeroResolvedTests).toBe(true);
+    expect(plan.mode).toBe('full');
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.reason).toBe('known changes did not resolve runnable tests');
+    expect(plan.testTargets).toEqual([]);
+  });
+
   test('classifyPushTests falls back to full suite when changed files cannot be resolved', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '',
@@ -230,6 +243,23 @@ describe('scripts/test pre-push runner', () => {
       'test/scripts/behavioral-judge.test.js',
       'test/structural/agentic-workflow-sync.test.js',
     ]);
+  });
+
+  test('runLocalValidationTests falls back to the full suite when no runnable tests are selected', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runLocalValidationTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'test/scripts/smart-status.helpers.js\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+    expect(spawnSync.calls[0].command).toBe('node');
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
   test('runPrePushTests falls back to the full unit suite when diff-base resolution yields no changed files', () => {
