@@ -49,7 +49,7 @@ describe('agentic-workflow sync checks', () => {
 
   test('behavioral-test.lock.yml has auto-generated comment header', () => {
     const content = fs.readFileSync(lockPath, 'utf8');
-    expect(content).toContain('auto-generated');
+    expect(content).toMatch(/automatically generated|auto-generated/);
   });
 
   test('check-agentic-workflow-sync.yml contains "gh aw compile" in error message', () => {
