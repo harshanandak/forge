@@ -1,12 +1,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { validateUserInput } = require('../../bin/forge');
 
 // Integration tests for enhanced onboarding
 // Tests the complete flow from CLI to file generation
 
 describe('Enhanced Onboarding Integration', () => {
-  const scratchDir = path.join(__dirname, '..', '..', 'scratchpad', 'integration-tests');
+  const scratchDir = path.join(os.tmpdir(), `forge-integration-${process.pid}-${crypto.randomUUID()}`);
 
   beforeEach(async () => {
     // Create clean test directory
@@ -378,19 +381,11 @@ This is a SaaS platform.
   });
 
   describe('Security Validation', () => {
-    // Note: validateUserInput is in bin/forge.js but not exported
-    // In production, this would be in a separate module for testability
-    // Testing validation logic directly here
-
     test('should block null bytes in directory_path validation', () => {
-      // Manually test the validation logic
       const inputWithNullByte = 'some/path\0/evil';
-
-      // Validation should reject null bytes
-      expect(inputWithNullByte.includes('\0')).toBeTruthy();
-
-      // The validation in forge.js blocks inputs with null bytes
-      // This is enforced at runtime, tested here for documentation
+      const result = validateUserInput(inputWithNullByte, 'directory_path');
+      expect(result.valid).toBe(false);
+      expect(result.error).toBeTruthy();
     });
 
     test('should block shell metacharacters in directory_path validation', () => {
@@ -402,10 +397,11 @@ This is a SaaS platform.
         'path`id`'
       ];
 
-      // All these should be blocked by the shell metacharacter check
-      // in validateUserInput (line 107: /[;|&$`()<>\r\n]/)
       dangerousInputs.forEach(input => {
-        expect(/[;|&$`()<>\r\n]/.test(input), `Input "${input}" should contain shell metacharacters`);
+        expect(validateUserInput(input, 'directory_path')).toEqual({
+          valid: false,
+          error: 'Invalid characters detected (shell metacharacters)',
+        });
       });
     });
 
@@ -418,14 +414,10 @@ This is a SaaS platform.
         ];
 
         blockedPaths.forEach(blockedPath => {
-          const normalized = path.normalize(blockedPath).toLowerCase();
-
-          // Should match blocked path patterns
-          const isBlocked =
-            normalized.startsWith(String.raw`c:\windows`) ||
-            normalized.startsWith(String.raw`c:\program files`);
-
-          expect(isBlocked).toBeTruthy();
+          expect(validateUserInput(blockedPath, 'directory_path')).toEqual({
+            valid: false,
+            error: 'Cannot target Windows system directories',
+          });
         });
       } else {
         // Skip on non-Windows
@@ -442,14 +434,10 @@ This is a SaaS platform.
         const blockedPaths = ['/etc', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev'];
 
         blockedPaths.forEach(blockedPath => {
-          const normalized = path.normalize(blockedPath).toLowerCase();
-
-          // Should match blocked path patterns
-          const isBlocked = blockedPaths.some(blocked =>
-            normalized.startsWith(blocked)
-          );
-
-          expect(isBlocked).toBeTruthy();
+          expect(validateUserInput(blockedPath, 'directory_path')).toEqual({
+            valid: false,
+            error: 'Cannot target system directories',
+          });
         });
       }
     });
@@ -463,12 +451,7 @@ This is a SaaS platform.
       ];
 
       safePaths.forEach(safePath => {
-        // Should not contain dangerous patterns
-        const hasNullByte = safePath.includes('\0');
-        const hasShellMeta = /[;|&$`()<>\r\n]/.test(safePath);
-
-        expect(hasNullByte).toBe(false);
-        expect(hasShellMeta).toBe(false);
+        expect(validateUserInput(safePath, 'directory_path')).toEqual({ valid: true });
       });
     });
   });

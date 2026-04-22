@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dep-guard.sh — Dependency-guard helper for pre-change impact analysis.
+# dep-guard.sh -- Dependency-guard helper for pre-change impact analysis.
 #
 # Subcommands:
 #   find-consumers     <file-path>                Find files that import/require a given module
@@ -14,9 +14,10 @@ set -euo pipefail
 
 # Source shared sanitize library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODE_CMD="${NODE_CMD:-node}"
 source "$SCRIPT_DIR/lib/sanitize.sh"
 
-# ── Helpers ──────────────────────────────────────────────────────────────
+# ---- Helpers ----------------------------------------------------------------
 
 usage() {
   cat >&2 <<'EOF'
@@ -212,90 +213,28 @@ extract_task_file_from_design() {
 }
 
 run_phase3_analyzer() {
-  local current_json_file="$1"
-  local open_json_file="$2"
-  local in_progress_json_file="$3"
+  local current_json="$1"
+  local open_json="$2"
+  local in_progress_json="$3"
   local task_file="$4"
   local repository_root="$5"
   local analyzer_script="${DEP_GUARD_ANALYZE_SCRIPT:-scripts/dep-guard-analyze.js}"
 
-  node "$analyzer_script" \
-    "$current_json_file" \
-    "$open_json_file" \
-    "$in_progress_json_file" \
-    "$task_file" \
-    "$repository_root"
+  printf '{"currentIssue":%s,"openIssues":%s,"inProgressIssues":%s,"taskFile":%s,"repositoryRoot":%s}' \
+    "$current_json" \
+    "${open_json:-[]}" \
+    "${in_progress_json:-[]}" \
+    "$(printf '%s' "$task_file" | jq -R '.')" \
+    "$(printf '%s' "$repository_root" | jq -R '.')" \
+    | "$NODE_CMD" "$analyzer_script" --stdin
 }
 
 render_phase3_review() {
-  local analysis_file="$1"
-
-  node - "$analysis_file" <<'NODE'
-const fs = require('node:fs');
-
-const analysisPath = process.argv[2];
-const analysis = JSON.parse(fs.readFileSync(analysisPath, 'utf8'));
-const detectorCategories = Object.entries(analysis.scores ?? {})
-  .filter(([name, score]) => name !== 'rubric' && Number(score) > 0)
-  .map(([name]) => name);
-
-const lines = [
-  '',
-  `Structured dependency review for ${analysis.currentIssue.id}...`,
-  '',
-];
-
-if (!Array.isArray(analysis.issues) || analysis.issues.length === 0) {
-  lines.push('No conflicts detected');
-  process.stdout.write(`${lines.join('\n')}\n`);
-  process.exit(0);
+  local renderer_script="${DEP_GUARD_RENDER_SCRIPT:-scripts/dep-guard-render-review.js}"
+  "$NODE_CMD" "$renderer_script"
 }
 
-const seenPairs = new Set();
-for (const finding of analysis.issues) {
-  const key = `${analysis.currentIssue.id}->${finding.targetIssueId}`;
-  if (seenPairs.has(key)) {
-    continue;
-  }
-  seenPairs.add(key);
-  lines.push(`Issue pair: ${analysis.currentIssue.id} -> ${finding.targetIssueId}`);
-}
-
-lines.push(`Rubric score: ${analysis.scores?.rubric ?? 0}`);
-lines.push(
-  `Confidence: ${(analysis.confidence?.score ?? 0).toFixed(2)}${
-    analysis.confidence?.belowThreshold ? ' (below 70% threshold)' : ''
-  }`,
-);
-lines.push(`Detector categories: ${detectorCategories.join(', ') || 'none'}`);
-lines.push(`Needs user decision: ${analysis.needsUserDecision ? 'yes' : 'no'}`);
-
-if (Array.isArray(analysis.detectorConflicts) && analysis.detectorConflicts.length > 0) {
-  lines.push('Conflicts:');
-  for (const conflict of analysis.detectorConflicts) {
-    lines.push(`  - ${conflict}`);
-  }
-}
-
-if (Array.isArray(analysis.proposals) && analysis.proposals.length > 0) {
-  lines.push('');
-  lines.push('Proposed dependency updates:');
-  for (const proposal of analysis.proposals) {
-    lines.push(`  - ${proposal.dependentIssueId} depends on ${proposal.dependsOnIssueId}`);
-    if (Array.isArray(proposal.pros) && proposal.pros.length > 0) {
-      lines.push(`    Pros: ${proposal.pros.join('; ')}`);
-    }
-    if (Array.isArray(proposal.cons) && proposal.cons.length > 0) {
-      lines.push(`    Cons: ${proposal.cons.join('; ')}`);
-    }
-  }
-}
-
-process.stdout.write(`${lines.join('\n')}\n`);
-NODE
-}
-
-# ── Subcommands ──────────────────────────────────────────────────────────
+# ---- Subcommands ------------------------------------------------------------
 
 cmd_find_consumers() {
   if [[ $# -lt 1 || -z "$1" ]]; then
@@ -343,11 +282,11 @@ cmd_check_ripple_keyword_v1() {
   local issue_id
   issue_id="$(sanitize "$1")"
 
-  # ── Step 1: Validate issue exists ──────────────────────────────────────
+  # ---- Step 1: Validate issue exists ----------------------------------------
   local src_json
   src_json="$(bd_show_json "$issue_id")"
 
-  # ── Step 2: Extract source title ───────────────────────────────────────
+  # ---- Step 2: Extract source title ----------------------------------------
   local src_title=""
   if command -v jq &>/dev/null; then
     src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
@@ -358,15 +297,15 @@ cmd_check_ripple_keyword_v1() {
   fi
 
   if [[ -z "$src_title" ]]; then
-    echo "⚠️  Warning: could not extract title for ${issue_id} — ripple check skipped" >&2
+    echo "Warning: could not extract title for ${issue_id} - ripple check skipped" >&2
     return 0
   fi
 
   echo ""
-  printf '%s\n' "📋 Ripple check for ${issue_id}..."
+  printf '%s\n' "Ripple check for ${issue_id}..."
   echo ""
 
-  # ── Step 3: Collect active issues ──────────────────────────────────────
+  # ---- Step 3: Collect active issues ---------------------------------------
   # Run bd list for open and in_progress separately, combine results
   local list_output=""
   local open_list=""
@@ -390,122 +329,24 @@ cmd_check_ripple_keyword_v1() {
   fi
 
   if [[ -z "$list_output" ]]; then
-    echo "⚠️  Warning: could not fetch active issue list — ripple check skipped" >&2
+    echo "Warning: could not fetch active issue list - ripple check skipped" >&2
     return 0
   fi
 
-  # ── Step 4: Parse each active issue (excluding source) ─────────────────
-  # Format: ○ forge-xxx [● P2] [feature] - Title of the issue
-  #         ◐ forge-yyy [● P1] [task] - Another issue title
-  local overlap_count=0
-  local overlap_report=""
-
-  # Stop words to exclude from keyword matching
-  local stop_words=" the a an and or is in to for of with on at by from add fix update implement create remove delete make use get set run test check all this that it be as not no but if do we they are was were been have has had will would could should may can each every both also into than then when where which what how why who its new first last same other "
-
-  # Tokenize source title: lowercase, split on non-alpha, filter stop words + short terms
-  local src_terms=""
-  src_terms="$(printf '%s' "$src_title" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alpha:]' '\n' | sort -u)"
-
-  # Filter source terms
-  local filtered_src_terms=""
-  while IFS= read -r term; do
-    [[ -z "$term" ]] && continue
-    # Skip terms < 3 characters
-    [[ ${#term} -lt 3 ]] && continue
-    # Skip stop words
-    if [[ "$stop_words" == *" ${term} "* ]]; then
-      continue
-    fi
-    filtered_src_terms="${filtered_src_terms} ${term}"
-  done <<< "$src_terms"
-
-  # Process each line in list_output
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-
-    # Extract issue ID (forge-xxx pattern)
-    local cand_id=""
-    cand_id="$(printf '%s' "$line" | grep -oE 'forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*' | head -1)" || continue
-    [[ -z "$cand_id" ]] && continue
-
-    # Skip the source issue itself
-    [[ "$cand_id" == "$issue_id" ]] && continue
-
-    # Extract status symbol and map to label
-    local cand_status="open"
-    if printf '%s' "$line" | grep -q '◐'; then
-      cand_status="in_progress"
-    fi
-
-    # Extract priority (P1, P2, P3, etc.)
-    local cand_priority=""
-    cand_priority="$(printf '%s' "$line" | grep -oE 'P[0-9]+' | head -1)" || true
-    [[ -z "$cand_priority" ]] && cand_priority="P2"
-
-    # Extract title (everything after " - ")
-    local cand_title=""
-    cand_title="$(printf '%s' "$line" | sed 's/^[^]]*\] [^]]*\] - //')" || continue
-    [[ -z "$cand_title" ]] && continue
-
-    # Tokenize candidate title
-    local cand_terms=""
-    cand_terms="$(printf '%s' "$cand_title" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alpha:]' '\n' | sort -u)"
-
-    # Filter candidate terms
-    local filtered_cand_terms=""
-    while IFS= read -r term; do
-      [[ -z "$term" ]] && continue
-      [[ ${#term} -lt 3 ]] && continue
-      if [[ "$stop_words" == *" ${term} "* ]]; then
-        continue
-      fi
-      filtered_cand_terms="${filtered_cand_terms} ${term}"
-    done <<< "$cand_terms"
-
-    # ── Step 6: Find shared meaningful terms ───────────────────────────────
-    local shared_terms=""
-    local shared_count=0
-    for src_t in $filtered_src_terms; do
-      for cand_t in $filtered_cand_terms; do
-        if [[ "$src_t" == "$cand_t" ]]; then
-          if [[ -z "$shared_terms" ]]; then
-            shared_terms="\"${src_t}\""
-          else
-            shared_terms="${shared_terms}, \"${src_t}\""
-          fi
-          shared_count=$((shared_count + 1))
-          break
-        fi
-      done
-    done
-
-    # ── Step 7: Report if >= 2 shared terms ────────────────────────────────
-    if [[ $shared_count -ge 2 ]]; then
-      overlap_count=$((overlap_count + 1))
-      overlap_report="${overlap_report}  ${cand_id} (${cand_status}, ${cand_priority}): \"${cand_title}\""$'\n'
-      overlap_report="${overlap_report}  Overlap: keyword match — ${shared_terms}"$'\n'
-      overlap_report="${overlap_report}  Confidence: LOW (keyword only, no contract data)"$'\n'
-      overlap_report="${overlap_report}"$'\n'
-      overlap_report="${overlap_report}  Options:"$'\n'
-      overlap_report="${overlap_report}  (a) Add dependency: bd dep add ${issue_id} ${cand_id}"$'\n'
-      overlap_report="${overlap_report}  (b) Proceed — no real conflict"$'\n'
-      overlap_report="${overlap_report}  (c) Investigate: bd show ${cand_id}"$'\n'
-      overlap_report="${overlap_report}"$'\n'
-    fi
-
-  done <<< "$list_output"
-
-  # ── Step 8: Output final report ──────────────────────────────────────
-  if [[ $overlap_count -gt 0 ]]; then
-    printf '%s\n' "⚠️  Potential overlap with ${overlap_count} issue(s):"
-    echo ""
-    printf '%s' "$overlap_report"
-  else
-    printf '%s\n' "✅ No conflicts detected"
+  # ---- Step 4: Parse each active issue (excluding source) ------------------
+  # Format: - forge-xxx [P2] [feature] - Title of the issue
+  #         - forge-yyy [P1] [task] - Another issue title
+  if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
+    echo "Error: ${NODE_CMD} is required but not found." >&2
+    exit 1
   fi
 
+  ISSUE_ID="$issue_id" \
+  SOURCE_TITLE="$src_title" \
+  LIST_OUTPUT="$list_output" \
+  "$NODE_CMD" "$SCRIPT_DIR/dep-guard-keyword-ripple.js"
   return 0
+
 }
 
 cmd_check_ripple() {
@@ -529,7 +370,7 @@ cmd_check_ripple() {
   fi
 
   if [[ -z "$src_title" ]]; then
-    echo "⚠️  Warning: could not extract title for ${issue_id} — ripple check skipped" >&2
+    echo "Warning: could not extract title for ${issue_id} - ripple check skipped" >&2
     return 0
   fi
 
@@ -544,7 +385,7 @@ cmd_check_ripple() {
   local task_file=""
   task_file="$(extract_task_file_from_design "$design_text" || true)"
   if [[ -z "$task_file" || ! -f "$task_file" ]]; then
-    echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+    echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
     cmd_check_ripple_keyword_v1 "$issue_id"
     return 0
   fi
@@ -555,51 +396,23 @@ cmd_check_ripple() {
   in_progress_json="$(${BD_CMD:-bd} list --status=in_progress --json 2>/dev/null)" || true
 
   if [[ -z "$open_json" && -z "$in_progress_json" ]]; then
-    echo "⚠️  Warning: could not fetch active issue list — ripple check skipped" >&2
+    echo "Warning: could not fetch active issue list - ripple check skipped" >&2
     return 0
   fi
 
-  local tmp_dir
-  tmp_dir="$(mktemp -d)"
-  # On Windows/Git Bash, normalize to a mixed-mode path so both bash file I/O
-  # and Node.js resolve to the same physical location (cygpath -m → C:/...).
-  # Preserve the original POSIX path if conversion fails or returns empty.
-  if command -v cygpath &>/dev/null; then
-    local mixed_tmp_dir
-    mixed_tmp_dir="$(cygpath -m "$tmp_dir" 2>/dev/null)" || true
-    if [[ -n "$mixed_tmp_dir" && -d "$mixed_tmp_dir" ]]; then
-      tmp_dir="$mixed_tmp_dir"
-    fi
-  fi
-  trap 'rm -rf "$tmp_dir"' RETURN
-
-  printf '%s' "$src_json" > "${tmp_dir}/current.json"
-  printf '%s' "${open_json:-[]}" > "${tmp_dir}/open.json"
-  printf '%s' "${in_progress_json:-[]}" > "${tmp_dir}/in-progress.json"
 
   local repository_root="${DEP_GUARD_REPOSITORY_ROOT:-$PWD}"
   if run_phase3_analyzer \
-    "${tmp_dir}/current.json" \
-    "${tmp_dir}/open.json" \
-    "${tmp_dir}/in-progress.json" \
+    "$src_json" \
+    "${open_json:-[]}" \
+    "${in_progress_json:-[]}" \
     "$task_file" \
     "$repository_root" \
-    > "${tmp_dir}/analysis.json" 2> "${tmp_dir}/analysis.err"; then
-    if render_phase3_review "${tmp_dir}/analysis.json"; then
-      trap - RETURN
-      rm -rf "$tmp_dir"
-      return 0
-    fi
-    echo "⚠️  Phase 3 review rendering failed — falling back to keyword-only ripple check." >&2
-  else
-    echo "⚠️  Structured analyzer unavailable, falling back to keyword-only ripple check." >&2
-    if [[ -s "${tmp_dir}/analysis.err" ]]; then
-      cat "${tmp_dir}/analysis.err" >&2
-    fi
+    | render_phase3_review; then
+    return 0
   fi
 
-  trap - RETURN
-  rm -rf "$tmp_dir"
+  echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
   cmd_check_ripple_keyword_v1 "$issue_id"
 }
 
@@ -624,7 +437,7 @@ cmd_apply_decision() {
     die "Failed to add dependency ${dependent_issue} -> ${depends_on_issue}"
   }
 
-  # Check for cycles — use exit code as primary signal
+  # Check for cycles -- use exit code as primary signal
   if ! ${BD_CMD:-bd} dep cycles &>/dev/null; then
     rollback_dependency "$dependent_issue" "$depends_on_issue"
     die "Cycle detected for ${dependent_issue} -> ${depends_on_issue}"
@@ -722,7 +535,7 @@ cmd_extract_contracts() {
   local all_contracts=""
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    # New task block — flush previous
+    # New task block -- flush previous
     if [[ "$line" =~ ^##\ Task ]]; then
       local _emitted
       _emitted="$(emit_contracts "$current_files" "$current_what")"
@@ -777,7 +590,7 @@ cmd_extract_contracts() {
   printf '%s\n' "$contracts"
 }
 
-# ── Main dispatcher ──────────────────────────────────────────────────────
+# ---- Main dispatcher --------------------------------------------------------
 
 if [[ $# -lt 1 ]]; then
   usage

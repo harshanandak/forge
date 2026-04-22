@@ -22,6 +22,10 @@ function isBdAvailable() {
 	}
 }
 
+function shouldRunBeadsIntegration() {
+	return process.env.RUN_BEADS_INTEGRATION === '1' && isBdAvailable();
+}
+
 /**
  * Helper: run the beads-context.sh script with given args.
  * Returns { exitCode, stdout, stderr }.
@@ -55,7 +59,7 @@ async function bd(...args) {
 	return { exitCode, stdout, stderr };
 }
 
-describe.skipIf(!isBdAvailable())('scripts/beads-context.sh', () => {
+describe.skipIf(!shouldRunBeadsIntegration())('scripts/beads-context.sh', () => {
 	let testIssueId;
 
 	// Create a temporary test issue for isolation

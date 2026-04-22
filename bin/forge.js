@@ -4813,4 +4813,9 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getWorkflowCommands, ensureDirWithNote };
+module.exports = {
+  ensureDirWithNote,
+  getWorkflowCommands,
+  validateDirectoryPathInput,
+  validateUserInput,
+};

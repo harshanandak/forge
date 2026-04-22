@@ -78,7 +78,7 @@ fi
 
 # Step 4: Tests
 print_header "4/4: Tests"
-if bun test; then
+if node scripts/test.js --validate; then
   print_success "All tests passed"
 else
   print_error "Tests failed"

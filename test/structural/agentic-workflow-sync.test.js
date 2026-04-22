@@ -6,8 +6,11 @@ const repoRoot = path.resolve(__dirname, '../..');
 
 const mdPath = path.join(repoRoot, '.github', 'agentic-workflows', 'behavioral-test.md');
 const lockPath = path.join(repoRoot, '.github', 'agentic-workflows', 'behavioral-test.lock.yml');
+const activeMdPath = path.join(repoRoot, '.github', 'workflows', 'behavioral-test.md');
+const activeLockPath = path.join(repoRoot, '.github', 'workflows', 'behavioral-test.lock.yml');
 const ciWorkflowPath = path.join(repoRoot, '.github', 'workflows', 'check-agentic-workflow-sync.yml');
 const detectWorkflowPath = path.join(repoRoot, '.github', 'workflows', 'detect-command-file-changes.yml');
+const syncScriptPath = path.join(repoRoot, 'scripts', 'sync-agentic-workflow.js');
 
 describe('agentic-workflow sync checks', () => {
   test('behavioral-test.md exists', () => {
@@ -18,8 +21,20 @@ describe('agentic-workflow sync checks', () => {
     expect(fs.existsSync(lockPath)).toBeTruthy();
   });
 
+  test('active behavioral-test.md exists in .github/workflows', () => {
+    expect(fs.existsSync(activeMdPath)).toBeTruthy();
+  });
+
+  test('active behavioral-test.lock.yml exists in .github/workflows', () => {
+    expect(fs.existsSync(activeLockPath)).toBeTruthy();
+  });
+
   test('check-agentic-workflow-sync.yml CI workflow exists', () => {
     expect(fs.existsSync(ciWorkflowPath)).toBeTruthy();
+  });
+
+  test('sync-agentic-workflow.js exists', () => {
+    expect(fs.existsSync(syncScriptPath)).toBeTruthy();
   });
 
   test('behavioral-test.md contains "claude-sonnet-4-6"', () => {
@@ -34,7 +49,7 @@ describe('agentic-workflow sync checks', () => {
 
   test('behavioral-test.lock.yml has auto-generated comment header', () => {
     const content = fs.readFileSync(lockPath, 'utf8');
-    expect(content).toContain('auto-generated');
+    expect(content).toMatch(/automatically generated|auto-generated/);
   });
 
   test('check-agentic-workflow-sync.yml contains "gh aw compile" in error message', () => {
@@ -45,6 +60,14 @@ describe('agentic-workflow sync checks', () => {
   test('check-agentic-workflow-sync.yml triggers on .github/agentic-workflows/*.md path changes', () => {
     const content = fs.readFileSync(ciWorkflowPath, 'utf8');
     expect(content).toContain('.github/agentic-workflows/*.md');
+  });
+
+  test('check-agentic-workflow-sync.yml uses the sync script and gh aw trial', () => {
+    const content = fs.readFileSync(ciWorkflowPath, 'utf8');
+    expect(content).toContain('scripts/sync-agentic-workflow.js');
+    expect(content).toContain('gh aw trial');
+    expect(content).toContain('--yes');
+    expect(content).toContain('--ignore-space-at-eol');
   });
 
   test('detect-command-file-changes.yml exists (created in Task 8)', () => {

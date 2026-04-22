@@ -104,4 +104,76 @@ Expected output: import detection finds downstream consumers.
 			]),
 		);
 	});
+
+	test('accepts stdin payloads for direct structured ripple analysis', () => {
+		const repositoryRoot = createFixture({
+			'lib/progress.js': `function parseProgress(raw) {
+  return raw.trim().toUpperCase();
+}
+
+module.exports = {
+  parseProgress,
+};
+`,
+			'features/dashboard.js': `const { parseProgress } = require('../lib/progress');
+
+function renderDashboard(raw) {
+  return parseProgress(raw);
+}
+
+module.exports = {
+  renderDashboard,
+};
+`,
+			'tasks.md': `# Task List: logic-level-dependency-detection
+
+## Task 1: Update progress parsing
+
+File(s): \`lib/progress.js\`
+
+What to implement: Update \`parseProgress\` for the new plan status format.
+
+Expected output: import detection finds downstream consumers.
+`,
+		});
+
+		const payload = {
+			currentIssue: {
+				id: 'forge-9zv',
+				title: 'Logic-level dependency detection in /plan Phase 3',
+				files: ['lib/progress.js'],
+			},
+			openIssues: [
+				{
+					id: 'forge-puh',
+					title: 'Multi-developer workflow',
+					files: ['features/dashboard.js'],
+				},
+			],
+			inProgressIssues: [],
+			taskFile: path.join(repositoryRoot, 'tasks.md'),
+			repositoryRoot,
+		};
+
+		const result = spawnSync(
+			process.execPath,
+			[SCRIPT, '--stdin'],
+			{
+				cwd: repositoryRoot,
+				encoding: 'utf8',
+				input: JSON.stringify(payload),
+			},
+		);
+
+		expect(result.status).toBe(0);
+		const analysis = JSON.parse(result.stdout);
+		expect(analysis.currentIssue.id).toBe('forge-9zv');
+		expect(analysis.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					targetIssueId: 'forge-puh',
+				}),
+			]),
+		);
+	});
 });
