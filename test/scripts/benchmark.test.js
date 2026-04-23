@@ -125,7 +125,11 @@ describe('scripts/benchmark.js', () => {
     expect(result.samples).toBe(3);
     expect(result.samplesMs).toHaveLength(3);
     expect(result.profilePath.endsWith('.profile.json')).toBe(true);
-    expect(fs.existsSync(path.join(process.cwd(), result.profilePath.replace(/\//g, path.sep)))).toBe(true);
+    const normalizedProfilePath = result.profilePath.replace(/\//g, path.sep);
+    const resolvedProfilePath = path.isAbsolute(normalizedProfilePath)
+      ? normalizedProfilePath
+      : path.resolve(process.cwd(), normalizedProfilePath);
+    expect(fs.existsSync(resolvedProfilePath)).toBe(true);
     expect(spawnStub.calls).toHaveLength(3);
   });
 
