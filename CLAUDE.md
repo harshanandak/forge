@@ -106,5 +106,6 @@ As you work, when you give the same instruction twice, add it here:
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
 - **Command sync**: After editing `.claude/commands/*.md`, run `node scripts/sync-commands.js` to update all 7 agent directories. Use `--check` in CI to detect drift. Use `--dry-run` to preview.
 - **Dynamic commands**: Never hardcode example output in command files (`.claude/commands/*.md`) when a script generates that output dynamically. Command files should reference the script and describe what it does — not duplicate its output with fake data that becomes stale.
+- **Review follow-up completion**: After fixing review feedback, always push the changes and resolve the related GitHub review threads via the GraphQL API before considering the work complete.
 
 <!-- USER:END -->
