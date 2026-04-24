@@ -72,8 +72,8 @@ _safe_sanitize() {
 }
 
 # ── _get_github_issue_number ─────────────────────────────────────────────
-# Extracts github_issue number from `bd show <id>` output.
-# Looks for `github_issue:N` pattern.
+# Extracts the canonical GitHub issue number from `bd show <id> --json`.
+# Falls back to legacy `github_issue:` state only as a migration bridge.
 # Returns the number or empty string (exit 1 if not found).
 _get_github_issue_number() {
   local beads_id="${1:-}"
@@ -84,16 +84,43 @@ _get_github_issue_number() {
 
   local bd_cmd="${BD_CMD:-bd}"
   local show_output
-  show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || {
+  show_output="$("$bd_cmd" show "$beads_id" --json 2>/dev/null)" || {
     _sync_error "Failed to get beads info for $beads_id"
     return 1
   }
 
   local issue_num
-  issue_num="$(printf '%s' "$show_output" | grep -oP 'github_issue:\K[0-9]+' | head -1)"
+  issue_num="$(printf '%s' "$show_output" | node -e '
+    const fs = require("node:fs");
+    const input = fs.readFileSync(0, "utf8");
+    try {
+      const data = JSON.parse(input);
+      const issue = Array.isArray(data) ? data[0] : data;
+      const value = issue?.github?.number
+        ?? issue?.githubNumber
+        ?? issue?.github_issue
+        ?? issue?.githubIssue
+        ?? issue?.issueNumber
+        ?? null;
+      if (value != null && value !== "") {
+        process.stdout.write(String(value));
+      }
+    } catch (_err) {
+      process.exitCode = 0;
+    }
+  ')"
 
   if [[ -z "$issue_num" ]]; then
-    _sync_error "No github_issue found for $beads_id"
+    local legacy_show_output
+    legacy_show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || {
+      _sync_error "Failed to get beads info for $beads_id"
+      return 1
+    }
+    issue_num="$(printf '%s' "$legacy_show_output" | grep -oP 'github_issue:\K[0-9]+' | head -1)"
+  fi
+
+  if [[ -z "$issue_num" ]]; then
+    _sync_error "No canonical GitHub number found for $beads_id"
     return 1
   fi
 
@@ -174,17 +201,6 @@ sync_issue_create() {
     _sync_error "Failed to store github_issue=$issue_num for $beads_id"
     return 1
   }
-
-  # Update beads-mapping.json for verify Check 4
-  local mapping_file=".github/beads-mapping.json"
-  if [[ -f "$mapping_file" ]]; then
-    local updated
-    updated="$(jq --arg num "$issue_num" --arg id "$beads_id" '.[$num] = $id' "$mapping_file")"
-    printf '%s\n' "$updated" > "$mapping_file"
-  else
-    mkdir -p .github
-    printf '%s\n' "{\"$issue_num\":\"$beads_id\"}" > "$mapping_file"
-  fi
 
   return 0
 }

@@ -9,6 +9,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { createLinkStore, resolveCanonicalLink, upsertCanonicalLink } = require('../../lib/issue-sync/link-store.js');
+const { bridgeLegacyLinkHints } = require('../../lib/issue-sync/legacy-link-bridge.js');
 
 /**
  * Reads the mapping file and returns parsed JSON.
@@ -75,4 +80,53 @@ export function setBeadsId(mappingPath, issueNumber, beadsId) {
   const key = String(issueNumber);
   data[key] = beadsId;
   writeMapping(mappingPath, data);
+}
+
+/**
+ * Loads a canonical link store seeded from the legacy mapping file plus any
+ * optional migration hints.
+ *
+ * @param {string} mappingPath - Path to the legacy mapping file
+ * @param {object} [legacyHints] - Additional migration hints to bridge
+ * @returns {ReturnType<typeof createLinkStore>}
+ */
+export function loadCanonicalLinkStore(mappingPath, legacyHints = {}) {
+  const store = createLinkStore();
+  const mapping = readMapping(mappingPath);
+  bridgeLegacyLinkHints({ ...legacyHints, mapping }, { store });
+  return store;
+}
+
+/**
+ * Resolves the canonical link record for a GitHub lookup using the legacy
+ * mapping file only as a bridge input.
+ *
+ * @param {string} mappingPath - Path to the legacy mapping file
+ * @param {object} lookup - Canonical lookup values
+ * @param {object} [legacyHints] - Additional migration hints to bridge
+ * @returns {object|null}
+ */
+export function resolveCanonicalBeadsLink(mappingPath, lookup = {}, legacyHints = {}) {
+  const store = loadCanonicalLinkStore(mappingPath, legacyHints);
+  return resolveCanonicalLink(store, lookup);
+}
+
+/**
+ * Upserts a canonical link and mirrors it into the legacy mapping file for
+ * compatibility during migration.
+ *
+ * @param {string} mappingPath - Path to the legacy mapping file
+ * @param {object} link - Canonical link record
+ * @param {object} [legacyHints] - Additional migration hints to bridge
+ * @returns {object}
+ */
+export function upsertCanonicalBeadsLink(mappingPath, link, legacyHints = {}) {
+  const store = loadCanonicalLinkStore(mappingPath, legacyHints);
+  const canonical = upsertCanonicalLink(store, link);
+
+  if (canonical?.github?.number != null && canonical.forgeIssueId) {
+    setBeadsId(mappingPath, canonical.github.number, canonical.forgeIssueId);
+  }
+
+  return canonical;
 }
