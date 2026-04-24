@@ -180,7 +180,8 @@ function getShardPlan(args, { allUnitTests, durationMap }) {
 function runTests(label, files) {
   fs.mkdirSync(reportDir, { recursive: true });
   const junitPath = path.join(reportDir, `${label}.xml`);
-  const result = spawnSync('bun', [
+  const bunCommand = process.env.BUN_EXE || 'bun';
+  const result = spawnSync(bunCommand, [
     'test',
     '--reporter=junit',
     '--reporter-outfile',

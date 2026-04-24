@@ -44,6 +44,23 @@ print_warning() {
   echo -e "${YELLOW}⚠ $1${NC}"
 }
 
+run_validate_tests() {
+  if [[ "${OS:-}" == "Windows_NT" && ( -n "${MSYSTEM:-}" || "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ) ]]; then
+    local bun_exe
+    bun_exe="$(where.exe bun 2>/dev/null | tr -d '\r' | grep -i 'bun\.exe$' | head -n 1)"
+
+    if [[ -n "$bun_exe" ]]; then
+      cmd.exe /d /c "set \"BUN_EXE=$bun_exe\" && node scripts\\test.js --validate"
+      return $?
+    fi
+
+    cmd.exe /d /c "node scripts\\test.js --validate"
+    return $?
+  fi
+
+  node scripts/test.js --validate
+}
+
 echo ""
 echo -e "${BLUE}╔═══════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║   Forge Quality Gate - Running Checks    ║${NC}"
@@ -78,7 +95,7 @@ fi
 
 # Step 4: Tests
 print_header "4/4: Tests"
-if node scripts/test.js --validate; then
+if run_validate_tests; then
   print_success "All tests passed"
 else
   print_error "Tests failed"

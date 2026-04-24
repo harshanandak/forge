@@ -1,7 +1,7 @@
 /**
  * Integration tests for GitHub-Beads sync pipeline.
  * Uses realistic webhook fixture data and tests the full pipeline
- * through dependency injection (sanitize -> map -> create -> mapping update -> comment).
+ * through dependency injection (sanitize -> map -> create -> canonical link -> comment).
  *
  * @module test/scripts/github-beads-sync/integration
  */
@@ -68,20 +68,21 @@ function makeMockGithubWithCalls(overrides = {}) {
 }
 
 /**
- * Create mock mapping functions with call recording.
+ * Create mock canonical link store functions with call recording.
  * @param {object} [overrides]
  * @returns {{ mocks: object, calls: object }}
  */
-function makeMockMappingWithCalls(overrides = {}) {
-  const calls = { get: [], set: [] };
+function makeMockLinkStoreWithCalls(overrides = {}) {
+  const calls = { resolve: [], upsert: [] };
   return {
     mocks: {
-      getBeadsId: overrides.getBeadsId ?? ((_path, num) => {
-        calls.get.push(num);
+      resolveCanonicalLink: overrides.resolveCanonicalLink ?? ((lookup) => {
+        calls.resolve.push(lookup);
         return null;
       }),
-      setBeadsId: overrides.setBeadsId ?? ((_path, num, id) => {
-        calls.set.push({ num, id });
+      upsertCanonicalLink: overrides.upsertCanonicalLink ?? ((link) => {
+        calls.upsert.push(link);
+        return link;
       }),
     },
     calls,
@@ -92,12 +93,12 @@ function makeMockMappingWithCalls(overrides = {}) {
  * Build full options object with call-recording mocks.
  * @param {object} [overrides] - Override individual mock functions
  * @param {object} [configOverride] - Config overrides for testing
- * @returns {{ options: object, bdCalls: object, githubCalls: object, mappingCalls: object }}
+ * @returns {{ options: object, bdCalls: object, githubCalls: object, linkStoreCalls: object }}
  */
 function makeTrackedOptions(overrides = {}, configOverride = undefined) {
   const { mocks: bdMocks, calls: bdCalls } = makeMockBdWithCalls(overrides.bd);
   const { mocks: githubMocks, calls: githubCalls } = makeMockGithubWithCalls(overrides.github);
-  const { mocks: mappingMocks, calls: mappingCalls } = makeMockMappingWithCalls(overrides.mapping);
+  const { mocks: linkStoreMocks, calls: linkStoreCalls } = makeMockLinkStoreWithCalls(overrides.linkStore);
 
   return {
     options: {
@@ -107,12 +108,12 @@ function makeTrackedOptions(overrides = {}, configOverride = undefined) {
       repo: 'test-repo',
       bd: bdMocks,
       github: githubMocks,
-      mapping: mappingMocks,
+      linkStore: linkStoreMocks,
       configOverride,
     },
     bdCalls,
     githubCalls,
-    mappingCalls,
+    linkStoreCalls,
   };
 }
 
@@ -120,8 +121,8 @@ function makeTrackedOptions(overrides = {}, configOverride = undefined) {
 // Integration: Full opened pipeline
 // ===========================================================================
 describe('integration: full opened pipeline', () => {
-  it('processes realistic webhook through sanitize -> map -> create -> mapping -> comment', async () => {
-    const { options, bdCalls, githubCalls, mappingCalls } = makeTrackedOptions();
+  it('processes realistic webhook through sanitize -> map -> create -> canonical link -> comment', async () => {
+    const { options, bdCalls, githubCalls, linkStoreCalls } = makeTrackedOptions();
 
     const result = await handleOpened(issueOpenedFixture, options);
 
@@ -140,10 +141,11 @@ describe('integration: full opened pipeline', () => {
     expect(createArgs.description).toBe('https://github.com/test-owner/test-repo/issues/42');
     expect(createArgs.externalRef).toBe('gh-42');
 
-    // Mapping was updated with issue number -> beads ID
-    expect(mappingCalls.set).toHaveLength(1);
-    expect(mappingCalls.set[0].num).toBe(42);
-    expect(mappingCalls.set[0].id).toBe('forge-integ001');
+    // Canonical link store was updated with the GitHub issue identity
+    expect(linkStoreCalls.upsert).toHaveLength(1);
+    expect(linkStoreCalls.upsert[0].forgeIssueId).toBe('forge-integ001');
+    expect(linkStoreCalls.upsert[0].github.number).toBe(42);
+    expect(linkStoreCalls.upsert[0].github.url).toBe('https://github.com/test-owner/test-repo/issues/42');
 
     // Sync comment was posted to GitHub
     expect(githubCalls.createOrEditComment).toHaveLength(1);
@@ -160,10 +162,16 @@ describe('integration: full opened pipeline', () => {
 // Integration: Full closed pipeline
 // ===========================================================================
 describe('integration: full closed pipeline', () => {
-  it('closes beads issue when mapping exists for the GitHub issue', async () => {
+  it('closes beads issue when a canonical link exists for the GitHub issue', async () => {
     const { options, bdCalls } = makeTrackedOptions({
-      mapping: {
-        getBeadsId: (_path, _num) => 'forge-integ001',
+      linkStore: {
+        resolveCanonicalLink: () => ({
+          forgeIssueId: 'forge-integ001',
+          github: {
+            number: 42,
+            url: 'https://github.com/test-owner/test-repo/issues/42',
+          },
+        }),
       },
     });
 
@@ -185,16 +193,14 @@ describe('integration: full closed pipeline', () => {
 });
 
 // ===========================================================================
-// Integration: Closed with missing mapping, fallback to sync comment
+// Integration: Closed with missing canonical link
 // ===========================================================================
-describe('integration: closed with comment fallback', () => {
-  it('falls back to sync comment when mapping has no entry', async () => {
+describe('integration: closed without canonical link', () => {
+  it('skips when no canonical link exists, even if a sync comment is available', async () => {
     const { options, bdCalls } = makeTrackedOptions({
-      // mapping returns null — no stored beads ID
-      mapping: {
-        getBeadsId: () => null,
+      linkStore: {
+        resolveCanonicalLink: () => null,
       },
-      // but findSyncComment returns a realistic comment
       github: {
         findSyncComment: () => ({
           id: 12345,
@@ -205,13 +211,9 @@ describe('integration: closed with comment fallback', () => {
 
     const result = await handleClosed(issueClosedFixture, options);
 
-    expect(result.success).toBe(true);
-    expect(result.beadsId).toBe('forge-fromcomment');
-
-    // bd.close was called using the ID extracted from the comment
-    expect(bdCalls.close).toHaveLength(1);
-    expect(bdCalls.close[0].id).toBe('forge-fromcomment');
-    expect(bdCalls.close[0].reason).toContain('#42');
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('no beads link found');
+    expect(bdCalls.close).toHaveLength(0);
   });
 });
 

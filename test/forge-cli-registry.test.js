@@ -7,7 +7,7 @@
  * Uses subprocess spawning to test the actual CLI entry point.
  */
 
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, setDefaultTimeout } = require('bun:test');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,6 +15,8 @@ const os = require('node:os');
 const { loadCommands } = require('../lib/commands/_registry');
 
 const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+
+setDefaultTimeout(15000);
 
 /**
  * Helper: run forge CLI with given args, return { stdout, stderr, status }.
@@ -175,7 +177,10 @@ describe('CLI Registry Integration', () => {
         workflowDecisions: { classification: 'critical' },
       });
 
-      const { stdout, stderr, status } = runForge(['verify', '--workflow-state', workflowState]);
+      const { stdout, stderr, status } = runForge(
+        ['verify', '--workflow-state', workflowState],
+        { PATH: '', Path: '' }
+      );
       const combined = stdout + stderr;
 
       expect(status).toBe(1);

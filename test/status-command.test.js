@@ -178,7 +178,8 @@ describe('status command authoritative workflow state', () => {
   });
 
   test('handler does not fall back to heuristic stage detection when state is missing', async () => {
-    const result = await statusCommand.handler([], {}, process.cwd());
+    const repoRoot = createTempBeadsRepo([]);
+    const result = await statusCommand.handler([], {}, repoRoot);
     expect(result.missingWorkflowState).toBe(true);
     expect(result.output).toContain('Context');
     expect(result.output).toContain('No active workflow state detected.');
@@ -198,6 +199,7 @@ describe('status command authoritative workflow state', () => {
   test('handler falls back gracefully when bd is unavailable', async () => {
     const originalPATH = process.env.PATH;
     const originalPath = process.env.Path;
+    const repoRoot = createTempBeadsRepo([]);
 
     process.env.PATH = '';
     process.env.Path = '';
@@ -206,7 +208,7 @@ describe('status command authoritative workflow state', () => {
       const result = await statusCommand.handler(
         ['--issue-id', 'forge-test'],
         {},
-        process.cwd()
+        repoRoot
       );
 
       expect(result.missingWorkflowState).toBe(true);

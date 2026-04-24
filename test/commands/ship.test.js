@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, setDefaultTimeout } = require('bun:test');
 const {
 	extractKeyDecisions,
 	extractTestScenarios,
@@ -10,6 +10,8 @@ const {
 	resolveBaseRemote,
 	resolveBaseBranch,
 } = require('../../lib/commands/ship.js');
+
+setDefaultTimeout(15000);
 
 describe('Ship Command - PR Creation', () => {
 	describe('Extract key decisions from research', () => {

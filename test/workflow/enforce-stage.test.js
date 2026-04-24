@@ -120,12 +120,17 @@ describe('workflow enforce-stage', () => {
   });
 
   test('enforceStageEntry requires workflow state for non-plan stages', async () => {
-    await expect(enforceStageEntry({
-      commandName: 'ship',
-      flags: {},
-      projectRoot: process.cwd(),
-      health: { healthy: true, hardStop: false, diagnostics: [] }
-    })).rejects.toThrow(/requires authoritative workflow state/i);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-missing-state-'));
+    try {
+      await expect(enforceStageEntry({
+        commandName: 'ship',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] }
+      })).rejects.toThrow(/requires authoritative workflow state/i);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('enforceStageEntry reads workflow state from .forge-state.json when present', async () => {

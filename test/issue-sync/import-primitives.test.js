@@ -1,14 +1,14 @@
-import { describe, test, expect } from 'bun:test';
+const { describe, test, expect } = require('bun:test');
 
-import { buildSharedIssueRecord } from '../../lib/issue-sync/schema.js';
-import { createLinkStore } from '../../lib/issue-sync/link-store.js';
-import { reconcileSharedIssueRecord } from '../../lib/issue-sync/reconcile.js';
-import {
+const { buildSharedIssueRecord } = require('../../lib/issue-sync/schema.js');
+const { createLinkStore } = require('../../lib/issue-sync/link-store.js');
+const { reconcileSharedIssueRecord } = require('../../lib/issue-sync/reconcile.js');
+const {
   listRemoteIssues,
   normalizeRemoteIssue,
   resolveSharedLink,
   materializeLocalIssue,
-} from '../../lib/issue-sync/import-primitives.js';
+} = require('../../lib/issue-sync/import-primitives.js');
 
 describe('import primitives', () => {
   test('normalize and materialize a remote GitHub issue page through the steady-state reconciliation path', () => {

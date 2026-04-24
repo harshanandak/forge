@@ -31,11 +31,15 @@ function shouldRunBeadsIntegration() {
  * Returns { exitCode, stdout, stderr }.
  */
 async function run(...args) {
+	return runWithEnv(args);
+}
+
+async function runWithEnv(args, envOverrides = {}) {
 	const proc = Bun.spawn([resolveBashCommand(), SCRIPT_PATH, ...args], {
 		cwd: WORKTREE_ROOT,
 		stdout: 'pipe',
 		stderr: 'pipe',
-		env: { ...process.env },
+		env: { ...process.env, ...envOverrides },
 	});
 	const stdout = await new Response(proc.stdout).text();
 	const stderr = await new Response(proc.stderr).text();
@@ -58,6 +62,15 @@ async function bd(...args) {
 	const exitCode = await proc.exited;
 	return { exitCode, stdout, stderr };
 }
+
+describe('scripts/beads-context.sh command resolution', () => {
+	test('script includes Windows-aware bd resolution fallback', () => {
+		const content = fs.readFileSync(SCRIPT_PATH, 'utf8');
+		expect(content).toContain('resolve_bd_cmd');
+		expect(content).toContain('where.exe');
+		expect(content).toContain('$HOME/.local/bin/bd.exe');
+	});
+});
 
 describe.skipIf(!shouldRunBeadsIntegration())('scripts/beads-context.sh', () => {
 	let testIssueId;

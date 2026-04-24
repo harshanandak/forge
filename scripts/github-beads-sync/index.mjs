@@ -228,10 +228,7 @@ export function handleOpened(event, options = {}) {
  */
 export function handleClosed(event, options = {}) {
   const {
-    owner,
-    repo,
     bd = {},
-    github = {},
   } = options;
 
   const bdClose = bd.bdClose ?? realBdClose;

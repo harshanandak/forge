@@ -94,7 +94,7 @@ describe('scripts/validate.sh', () => {
       );
 
       expect(packageJson.scripts.check).toBeTruthy();
-      expect(packageJson.scripts.check.includes('scripts/validate.sh')).toBeTruthy();
+      expect(packageJson.scripts.check.includes('scripts/validate.js')).toBeTruthy();
     });
   });
 });
