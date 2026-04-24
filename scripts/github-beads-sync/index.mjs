@@ -7,19 +7,21 @@
 
 import { readFileSync, appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { loadConfig } from './config.mjs';
 import { sanitizeTitle } from './sanitize.mjs';
 import { mapLabels } from './label-mapper.mjs';
 import { bdCreate as realBdCreate, bdClose as realBdClose, bdShow as realBdShow } from './run-bd.mjs';
-import {
-  resolveCanonicalBeadsLink as realResolveCanonicalBeadsLink,
-  upsertCanonicalBeadsLink as realUpsertCanonicalBeadsLink,
-} from './mapping.mjs';
-import { buildComment, parseComment } from './comment.mjs';
-import {
-  findSyncComment as realFindSyncComment,
-  createOrEditComment as realCreateOrEditComment,
-} from './github-api.mjs';
+import { buildComment } from './comment.mjs';
+import { createOrEditComment as realCreateOrEditComment } from './github-api.mjs';
+
+const require = createRequire(import.meta.url);
+const {
+  createLinkStore,
+  resolveCanonicalLink: resolveLinkInStore,
+  upsertCanonicalLink: upsertLinkInStore,
+} = require('../../lib/issue-sync/link-store.js');
+const { bridgeLegacyLinkHints } = require('../../lib/issue-sync/legacy-link-bridge.js');
 
 function isBot(login) {
   if (!login) return false;
@@ -42,35 +44,61 @@ function getGitHubLink(issue = {}) {
   };
 }
 
-function resolveCanonicalLink(options, issue) {
-  const lookup = {
-    githubNodeId: issue.node_id ?? issue.nodeId ?? null,
-    githubNumber: issue.number,
-  };
-
-  if (
-    options.linkStore &&
-    typeof options.linkStore.resolveCanonicalLink === 'function'
-  ) {
-    return options.linkStore.resolveCanonicalLink(lookup);
+function readLegacyMapping(mappingPath) {
+  if (!mappingPath) {
+    return {};
   }
 
-  const mappingPath = options.mappingPath ?? '.github/beads-mapping.json';
-  return realResolveCanonicalBeadsLink(mappingPath, lookup);
+  try {
+    return JSON.parse(readFileSync(mappingPath, 'utf8'));
+  } catch (_err) {
+    return {};
+  }
 }
 
-function upsertCanonicalLink(options, issue, link) {
-  if (
-    options.linkStore &&
-    typeof options.linkStore.upsertCanonicalLink === 'function'
-  ) {
-    return options.linkStore.upsertCanonicalLink(link);
+function createCanonicalLinkStore(mappingPath) {
+  const store = createLinkStore();
+  const mapping = readLegacyMapping(mappingPath);
+
+  if (Object.keys(mapping).length > 0) {
+    bridgeLegacyLinkHints({ mapping }, { store });
   }
 
-  const mappingPath = options.mappingPath ?? '.github/beads-mapping.json';
-  return realUpsertCanonicalBeadsLink(mappingPath, link, {
-    github: getGitHubLink(issue),
-  });
+  return {
+    resolveCanonicalLink(lookup) {
+      return resolveLinkInStore(store, lookup);
+    },
+    upsertCanonicalLink(link) {
+      return upsertLinkInStore(store, link);
+    },
+  };
+}
+
+function getCanonicalLinkStore(options = {}) {
+  const defaultStore = createCanonicalLinkStore(options.mappingPath ?? '.github/beads-mapping.json');
+
+  if (
+    options.linkStore &&
+    (typeof options.linkStore.resolveCanonicalLink === 'function' ||
+      typeof options.linkStore.upsertCanonicalLink === 'function')
+  ) {
+    return {
+      resolveCanonicalLink(lookup) {
+        if (typeof options.linkStore.resolveCanonicalLink === 'function') {
+          return options.linkStore.resolveCanonicalLink(lookup);
+        }
+        return defaultStore.resolveCanonicalLink(lookup);
+      },
+      upsertCanonicalLink(link) {
+        if (typeof options.linkStore.upsertCanonicalLink === 'function') {
+          return options.linkStore.upsertCanonicalLink(link);
+        }
+        return defaultStore.upsertCanonicalLink(link);
+      },
+    };
+  }
+
+  return defaultStore;
 }
 
 /**
@@ -99,8 +127,8 @@ export function handleOpened(event, options = {}) {
   } = options;
 
   const bdCreate = bd.bdCreate ?? realBdCreate;
-  const findSyncComment = github.findSyncComment ?? realFindSyncComment;
   const createOrEditComment = github.createOrEditComment ?? realCreateOrEditComment;
+  const canonicalLinkStore = getCanonicalLinkStore(options);
 
   let config = loadConfig(configPath);
   if (configOverride) {
@@ -144,25 +172,16 @@ export function handleOpened(event, options = {}) {
     }
   }
 
-  const canonicalLink = resolveCanonicalLink(options, issue);
+  const canonicalLink = canonicalLinkStore.resolveCanonicalLink({
+    githubNodeId: issue.node_id ?? issue.nodeId ?? null,
+    githubNumber: issue.number,
+  });
   if (canonicalLink) {
     return {
       skipped: true,
       reason: 'already synced (canonical link)',
       beadsId: canonicalLink.forgeIssueId,
     };
-  }
-
-  const existingComment = findSyncComment(owner, repo, issueNumber);
-  if (existingComment) {
-    const parsed = parseComment(existingComment.body);
-    if (parsed?.beadsId) {
-      return {
-        skipped: true,
-        reason: 'already synced (comment)',
-        beadsId: parsed.beadsId,
-      };
-    }
   }
 
   const { sanitized: sanitizedTitle, warnings: titleWarnings } = sanitizeTitle(rawTitle);
@@ -185,7 +204,7 @@ export function handleOpened(event, options = {}) {
     return { success: false, reason: 'bd create failed - no beads ID returned', issueNumber };
   }
 
-  upsertCanonicalLink(options, issue, {
+  canonicalLinkStore.upsertCanonicalLink({
     forgeIssueId: beadsId,
     github: getGitHubLink(issue),
     sources: [
@@ -228,7 +247,7 @@ export function handleClosed(event, options = {}) {
 
   const bdClose = bd.bdClose ?? realBdClose;
   const bdShow = bd.bdShow ?? realBdShow;
-  const findSyncComment = github.findSyncComment ?? realFindSyncComment;
+  const canonicalLinkStore = getCanonicalLinkStore(options);
 
   const issue = event.issue;
   const issueNumber = issue.number;
@@ -247,18 +266,11 @@ export function handleClosed(event, options = {}) {
     return { skipped: true, reason: `closed as ${stateReason}` };
   }
 
-  const canonicalLink = resolveCanonicalLink(options, issue);
+  const canonicalLink = canonicalLinkStore.resolveCanonicalLink({
+    githubNodeId: issue.node_id ?? issue.nodeId ?? null,
+    githubNumber: issue.number,
+  });
   let beadsId = canonicalLink?.forgeIssueId ?? null;
-
-  if (!beadsId) {
-    const comment = findSyncComment(owner, repo, issueNumber);
-    if (comment) {
-      const parsed = parseComment(comment.body);
-      if (parsed && parsed.issueNumber === issueNumber) {
-        beadsId = parsed.beadsId;
-      }
-    }
-  }
 
   if (!beadsId) {
     return { skipped: true, reason: 'no beads link found' };

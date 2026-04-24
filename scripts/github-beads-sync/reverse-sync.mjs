@@ -42,8 +42,7 @@ function extractCanonicalGitHubLink(issue = {}) {
       };
     }
   }
-
-  return extractGitHubUrl(issue.description);
+  return null;
 }
 
 /**

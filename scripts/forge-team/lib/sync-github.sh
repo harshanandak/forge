@@ -7,7 +7,7 @@
 #   sync_issue_status  <beads-id> <status>    — Update status label on GitHub
 #   sync_issue_close   <beads-id>             — Close GitHub issue
 #   sync_issue_deps    <beads-id-a> <beads-id-b> — Add "Blocked by" comment
-#   _get_github_issue_number <beads-id>       — Extract github_issue from bd show
+#   _get_github_issue_number <beads-id>       — Extract canonical GitHub issue from bd show
 #
 # Env overrides (for testing):
 #   GH_CMD  — Path to gh binary (default: gh)
@@ -73,7 +73,6 @@ _safe_sanitize() {
 
 # ── _get_github_issue_number ─────────────────────────────────────────────
 # Extracts the canonical GitHub issue number from `bd show <id> --json`.
-# Falls back to legacy `github_issue:` state only as a migration bridge.
 # Returns the number or empty string (exit 1 if not found).
 _get_github_issue_number() {
   local beads_id="${1:-}"
@@ -98,8 +97,6 @@ _get_github_issue_number() {
       const issue = Array.isArray(data) ? data[0] : data;
       const value = issue?.github?.number
         ?? issue?.githubNumber
-        ?? issue?.github_issue
-        ?? issue?.githubIssue
         ?? issue?.issueNumber
         ?? null;
       if (value != null && value !== "") {
@@ -109,15 +106,6 @@ _get_github_issue_number() {
       process.exitCode = 0;
     }
   ')"
-
-  if [[ -z "$issue_num" ]]; then
-    local legacy_show_output
-    legacy_show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || {
-      _sync_error "Failed to get beads info for $beads_id"
-      return 1
-    }
-    issue_num="$(printf '%s' "$legacy_show_output" | grep -oP 'github_issue:\K[0-9]+' | head -1)"
-  fi
 
   if [[ -z "$issue_num" ]]; then
     _sync_error "No canonical GitHub number found for $beads_id"
@@ -157,7 +145,6 @@ _get_issue_title() {
 
 # sync_issue_create <beads-id>
 # Creates GitHub issue from Beads issue data.
-# Stores GitHub issue number back via `bd set-state`.
 # Returns 0 on success, 1 on failure.
 sync_issue_create() {
   local beads_id="${1:-}"
@@ -195,12 +182,6 @@ sync_issue_create() {
     _sync_error "Could not extract issue number from: $gh_output"
     return 1
   fi
-
-  # Store issue number in Beads
-  "$bd_cmd" set-state "$beads_id" "github_issue=$issue_num" >/dev/null 2>&1 || {
-    _sync_error "Failed to store github_issue=$issue_num for $beads_id"
-    return 1
-  }
 
   return 0
 }

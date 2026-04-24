@@ -144,12 +144,12 @@ describe('handleBeadsClosed', () => {
     expect(result.closed[0].beadsId).toBe('forge-x');
   });
 
-  test('skips issues without canonical GitHub link data', () => {
+  test('skips issues without canonical GitHub link data even when description still has a legacy URL', () => {
     const closedCalls = [];
     const mockCloseGitHubIssue = (owner, repo, num) => closedCalls.push({ owner, repo, num });
 
-    const oldContent = '{"id":"forge-y","status":"open","github":{"number":null}}';
-    const newContent = '{"id":"forge-y","status":"closed","github":{"number":null}}';
+    const oldContent = '{"id":"forge-y","status":"open","github":{"number":null},"description":"https://github.com/legacy/repo/issues/77"}';
+    const newContent = '{"id":"forge-y","status":"closed","github":{"number":null},"description":"https://github.com/legacy/repo/issues/77"}';
 
     const result = handleBeadsClosed(oldContent, newContent, {
       closeGitHubIssue: mockCloseGitHubIssue,

@@ -95,6 +95,17 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" unexpected="$2" actual="$3"
+  if [[ "$actual" == *"$unexpected"* ]]; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $label (did not expect '$unexpected', got '$actual')"
+  else
+    PASS=$((PASS + 1))
+    echo "  PASS: $label"
+  fi
+}
+
 assert_exit() {
   local label="$1" expected="$2" actual="$3"
   if [[ "$actual" -eq "$expected" ]]; then
@@ -115,8 +126,8 @@ log_contents="$(cat "$log_file")"
 assert_contains "gh issue create called" "issue create" "$log_contents"
 assert_contains "title includes Test Issue" "Test Issue" "$log_contents"
 assert_contains "body includes beads-001" "beads-001" "$log_contents"
-assert_contains "bd set-state called" "set-state" "$log_contents"
-assert_contains "github_issue=42 set" "github_issue=42" "$log_contents"
+assert_not_contains "sync create no longer writes legacy github_issue state" "github_issue=42" "$log_contents"
+assert_not_contains "sync create no longer calls set-state for canonical linkage" "set-state" "$log_contents"
 
 echo
 echo "== Test 2: sync_issue_claim =="
@@ -181,7 +192,34 @@ assert_exit "returns error when no canonical github number" 1 "$rc"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 8: Injection in title sanitized =="
+echo "== Test 8: Legacy github_issue state ignored =="
+cat > "$mock_dir/bd-legacy" << 'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$LOG_FILE"
+case "$1" in
+  show)
+    if [[ "${3:-}" == "--json" ]]; then
+      cat <<'JSON'
+{"id":"beads-legacy","github_issue":43,"shared":{"title":"Legacy Issue"}}
+JSON
+    else
+      echo "o $2 - Legacy Issue"
+      echo "github_issue:43"
+      echo "Title: Legacy Issue"
+    fi
+    ;;
+  set-state) echo "State set" ;;
+esac
+MOCK
+chmod +x "$mock_dir/bd-legacy"
+export BD_CMD="$mock_dir/bd-legacy"
+rc=0
+result="$(_get_github_issue_number "beads-legacy" 2>/dev/null)" || rc=$?
+assert_exit "legacy github_issue is ignored" 1 "$rc"
+export BD_CMD="$mock_dir/bd"
+
+echo
+echo "== Test 9: Injection in title sanitized =="
 cat > "$mock_dir/bd-inject" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"

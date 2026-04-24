@@ -234,7 +234,7 @@ describe('handleClosed', () => {
     expect(bdCloseCalls[0].reason).toContain('#42');
   });
 
-  it('fallback - no mapping, falls back to comment parsing', async () => {
+  it('skips when no canonical link exists even if a sync comment is present', async () => {
     const bdCloseCalls = [];
 
     const opts = makeOptions({
@@ -242,23 +242,21 @@ describe('handleClosed', () => {
         bdClose: (id, reason) => { bdCloseCalls.push({ id, reason }); },
         bdShow: () => 'open',
       },
-      mapping: {
-        getBeadsId: () => null,
-      },
       github: {
-        findSyncComment: () => ({
-          id: 999,
-          body: '<!-- beads-sync:42 -->\n**Beads:** `forge-fromcomment`',
-        }),
+        findSyncComment: () => {
+          throw new Error('sync comment lookup should not be consulted when canonical link is missing');
+        },
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
       },
     });
 
     const result = await handleClosed(makeClosedEvent(), opts);
 
-    expect(result.success).toBe(true);
-    expect(result.beadsId).toBe('forge-fromcomment');
-    expect(bdCloseCalls).toHaveLength(1);
-    expect(bdCloseCalls[0].id).toBe('forge-fromcomment');
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('no beads link found');
+    expect(bdCloseCalls).toHaveLength(0);
   });
 
   it('skips when no beads link found', async () => {
