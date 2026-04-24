@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 import { loadConfig } from './config.mjs';
 import { sanitizeTitle } from './sanitize.mjs';
 import { mapLabels } from './label-mapper.mjs';
+import { readMapping } from './mapping.mjs';
 import { bdCreate as realBdCreate, bdClose as realBdClose, bdShow as realBdShow } from './run-bd.mjs';
 import { buildComment } from './comment.mjs';
 import { createOrEditComment as realCreateOrEditComment } from './github-api.mjs';
@@ -44,21 +45,9 @@ function getGitHubLink(issue = {}) {
   };
 }
 
-function readLegacyMapping(mappingPath) {
-  if (!mappingPath) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(readFileSync(mappingPath, 'utf8'));
-  } catch (_err) {
-    return {};
-  }
-}
-
 function createCanonicalLinkStore(mappingPath) {
   const store = createLinkStore();
-  const mapping = readLegacyMapping(mappingPath);
+  const mapping = mappingPath ? readMapping(mappingPath) : {};
 
   if (Object.keys(mapping).length > 0) {
     bridgeLegacyLinkHints({ mapping }, { store });

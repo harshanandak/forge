@@ -71,6 +71,51 @@ _safe_sanitize() {
   printf '%s' "$input"
 }
 
+_extract_issue_number_from_url() {
+  local input="${1:-}"
+  local suffix="${input##*/issues/}"
+
+  if [[ "$suffix" == "$input" ]]; then
+    return 1
+  fi
+
+  suffix="${suffix%%[^0-9]*}"
+  if [[ -z "$suffix" ]]; then
+    return 1
+  fi
+
+  printf '%s' "$suffix"
+}
+
+_extract_issue_title_from_show() {
+  local input="${1:-}"
+
+  printf '%s' "$input" | node -e '
+    const fs = require("node:fs");
+    const input = fs.readFileSync(0, "utf8");
+    const lines = input.split(/\r?\n/);
+    const titledLine = lines.find((line) => /^Title:\s*/.test(line));
+
+    if (titledLine) {
+      process.stdout.write(titledLine.replace(/^Title:\s*/, "").trim());
+      process.exit(0);
+    }
+
+    const summaryLine = lines.find((line) => line.trim().length > 0);
+    if (!summaryLine) {
+      process.exit(0);
+    }
+
+    const summaryMatch = summaryLine.match(
+      /^[^\-\u00B7\u2022]*(?:\s+-\s+|\s+[\u00B7\u2022]\s+)(.+?)(?:\s+\[[^\]]*\]\s*)?$/u,
+    );
+
+    if (summaryMatch) {
+      process.stdout.write(summaryMatch[1].trimEnd());
+    }
+  '
+}
+
 # ── _get_github_issue_number ─────────────────────────────────────────────
 # Extracts the canonical GitHub issue number from `bd show <id> --json`.
 # Returns the number or empty string (exit 1 if not found).
@@ -126,13 +171,7 @@ _get_issue_title() {
   show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || return 1
 
   local title
-  # Try "Title: ..." line first
-  title="$(printf '%s' "$show_output" | grep -oP '^Title:\s*\K.*' | head -1)"
-
-  if [[ -z "$title" ]]; then
-    # Fallback: extract from summary line "○ <id> · <title> [...]"
-    title="$(printf '%s' "$show_output" | grep -oP '·\s*\K[^\[]+' | head -1 | sed 's/[[:space:]]*$//')"
-  fi
+  title="$(_extract_issue_title_from_show "$show_output")"
 
   if [[ -z "$title" ]]; then
     title="$beads_id"
@@ -176,7 +215,7 @@ sync_issue_create() {
 
   # Extract issue number from URL (e.g., https://github.com/.../issues/42)
   local issue_num
-  issue_num="$(printf '%s' "$gh_output" | grep -oP '/issues/\K[0-9]+' | head -1)"
+  issue_num="$(_extract_issue_number_from_url "$gh_output")"
 
   if [[ -z "$issue_num" ]]; then
     _sync_error "Could not extract issue number from: $gh_output"

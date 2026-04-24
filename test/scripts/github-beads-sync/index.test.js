@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { handleOpened, handleClosed } from '../../../scripts/github-beads-sync/index.mjs';
 
 function makeOpenedEvent(overrides = {}) {
@@ -182,6 +185,23 @@ describe('handleOpened', () => {
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('already synced (canonical link)');
     expect(result.beadsId).toBe('forge-existing');
+  });
+
+  it('throws when the legacy mapping file contains malformed JSON', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-'));
+    const mappingPath = join(tempDir, 'beads-mapping.json');
+    writeFileSync(mappingPath, '{"42":"forge-abc123"', 'utf8');
+    const options = {
+      ...makeOptions(),
+      mappingPath,
+      linkStore: null,
+    };
+
+    try {
+      expect(() => handleOpened(makeOpenedEvent(), options)).toThrow(`Failed to parse mapping file at ${mappingPath}`);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('skips unauthorized author with author_association gate', async () => {

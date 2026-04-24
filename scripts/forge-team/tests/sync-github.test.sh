@@ -7,8 +7,12 @@ TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP" "$mock_dir"' EXIT
 
 mock_dir="$(mktemp -d)"
+portable_bin="$(mktemp -d)"
 log_file="$mock_dir/calls.log"
 touch "$log_file"
+REAL_GREP="$(command -v grep)"
+ORIGINAL_PATH="$PATH"
+export REAL_GREP
 
 cat > "$mock_dir/gh" << 'MOCK'
 #!/usr/bin/env bash
@@ -62,6 +66,20 @@ JSON
 esac
 MOCK
 chmod +x "$mock_dir/bd-no-gh"
+
+cat > "$portable_bin/grep" << 'MOCK'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    -P|--perl-regexp|-*P*)
+      echo "grep: PCRE support disabled for test" >&2
+      exit 2
+      ;;
+  esac
+done
+exec "$REAL_GREP" "$@"
+MOCK
+chmod +x "$portable_bin/grep"
 
 export LOG_FILE="$log_file"
 export GH_CMD="$mock_dir/gh"
@@ -252,6 +270,17 @@ else
   echo "  PASS: injection sanitized - no \$\(rm in gh call"
 fi
 export BD_CMD="$mock_dir/bd"
+
+echo
+echo "== Test 10: sync_issue_create without grep -P =="
+export PATH="$portable_bin:$ORIGINAL_PATH"
+> "$log_file"
+rc=0
+sync_issue_create "beads-001" || rc=$?
+assert_exit "sync_issue_create works when grep -P is unavailable" 0 "$rc"
+log_contents="$(cat "$log_file")"
+assert_contains "gh issue create called without PCRE grep" "issue create" "$log_contents"
+export PATH="$ORIGINAL_PATH"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"
