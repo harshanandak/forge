@@ -283,5 +283,33 @@ assert_contains "gh issue create called without PCRE grep" "issue create" "$log_
 export PATH="$ORIGINAL_PATH"
 
 echo
+echo "== Test 11: sync_issue_create with summary-only bd show =="
+cat > "$mock_dir/bd-summary-only" << 'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$LOG_FILE"
+case "$1" in
+  show)
+    if [[ "${3:-}" == "--json" ]]; then
+      cat <<'JSON'
+{"id":"beads-summary","github":{"number":77,"url":"https://github.com/test/repo/issues/77"},"shared":{"title":"Summary Only Title"}}
+JSON
+    else
+      echo "o $2 - Summary Only Title"
+    fi
+    ;;
+  set-state) echo "State set" ;;
+esac
+MOCK
+chmod +x "$mock_dir/bd-summary-only"
+export BD_CMD="$mock_dir/bd-summary-only"
+> "$log_file"
+rc=0
+sync_issue_create "beads-summary" || rc=$?
+assert_exit "sync_issue_create works with summary-only bd show" 0 "$rc"
+log_contents="$(cat "$log_file")"
+assert_contains "summary-only title is passed to gh issue create" "Summary Only Title" "$log_contents"
+export BD_CMD="$mock_dir/bd"
+
+echo
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

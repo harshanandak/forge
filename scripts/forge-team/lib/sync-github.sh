@@ -106,12 +106,22 @@ _extract_issue_title_from_show() {
       process.exit(0);
     }
 
-    const summaryMatch = summaryLine.match(
-      /^[^\-\u00B7\u2022]*(?:\s+-\s+|\s+[\u00B7\u2022]\s+)(.+?)(?:\s+\[[^\]]*\]\s*)?$/u,
-    );
+    const separators = [" - ", " \u00B7 ", " \u2022 "];
+    for (const separator of separators) {
+      const separatorIndex = summaryLine.indexOf(separator);
+      if (separatorIndex === -1) {
+        continue;
+      }
 
-    if (summaryMatch) {
-      process.stdout.write(summaryMatch[1].trimEnd());
+      const candidate = summaryLine
+        .slice(separatorIndex + separator.length)
+        .replace(/\s+\[[^\]]*\]\s*$/u, "")
+        .trim();
+
+      if (candidate.length > 0) {
+        process.stdout.write(candidate);
+        break;
+      }
     }
   '
 }
