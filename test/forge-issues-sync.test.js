@@ -7,6 +7,7 @@ const { createGitHubProjectionPlan } = require('../lib/issue-sync/project-github
 describe('forge issue write sync', () => {
   test('creates a GitHub projection plan only for shared field writes', () => {
     expect(createGitHubProjectionPlan('update', ['forge-1', '--priority', '2'])).toBeNull();
+    expect(createGitHubProjectionPlan('close', ['--help'])).toBeNull();
 
     expect(createGitHubProjectionPlan('update', ['forge-1', '--title', 'Renamed'])).toEqual({
       operation: 'update',
@@ -74,6 +75,25 @@ describe('forge issue write sync', () => {
     });
 
     expect(result).toEqual({ success: true, output: 'local write ok' });
+    expect(queued).toEqual([]);
+  });
+
+  test('does not queue outbound projections for write help passthrough', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const queued = [];
+
+    const result = await runIssueOperation('close', ['--help'], '/repo', {
+      createService: () => ({
+        async run() {
+          return { success: true, output: 'bd close help output' };
+        },
+      }),
+      enqueueGitHubProjection: projection => {
+        queued.push(projection);
+      },
+    });
+
+    expect(result).toEqual({ success: true, output: 'bd close help output' });
     expect(queued).toEqual([]);
   });
 });
