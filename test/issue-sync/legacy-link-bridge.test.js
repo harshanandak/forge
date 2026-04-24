@@ -16,12 +16,14 @@ describe('legacy link bridge', () => {
       mapping: {
         forgeIssueId: 'forge-nlgg',
         githubNumber: 42,
+        githubNodeId: 'I_kwDOForge42Primary',
       },
       githubIssue: 42,
       syncComments: [
         {
           beadsId: 'forge-nlgg',
           githubNumber: 42,
+          githubNodeId: 'I_kwDOForge42Stale',
           body: 'Synced as gh-42',
         },
         {
@@ -37,14 +39,24 @@ describe('legacy link bridge', () => {
     expect(result.link).toEqual({
       forgeIssueId: 'forge-nlgg',
       github: {
-        nodeId: null,
+        nodeId: 'I_kwDOForge42Primary',
         number: 42,
         url: 'https://github.com/acme/forge/issues/42',
       },
       sources: [
-        { source: 'mapping', githubNumber: 42, forgeIssueId: 'forge-nlgg' },
+        {
+          source: 'mapping',
+          githubNumber: 42,
+          githubNodeId: 'I_kwDOForge42Primary',
+          forgeIssueId: 'forge-nlgg',
+        },
         { source: 'githubIssue', githubNumber: 42, forgeIssueId: 'forge-nlgg' },
-        { source: 'syncComment', githubNumber: 42, forgeIssueId: 'forge-nlgg' },
+        {
+          source: 'syncComment',
+          githubNumber: 42,
+          githubNodeId: 'I_kwDOForge42Stale',
+          forgeIssueId: 'forge-nlgg',
+        },
         { source: 'syncComment', githubNumber: 77, forgeIssueId: 'forge-nlgg' },
         { source: 'externalRef', githubNumber: 42, forgeIssueId: 'forge-nlgg' },
         {
@@ -55,6 +67,14 @@ describe('legacy link bridge', () => {
         },
       ],
       diagnostics: [
+        {
+          type: 'legacy-link-drift',
+          field: 'github.nodeId',
+          selected: { source: 'mapping', value: 'I_kwDOForge42Primary' },
+          conflicts: [
+            { source: 'syncComment', value: 'I_kwDOForge42Stale' },
+          ],
+        },
         {
           type: 'legacy-link-drift',
           field: 'github.number',
