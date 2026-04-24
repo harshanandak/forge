@@ -19,7 +19,9 @@ describe('shared issue authority', () => {
     expect(getFieldAuthority('shared.assignees')).toBe('github');
     expect(getFieldAuthority('shared.labels')).toBe('github');
     expect(getFieldAuthority('shared.milestone')).toBe('github');
+    expect(getFieldAuthority('sync.remoteUpdatedAt')).toBe('github');
     expect(isGitHubOwnedField('shared.title')).toBe(true);
+    expect(isGitHubOwnedField('sync.remoteUpdatedAt')).toBe(true);
     expect(isSharedField('shared.labels')).toBe(true);
   });
 
@@ -34,7 +36,6 @@ describe('shared issue authority', () => {
     expect(getFieldAuthority('forge.stageTransitions')).toBe('forge');
     expect(getFieldAuthority('forge.decisions')).toBe('forge');
     expect(getFieldAuthority('forge.memory')).toBe('forge');
-    expect(getFieldAuthority('sync.remoteUpdatedAt')).toBe('forge');
     expect(getFieldAuthority('sync.pendingOutbound')).toBe('forge');
     expect(getFieldAuthority('sync.drift')).toBe('forge');
     expect(isForgeOwnedField('forge.dependencies')).toBe(true);
