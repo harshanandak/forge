@@ -7,7 +7,6 @@ const { resolveBashCommand } = require('../../test/helpers/bash.js');
 const TEST_ENV_DIR = path.join(__dirname, '..');
 const FIXTURES_DIR = path.join(TEST_ENV_DIR, 'fixtures');
 const SETUP_SCRIPT = path.join(TEST_ENV_DIR, 'automation', 'setup-fixtures.sh');
-const FIXTURE_LOCK_DIR = path.join(FIXTURES_DIR, '.setup-lock');
 
 function sleep(ms) {
 	const end = Date.now() + ms;
@@ -16,45 +15,51 @@ function sleep(ms) {
 	}
 }
 
-function fixturesNeedRepair() {
-	return !fs.existsSync(path.join(FIXTURES_DIR, 'fresh-project', '.git'))
-		|| !fs.existsSync(path.join(FIXTURES_DIR, 'dirty-git', 'uncommitted.txt'))
-		|| !fs.existsSync(path.join(FIXTURES_DIR, 'detached-head', '.git'))
-		|| !fs.existsSync(path.join(FIXTURES_DIR, 'merge-conflict', '.git', 'MERGE_HEAD'))
-		|| fs.existsSync(path.join(FIXTURES_DIR, 'no-git', '.git'))
-		|| !fs.existsSync(path.join(FIXTURES_DIR, 'read-only-dirs', '.claude'));
+function fixturesNeedRepair(fixturesDir) {
+	return !fs.existsSync(path.join(fixturesDir, 'fresh-project', '.git'))
+		|| !fs.existsSync(path.join(fixturesDir, 'dirty-git', 'uncommitted.txt'))
+		|| !fs.existsSync(path.join(fixturesDir, 'detached-head', '.git'))
+		|| !fs.existsSync(path.join(fixturesDir, 'merge-conflict', '.git', 'MERGE_HEAD'))
+		|| fs.existsSync(path.join(fixturesDir, 'no-git', '.git'))
+		|| !fs.existsSync(path.join(fixturesDir, 'read-only-dirs', '.claude'));
 }
 
-function repairFixtures() {
+function repairFixtures(setupScript) {
 	try {
-		fs.chmodSync(SETUP_SCRIPT, 0o755);
+		fs.chmodSync(setupScript, 0o755);
 	} catch (_error) {
 		// Best-effort on platforms that do not support chmod here.
 	}
 
-	execFileSync(resolveBashCommand(), [SETUP_SCRIPT, '--force', '--no-validate'], {
-		cwd: path.dirname(SETUP_SCRIPT),
+	execFileSync(resolveBashCommand(), [setupScript, '--force', '--no-validate'], {
+		cwd: path.dirname(setupScript),
 		stdio: 'pipe',
 	});
 }
 
-function ensureTestFixtures() {
-	if (!fixturesNeedRepair()) {
+function ensureTestFixtures(options = {}) {
+	const fixturesDir = options.fixturesDir ?? FIXTURES_DIR;
+	const setupScript = options.setupScript ?? SETUP_SCRIPT;
+	const lockDir = options.lockDir ?? path.join(fixturesDir, '.setup-lock');
+	const repair = options.repairFixtures ?? (() => repairFixtures(setupScript));
+	const needsRepair = () => fixturesNeedRepair(fixturesDir);
+
+	if (!needsRepair()) {
 		return;
 	}
 
-	fs.mkdirSync(FIXTURES_DIR, { recursive: true });
+	fs.mkdirSync(fixturesDir, { recursive: true });
 	const deadline = Date.now() + 30000;
 
 	while (true) {
 		try {
-			fs.mkdirSync(FIXTURE_LOCK_DIR);
+			fs.mkdirSync(lockDir);
 			break;
 		} catch (error) {
 			if (error.code !== 'EEXIST') {
 				throw error;
 			}
-			if (!fixturesNeedRepair()) {
+			if (!needsRepair()) {
 				return;
 			}
 			if (Date.now() >= deadline) {
@@ -65,14 +70,14 @@ function ensureTestFixtures() {
 	}
 
 	try {
-		if (fixturesNeedRepair()) {
-			repairFixtures();
+		if (needsRepair()) {
+			repair();
 		}
-		if (fixturesNeedRepair()) {
+		if (needsRepair()) {
 			throw new Error('Fixture repair did not restore expected test fixture state');
 		}
 	} finally {
-		fs.rmSync(FIXTURE_LOCK_DIR, { recursive: true, force: true });
+		fs.rmSync(lockDir, { recursive: true, force: true });
 	}
 }
 
