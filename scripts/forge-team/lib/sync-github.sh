@@ -176,11 +176,21 @@ if (!raw) {
 }
 
 const data = JSON.parse(raw);
+let newestIssueNum = null;
 for (const [issueNum, mappedBeadsId] of Object.entries(data)) {
-  if (mappedBeadsId === beadsId) {
-    process.stdout.write(String(issueNum));
-    break;
+  if (mappedBeadsId !== beadsId) {
+    continue;
   }
+  const parsedIssueNum = Number.parseInt(issueNum, 10);
+  if (!Number.isFinite(parsedIssueNum)) {
+    continue;
+  }
+  if (newestIssueNum == null || parsedIssueNum > newestIssueNum) {
+    newestIssueNum = parsedIssueNum;
+  }
+}
+if (newestIssueNum != null) {
+  process.stdout.write(String(newestIssueNum));
 }
 NODE
 }

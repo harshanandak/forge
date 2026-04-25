@@ -414,8 +414,9 @@ describe('handleClosed', () => {
     expect(bdCloseCalls[0].reason).toContain('#42');
   });
 
-  it('skips when no canonical link exists even if a sync comment is present', async () => {
+  it('closes the beads issue when canonical link is missing but a sync comment is present', async () => {
     const bdCloseCalls = [];
+    const upsertCanonicalLinkCalls = [];
 
     const opts = makeOptions({
       bd: {
@@ -423,20 +424,47 @@ describe('handleClosed', () => {
         bdShow: () => 'open',
       },
       github: {
-        findSyncComment: () => {
-          throw new Error('sync comment lookup should not be consulted when canonical link is missing');
-        },
+        findSyncComment: () => ({
+          id: 7,
+          body: buildComment('forge-existing', 42, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-42',
+          }),
+        }),
       },
       linkStore: {
         resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
       },
     });
 
     const result = await handleClosed(makeClosedEvent(), opts);
 
-    expect(result.skipped).toBe(true);
-    expect(result.reason).toBe('no beads link found');
-    expect(bdCloseCalls).toHaveLength(0);
+    expect(result).toMatchObject({
+      success: true,
+      beadsId: 'forge-existing',
+      issueNumber: 42,
+    });
+    expect(upsertCanonicalLinkCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls[0].forgeIssueId).toBe('forge-existing');
+    expect(upsertCanonicalLinkCalls[0].sources).toEqual([
+      {
+        source: 'syncComment',
+        forgeIssueId: 'forge-existing',
+        githubNumber: 42,
+        url: 'https://github.com/owner/repo/issues/42',
+      },
+    ]);
+    expect(bdCloseCalls).toEqual([
+      {
+        id: 'forge-existing',
+        reason: 'Closed via GitHub issue #42',
+      },
+    ]);
   });
 
   it('skips when no beads link found', async () => {

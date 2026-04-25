@@ -239,6 +239,7 @@ export function handleClosed(event, options = {}) {
 
   const bdClose = bd.bdClose ?? realBdClose;
   const bdShow = bd.bdShow ?? realBdShow;
+  const findSyncComment = options.github?.findSyncComment ?? realFindSyncComment;
   const canonicalLinkStore = getCanonicalLinkStore(options);
 
   const issue = event.issue;
@@ -263,6 +264,26 @@ export function handleClosed(event, options = {}) {
     githubNumber: issue.number,
   });
   let beadsId = canonicalLink?.forgeIssueId ?? null;
+
+  if (!beadsId) {
+    const syncCommentLink = parseComment(findSyncComment(options.owner, options.repo, issueNumber)?.body);
+    if (syncCommentLink?.beadsId) {
+      canonicalLinkStore.upsertCanonicalLink({
+        forgeIssueId: syncCommentLink.beadsId,
+        github: getGitHubLink(issue),
+        sources: [
+          {
+            source: 'syncComment',
+            forgeIssueId: syncCommentLink.beadsId,
+            githubNumber: issueNumber,
+            url: issue.html_url ?? null,
+          },
+        ],
+        diagnostics: [],
+      });
+      beadsId = syncCommentLink.beadsId;
+    }
+  }
 
   if (!beadsId) {
     return { skipped: true, reason: 'no beads link found' };

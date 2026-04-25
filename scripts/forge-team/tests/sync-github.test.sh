@@ -217,7 +217,21 @@ assert_eq "mapping fallback returns issue number 77" "77" "$result"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 8: Missing canonical GitHub number =="
+echo "== Test 8: Mapping fallback returns newest issue number =="
+cat > "$mapping_file" << 'JSON'
+{
+  "77": "beads-999",
+  "91": "beads-999",
+  "88": "beads-other"
+}
+JSON
+export BD_CMD="$mock_dir/bd-no-gh"
+result="$(_get_github_issue_number "beads-999")"
+assert_eq "mapping fallback returns newest matching issue number" "91" "$result"
+export BD_CMD="$mock_dir/bd"
+
+echo
+echo "== Test 9: Missing canonical GitHub number =="
 rm -f "$mapping_file"
 export BD_CMD="$mock_dir/bd-no-gh"
 rc=0
@@ -226,7 +240,7 @@ assert_exit "returns error when no canonical github number" 1 "$rc"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 9: Legacy github_issue state fallback =="
+echo "== Test 10: Legacy github_issue state fallback =="
 cat > "$mock_dir/bd-legacy" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
@@ -254,7 +268,7 @@ assert_eq "legacy github_issue returns number" "43" "$result"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 10: Injection in title sanitized =="
+echo "== Test 11: Injection in title sanitized =="
 cat > "$mock_dir/bd-inject" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
