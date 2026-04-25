@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Normalized shared GitHub/Beads issue sync state** (PR #134, forge-nlgg): added canonical link reconciliation and shared import primitives so steady-state GitHub sync and existing-issue import use the same normalized issue contract
+
 ### Fixed
 
 - **Plan file path contract** (forge-ddk3): Unified all references from `.claude/plans/` to `docs/plans/` across all 7 agent directories, tests, and source code
