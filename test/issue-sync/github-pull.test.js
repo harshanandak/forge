@@ -80,9 +80,11 @@ describe('github pull normalization', () => {
     });
   });
 
-  test('normalizes GraphQL connection-shaped assignees and labels', () => {
+  test('normalizes GraphQL identity plus connection-shaped assignees and labels', () => {
     const normalized = normalizeRemoteIssue({
       number: 77,
+      id: 'I_kwDOForge77',
+      url: 'https://github.com/acme/forge/issues/77',
       assignees: {
         edges: [
           { node: { login: 'octocat' } },
@@ -101,8 +103,8 @@ describe('github pull normalization', () => {
     expect(normalized).toEqual({
       github: {
         number: 77,
-        nodeId: null,
-        url: null,
+        nodeId: 'I_kwDOForge77',
+        url: 'https://github.com/acme/forge/issues/77',
       },
       shared: {
         title: '',
