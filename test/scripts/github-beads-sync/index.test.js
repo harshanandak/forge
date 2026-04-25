@@ -69,6 +69,7 @@ function makeMockLinkStore(overrides = {}) {
 }
 
 function makeOptions(overrides = {}) {
+  const linkStoreOverride = overrides.linkStore;
   return {
     configPath: undefined,
     mappingPath: '/tmp/test-mapping.json',
@@ -77,7 +78,12 @@ function makeOptions(overrides = {}) {
     ...overrides,
     bd: makeMockBd(overrides.bd),
     github: makeMockGithub(overrides.github),
-    linkStore: overrides.linkStore === null ? null : makeMockLinkStore(overrides.linkStore),
+    linkStore:
+      linkStoreOverride === null
+        ? null
+        : linkStoreOverride === undefined
+          ? makeMockLinkStore()
+          : linkStoreOverride,
     mapping: makeMockMapping(overrides.mapping),
   };
 }
@@ -159,7 +165,7 @@ describe('handleOpened', () => {
   it('idempotent - canonical link store entry returns skip after repairing the sync comment', async () => {
     const createOrEditCalls = [];
     const opts = makeOptions({
-      linkStore: {
+      linkStore: makeMockLinkStore({
         resolveCanonicalLink: () => ({
           forgeIssueId: 'forge-existing',
           github: {
@@ -168,7 +174,7 @@ describe('handleOpened', () => {
             url: 'https://github.com/testowner/testrepo/issues/42',
           },
         }),
-      },
+      }),
       mapping: {
         getBeadsId: () => { throw new Error('legacy mapping should not be consulted when canonical link exists'); },
         setBeadsId: () => { throw new Error('legacy mapping should not be written when canonical link exists'); },
@@ -324,7 +330,7 @@ describe('handleClosed', () => {
         bdClose: (id, reason) => { bdCloseCalls.push({ id, reason }); },
         bdShow: () => 'open',
       },
-      linkStore: {
+      linkStore: makeMockLinkStore({
         resolveCanonicalLink: () => ({
           forgeIssueId: 'forge-abc123',
           github: {
@@ -333,7 +339,7 @@ describe('handleClosed', () => {
             url: 'https://github.com/testowner/testrepo/issues/42',
           },
         }),
-      },
+      }),
       mapping: {
         getBeadsId: () => { throw new Error('legacy mapping should not be consulted when canonical link exists'); },
       },
@@ -389,7 +395,7 @@ describe('handleClosed', () => {
 
   it('skips when beads issue already closed', async () => {
     const result = await handleClosed(makeClosedEvent(), makeOptions({
-      linkStore: {
+      linkStore: makeMockLinkStore({
         resolveCanonicalLink: () => ({
           forgeIssueId: 'forge-abc123',
           github: {
@@ -398,7 +404,7 @@ describe('handleClosed', () => {
             url: 'https://github.com/testowner/testrepo/issues/42',
           },
         }),
-      },
+      }),
       bd: {
         bdShow: () => 'closed',
         bdClose: () => { throw new Error('should not be called'); },

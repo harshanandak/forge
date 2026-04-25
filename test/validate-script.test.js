@@ -118,7 +118,7 @@ describe('scripts/validate.js runtime', () => {
     writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     const exitCode = main({
-      runCommand(command, args) {
+      runCommand(_command, args) {
         if (args[1] === 'typecheck') {
           return makeResult(0, 'Type check completed\n');
         }
@@ -140,7 +140,7 @@ describe('scripts/validate.js runtime', () => {
     writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     const exitCode = main({
-      runCommand(command, args) {
+      runCommand(_command, args) {
         if (args[1] === 'typecheck') {
           return makeResult(0, 'No TypeScript in project - skipping type check\n');
         }
