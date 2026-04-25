@@ -45,6 +45,10 @@ function extractCanonicalGitHubLink(issue = {}) {
   return null;
 }
 
+function extractPreferredGitHubLink(issue = {}) {
+  return extractCanonicalGitHubLink(issue) ?? extractGitHubUrl(issue.description);
+}
+
 /**
  * Detect Beads issues that transitioned to "closed" status.
  * Only detects transitions: issue must exist in oldLines as non-closed,
@@ -135,7 +139,7 @@ export function handleBeadsClosed(oldContent, newContent, deps = {}) {
   const errors = [];
 
   for (const issue of transitions) {
-    const parsed = extractCanonicalGitHubLink(latestIssues.get(issue.id) ?? issue);
+    const parsed = extractPreferredGitHubLink(latestIssues.get(issue.id) ?? issue);
     if (!parsed) {
       skipped.push({ beadsId: issue.id, reason: 'no GitHub URL' });
       continue;

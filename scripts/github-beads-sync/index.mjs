@@ -105,6 +105,9 @@ export function handleOpened(event, options = {}) {
   const htmlUrl = issue.html_url;
   const body = issue.body ?? '';
   const authorAssociation = issue.author_association;
+  const rawLabelNames = labels.map((l) => (typeof l === 'string' ? l : l.name));
+  const { type, priority } = mapLabels(rawLabelNames, config);
+  const externalRef = `gh-${issueNumber}`;
 
   if (isBot(event.sender?.login)) {
     return { skipped: true, reason: 'bot actor' };
@@ -139,6 +142,12 @@ export function handleOpened(event, options = {}) {
     githubNumber: issue.number,
   });
   if (canonicalLink) {
+    const commentBody = buildComment(canonicalLink.forgeIssueId, issueNumber, {
+      type,
+      priority,
+      externalRef,
+    });
+    createOrEditComment(owner, repo, issueNumber, commentBody);
     return {
       skipped: true,
       reason: 'already synced (canonical link)',
@@ -148,11 +157,6 @@ export function handleOpened(event, options = {}) {
 
   const { sanitized: sanitizedTitle, warnings: titleWarnings } = sanitizeTitle(rawTitle);
   if (titleWarnings.length) console.warn('sanitize:', titleWarnings);
-
-  const rawLabelNames = labels.map((l) => (typeof l === 'string' ? l : l.name));
-  const { type, priority } = mapLabels(rawLabelNames, config);
-
-  const externalRef = `gh-${issueNumber}`;
   const beadsId = bdCreate({
     title: sanitizedTitle,
     type,

@@ -109,4 +109,48 @@ describe('scripts/validate.js runtime', () => {
       ['node', 'scripts/test.js', '--validate'],
     ]);
   });
+
+  test('reports a successful type check when the command actually ran', () => {
+    const logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+    writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const exitCode = main({
+      runCommand(command, args) {
+        if (args[1] === 'typecheck') {
+          return makeResult(0, 'Type check completed\n');
+        }
+        return makeResult(0);
+      },
+      bunCommand: 'bun-test',
+    });
+
+    expect(exitCode).toBe(0);
+    expect(logs.some(entry => entry.includes('Type check passed'))).toBe(true);
+    expect(logs.some(entry => entry.includes('SKIPPED (no TypeScript in project)'))).toBe(false);
+  });
+
+  test('reports skipped type check only when bun says the project has no TypeScript', () => {
+    const logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+    writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const exitCode = main({
+      runCommand(command, args) {
+        if (args[1] === 'typecheck') {
+          return makeResult(0, 'No TypeScript in project - skipping type check\n');
+        }
+        return makeResult(0);
+      },
+      bunCommand: 'bun-test',
+    });
+
+    expect(exitCode).toBe(0);
+    expect(logs.some(entry => entry.includes('SKIPPED (no TypeScript in project)'))).toBe(true);
+    expect(logs.some(entry => entry.includes('Type check passed'))).toBe(false);
+  });
 });

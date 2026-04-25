@@ -56,12 +56,23 @@ function main(options = {}) {
   console.log(color('0;34', '╚═══════════════════════════════════════════╝'));
 
   printHeader('1/4: Type Check');
-  const typecheck = runCommand(activeBunCommand, ['run', 'typecheck']);
+  const typecheck = runCommand(activeBunCommand, ['run', 'typecheck'], { captureOutput: true });
+  const typecheckOutput = combinedOutput(typecheck);
+  if (typecheckOutput) {
+    process.stdout.write(typecheckOutput);
+    if (!typecheckOutput.endsWith('\n')) {
+      process.stdout.write('\n');
+    }
+  }
   if ((typecheck.status ?? 1) !== 0) {
     printStatus('error', 'Type check failed');
     return 1;
   }
-  printStatus('warning', 'SKIPPED (no TypeScript in project)');
+  if (/no typescript in project|skipping type check/i.test(typecheckOutput)) {
+    printStatus('warning', 'SKIPPED (no TypeScript in project)');
+  } else {
+    printStatus('success', 'Type check passed');
+  }
 
   printHeader('2/4: Lint');
   const lint = runCommand(activeBunCommand, ['run', 'lint']);

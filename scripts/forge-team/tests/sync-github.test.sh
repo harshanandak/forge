@@ -85,6 +85,7 @@ export LOG_FILE="$log_file"
 export GH_CMD="$mock_dir/gh"
 export BD_CMD="$mock_dir/bd"
 export TEAM_MAP_ROOT="$TEST_TMP"
+mapping_file="$TEAM_MAP_ROOT/.github/beads-mapping.json"
 
 source "$SCRIPT_DIR/lib/sync-github.sh"
 
@@ -146,6 +147,7 @@ assert_contains "title includes Test Issue" "Test Issue" "$log_contents"
 assert_contains "body includes beads-001" "beads-001" "$log_contents"
 assert_not_contains "sync create no longer writes legacy github_issue state" "github_issue=42" "$log_contents"
 assert_not_contains "sync create no longer calls set-state for canonical linkage" "set-state" "$log_contents"
+assert_contains "sync create persists mapping entry" '"42": "beads-001"' "$(cat "$mapping_file")"
 
 echo
 echo "== Test 2: sync_issue_claim =="
@@ -202,7 +204,21 @@ log_contents="$(cat "$log_file")"
 assert_contains "_get_github_issue_number uses JSON" "--json" "$log_contents"
 
 echo
-echo "== Test 7: Missing canonical GitHub number =="
+echo "== Test 7: Mapping fallback when canonical GitHub number missing =="
+mkdir -p "$(dirname "$mapping_file")"
+cat > "$mapping_file" << 'JSON'
+{
+  "77": "beads-999"
+}
+JSON
+export BD_CMD="$mock_dir/bd-no-gh"
+result="$(_get_github_issue_number "beads-999")"
+assert_eq "mapping fallback returns issue number 77" "77" "$result"
+export BD_CMD="$mock_dir/bd"
+
+echo
+echo "== Test 8: Missing canonical GitHub number =="
+rm -f "$mapping_file"
 export BD_CMD="$mock_dir/bd-no-gh"
 rc=0
 result="$(_get_github_issue_number "beads-999" 2>/dev/null)" || rc=$?
@@ -210,7 +226,7 @@ assert_exit "returns error when no canonical github number" 1 "$rc"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 8: Legacy github_issue state ignored =="
+echo "== Test 9: Legacy github_issue state ignored =="
 cat > "$mock_dir/bd-legacy" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
@@ -237,7 +253,7 @@ assert_exit "legacy github_issue is ignored" 1 "$rc"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 9: Injection in title sanitized =="
+echo "== Test 10: Injection in title sanitized =="
 cat > "$mock_dir/bd-inject" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
@@ -272,7 +288,7 @@ fi
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 10: sync_issue_create without grep -P =="
+echo "== Test 11: sync_issue_create without grep -P =="
 export PATH="$portable_bin:$ORIGINAL_PATH"
 > "$log_file"
 rc=0
@@ -283,7 +299,7 @@ assert_contains "gh issue create called without PCRE grep" "issue create" "$log_
 export PATH="$ORIGINAL_PATH"
 
 echo
-echo "== Test 11: sync_issue_create with summary-only bd show =="
+echo "== Test 12: sync_issue_create with summary-only bd show =="
 cat > "$mock_dir/bd-summary-only" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"

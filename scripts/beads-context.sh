@@ -71,11 +71,30 @@ convert_windows_path() {
   printf '/mnt/%s%s' "$drive" "$rest"
 }
 
+is_runnable_bd_candidate() {
+  local candidate="${1:-}"
+
+  if [[ -z "$candidate" || ! -f "$candidate" ]]; then
+    return 1
+  fi
+
+  [[ -x "$candidate" || "$candidate" == *.exe ]]
+}
+
 resolve_bd_cmd() {
   local candidate=""
   local converted=""
 
   if [[ -n "${BD_CMD:-}" ]]; then
+    if [[ "${BD_CMD}" == *"/"* || "${BD_CMD}" == *"\\"* ]]; then
+      converted="$(convert_windows_path "$BD_CMD")"
+      if is_runnable_bd_candidate "$converted"; then
+        printf '%s' "$converted"
+        return 0
+      fi
+
+      is_runnable_bd_candidate "$BD_CMD" || return 1
+    fi
     printf '%s' "$BD_CMD"
     return 0
   fi
@@ -96,7 +115,7 @@ resolve_bd_cmd() {
     "$HOME/.bun/bin/bd" \
     "$HOME/.bun/bin/bd.exe"
   do
-    if [[ -n "$candidate" && ( -f "$candidate" || -x "$candidate" ) ]]; then
+    if is_runnable_bd_candidate "$candidate"; then
       printf '%s' "$candidate"
       return 0
     fi
@@ -108,12 +127,12 @@ resolve_bd_cmd() {
       [[ -z "$candidate" ]] && continue
 
       converted="$(convert_windows_path "$candidate")"
-      if [[ -n "$converted" && ( -f "$converted" || -x "$converted" ) ]]; then
+      if is_runnable_bd_candidate "$converted"; then
         printf '%s' "$converted"
         return 0
       fi
 
-      if [[ -f "$candidate" || -x "$candidate" ]]; then
+      if is_runnable_bd_candidate "$candidate"; then
         printf '%s' "$candidate"
         return 0
       fi
@@ -123,13 +142,23 @@ resolve_bd_cmd() {
   return 1
 }
 
-BD="$(resolve_bd_cmd)" || die "bd is required but not found"
+BD=""
+
+get_bd_cmd() {
+  if [[ -z "$BD" ]]; then
+    BD="$(resolve_bd_cmd)" || die "bd is required but not found"
+  fi
+
+  printf '%s' "$BD"
+}
 
 # Run bd update and check for errors in both exit code and output.
 # bd update exits 0 even for non-existent issues, so we check stdout too.
 bd_update() {
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
   local output
-  output="$("$BD" update "$@" 2>&1)"
+  output="$("$bd_cmd" update "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -150,8 +179,10 @@ bd_update() {
 
 # Run bd comments add and check for errors similarly.
 bd_comment() {
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
   local output
-  output="$("$BD" comments add "$@" 2>&1)"
+  output="$("$bd_cmd" comments add "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -256,10 +287,12 @@ cmd_parse_progress() {
   fi
 
   local issue_id="$1"
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
 
   # Get the issue JSON — detect non-existent issues
   local json
-  json="$("$BD" show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
+  json="$("$bd_cmd" show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
 
   # bd show may exit 0 but print an error for non-existent issues
   # Match specific bd error patterns, not the word "error" in data fields
@@ -404,10 +437,12 @@ cmd_validate() {
 
   local issue_id="$1"
   local warnings=0
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
 
   # Get issue JSON
   local json
-  json="$("$BD" show "$issue_id" --json 2>&1)" || {
+  json="$("$bd_cmd" show "$issue_id" --json 2>&1)" || {
     echo "Error: Failed to retrieve issue ${issue_id}" >&2
     exit 1
   }
@@ -441,7 +476,7 @@ cmd_validate() {
 
   # Get comments to check for stage transitions
   local comments
-  comments="$("$BD" comments "$issue_id" 2>/dev/null || true)"
+  comments="$("$bd_cmd" comments "$issue_id" 2>/dev/null || true)"
 
   # Check 2: At least one stage transition exists
   local has_transition=false

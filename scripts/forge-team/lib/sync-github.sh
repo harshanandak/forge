@@ -126,6 +126,65 @@ _extract_issue_title_from_show() {
   '
 }
 
+_sync_mapping_file() {
+  local root="${TEAM_MAP_ROOT:-.}"
+  printf '%s' "${SYNC_MAPPING_FILE:-$root/.github/beads-mapping.json}"
+}
+
+_persist_issue_mapping() {
+  local beads_id="${1:-}"
+  local issue_num="${2:-}"
+  local mapping_file
+  mapping_file="$(_sync_mapping_file)"
+
+  node - "$mapping_file" "$issue_num" "$beads_id" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [mappingPath, issueNum, beadsId] = process.argv.slice(2);
+let data = {};
+
+if (fs.existsSync(mappingPath)) {
+  const raw = fs.readFileSync(mappingPath, 'utf8').trim();
+  if (raw) {
+    data = JSON.parse(raw);
+  }
+}
+
+fs.mkdirSync(path.dirname(mappingPath), { recursive: true });
+data[String(issueNum)] = beadsId;
+fs.writeFileSync(mappingPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+NODE
+}
+
+_get_issue_number_from_mapping() {
+  local beads_id="${1:-}"
+  local mapping_file
+  mapping_file="$(_sync_mapping_file)"
+
+  node - "$mapping_file" "$beads_id" <<'NODE'
+const fs = require('node:fs');
+
+const [mappingPath, beadsId] = process.argv.slice(2);
+if (!fs.existsSync(mappingPath)) {
+  process.exit(0);
+}
+
+const raw = fs.readFileSync(mappingPath, 'utf8').trim();
+if (!raw) {
+  process.exit(0);
+}
+
+const data = JSON.parse(raw);
+for (const [issueNum, mappedBeadsId] of Object.entries(data)) {
+  if (mappedBeadsId === beadsId) {
+    process.stdout.write(String(issueNum));
+    break;
+  }
+}
+NODE
+}
+
 # ── _get_github_issue_number ─────────────────────────────────────────────
 # Extracts the canonical GitHub issue number from `bd show <id> --json`.
 # Returns the number or empty string (exit 1 if not found).
@@ -161,6 +220,10 @@ _get_github_issue_number() {
       process.exitCode = 0;
     }
   ')"
+
+  if [[ -z "$issue_num" ]]; then
+    issue_num="$(_get_issue_number_from_mapping "$beads_id" 2>/dev/null || true)"
+  fi
 
   if [[ -z "$issue_num" ]]; then
     _sync_error "No canonical GitHub number found for $beads_id"
@@ -229,6 +292,11 @@ sync_issue_create() {
 
   if [[ -z "$issue_num" ]]; then
     _sync_error "Could not extract issue number from: $gh_output"
+    return 1
+  fi
+
+  if ! _persist_issue_mapping "$beads_id" "$issue_num"; then
+    _sync_error "Failed to persist GitHub link for $beads_id"
     return 1
   fi
 

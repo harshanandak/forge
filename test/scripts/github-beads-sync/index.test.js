@@ -156,7 +156,8 @@ describe('handleOpened', () => {
     expect(result.reason).toBe('no-beads in body');
   });
 
-  it('idempotent - canonical link store entry returns skip', async () => {
+  it('idempotent - canonical link store entry returns skip after repairing the sync comment', async () => {
+    const createOrEditCalls = [];
     const opts = makeOptions({
       linkStore: {
         resolveCanonicalLink: () => ({
@@ -173,8 +174,9 @@ describe('handleOpened', () => {
         setBeadsId: () => { throw new Error('legacy mapping should not be written when canonical link exists'); },
       },
       github: {
-        findSyncComment: () => { throw new Error('sync comment lookup should not be needed when canonical link exists'); },
-        createOrEditComment: () => { throw new Error('sync comment repair should not be needed when canonical link exists'); },
+        createOrEditComment: (owner, repo, num, body) => {
+          createOrEditCalls.push({ owner, repo, num, body });
+        },
       },
       bd: {
         bdCreate: () => { throw new Error('bdCreate should not be called for canonical duplicates'); },
@@ -186,6 +188,9 @@ describe('handleOpened', () => {
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('already synced (canonical link)');
     expect(result.beadsId).toBe('forge-existing');
+    expect(createOrEditCalls).toHaveLength(1);
+    expect(createOrEditCalls[0].num).toBe(42);
+    expect(createOrEditCalls[0].body).toContain('forge-existing');
   });
 
   it('throws when the legacy mapping file contains malformed JSON', () => {
