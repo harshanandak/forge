@@ -467,6 +467,42 @@ describe('handleClosed', () => {
     ]);
   });
 
+  it('skips when the sync comment points at a different GitHub issue number', async () => {
+    const bdCloseCalls = [];
+    const upsertCanonicalLinkCalls = [];
+
+    const opts = makeOptions({
+      bd: {
+        bdClose: (id, reason) => { bdCloseCalls.push({ id, reason }); },
+        bdShow: () => 'open',
+      },
+      github: {
+        findSyncComment: () => ({
+          id: 7,
+          body: buildComment('forge-existing', 99, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-99',
+          }),
+        }),
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
+      },
+    });
+
+    const result = await handleClosed(makeClosedEvent(), opts);
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('no beads link found');
+    expect(upsertCanonicalLinkCalls).toHaveLength(0);
+    expect(bdCloseCalls).toHaveLength(0);
+  });
+
   it('skips when no beads link found', async () => {
     const result = await handleClosed(makeClosedEvent(), makeOptions({
       mapping: { getBeadsId: () => null },

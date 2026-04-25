@@ -267,7 +267,7 @@ export function handleClosed(event, options = {}) {
 
   if (!beadsId) {
     const syncCommentLink = parseComment(findSyncComment(options.owner, options.repo, issueNumber)?.body);
-    if (syncCommentLink?.beadsId) {
+    if (syncCommentLink?.beadsId && syncCommentLink.issueNumber === issueNumber) {
       canonicalLinkStore.upsertCanonicalLink({
         forgeIssueId: syncCommentLink.beadsId,
         github: getGitHubLink(issue),

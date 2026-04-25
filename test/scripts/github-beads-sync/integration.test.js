@@ -196,8 +196,8 @@ describe('integration: full closed pipeline', () => {
 // Integration: Closed with missing canonical link
 // ===========================================================================
 describe('integration: closed without canonical link', () => {
-  it('skips when no canonical link exists, even if a sync comment is available', async () => {
-    const { options, bdCalls } = makeTrackedOptions({
+  it('closes when no canonical link exists but a matching sync comment is available', async () => {
+    const { options, bdCalls, linkStoreCalls } = makeTrackedOptions({
       linkStore: {
         resolveCanonicalLink: () => null,
       },
@@ -211,8 +211,39 @@ describe('integration: closed without canonical link', () => {
 
     const result = await handleClosed(issueClosedFixture, options);
 
+    expect(result).toMatchObject({
+      success: true,
+      beadsId: 'forge-fromcomment',
+      issueNumber: 42,
+    });
+    expect(linkStoreCalls.upsert).toHaveLength(1);
+    expect(linkStoreCalls.upsert[0].forgeIssueId).toBe('forge-fromcomment');
+    expect(bdCalls.close).toEqual([
+      {
+        id: 'forge-fromcomment',
+        reason: 'Closed via GitHub issue #42',
+      },
+    ]);
+  });
+
+  it('skips when a sync comment exists but its tagged issue number does not match the closed issue', async () => {
+    const { options, bdCalls, linkStoreCalls } = makeTrackedOptions({
+      linkStore: {
+        resolveCanonicalLink: () => null,
+      },
+      github: {
+        findSyncComment: () => ({
+          id: 12345,
+          body: '<!-- beads-sync:99 -->\n**Beads:** `forge-fromcomment`\n<details>\n<summary>Sync details</summary>\n\n- Type: feature\n- Priority: 1\n- External ref: gh-99\n- Synced: 2026-03-21T00:00:00.000Z\n\n</details>',
+        }),
+      },
+    });
+
+    const result = await handleClosed(issueClosedFixture, options);
+
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('no beads link found');
+    expect(linkStoreCalls.upsert).toHaveLength(0);
     expect(bdCalls.close).toHaveLength(0);
   });
 });
