@@ -4,6 +4,7 @@
 const { describe, test } = require('bun:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const { ensureTestFixtures, FIXTURES_DIR } = require('../helpers/fixtures.js');
 
 // Import validation helpers from Phase 1
 const {
@@ -13,8 +14,7 @@ const {
   hasMergeConflict
 } = require('../validation/git-state-checker.js');
 
-// Fixtures directory
-const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
+ensureTestFixtures();
 
 describe('git-state-edge-cases', () => {
   describe('Detached HEAD (Warning)', () => {

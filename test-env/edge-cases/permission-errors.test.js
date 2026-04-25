@@ -7,10 +7,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-
-const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
+const { ensureTestFixtures, FIXTURES_DIR } = require('../helpers/fixtures.js');
 
 let testDir;
+
+ensureTestFixtures();
 
 before(() => {
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-permissions-'));
