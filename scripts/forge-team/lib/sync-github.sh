@@ -212,6 +212,7 @@ _get_github_issue_number() {
       const value = issue?.github?.number
         ?? issue?.githubNumber
         ?? issue?.issueNumber
+        ?? issue?.github_issue
         ?? null;
       if (value != null && value !== "") {
         process.stdout.write(String(value));

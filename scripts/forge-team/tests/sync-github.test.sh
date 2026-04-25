@@ -226,7 +226,7 @@ assert_exit "returns error when no canonical github number" 1 "$rc"
 export BD_CMD="$mock_dir/bd"
 
 echo
-echo "== Test 9: Legacy github_issue state ignored =="
+echo "== Test 9: Legacy github_issue state fallback =="
 cat > "$mock_dir/bd-legacy" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
@@ -249,7 +249,8 @@ chmod +x "$mock_dir/bd-legacy"
 export BD_CMD="$mock_dir/bd-legacy"
 rc=0
 result="$(_get_github_issue_number "beads-legacy" 2>/dev/null)" || rc=$?
-assert_exit "legacy github_issue is ignored" 1 "$rc"
+assert_exit "legacy github_issue exits successfully" 0 "$rc"
+assert_eq "legacy github_issue returns number" "43" "$result"
 export BD_CMD="$mock_dir/bd"
 
 echo

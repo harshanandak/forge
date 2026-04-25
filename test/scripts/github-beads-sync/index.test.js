@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { buildComment } from '../../../scripts/github-beads-sync/comment.mjs';
 import { handleOpened, handleClosed } from '../../../scripts/github-beads-sync/index.mjs';
 import { readMapping } from '../../../scripts/github-beads-sync/mapping.mjs';
 
@@ -194,6 +195,61 @@ describe('handleOpened', () => {
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('already synced (canonical link)');
     expect(result.beadsId).toBe('forge-existing');
+    expect(createOrEditCalls).toHaveLength(1);
+    expect(createOrEditCalls[0].num).toBe(42);
+    expect(createOrEditCalls[0].body).toContain('forge-existing');
+  });
+
+  it('repairs canonical link from an existing sync comment before creating a duplicate beads issue', async () => {
+    const createOrEditCalls = [];
+    const upsertCanonicalLinkCalls = [];
+    const opts = makeOptions({
+      bd: {
+        bdCreate: () => { throw new Error('bdCreate should not be called when a sync comment already exists'); },
+      },
+      github: {
+        findSyncComment: () => ({
+          id: 7,
+          body: buildComment('forge-existing', 42, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-42',
+          }),
+        }),
+        createOrEditComment: (owner, repo, num, body) => {
+          createOrEditCalls.push({ owner, repo, num, body });
+        },
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
+      },
+      mapping: {
+        getBeadsId: () => { throw new Error('legacy mapping should not be consulted when a sync comment already exists'); },
+        setBeadsId: () => { throw new Error('legacy mapping should not be written when a sync comment already exists'); },
+      },
+    });
+
+    const result = await handleOpened(makeOpenedEvent(), opts);
+
+    expect(result).toMatchObject({
+      skipped: true,
+      reason: 'already synced (sync comment)',
+      beadsId: 'forge-existing',
+    });
+    expect(upsertCanonicalLinkCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls[0].forgeIssueId).toBe('forge-existing');
+    expect(upsertCanonicalLinkCalls[0].sources).toEqual([
+      {
+        source: 'syncComment',
+        forgeIssueId: 'forge-existing',
+        githubNumber: 42,
+        url: 'https://github.com/owner/repo/issues/42',
+      },
+    ]);
     expect(createOrEditCalls).toHaveLength(1);
     expect(createOrEditCalls[0].num).toBe(42);
     expect(createOrEditCalls[0].body).toContain('forge-existing');

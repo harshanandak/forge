@@ -12,8 +12,8 @@ import { sanitizeTitle } from './sanitize.mjs';
 import { mapLabels } from './label-mapper.mjs';
 import { resolveCanonicalBeadsLink, upsertCanonicalBeadsLink } from './mapping.mjs';
 import { bdCreate as realBdCreate, bdClose as realBdClose, bdShow as realBdShow } from './run-bd.mjs';
-import { buildComment } from './comment.mjs';
-import { createOrEditComment as realCreateOrEditComment } from './github-api.mjs';
+import { buildComment, parseComment } from './comment.mjs';
+import { createOrEditComment as realCreateOrEditComment, findSyncComment as realFindSyncComment } from './github-api.mjs';
 
 const DEFAULT_MAPPING_PATH = '.github/beads-mapping.json';
 
@@ -90,6 +90,7 @@ export function handleOpened(event, options = {}) {
 
   const bdCreate = bd.bdCreate ?? realBdCreate;
   const createOrEditComment = github.createOrEditComment ?? realCreateOrEditComment;
+  const findSyncComment = github.findSyncComment ?? realFindSyncComment;
   const canonicalLinkStore = getCanonicalLinkStore(options);
 
   let config = loadConfig(configPath);
@@ -152,6 +153,34 @@ export function handleOpened(event, options = {}) {
       skipped: true,
       reason: 'already synced (canonical link)',
       beadsId: canonicalLink.forgeIssueId,
+    };
+  }
+
+  const existingSyncComment = parseComment(findSyncComment(owner, repo, issueNumber)?.body);
+  if (existingSyncComment?.beadsId) {
+    canonicalLinkStore.upsertCanonicalLink({
+      forgeIssueId: existingSyncComment.beadsId,
+      github: getGitHubLink(issue),
+      sources: [
+        {
+          source: 'syncComment',
+          forgeIssueId: existingSyncComment.beadsId,
+          githubNumber: issueNumber,
+          url: htmlUrl,
+        },
+      ],
+      diagnostics: [],
+    });
+    const commentBody = buildComment(existingSyncComment.beadsId, issueNumber, {
+      type,
+      priority,
+      externalRef,
+    });
+    createOrEditComment(owner, repo, issueNumber, commentBody);
+    return {
+      skipped: true,
+      reason: 'already synced (sync comment)',
+      beadsId: existingSyncComment.beadsId,
     };
   }
 
