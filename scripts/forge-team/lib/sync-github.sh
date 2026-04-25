@@ -257,6 +257,8 @@ _get_issue_title() {
 
 # sync_issue_create <beads-id>
 # Creates GitHub issue from Beads issue data.
+# Persists both the canonical mapping file and the legacy github_issue state
+# until downstream hook and verify flows stop reading bd show output.
 # Returns 0 on success, 1 on failure.
 sync_issue_create() {
   local beads_id="${1:-}"
@@ -297,6 +299,11 @@ sync_issue_create() {
 
   if ! _persist_issue_mapping "$beads_id" "$issue_num"; then
     _sync_error "Failed to persist GitHub link for $beads_id"
+    return 1
+  fi
+
+  if ! "$bd_cmd" set-state "$beads_id" "github_issue=$issue_num" >/dev/null 2>&1; then
+    _sync_error "Failed to store github_issue=$issue_num for $beads_id"
     return 1
   fi
 

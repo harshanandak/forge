@@ -145,8 +145,8 @@ log_contents="$(cat "$log_file")"
 assert_contains "gh issue create called" "issue create" "$log_contents"
 assert_contains "title includes Test Issue" "Test Issue" "$log_contents"
 assert_contains "body includes beads-001" "beads-001" "$log_contents"
-assert_not_contains "sync create no longer writes legacy github_issue state" "github_issue=42" "$log_contents"
-assert_not_contains "sync create no longer calls set-state for canonical linkage" "set-state" "$log_contents"
+assert_contains "sync create writes legacy github_issue state" "github_issue=42" "$log_contents"
+assert_contains "sync create calls set-state for hook compatibility" "set-state" "$log_contents"
 assert_contains "sync create persists mapping entry" '"42": "beads-001"' "$(cat "$mapping_file")"
 
 echo
