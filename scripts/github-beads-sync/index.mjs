@@ -7,22 +7,15 @@
 
 import { readFileSync, appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import { loadConfig } from './config.mjs';
 import { sanitizeTitle } from './sanitize.mjs';
 import { mapLabels } from './label-mapper.mjs';
-import { readMapping } from './mapping.mjs';
+import { resolveCanonicalBeadsLink, upsertCanonicalBeadsLink } from './mapping.mjs';
 import { bdCreate as realBdCreate, bdClose as realBdClose, bdShow as realBdShow } from './run-bd.mjs';
 import { buildComment } from './comment.mjs';
 import { createOrEditComment as realCreateOrEditComment } from './github-api.mjs';
 
-const require = createRequire(import.meta.url);
-const {
-  createLinkStore,
-  resolveCanonicalLink: resolveLinkInStore,
-  upsertCanonicalLink: upsertLinkInStore,
-} = require('../../lib/issue-sync/link-store.js');
-const { bridgeLegacyLinkHints } = require('../../lib/issue-sync/legacy-link-bridge.js');
+const DEFAULT_MAPPING_PATH = '.github/beads-mapping.json';
 
 function isBot(login) {
   if (!login) return false;
@@ -46,45 +39,25 @@ function getGitHubLink(issue = {}) {
 }
 
 function createCanonicalLinkStore(mappingPath) {
-  const store = createLinkStore();
-  const mapping = mappingPath ? readMapping(mappingPath) : {};
-
-  if (Object.keys(mapping).length > 0) {
-    bridgeLegacyLinkHints({ mapping }, { store });
-  }
-
   return {
     resolveCanonicalLink(lookup) {
-      return resolveLinkInStore(store, lookup);
+      return resolveCanonicalBeadsLink(mappingPath, lookup);
     },
     upsertCanonicalLink(link) {
-      return upsertLinkInStore(store, link);
+      return upsertCanonicalBeadsLink(mappingPath, link);
     },
   };
 }
 
 function getCanonicalLinkStore(options = {}) {
-  const defaultStore = createCanonicalLinkStore(options.mappingPath ?? '.github/beads-mapping.json');
+  const defaultStore = createCanonicalLinkStore(options.mappingPath ?? DEFAULT_MAPPING_PATH);
 
   if (
     options.linkStore &&
-    (typeof options.linkStore.resolveCanonicalLink === 'function' ||
-      typeof options.linkStore.upsertCanonicalLink === 'function')
+    typeof options.linkStore.resolveCanonicalLink === 'function' &&
+    typeof options.linkStore.upsertCanonicalLink === 'function'
   ) {
-    return {
-      resolveCanonicalLink(lookup) {
-        if (typeof options.linkStore.resolveCanonicalLink === 'function') {
-          return options.linkStore.resolveCanonicalLink(lookup);
-        }
-        return defaultStore.resolveCanonicalLink(lookup);
-      },
-      upsertCanonicalLink(link) {
-        if (typeof options.linkStore.upsertCanonicalLink === 'function') {
-          return options.linkStore.upsertCanonicalLink(link);
-        }
-        return defaultStore.upsertCanonicalLink(link);
-      },
-    };
+    return options.linkStore;
   }
 
   return defaultStore;
@@ -291,7 +264,7 @@ if (process.argv[1] === __filename) {
 
   const options = {
     configPath: process.env.BEADS_SYNC_CONFIG || undefined,
-    mappingPath: process.env.BEADS_SYNC_MAPPING || '.github/beads-mapping.json',
+    mappingPath: process.env.BEADS_SYNC_MAPPING || DEFAULT_MAPPING_PATH,
     owner,
     repo,
   };

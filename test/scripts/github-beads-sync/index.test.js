@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { handleOpened, handleClosed } from '../../../scripts/github-beads-sync/index.mjs';
+import { readMapping } from '../../../scripts/github-beads-sync/mapping.mjs';
 
 function makeOpenedEvent(overrides = {}) {
   return {
@@ -73,11 +74,11 @@ function makeOptions(overrides = {}) {
     mappingPath: '/tmp/test-mapping.json',
     owner: 'testowner',
     repo: 'testrepo',
+    ...overrides,
     bd: makeMockBd(overrides.bd),
     github: makeMockGithub(overrides.github),
-    linkStore: makeMockLinkStore(overrides.linkStore),
+    linkStore: overrides.linkStore === null ? null : makeMockLinkStore(overrides.linkStore),
     mapping: makeMockMapping(overrides.mapping),
-    ...overrides,
   };
 }
 
@@ -199,6 +200,98 @@ describe('handleOpened', () => {
 
     try {
       expect(() => handleOpened(makeOpenedEvent(), options)).toThrow(`Failed to parse mapping file at ${mappingPath}`);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists canonical links into the legacy mapping file for default webhook runs', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-default-store-'));
+    const mappingPath = join(tempDir, 'beads-mapping.json');
+    const bdCloseCalls = [];
+
+    try {
+      const opened = await handleOpened(
+        makeOpenedEvent(),
+        {
+          ...makeOptions(),
+          mappingPath,
+          linkStore: null,
+          bd: makeMockBd({
+            bdCreate: () => 'forge-abc123',
+          }),
+          github: makeMockGithub({
+            createOrEditComment: () => {},
+          }),
+        },
+      );
+
+      expect(opened).toMatchObject({
+        success: true,
+        beadsId: 'forge-abc123',
+        issueNumber: 42,
+      });
+      expect(readMapping(mappingPath)).toEqual({
+        42: 'forge-abc123',
+      });
+
+      const closed = await handleClosed(
+        makeClosedEvent(),
+        {
+          ...makeOptions(),
+          mappingPath,
+          linkStore: null,
+          bd: makeMockBd({
+            bdShow: () => 'open',
+            bdClose: (id, reason) => {
+              bdCloseCalls.push({ id, reason });
+            },
+          }),
+        },
+      );
+
+      expect(closed).toMatchObject({
+        success: true,
+        beadsId: 'forge-abc123',
+        issueNumber: 42,
+      });
+      expect(bdCloseCalls).toEqual([
+        {
+          id: 'forge-abc123',
+          reason: 'Closed via GitHub issue #42',
+        },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores partial injected link stores and falls back to the durable default store', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-partial-store-'));
+    const mappingPath = join(tempDir, 'beads-mapping.json');
+
+    try {
+      const result = await handleOpened(
+        makeOpenedEvent(),
+        {
+          ...makeOptions(),
+          mappingPath,
+          linkStore: {
+            resolveCanonicalLink: () => null,
+          },
+          bd: makeMockBd({
+            bdCreate: () => 'forge-abc123',
+          }),
+          github: makeMockGithub({
+            createOrEditComment: () => {},
+          }),
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(readMapping(mappingPath)).toEqual({
+        42: 'forge-abc123',
+      });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

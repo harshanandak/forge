@@ -47,14 +47,16 @@ function combinedOutput(result) {
   return [result.stdout, result.stderr].filter(Boolean).join('');
 }
 
-function main() {
+function main(options = {}) {
+  const runCommand = options.runCommand ?? run;
+  const activeBunCommand = options.bunCommand ?? bunCommand;
   console.log('');
   console.log(color('0;34', '╔═══════════════════════════════════════════╗'));
   console.log(color('0;34', '║   Forge Quality Gate - Running Checks    ║'));
   console.log(color('0;34', '╚═══════════════════════════════════════════╝'));
 
   printHeader('1/4: Type Check');
-  const typecheck = run(bunCommand, ['run', 'typecheck']);
+  const typecheck = runCommand(activeBunCommand, ['run', 'typecheck']);
   if ((typecheck.status ?? 1) !== 0) {
     printStatus('error', 'Type check failed');
     return 1;
@@ -62,7 +64,7 @@ function main() {
   printStatus('warning', 'SKIPPED (no TypeScript in project)');
 
   printHeader('2/4: Lint');
-  const lint = run(bunCommand, ['run', 'lint']);
+  const lint = runCommand(activeBunCommand, ['run', 'lint']);
   if ((lint.status ?? 1) !== 0) {
     printStatus('error', 'Lint failed');
     return 1;
@@ -70,7 +72,7 @@ function main() {
   printStatus('success', 'Lint passed');
 
   printHeader('3/4: Security Audit');
-  const audit = run(bunCommand, ['audit'], { captureOutput: true });
+  const audit = runCommand(activeBunCommand, ['audit'], { captureOutput: true });
   const auditOutput = combinedOutput(audit);
   if (auditOutput) {
     process.stdout.write(auditOutput);
@@ -89,7 +91,7 @@ function main() {
   }
 
   printHeader('4/4: Tests');
-  const tests = run('node', ['scripts/test.js', '--validate']);
+  const tests = runCommand('node', ['scripts/test.js', '--validate']);
   if ((tests.status ?? 1) !== 0) {
     printStatus('error', 'Tests failed');
     return 1;
@@ -104,4 +106,15 @@ function main() {
   return 0;
 }
 
-process.exit(main());
+if (require.main === module) {
+  process.exit(main());
+}
+
+module.exports = {
+  color,
+  combinedOutput,
+  main,
+  printHeader,
+  printStatus,
+  run,
+};

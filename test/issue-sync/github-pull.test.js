@@ -48,4 +48,35 @@ describe('github pull normalization', () => {
       },
     });
   });
+
+  test('ignores API URLs and handles partial payloads gracefully', () => {
+    const normalized = normalizeRemoteIssue({
+      number: 42,
+      node_id: 'I_kwDOForge42',
+      url: 'https://api.github.com/repos/acme/forge/issues/42',
+      assignee: {
+        login: 'octocat',
+      },
+      labels: [],
+    });
+
+    expect(normalized).toEqual({
+      github: {
+        number: 42,
+        nodeId: 'I_kwDOForge42',
+        url: null,
+      },
+      shared: {
+        title: '',
+        body: '',
+        state: 'open',
+        assignees: ['octocat'],
+        labels: [],
+        milestone: null,
+      },
+      sync: {
+        remoteUpdatedAt: null,
+      },
+    });
+  });
 });

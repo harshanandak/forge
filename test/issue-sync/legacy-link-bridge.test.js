@@ -8,6 +8,52 @@ const {
 const { bridgeLegacyLinkHints } = require('../../lib/issue-sync/legacy-link-bridge.js');
 
 describe('legacy link bridge', () => {
+  test('hydrates one canonical record per legacy mapping entry when seeded from mapping only', () => {
+    const store = createLinkStore();
+
+    const result = bridgeLegacyLinkHints({
+      mapping: {
+        7: 'forge-seven',
+        42: 'forge-forty-two',
+      },
+    }, { store });
+
+    expect(result.links).toHaveLength(2);
+    expect(listCanonicalLinks(store)).toHaveLength(2);
+    expect(resolveCanonicalLink(store, { githubNumber: 7 })).toEqual({
+      forgeIssueId: 'forge-seven',
+      github: {
+        nodeId: null,
+        number: 7,
+        url: null,
+      },
+      sources: [
+        {
+          source: 'mapping',
+          forgeIssueId: 'forge-seven',
+          githubNumber: 7,
+        },
+      ],
+      diagnostics: [],
+    });
+    expect(resolveCanonicalLink(store, { forgeIssueId: 'forge-forty-two' })).toEqual({
+      forgeIssueId: 'forge-forty-two',
+      github: {
+        nodeId: null,
+        number: 42,
+        url: null,
+      },
+      sources: [
+        {
+          source: 'mapping',
+          forgeIssueId: 'forge-forty-two',
+          githubNumber: 42,
+        },
+      ],
+      diagnostics: [],
+    });
+  });
+
   test('collapses conflicting legacy hints into one canonical record and drift diagnostic', () => {
     const store = createLinkStore([
       {
@@ -112,5 +158,21 @@ describe('legacy link bridge', () => {
     expect(resolveCanonicalLink(store, { forgeIssueId: 'forge-nlgg' })).toEqual(result.link);
     expect(resolveCanonicalLink(store, { githubNodeId: 'I_kwDOForge42Primary' })).toEqual(result.link);
     expect(resolveCanonicalLink(store, { githubNumber: 42 })).toEqual(result.link);
+  });
+
+  test('does not synthesize a canonical url from an unrelated repository template', () => {
+    const store = createLinkStore();
+
+    const result = bridgeLegacyLinkHints({
+      forgeIssueId: 'forge-nlgg',
+      mapping: 42,
+      description: 'Linked issue: https://github.com/other/repo/issues/7',
+    }, { store });
+
+    expect(result.link.github).toEqual({
+      nodeId: null,
+      number: 42,
+      url: null,
+    });
   });
 });

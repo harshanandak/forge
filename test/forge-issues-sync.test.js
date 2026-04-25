@@ -15,6 +15,18 @@ describe('forge issue write sync', () => {
       fieldPaths: ['shared.title'],
     });
 
+    expect(createGitHubProjectionPlan('update', ['forge-1', '--title=Renamed'])).toEqual({
+      operation: 'update',
+      args: ['forge-1', '--title=Renamed'],
+      fieldPaths: ['shared.title'],
+    });
+
+    expect(createGitHubProjectionPlan('update', ['forge-1', '--labels=bug,triage'])).toEqual({
+      operation: 'update',
+      args: ['forge-1', '--labels=bug,triage'],
+      fieldPaths: ['shared.labels'],
+    });
+
     expect(createGitHubProjectionPlan('update', ['forge-1', '--claim'])).toEqual({
       operation: 'update',
       args: ['forge-1', '--claim'],
