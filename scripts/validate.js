@@ -47,6 +47,17 @@ function combinedOutput(result) {
   return [result.stdout, result.stderr].filter(Boolean).join('');
 }
 
+function hasBlockingAuditSeverity(output = '') {
+  if (typeof output !== 'string' || output.length === 0) {
+    return false;
+  }
+
+  return [
+    /\b(?:critical|high)\s+severity\b/i,
+    /\bseverity\s*:?\s*(?:critical|high)\b/i,
+  ].some((pattern) => pattern.test(output));
+}
+
 function main(options = {}) {
   const runCommand = options.runCommand ?? run;
   const activeBunCommand = options.bunCommand ?? bunCommand;
@@ -91,7 +102,7 @@ function main(options = {}) {
       process.stdout.write('\n');
     }
   }
-  if (/critical|high/i.test(auditOutput)) {
+  if (hasBlockingAuditSeverity(auditOutput)) {
     printStatus('error', 'Security audit found critical/high vulnerabilities');
     return 1;
   }
@@ -124,6 +135,7 @@ if (require.main === module) {
 module.exports = {
   color,
   combinedOutput,
+  hasBlockingAuditSeverity,
   main,
   printHeader,
   printStatus,

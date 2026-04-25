@@ -110,6 +110,31 @@ describe('scripts/validate.js runtime', () => {
     ]);
   });
 
+  test('does not block when audit output only contains non-severity words like highlightjs', () => {
+    const calls = [];
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const exitCode = main({
+      runCommand(command, args) {
+        calls.push([command, ...args]);
+        if (args[0] === 'audit') {
+          return makeResult(1, '1 moderate severity vulnerability found in highlightjs\n');
+        }
+        return makeResult(0);
+      },
+      bunCommand: 'bun-test',
+    });
+
+    expect(exitCode).toBe(0);
+    expect(calls).toEqual([
+      ['bun-test', 'run', 'typecheck'],
+      ['bun-test', 'run', 'lint'],
+      ['bun-test', 'audit'],
+      ['node', 'scripts/test.js', '--validate'],
+    ]);
+  });
+
   test('reports a successful type check when the command actually ran', () => {
     const logs = [];
     logSpy = spyOn(console, 'log').mockImplementation((...args) => {
