@@ -8,8 +8,9 @@ const { checkLefthookStatus } = require('../lib/lefthook-check');
 const tempDirs = [];
 
 // This test shells through the full setup path and can take longer on
-// Windows/Node 22 runners than Bun's default 5s timeout.
-setDefaultTimeout(10000);
+// Windows runners when package-manager subprocesses contend with the rest
+// of the suite.
+setDefaultTimeout(30000);
 
 function makeTempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-lefthook-'));

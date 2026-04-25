@@ -29,33 +29,35 @@ describe('forge issue command surface', () => {
       {},
       '/fake/root',
       {
-        _exec: (command, args, opts) => {
-          calls.push({ command, args, opts });
+        runIssueOperation: async (operation, args, projectRoot) => {
+          calls.push({ operation, args, projectRoot });
+          return { success: true, subcommand: 'create' };
         },
       }
     );
 
     expect(result).toEqual({ success: true, subcommand: 'create' });
     expect(calls).toEqual([{
-      command: 'bd',
-      args: ['create', '--title', 'Test issue', '--type', 'feature'],
-      opts: { cwd: '/fake/root', stdio: 'inherit' },
+      operation: 'create',
+      args: ['--title', 'Test issue', '--type', 'feature'],
+      projectRoot: '/fake/root',
     }]);
   });
 
   test('claim alias dispatches to bd update --claim', async () => {
     const calls = [];
     const result = await claim.handler(['forge-abc'], {}, '/fake/root', {
-      _exec: (command, args, opts) => {
-        calls.push({ command, args, opts });
+      runIssueOperation: async (operation, args, projectRoot) => {
+        calls.push({ operation, args, projectRoot });
+        return { success: true, subcommand: 'claim' };
       },
     });
 
     expect(result).toEqual({ success: true, subcommand: 'claim' });
     expect(calls).toEqual([{
-      command: 'bd',
-      args: ['update', 'forge-abc', '--claim'],
-      opts: { cwd: '/fake/root', stdio: 'inherit' },
+      operation: 'update',
+      args: ['forge-abc', '--claim'],
+      projectRoot: '/fake/root',
     }]);
   });
 

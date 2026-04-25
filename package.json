@@ -18,7 +18,7 @@
     "test:ci:shard": "node scripts/test-ci-shard.js",
     "typecheck": "echo 'No TypeScript in project - skipping type check'",
     "lint": "eslint . --max-warnings 0",
-    "check": "bash scripts/validate.sh",
+    "check": "node scripts/validate.js",
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
     "setup": "node ./bin/forge.js setup",
     "help": "node ./bin/forge.js --help",

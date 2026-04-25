@@ -9,6 +9,10 @@ const path = require('path');
 const testDir = path.join(__dirname, 'temp-user-section-test');
 const _projectRoot = testDir;
 
+function ensureTestDir() {
+  fs.mkdirSync(testDir, { recursive: true });
+}
+
 // Test implementation of extractUserSections
 function extractUserSections(filePath) {
   if (!fs.existsSync(filePath)) return {};
@@ -78,6 +82,7 @@ describe('USER Section Extraction & Preservation Tests', () => {
 
   describe('Basic USER Section Extraction', () => {
     test('Extracts single USER section', () => {
+      ensureTestDir();
       const testFile = path.join(testDir, 'test1.md');
       const content = `# File
 <!-- USER:START -->
@@ -94,6 +99,7 @@ More content`;
     });
 
     test('Extracts multiple USER sections', () => {
+      ensureTestDir();
       const testFile = path.join(testDir, 'test2.md');
       const content = `# File
 <!-- USER:START -->
@@ -114,6 +120,7 @@ Second section
     });
 
     test('Returns empty object for non-existent file', () => {
+      ensureTestDir();
       const sections = extractUserSections(path.join(testDir, 'nonexistent.md'));
       assert.strictEqual(Object.keys(sections).length, 0);
     });
@@ -121,6 +128,7 @@ Second section
 
   describe('USER Section Preservation', () => {
     test('Preserves single USER section', () => {
+      ensureTestDir();
       const testFile = path.join(testDir, 'test6.md');
       const original = `# File
 <!-- USER:START -->

@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildComment } from '../../../scripts/github-beads-sync/comment.mjs';
 import { handleOpened, handleClosed } from '../../../scripts/github-beads-sync/index.mjs';
-
-// ---------------------------------------------------------------------------
-// Helpers: fake event builders
-// ---------------------------------------------------------------------------
+import { readMapping } from '../../../scripts/github-beads-sync/mapping.mjs';
 
 function makeOpenedEvent(overrides = {}) {
   return {
@@ -39,10 +40,6 @@ function makeClosedEvent(overrides = {}) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Helpers: mock dependency factories
-// ---------------------------------------------------------------------------
-
 function makeMockBd(overrides = {}) {
   return {
     bdCreate: overrides.bdCreate ?? (() => 'forge-abc123'),
@@ -65,26 +62,37 @@ function makeMockMapping(overrides = {}) {
   };
 }
 
+function makeMockLinkStore(overrides = {}) {
+  return {
+    resolveCanonicalLink: overrides.resolveCanonicalLink ?? (() => null),
+    upsertCanonicalLink: overrides.upsertCanonicalLink ?? (() => ({})),
+  };
+}
+
 function makeOptions(overrides = {}) {
+  const linkStoreOverride = overrides.linkStore;
   return {
     configPath: undefined,
     mappingPath: '/tmp/test-mapping.json',
     owner: 'testowner',
     repo: 'testrepo',
+    ...overrides,
     bd: makeMockBd(overrides.bd),
     github: makeMockGithub(overrides.github),
+    linkStore:
+      linkStoreOverride === null
+        ? null
+        : linkStoreOverride === undefined
+          ? makeMockLinkStore()
+          : linkStoreOverride,
     mapping: makeMockMapping(overrides.mapping),
-    ...overrides,
   };
 }
 
-// ===========================================================================
-// handleOpened
-// ===========================================================================
 describe('handleOpened', () => {
-  it('happy path — creates beads issue, updates mapping, posts comment', async () => {
+  it('happy path - creates beads issue, upserts canonical link, posts comment', async () => {
     const bdCreateCalls = [];
-    const setBeadsIdCalls = [];
+    const upsertCanonicalLinkCalls = [];
     const createOrEditCalls = [];
 
     const opts = makeOptions({
@@ -95,168 +103,282 @@ describe('handleOpened', () => {
         findSyncComment: () => null,
         createOrEditComment: (ow, re, num, body) => { createOrEditCalls.push({ ow, re, num, body }); },
       },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => { upsertCanonicalLinkCalls.push(record); return record; },
+      },
       mapping: {
-        getBeadsId: () => null,
-        setBeadsId: (p, num, id) => { setBeadsIdCalls.push({ p, num, id }); },
+        getBeadsId: () => { throw new Error('legacy mapping should not be consulted on canonical writes'); },
+        setBeadsId: () => { throw new Error('legacy mapping should not be written on canonical writes'); },
       },
     });
 
-    const event = makeOpenedEvent();
-    const result = await handleOpened(event, opts);
+    const result = await handleOpened(makeOpenedEvent(), opts);
 
     expect(result.success).toBe(true);
     expect(result.beadsId).toBe('forge-abc123');
     expect(result.issueNumber).toBe(42);
-
-    // bdCreate was called with sanitized title and mapped type/priority
-    expect(bdCreateCalls.length).toBe(1);
+    expect(bdCreateCalls).toHaveLength(1);
     expect(bdCreateCalls[0].title).toBe('Fix the thing');
     expect(bdCreateCalls[0].type).toBe('bug');
     expect(bdCreateCalls[0].priority).toBe(1);
     expect(bdCreateCalls[0].externalRef).toBe('gh-42');
-
-    // mapping updated
-    expect(setBeadsIdCalls.length).toBe(1);
-    expect(setBeadsIdCalls[0].num).toBe(42);
-    expect(setBeadsIdCalls[0].id).toBe('forge-abc123');
-
-    // comment posted
-    expect(createOrEditCalls.length).toBe(1);
+    expect(upsertCanonicalLinkCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls[0].forgeIssueId).toBe('forge-abc123');
+    expect(upsertCanonicalLinkCalls[0].github.number).toBe(42);
+    expect(createOrEditCalls).toHaveLength(1);
     expect(createOrEditCalls[0].num).toBe(42);
     expect(createOrEditCalls[0].body).toContain('forge-abc123');
   });
 
   it('skips bot actor (contains [bot])', async () => {
-    const event = makeOpenedEvent({ sender: { login: 'dependabot[bot]' } });
-    const result = await handleOpened(event, makeOptions());
+    const result = await handleOpened(makeOpenedEvent({ sender: { login: 'dependabot[bot]' } }), makeOptions());
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('bot actor');
   });
 
   it('skips bot actor (github-actions)', async () => {
-    const event = makeOpenedEvent({ sender: { login: 'github-actions' } });
-    const result = await handleOpened(event, makeOptions());
+    const result = await handleOpened(makeOpenedEvent({ sender: { login: 'github-actions' } }), makeOptions());
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('bot actor');
   });
 
   it('skips when issue has skip-beads-sync label', async () => {
-    const event = makeOpenedEvent({
+    const result = await handleOpened(makeOpenedEvent({
       issue: { labels: [{ name: 'bug' }, { name: 'skip-beads-sync' }] },
-    });
-    const result = await handleOpened(event, makeOptions());
+    }), makeOptions());
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('skip label');
   });
 
   it('skips when body contains no-beads', async () => {
-    const event = makeOpenedEvent({
+    const result = await handleOpened(makeOpenedEvent({
       issue: { body: 'This issue has no-beads tracking needed' },
-    });
-    const result = await handleOpened(event, makeOptions());
+    }), makeOptions());
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('no-beads in body');
   });
 
-  it('idempotent — mapping file entry returns skip', async () => {
+  it('idempotent - canonical link store entry returns skip after repairing the sync comment', async () => {
+    const createOrEditCalls = [];
     const opts = makeOptions({
+      linkStore: makeMockLinkStore({
+        resolveCanonicalLink: () => ({
+          forgeIssueId: 'forge-existing',
+          github: {
+            nodeId: 'node-42',
+            number: 42,
+            url: 'https://github.com/testowner/testrepo/issues/42',
+          },
+        }),
+      }),
       mapping: {
-        getBeadsId: () => 'forge-existing',
-        setBeadsId: () => {},
+        getBeadsId: () => { throw new Error('legacy mapping should not be consulted when canonical link exists'); },
+        setBeadsId: () => { throw new Error('legacy mapping should not be written when canonical link exists'); },
       },
       github: {
-        findSyncComment: () => ({ id: 999, body: '<!-- beads-sync:42 -->' }),
-        createOrEditComment: () => {},
+        createOrEditComment: (owner, repo, num, body) => {
+          createOrEditCalls.push({ owner, repo, num, body });
+        },
+      },
+      bd: {
+        bdCreate: () => { throw new Error('bdCreate should not be called for canonical duplicates'); },
       },
     });
 
-    const event = makeOpenedEvent();
-    const result = await handleOpened(event, opts);
+    const result = await handleOpened(makeOpenedEvent(), opts);
 
     expect(result.skipped).toBe(true);
-    expect(result.reason).toBe('already synced (mapping file)');
+    expect(result.reason).toBe('already synced (canonical link)');
     expect(result.beadsId).toBe('forge-existing');
+    expect(createOrEditCalls).toHaveLength(1);
+    expect(createOrEditCalls[0].num).toBe(42);
+    expect(createOrEditCalls[0].body).toContain('forge-existing');
   });
 
-  it('idempotent — sync comment repairs mapping when mapping is missing', async () => {
-    const setBeadsIdCalls = [];
+  it('repairs canonical link from an existing sync comment before creating a duplicate beads issue', async () => {
+    const createOrEditCalls = [];
+    const upsertCanonicalLinkCalls = [];
     const opts = makeOptions({
-      mapping: {
-        getBeadsId: () => null,
-        setBeadsId: (p, num, id) => { setBeadsIdCalls.push({ p, num, id }); },
+      bd: {
+        bdCreate: () => { throw new Error('bdCreate should not be called when a sync comment already exists'); },
       },
       github: {
         findSyncComment: () => ({
-          id: 999,
-          body: '<!-- beads-sync:42 -->\n**Beads:** `forge-existing`',
+          id: 7,
+          body: buildComment('forge-existing', 42, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-42',
+          }),
         }),
-        createOrEditComment: () => {},
+        createOrEditComment: (owner, repo, num, body) => {
+          createOrEditCalls.push({ owner, repo, num, body });
+        },
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
+      },
+      mapping: {
+        getBeadsId: () => { throw new Error('legacy mapping should not be consulted when a sync comment already exists'); },
+        setBeadsId: () => { throw new Error('legacy mapping should not be written when a sync comment already exists'); },
       },
     });
 
-    const event = makeOpenedEvent();
-    const result = await handleOpened(event, opts);
+    const result = await handleOpened(makeOpenedEvent(), opts);
 
-    expect(result.skipped).toBe(true);
-    expect(result.reason).toBe('already synced (comment)');
-    expect(result.beadsId).toBe('forge-existing');
-    expect(setBeadsIdCalls.length).toBe(1);
-    expect(setBeadsIdCalls[0].id).toBe('forge-existing');
+    expect(result).toMatchObject({
+      skipped: true,
+      reason: 'already synced (sync comment)',
+      beadsId: 'forge-existing',
+    });
+    expect(upsertCanonicalLinkCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls[0].forgeIssueId).toBe('forge-existing');
+    expect(upsertCanonicalLinkCalls[0].sources).toEqual([
+      {
+        source: 'syncComment',
+        forgeIssueId: 'forge-existing',
+        githubNumber: 42,
+        url: 'https://github.com/owner/repo/issues/42',
+      },
+    ]);
+    expect(createOrEditCalls).toHaveLength(1);
+    expect(createOrEditCalls[0].num).toBe(42);
+    expect(createOrEditCalls[0].body).toContain('forge-existing');
   });
 
-  it('idempotent — mapping file repairs missing comment', async () => {
-    const createOrEditCalls = [];
-    const opts = makeOptions({
-      mapping: {
-        getBeadsId: () => 'forge-existing',
-        setBeadsId: () => {},
-      },
-      github: {
-        findSyncComment: () => null,
-        createOrEditComment: (ow, re, num, body) => { createOrEditCalls.push({ ow, re, num, body }); },
-      },
-    });
+  it('throws when the legacy mapping file contains malformed JSON', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-'));
+    const mappingPath = join(tempDir, 'beads-mapping.json');
+    writeFileSync(mappingPath, '{"42":"forge-abc123"', 'utf8');
+    const options = {
+      ...makeOptions(),
+      mappingPath,
+      linkStore: null,
+    };
 
-    const event = makeOpenedEvent();
-    const result = await handleOpened(event, opts);
+    try {
+      expect(() => handleOpened(makeOpenedEvent(), options)).toThrow(`Failed to parse mapping file at ${mappingPath}`);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 
-    expect(result.skipped).toBe(true);
-    expect(result.reason).toBe('already synced (mapping file)');
-    expect(createOrEditCalls.length).toBe(1);
+  it('persists canonical links into the legacy mapping file for default webhook runs', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-default-store-'));
+    const mappingPath = join(tempDir, 'beads-mapping.json');
+    const bdCloseCalls = [];
+
+    try {
+      const opened = await handleOpened(
+        makeOpenedEvent(),
+        {
+          ...makeOptions(),
+          mappingPath,
+          linkStore: null,
+          bd: makeMockBd({
+            bdCreate: () => 'forge-abc123',
+          }),
+          github: makeMockGithub({
+            createOrEditComment: () => {},
+          }),
+        },
+      );
+
+      expect(opened).toMatchObject({
+        success: true,
+        beadsId: 'forge-abc123',
+        issueNumber: 42,
+      });
+      expect(readMapping(mappingPath)).toEqual({
+        42: 'forge-abc123',
+      });
+
+      const closed = await handleClosed(
+        makeClosedEvent(),
+        {
+          ...makeOptions(),
+          mappingPath,
+          linkStore: null,
+          bd: makeMockBd({
+            bdShow: () => 'open',
+            bdClose: (id, reason) => {
+              bdCloseCalls.push({ id, reason });
+            },
+          }),
+        },
+      );
+
+      expect(closed).toMatchObject({
+        success: true,
+        beadsId: 'forge-abc123',
+        issueNumber: 42,
+      });
+      expect(bdCloseCalls).toEqual([
+        {
+          id: 'forge-abc123',
+          reason: 'Closed via GitHub issue #42',
+        },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores partial injected link stores and falls back to the durable default store', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-partial-store-'));
+    const mappingPath = join(tempDir, 'beads-mapping.json');
+
+    try {
+      const result = await handleOpened(
+        makeOpenedEvent(),
+        {
+          ...makeOptions(),
+          mappingPath,
+          linkStore: {
+            resolveCanonicalLink: () => null,
+          },
+          bd: makeMockBd({
+            bdCreate: () => 'forge-abc123',
+          }),
+          github: makeMockGithub({
+            createOrEditComment: () => {},
+          }),
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(readMapping(mappingPath)).toEqual({
+        42: 'forge-abc123',
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('skips unauthorized author with author_association gate', async () => {
     const opts = makeOptions({
-      configPath: undefined,
+      configOverride: { publicRepoGate: 'author_association' },
     });
-    // We need a config that has publicRepoGate = 'author_association'
-    // Override by passing a custom configPath that doesn't exist (defaults) then override config
-    // Better approach: use a config override in options
-    const event = makeOpenedEvent({
+    const result = await handleOpened(makeOpenedEvent({
       issue: { author_association: 'NONE' },
-    });
-
-    // We need to set publicRepoGate on the config. Since loadConfig returns defaults
-    // with publicRepoGate: 'none', we need a config file or a config override.
-    // Let's use the configOverride option pattern.
-    opts.configOverride = { publicRepoGate: 'author_association' };
-
-    const result = await handleOpened(event, opts);
+    }), opts);
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('author not authorized');
   });
 });
 
-// ===========================================================================
-// handleClosed
-// ===========================================================================
 describe('handleClosed', () => {
-  it('happy path — reads mapping and closes beads issue', async () => {
+  it('happy path - reads canonical link store and closes beads issue', async () => {
     const bdCloseCalls = [];
 
     const opts = makeOptions({
@@ -264,84 +386,157 @@ describe('handleClosed', () => {
         bdClose: (id, reason) => { bdCloseCalls.push({ id, reason }); },
         bdShow: () => 'open',
       },
+      linkStore: makeMockLinkStore({
+        resolveCanonicalLink: () => ({
+          forgeIssueId: 'forge-abc123',
+          github: {
+            nodeId: 'node-42',
+            number: 42,
+            url: 'https://github.com/testowner/testrepo/issues/42',
+          },
+        }),
+      }),
       mapping: {
-        getBeadsId: () => 'forge-abc123',
+        getBeadsId: () => { throw new Error('legacy mapping should not be consulted when canonical link exists'); },
+      },
+      github: {
+        findSyncComment: () => { throw new Error('sync comment lookup should not be needed when canonical link exists'); },
       },
     });
 
-    const event = makeClosedEvent();
-    const result = await handleClosed(event, opts);
+    const result = await handleClosed(makeClosedEvent(), opts);
 
     expect(result.success).toBe(true);
     expect(result.beadsId).toBe('forge-abc123');
     expect(result.issueNumber).toBe(42);
-
-    expect(bdCloseCalls.length).toBe(1);
+    expect(bdCloseCalls).toHaveLength(1);
     expect(bdCloseCalls[0].id).toBe('forge-abc123');
     expect(bdCloseCalls[0].reason).toContain('#42');
   });
 
-  it('fallback — no mapping, falls back to comment parsing', async () => {
+  it('closes the beads issue when canonical link is missing but a sync comment is present', async () => {
     const bdCloseCalls = [];
+    const upsertCanonicalLinkCalls = [];
 
     const opts = makeOptions({
       bd: {
         bdClose: (id, reason) => { bdCloseCalls.push({ id, reason }); },
         bdShow: () => 'open',
       },
-      mapping: {
-        getBeadsId: () => null,
+      github: {
+        findSyncComment: () => ({
+          id: 7,
+          body: buildComment('forge-existing', 42, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-42',
+          }),
+        }),
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
+      },
+    });
+
+    const result = await handleClosed(makeClosedEvent(), opts);
+
+    expect(result).toMatchObject({
+      success: true,
+      beadsId: 'forge-existing',
+      issueNumber: 42,
+    });
+    expect(upsertCanonicalLinkCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls[0].forgeIssueId).toBe('forge-existing');
+    expect(upsertCanonicalLinkCalls[0].sources).toEqual([
+      {
+        source: 'syncComment',
+        forgeIssueId: 'forge-existing',
+        githubNumber: 42,
+        url: 'https://github.com/owner/repo/issues/42',
+      },
+    ]);
+    expect(bdCloseCalls).toEqual([
+      {
+        id: 'forge-existing',
+        reason: 'Closed via GitHub issue #42',
+      },
+    ]);
+  });
+
+  it('skips when the sync comment points at a different GitHub issue number', async () => {
+    const bdCloseCalls = [];
+    const upsertCanonicalLinkCalls = [];
+
+    const opts = makeOptions({
+      bd: {
+        bdClose: (id, reason) => { bdCloseCalls.push({ id, reason }); },
+        bdShow: () => 'open',
       },
       github: {
         findSyncComment: () => ({
-          id: 999,
-          body: '<!-- beads-sync:42 -->\n**Beads:** `forge-fromcomment`',
+          id: 7,
+          body: buildComment('forge-existing', 99, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-99',
+          }),
         }),
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
       },
     });
 
-    const event = makeClosedEvent();
-    const result = await handleClosed(event, opts);
+    const result = await handleClosed(makeClosedEvent(), opts);
 
-    expect(result.success).toBe(true);
-    expect(result.beadsId).toBe('forge-fromcomment');
-
-    expect(bdCloseCalls.length).toBe(1);
-    expect(bdCloseCalls[0].id).toBe('forge-fromcomment');
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('no beads link found');
+    expect(upsertCanonicalLinkCalls).toHaveLength(0);
+    expect(bdCloseCalls).toHaveLength(0);
   });
 
   it('skips when no beads link found', async () => {
-    const opts = makeOptions({
+    const result = await handleClosed(makeClosedEvent(), makeOptions({
       mapping: { getBeadsId: () => null },
       github: { findSyncComment: () => null },
-    });
-
-    const event = makeClosedEvent();
-    const result = await handleClosed(event, opts);
+    }));
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('no beads link found');
   });
 
   it('skips when beads issue already closed', async () => {
-    const opts = makeOptions({
+    const result = await handleClosed(makeClosedEvent(), makeOptions({
+      linkStore: makeMockLinkStore({
+        resolveCanonicalLink: () => ({
+          forgeIssueId: 'forge-abc123',
+          github: {
+            nodeId: 'node-42',
+            number: 42,
+            url: 'https://github.com/testowner/testrepo/issues/42',
+          },
+        }),
+      }),
       bd: {
         bdShow: () => 'closed',
         bdClose: () => { throw new Error('should not be called'); },
       },
-      mapping: { getBeadsId: () => 'forge-abc123' },
-    });
-
-    const event = makeClosedEvent();
-    const result = await handleClosed(event, opts);
+    }));
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('already closed');
   });
 
   it('skips bot actor', async () => {
-    const event = makeClosedEvent({ sender: { login: 'renovate[bot]' } });
-    const result = await handleClosed(event, makeOptions());
+    const result = await handleClosed(makeClosedEvent({ sender: { login: 'renovate[bot]' } }), makeOptions());
 
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe('bot actor');

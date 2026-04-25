@@ -8,13 +8,13 @@ const path = require('node:path');
 // SECURITY: Using execSync with HARDCODED script path only (no user input)
 const { execFileSync } = require('node:child_process');
 const { resolveBashCommand } = require('../../test/helpers/bash.js');
+const { ensureTestFixtures, FIXTURES_DIR } = require('../helpers/fixtures.js');
 
 // Import validation helpers from Phase 1
 const { checkGitState, isDetachedHead, hasUncommittedChanges, hasMergeConflict } = require('../validation/git-state-checker.js');
 const { validateFile: _validateFile } = require('../validation/file-checker.js');
 const { validateEnvFile: _validateEnvFile } = require('../validation/env-validator.js');
 
-const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 const SETUP_SCRIPT = path.join(__dirname, 'setup-fixtures.sh');
 
 const EXPECTED_FIXTURES = [
@@ -24,19 +24,7 @@ const EXPECTED_FIXTURES = [
   'large-agents-md', 'missing-prerequisites'
 ];
 
-function ensureFixtures() {
-  try { fs.chmodSync(SETUP_SCRIPT, 0o755); } catch (_error) { }
-  try {
-    // SECURITY: Hardcoded command (no user input)
-    // Note: Don't use --force to avoid race conditions with other tests.
-    execFileSync(resolveBashCommand(), [SETUP_SCRIPT, '--no-validate'], {
-      cwd: __dirname,
-      stdio: 'pipe',
-    });
-  } catch (error) { console.error('Failed to run setup-fixtures.sh:', error.message); }
-}
-
-ensureFixtures();
+ensureTestFixtures();
 
 describe('setup-fixtures.sh', () => {
   test('should create all 15 fixtures', () => {

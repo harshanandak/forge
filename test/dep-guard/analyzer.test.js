@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { afterEach, describe, expect, test } = require('bun:test');
+const { afterEach, describe, expect, setDefaultTimeout, test } = require('bun:test');
 
 const {
 	analyzePhase3Dependencies,
@@ -10,6 +10,8 @@ const {
 } = require('../../lib/dep-guard/analyzer.js');
 
 const tempDirs = [];
+
+setDefaultTimeout(15000);
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {

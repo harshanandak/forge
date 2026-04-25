@@ -41,11 +41,124 @@ die() {
   exit 1
 }
 
+# Resolve a Windows bd.exe installation for bash-based helper flows.
+# This covers WSL/Git Bash cases where PowerShell can run bd.exe but bash PATH
+# does not include the Windows install directory.
+convert_windows_path() {
+  local raw="${1%$'\r'}"
+
+  if [[ -z "$raw" ]]; then
+    return 1
+  fi
+
+  if [[ ! "$raw" =~ ^[A-Za-z]:\\ ]]; then
+    printf '%s' "$raw"
+    return 0
+  fi
+
+  if command -v wslpath >/dev/null 2>&1; then
+    wslpath -u "$raw" 2>/dev/null && return 0
+  fi
+
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$raw" 2>/dev/null && return 0
+  fi
+
+  local drive rest
+  drive="$(printf '%s' "$raw" | cut -c1 | tr '[:upper:]' '[:lower:]')"
+  rest="${raw:2}"
+  rest="${rest//\\//}"
+  printf '/mnt/%s%s' "$drive" "$rest"
+}
+
+is_runnable_bd_candidate() {
+  local candidate="${1:-}"
+
+  if [[ -z "$candidate" || ! -f "$candidate" ]]; then
+    return 1
+  fi
+
+  [[ -x "$candidate" || "$candidate" == *.exe ]]
+}
+
+resolve_bd_cmd() {
+  local candidate=""
+  local converted=""
+
+  if [[ -n "${BD_CMD:-}" ]]; then
+    if [[ "${BD_CMD}" == *"/"* || "${BD_CMD}" == *"\\"* ]]; then
+      converted="$(convert_windows_path "$BD_CMD")"
+      if is_runnable_bd_candidate "$converted"; then
+        printf '%s' "$converted"
+        return 0
+      fi
+
+      is_runnable_bd_candidate "$BD_CMD" || return 1
+    fi
+    printf '%s' "$BD_CMD"
+    return 0
+  fi
+
+  if command -v bd >/dev/null 2>&1; then
+    printf '%s' "bd"
+    return 0
+  fi
+
+  if command -v bd.exe >/dev/null 2>&1; then
+    printf '%s' "bd.exe"
+    return 0
+  fi
+
+  for candidate in \
+    "$HOME/.local/bin/bd" \
+    "$HOME/.local/bin/bd.exe" \
+    "$HOME/.bun/bin/bd" \
+    "$HOME/.bun/bin/bd.exe"
+  do
+    if is_runnable_bd_candidate "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  if command -v where.exe >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      candidate="${candidate%$'\r'}"
+      [[ -z "$candidate" ]] && continue
+
+      converted="$(convert_windows_path "$candidate")"
+      if is_runnable_bd_candidate "$converted"; then
+        printf '%s' "$converted"
+        return 0
+      fi
+
+      if is_runnable_bd_candidate "$candidate"; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    done < <(where.exe bd 2>/dev/null || true)
+  fi
+
+  return 1
+}
+
+BD=""
+
+get_bd_cmd() {
+  if [[ -z "$BD" ]]; then
+    BD="$(resolve_bd_cmd)" || die "bd is required but not found"
+  fi
+
+  printf '%s' "$BD"
+}
+
 # Run bd update and check for errors in both exit code and output.
 # bd update exits 0 even for non-existent issues, so we check stdout too.
 bd_update() {
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
   local output
-  output="$(bd update "$@" 2>&1)"
+  output="$("$bd_cmd" update "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -66,8 +179,10 @@ bd_update() {
 
 # Run bd comments add and check for errors similarly.
 bd_comment() {
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
   local output
-  output="$(bd comments add "$@" 2>&1)"
+  output="$("$bd_cmd" comments add "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -172,10 +287,12 @@ cmd_parse_progress() {
   fi
 
   local issue_id="$1"
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
 
   # Get the issue JSON — detect non-existent issues
   local json
-  json="$(bd show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
+  json="$("$bd_cmd" show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
 
   # bd show may exit 0 but print an error for non-existent issues
   # Match specific bd error patterns, not the word "error" in data fields
@@ -320,10 +437,12 @@ cmd_validate() {
 
   local issue_id="$1"
   local warnings=0
+  local bd_cmd
+  bd_cmd="$(get_bd_cmd)"
 
   # Get issue JSON
   local json
-  json="$(bd show "$issue_id" --json 2>&1)" || {
+  json="$("$bd_cmd" show "$issue_id" --json 2>&1)" || {
     echo "Error: Failed to retrieve issue ${issue_id}" >&2
     exit 1
   }
@@ -357,7 +476,7 @@ cmd_validate() {
 
   # Get comments to check for stage transitions
   local comments
-  comments="$(bd comments list "$issue_id" 2>/dev/null || true)"
+  comments="$("$bd_cmd" comments "$issue_id" 2>/dev/null || true)"
 
   # Check 2: At least one stage transition exists
   local has_transition=false

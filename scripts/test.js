@@ -189,6 +189,7 @@ function runTestExecutionPlan(plan, deps = {}) {
   const spawnSync = deps.spawnSync || defaultSpawnSync;
   const pkgManager = deps.pkgManager || detectPackageManager();
   const env = deps.env || stripGitHookEnv(process.env);
+  const bunCommand = deps.bunCommand || env.BUN_EXE || process.env.BUN_EXE || 'bun';
   const label = deps.label || 'tests';
 
   console.log(`Running ${label} (${pkgManager})...`);
@@ -200,19 +201,20 @@ function runTestExecutionPlan(plan, deps = {}) {
       if (status !== 0) return status;
     } else if (plan.testTargets.length > 0) {
       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
-      const status = runCommand(pkgManager, ['run', 'test', ...plan.testTargets], { env }, spawnSync);
+      const command = pkgManager === 'bun' ? bunCommand : pkgManager;
+      const status = runCommand(command, ['run', 'test', ...plan.testTargets], { env }, spawnSync);
       if (status !== 0) return status;
     }
 
     if (!plan.runFullSuite && plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
-      const status = runCommand('bun', ['test', 'test/e2e/'], { env }, spawnSync);
+      const status = runCommand(bunCommand, ['test', 'test/e2e/'], { env }, spawnSync);
       if (status !== 0) return status;
     }
 
     if (!plan.runFullSuite && plan.runTestEnv) {
       console.log('  Extra: running affected edge-case tests');
-      const status = runCommand('bun', ['test', 'test-env/'], { env }, spawnSync);
+      const status = runCommand(bunCommand, ['test', 'test-env/'], { env }, spawnSync);
       if (status !== 0) return status;
     }
 

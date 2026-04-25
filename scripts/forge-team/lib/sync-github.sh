@@ -7,7 +7,7 @@
 #   sync_issue_status  <beads-id> <status>    — Update status label on GitHub
 #   sync_issue_close   <beads-id>             — Close GitHub issue
 #   sync_issue_deps    <beads-id-a> <beads-id-b> — Add "Blocked by" comment
-#   _get_github_issue_number <beads-id>       — Extract github_issue from bd show
+#   _get_github_issue_number <beads-id>       — Extract canonical GitHub issue from bd show
 #
 # Env overrides (for testing):
 #   GH_CMD  — Path to gh binary (default: gh)
@@ -71,9 +71,132 @@ _safe_sanitize() {
   printf '%s' "$input"
 }
 
+_extract_issue_number_from_url() {
+  local input="${1:-}"
+  local suffix="${input##*/issues/}"
+
+  if [[ "$suffix" == "$input" ]]; then
+    return 1
+  fi
+
+  suffix="${suffix%%[^0-9]*}"
+  if [[ -z "$suffix" ]]; then
+    return 1
+  fi
+
+  printf '%s' "$suffix"
+}
+
+_extract_issue_title_from_show() {
+  local input="${1:-}"
+
+  printf '%s' "$input" | node -e '
+    const fs = require("node:fs");
+    const input = fs.readFileSync(0, "utf8");
+    const lines = input.split(/\r?\n/);
+    const titledLine = lines.find((line) => /^Title:\s*/.test(line));
+
+    if (titledLine) {
+      process.stdout.write(titledLine.replace(/^Title:\s*/, "").trim());
+      process.exit(0);
+    }
+
+    const summaryLine = lines.find((line) => line.trim().length > 0);
+    if (!summaryLine) {
+      process.exit(0);
+    }
+
+    const separators = [" - ", " \u00B7 ", " \u2022 "];
+    for (const separator of separators) {
+      const separatorIndex = summaryLine.indexOf(separator);
+      if (separatorIndex === -1) {
+        continue;
+      }
+
+      const candidate = summaryLine
+        .slice(separatorIndex + separator.length)
+        .replace(/\s+\[[^\]]*\]\s*$/u, "")
+        .trim();
+
+      if (candidate.length > 0) {
+        process.stdout.write(candidate);
+        break;
+      }
+    }
+  '
+}
+
+_sync_mapping_file() {
+  local root="${TEAM_MAP_ROOT:-.}"
+  printf '%s' "${SYNC_MAPPING_FILE:-$root/.github/beads-mapping.json}"
+}
+
+_persist_issue_mapping() {
+  local beads_id="${1:-}"
+  local issue_num="${2:-}"
+  local mapping_file
+  mapping_file="$(_sync_mapping_file)"
+
+  node - "$mapping_file" "$issue_num" "$beads_id" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [mappingPath, issueNum, beadsId] = process.argv.slice(2);
+let data = {};
+
+if (fs.existsSync(mappingPath)) {
+  const raw = fs.readFileSync(mappingPath, 'utf8').trim();
+  if (raw) {
+    data = JSON.parse(raw);
+  }
+}
+
+fs.mkdirSync(path.dirname(mappingPath), { recursive: true });
+data[String(issueNum)] = beadsId;
+fs.writeFileSync(mappingPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+NODE
+}
+
+_get_issue_number_from_mapping() {
+  local beads_id="${1:-}"
+  local mapping_file
+  mapping_file="$(_sync_mapping_file)"
+
+  node - "$mapping_file" "$beads_id" <<'NODE'
+const fs = require('node:fs');
+
+const [mappingPath, beadsId] = process.argv.slice(2);
+if (!fs.existsSync(mappingPath)) {
+  process.exit(0);
+}
+
+const raw = fs.readFileSync(mappingPath, 'utf8').trim();
+if (!raw) {
+  process.exit(0);
+}
+
+const data = JSON.parse(raw);
+let newestIssueNum = null;
+for (const [issueNum, mappedBeadsId] of Object.entries(data)) {
+  if (mappedBeadsId !== beadsId) {
+    continue;
+  }
+  const parsedIssueNum = Number.parseInt(issueNum, 10);
+  if (!Number.isFinite(parsedIssueNum)) {
+    continue;
+  }
+  if (newestIssueNum == null || parsedIssueNum > newestIssueNum) {
+    newestIssueNum = parsedIssueNum;
+  }
+}
+if (newestIssueNum != null) {
+  process.stdout.write(String(newestIssueNum));
+}
+NODE
+}
+
 # ── _get_github_issue_number ─────────────────────────────────────────────
-# Extracts github_issue number from `bd show <id>` output.
-# Looks for `github_issue:N` pattern.
+# Extracts the canonical GitHub issue number from `bd show <id> --json`.
 # Returns the number or empty string (exit 1 if not found).
 _get_github_issue_number() {
   local beads_id="${1:-}"
@@ -84,16 +207,37 @@ _get_github_issue_number() {
 
   local bd_cmd="${BD_CMD:-bd}"
   local show_output
-  show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || {
+  show_output="$("$bd_cmd" show "$beads_id" --json 2>/dev/null)" || {
     _sync_error "Failed to get beads info for $beads_id"
     return 1
   }
 
   local issue_num
-  issue_num="$(printf '%s' "$show_output" | grep -oP 'github_issue:\K[0-9]+' | head -1)"
+  issue_num="$(printf '%s' "$show_output" | node -e '
+    const fs = require("node:fs");
+    const input = fs.readFileSync(0, "utf8");
+    try {
+      const data = JSON.parse(input);
+      const issue = Array.isArray(data) ? data[0] : data;
+      const value = issue?.github?.number
+        ?? issue?.githubNumber
+        ?? issue?.issueNumber
+        ?? issue?.github_issue
+        ?? null;
+      if (value != null && value !== "") {
+        process.stdout.write(String(value));
+      }
+    } catch (_err) {
+      process.exitCode = 0;
+    }
+  ')"
 
   if [[ -z "$issue_num" ]]; then
-    _sync_error "No github_issue found for $beads_id"
+    issue_num="$(_get_issue_number_from_mapping "$beads_id" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$issue_num" ]]; then
+    _sync_error "No canonical GitHub number found for $beads_id"
     return 1
   fi
 
@@ -111,13 +255,7 @@ _get_issue_title() {
   show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || return 1
 
   local title
-  # Try "Title: ..." line first
-  title="$(printf '%s' "$show_output" | grep -oP '^Title:\s*\K.*' | head -1)"
-
-  if [[ -z "$title" ]]; then
-    # Fallback: extract from summary line "○ <id> · <title> [...]"
-    title="$(printf '%s' "$show_output" | grep -oP '·\s*\K[^\[]+' | head -1 | sed 's/[[:space:]]*$//')"
-  fi
+  title="$(_extract_issue_title_from_show "$show_output")"
 
   if [[ -z "$title" ]]; then
     title="$beads_id"
@@ -130,7 +268,8 @@ _get_issue_title() {
 
 # sync_issue_create <beads-id>
 # Creates GitHub issue from Beads issue data.
-# Stores GitHub issue number back via `bd set-state`.
+# Persists both the canonical mapping file and the legacy github_issue state
+# until downstream hook and verify flows stop reading bd show output.
 # Returns 0 on success, 1 on failure.
 sync_issue_create() {
   local beads_id="${1:-}"
@@ -162,28 +301,21 @@ sync_issue_create() {
 
   # Extract issue number from URL (e.g., https://github.com/.../issues/42)
   local issue_num
-  issue_num="$(printf '%s' "$gh_output" | grep -oP '/issues/\K[0-9]+' | head -1)"
+  issue_num="$(_extract_issue_number_from_url "$gh_output")"
 
   if [[ -z "$issue_num" ]]; then
     _sync_error "Could not extract issue number from: $gh_output"
     return 1
   fi
 
-  # Store issue number in Beads
-  "$bd_cmd" set-state "$beads_id" "github_issue=$issue_num" >/dev/null 2>&1 || {
+  if ! _persist_issue_mapping "$beads_id" "$issue_num"; then
+    _sync_error "Failed to persist GitHub link for $beads_id"
+    return 1
+  fi
+
+  if ! "$bd_cmd" set-state "$beads_id" "github_issue=$issue_num" >/dev/null 2>&1; then
     _sync_error "Failed to store github_issue=$issue_num for $beads_id"
     return 1
-  }
-
-  # Update beads-mapping.json for verify Check 4
-  local mapping_file=".github/beads-mapping.json"
-  if [[ -f "$mapping_file" ]]; then
-    local updated
-    updated="$(jq --arg num "$issue_num" --arg id "$beads_id" '.[$num] = $id' "$mapping_file")"
-    printf '%s\n' "$updated" > "$mapping_file"
-  else
-    mkdir -p .github
-    printf '%s\n' "{\"$issue_num\":\"$beads_id\"}" > "$mapping_file"
   fi
 
   return 0

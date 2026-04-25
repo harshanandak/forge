@@ -28,6 +28,27 @@ function parseJsonlLines(lines) {
   return results;
 }
 
+function extractCanonicalGitHubLink(issue = {}) {
+  const github = issue.github ?? {};
+  if (typeof github.url === 'string' && github.url.length > 0) {
+    const match = github.url.match(
+      /https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/,
+    );
+    if (match) {
+      return {
+        owner: match[1],
+        repo: match[2],
+        issueNumber: parseInt(match[3], 10),
+      };
+    }
+  }
+  return null;
+}
+
+function extractPreferredGitHubLink(issue = {}) {
+  return extractCanonicalGitHubLink(issue) ?? extractGitHubUrl(issue.description);
+}
+
 /**
  * Detect Beads issues that transitioned to "closed" status.
  * Only detects transitions: issue must exist in oldLines as non-closed,
@@ -109,13 +130,16 @@ export function handleBeadsClosed(oldContent, newContent, deps = {}) {
   const newLines = newContent.split('\n');
 
   const transitions = detectClosedIssues(oldLines, newLines);
+  const latestIssues = new Map(
+    parseJsonlLines(newLines).map((issue) => [issue.id, issue]),
+  );
 
   const closed = [];
   const skipped = [];
   const errors = [];
 
   for (const issue of transitions) {
-    const parsed = extractGitHubUrl(issue.description);
+    const parsed = extractPreferredGitHubLink(latestIssues.get(issue.id) ?? issue);
     if (!parsed) {
       skipped.push({ beadsId: issue.id, reason: 'no GitHub URL' });
       continue;

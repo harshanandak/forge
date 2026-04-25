@@ -69,6 +69,32 @@ Three guards prevent infinite ping-pong:
 2. **Commit message prefix** -- Phase 2 workflow skips commits starting with `chore(beads):`
 3. **Opt-out label** -- `skip-beads-sync` label on any issue disables sync entirely
 
+### Normalized Core
+
+GitHub-owned shared fields are the only fields that steady-state pull and initial import are allowed to overwrite:
+
+- `github.number`
+- `github.nodeId`
+- `github.url`
+- `shared.title`
+- `shared.body`
+- `shared.state`
+- `shared.assignees`
+- `shared.labels`
+- `shared.milestone`
+- `sync.remoteUpdatedAt`
+
+Forge-owned workflow context stays local in Beads. That includes workflow stage, dependencies, progress notes, decisions, and other issue-engine metadata.
+
+Both ongoing pull sync and the `forge-ij1` import bootstrap use the same primitive layer:
+
+- `lib/issue-sync/link-store.js` resolves canonical GitHub/Beads links.
+- `lib/issue-sync/github-pull.js` normalizes remote GitHub issues into shared records.
+- `lib/issue-sync/reconcile.js` applies GitHub-owned fields and materializes the local cache row.
+- `lib/issue-sync/import-primitives.js` exposes `listRemoteIssues`, `normalizeRemoteIssue`, `resolveSharedLink`, and `materializeLocalIssue` for import backfill.
+
+`forge-ij1` depends on these primitives directly. It does not use a separate import-specific sync contract or an alternate reconciliation path.
+
 ---
 
 ## Setup

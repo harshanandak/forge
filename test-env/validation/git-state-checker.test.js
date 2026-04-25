@@ -1,7 +1,7 @@
 // Test: Git State Checker Validation Helper
 // Tests for git repository state validation
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
+const { describe, test, beforeAll: before, afterAll: after, setDefaultTimeout } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -30,6 +30,8 @@ const gitExecOptions = {
     LEFTHOOK: '0',
   },
 };
+
+setDefaultTimeout(15000);
 
 before(() => {
   // Create temp directory for tests

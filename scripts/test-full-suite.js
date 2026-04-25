@@ -106,12 +106,13 @@ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
 function spawnShard(shard, options = {}) {
   const spawn = options.spawn || defaultSpawn;
   const env = options.env || process.env;
+  const bunCommand = options.bunCommand || env.BUN_EXE || process.env.BUN_EXE || 'bun';
   const labelPrefix = options.labelPrefix || 'local-full';
   fs.mkdirSync(reportDir, { recursive: true });
   const junitPath = path.join(reportDir, `${labelPrefix}-shard-${shard.index}.xml`);
 
   return new Promise((resolve, reject) => {
-    const child = spawn('bun', [
+    const child = spawn(bunCommand, [
       'test',
       '--reporter=junit',
       '--reporter-outfile',
@@ -147,6 +148,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
 
   console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
   const results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
+    bunCommand: deps.bunCommand,
     env: deps.env,
     labelPrefix: args.labelPrefix,
     spawn: deps.spawn,

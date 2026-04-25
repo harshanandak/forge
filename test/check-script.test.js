@@ -1,44 +1,32 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 
-describe('scripts/validate.sh', () => {
-  const checkScriptPath = path.join(__dirname, '..', 'scripts', 'validate.sh');
+describe('scripts/validate.js', () => {
+  const checkScriptPath = path.join(__dirname, '..', 'scripts', 'validate.js');
 
-  describe('Script existence and permissions', () => {
+  describe('Script existence and entrypoint wiring', () => {
     test('should exist', () => {
       expect(fs.existsSync(checkScriptPath)).toBeTruthy();
     });
 
-    test('should be executable', () => {
-      // On Windows, we check if file exists (executable bit not applicable)
-      // On Unix, we check if executable bit is set
-      if (process.platform === 'win32') {
-        expect(fs.existsSync(checkScriptPath)).toBeTruthy();
-      } else {
-        const stats = fs.statSync(checkScriptPath);
-        const isExecutable = (stats.mode & 0o111) !== 0;
-        expect(isExecutable).toBeTruthy();
-      }
-    });
-
-    test('should have proper shebang for cross-platform compatibility', () => {
+    test('should have a node shebang for CLI execution', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
       const firstLine = content.split('\n')[0];
-      // Should use #!/usr/bin/env bash or #!/bin/sh for portability
-      expect(firstLine.includes('#!/usr/bin/env bash') || firstLine.includes('#!/bin/sh')).toBeTruthy();
+      expect(firstLine.includes('#!/usr/bin/env node')).toBeTruthy();
+    });
+
+    test('should export main and guard direct execution', () => {
+      const content = fs.readFileSync(checkScriptPath, 'utf-8');
+      expect(content).toContain('if (require.main === module)');
+      expect(content).toContain('module.exports');
     });
   });
-
-  // Note: Exit code testing removed to avoid recursion
-  // (check.sh runs all tests including this test file)
-  // Manual verification: Run `bun run check` separately
 
   describe('Check orchestration', () => {
     test('should run checks in correct order', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
 
-      // Check that step headers appear in order
       const typecheckIndex = content.indexOf('Type Check');
       const lintIndex = content.indexOf('Lint');
       const testIndex = content.indexOf('Tests');
@@ -50,39 +38,25 @@ describe('scripts/validate.sh', () => {
 
     test('should run security check', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
-
-      // Should include security scan (npm audit or similar)
       expect(content.includes('audit') || content.includes('security')).toBeTruthy();
     });
 
     test('should stop on first failure', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
-
-      // Should use 'set -e' to exit on first error
-      // OR explicitly check exit codes
-      expect(content.includes('set -e') || content.includes('exit 1') || content.includes('$?')).toBeTruthy();
+      expect(content.includes('return 1') || content.includes('throw')).toBeTruthy();
     });
   });
 
   describe('Output formatting', () => {
-    test('should provide clear progress indicators', () => {
+    test('should provide clear progress helpers', () => {
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
-
-      // Should have echo statements showing progress
-      const echoCount = (content.match(/echo/g) || []).length;
-      expect(echoCount >= 4).toBeTruthy();
+      expect(content).toContain('printHeader');
+      expect(content).toContain('printStatus');
     });
 
     test('should use colors for better readability', () => {
-      // Skip color checks on CI environments that don't support it
-      if (process.env.CI) {
-        return; // Skip in CI
-      }
-
       const content = fs.readFileSync(checkScriptPath, 'utf-8');
-
-      // Should include ANSI color codes or tput commands
-      const hasColors = content.includes('\033[') || content.includes('tput');
+      const hasColors = content.includes('\\u001b[') || content.includes('process.stdout.isTTY');
       expect(hasColors).toBeTruthy();
     });
   });
@@ -90,11 +64,11 @@ describe('scripts/validate.sh', () => {
   describe('Integration with package.json', () => {
     test('package.json should have check script', () => {
       const packageJson = JSON.parse(
-        fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')
+        fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'),
       );
 
       expect(packageJson.scripts.check).toBeTruthy();
-      expect(packageJson.scripts.check.includes('scripts/validate.sh')).toBeTruthy();
+      expect(packageJson.scripts.check.includes('scripts/validate.js')).toBeTruthy();
     });
   });
 });
