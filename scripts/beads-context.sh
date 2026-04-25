@@ -441,7 +441,7 @@ cmd_validate() {
 
   # Get comments to check for stage transitions
   local comments
-  comments="$("$BD" comments list "$issue_id" 2>/dev/null || true)"
+  comments="$("$BD" comments "$issue_id" 2>/dev/null || true)"
 
   # Check 2: At least one stage transition exists
   local has_transition=false

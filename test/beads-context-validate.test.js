@@ -45,7 +45,7 @@ if [ "$1" = "show" ] && [ "$3" = "--json" ]; then
   cat ${shQuote(`./${path.basename(shimDir)}/show.json`)}
   exit 0
 fi
-if [ "$1" = "comments" ] && [ "$2" = "list" ]; then
+if [ "$1" = "comments" ] && [ "$2" = "${issueId}" ]; then
   cat ${shQuote(`./${path.basename(shimDir)}/comments.txt`)}
   exit 0
 fi
