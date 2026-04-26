@@ -42,8 +42,32 @@ restore_hooks_dir() {
   fi
 }
 
+write_beads_config() {
+  mkdir -p .beads
+  {
+    printf '%s\n' 'issue-prefix: forge'
+    printf '\n'
+    printf '%s\n' 'database:'
+    printf '%s\n' '  backend: dolt'
+    printf '\n'
+  } > .beads/config.yaml
+}
+
+write_beads_gitignore() {
+  mkdir -p .beads
+  {
+    printf '%s\n' '# Dolt database files (binary, not suitable for git)'
+    printf '%s\n' 'dolt/'
+    printf '%s\n' '*.db'
+    printf '%s\n' '*.lock'
+    printf '\n'
+  } > .beads/.gitignore
+}
+
 safe_bd_init() {
   hooks_dir="$(git rev-parse --git-path hooks 2>/dev/null || printf '.git/hooks')"
+  write_beads_config
+  write_beads_gitignore
   snapshot_hooks_dir "$hooks_dir"
 
   bd init --database forge --prefix forge >/dev/null 2>&1

@@ -50,7 +50,7 @@ function makeMockBin({
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-bin-'));
   const logPath = path.join(tmpDir, 'calls.log');
 
-  for (const tool of ['chmod', 'cp', 'find', 'git', 'mkdir', 'mktemp', 'rm', 'tr']) {
+  for (const tool of ['chmod', 'cp', 'find', 'git', 'grep', 'mkdir', 'mktemp', 'rm', 'tr']) {
     writeUtilityShim(tmpDir, tool);
   }
 
@@ -115,9 +115,9 @@ function resolvePreflightBashCommand() {
   return (probe.stdout || '').trim() || command;
 }
 
-function runPreflight(env = {}) {
+function runPreflight(env = {}, cwd = PROJECT_ROOT) {
   const result = spawnSync(resolvePreflightBashCommand(), [toBashPath(SCRIPT)], {
-    cwd: PROJECT_ROOT,
+    cwd,
     encoding: 'utf-8',
     timeout: 30000,
     env: {
@@ -180,11 +180,12 @@ describe('scripts/preflight.sh', () => {
 
   test('runs bd init and exits 1 when Beads is not initialized', () => {
     const { tmpDir, logPath } = makeMockBin({ bdListStatus: 1 });
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-project-'));
     try {
-      const result = runPreflight(makeMockPathEnv(tmpDir));
+      const result = runPreflight(makeMockPathEnv(tmpDir), projectRoot);
 
-      expect(result.status).toBe(1);
       expect(result.stdout).toContain('FIXED beads-init');
+      expect(result.status).toBe(1);
       expect(result.stdout).toContain('FIXED beads-doctor');
 
       const calls = readCalls(logPath);
@@ -193,11 +194,13 @@ describe('scripts/preflight.sh', () => {
       expect(calls).toContain('bd doctor --fix --yes');
     } finally {
       cleanupTmpDir(tmpDir);
+      cleanupTmpDir(projectRoot);
     }
   });
 
   test('preserves all existing git hooks and executable modes around bd init', () => {
     const { tmpDir, logPath } = makeMockBin({ bdListStatus: 1 });
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-project-'));
     const git = makeGitDirWithHooks();
     try {
       const bdPath = path.join(tmpDir, 'bd');
@@ -238,7 +241,7 @@ esac
       const result = runPreflight({
         ...makeMockPathEnv(tmpDir),
         GIT_DIR: toBashPath(git.tmpDir),
-      });
+      }, projectRoot);
 
       expect(result.status).toBe(1);
       expect(fs.existsSync(git.prepareHook)).toBe(true);
@@ -247,6 +250,64 @@ esac
       expect(fs.existsSync(path.join(git.hooksDir, 'pre-push'))).toBe(false);
     } finally {
       cleanupTmpDir(tmpDir);
+      cleanupTmpDir(projectRoot);
+      cleanupTmpDir(git.tmpDir);
+    }
+  });
+
+  test('writes Beads prefix config before bd init', () => {
+    const { tmpDir } = makeMockBin({ bdListStatus: 1 });
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-project-'));
+    const configCopyPath = path.join(tmpDir, 'config-before-init.yaml');
+    const gitignoreCopyPath = path.join(tmpDir, 'gitignore-before-init');
+    const git = makeGitDirWithHooks();
+    try {
+      writeExecutable(
+        path.join(tmpDir, 'git'),
+        `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--git-path" ] && [ "$3" = "hooks" ]; then
+  printf '%s\\n' "${toBashPath(git.hooksDir)}"
+  exit 0
+fi
+exit 64
+`,
+      );
+      writeExecutable(
+        path.join(tmpDir, 'bd'),
+        `#!/bin/sh
+set -e
+case "$1" in
+  list)
+    exit 1
+    ;;
+  init)
+    cp .beads/config.yaml "${toBashPath(configCopyPath)}"
+    cp .beads/.gitignore "${toBashPath(gitignoreCopyPath)}"
+    exit 0
+    ;;
+  doctor)
+    exit 0
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+`,
+      );
+
+      const result = runPreflight(makeMockPathEnv(tmpDir), projectRoot);
+
+      expect(result.stdout).toContain('FIXED beads-init');
+      expect(result.status).toBe(1);
+      expect(fs.readFileSync(configCopyPath, 'utf8'))
+        .toContain('issue-prefix: forge');
+      expect(fs.readFileSync(configCopyPath, 'utf8'))
+        .toContain('  backend: dolt');
+      expect(fs.readFileSync(gitignoreCopyPath, 'utf8'))
+        .toContain('dolt/');
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(projectRoot);
       cleanupTmpDir(git.tmpDir);
     }
   });
