@@ -114,6 +114,8 @@ function spawnShard(shard, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bunCommand, [
       'test',
+      '--timeout',
+      '30000',
       '--reporter=junit',
       '--reporter-outfile',
       junitPath,

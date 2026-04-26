@@ -79,7 +79,7 @@ describe('CLI Registry Integration', () => {
     });
 
     test('forge sync dispatches to registry (not unknown command)', () => {
-      const { stdout, stderr, status } = runForge(['sync']);
+      const { stdout, stderr, status } = runForge(['sync'], { PATH: '', Path: '' });
       const combined = stdout + stderr;
       // Key assertion: sync command does NOT fall through to FORGE_SETUP_REQUIRED
       // or minimalInstall. It dispatches via registry and exits cleanly.

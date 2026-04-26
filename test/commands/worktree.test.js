@@ -29,6 +29,32 @@ describe('forge worktree command', () => {
     expect(typeof mod.handler).toBe('function');
   });
 
+  test('create returns bare repo error when project root has no working tree', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const calls = [];
+    const mockExec = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
+        throw new Error('fatal: this operation must be run in a work tree');
+      }
+      throw new Error(`Unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+    const mockFs = {
+      mkdirSync: () => {
+        throw new Error('mkdirSync should not be called for bare repos');
+      },
+      existsSync: () => false,
+    };
+
+    const result = await mod.handler(
+      ['create', 'bare-root'], {}, '/fake/bare.git',
+      { _exec: mockExec, _fs: mockFs }
+    );
+
+    expect(result).toEqual({ success: false, error: 'bare repo detected' });
+    expect(calls).toHaveLength(1);
+  });
+
   // (b) create: calls git worktree add with correct args (new branch)
   test('create calls git worktree add with -b for new branch', async () => {
     const mod = require('../../lib/commands/worktree');
