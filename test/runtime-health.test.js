@@ -117,6 +117,18 @@ describe('runtime health checks', () => {
     expect(result.checks.lefthook.message).toContain('bun install');
   });
 
+  test('bun-created lefthook exe and bunx shims count as an installed binary', () => {
+    const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
+    const binDir = path.join(projectRoot, 'node_modules', '.bin');
+    fs.writeFileSync(path.join(binDir, 'lefthook.exe'), '');
+    fs.writeFileSync(path.join(binDir, 'lefthook.bunx'), '');
+
+    const lefthookStatus = checkLefthookStatus(projectRoot);
+
+    expect(lefthookStatus.state).toBe('installed');
+    expect(lefthookStatus.binaryAvailable).toBe(true);
+  });
+
   test('missing bd produces a hard-stop diagnostic', () => {
     const projectRoot = createProjectRoot();
 
