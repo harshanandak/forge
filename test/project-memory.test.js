@@ -336,6 +336,31 @@ describe('project memory', () => {
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
   });
 
+  test('recovers fresh dead locks immediately when lock timeout is shorter than grace', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
+      pid: 99999999,
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+
+    projectMemory.write(root, {
+      key: 'policy.short-timeout-dead-lock',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 50,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.short-timeout-dead-lock')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
   test('recovers future-dated lockfiles owned by dead processes', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
