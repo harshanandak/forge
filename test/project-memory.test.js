@@ -247,6 +247,28 @@ describe('project memory', () => {
     })).toThrow('projectRoot');
   });
 
+  test('rejects symlinked memory files outside the project root', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const root = tempRoot();
+    const outside = tempRoot();
+    const memoryDir = path.join(root, '.forge', 'memory');
+    const outsideFile = path.join(outside, 'entries.jsonl');
+    fs.mkdirSync(memoryDir, { recursive: true });
+    fs.writeFileSync(outsideFile, JSON.stringify({
+      key: 'policy.external',
+      value: 'external data',
+      'source-agent': 'Codex',
+      timestamp: '2026-04-26T00:00:00.000Z',
+      tags: [],
+    }) + '\n', 'utf8');
+    fs.symlinkSync(outsideFile, path.join(memoryDir, 'entries.jsonl'), 'file');
+
+    expect(() => projectMemory.list(root)).toThrow('projectRoot');
+  });
+
   test('recovers stale lockfiles owned by dead processes', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
@@ -267,6 +289,31 @@ describe('project memory', () => {
     });
 
     expect(projectMemory.read(root, 'policy.stale-lock')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
+  test('recovers fresh lockfiles owned by dead processes', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
+      pid: 99999999,
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+
+    projectMemory.write(root, {
+      key: 'policy.fresh-dead-lock',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.fresh-dead-lock')).toMatchObject({
       value: 'recovered',
     });
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
