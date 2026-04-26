@@ -128,6 +128,36 @@ describe('project memory', () => {
     expect(projectMemory.search(root, 'agent-private')[0].key).toBe('decision.canonical-store');
   });
 
+  test('resolves relative filePath overrides from the project root', () => {
+    const root = tempRoot();
+    const originalCwd = process.cwd();
+    const overridePath = path.join('.forge', 'memory', `${path.basename(root)}-custom.jsonl`);
+
+    try {
+      process.chdir(os.tmpdir());
+      projectMemory.write(root, {
+        key: 'decision.relative-override',
+        value: 'Relative override paths stay project-scoped.',
+        sourceAgent: 'Codex',
+        timestamp: '2026-04-26T00:00:00.000Z',
+        tags: ['paths'],
+      }, {
+        filePath: overridePath,
+      });
+    } finally {
+      process.chdir(originalCwd);
+    }
+
+    expect(fs.existsSync(path.join(root, overridePath))).toBe(true);
+    expect(fs.existsSync(path.join(os.tmpdir(), overridePath))).toBe(false);
+    expect(projectMemory.read(root, 'decision.relative-override', {
+      filePath: overridePath,
+    })).toMatchObject({
+      key: 'decision.relative-override',
+      sourceAgent: 'Codex',
+    });
+  });
+
   test('validates required schema fields before writing', () => {
     const root = tempRoot();
 
