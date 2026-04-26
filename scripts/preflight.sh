@@ -21,6 +21,17 @@ action() {
   exit_code=2
 }
 
+is_windows_shell() {
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    MINGW*|MSYS*|CYGWIN*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 check_tool() {
   tool="$1"
   hint="$2"
@@ -31,7 +42,11 @@ check_tool() {
   fi
 
   action "tool $tool" "missing"
-  printf '  Windows hint: %s\n' "$hint"
+  if is_windows_shell; then
+    printf '  Windows hint: %s\n' "$hint"
+  else
+    printf '  Install hint: %s\n' "$hint"
+  fi
   return 1
 }
 
@@ -65,20 +80,20 @@ check_beads() {
     return 0
   fi
 
-  initialized=1
+  init_ok=0
   if bd show --json forge-byvq >/dev/null 2>&1; then
     ok "beads-init" "forge-byvq is readable"
-    initialized=0
+    init_ok=1
   else
     if bd init --database forge --prefix forge >/dev/null 2>&1; then
       fixed "beads-init" "ran bd init --database forge --prefix forge"
-      initialized=0
+      init_ok=1
     else
       action "beads-init" "bd init failed; inspect Beads setup manually"
     fi
   fi
 
-  if [ "$initialized" -ne 0 ]; then
+  if [ "$init_ok" -ne 1 ]; then
     return 0
   fi
 

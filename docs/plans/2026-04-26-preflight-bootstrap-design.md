@@ -1,7 +1,7 @@
 # Preflight Bootstrap Script Design
 
 **Feature:** preflight-bootstrap
-**Issue:** forge-byvq
+**Issue:** forge-byvq (local Beads issue; run `bd show forge-byvq`)
 **Date:** 2026-04-26
 **Status:** Planned
 

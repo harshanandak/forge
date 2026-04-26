@@ -52,8 +52,9 @@ TDD steps:
 
 1. Write test: covered by Task 1.
 2. Run test: `bun test test/scripts/preflight.test.js`.
-3. Implement: no additional code unless verification finds a defect.
-4. Run test: rerun focused test after any fix.
-5. Commit: no commit unless a verification fix is needed.
+3. Run pre-push validation: `node scripts/test.js --pre-push`.
+4. Implement: no additional code unless verification finds a defect.
+5. Run test: rerun focused test after any fix.
+6. Commit: no commit unless a verification fix is needed.
 
 Expected output: Focused preflight tests pass and changed files are limited to the requested artifacts plus plan/dev docs.
