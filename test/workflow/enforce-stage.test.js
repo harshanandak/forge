@@ -133,6 +133,66 @@ describe('workflow enforce-stage', () => {
     }
   });
 
+  test('enforceStageEntry allows verify without workflow state for post-merge checks', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-verify-missing-state-'));
+    try {
+      const result = await enforceStageEntry({
+        commandName: 'verify',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] }
+      });
+
+      expect(result).toEqual({
+        allowed: true,
+        stage: 'verify',
+        workflowState: null
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('enforceStageEntry allows validate without workflow state for direct hotfix gates', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-missing-state-'));
+    try {
+      const result = await enforceStageEntry({
+        commandName: 'validate',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] }
+      });
+
+      expect(result).toEqual({
+        allowed: true,
+        stage: 'validate',
+        workflowState: null
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('enforceStageEntry allows dev without workflow state for simple and hotfix starts', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-dev-missing-state-'));
+    try {
+      const result = await enforceStageEntry({
+        commandName: 'dev',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] }
+      });
+
+      expect(result).toEqual({
+        allowed: true,
+        stage: 'dev',
+        workflowState: null
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('enforceStageEntry reads workflow state from .forge-state.json when present', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-workflow-state-'));
     try {
