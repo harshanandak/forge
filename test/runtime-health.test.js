@@ -9,6 +9,7 @@ const { checkLefthookStatus } = require('../lib/lefthook-check');
 function createProjectRoot({ lefthookDependency = true, lefthookBinary = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runtime-health-'));
   fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true });
+  writeLefthookEntries(root);
 
   const packageJson = {
     name: 'runtime-health-fixture',
@@ -24,6 +25,12 @@ function createProjectRoot({ lefthookDependency = true, lefthookBinary = true } 
   }
 
   return root;
+}
+
+function writeLefthookEntries(root, hooksDir = path.join(root, '.lefthook', 'hooks')) {
+  fs.mkdirSync(hooksDir, { recursive: true });
+  fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
+  fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
 }
 
 function createExecStub({ missing = new Set(), hooksPath = '.lefthook/hooks', resolvedHooksDir = null } = {}) {
@@ -261,6 +268,27 @@ describe('runtime health checks', () => {
     expect(result.hardStop).toBe(false);
     expect(result.checks.hooks.active).toBe(true);
     expect(result.checks.hooks.state).toBe('active');
+  });
+
+  test('configured lefthook hooksPath requires lefthook hook entries', () => {
+    const projectRoot = createProjectRoot();
+    fs.rmSync(path.join(projectRoot, '.lefthook', 'hooks'), { recursive: true, force: true });
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks).toEqual(
+      expect.objectContaining({
+        active: false,
+        state: 'inactive',
+        verification: 'core.hooksPath',
+        missingHooks: ['pre-commit', 'pre-push']
+      })
+    );
   });
 
   test('worktree fallback marks hooks active when core.hooksPath is unset but resolved hook files exist', () => {
