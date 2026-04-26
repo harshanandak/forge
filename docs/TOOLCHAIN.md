@@ -31,6 +31,22 @@ Complete reference for all tools integrated with the Forge workflow.
 
 ---
 
+## Shell Model
+
+Forge commands and repo scripts run under the shell shown below:
+
+| Platform | Shell used by Forge commands and scripts |
+| --- | --- |
+| Windows | WSL, not Git Bash or native PowerShell |
+| macOS/Linux | Default login shell |
+
+Windows gotchas:
+
+- Paths crossing between Windows tools and WSL scripts may need translation with `wslpath`.
+- Do not assume Git Bash path semantics for Forge scripts on Windows.
+
+---
+
 ## Beads - Dolt-Backed Issue Tracking
 
 **Package**: `@beads/bd`  
