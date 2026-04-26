@@ -230,6 +230,48 @@ describe('project memory', () => {
     })).toThrow('projectRoot');
   });
 
+  test('rejects memory paths that traverse symlinks outside the project root', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const root = tempRoot();
+    const outside = tempRoot();
+    fs.symlinkSync(outside, path.join(root, '.forge'), 'dir');
+
+    expect(() => projectMemory.write(root, {
+      key: 'policy.symlink-escape',
+      value: 'must stay in repo',
+      sourceAgent: 'Codex',
+      tags: [],
+    })).toThrow('projectRoot');
+  });
+
+  test('recovers stale lockfiles owned by dead processes', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
+      pid: 99999999,
+      createdAt: '2026-04-26T00:00:00.000Z',
+    }), 'utf8');
+
+    projectMemory.write(root, {
+      key: 'policy.stale-lock',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.stale-lock')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
   test('serializes concurrent writers without losing entries', () => {
     const root = tempRoot();
     const worker = `
