@@ -280,6 +280,31 @@ describe('runtime health checks', () => {
     expect(result.checks.hooks.active).toBe(true);
   });
 
+  test('explicit non-lefthook hooksPath stays inactive even when default hooks exist', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: 'custom-hooks', resolvedHooksDir: hooksDir }),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks).toEqual(
+      expect.objectContaining({
+        active: false,
+        state: 'inactive',
+        verification: 'core.hooksPath',
+        hooksPath: 'custom-hooks'
+      })
+    );
+    expect(result.checks.hooks.message).toContain('custom-hooks');
+  });
+
   test('worktree fallback preserves missing-binary lefthook hard-stop when effective hooks are active', () => {
     const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
     const hooksDir = path.join(projectRoot, '.git', 'hooks');
