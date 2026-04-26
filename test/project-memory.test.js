@@ -1,5 +1,5 @@
 const { describe, test, expect, afterEach } = require('bun:test');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -272,7 +272,7 @@ describe('project memory', () => {
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
   });
 
-  test('serializes concurrent writers without losing entries', () => {
+  test('serializes concurrent writers without losing entries', async () => {
     const root = tempRoot();
     const worker = `
 const projectMemory = require(${JSON.stringify(workerModulePath)});
@@ -287,11 +287,17 @@ projectMemory.write(root, {
 });
 `;
 
-    const results = Array.from({ length: 8 }, (_unused, index) => spawnSync(
-      process.execPath,
-      ['-e', worker, root, String(index)],
-      { encoding: 'utf8', timeout: 15000 }
-    ));
+    const results = await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve) => {
+      const child = spawn(process.execPath, ['-e', worker, root, String(index)], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
+    })));
 
     for (const result of results) {
       expect(result.status).toBe(0);
