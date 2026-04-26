@@ -122,6 +122,28 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test('classifyPushTests maps runtime health and plan doc changes without forcing a full suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: [
+        '.gitignore',
+        'docs/plans/2026-04-26-preflight-bootstrap-design.md',
+        'lib/lefthook-check.js',
+        'scripts/preflight.sh',
+        'scripts/test.js',
+        'test/runtime-health.test.js',
+        'test/scripts/preflight.test.js',
+      ].join('\n'),
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/runtime-health.test.js',
+      'test/scripts/preflight.test.js',
+      'test/scripts/test-runner.test.js',
+    ]);
+  });
+
   test('classifyPushTests falls back to full suite for package-level changes', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: 'package.json\n',

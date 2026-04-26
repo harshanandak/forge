@@ -74,6 +74,14 @@ function stripGitHookEnv(sourceEnv = process.env) {
 }
 
 function isKnownTargetablePath(file) {
+  if (file === '.gitignore') {
+    return true;
+  }
+
+  if (file.startsWith('docs/plans/')) {
+    return true;
+  }
+
   return KNOWN_TARGETABLE_PREFIXES.some((prefix) => file.startsWith(prefix));
 }
 
