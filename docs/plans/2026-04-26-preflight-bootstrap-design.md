@@ -1,7 +1,7 @@
 # Preflight Bootstrap Script Design
 
 **Feature:** preflight-bootstrap
-**Issue:** forge-byvq (local Beads issue; run `bd show forge-byvq`)
+**Issue:** forge-byvq (local Beads issue; probe repo health with `bd list --json --limit 1`)
 **Date:** 2026-04-26
 **Status:** Planned
 
@@ -15,7 +15,7 @@ Create a first-run bootstrap check for developers before `/status` so missing CL
 - Missing tools produce Windows install hints and exit code 2.
 - `gh auth status` is checked and unauthenticated sessions exit code 2 with `gh auth login` guidance.
 - Beads schema repair runs through `bd doctor --fix --yes`.
-- If Beads is not initialized, the script runs `bd init --database forge --prefix forge`.
+- If Beads is not initialized, the script runs hook-preserving `bd init --database forge --prefix forge`.
 - Exit codes are stable: 0 means all good, 1 means fixable issues were repaired during the run, 2 means manual action is needed.
 - `test/scripts/preflight.test.js` covers happy path, fixable repair/init path, and manual-action failures.
 
@@ -32,8 +32,8 @@ Use a Bash script in `scripts/preflight.sh` because this repo already keeps work
 
 - `command -v` for tool availability.
 - `gh auth status` for GitHub login state.
-- `bd show --json forge-byvq` as a low-impact initialization probe.
-- `bd init --database forge --prefix forge` only when the probe fails.
+- `bd list --json --limit 1` as a low-impact database readability probe.
+- Hook-preserving `bd init --database forge --prefix forge` only when the probe fails.
 - `bd doctor --fix --yes` for schema health after initialization is available.
 - A small status accumulator where repaired Beads state sets exit code 1 unless a manual-action failure sets exit code 2.
 
@@ -68,8 +68,8 @@ Install hints are printed directly under missing-tool lines and remain Windows-f
 - Missing `bd`: skip Beads probes and doctor because manual installation is required.
 - Missing `gh`: skip auth status because auth cannot be checked.
 - `gh auth status` non-zero: exit 2 and print `gh auth login`.
-- `bd init` succeeds: mark the run fixable with exit 1.
-- `bd doctor --fix --yes` succeeds: mark the run fixable with exit 1, because the script may have repaired schema state.
+- Hook-preserving `bd init` succeeds: mark the run fixable with exit 1.
+- `bd doctor --fix --yes` succeeds: mark the run fixable with exit 1 when it follows an init repair or reports repair-like output.
 - `bd doctor --fix --yes` fails: exit 2.
 
 ## Ambiguity policy
@@ -93,5 +93,5 @@ OWASP analysis:
 TDD scenarios:
 
 - Happy path: all tools available, GitHub auth succeeds, Beads initialized, doctor succeeds, exit 0.
-- Fixable path: Beads is uninitialized, `bd init --database forge --prefix forge` runs, doctor succeeds, exit 1.
+- Fixable path: Beads is uninitialized, hook-preserving `bd init --database forge --prefix forge` runs, doctor succeeds, exit 1.
 - Manual path: missing `gh` or failed `gh auth status` prints Windows/login hints and exits 2.
