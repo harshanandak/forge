@@ -305,6 +305,25 @@ describe('runtime health checks', () => {
     expect(result.checks.hooks.message).toContain('custom-hooks');
   });
 
+  test('worktree fallback rejects non-lefthook hook files', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nnpm test\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nnpm run lint\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '', resolvedHooksDir: hooksDir }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.verification).toBe('git-path-hooks');
+    expect(result.checks.hooks.missingHooks).toEqual(['pre-commit', 'pre-push']);
+  });
+
   test('worktree fallback preserves missing-binary lefthook hard-stop when effective hooks are active', () => {
     const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
     const hooksDir = path.join(projectRoot, '.git', 'hooks');
