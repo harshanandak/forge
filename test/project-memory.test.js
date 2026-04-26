@@ -86,6 +86,23 @@ describe('project memory', () => {
     });
   });
 
+  test('normalizes read keys before lookup', () => {
+    const root = tempRoot();
+
+    projectMemory.write(root, {
+      key: ' preference.trimmed-read ',
+      value: 'read callers may pass padded keys',
+      sourceAgent: 'Codex',
+      timestamp: '2026-04-26T00:00:00.000Z',
+      tags: ['preference'],
+    });
+
+    expect(projectMemory.read(root, ' preference.trimmed-read ')).toMatchObject({
+      key: 'preference.trimmed-read',
+      value: 'read callers may pass padded keys',
+    });
+  });
+
   test('deduplicates all existing records for a key during upsert', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
@@ -334,7 +351,7 @@ projectMemory.write(root, {
 });
 `;
 
-    const results = await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve) => {
+    await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ['-e', worker, root, String(index)], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -343,13 +360,42 @@ projectMemory.write(root, {
 
       child.stdout.on('data', (chunk) => { stdout += chunk; });
       child.stderr.on('data', (chunk) => { stderr += chunk; });
-      child.on('close', (status) => resolve({ status, stdout, stderr }));
+      child.on('error', (err) => {
+        reject(new Error(`worker ${index} failed to spawn: ${err.message}`));
+      });
+      child.on('close', (status) => {
+        if (status === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(`worker ${index} exited with ${status}: ${stderr || stdout}`));
+      });
     })));
 
-    for (const result of results) {
-      expect(result.status).toBe(0);
-    }
     expect(projectMemory.search(root, 'concurrent')).toHaveLength(8);
+  });
+
+  test('rejects schema-invalid stored JSONL entries when reading', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(memoryFile, [
+      JSON.stringify({
+        key: 'policy.valid',
+        value: 'valid',
+        'source-agent': 'Codex',
+        timestamp: '2026-04-26T00:00:00.000Z',
+        tags: [],
+      }),
+      JSON.stringify({
+        key: 'policy.invalid',
+        value: 'missing disk source-agent',
+        sourceAgent: 'Codex',
+        tags: [],
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    expect(() => projectMemory.list(root)).toThrow('invalid project memory entry at line 2');
   });
 
   test('validates required schema fields before writing', () => {
