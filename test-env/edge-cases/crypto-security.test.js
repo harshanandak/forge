@@ -3,8 +3,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const { execFileSync } = require('node:child_process');
 
 const rootDir = path.join(__dirname, '..', '..');
@@ -14,18 +13,15 @@ describe('OWASP A02: Cryptographic Failures', () => {
     const gitignore = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf-8');
 
     test('.env.local pattern is in .gitignore', () => {
-      assert.ok(gitignore.includes('.env.local'), '.env.local should be in .gitignore');
+      expect(gitignore.includes('.env.local')).toBeTruthy();
     });
 
     test('.env pattern is in .gitignore', () => {
-      assert.ok(gitignore.includes('.env'), '.env should be in .gitignore');
+      expect(gitignore.includes('.env')).toBeTruthy();
     });
 
     test('.env.*.local pattern is in .gitignore', () => {
-      assert.ok(
-        gitignore.includes('.env.*.local'),
-        '.env.*.local should be in .gitignore'
-      );
+      expect(gitignore.includes('.env.*.local')).toBeTruthy();
     });
   });
 
@@ -65,19 +61,13 @@ describe('OWASP A02: Cryptographic Failures', () => {
     test('lib/ contains no hardcoded API keys or secrets', () => {
       const libDir = path.join(rootDir, 'lib');
       const violations = scanDirectory(libDir, secretPattern);
-      assert.strictEqual(
-        violations.length, 0,
-        `Found ${violations.length} hardcoded secrets in lib/:\n${violations.map(v => `  ${v.file}:${v.line}: ${v.content}`).join('\n')}`
-      );
+      expect(violations.length).toBe(0);
     });
 
     test('bin/ contains no hardcoded API keys or secrets', () => {
       const binDir = path.join(rootDir, 'bin');
       const violations = scanDirectory(binDir, secretPattern);
-      assert.strictEqual(
-        violations.length, 0,
-        `Found ${violations.length} hardcoded secrets in bin/:\n${violations.map(v => `  ${v.file}:${v.line}: ${v.content}`).join('\n')}`
-      );
+      expect(violations.length).toBe(0);
     });
   });
 
@@ -98,10 +88,7 @@ describe('OWASP A02: Cryptographic Failures', () => {
           violations.push(`  Line ${i + 1}: ${line.trim()}`);
         }
       }
-      assert.strictEqual(
-        violations.length, 0,
-        `agents-config.js contains hardcoded tokens:\n${violations.join('\n')}`
-      );
+      expect(violations.length).toBe(0);
     });
 
     test('MCP example config uses no inline secrets', () => {
@@ -110,10 +97,7 @@ describe('OWASP A02: Cryptographic Failures', () => {
         'utf-8'
       );
       const secretPattern = /(?:api[_-]?key|token|secret|password)\s*[:=]\s*['"][A-Za-z0-9+/=_-]{8,}['"]/i;
-      assert.ok(
-        !secretPattern.test(mcpExample),
-        '.mcp.json.example should not contain inline secrets'
-      );
+      expect(!secretPattern.test(mcpExample)).toBeTruthy();
     });
   });
 
@@ -134,10 +118,7 @@ describe('OWASP A02: Cryptographic Failures', () => {
         /^\.env($|\.)/.test(path.basename(f))
       );
 
-      assert.strictEqual(
-        envFiles.length, 0,
-        `Found tracked .env files: ${envFiles.join(', ')}`
-      );
+      expect(envFiles.length).toBe(0);
     });
   });
 });

@@ -1,8 +1,7 @@
 // Test: USER Section Extraction and Preservation
 // Tests for extractUserSections() and preserveUserSections()
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('fs');
 const path = require('path');
 
@@ -66,13 +65,13 @@ function preserveUserSections(filePath, sections) {
 }
 
 describe('USER Section Extraction & Preservation Tests', () => {
-  before(() => {
+  beforeAll(() => {
     if (!fs.existsSync(testDir)) {
       fs.mkdirSync(testDir, { recursive: true });
     }
   });
 
-  after(() => {
+  afterAll(() => {
     try {
       fs.rmdirSync(testDir, { recursive: true });
     } catch (_err) {
@@ -92,8 +91,8 @@ More content`;
       fs.writeFileSync(testFile, content);
 
       const sections = extractUserSections(testFile);
-      assert.strictEqual(Object.keys(sections).length, 1);
-      assert.strictEqual(sections.user_0.trim(), 'Custom content here');
+      expect(Object.keys(sections).length).toBe(1);
+      expect(sections.user_0.trim()).toBe('Custom content here');
 
       fs.unlinkSync(testFile);
     });
@@ -112,9 +111,9 @@ Second section
       fs.writeFileSync(testFile, content);
 
       const sections = extractUserSections(testFile);
-      assert.strictEqual(Object.keys(sections).length, 2);
-      assert.strictEqual(sections.user_0.trim(), 'First section');
-      assert.strictEqual(sections.user_1.trim(), 'Second section');
+      expect(Object.keys(sections).length).toBe(2);
+      expect(sections.user_0.trim()).toBe('First section');
+      expect(sections.user_1.trim()).toBe('Second section');
 
       fs.unlinkSync(testFile);
     });
@@ -122,7 +121,7 @@ Second section
     test('Returns empty object for non-existent file', () => {
       ensureTestDir();
       const sections = extractUserSections(path.join(testDir, 'nonexistent.md'));
-      assert.strictEqual(Object.keys(sections).length, 0);
+      expect(Object.keys(sections).length).toBe(0);
     });
   });
 
@@ -146,7 +145,7 @@ Original content
       preserveUserSections(testFile, sections);
 
       const restored = fs.readFileSync(testFile, 'utf-8');
-      assert.ok(restored.includes('Original content'));
+      expect(restored.includes('Original content')).toBeTruthy();
 
       fs.unlinkSync(testFile);
     });

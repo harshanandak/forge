@@ -2,8 +2,7 @@
 // Comprehensive security validation (shell injection, path traversal, unicode attacks)
 // Reuses patterns from test/rollback-edge-cases.test.js
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const path = require('node:path');
 
 // Security validation function (will be added to bin/forge.js)
@@ -66,248 +65,248 @@ describe('security-validation', () => {
   describe('Shell Injection Prevention', () => {
     test('should reject semicolon injection', () => {
       const result = validateUserInput('test;rm -rf /', 'path');
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('shell metacharacters'));
+      expect(result.valid).toBe(false);
+      expect(result.error.includes('shell metacharacters')).toBeTruthy();
     });
 
     test('should reject pipe injection', () => {
       const result = validateUserInput('test|cat /etc/passwd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject ampersand injection', () => {
       const result = validateUserInput('test&whoami', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject backtick injection', () => {
       const result = validateUserInput('test`whoami`', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject dollar sign command substitution', () => {
       const result = validateUserInput('test$(whoami)', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject newline injection', () => {
       const result = validateUserInput('test\nrm -rf /', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject carriage return injection', () => {
       const result = validateUserInput('test\rrm -rf /', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject output redirection', () => {
       const result = validateUserInput('test>/etc/passwd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject input redirection', () => {
       const result = validateUserInput('test</etc/passwd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject append operator', () => {
       const result = validateUserInput('test>>/etc/passwd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject AND operator', () => {
       const result = validateUserInput('test&&whoami', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject OR operator', () => {
       const result = validateUserInput('test||whoami', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject parentheses', () => {
       const result = validateUserInput('test(ls)', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject angle brackets', () => {
       const result = validateUserInput('<script>alert(1)</script>', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject multiple operators', () => {
       const result = validateUserInput('test;|&&&||', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
   });
 
   describe('Path Traversal Prevention', () => {
     test('should reject parent directory traversal', () => {
       const result = validateUserInput('../../../etc/passwd', 'path');
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('outside project root'));
+      expect(result.valid).toBe(false);
+      expect(result.error.includes('outside project root')).toBeTruthy();
     });
 
     test('should reject absolute Unix paths', () => {
       const result = validateUserInput('/etc/passwd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject URL-encoded dot', () => {
       const result = validateUserInput('%2e%2e/passwd', 'path');
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('URL-encoded'));
+      expect(result.valid).toBe(false);
+      expect(result.error.includes('URL-encoded')).toBeTruthy();
     });
 
     test('should reject URL-encoded slash', () => {
       const result = validateUserInput('..%2fpasswd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject URL-encoded backslash', () => {
       const result = validateUserInput('..%5cpasswd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject mixed URL encoding', () => {
       const result = validateUserInput('..%2F..%2Fetc', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject Windows path traversal', () => {
       const result = validateUserInput('..\\..\\windows\\system32', 'path');
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('Backslash') || result.error.includes('ASCII') || result.error.includes('outside'));
+      expect(result.valid).toBe(false);
+      expect(result.error.includes('Backslash') || result.error.includes('ASCII') || result.error.includes('outside')).toBeTruthy();
     });
 
     test('should reject Windows drive letters', () => {
       const result = validateUserInput('C:\\Windows\\System32', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject UNC paths', () => {
       const result = validateUserInput('\\\\server\\share', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should allow safe relative paths', () => {
       const result = validateUserInput('docs/readme.md', 'path');
-      assert.strictEqual(result.valid, true, 'Safe relative paths should be allowed');
+      expect(result.valid).toBe(true);
     });
   });
 
   describe('Unicode Injection', () => {
     test('should reject zero-width space', () => {
       const result = validateUserInput('test\u200Bfile', 'path');
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.error.includes('ASCII'));
+      expect(result.valid).toBe(false);
+      expect(result.error.includes('ASCII')).toBeTruthy();
     });
 
     test('should reject right-to-left override', () => {
       const result = validateUserInput('test\u202Efile', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject emoji in path', () => {
       const result = validateUserInput('📁folder/file.txt', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject Chinese characters', () => {
       const result = validateUserInput('路径/file.txt', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject Cyrillic lookalikes', () => {
       const result = validateUserInput('аdmin', 'path'); // First 'а' is Cyrillic
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject homoglyph attacks', () => {
       const result = validateUserInput('раypal', 'path'); // 'а' and 'р' are Cyrillic
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject non-printable ASCII', () => {
       const result = validateUserInput('test\x00file', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should reject high-bit characters', () => {
       const result = validateUserInput('test\xFFfile', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
   });
 
   describe('Input Sanitization by Type', () => {
     test('agent name - should allow valid format', () => {
       const result = validateUserInput('claude-code', 'agent');
-      assert.strictEqual(result.valid, true);
+      expect(result.valid).toBe(true);
     });
 
     test('agent name - should reject uppercase', () => {
       const result = validateUserInput('Claude-Code', 'agent');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('agent name - should reject underscores', () => {
       const result = validateUserInput('claude_code', 'agent');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('agent name - should reject special characters', () => {
       const result = validateUserInput('claude@code', 'agent');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('commit hash - should allow valid short hash', () => {
       const result = validateUserInput('abc123', 'hash');
-      assert.strictEqual(result.valid, true);
+      expect(result.valid).toBe(true);
     });
 
     test('commit hash - should allow valid long hash', () => {
       const result = validateUserInput('abc123def456abc123def456abc123def456abcd', 'hash');
-      assert.strictEqual(result.valid, true);
+      expect(result.valid).toBe(true);
     });
 
     test('commit hash - should reject non-hex characters', () => {
       const result = validateUserInput('xyz123', 'hash');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('commit hash - should reject too short', () => {
       const result = validateUserInput('abc', 'hash');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('commit hash - should reject too long', () => {
       const result = validateUserInput('a'.repeat(41), 'hash');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('path - should allow alphanumeric with dash', () => {
       const result = validateUserInput('my-project-123', 'path');
-      assert.strictEqual(result.valid, true);
+      expect(result.valid).toBe(true);
     });
   });
 
   describe('Edge Case Combinations', () => {
     test('should reject multiple attack vectors combined', () => {
       const result = validateUserInput(';../../../etc\npässwd', 'path');
-      assert.strictEqual(result.valid, false);
+      expect(result.valid).toBe(false);
     });
 
     test('should handle empty string', () => {
       const result = validateUserInput('', 'path');
       // Empty string is technically valid ASCII, behavior may vary
       // Just verify it doesn't crash
-      assert.ok(typeof result.valid === 'boolean');
+      expect(typeof result.valid === 'boolean').toBeTruthy();
     });
 
     test('should handle very long input', () => {
       const result = validateUserInput('a'.repeat(10000), 'path');
       // Should not crash on long input
-      assert.ok(typeof result.valid === 'boolean');
+      expect(typeof result.valid === 'boolean').toBeTruthy();
     });
   });
 });

@@ -1,8 +1,7 @@
 // Test: Prerequisites Validation Edge Cases
 // Validates checkPrerequisites() detection of missing tools and version constraints
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -88,7 +87,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.ok(result.errors.some(e => e.includes('git')), 'Should detect missing git');
+      expect(result.errors.some(e => e.includes('git'))).toBeTruthy();
     });
 
     test('should detect missing gh', () => {
@@ -100,7 +99,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.ok(result.errors.some(e => e.includes('gh')), 'Should detect missing gh');
+      expect(result.errors.some(e => e.includes('gh'))).toBeTruthy();
     });
 
     test('should detect old Node version', () => {
@@ -113,7 +112,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 19 });
-      assert.ok(result.errors.some(e => e.includes('Node.js 20+')), 'Should detect old Node version');
+      expect(result.errors.some(e => e.includes('Node.js 20+'))).toBeTruthy();
     });
 
     test('should detect missing package manager', () => {
@@ -125,7 +124,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.ok(result.errors.some(e => e.includes('package manager')), 'Should detect missing package manager');
+      expect(result.errors.some(e => e.includes('package manager'))).toBeTruthy();
     });
   });
 
@@ -140,7 +139,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.ok(!result.errors.some(e => e.includes('Node.js')), 'Node 20 should pass');
+      expect(!result.errors.some(e => e.includes('Node.js'))).toBeTruthy();
     });
 
     test('Node 22 - should pass', () => {
@@ -153,7 +152,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 22 });
-      assert.ok(!result.errors.some(e => e.includes('Node.js')), 'Node 22 should pass');
+      expect(!result.errors.some(e => e.includes('Node.js'))).toBeTruthy();
     });
 
     test('Node 19.9.9 - should fail', () => {
@@ -166,7 +165,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 19 });
-      assert.ok(result.errors.some(e => e.includes('Node.js 20+')), 'Node 19 should fail');
+      expect(result.errors.some(e => e.includes('Node.js 20+'))).toBeTruthy();
     });
   });
 
@@ -181,7 +180,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.ok(result.warnings.some(w => w.includes('not authenticated')), 'Should warn about unauthenticated gh');
+      expect(result.warnings.some(w => w.includes('not authenticated'))).toBeTruthy();
     });
 
     test('authenticated gh - should be OK', () => {
@@ -194,7 +193,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.ok(!result.warnings.some(w => w.includes('not authenticated')), 'Should not warn if authenticated');
+      expect(!result.warnings.some(w => w.includes('not authenticated'))).toBeTruthy();
     });
   });
 
@@ -209,7 +208,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.strictEqual(result.pkgManager, 'npm', 'Should detect npm');
+      expect(result.pkgManager).toBe('npm');
     });
 
     test('should detect yarn', () => {
@@ -222,7 +221,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.strictEqual(result.pkgManager, 'yarn', 'Should detect yarn');
+      expect(result.pkgManager).toBe('yarn');
     });
 
     test('should detect pnpm', () => {
@@ -235,7 +234,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.strictEqual(result.pkgManager, 'pnpm', 'Should detect pnpm');
+      expect(result.pkgManager).toBe('pnpm');
     });
 
     test('should detect bun', () => {
@@ -248,7 +247,7 @@ describe('prerequisites-edge-cases', () => {
       };
 
       const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20 });
-      assert.strictEqual(result.pkgManager, 'bun', 'Should detect bun');
+      expect(result.pkgManager).toBe('bun');
     });
 
     test('lockfile should override binary priority', () => {
@@ -268,7 +267,7 @@ describe('prerequisites-edge-cases', () => {
         };
 
         const result = checkPrerequisitesTest({ mockExec, nodeVersion: 20, projectRoot: tempDir });
-        assert.strictEqual(result.pkgManager, 'yarn', 'yarn.lock should override npm detection');
+        expect(result.pkgManager).toBe('yarn');
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
       }

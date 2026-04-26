@@ -1,8 +1,7 @@
 // Test: Git State Edge Cases
 // Validates git state warnings and blocking using git-state-checker.js
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const path = require('node:path');
 const { ensureTestFixtures, FIXTURES_DIR } = require('../helpers/fixtures.js');
 
@@ -23,8 +22,8 @@ describe('git-state-edge-cases', () => {
 
       const result = isDetachedHead(fixturePath);
 
-      assert.strictEqual(result.detached, true, 'Should detect detached HEAD');
-      assert.strictEqual(result.branch, null, 'Branch should be null when detached');
+      expect(result.detached).toBe(true);
+      expect(result.branch).toBe(null);
     });
 
     test('should allow detached HEAD to pass with warning', () => {
@@ -39,10 +38,7 @@ describe('git-state-edge-cases', () => {
       );
 
       // Either it passes with warning, or it "fails" but with low severity
-      assert.ok(
-        result.passed || hasDetachedWarning,
-        'Should either pass or have detached HEAD warning'
-      );
+      expect(result.passed || hasDetachedWarning).toBeTruthy();
     });
   });
 
@@ -52,12 +48,9 @@ describe('git-state-edge-cases', () => {
 
       const result = hasUncommittedChanges(fixturePath);
 
-      assert.strictEqual(result.hasChanges, true, 'Should detect uncommitted changes');
-      assert.ok(result.files.length > 0, 'Should list uncommitted files');
-      assert.ok(
-        result.files.some(f => f.includes('uncommitted.txt')),
-        'Should detect uncommitted.txt file'
-      );
+      expect(result.hasChanges).toBe(true);
+      expect(result.files.length > 0).toBeTruthy();
+      expect(result.files.some(f => f.includes('uncommitted.txt'))).toBeTruthy();
     });
 
     test('should allow uncommitted changes to pass with warning', () => {
@@ -70,10 +63,7 @@ describe('git-state-edge-cases', () => {
         /uncommitted changes/i.test(f.reason)
       );
 
-      assert.ok(
-        result.passed || hasUncommittedWarning,
-        'Should either pass or have uncommitted changes warning'
-      );
+      expect(result.passed || hasUncommittedWarning).toBeTruthy();
     });
   });
 
@@ -83,7 +73,7 @@ describe('git-state-edge-cases', () => {
 
       const result = hasMergeConflict(fixturePath);
 
-      assert.strictEqual(result.hasConflict, true, 'Should detect merge conflict');
+      expect(result.hasConflict).toBe(true);
     });
 
     test('should block installation on merge conflict', () => {
@@ -92,7 +82,7 @@ describe('git-state-edge-cases', () => {
       const result = checkGitState(fixturePath);
 
       // Merge conflicts should FAIL validation (blocking)
-      assert.strictEqual(result.passed, false, 'Should fail validation on merge conflict');
+      expect(result.passed).toBe(false);
     });
 
     test('should provide helpful error message for merge conflict', () => {
@@ -105,14 +95,11 @@ describe('git-state-edge-cases', () => {
         /merge conflict/i.test(f.reason)
       );
 
-      assert.ok(hasConflictError, 'Should have merge conflict error message');
+      expect(hasConflictError).toBeTruthy();
 
       // Error message should suggest resolution
       const conflictFailure = result.failures.find(f => /merge conflict/i.test(f.reason));
-      assert.ok(
-        conflictFailure && conflictFailure.reason.length > 10,
-        'Should provide detailed error message'
-      );
+      expect(conflictFailure && conflictFailure.reason.length > 10).toBeTruthy();
     });
   });
 
@@ -122,9 +109,9 @@ describe('git-state-edge-cases', () => {
 
       const result = checkGitState(fixturePath);
 
-      assert.strictEqual(result.passed, true, 'Clean repository should pass');
+      expect(result.passed).toBe(true);
       // Note: May have warnings (like detached HEAD) but should still pass overall
-      assert.ok(result.coverage > 0, 'Should have some coverage');
+      expect(result.coverage > 0).toBeTruthy();
     });
   });
 
@@ -134,11 +121,8 @@ describe('git-state-edge-cases', () => {
 
       const result = checkGitState(fixturePath);
 
-      assert.strictEqual(result.passed, false, 'Should fail without .git');
-      assert.ok(
-        result.failures.some(f => /not a git repository/i.test(f.reason)),
-        'Should have "not a git repository" error'
-      );
+      expect(result.passed).toBe(false);
+      expect(result.failures.some(f => /not a git repository/i.test(f.reason))).toBeTruthy();
     });
   });
 });

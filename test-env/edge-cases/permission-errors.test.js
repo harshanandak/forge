@@ -1,8 +1,7 @@
 // Test: Permission Error Edge Cases
 // Validates graceful handling of filesystem permission errors
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
@@ -13,11 +12,11 @@ let testDir;
 
 ensureTestFixtures();
 
-before(() => {
+beforeAll(() => {
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-permissions-'));
 });
 
-after(() => {
+afterAll(() => {
   // Clean up - restore permissions before removing
   try {
     // Restore write permissions for cleanup
@@ -78,8 +77,8 @@ describe('permission-errors', () => {
 
       // On Unix, should detect no write permission
       if (process.platform !== 'win32') {
-        assert.strictEqual(result.writable, false, 'Should detect read-only directory');
-        assert.ok(result.error, 'Should have error message');
+        expect(result.writable).toBe(false);
+        expect(result.error).toBeTruthy();
       }
     });
 
@@ -94,7 +93,7 @@ describe('permission-errors', () => {
         // On Unix, check permissions
         if (process.platform !== 'win32') {
           const mode = stats.mode & 0o777;
-          assert.strictEqual(mode, 0o444, 'Fixture .claude should be read-only (444)');
+          expect(mode).toBe(0o444);
         }
       }
     });
@@ -115,8 +114,8 @@ describe('permission-errors', () => {
       const result = checkWritePermission(nestedDir);
 
       if (process.platform !== 'win32') {
-        assert.strictEqual(result.writable, false);
-        assert.ok(result.error.includes('permission'), 'Error should mention permission');
+        expect(result.writable).toBe(false);
+        expect(result.error.includes('permission')).toBeTruthy();
       }
     });
   });
@@ -138,11 +137,11 @@ describe('permission-errors', () => {
         fs.writeFileSync(filePath, 'new content');
         // If we get here on Unix, something is wrong
         if (process.platform !== 'win32') {
-          assert.fail('Should not be able to write to read-only file');
+          throw new Error('Should not be able to write to read-only file');
         }
       } catch (err) {
         if (process.platform !== 'win32') {
-          assert.ok(err.code === 'EACCES' || err.code === 'EPERM', 'Should get permission error');
+          expect(err.code === 'EACCES' || err.code === 'EPERM').toBeTruthy();
         }
       }
     });
@@ -155,16 +154,16 @@ describe('permission-errors', () => {
       const result = checkWritePermission(path.join(dir, 'nonexistent.txt'));
 
       // Should return a result (may vary by platform)
-      assert.ok(typeof result.writable === 'boolean', 'Should return writable status');
+      expect(typeof result.writable === 'boolean').toBeTruthy();
     });
 
     test('should handle permission errors gracefully', () => {
       const result = checkWritePermission('/root/protected.txt');
 
       // Should return error object, not throw
-      assert.ok(typeof result.writable === 'boolean', 'Should return result object');
+      expect(typeof result.writable === 'boolean').toBeTruthy();
       if (!result.writable) {
-        assert.ok(result.error, 'Should have error message');
+        expect(result.error).toBeTruthy();
       }
     });
   });
@@ -184,12 +183,12 @@ describe('permission-errors', () => {
       const result = checkWritePermission(readOnlyDir);
 
       if (process.platform !== 'win32') {
-        assert.strictEqual(result.writable, false);
+        expect(result.writable).toBe(false);
         // Should suggest fix based on platform
         if (process.platform === 'win32') {
-          assert.ok(result.error.includes('Administrator'), 'Should suggest Administrator on Windows');
+          expect(result.error.includes('Administrator')).toBeTruthy();
         } else {
-          assert.ok(result.error.includes('sudo'), 'Should suggest sudo on Unix');
+          expect(result.error.includes('sudo')).toBeTruthy();
         }
       }
     });
@@ -226,7 +225,7 @@ describe('permission-errors', () => {
 
       // No partial files should be created (Unix only)
       if (process.platform !== 'win32') {
-        assert.strictEqual(filesAfter.length, filesBefore.length, 'Should not create partial files');
+        expect(filesAfter.length).toBe(filesBefore.length);
       }
     });
   });

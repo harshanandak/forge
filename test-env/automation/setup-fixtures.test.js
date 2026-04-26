@@ -1,8 +1,7 @@
 // Test: setup-fixtures.sh
 // Validates that all 15 test fixtures are created correctly
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 // SECURITY: Using execSync with HARDCODED script path only (no user input)
@@ -30,24 +29,24 @@ describe('setup-fixtures.sh', () => {
   test('should create all 15 fixtures', () => {
     for (const fixture of EXPECTED_FIXTURES) {
       const fixturePath = path.join(FIXTURES_DIR, fixture);
-      assert.ok(fs.existsSync(fixturePath), `Fixture should exist: ${fixture}`);
+      expect(fs.existsSync(fixturePath)).toBeTruthy();
     }
   });
 
   describe('Fixture: fresh-project', () => {
     const fixturePath = path.join(FIXTURES_DIR, 'fresh-project');
     test('should have .git directory', () => {
-      assert.ok(fs.existsSync(path.join(fixturePath, '.git')));
+      expect(fs.existsSync(path.join(fixturePath, '.git'))).toBeTruthy();
     });
     test('should have clean git state', () => {
-      assert.strictEqual(checkGitState(fixturePath).passed, true);
+      expect(checkGitState(fixturePath).passed).toBe(true);
     });
   });
 
   describe('Fixture: no-git', () => {
     const fixturePath = path.join(FIXTURES_DIR, 'no-git');
     test('should NOT have .git directory', () => {
-      assert.strictEqual(fs.existsSync(path.join(fixturePath, '.git')), false);
+      expect(fs.existsSync(path.join(fixturePath, '.git'))).toBe(false);
     });
   });
 
@@ -55,7 +54,7 @@ describe('setup-fixtures.sh', () => {
     test('should have uncommitted changes', () => {
       const fixturePath = path.join(FIXTURES_DIR, 'dirty-git');
       const result = hasUncommittedChanges(fixturePath);
-      assert.strictEqual(result.hasChanges, true);
+      expect(result.hasChanges).toBe(true);
     });
   });
 
@@ -63,7 +62,7 @@ describe('setup-fixtures.sh', () => {
     test('should be in detached HEAD state', () => {
       const fixturePath = path.join(FIXTURES_DIR, 'detached-head');
       const result = isDetachedHead(fixturePath);
-      assert.strictEqual(result.detached, true);
+      expect(result.detached).toBe(true);
     });
   });
 
@@ -71,14 +70,14 @@ describe('setup-fixtures.sh', () => {
     test('should have active merge conflict', () => {
       const fixturePath = path.join(FIXTURES_DIR, 'merge-conflict');
       const result = hasMergeConflict(fixturePath);
-      assert.strictEqual(result.hasConflict, true);
+      expect(result.hasConflict).toBe(true);
     });
   });
 
   describe('Fixture: monorepo', () => {
     test('should have pnpm-workspace.yaml', () => {
       const fixturePath = path.join(FIXTURES_DIR, 'monorepo');
-      assert.ok(fs.existsSync(path.join(fixturePath, 'pnpm-workspace.yaml')));
+      expect(fs.existsSync(path.join(fixturePath, 'pnpm-workspace.yaml'))).toBeTruthy();
     });
   });
 
@@ -86,7 +85,7 @@ describe('setup-fixtures.sh', () => {
     test('should have AGENTS.md with >300 lines', () => {
       const fixturePath = path.join(FIXTURES_DIR, 'large-agents-md');
       const content = fs.readFileSync(path.join(fixturePath, 'AGENTS.md'), 'utf8');
-      assert.ok(content.split('\n').length > 300);
+      expect(content.split('\n').length > 300).toBeTruthy();
     });
   });
 
@@ -94,6 +93,6 @@ describe('setup-fixtures.sh', () => {
     const result = execFileSync(resolveBashCommand(), [SETUP_SCRIPT], {
       cwd: __dirname, stdio: 'pipe', encoding: 'utf8'
     });
-    assert.match(result, /Fixture already exists|Skipped/i);
+    expect(result).toMatch(/Fixture already exists|Skipped/i);
   });
 });

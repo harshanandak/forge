@@ -1,8 +1,7 @@
 // Test: Network Failures and Retry Logic Edge Cases
 // Validates safeExecWithRetry() handling of network failures and retry mechanisms
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const { execSync } = require('node:child_process');
 
 // Retry function implementation for testing
@@ -49,22 +48,22 @@ describe('network-failures-edge-cases', () => {
   describe('Retry Logic', () => {
     test('should succeed on first attempt with valid command', () => {
       const result = safeExecWithRetry('echo "test"', { maxRetries: 3 });
-      assert.strictEqual(result.success, true, 'Should succeed on first try');
-      assert.strictEqual(result.attempts, 1, 'Should only attempt once');
-      assert.ok(result.output, 'Should have output');
+      expect(result.success).toBe(true);
+      expect(result.attempts).toBe(1);
+      expect(result.output).toBeTruthy();
     });
 
     test('should retry on failed command', () => {
       const result = safeExecWithRetry('node -e "process.exit(1)"', { maxRetries: 2, initialDelay: 50 });
-      assert.strictEqual(result.success, false, 'Should fail after retries');
-      assert.strictEqual(result.attempts, 3, 'Should attempt 3 times (1 + 2 retries)');
-      assert.ok(result.error, 'Should have error message');
+      expect(result.success).toBe(false);
+      expect(result.attempts).toBe(3);
+      expect(result.error).toBeTruthy();
     });
 
     test('should respect maxRetries setting', () => {
       const result = safeExecWithRetry('node -e "process.exit(1)"', { maxRetries: 1, initialDelay: 50 });
-      assert.strictEqual(result.success, false, 'Should fail');
-      assert.strictEqual(result.attempts, 2, 'Should attempt 2 times (1 + 1 retry)');
+      expect(result.success).toBe(false);
+      expect(result.attempts).toBe(2);
     });
 
     test('should use exponential backoff', () => {
@@ -75,9 +74,9 @@ describe('network-failures-edge-cases', () => {
         maxDelay: 500
       });
       const duration = Date.now() - startTime;
-      assert.strictEqual(result.success, false, 'Should fail');
-      assert.strictEqual(result.attempts, 3, 'Should attempt 3 times');
-      assert.ok(duration >= 250, 'Should use exponential backoff delays');
+      expect(result.success).toBe(false);
+      expect(result.attempts).toBe(3);
+      expect(duration >= 250).toBeTruthy();
     });
   });
 
@@ -90,22 +89,22 @@ describe('network-failures-edge-cases', () => {
         maxDelay: 150,
         onDelay: delay => delays.push(delay)
       });
-      assert.strictEqual(result.attempts, 4, 'Should attempt 4 times (1 + 3 retries)');
-      assert.deepStrictEqual(delays, [100, 150, 150], 'Should cap exponential backoff at maxDelay');
+      expect(result.attempts).toBe(4);
+      expect(delays).toEqual([100, 150, 150]);
     });
 
     test('should handle zero retries', () => {
       const result = safeExecWithRetry('node -e "process.exit(1)"', { maxRetries: 0 });
-      assert.strictEqual(result.success, false, 'Should fail');
-      assert.strictEqual(result.attempts, 1, 'Should only attempt once with maxRetries=0');
+      expect(result.success).toBe(false);
+      expect(result.attempts).toBe(1);
     });
   });
 
   describe('Command Execution', () => {
     test('should capture command output on success', () => {
       const result = safeExecWithRetry('echo "hello world"', { maxRetries: 1 });
-      assert.strictEqual(result.success, true, 'Should succeed');
-      assert.ok(result.output.includes('hello'), 'Should capture output');
+      expect(result.success).toBe(true);
+      expect(result.output.includes('hello')).toBeTruthy();
     });
 
     test('should handle command timeout', () => {
@@ -113,7 +112,7 @@ describe('network-failures-edge-cases', () => {
         maxRetries: 1,
         timeout: 5000
       });
-      assert.strictEqual(result.success, true, 'Should succeed before timeout');
+      expect(result.success).toBe(true);
     });
 
     test('should provide error details on failure', () => {
@@ -121,9 +120,9 @@ describe('network-failures-edge-cases', () => {
         maxRetries: 1,
         initialDelay: 50
       });
-      assert.strictEqual(result.success, false, 'Should fail');
-      assert.ok(result.error, 'Should have error message');
-      assert.strictEqual(result.attempts, 2, 'Should retry once');
+      expect(result.success).toBe(false);
+      expect(result.error).toBeTruthy();
+      expect(result.attempts).toBe(2);
     });
   });
 });

@@ -1,8 +1,7 @@
 // Test: Env Validator Helper
 // Tests for .env.local file validation and preservation
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
@@ -17,12 +16,12 @@ const {
 
 let testDir;
 
-before(() => {
+beforeAll(() => {
   // Create temp directory for tests
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-env-'));
 });
 
-after(() => {
+afterAll(() => {
   // Cleanup
   rmSync(testDir, { recursive: true, force: true });
 });
@@ -35,8 +34,8 @@ describe('env-validator', () => {
 
       const result = validateEnvFile(envPath);
 
-      assert.strictEqual(result.passed, true);
-      assert.strictEqual(result.failures.length, 0);
+      expect(result.passed).toBe(true);
+      expect(result.failures.length).toBe(0);
     });
 
     test('should detect malformed entries', () => {
@@ -45,8 +44,8 @@ describe('env-validator', () => {
 
       const result = validateEnvFile(envPath);
 
-      assert.strictEqual(result.passed, false);
-      assert.ok(result.failures.length > 0);
+      expect(result.passed).toBe(false);
+      expect(result.failures.length > 0).toBeTruthy();
     });
 
     test('should detect missing equals sign', () => {
@@ -55,8 +54,8 @@ describe('env-validator', () => {
 
       const result = validateEnvFile(envPath);
 
-      assert.strictEqual(result.passed, false);
-      assert.match(result.failures[0].reason, /invalid format/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures[0].reason).toMatch(/invalid format/i);
     });
 
     test('should allow comments and empty lines', () => {
@@ -65,7 +64,7 @@ describe('env-validator', () => {
 
       const result = validateEnvFile(envPath);
 
-      assert.strictEqual(result.passed, true);
+      expect(result.passed).toBe(true);
     });
 
     test('should return unified interface format', () => {
@@ -75,14 +74,14 @@ describe('env-validator', () => {
       const result = validateEnvFile(envPath);
 
       // Check interface structure
-      assert.ok('passed' in result);
-      assert.ok('failures' in result);
-      assert.ok('coverage' in result);
+      expect('passed' in result).toBeTruthy();
+      expect('failures' in result).toBeTruthy();
+      expect('coverage' in result).toBeTruthy();
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-      assert.strictEqual(typeof result.coverage, 'number');
-      assert.ok(result.coverage >= 0 && result.coverage <= 1);
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
+      expect(typeof result.coverage).toBe('number');
+      expect(result.coverage >= 0 && result.coverage <= 1).toBeTruthy();
     });
   });
 
@@ -92,9 +91,9 @@ describe('env-validator', () => {
 
       const result = parseEnvFile(content);
 
-      assert.ok(result.variables);
-      assert.strictEqual(result.variables.API_KEY, 'abc123');
-      assert.strictEqual(result.variables.DATABASE_URL, 'postgres://localhost');
+      expect(result.variables).toBeTruthy();
+      expect(result.variables.API_KEY).toBe('abc123');
+      expect(result.variables.DATABASE_URL).toBe('postgres://localhost');
     });
 
     test('should handle quoted values', () => {
@@ -102,8 +101,8 @@ describe('env-validator', () => {
 
       const result = parseEnvFile(content);
 
-      assert.strictEqual(result.variables.QUOTED, 'value with spaces');
-      assert.strictEqual(result.variables.SINGLE, 'single quoted');
+      expect(result.variables.QUOTED).toBe('value with spaces');
+      expect(result.variables.SINGLE).toBe('single quoted');
     });
 
     test('should preserve comments', () => {
@@ -111,8 +110,8 @@ describe('env-validator', () => {
 
       const result = parseEnvFile(content);
 
-      assert.ok(Array.isArray(result.comments));
-      assert.ok(result.comments.length >= 2);
+      expect(Array.isArray(result.comments)).toBeTruthy();
+      expect(result.comments.length >= 2).toBeTruthy();
     });
 
     test('should ignore empty lines', () => {
@@ -120,7 +119,7 @@ describe('env-validator', () => {
 
       const result = parseEnvFile(content);
 
-      assert.strictEqual(Object.keys(result.variables).length, 2);
+      expect(Object.keys(result.variables).length).toBe(2);
     });
 
     test('should handle multiline values', () => {
@@ -129,7 +128,7 @@ describe('env-validator', () => {
 
       const result = parseEnvFile(content);
 
-      assert.strictEqual(result.variables.SIMPLE, 'value');
+      expect(result.variables.SIMPLE).toBe('value');
     });
   });
 
@@ -140,8 +139,8 @@ describe('env-validator', () => {
 
       const result = checkPreservation(oldContent, newContent);
 
-      assert.strictEqual(result.passed, true);
-      assert.strictEqual(result.failures.length, 0);
+      expect(result.passed).toBe(true);
+      expect(result.failures.length).toBe(0);
     });
 
     test('should detect new variables added', () => {
@@ -150,7 +149,7 @@ describe('env-validator', () => {
 
       const result = checkPreservation(oldContent, newContent);
 
-      assert.strictEqual(result.passed, true);
+      expect(result.passed).toBe(true);
       // No failures because adding is allowed
     });
 
@@ -160,8 +159,8 @@ describe('env-validator', () => {
 
       const result = checkPreservation(oldContent, newContent);
 
-      assert.strictEqual(result.passed, false);
-      assert.ok(result.failures.some(f => /removed/i.test(f.reason)));
+      expect(result.passed).toBe(false);
+      expect(result.failures.some(f => /removed/i.test(f.reason))).toBeTruthy();
     });
 
     test('should detect changed values', () => {
@@ -170,8 +169,8 @@ describe('env-validator', () => {
 
       const result = checkPreservation(oldContent, newContent);
 
-      assert.strictEqual(result.passed, false);
-      assert.ok(result.failures.some(f => /changed/i.test(f.reason)));
+      expect(result.passed).toBe(false);
+      expect(result.failures.some(f => /changed/i.test(f.reason))).toBeTruthy();
     });
 
     test('should preserve comments', () => {
@@ -181,7 +180,7 @@ describe('env-validator', () => {
       const result = checkPreservation(oldContent, newContent);
 
       // Comments should be preserved
-      assert.strictEqual(result.passed, true);
+      expect(result.passed).toBe(true);
     });
   });
 });
