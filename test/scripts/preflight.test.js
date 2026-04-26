@@ -7,6 +7,7 @@ const { spawnSync } = require('node:child_process');
 const { describe, expect, test } = require('bun:test');
 
 const {
+  BASH_PATH_ENV,
   PROJECT_ROOT,
   cleanupTmpDir,
   resolveBashCommand,
@@ -17,6 +18,24 @@ const SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'preflight.sh');
 
 function writeExecutable(filePath, content) {
   fs.writeFileSync(filePath, content, { mode: 0o755 });
+}
+
+function writeUtilityShim(binDir, name) {
+  writeExecutable(
+    path.join(binDir, name),
+    `#!/bin/sh
+PATH="${BASH_PATH_ENV}"
+export PATH
+exec ${name} "$@"
+`,
+  );
+}
+
+function isExecutable(filePath) {
+  if (process.platform === 'win32') {
+    return true;
+  }
+  return Boolean(fs.statSync(filePath).mode & 0o111);
 }
 
 function makeMockBin({
@@ -30,6 +49,10 @@ function makeMockBin({
 } = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-bin-'));
   const logPath = path.join(tmpDir, 'calls.log');
+
+  for (const tool of ['chmod', 'cp', 'find', 'git', 'mkdir', 'mktemp', 'rm', 'tr']) {
+    writeUtilityShim(tmpDir, tool);
+  }
 
   if (includeBd) {
     writeExecutable(
@@ -121,6 +144,16 @@ function makeMockPathEnv(tmpDir) {
     : { PATH: pathValue };
 }
 
+function makeGitDirWithHooks() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-git-'));
+  const hooksDir = path.join(tmpDir, 'hooks');
+  fs.mkdirSync(hooksDir, { recursive: true });
+
+  const prepareHook = path.join(hooksDir, 'prepare-commit-msg');
+  writeExecutable(prepareHook, '#!/bin/sh\nprintf custom-hook\n');
+  return { hooksDir, prepareHook, tmpDir };
+}
+
 describe('scripts/preflight.sh', () => {
   test('exits 0 when tools, GitHub auth, Beads init, and doctor are healthy', () => {
     const { tmpDir, logPath } = makeMockBin();
@@ -160,6 +193,61 @@ describe('scripts/preflight.sh', () => {
       expect(calls).toContain('bd doctor --fix --yes');
     } finally {
       cleanupTmpDir(tmpDir);
+    }
+  });
+
+  test('preserves all existing git hooks and executable modes around bd init', () => {
+    const { tmpDir, logPath } = makeMockBin({ bdListStatus: 1 });
+    const git = makeGitDirWithHooks();
+    try {
+      const bdPath = path.join(tmpDir, 'bd');
+      writeExecutable(
+        path.join(tmpDir, 'git'),
+        `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--git-path" ] && [ "$3" = "hooks" ]; then
+  printf '%s\\n' "${toBashPath(git.hooksDir)}"
+  exit 0
+fi
+exit 64
+`,
+      );
+      writeExecutable(
+        bdPath,
+        `#!/bin/sh
+printf 'bd %s\\n' "$*" >> "${toBashPath(logPath)}"
+case "$1" in
+  list)
+    exit 1
+    ;;
+  init)
+    printf '#!/bin/sh\\nprintf generated\\n' > "${toBashPath(path.join(git.hooksDir, 'pre-push'))}"
+    chmod +x "${toBashPath(path.join(git.hooksDir, 'pre-push'))}"
+    rm -f "${toBashPath(git.prepareHook)}"
+    exit 0
+    ;;
+  doctor)
+    exit 0
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+`,
+      );
+
+      const result = runPreflight({
+        ...makeMockPathEnv(tmpDir),
+        GIT_DIR: toBashPath(git.tmpDir),
+      });
+
+      expect(result.status).toBe(1);
+      expect(fs.existsSync(git.prepareHook)).toBe(true);
+      expect(fs.readFileSync(git.prepareHook, 'utf8')).toContain('custom-hook');
+      expect(isExecutable(git.prepareHook)).toBe(true);
+      expect(fs.existsSync(path.join(git.hooksDir, 'pre-push'))).toBe(false);
+    } finally {
+      cleanupTmpDir(tmpDir);
+      cleanupTmpDir(git.tmpDir);
     }
   });
 

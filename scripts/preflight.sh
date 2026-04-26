@@ -21,52 +21,35 @@ action() {
   exit_code=2
 }
 
-snapshot_hook_contents() {
+snapshot_hooks_dir() {
   hooks_dir="$1"
-  saved_pre_commit=0
-  saved_pre_push=0
-  saved_commit_msg=0
+  hooks_snapshot_dir="$(mktemp -d 2>/dev/null || mktemp -d -t forge-preflight-hooks)"
 
-  if [ -f "$hooks_dir/pre-commit" ]; then
-    saved_pre_commit=1
-    pre_commit_content="$(<"$hooks_dir/pre-commit")"
-  fi
-
-  if [ -f "$hooks_dir/pre-push" ]; then
-    saved_pre_push=1
-    pre_push_content="$(<"$hooks_dir/pre-push")"
-  fi
-
-  if [ -f "$hooks_dir/commit-msg" ]; then
-    saved_commit_msg=1
-    commit_msg_content="$(<"$hooks_dir/commit-msg")"
+  if [ -d "$hooks_dir" ]; then
+    cp -pR "$hooks_dir"/. "$hooks_snapshot_dir"/
   fi
 }
 
-restore_hook_contents() {
+restore_hooks_dir() {
   hooks_dir="$1"
+  mkdir -p "$hooks_dir"
 
-  if [ "$saved_pre_commit" -eq 1 ]; then
-    printf '%s\n' "$pre_commit_content" > "$hooks_dir/pre-commit"
-  fi
+  find "$hooks_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
-  if [ "$saved_pre_push" -eq 1 ]; then
-    printf '%s\n' "$pre_push_content" > "$hooks_dir/pre-push"
-  fi
-
-  if [ "$saved_commit_msg" -eq 1 ]; then
-    printf '%s\n' "$commit_msg_content" > "$hooks_dir/commit-msg"
+  if [ -d "$hooks_snapshot_dir" ]; then
+    cp -pR "$hooks_snapshot_dir"/. "$hooks_dir"/
+    rm -rf "$hooks_snapshot_dir"
   fi
 }
 
 safe_bd_init() {
   hooks_dir="$(git rev-parse --git-path hooks 2>/dev/null || printf '.git/hooks')"
-  snapshot_hook_contents "$hooks_dir"
+  snapshot_hooks_dir "$hooks_dir"
 
   bd init --database forge --prefix forge >/dev/null 2>&1
   init_status=$?
 
-  restore_hook_contents "$hooks_dir"
+  restore_hooks_dir "$hooks_dir"
   return "$init_status"
 }
 
