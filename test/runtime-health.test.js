@@ -26,10 +26,14 @@ function createProjectRoot({ lefthookDependency = true, lefthookBinary = true } 
   return root;
 }
 
-function createExecStub({ missing = new Set(), hooksPath = '.lefthook/hooks' } = {}) {
+function createExecStub({ missing = new Set(), hooksPath = '.lefthook/hooks', resolvedHooksDir = null } = {}) {
   return (command, args = []) => {
     if (command === 'git' && args[0] === 'config' && args[1] === '--get' && args[2] === 'core.hooksPath') {
       return `${hooksPath}\n`;
+    }
+    if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'hooks') {
+      if (resolvedHooksDir) return `${resolvedHooksDir}\n`;
+      return '.git/hooks\n';
     }
 
     if (missing.has(command)) {
@@ -55,7 +59,7 @@ describe('runtime health checks', () => {
     expect(lefthookStatus.state).toBe('missing-dependency');
 
     const result = checkRuntimeHealth(projectRoot, {
-      _exec: createExecStub(),
+      _exec: createExecStub({ hooksPath: '.git/hooks-empty' }),
       platform: 'linux',
       shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
     });
@@ -78,7 +82,7 @@ describe('runtime health checks', () => {
     expect(lefthookStatus.state).toBe('missing-binary');
 
     const result = checkRuntimeHealth(projectRoot, {
-      _exec: createExecStub(),
+      _exec: createExecStub({ hooksPath: '.git/hooks-empty', resolvedHooksDir: path.join(projectRoot, '.git', 'hooks-empty') }),
       platform: 'linux',
       shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
     });
@@ -257,6 +261,41 @@ describe('runtime health checks', () => {
     expect(result.hardStop).toBe(false);
     expect(result.checks.hooks.active).toBe(true);
     expect(result.checks.hooks.state).toBe('active');
+  });
+
+  test('worktree fallback marks hooks active when core.hooksPath is unset but resolved hook files exist', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '', resolvedHooksDir: hooksDir }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+  });
+
+  test('worktree fallback allows missing-binary lefthook when effective hooks are active', () => {
+    const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
+    const hooksDir = path.join(projectRoot, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '', resolvedHooksDir: hooksDir }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.diagnostics.some(d => d.code === 'LEFTHOOK_MISSING')).toBe(false);
+    expect(result.checks.lefthook.state).toBe('missing-binary');
   });
 
   test('missing project root falls back to process.cwd()', () => {

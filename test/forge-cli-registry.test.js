@@ -63,6 +63,21 @@ describe('CLI Registry Integration', () => {
       expect(commands.has('issues')).toBe(true);
     });
 
+    test('recommend and team commands load into the registry without skip warnings', () => {
+      const warnCalls = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => { warnCalls.push(args.join(' ')); };
+      try {
+        const { commands } = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+        expect(commands.has('recommend')).toBe(true);
+        expect(commands.has('team')).toBe(true);
+        expect(warnCalls.join('\n')).not.toContain('recommend.js');
+        expect(warnCalls.join('\n')).not.toContain('team.js');
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
     test('forge sync dispatches to registry (not unknown command)', () => {
       const { stdout, stderr, status } = runForge(['sync']);
       const combined = stdout + stderr;
