@@ -37,13 +37,14 @@ Forge commands and repo scripts run under the shell shown below:
 
 | Platform | Shell used by Forge commands and scripts |
 | --- | --- |
-| Windows | WSL, not Git Bash or native PowerShell |
+| Windows | WSL is the supported/recommended environment for Forge commands and repo scripts |
 | macOS/Linux | Default login shell |
 
-Windows gotchas:
+Windows gotchas (supported workflow):
 
 - Paths crossing between Windows tools and WSL scripts may need translation with `wslpath`.
-- Do not assume Git Bash path semantics for Forge scripts on Windows.
+- Git Bash/native PowerShell may work for some commands, but are not supported troubleshooting targets for Forge script execution.
+- Some bootstrap paths still invoke native Windows tools such as `powershell.exe`; this does not change the supported shell model for repo scripts.
 
 ---
 
