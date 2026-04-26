@@ -67,8 +67,8 @@
 
 ## Task 4: Remove command-registry warning noise for recommend/team
 
-**File(s):** `lib/commands/recommend.js`, `lib/commands/team.js`, `test/commands/registry.test.js` (or nearest registry coverage file)  
-**OWNS:** `lib/commands/recommend.js`, `lib/commands/team.js`, `test/commands/registry.test.js`
+**File(s):** `lib/commands/recommend.js`, `lib/commands/team.js`, `test/commands/_registry.test.js` (or nearest registry coverage file)  
+**OWNS:** `lib/commands/recommend.js`, `lib/commands/team.js`, `test/commands/_registry.test.js`
 
 **What to implement:** Export standard command metadata (`name`, `description`, `handler`) for `recommend` and `team` so startup diagnostics no longer emit irrelevant warning noise.
 

@@ -280,7 +280,7 @@ describe('runtime health checks', () => {
     expect(result.checks.hooks.active).toBe(true);
   });
 
-  test('worktree fallback allows missing-binary lefthook when effective hooks are active', () => {
+  test('worktree fallback preserves missing-binary lefthook hard-stop when effective hooks are active', () => {
     const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
     const hooksDir = path.join(projectRoot, '.git', 'hooks');
     fs.mkdirSync(hooksDir, { recursive: true });
@@ -293,8 +293,13 @@ describe('runtime health checks', () => {
       shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
     });
 
-    expect(result.hardStop).toBe(false);
-    expect(result.diagnostics.some(d => d.code === 'LEFTHOOK_MISSING')).toBe(false);
+    expect(result.hardStop).toBe(true);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'LEFTHOOK_MISSING',
+        severity: 'hard-stop'
+      })
+    );
     expect(result.checks.lefthook.state).toBe('missing-binary');
   });
 
