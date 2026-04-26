@@ -84,9 +84,10 @@ describe('Validate Command - Validation Orchestration', () => {
 
 		test('uses a long enough subprocess timeout for the full local suite', () => {
 			const source = fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'commands', 'validate.js'), 'utf8');
-			expect(source).toContain('VALIDATION_COMMAND_TIMEOUT_MS = 600000');
-			expect(source).toContain('timeout: VALIDATION_COMMAND_TIMEOUT_MS');
-			expect(source).toContain("['test', '--timeout', '30000']");
+			expect(source).toMatch(/VALIDATION_COMMAND_TIMEOUT_MS\s*=\s*600000/);
+			expect(source).toMatch(/timeout:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
+			expect(source).toMatch(/execFileSync\(\s*'bun'\s*,\s*\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'/);
+			expect(source).not.toContain('timed out after 2 minutes');
 		});
 	});
 

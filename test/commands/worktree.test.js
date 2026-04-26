@@ -55,6 +55,29 @@ describe('forge worktree command', () => {
     expect(calls).toHaveLength(1);
   });
 
+  test('create preserves non-bare rev-parse errors', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const mockExec = (cmd, args) => {
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
+        throw new Error('fatal: detected dubious ownership in repository');
+      }
+      throw new Error(`Unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+    const mockFs = {
+      mkdirSync: () => {
+        throw new Error('mkdirSync should not be called after rev-parse failure');
+      },
+      existsSync: () => false,
+    };
+
+    const result = await mod.handler(
+      ['create', 'abc'], {}, '/fake/repo',
+      { _exec: mockExec, _fs: mockFs }
+    );
+
+    expect(result).toEqual({ success: false, error: 'fatal: detected dubious ownership in repository' });
+  });
+
   // (b) create: calls git worktree add with correct args (new branch)
   test('create calls git worktree add with -b for new branch', async () => {
     const mod = require('../../lib/commands/worktree');

@@ -114,6 +114,32 @@ describe('state-manager', () => {
       }
     });
 
+    test('preferBeads falls back to file when Beads lookup throws', () => {
+      const dir = createTmpDir();
+      try {
+        const fileState = createWorkflowState('dev', 'standard');
+        writeStateFile(dir, fileState);
+        const throwingIssue = {};
+        Object.defineProperty(throwingIssue, 'comments', {
+          get() {
+            throw new Error('simulated Beads read failure');
+          },
+        });
+
+        const errors = [];
+        const result = loadState(dir, {
+          preferBeads: true,
+          issue: throwingIssue,
+          onBeadsError: error => errors.push(error),
+        });
+        expect(result.state.currentStage).toBe('dev');
+        expect(result.source).toBe('file');
+        expect(errors.length).toBe(1);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     test('falls back to Beads when state file is malformed', () => {
       const dir = createTmpDir();
       try {
