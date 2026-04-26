@@ -1,8 +1,7 @@
 // Test: validateRollbackInput()
 // GREEN phase - Tests should pass with implementation
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const path = require('node:path');
 
 // Mock projectRoot for testing
@@ -77,37 +76,37 @@ function validateRollbackInput(method, target) {
 describe('GREEN Phase: Rollback Validation Tests', () => {
   test('Valid commit hash', () => {
     const result = validateRollbackInput('commit', 'a1b2c3d');
-    assert.strictEqual(result.valid, true, 'Should accept valid commit hash');
+    expect(result.valid).toBe(true);
   });
 
   test('HEAD is valid', () => {
     const result = validateRollbackInput('commit', 'HEAD');
-    assert.strictEqual(result.valid, true, 'Should accept HEAD');
+    expect(result.valid).toBe(true);
   });
 
   test('Invalid commit hash with semicolon', () => {
     const result = validateRollbackInput('commit', 'abc;rm -rf /');
-    assert.strictEqual(result.valid, false, 'Should reject shell metacharacters');
-    assert.ok(result.error.includes('Invalid'), 'Should have error message');
+    expect(result.valid).toBe(false);
+    expect(result.error.includes('Invalid')).toBeTruthy();
   });
 
   test('Invalid method', () => {
     const result = validateRollbackInput('invalid', 'HEAD');
-    assert.strictEqual(result.valid, false, 'Should reject invalid method');
+    expect(result.valid).toBe(false);
   });
 
   test('Path validation - reject path traversal', () => {
     const result = validateRollbackInput('partial', '../../../etc/passwd');
-    assert.strictEqual(result.valid, false, 'Should reject path traversal');
+    expect(result.valid).toBe(false);
   });
 
   test('Valid file paths', () => {
     const result = validateRollbackInput('partial', 'AGENTS.md,package.json');
-    assert.strictEqual(result.valid, true, 'Should accept valid file paths');
+    expect(result.valid).toBe(true);
   });
 
   test('Branch range validation', () => {
     const result = validateRollbackInput('branch', 'abc123..def456');
-    assert.strictEqual(result.valid, true, 'Should accept valid range');
+    expect(result.valid).toBe(true);
   });
 });

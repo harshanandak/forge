@@ -1,8 +1,7 @@
 // Test: Git State Checker Validation Helper
 // Tests for git repository state validation
 
-const { describe, test, beforeAll: before, afterAll: after, setDefaultTimeout } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, setDefaultTimeout, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
@@ -33,12 +32,12 @@ const gitExecOptions = {
 
 setDefaultTimeout(15000);
 
-before(() => {
+beforeAll(() => {
   // Create temp directory for tests
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-git-state-'));
 });
 
-after(() => {
+afterAll(() => {
   // Cleanup
   rmSync(testDir, { recursive: true, force: true });
 });
@@ -105,9 +104,9 @@ describe('git-state-checker', () => {
 
       const result = checkGitState(repoDir);
 
-      assert.strictEqual(result.passed, true);
-      assert.strictEqual(result.failures.length, 0);
-      assert.strictEqual(typeof result.coverage, 'number');
+      expect(result.passed).toBe(true);
+      expect(result.failures.length).toBe(0);
+      expect(typeof result.coverage).toBe('number');
     });
 
     test('should detect missing .git directory', () => {
@@ -116,9 +115,9 @@ describe('git-state-checker', () => {
 
       const result = checkGitState(nonGitDir);
 
-      assert.strictEqual(result.passed, false);
-      assert.ok(result.failures.length > 0);
-      assert.match(result.failures[0].reason, /not a git repository/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures.length > 0).toBeTruthy();
+      expect(result.failures[0].reason).toMatch(/not a git repository/i);
     });
 
     test('should detect detached HEAD state', () => {
@@ -132,7 +131,7 @@ describe('git-state-checker', () => {
       const result = checkGitState(detachedDir);
 
       // Detached HEAD is a warning, not a failure (passed = true, but has findings)
-      assert.ok(result.failures.some(f => /detached HEAD/i.test(f.reason)));
+      expect(result.failures.some(f => /detached HEAD/i.test(f.reason))).toBeTruthy();
     });
 
     test('should detect uncommitted changes', () => {
@@ -146,7 +145,7 @@ describe('git-state-checker', () => {
 
       const result = checkGitState(dirtyDir);
 
-      assert.ok(result.failures.some(f => /uncommitted changes/i.test(f.reason)));
+      expect(result.failures.some(f => /uncommitted changes/i.test(f.reason))).toBeTruthy();
     });
 
     test('should detect merge conflicts', () => {
@@ -157,8 +156,8 @@ describe('git-state-checker', () => {
 
       const result = checkGitState(conflictDir);
 
-      assert.strictEqual(result.passed, false);
-      assert.ok(result.failures.some(f => /merge conflict/i.test(f.reason)));
+      expect(result.passed).toBe(false);
+      expect(result.failures.some(f => /merge conflict/i.test(f.reason))).toBeTruthy();
     });
 
     test('should return unified interface format', () => {
@@ -169,14 +168,14 @@ describe('git-state-checker', () => {
       const result = checkGitState(formatDir);
 
       // Check interface structure
-      assert.ok('passed' in result);
-      assert.ok('failures' in result);
-      assert.ok('coverage' in result);
+      expect('passed' in result).toBeTruthy();
+      expect('failures' in result).toBeTruthy();
+      expect('coverage' in result).toBeTruthy();
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-      assert.strictEqual(typeof result.coverage, 'number');
-      assert.ok(result.coverage >= 0 && result.coverage <= 1);
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
+      expect(typeof result.coverage).toBe('number');
+      expect(result.coverage >= 0 && result.coverage <= 1).toBeTruthy();
     });
   });
 
@@ -188,7 +187,7 @@ describe('git-state-checker', () => {
 
       const result = isDetachedHead(normalDir);
 
-      assert.strictEqual(result.detached, false);
+      expect(result.detached).toBe(false);
     });
 
     test('should return true for detached HEAD', () => {
@@ -199,8 +198,8 @@ describe('git-state-checker', () => {
 
       const result = isDetachedHead(detachedDir);
 
-      assert.strictEqual(result.detached, true);
-      assert.strictEqual(result.branch, null);
+      expect(result.detached).toBe(true);
+      expect(result.branch).toBe(null);
     });
   });
 
@@ -212,8 +211,8 @@ describe('git-state-checker', () => {
 
       const result = hasUncommittedChanges(cleanDir);
 
-      assert.strictEqual(result.hasChanges, false);
-      assert.strictEqual(result.files.length, 0);
+      expect(result.hasChanges).toBe(false);
+      expect(result.files.length).toBe(0);
     });
 
     test('should return true with uncommitted changes', () => {
@@ -227,8 +226,8 @@ describe('git-state-checker', () => {
 
       const result = hasUncommittedChanges(dirtyDir);
 
-      assert.strictEqual(result.hasChanges, true);
-      assert.ok(result.files.length > 0);
+      expect(result.hasChanges).toBe(true);
+      expect(result.files.length > 0).toBeTruthy();
     });
   });
 
@@ -240,8 +239,8 @@ describe('git-state-checker', () => {
 
       const result = hasMergeConflict(normalDir);
 
-      assert.strictEqual(result.hasConflict, false);
-      assert.strictEqual(result.conflictedFiles.length, 0);
+      expect(result.hasConflict).toBe(false);
+      expect(result.conflictedFiles.length).toBe(0);
     });
 
     test('should return true for active merge conflict', () => {
@@ -252,7 +251,7 @@ describe('git-state-checker', () => {
 
       const result = hasMergeConflict(conflictDir);
 
-      assert.strictEqual(result.hasConflict, true);
+      expect(result.hasConflict).toBe(true);
     });
   });
 });

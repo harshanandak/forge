@@ -3,8 +3,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 
 const rootDir = path.join(__dirname, '..', '..');
 
@@ -15,14 +14,8 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
         path.join(rootDir, 'scripts', 'branch-protection.js'),
         'utf-8'
       );
-      assert.ok(
-        content.includes("'main'") || content.includes('"main"'),
-        'branch-protection.js should protect main branch'
-      );
-      assert.ok(
-        content.includes("'master'") || content.includes('"master"'),
-        'branch-protection.js should protect master branch'
-      );
+      expect(content.includes("'main'") || content.includes('"main"')).toBeTruthy();
+      expect(content.includes("'master'") || content.includes('"master"')).toBeTruthy();
     });
 
     test('branch-protection.js exits with code 1 for protected branches', () => {
@@ -30,10 +23,7 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
         path.join(rootDir, 'scripts', 'branch-protection.js'),
         'utf-8'
       );
-      assert.ok(
-        content.includes('process.exit(1)'),
-        'should exit with code 1 to block push'
-      );
+      expect(content.includes('process.exit(1)')).toBeTruthy();
     });
   });
 
@@ -47,7 +37,7 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
       const referencesGh = content.includes('gh ') ||
         content.includes("'gh'") ||
         content.includes('"gh"');
-      assert.ok(referencesGh, 'forge.js should reference gh CLI for GitHub operations');
+      expect(referencesGh).toBeTruthy();
     });
   });
 
@@ -86,10 +76,7 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
         }
       }
 
-      assert.strictEqual(
-        violations.length, 0,
-        `Found default credentials:\n${violations.join('\n')}`
-      );
+      expect(violations.length).toBe(0);
     });
   });
 
@@ -116,10 +103,7 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
             content.includes('npx') ||
             content.includes('bunx') ||
             content.includes('node scripts/');
-          assert.ok(
-            usesEnvVar,
-            `${configFile} mentions auth but doesn't use env vars`
-          );
+          expect(usesEnvVar).toBeTruthy();
         }
       }
     });
@@ -138,10 +122,7 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
           !line.includes('process.env');
       });
 
-      assert.strictEqual(
-        tokenAssignments.length, 0,
-        `forge.js has token assignments without process.env:\n${tokenAssignments.join('\n')}`
-      );
+      expect(tokenAssignments.length).toBe(0);
     });
   });
 });

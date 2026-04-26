@@ -1,8 +1,7 @@
 // Test: Agent Validator Helper
 // Tests for validating agent configurations
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
@@ -16,12 +15,12 @@ const {
 
 let testDir;
 
-before(() => {
+beforeAll(() => {
   // Create temp directory for tests
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-agent-'));
 });
 
-after(() => {
+afterAll(() => {
   // Cleanup
   rmSync(testDir, { recursive: true, force: true });
 });
@@ -41,9 +40,9 @@ describe('agent-validator', () => {
 
       const result = validateAgent('claude', claudeDir);
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-      assert.strictEqual(typeof result.coverage, 'number');
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
+      expect(typeof result.coverage).toBe('number');
     });
 
     test('should validate Cursor installation', () => {
@@ -59,8 +58,8 @@ describe('agent-validator', () => {
 
       const result = validateAgent('cursor', cursorDir);
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
     });
 
     test('should detect missing agent files', () => {
@@ -69,8 +68,8 @@ describe('agent-validator', () => {
 
       const result = validateAgent('claude', missingDir);
 
-      assert.strictEqual(result.passed, false);
-      assert.ok(result.failures.length > 0);
+      expect(result.passed).toBe(false);
+      expect(result.failures.length > 0).toBeTruthy();
     });
 
     test('should detect partial installation', () => {
@@ -83,8 +82,8 @@ describe('agent-validator', () => {
 
       const result = validateAgent('claude', partialDir);
 
-      assert.ok(result.failures.length > 0);
-      assert.ok(result.coverage < 1.0);
+      expect(result.failures.length > 0).toBeTruthy();
+      expect(result.coverage < 1.0).toBeTruthy();
     });
 
     test('should return unified interface format', () => {
@@ -94,14 +93,14 @@ describe('agent-validator', () => {
       const result = validateAgent('claude', formatDir);
 
       // Check interface structure
-      assert.ok('passed' in result);
-      assert.ok('failures' in result);
-      assert.ok('coverage' in result);
+      expect('passed' in result).toBeTruthy();
+      expect('failures' in result).toBeTruthy();
+      expect('coverage' in result).toBeTruthy();
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-      assert.strictEqual(typeof result.coverage, 'number');
-      assert.ok(result.coverage >= 0 && result.coverage <= 1);
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
+      expect(typeof result.coverage).toBe('number');
+      expect(result.coverage >= 0 && result.coverage <= 1).toBeTruthy();
     });
   });
 
@@ -109,23 +108,23 @@ describe('agent-validator', () => {
     test('should return expected files for Claude Code', () => {
       const files = getExpectedFiles('claude');
 
-      assert.ok(Array.isArray(files));
-      assert.ok(files.length > 0);
+      expect(Array.isArray(files)).toBeTruthy();
+      expect(files.length > 0).toBeTruthy();
 
       // Should include at least CLAUDE.md
       const hasClaudeMd = files.some(f => f.path && f.path.includes('CLAUDE.md'));
-      assert.ok(hasClaudeMd);
+      expect(hasClaudeMd).toBeTruthy();
     });
 
     test('should return expected files for Cursor', () => {
       const files = getExpectedFiles('cursor');
 
-      assert.ok(Array.isArray(files));
-      assert.ok(files.length > 0);
+      expect(Array.isArray(files)).toBeTruthy();
+      expect(files.length > 0).toBeTruthy();
 
       // Should include .cursorrules (not CURSOR.md)
       const hasCursorRules = files.some(f => f.path && f.path.includes('.cursorrules'));
-      assert.ok(hasCursorRules);
+      expect(hasCursorRules).toBeTruthy();
     });
 
     test('should return expected files for all 8 agents', () => {
@@ -136,15 +135,15 @@ describe('agent-validator', () => {
 
       for (const agent of agents) {
         const files = getExpectedFiles(agent);
-        assert.ok(Array.isArray(files), `${agent} should return array`);
+        expect(Array.isArray(files)).toBeTruthy();
       }
     });
 
     test('should return empty array for unknown agent', () => {
       const files = getExpectedFiles('unknown-agent-xyz');
 
-      assert.ok(Array.isArray(files));
-      assert.strictEqual(files.length, 0);
+      expect(Array.isArray(files)).toBeTruthy();
+      expect(files.length).toBe(0);
     });
   });
 
@@ -163,7 +162,7 @@ describe('agent-validator', () => {
       const result = validateAgent('cursor', fullDir);
 
       // Coverage should be high (close to 1.0)
-      assert.ok(result.coverage > 0.5);
+      expect(result.coverage > 0.5).toBeTruthy();
     });
 
     test('should calculate partial coverage with some files missing', () => {
@@ -177,8 +176,8 @@ describe('agent-validator', () => {
       const result = validateAgent('claude', partialDir);
 
       // Coverage should be less than 1.0
-      assert.ok(result.coverage < 1.0);
-      assert.ok(result.coverage > 0);
+      expect(result.coverage < 1.0).toBeTruthy();
+      expect(result.coverage > 0).toBeTruthy();
     });
   });
 });

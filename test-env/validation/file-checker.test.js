@@ -1,8 +1,7 @@
 // Test: File Checker Validation Helper
 // Tests for file existence, content, and symlink validation
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
@@ -17,12 +16,12 @@ const {
 
 let testDir;
 
-before(() => {
+beforeAll(() => {
   // Create temp directory for tests
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-file-checker-'));
 });
 
-after(() => {
+afterAll(() => {
   // Cleanup
   rmSync(testDir, { recursive: true, force: true });
 });
@@ -35,8 +34,8 @@ describe('file-checker', () => {
 
       const result = validateFile(filePath, { mustExist: true });
 
-      assert.strictEqual(result.passed, true);
-      assert.strictEqual(result.failures.length, 0);
+      expect(result.passed).toBe(true);
+      expect(result.failures.length).toBe(0);
     });
 
     test('should detect missing file', () => {
@@ -44,9 +43,9 @@ describe('file-checker', () => {
 
       const result = validateFile(filePath, { mustExist: true });
 
-      assert.strictEqual(result.passed, false);
-      assert.strictEqual(result.failures.length, 1);
-      assert.match(result.failures[0].reason, /does not exist/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures.length).toBe(1);
+      expect(result.failures[0].reason).toMatch(/does not exist/i);
     });
 
     test('should validate file is not empty', () => {
@@ -55,7 +54,7 @@ describe('file-checker', () => {
 
       const result = validateFile(filePath, { mustExist: true, notEmpty: true });
 
-      assert.strictEqual(result.passed, true);
+      expect(result.passed).toBe(true);
     });
 
     test('should detect empty file', () => {
@@ -64,8 +63,8 @@ describe('file-checker', () => {
 
       const result = validateFile(filePath, { mustExist: true, notEmpty: true });
 
-      assert.strictEqual(result.passed, false);
-      assert.match(result.failures[0].reason, /is empty/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures[0].reason).toMatch(/is empty/i);
     });
 
     test('should validate minimum file size', () => {
@@ -74,7 +73,7 @@ describe('file-checker', () => {
 
       const result = validateFile(filePath, { mustExist: true, minSize: 50 });
 
-      assert.strictEqual(result.passed, true);
+      expect(result.passed).toBe(true);
     });
 
     test('should detect file below minimum size', () => {
@@ -83,8 +82,8 @@ describe('file-checker', () => {
 
       const result = validateFile(filePath, { mustExist: true, minSize: 100 });
 
-      assert.strictEqual(result.passed, false);
-      assert.match(result.failures[0].reason, /smaller than minimum/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures[0].reason).toMatch(/smaller than minimum/i);
     });
   });
 
@@ -107,8 +106,8 @@ describe('file-checker', () => {
 
       const result = checkSymlink(linkPath, targetPath);
 
-      assert.strictEqual(result.passed, true);
-      assert.strictEqual(result.failures.length, 0);
+      expect(result.passed).toBe(true);
+      expect(result.failures.length).toBe(0);
     });
 
     test('should detect missing symlink', () => {
@@ -117,8 +116,8 @@ describe('file-checker', () => {
 
       const result = checkSymlink(linkPath, targetPath);
 
-      assert.strictEqual(result.passed, false);
-      assert.match(result.failures[0].reason, /does not exist/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures[0].reason).toMatch(/does not exist/i);
     });
 
     test('should detect incorrect symlink target', () => {
@@ -141,8 +140,8 @@ describe('file-checker', () => {
 
       const result = checkSymlink(linkPath, targetPath);
 
-      assert.strictEqual(result.passed, false);
-      assert.match(result.failures[0].reason, /points to wrong target/i);
+      expect(result.passed).toBe(false);
+      expect(result.failures[0].reason).toMatch(/points to wrong target/i);
     });
   });
 
@@ -160,23 +159,23 @@ describe('file-checker', () => {
 
       const result = validateInstallation('claude', testDir);
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-      assert.strictEqual(typeof result.coverage, 'number');
-      assert.ok(result.coverage >= 0 && result.coverage <= 1);
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
+      expect(typeof result.coverage).toBe('number');
+      expect(result.coverage >= 0 && result.coverage <= 1).toBeTruthy();
     });
 
     test('should return unified interface format', () => {
       const result = validateInstallation('claude', testDir);
 
       // Check interface structure
-      assert.ok('passed' in result);
-      assert.ok('failures' in result);
-      assert.ok('coverage' in result);
+      expect('passed' in result).toBeTruthy();
+      expect('failures' in result).toBeTruthy();
+      expect('coverage' in result).toBeTruthy();
 
-      assert.strictEqual(typeof result.passed, 'boolean');
-      assert.ok(Array.isArray(result.failures));
-      assert.strictEqual(typeof result.coverage, 'number');
+      expect(typeof result.passed).toBe('boolean');
+      expect(Array.isArray(result.failures)).toBeTruthy();
+      expect(typeof result.coverage).toBe('number');
     });
 
     test('should calculate coverage correctly', () => {
@@ -188,12 +187,12 @@ describe('file-checker', () => {
       const result = validateInstallation('claude', testDir);
 
       // Coverage should be between 0 and 1
-      assert.ok(result.coverage >= 0);
-      assert.ok(result.coverage <= 1);
+      expect(result.coverage >= 0).toBeTruthy();
+      expect(result.coverage <= 1).toBeTruthy();
 
       // If not all files exist, coverage < 1
       if (result.failures.length > 0) {
-        assert.ok(result.coverage < 1);
+        expect(result.coverage < 1).toBeTruthy();
       }
     });
 
@@ -203,9 +202,9 @@ describe('file-checker', () => {
       if (result.failures.length > 0) {
         const failure = result.failures[0];
 
-        assert.ok('path' in failure || 'file' in failure);
-        assert.ok('reason' in failure);
-        assert.strictEqual(typeof failure.reason, 'string');
+        expect('path' in failure || 'file' in failure).toBeTruthy();
+        expect('reason' in failure).toBeTruthy();
+        expect(typeof failure.reason).toBe('string');
       }
     });
   });

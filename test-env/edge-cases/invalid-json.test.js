@@ -1,8 +1,7 @@
 // Test: Invalid JSON and Schema Validation Edge Cases
 // Validates validatePluginSchema() handling of malformed and invalid plugin configs
 
-const { describe, test } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, expect } from 'bun:test';
 const { validatePluginSchema } = require('../../lib/plugin-manager');
 
 describe('invalid-json-edge-cases', () => {
@@ -10,29 +9,23 @@ describe('invalid-json-edge-cases', () => {
     test('should reject null plugin', () => {
       const result = validatePluginSchema(null);
 
-      assert.strictEqual(result.valid, false, 'Null plugin should be invalid');
-      assert.ok(result.errors.length > 0, 'Should have errors');
-      assert.ok(
-        result.errors.some(e => e.includes('non-null object')),
-        'Should error about non-null object'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.length > 0).toBeTruthy();
+      expect(result.errors.some(e => e.includes('non-null object'))).toBeTruthy();
     });
 
     test('should reject array as plugin', () => {
       const result = validatePluginSchema([]);
 
-      assert.strictEqual(result.valid, false, 'Array should be invalid');
-      assert.ok(
-        result.errors.some(e => e.includes('non-null object')),
-        'Should error about object type'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('non-null object'))).toBeTruthy();
     });
 
     test('should reject primitive types', () => {
       const result = validatePluginSchema('not an object');
 
-      assert.strictEqual(result.valid, false, 'String should be invalid');
-      assert.ok(result.errors.length > 0, 'Should have errors');
+      expect(result.valid).toBe(false);
+      expect(result.errors.length > 0).toBeTruthy();
     });
   });
 
@@ -46,11 +39,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail without id');
-      assert.ok(
-        result.errors.some(e => e.includes('id')),
-        'Should mention missing id'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('id'))).toBeTruthy();
     });
 
     test('should detect missing "name"', () => {
@@ -62,11 +52,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail without name');
-      assert.ok(
-        result.errors.some(e => e.includes('name')),
-        'Should mention missing name'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('name'))).toBeTruthy();
     });
 
     test('should detect missing "version"', () => {
@@ -78,11 +65,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail without version');
-      assert.ok(
-        result.errors.some(e => e.includes('version')),
-        'Should mention missing version'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('version'))).toBeTruthy();
     });
 
     test('should detect missing "directories"', () => {
@@ -94,11 +78,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail without directories');
-      assert.ok(
-        result.errors.some(e => e.includes('directories')),
-        'Should mention missing directories'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('directories'))).toBeTruthy();
     });
   });
 
@@ -113,11 +94,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with numeric id');
-      assert.ok(
-        result.errors.some(e => e.includes('id') && e.includes('string')),
-        'Should mention id must be string'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('id') && e.includes('string'))).toBeTruthy();
     });
 
     test('should detect non-string "name"', () => {
@@ -130,11 +108,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with object name');
-      assert.ok(
-        result.errors.some(e => e.includes('name') && e.includes('string')),
-        'Should mention name must be string'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('name') && e.includes('string'))).toBeTruthy();
     });
 
     test('should detect non-string "version"', () => {
@@ -147,11 +122,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with numeric version');
-      assert.ok(
-        result.errors.some(e => e.includes('version') && e.includes('string')),
-        'Should mention version must be string'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('version') && e.includes('string'))).toBeTruthy();
     });
 
     test('should detect non-object "directories"', () => {
@@ -164,11 +136,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with string directories');
-      assert.ok(
-        result.errors.some(e => e.includes('directories') && e.includes('object')),
-        'Should mention directories must be object'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('directories') && e.includes('object'))).toBeTruthy();
     });
 
     test('should detect array "directories"', () => {
@@ -181,11 +150,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with array directories');
-      assert.ok(
-        result.errors.some(e => e.includes('directories') && e.includes('object')),
-        'Should mention directories must be object'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('directories') && e.includes('object'))).toBeTruthy();
     });
   });
 
@@ -200,8 +166,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, true, 'Valid plugin should pass');
-      assert.strictEqual(result.errors.length, 0, 'Should have no errors');
+      expect(result.valid).toBe(true);
+      expect(result.errors.length).toBe(0);
     });
 
     test('should accept valid plugin with optional fields', () => {
@@ -216,8 +182,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, true, 'Valid plugin with optional fields should pass');
-      assert.strictEqual(result.errors.length, 0, 'Should have no errors');
+      expect(result.valid).toBe(true);
+      expect(result.errors.length).toBe(0);
     });
 
     test('should detect empty "directories" object', () => {
@@ -230,11 +196,8 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with empty directories');
-      assert.ok(
-        result.errors.some(e => e.includes('directories') && e.includes('empty')),
-        'Should mention directories must not be empty'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('directories') && e.includes('empty'))).toBeTruthy();
     });
 
     test('should detect invalid optional field types', () => {
@@ -249,16 +212,10 @@ describe('invalid-json-edge-cases', () => {
 
       const result = validatePluginSchema(plugin);
 
-      assert.strictEqual(result.valid, false, 'Should fail with invalid optional fields');
-      assert.ok(result.errors.length >= 2, 'Should have at least 2 errors');
-      assert.ok(
-        result.errors.some(e => e.includes('description')),
-        'Should mention description error'
-      );
-      assert.ok(
-        result.errors.some(e => e.includes('homepage')),
-        'Should mention homepage error'
-      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.length >= 2).toBeTruthy();
+      expect(result.errors.some(e => e.includes('description'))).toBeTruthy();
+      expect(result.errors.some(e => e.includes('homepage'))).toBeTruthy();
     });
   });
 });

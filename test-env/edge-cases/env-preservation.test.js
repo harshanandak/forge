@@ -1,8 +1,7 @@
 // Test: .env.local Preservation Edge Cases
 // Validates .env.local preservation using env-validator.js
 
-const { describe, test, beforeAll: before, afterAll: after } = require('bun:test');
-const assert = require('node:assert/strict');
+import { describe, test, beforeAll, afterAll, expect } from 'bun:test';
 const fs = require('node:fs');
 const path = require('node:path');
 const { mkdtempSync, rmSync } = require('node:fs');
@@ -19,11 +18,11 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 
 let testDir;
 
-before(() => {
+beforeAll(() => {
   testDir = mkdtempSync(path.join(tmpdir(), 'forge-test-env-preservation-'));
 });
 
-after(() => {
+afterAll(() => {
   rmSync(testDir, { recursive: true, force: true });
 });
 
@@ -43,8 +42,8 @@ NEW_VAR=added_value
 
       const result = checkPreservation(oldEnv, newEnv);
 
-      assert.strictEqual(result.passed, true, 'Should preserve all existing variables');
-      assert.strictEqual(result.failures.length, 0, 'Should have no preservation failures');
+      expect(result.passed).toBe(true);
+      expect(result.failures.length).toBe(0);
     });
 
     test('should add new variables without overwrite', () => {
@@ -58,12 +57,12 @@ ANOTHER_VAR=another
 
       const result = checkPreservation(oldEnv, newEnv);
 
-      assert.strictEqual(result.passed, true, 'Should allow adding new variables');
+      expect(result.passed).toBe(true);
 
       const newParsed = parseEnvFile(newEnv);
-      assert.strictEqual(newParsed.variables.API_KEY, 'old_key', 'Old key preserved');
-      assert.strictEqual(newParsed.variables.NEW_API, 'new_value', 'New var added');
-      assert.strictEqual(newParsed.variables.ANOTHER_VAR, 'another', 'Another var added');
+      expect(newParsed.variables.API_KEY).toBe('old_key');
+      expect(newParsed.variables.NEW_API).toBe('new_value');
+      expect(newParsed.variables.ANOTHER_VAR).toBe('another');
     });
 
     test('should not change existing values', () => {
@@ -77,11 +76,8 @@ SECRET=top_secret
 
       const result = checkPreservation(oldEnv, newEnv);
 
-      assert.strictEqual(result.passed, false, 'Should fail if values changed');
-      assert.ok(
-        result.failures.some(f => f.path === 'API_KEY'),
-        'Should report changed API_KEY'
-      );
+      expect(result.passed).toBe(false);
+      expect(result.failures.some(f => f.path === 'API_KEY')).toBeTruthy();
     });
 
     test('should never remove old variables', () => {
@@ -96,11 +92,8 @@ DATABASE_URL=url
 
       const result = checkPreservation(oldEnv, newEnv);
 
-      assert.strictEqual(result.passed, false, 'Should fail if variables removed');
-      assert.ok(
-        result.failures.some(f => f.path === 'SECRET'),
-        'Should report removed SECRET'
-      );
+      expect(result.passed).toBe(false);
+      expect(result.failures.some(f => f.path === 'SECRET')).toBeTruthy();
     });
   });
 
@@ -113,11 +106,8 @@ API_KEY=value
 
       const parsed = parseEnvFile(envContent);
 
-      assert.ok(parsed.comments.length >= 2, 'Should preserve multiple comment lines');
-      assert.ok(
-        parsed.comments.some(c => c.includes('header comment')),
-        'Should preserve header comment text'
-      );
+      expect(parsed.comments.length >= 2).toBeTruthy();
+      expect(parsed.comments.some(c => c.includes('header comment'))).toBeTruthy();
     });
 
     test('should handle inline comments', () => {
@@ -130,8 +120,8 @@ DATABASE_URL=url
 
       const parsed = parseEnvFile(envContent);
 
-      assert.ok(parsed.comments.length > 0, 'Should preserve comments');
-      assert.strictEqual(parsed.variables.API_KEY, 'value', 'Should parse value correctly');
+      expect(parsed.comments.length > 0).toBeTruthy();
+      expect(parsed.variables.API_KEY).toBe('value');
     });
   });
 
@@ -146,9 +136,9 @@ DATABASE_URL=url
 
       const parsed = parseEnvFile(envContent);
 
-      assert.strictEqual(parsed.variables.API_KEY, 'value', 'Should parse with spacing');
-      assert.strictEqual(parsed.variables.DATABASE_URL, 'url', 'Should parse after empty line');
-      assert.ok(parsed.raw.includes('\n\n'), 'Raw content should preserve empty lines');
+      expect(parsed.variables.API_KEY).toBe('value');
+      expect(parsed.variables.DATABASE_URL).toBe('url');
+      expect(parsed.raw.includes('\n\n')).toBeTruthy();
     });
 
     test('should preserve quoted values', () => {
@@ -160,9 +150,9 @@ PLAIN=unquoted
       const parsed = parseEnvFile(envContent);
 
       // parseEnvFile strips quotes, but values should be correct
-      assert.strictEqual(parsed.variables.API_KEY, 'quoted value', 'Double quoted value');
-      assert.strictEqual(parsed.variables.PATH, 'single quoted', 'Single quoted value');
-      assert.strictEqual(parsed.variables.PLAIN, 'unquoted', 'Unquoted value');
+      expect(parsed.variables.API_KEY).toBe('quoted value');
+      expect(parsed.variables.PATH).toBe('single quoted');
+      expect(parsed.variables.PLAIN).toBe('unquoted');
     });
 
     test('should preserve escaped values', () => {
@@ -173,8 +163,8 @@ REGEX="test\\nvalue"
       const parsed = parseEnvFile(envContent);
 
       // Should parse without errors
-      assert.ok(parsed.variables.PATH, 'Should parse path with backslashes');
-      assert.ok(parsed.variables.REGEX, 'Should parse regex with escapes');
+      expect(parsed.variables.PATH).toBeTruthy();
+      expect(parsed.variables.REGEX).toBeTruthy();
     });
   });
 
@@ -189,13 +179,13 @@ REGEX="test\\nvalue"
       const gitignore = fs.readFileSync(gitignorePath, 'utf8');
       const shouldAdd = !gitignore.includes('.env.local');
 
-      assert.strictEqual(shouldAdd, true, '.env.local not in gitignore initially');
+      expect(shouldAdd).toBe(true);
 
       // Add it
       fs.writeFileSync(gitignorePath, gitignore + '.env.local\n');
 
       const updatedGitignore = fs.readFileSync(gitignorePath, 'utf8');
-      assert.ok(updatedGitignore.includes('.env.local'), 'Should add .env.local to gitignore');
+      expect(updatedGitignore.includes('.env.local')).toBeTruthy();
     });
 
     test('should not duplicate .env.local entry', () => {
@@ -208,11 +198,11 @@ REGEX="test\\nvalue"
       const gitignore = fs.readFileSync(gitignorePath, 'utf8');
       const shouldAdd = !gitignore.includes('.env.local');
 
-      assert.strictEqual(shouldAdd, false, '.env.local already in gitignore');
+      expect(shouldAdd).toBe(false);
 
       // Count occurrences
       const matches = gitignore.match(/\.env\.local/g);
-      assert.strictEqual(matches.length, 1, 'Should have exactly one .env.local entry');
+      expect(matches.length).toBe(1);
     });
   });
 
@@ -225,8 +215,8 @@ REGEX="test\\nvalue"
       if (fs.existsSync(envPath)) {
         const result = validateEnvFile(envPath);
 
-        assert.strictEqual(result.passed, true, 'Fixture .env.local should be valid');
-        assert.ok(result.coverage > 0, 'Should have coverage > 0');
+        expect(result.passed).toBe(true);
+        expect(result.coverage > 0).toBeTruthy();
       }
     });
   });
