@@ -84,6 +84,9 @@ test-env/fixtures/*
 # Cursor hooks runtime state (auto-generated, not versioned)
 .cursor/hooks/state/
 
+# Lefthook generated hook shims (auto-generated, not versioned)
+.lefthook/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 .beads/*.db
