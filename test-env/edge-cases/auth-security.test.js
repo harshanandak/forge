@@ -77,7 +77,7 @@ describe('OWASP A07: Identification & Authentication Failures', () => {
       }
 
       expect(violations.length).toBe(0);
-    });
+    }, 30000);
   });
 
   describe('Auth tokens use environment variables', () => {

@@ -75,6 +75,8 @@ describe('scripts/test-full-suite.js', () => {
     expect(status).toBe(0);
     expect(calls).toHaveLength(2);
     expect(calls[0]).toContain('--reporter=junit');
+    expect(calls[0]).toContain('--timeout');
+    expect(calls[0]).toContain('30000');
   });
 
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {

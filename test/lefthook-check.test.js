@@ -52,6 +52,21 @@ describe('checkLefthookStatus', () => {
     expect(result.message).toContain('bun install');
   });
 
+  it('detects Bun Windows lefthook.exe shim as an available binary', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ devDependencies: { lefthook: '^2.1.4' } })
+    );
+    const binDir = path.join(tmpDir, 'node_modules', '.bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'lefthook.exe'), '');
+
+    const result = checkLefthookStatus(tmpDir);
+    expect(result.installed).toBe(true);
+    expect(result.binaryAvailable).toBe(true);
+    expect(result.state).toBe('installed');
+  });
+
   it('returns installed=false and binaryAvailable=false when lefthook not in package.json', () => {
     // Create package.json without lefthook
     fs.writeFileSync(

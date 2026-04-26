@@ -2,9 +2,18 @@ const { describe, test, expect, setDefaultTimeout } = require('bun:test');
 const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { resolveShellRuntime } = require('../lib/runtime-health');
 
 const ROOT = path.resolve(__dirname, '..');
 setDefaultTimeout(60000);
+
+function bashCommand() {
+  if (process.platform !== 'win32') {
+    return 'bash';
+  }
+  const shell = resolveShellRuntime();
+  return shell.available && shell.command ? shell.command : 'bash';
+}
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
@@ -56,13 +65,11 @@ exit 0
     { mode: 0o755 }
   );
 
-  const currentPath = process.env.PATH || process.env.Path || '';
-  const result = spawnSync('bash', ['./scripts/beads-context.sh', 'stage-transition', ...splitShellArgs(args)], {
+  const result = spawnSync(bashCommand(), ['./scripts/beads-context.sh', 'stage-transition', ...splitShellArgs(args)], {
     cwd: ROOT,
     env: {
       ...process.env,
-      PATH: `${shimDir}${path.delimiter}${currentPath}`,
-      Path: `${shimDir}${path.delimiter}${currentPath}`,
+      BD_CMD: shimPath,
     },
     encoding: 'utf8',
     timeout: 45000,
