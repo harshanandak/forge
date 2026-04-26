@@ -80,8 +80,20 @@ exit 0
   return { tmpDir, logPath };
 }
 
+function resolvePreflightBashCommand() {
+  const command = resolveBashCommand();
+  if (path.isAbsolute(command)) {
+    return command;
+  }
+
+  const probe = spawnSync(command, ['-lc', 'command -v bash'], {
+    encoding: 'utf-8',
+  });
+  return (probe.stdout || '').trim() || command;
+}
+
 function runPreflight(env = {}) {
-  const result = spawnSync(resolveBashCommand(), [toBashPath(SCRIPT)], {
+  const result = spawnSync(resolvePreflightBashCommand(), [toBashPath(SCRIPT)], {
     cwd: PROJECT_ROOT,
     encoding: 'utf-8',
     timeout: 30000,
@@ -102,11 +114,18 @@ function readCalls(logPath) {
   return fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
 }
 
+function makeMockPathEnv(tmpDir) {
+  const pathValue = toBashPath(tmpDir);
+  return process.platform === 'win32'
+    ? { PATH: pathValue, Path: pathValue }
+    : { PATH: pathValue };
+}
+
 describe('scripts/preflight.sh', () => {
   test('exits 0 when tools, GitHub auth, Beads init, and doctor are healthy', () => {
     const { tmpDir, logPath } = makeMockBin();
     try {
-      const result = runPreflight({ PATH: toBashPath(tmpDir), Path: toBashPath(tmpDir) });
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('OK tool bd');
@@ -129,7 +148,7 @@ describe('scripts/preflight.sh', () => {
   test('runs bd init and exits 1 when Beads is not initialized', () => {
     const { tmpDir, logPath } = makeMockBin({ bdShowStatus: 1 });
     try {
-      const result = runPreflight({ PATH: toBashPath(tmpDir), Path: toBashPath(tmpDir) });
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(1);
       expect(result.stdout).toContain('FIXED beads-init');
@@ -147,7 +166,7 @@ describe('scripts/preflight.sh', () => {
   test('exits 2 with Windows guidance when gh is missing', () => {
     const { tmpDir } = makeMockBin({ includeGh: false });
     try {
-      const result = runPreflight({ PATH: toBashPath(tmpDir), Path: toBashPath(tmpDir) });
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(2);
       expect(result.stdout).toContain('ACTION tool gh');
@@ -161,7 +180,7 @@ describe('scripts/preflight.sh', () => {
   test('exits 2 with Windows guidance when bd and jq are missing', () => {
     const { tmpDir, logPath } = makeMockBin({ includeBd: false, includeJq: false });
     try {
-      const result = runPreflight({ PATH: toBashPath(tmpDir), Path: toBashPath(tmpDir) });
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(2);
       expect(result.stdout).toContain('ACTION tool bd');
@@ -177,7 +196,7 @@ describe('scripts/preflight.sh', () => {
   test('exits 2 with login guidance when GitHub auth is unavailable', () => {
     const { tmpDir } = makeMockBin({ ghAuthStatus: 1 });
     try {
-      const result = runPreflight({ PATH: toBashPath(tmpDir), Path: toBashPath(tmpDir) });
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(2);
       expect(result.stdout).toContain('ACTION github-auth');
