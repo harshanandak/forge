@@ -56,10 +56,10 @@ Forge commands and repo scripts assume the following shell model:
 
 | Platform | Shell used by Forge commands and scripts |
 | --- | --- |
-| Windows | WSL, not Git Bash or native PowerShell |
+| Windows | Git Bash for helper-backed Forge stage flows |
 | macOS/Linux | Default login shell |
 
-On Windows, translate paths at the WSL boundary with `wslpath` when passing Windows paths into shell scripts. See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md#shell-model) for details.
+On Windows, Forge runtime health enforces Git Bash for helper-backed stage flows. Native PowerShell is still used by some bootstrap paths, and WSL may be useful for adjacent development tasks. See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md#shell-model) for details.
 
 ---
 
