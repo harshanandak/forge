@@ -84,6 +84,54 @@ describe('project memory', () => {
     });
   });
 
+  test('deduplicates all existing records for a key during upsert', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(memoryFile, [
+      JSON.stringify({
+        key: 'decision.duplicate',
+        value: 'stale manual merge copy',
+        'source-agent': 'Claude',
+        timestamp: '2026-04-26T00:00:00.000Z',
+        tags: ['stale'],
+      }),
+      JSON.stringify({
+        key: 'decision.keep',
+        value: 'unrelated entry',
+        'source-agent': 'Cursor',
+        timestamp: '2026-04-26T00:01:00.000Z',
+        tags: ['keep'],
+      }),
+      JSON.stringify({
+        key: 'decision.duplicate',
+        value: 'second stale manual merge copy',
+        'source-agent': 'Codex',
+        timestamp: '2026-04-26T00:02:00.000Z',
+        tags: ['stale'],
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    projectMemory.write(root, {
+      key: 'decision.duplicate',
+      value: 'current value',
+      sourceAgent: 'OpenCode',
+      timestamp: '2026-04-26T00:03:00.000Z',
+      tags: ['current'],
+    });
+
+    expect(projectMemory.list(root).map((entry) => entry.key)).toEqual([
+      'decision.duplicate',
+      'decision.keep',
+    ]);
+    expect(projectMemory.search(root, 'stale')).toEqual([]);
+    expect(projectMemory.read(root, 'decision.duplicate')).toMatchObject({
+      value: 'current value',
+      sourceAgent: 'OpenCode',
+      tags: ['current'],
+    });
+  });
+
   test('searches keys, string values, source agents, and tags case-insensitively', () => {
     const root = tempRoot();
 
