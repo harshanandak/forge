@@ -23,7 +23,7 @@ function makeMockBin({
   includeBd = true,
   includeGh = true,
   includeJq = true,
-  bdShowStatus = 0,
+  bdListStatus = 0,
   bdInitStatus = 0,
   bdDoctorStatus = 0,
   ghAuthStatus = 0,
@@ -37,8 +37,8 @@ function makeMockBin({
       `#!/bin/sh
 printf 'bd %s\\n' "$*" >> "${toBashPath(logPath)}"
 case "$1" in
-  show)
-    exit ${bdShowStatus}
+  list)
+    exit ${bdListStatus}
     ;;
   init)
     exit ${bdInitStatus}
@@ -137,7 +137,7 @@ describe('scripts/preflight.sh', () => {
 
       const calls = readCalls(logPath);
       expect(calls).toContain('gh auth status');
-      expect(calls).toContain('bd show --json forge-byvq');
+      expect(calls).toContain('bd list --json --limit 1');
       expect(calls).toContain('bd doctor --fix --yes');
       expect(calls).not.toContain('bd init');
     } finally {
@@ -146,7 +146,7 @@ describe('scripts/preflight.sh', () => {
   });
 
   test('runs bd init and exits 1 when Beads is not initialized', () => {
-    const { tmpDir, logPath } = makeMockBin({ bdShowStatus: 1 });
+    const { tmpDir, logPath } = makeMockBin({ bdListStatus: 1 });
     try {
       const result = runPreflight(makeMockPathEnv(tmpDir));
 
@@ -155,7 +155,7 @@ describe('scripts/preflight.sh', () => {
       expect(result.stdout).toContain('FIXED beads-doctor');
 
       const calls = readCalls(logPath);
-      expect(calls).toContain('bd show --json forge-byvq');
+      expect(calls).toContain('bd list --json --limit 1');
       expect(calls).toContain('bd init --database forge --prefix forge');
       expect(calls).toContain('bd doctor --fix --yes');
     } finally {

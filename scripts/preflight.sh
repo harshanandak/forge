@@ -81,8 +81,8 @@ check_beads() {
   fi
 
   init_ok=0
-  if bd show --json forge-byvq >/dev/null 2>&1; then
-    ok "beads-init" "forge-byvq is readable"
+  if bd list --json --limit 1 >/dev/null 2>&1; then
+    ok "beads-init" "Beads database is readable"
     init_ok=1
   else
     if bd init --database forge --prefix forge >/dev/null 2>&1; then
