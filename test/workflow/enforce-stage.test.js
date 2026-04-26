@@ -173,6 +173,26 @@ describe('workflow enforce-stage', () => {
     }
   });
 
+  test('enforceStageEntry allows review without workflow state for direct PR feedback checks', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-review-missing-state-'));
+    try {
+      const result = await enforceStageEntry({
+        commandName: 'review',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] }
+      });
+
+      expect(result).toEqual({
+        allowed: true,
+        stage: 'review',
+        workflowState: null
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('enforceStageEntry allows dev without workflow state for simple and hotfix starts', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-dev-missing-state-'));
     try {
