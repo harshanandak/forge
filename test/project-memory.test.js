@@ -1,4 +1,5 @@
 const { describe, test, expect, afterEach } = require('bun:test');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -6,6 +7,7 @@ const path = require('node:path');
 const projectMemory = require('../lib/project-memory');
 
 const tempRoots = [];
+const workerModulePath = path.resolve(__dirname, '..', 'lib', 'project-memory');
 
 function tempRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-project-memory-'));
@@ -204,6 +206,55 @@ describe('project memory', () => {
       key: 'decision.relative-override',
       sourceAgent: 'Codex',
     });
+  });
+
+  test('rejects filePath overrides outside the project root', () => {
+    const root = tempRoot();
+
+    expect(() => projectMemory.write(root, {
+      key: 'policy.escape',
+      value: 'must stay in repo',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      filePath: path.join('..', 'outside.jsonl'),
+    })).toThrow('projectRoot');
+
+    expect(() => projectMemory.write(root, {
+      key: 'policy.absolute-escape',
+      value: 'must stay in repo',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      filePath: path.join(os.tmpdir(), `outside-${path.basename(root)}.jsonl`),
+    })).toThrow('projectRoot');
+  });
+
+  test('serializes concurrent writers without losing entries', () => {
+    const root = tempRoot();
+    const worker = `
+const projectMemory = require(${JSON.stringify(workerModulePath)});
+const root = process.argv[1];
+const index = Number(process.argv[2]);
+projectMemory.write(root, {
+  key: \`decision.concurrent.\${index}\`,
+  value: \`writer-\${index}\`,
+  sourceAgent: 'Codex',
+  timestamp: '2026-04-26T00:00:00.000Z',
+  tags: ['concurrent'],
+});
+`;
+
+    const results = Array.from({ length: 8 }, (_unused, index) => spawnSync(
+      process.execPath,
+      ['-e', worker, root, String(index)],
+      { encoding: 'utf8', timeout: 15000 }
+    ));
+
+    for (const result of results) {
+      expect(result.status).toBe(0);
+    }
+    expect(projectMemory.search(root, 'concurrent')).toHaveLength(8);
   });
 
   test('validates required schema fields before writing', () => {
