@@ -336,6 +336,32 @@ describe('project memory', () => {
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
   });
 
+  test('recovers future-dated lockfiles owned by dead processes', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const future = new Date(Date.now() + 60_000).toISOString();
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
+      pid: 99999999,
+      createdAt: future,
+    }), 'utf8');
+
+    projectMemory.write(root, {
+      key: 'policy.future-dead-lock',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.future-dead-lock')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
   test('serializes concurrent writers without losing entries', async () => {
     const root = tempRoot();
     const worker = `
