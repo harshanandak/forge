@@ -138,6 +138,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/lefthook-check.test.js',
       'test/runtime-health.test.js',
       'test/scripts/preflight.test.js',
       'test/scripts/test-runner.test.js',

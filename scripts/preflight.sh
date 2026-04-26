@@ -149,7 +149,7 @@ check_beads() {
   doctor_output="$(bd doctor --fix --yes 2>&1)"
   doctor_status=$?
   if [ "$doctor_status" -eq 0 ]; then
-    doctor_output_lower="${doctor_output,,}"
+    doctor_output_lower="$(printf '%s' "$doctor_output" | tr '[:upper:]' '[:lower:]')"
     if [ "$exit_code" -eq 1 ] ||
       [[ "$doctor_output_lower" == *fix* ]] ||
       [[ "$doctor_output_lower" == *repair* ]] ||
