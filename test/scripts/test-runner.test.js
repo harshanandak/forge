@@ -210,6 +210,18 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([]);
   });
 
+  test('buildTestExecutionPlan keeps e2e-only helper changes in targeted mode', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'test/e2e/helpers/scaffold.js\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasZeroResolvedTests).toBe(false);
+    expect(plan.mode).toBe('targeted');
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.runE2E).toBe(true);
+    expect(plan.testTargets).toEqual(riskTargets);
+  });
+
   test('classifyPushTests falls back to full suite when changed files cannot be resolved', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '',

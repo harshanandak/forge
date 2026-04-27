@@ -130,6 +130,10 @@ function uniqueTestTargets(testTargets) {
   return [...new Set(testTargets)];
 }
 
+function isExtraLaneOnlyPath(file) {
+  return file.startsWith('test/e2e/') || file.startsWith('test-env/');
+}
+
 /**
  * Builds the execution plan used by PR, pre-push, and local validation test lanes.
  *
@@ -190,9 +194,12 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     hasUnmappedFiles = true;
   }
 
+  const hasOnlyExtraLaneChanges = changedFiles.length > 0
+    && changedFiles.every(isExtraLaneOnlyPath);
   const hasZeroResolvedTests = changedFiles.length > 0
     && affectedTestTargets.length === 0
-    && !runFullSuite;
+    && !runFullSuite
+    && !hasOnlyExtraLaneChanges;
   const shouldRunFullSuite = runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests;
 
   const reason = hasUnmappedFiles
