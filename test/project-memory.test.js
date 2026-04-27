@@ -369,6 +369,8 @@ describe('project memory', () => {
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
     fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
     fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
+    const staleTime = new Date(Date.now() - 1_000);
+    fs.utimesSync(`${memoryFile}.lock`, staleTime, staleTime);
 
     projectMemory.write(root, {
       key: 'policy.malformed-lock-file',
@@ -384,6 +386,26 @@ describe('project memory', () => {
       value: 'recovered',
     });
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
+  test('does not reclaim a freshly initializing malformed lockfile before waiter timeout', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
+
+    expect(() => projectMemory.write(root, {
+      key: 'policy.fresh-invalid-lock',
+      value: 'blocked',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 100,
+    })).toThrow();
+
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(true);
+    expect(projectMemory.search(root, 'fresh-invalid-lock')).toEqual([]);
   });
 
   test('recovers fresh lockfiles owned by dead processes', () => {

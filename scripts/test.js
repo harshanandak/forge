@@ -291,7 +291,7 @@ function runTestExecutionPlan(plan, deps = {}) {
       if (status !== 0) return status;
     }
 
-    if (!plan.runFullSuite && plan.runE2E) {
+    if (plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
       const status = runCommand(bunCommand, ['test', 'test/e2e/'], { env }, spawnSync);
       if (status !== 0) return status;

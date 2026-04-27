@@ -222,6 +222,18 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual(riskTargets);
   });
 
+  test('buildTestExecutionPlan preserves e2e lane for mixed zero-target changes', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'test/e2e/helpers/scaffold.js\nscripts/new-maintenance-task.sh\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasZeroResolvedTests).toBe(true);
+    expect(plan.mode).toBe('full');
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.runE2E).toBe(true);
+    expect(plan.testTargets).toEqual([]);
+  });
+
   test('classifyPushTests falls back to full suite when changed files cannot be resolved', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '',
@@ -293,6 +305,25 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls).toHaveLength(1);
     expect(spawnSync.calls[0].command).toBe('node');
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+  });
+
+  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'test/e2e/helpers/scaffold.js\nscripts/new-maintenance-task.sh\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(2);
+    expect(spawnSync.calls[0].command).toBe('node');
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+    expect(spawnSync.calls[1].command).toBe('bun');
+    expect(spawnSync.calls[1].args).toEqual(['test', 'test/e2e/']);
   });
 
   test('runLocalValidationTests reuses the same targeted runner path', () => {
