@@ -311,6 +311,59 @@ describe('project memory', () => {
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
   });
 
+  test('removes lockfiles when lock metadata initialization fails', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const originalWriteFileSync = fs.writeFileSync;
+    let injected = false;
+
+    fs.writeFileSync = function writeFileSyncWithInjectedFailure(target, ...args) {
+      if (!injected && String(target).endsWith(`${path.sep}owner.json`)) {
+        injected = true;
+        throw new Error('injected lock metadata failure');
+      }
+      return originalWriteFileSync.call(this, target, ...args);
+    };
+
+    try {
+      expect(() => projectMemory.write(root, {
+        key: 'policy.lock-init-failure',
+        value: 'not written',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 50,
+        lockRetryMs: 5,
+      })).toThrow('injected lock metadata failure');
+    } finally {
+      fs.writeFileSync = originalWriteFileSync;
+    }
+
+    expect(injected).toBe(true);
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
+  test('recovers metadata-less lock directories within the lock timeout', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(`${memoryFile}.lock`, { recursive: true });
+
+    projectMemory.write(root, {
+      key: 'policy.metadata-less-lock-dir',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.metadata-less-lock-dir')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
   test('recovers fresh lockfiles owned by dead processes', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
@@ -498,6 +551,77 @@ projectMemory.write(root, {
     ].join('\n') + '\n', 'utf8');
 
     expect(() => projectMemory.list(root)).toThrow('invalid project memory entry at line 2');
+  });
+
+  test('ignores a torn trailing JSONL append when reading', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(memoryFile, [
+      JSON.stringify({
+        key: 'policy.valid-before-torn-tail',
+        value: 'valid',
+        'source-agent': 'Codex',
+        timestamp: '2026-04-26T00:00:00.000Z',
+        tags: ['valid'],
+      }),
+      '{"key":"policy.torn-tail"',
+    ].join('\n'), 'utf8');
+
+    expect(projectMemory.list(root)).toEqual([{
+      key: 'policy.valid-before-torn-tail',
+      value: 'valid',
+      sourceAgent: 'Codex',
+      timestamp: '2026-04-26T00:00:00.000Z',
+      tags: ['valid'],
+    }]);
+  });
+
+  test('ignores a valid but unterminated trailing JSONL record when reading', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(memoryFile, JSON.stringify({
+      key: 'policy.unterminated',
+      value: 'valid json without commit newline',
+      'source-agent': 'Codex',
+      timestamp: '2026-04-26T00:00:00.000Z',
+      tags: ['unterminated'],
+    }), 'utf8');
+
+    expect(projectMemory.list(root)).toEqual([]);
+  });
+
+  test('repairs a torn trailing JSONL append before the next write', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    const validEntry = {
+      key: 'policy.valid-before-repair',
+      value: 'valid',
+      'source-agent': 'Codex',
+      timestamp: '2026-04-26T00:00:00.000Z',
+      tags: ['valid'],
+    };
+    fs.writeFileSync(memoryFile, [
+      JSON.stringify(validEntry),
+      '{"key":"policy.torn-tail"',
+    ].join('\n'), 'utf8');
+
+    projectMemory.write(root, {
+      key: 'policy.after-repair',
+      value: 'written',
+      sourceAgent: 'Codex',
+      timestamp: '2026-04-26T00:01:00.000Z',
+      tags: ['repair'],
+    });
+
+    const rawLines = fs.readFileSync(memoryFile, 'utf8').trim().split(/\r?\n/);
+    expect(rawLines).toHaveLength(2);
+    expect(rawLines.map((line) => JSON.parse(line).key)).toEqual([
+      'policy.valid-before-repair',
+      'policy.after-repair',
+    ]);
   });
 
   test('validates required schema fields before writing', () => {
