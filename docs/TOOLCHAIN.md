@@ -31,6 +31,23 @@ Complete reference for all tools integrated with the Forge workflow.
 
 ---
 
+## Shell Model
+
+Forge commands and repo scripts run under the shell shown below:
+
+| Platform | Shell used by Forge commands and scripts |
+| --- | --- |
+| Windows | Git Bash for helper-backed Forge stage flows |
+| macOS/Linux | Default login shell |
+
+Windows gotchas:
+
+- Forge runtime health enforces Git Bash on Windows for helper-backed flows and reports `Git Bash is required on Windows for helper-backed flows.` when it is missing.
+- Native PowerShell is still used by some bootstrap paths, such as Beads installation, but it is not the enforced shell for helper-backed stage execution.
+- WSL may be useful for adjacent development tasks, but it is not the Windows shell policy currently enforced by Forge runtime checks.
+
+---
+
 ## Beads - Dolt-Backed Issue Tracking
 
 **Package**: `@beads/bd`  

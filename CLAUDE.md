@@ -50,6 +50,17 @@ See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) for detailed MCP setup instructions.
 
 Setup prompts for Beads during interactive installation. Manual install: see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
 
+### Shell Model
+
+Forge commands and repo scripts assume the following shell model:
+
+| Platform | Shell used by Forge commands and scripts |
+| --- | --- |
+| Windows | Git Bash for helper-backed Forge stage flows |
+| macOS/Linux | Default login shell |
+
+On Windows, Forge runtime health enforces Git Bash for helper-backed stage flows. Native PowerShell is still used by some bootstrap paths, and WSL may be useful for adjacent development tasks. See [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md#shell-model) for details.
+
 ---
 
 ## Git Workflow
