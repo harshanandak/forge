@@ -192,10 +192,7 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
 
   const hasZeroResolvedTests = changedFiles.length > 0
     && affectedTestTargets.length === 0
-    && !runFullSuite
-    && !runTestEnv
-    && !runE2E
-    && !runWorkflowTests;
+    && !runFullSuite;
   const shouldRunFullSuite = runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests;
 
   const reason = hasUnmappedFiles

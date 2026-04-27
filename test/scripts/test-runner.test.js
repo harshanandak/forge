@@ -199,6 +199,17 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([]);
   });
 
+  test('buildTestExecutionPlan preserves zero-target full fallback before adding risk tests', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'scripts/new-maintenance-task.sh\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasZeroResolvedTests).toBe(true);
+    expect(plan.mode).toBe('full');
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.testTargets).toEqual([]);
+  });
+
   test('classifyPushTests falls back to full suite when changed files cannot be resolved', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '',

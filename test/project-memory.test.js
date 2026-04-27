@@ -364,6 +364,28 @@ describe('project memory', () => {
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
   });
 
+  test('recovers malformed lockfiles within the lock timeout', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
+
+    projectMemory.write(root, {
+      key: 'policy.malformed-lock-file',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.malformed-lock-file')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
   test('recovers fresh lockfiles owned by dead processes', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
