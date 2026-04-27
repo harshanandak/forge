@@ -37,6 +37,12 @@ const KNOWN_TARGETABLE_PREFIXES = [
   'test/',
 ];
 
+const ALWAYS_RUN_RISK_TEST_TARGETS = [
+  // Windows + concurrent filesystem locking has failed post-merge; keep this
+  // in the fast PR lane until enough full-matrix runs prove it stable.
+  'test/project-memory.test.js',
+];
+
 const isWindows = process.platform === 'win32';
 
 /**
@@ -91,19 +97,23 @@ function includesWorkflowTarget(testTargets) {
     || target.startsWith('test/workflows/'));
 }
 
+function uniqueTestTargets(testTargets) {
+  return [...new Set(testTargets)];
+}
+
 function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync, options = {}) {
   const diffOptions = {
     sinceUpstream: options.sinceUpstream !== false,
   };
   const changedFiles = getChangedFiles(execFileSync, diffOptions);
-  const testTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
+  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
 
   let runFullSuite = false;
   let runTestEnv = false;
   let runE2E = false;
-  let runWorkflowTests = includesWorkflowTarget(testTargets);
+  let runWorkflowTests = includesWorkflowTarget(affectedTestTargets);
   let hasUnmappedFiles = false;
-  const hasUnknownChangedFiles = changedFiles.length === 0 && testTargets.length === 0;
+  const hasUnknownChangedFiles = changedFiles.length === 0 && affectedTestTargets.length === 0;
 
   for (const file of changedFiles) {
     if (PACKAGE_LEVEL_PATHS.has(file) || file.startsWith('packages/')) {
@@ -144,11 +154,12 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
   }
 
   const hasZeroResolvedTests = changedFiles.length > 0
-    && testTargets.length === 0
+    && affectedTestTargets.length === 0
     && !runFullSuite
     && !runTestEnv
     && !runE2E
     && !runWorkflowTests;
+  const shouldRunFullSuite = runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests;
 
   const reason = hasUnmappedFiles
     ? 'unmapped pushed files require full unit coverage'
@@ -165,13 +176,15 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     hasUnmappedFiles,
     hasUnknownChangedFiles,
     hasZeroResolvedTests,
-    mode: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests ? 'full' : 'targeted',
+    mode: shouldRunFullSuite ? 'full' : 'targeted',
     reason,
     runE2E,
-    runFullSuite: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests,
+    runFullSuite: shouldRunFullSuite,
     runTestEnv,
     runWorkflowTests,
-    testTargets,
+    testTargets: shouldRunFullSuite
+      ? affectedTestTargets
+      : uniqueTestTargets([...affectedTestTargets, ...ALWAYS_RUN_RISK_TEST_TARGETS]),
   };
 }
 
@@ -256,6 +269,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ALWAYS_RUN_RISK_TEST_TARGETS,
   buildTestExecutionPlan,
   classifyPushTests,
   detectPackageManager,
