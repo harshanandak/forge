@@ -20,9 +20,16 @@ describe('CI Workflow Configuration', () => {
   });
 
   describe('Follow-up PR Pushes', () => {
-    test('followup-tests job exists for synchronize events', () => {
+    test('followup-tests job exists for all pull request events', () => {
       expectSection('followup-tests');
-      expect(workflowContent.includes("if: github.event_name == 'pull_request' && github.event.action == 'synchronize'")).toBe(true);
+      expect(workflowContent.includes("if: github.event_name == 'pull_request'")).toBe(true);
+    });
+
+    test('followup-tests covers the Windows Node 22 lane before merge', () => {
+      expect(workflowContent.includes('name: Targeted PR Tests (${{ matrix.label }})')).toBe(true);
+      expect(workflowContent.includes('os: windows-latest')).toBe(true);
+      expect(workflowContent.includes('node-version: 22')).toBe(true);
+      expect(workflowContent.includes('label: windows-node22')).toBe(true);
     });
 
     test('followup-tests resolves affected targets through the shared execution planner', () => {

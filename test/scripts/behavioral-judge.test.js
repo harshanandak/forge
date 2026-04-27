@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { describe, test, expect } = require('bun:test');
@@ -130,6 +131,27 @@ describe('scripts/behavioral-judge.sh', () => {
       expect(result.error).toBeUndefined();
       const parsed = parseOutput(result.stdout);
       expect(parsed).not.toBeNull();
+    }, 15000);
+
+    test('test mode prefers node JSON parsing when python3 is unavailable', () => {
+      const tempBin = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-python3-shim-'));
+      const marker = path.join(tempBin, 'python3-called');
+      const pythonShim = path.join(tempBin, 'python3');
+      fs.writeFileSync(pythonShim, `#!/usr/bin/env bash\necho called > ${JSON.stringify(marker)}\nexit 97\n`, 'utf8');
+      fs.chmodSync(pythonShim, 0o755);
+
+      try {
+        const result = runJudge(SAMPLE_PLAN_OUTPUT, {
+          BEHAVIORAL_JUDGE_TEST_MODE: '1',
+          PATH: `${tempBin}${path.delimiter}${process.env.PATH}`,
+        });
+        expect(result.error).toBeUndefined();
+        const parsed = parseOutput(result.stdout);
+        expect(parsed).not.toBeNull();
+        expect(fs.existsSync(marker)).toBe(false);
+      } finally {
+        fs.rmSync(tempBin, { recursive: true, force: true });
+      }
     }, 15000);
 
     test('output contains "result" field', () => {

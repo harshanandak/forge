@@ -66,10 +66,25 @@ else
   INPUT="$(cat)"
 fi
 
-# Extract plan_output text if input is JSON, otherwise use raw input
-PLAN_TEXT="$INPUT"
-if command -v python3 >/dev/null 2>&1; then
-  EXTRACTED=$(echo "$INPUT" | python3 -c "
+extract_plan_text() {
+  if command -v node >/dev/null 2>&1; then
+    node -e "
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  try {
+    const parsed = JSON.parse(input);
+    const value = parsed && parsed.plan_output;
+    if (value) process.stdout.write(String(value));
+  } catch (_) {}
+});
+" 2>/dev/null
+    return $?
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -78,10 +93,16 @@ try:
         print(val)
 except:
     pass
-" 2>/dev/null) || true
-  if [ -n "$EXTRACTED" ]; then
-    PLAN_TEXT="$EXTRACTED"
+" 2>/dev/null
+    return $?
   fi
+}
+
+# Extract plan_output text if input is JSON, otherwise use raw input
+PLAN_TEXT="$INPUT"
+EXTRACTED=$(printf '%s' "$INPUT" | extract_plan_text) || true
+if [ -n "$EXTRACTED" ]; then
+  PLAN_TEXT="$EXTRACTED"
 fi
 
 # ─── Judge prompt ────────────────────────────────────────────────────────────
@@ -158,7 +179,22 @@ parse_scores() {
   local response="$1"
   # Extract the JSON object from the LLM response content
   local content
-  content=$(echo "$response" | python3 -c "
+  if command -v node >/dev/null 2>&1; then
+    content=$(printf '%s' "$response" | node -e "
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  try {
+    const data = JSON.parse(input);
+    const choice = (data.choices || [])[0] || {};
+    const message = choice.message || {};
+    process.stdout.write(String(message.content || ''));
+  } catch (_) {}
+});
+" 2>/dev/null) || true
+  elif command -v python3 >/dev/null 2>&1; then
+    content=$(printf '%s' "$response" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -170,6 +206,9 @@ try:
 except Exception as e:
     pass
 " 2>/dev/null) || true
+  else
+    content=""
+  fi
 
   if [ -z "$content" ]; then
     echo ""
@@ -178,7 +217,37 @@ except Exception as e:
 
   # Parse scores from content JSON
   local scores
-  scores=$(echo "$content" | python3 -c "
+  if command -v node >/dev/null 2>&1; then
+    scores=$(printf '%s' "$content" | node -e "
+let text = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { text += chunk; });
+process.stdin.on('end', () => {
+  function emit(value) {
+    const security = Number.parseInt(value.security, 10);
+    const tdd = Number.parseInt(value.tdd, 10);
+    const design = Number.parseInt(value.design, 10);
+    const structural = Number.parseInt(value.structural, 10);
+    if ([security, tdd, design, structural].every(score => Number.isInteger(score) && score >= 0 && score <= 5)) {
+      console.log([security, tdd, design, structural].join(' '));
+      return true;
+    }
+    return false;
+  }
+  try {
+    if (emit(JSON.parse(text.trim()))) return;
+  } catch (_) {}
+  const match = text.match(/\{[^}]+\}/s);
+  if (match) {
+    try {
+      if (emit(JSON.parse(match[0]))) return;
+    } catch (_) {}
+  }
+  process.exit(1);
+});
+" 2>/dev/null) || { echo ""; return 1; }
+  elif command -v python3 >/dev/null 2>&1; then
+    scores=$(printf '%s' "$content" | python3 -c "
 import sys, json, re
 text = sys.stdin.read().strip()
 # Try direct JSON parse first
@@ -209,6 +278,10 @@ if m:
         pass
 sys.exit(1)
 " 2>/dev/null) || { echo ""; return 1; }
+  else
+    echo ""
+    return 1
+  fi
 
   echo "$scores"
 }
@@ -221,10 +294,23 @@ call_openrouter() {
 
   # Escape prompt for JSON
   local escaped_prompt
-  escaped_prompt=$(echo "$prompt" | python3 -c "
+  if command -v node >/dev/null 2>&1; then
+    escaped_prompt=$(printf '%s' "$prompt" | node -e "
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  process.stdout.write(JSON.stringify(input));
+});
+" 2>/dev/null) || escaped_prompt='""'
+  elif command -v python3 >/dev/null 2>&1; then
+    escaped_prompt=$(printf '%s' "$prompt" | python3 -c "
 import sys, json
 print(json.dumps(sys.stdin.read()))
 " 2>/dev/null) || escaped_prompt='""'
+  else
+    escaped_prompt='""'
+  fi
 
   local body
   body=$(cat <<JSON
@@ -295,7 +381,22 @@ if [ "${BEHAVIORAL_JUDGE_TEST_MODE}" = "1" ]; then
   fi
 
   # Parse mock scores
-  scores=$(echo "$mock_scores" | python3 -c "
+  if command -v node >/dev/null 2>&1; then
+    scores=$(printf '%s' "$mock_scores" | node -e "
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  const scores = JSON.parse(input);
+  const security = Number.parseInt(scores.security ?? 3, 10);
+  const tdd = Number.parseInt(scores.tdd ?? 3, 10);
+  const design = Number.parseInt(scores.design ?? 3, 10);
+  const structural = Number.parseInt(scores.structural ?? 3, 10);
+  console.log([security, tdd, design, structural].join(' '));
+});
+" 2>/dev/null) || scores="3 3 3 3"
+  elif command -v python3 >/dev/null 2>&1; then
+    scores=$(printf '%s' "$mock_scores" | python3 -c "
 import sys, json
 d = json.loads(sys.stdin.read())
 s = int(d.get('security', 3))
@@ -304,6 +405,9 @@ de = int(d.get('design', 3))
 st = int(d.get('structural', 3))
 print(f'{s} {t} {de} {st}')
 " 2>/dev/null) || scores="3 3 3 3"
+  else
+    scores="3 3 3 3"
+  fi
 
   read -r sec tdd_s des str <<< "$scores"
   compute_result "$sec" "$tdd_s" "$des" "$str" "$judge_model" "$judge_calls"
