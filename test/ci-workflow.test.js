@@ -4,8 +4,9 @@ const { describe, test, expect } = require('bun:test');
 
 describe('CI Workflow Configuration', () => {
   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
-  const workflowContent = fs.readFileSync(workflowPath, 'utf-8');
+  const workflowContent = fs.readFileSync(workflowPath, 'utf-8').replace(/\r\n/g, '\n');
   const synchronizeSkipCondition = "github.event_name != 'pull_request' || github.event.action != 'synchronize'";
+  const prNonSynchronizeCondition = "github.event_name == 'pull_request' && github.event.action != 'synchronize'";
 
   function expectSection(sectionName) {
     expect(workflowContent.includes(`${sectionName}:`)).toBe(true);
@@ -72,9 +73,10 @@ describe('CI Workflow Configuration', () => {
   });
 
   describe('Confidence Lane', () => {
-    test('full matrix job is reserved for non-PR runs', () => {
+    test('full matrix job runs for PR events', () => {
       expectSection('full-matrix');
-      expect(workflowContent.includes("if: github.event_name != 'pull_request'")).toBe(true);
+      expect(workflowContent.includes("full-matrix:\n    name: Full Matrix")).toBe(true);
+      expect(workflowContent.includes("full-matrix:\n    name: Full Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})\n    if:")).toBe(false);
       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
     });
@@ -115,9 +117,11 @@ describe('CI Workflow Configuration', () => {
   });
 
   describe('Trigger Layout', () => {
-    test('broad jobs skip synchronize events', () => {
+    test('broad PR jobs run on synchronize events', () => {
       const skipConditionOccurrences = workflowContent.split(synchronizeSkipCondition).length - 1;
-      expect(skipConditionOccurrences >= 2).toBe(true);
+      const prNonSynchronizeOccurrences = workflowContent.split(prNonSynchronizeCondition).length - 1;
+      expect(skipConditionOccurrences).toBe(0);
+      expect(prNonSynchronizeOccurrences).toBe(0);
     });
 
     test('workflow retains schedule and workflow_dispatch triggers', () => {
