@@ -624,6 +624,57 @@ projectMemory.write(root, {
     ]);
   });
 
+  test('rolls back an appended record when fsync fails', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(memoryFile, JSON.stringify({
+      key: 'policy.before-fsync-failure',
+      value: 'valid',
+      'source-agent': 'Codex',
+      timestamp: '2026-04-26T00:00:00.000Z',
+      tags: ['valid'],
+    }) + '\n', 'utf8');
+
+    const originalOpenSync = fs.openSync;
+    const originalFsyncSync = fs.fsyncSync;
+    const entryFileDescriptors = new Set();
+    let injected = false;
+
+    fs.openSync = function openSyncWithTrackedEntryFile(target, ...args) {
+      const fd = originalOpenSync.call(this, target, ...args);
+      if (path.resolve(String(target)) === memoryFile) {
+        entryFileDescriptors.add(fd);
+      }
+      return fd;
+    };
+    fs.fsyncSync = function fsyncSyncWithInjectedFailure(fd) {
+      if (!injected && entryFileDescriptors.has(fd)) {
+        injected = true;
+        throw new Error('injected entry fsync failure');
+      }
+      return originalFsyncSync.call(this, fd);
+    };
+
+    try {
+      expect(() => projectMemory.write(root, {
+        key: 'policy.fsync-failure',
+        value: 'must not persist',
+        sourceAgent: 'Codex',
+        timestamp: '2026-04-26T00:01:00.000Z',
+        tags: ['failure'],
+      })).toThrow('injected entry fsync failure');
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+      fs.openSync = originalOpenSync;
+    }
+
+    expect(injected).toBe(true);
+    expect(projectMemory.list(root).map((entry) => entry.key)).toEqual([
+      'policy.before-fsync-failure',
+    ]);
+  });
+
   test('validates required schema fields before writing', () => {
     const root = tempRoot();
 
