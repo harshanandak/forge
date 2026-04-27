@@ -37,6 +37,12 @@ const KNOWN_TARGETABLE_PREFIXES = [
   'test/',
 ];
 
+const ALWAYS_RUN_RISK_TEST_TARGETS = [
+  // Windows + concurrent filesystem locking has failed post-merge; keep this
+  // in the fast PR lane until enough full-matrix runs prove it stable.
+  'test/project-memory.test.js',
+];
+
 const isWindows = process.platform === 'win32';
 
 /**
@@ -54,6 +60,11 @@ const isWindows = process.platform === 'win32';
  * @property {string[]} testTargets
  */
 
+/**
+ * Detects the package manager to use for running test commands in this checkout.
+ *
+ * @returns {'bun'|'pnpm'|'yarn'|'npm'} The package manager inferred from lockfiles.
+ */
 function detectPackageManager() {
   if (fs.existsSync('bun.lockb') || fs.existsSync('bun.lock')) return 'bun';
   if (fs.existsSync('pnpm-lock.yaml')) return 'pnpm';
@@ -61,6 +72,12 @@ function detectPackageManager() {
   return 'npm';
 }
 
+/**
+ * Removes Git hook-only environment variables before spawning nested Git-aware commands.
+ *
+ * @param {NodeJS.ProcessEnv} [sourceEnv=process.env] Environment variables to sanitize.
+ * @returns {NodeJS.ProcessEnv} A copy of the environment without hook-specific Git variables.
+ */
 function stripGitHookEnv(sourceEnv = process.env) {
   const env = { ...sourceEnv };
   for (const key of Object.keys(env)) {
@@ -73,6 +90,12 @@ function stripGitHookEnv(sourceEnv = process.env) {
   return env;
 }
 
+/**
+ * Checks whether a changed path belongs to a known test-targetable area.
+ *
+ * @param {string} file Repository-relative changed file path.
+ * @returns {boolean} True when the path can be handled by targeted test selection.
+ */
 function isKnownTargetablePath(file) {
   if (file === '.gitignore') {
     return true;
@@ -85,25 +108,53 @@ function isKnownTargetablePath(file) {
   return KNOWN_TARGETABLE_PREFIXES.some((prefix) => file.startsWith(prefix));
 }
 
+/**
+ * Determines whether the resolved test targets require workflow-specific validation.
+ *
+ * @param {string[]} testTargets Repository-relative test file paths.
+ * @returns {boolean} True when workflow tests are part of the target set.
+ */
 function includesWorkflowTarget(testTargets) {
   return testTargets.some((target) => target === 'test/ci-workflow.test.js'
     || target === 'test/structural/agentic-workflow-sync.test.js'
     || target.startsWith('test/workflows/'));
 }
 
+/**
+ * Deduplicates test targets while preserving the original execution order.
+ *
+ * @param {string[]} testTargets Repository-relative test file paths.
+ * @returns {string[]} Unique test targets in first-seen order.
+ */
+function uniqueTestTargets(testTargets) {
+  return [...new Set(testTargets)];
+}
+
+function isExtraLaneOnlyPath(file) {
+  return file.startsWith('test/e2e/') || file.startsWith('test-env/');
+}
+
+/**
+ * Builds the execution plan used by PR, pre-push, and local validation test lanes.
+ *
+ * @param {string} projectRoot Absolute or relative repository root.
+ * @param {typeof defaultExecFileSync} [execFileSync=defaultExecFileSync] Command runner used to inspect Git state.
+ * @param {{sinceUpstream?: boolean}} [options={}] Test selection options.
+ * @returns {TestExecutionPlan} The computed test execution plan.
+ */
 function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync, options = {}) {
   const diffOptions = {
     sinceUpstream: options.sinceUpstream !== false,
   };
   const changedFiles = getChangedFiles(execFileSync, diffOptions);
-  const testTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
+  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
 
   let runFullSuite = false;
   let runTestEnv = false;
   let runE2E = false;
-  let runWorkflowTests = includesWorkflowTarget(testTargets);
+  let runWorkflowTests = includesWorkflowTarget(affectedTestTargets);
   let hasUnmappedFiles = false;
-  const hasUnknownChangedFiles = changedFiles.length === 0 && testTargets.length === 0;
+  const hasUnknownChangedFiles = changedFiles.length === 0 && affectedTestTargets.length === 0;
 
   for (const file of changedFiles) {
     if (PACKAGE_LEVEL_PATHS.has(file) || file.startsWith('packages/')) {
@@ -143,12 +194,13 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     hasUnmappedFiles = true;
   }
 
+  const hasOnlyExtraLaneChanges = changedFiles.length > 0
+    && changedFiles.every(isExtraLaneOnlyPath);
   const hasZeroResolvedTests = changedFiles.length > 0
-    && testTargets.length === 0
+    && affectedTestTargets.length === 0
     && !runFullSuite
-    && !runTestEnv
-    && !runE2E
-    && !runWorkflowTests;
+    && !hasOnlyExtraLaneChanges;
+  const shouldRunFullSuite = runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests;
 
   const reason = hasUnmappedFiles
     ? 'unmapped pushed files require full unit coverage'
@@ -165,20 +217,38 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
     hasUnmappedFiles,
     hasUnknownChangedFiles,
     hasZeroResolvedTests,
-    mode: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests ? 'full' : 'targeted',
+    mode: shouldRunFullSuite ? 'full' : 'targeted',
     reason,
     runE2E,
-    runFullSuite: runFullSuite || hasUnmappedFiles || hasUnknownChangedFiles || hasZeroResolvedTests,
+    runFullSuite: shouldRunFullSuite,
     runTestEnv,
     runWorkflowTests,
-    testTargets,
+    testTargets: shouldRunFullSuite
+      ? affectedTestTargets
+      : uniqueTestTargets([...affectedTestTargets, ...ALWAYS_RUN_RISK_TEST_TARGETS]),
   };
 }
 
+/**
+ * Classifies the pushed changes into the test plan enforced by the pre-push hook.
+ *
+ * @param {string} projectRoot Absolute or relative repository root.
+ * @param {typeof defaultExecFileSync} [execFileSync=defaultExecFileSync] Command runner used to inspect Git state.
+ * @returns {TestExecutionPlan} The pre-push test execution plan.
+ */
 function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
   return buildTestExecutionPlan(projectRoot, execFileSync, { sinceUpstream: true });
 }
 
+/**
+ * Runs a command and returns its exit status, throwing only when process spawning fails.
+ *
+ * @param {string} command Executable name.
+ * @param {string[]} args Command arguments.
+ * @param {import('node:child_process').SpawnSyncOptions} [options={}] Spawn options.
+ * @param {typeof defaultSpawnSync} [spawnSync=defaultSpawnSync] Process runner.
+ * @returns {number} Process exit status, or 1 when no status is reported.
+ */
 function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
   const result = spawnSync(command, args, {
     stdio: 'inherit',
@@ -193,6 +263,13 @@ function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
   return result.status ?? 1;
 }
 
+/**
+ * Executes a computed test plan and any extra targeted validation lanes.
+ *
+ * @param {TestExecutionPlan} plan Test plan to execute.
+ * @param {Object} [deps={}] Runtime dependencies for tests.
+ * @returns {number} Exit status for the executed plan.
+ */
 function runTestExecutionPlan(plan, deps = {}) {
   const spawnSync = deps.spawnSync || defaultSpawnSync;
   const pkgManager = deps.pkgManager || detectPackageManager();
@@ -214,7 +291,7 @@ function runTestExecutionPlan(plan, deps = {}) {
       if (status !== 0) return status;
     }
 
-    if (!plan.runFullSuite && plan.runE2E) {
+    if (plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
       const status = runCommand(bunCommand, ['test', 'test/e2e/'], { env }, spawnSync);
       if (status !== 0) return status;
@@ -236,12 +313,26 @@ function runTestExecutionPlan(plan, deps = {}) {
   }
 }
 
+/**
+ * Runs the pre-push test plan for the current checkout.
+ *
+ * @param {string} [projectRoot=process.cwd()] Repository root.
+ * @param {Object} [deps={}] Runtime dependencies for tests.
+ * @returns {number} Exit status for pre-push tests.
+ */
 function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
   const execFileSync = deps.execFileSync || defaultExecFileSync;
   const plan = classifyPushTests(projectRoot, execFileSync);
   return runTestExecutionPlan(plan, { ...deps, label: 'pre-push tests' });
 }
 
+/**
+ * Runs the local validation test plan for the current checkout.
+ *
+ * @param {string} [projectRoot=process.cwd()] Repository root.
+ * @param {Object} [deps={}] Runtime dependencies for tests.
+ * @returns {number} Exit status for local validation tests.
+ */
 function runLocalValidationTests(projectRoot = process.cwd(), deps = {}) {
   const execFileSync = deps.execFileSync || defaultExecFileSync;
   const plan = buildTestExecutionPlan(projectRoot, execFileSync, { sinceUpstream: true });
@@ -256,6 +347,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ALWAYS_RUN_RISK_TEST_TARGETS,
   buildTestExecutionPlan,
   classifyPushTests,
   detectPackageManager,

@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
 const path = require('node:path');
 
 const {
+  ALWAYS_RUN_RISK_TEST_TARGETS,
   buildTestExecutionPlan,
   classifyPushTests,
   runLocalValidationTests,
@@ -12,6 +13,7 @@ const {
 } = require('../../scripts/test');
 
 const repoRoot = path.resolve(__dirname, '../..');
+const riskTargets = [...ALWAYS_RUN_RISK_TEST_TARGETS];
 
 function makeExecFileSync({
   changedFiles = '',
@@ -80,6 +82,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runTestEnv).toBe(true);
     expect(plan.runE2E).toBe(false);
     expect(plan.testTargets).toContain('test/commands/ship.test.js');
+    expect(plan.testTargets).toEqual(expect.arrayContaining(riskTargets));
   });
 
   test('classifyPushTests maps canonical command edits to command sync checks', () => {
@@ -90,6 +93,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([
       'test/command-sync-check.test.js',
       'test/structural/command-sync.test.js',
+      ...riskTargets,
     ]);
   });
 
@@ -105,6 +109,7 @@ describe('scripts/test pre-push runner', () => {
       'test/command-sync-check.test.js',
       'test/scripts/check-agents.test.js',
       'test/structural/command-sync.test.js',
+      ...riskTargets,
     ]);
   });
 
@@ -119,6 +124,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([
       'test/scripts/behavioral-judge.test.js',
       'test/structural/agentic-workflow-sync.test.js',
+      ...riskTargets,
     ]);
   });
 
@@ -142,7 +148,20 @@ describe('scripts/test pre-push runner', () => {
       'test/runtime-health.test.js',
       'test/scripts/preflight.test.js',
       'test/scripts/test-runner.test.js',
+      ...riskTargets,
     ]);
+  });
+
+  test('buildTestExecutionPlan always includes curated risk tests in targeted mode', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'scripts/behavioral-judge.sh\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.mode).toBe('targeted');
+    expect(plan.testTargets).toEqual(expect.arrayContaining([
+      'test/scripts/behavioral-judge.test.js',
+      'test/project-memory.test.js',
+    ]));
   });
 
   test('classifyPushTests falls back to full suite for package-level changes', () => {
@@ -180,6 +199,41 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([]);
   });
 
+  test('buildTestExecutionPlan preserves zero-target full fallback before adding risk tests', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'scripts/new-maintenance-task.sh\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasZeroResolvedTests).toBe(true);
+    expect(plan.mode).toBe('full');
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.testTargets).toEqual([]);
+  });
+
+  test('buildTestExecutionPlan keeps e2e-only helper changes in targeted mode', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'test/e2e/helpers/scaffold.js\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasZeroResolvedTests).toBe(false);
+    expect(plan.mode).toBe('targeted');
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.runE2E).toBe(true);
+    expect(plan.testTargets).toEqual(riskTargets);
+  });
+
+  test('buildTestExecutionPlan preserves e2e lane for mixed zero-target changes', () => {
+    const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+      changedFiles: 'test/e2e/helpers/scaffold.js\nscripts/new-maintenance-task.sh\n',
+    }), { sinceUpstream: true });
+
+    expect(plan.hasZeroResolvedTests).toBe(true);
+    expect(plan.mode).toBe('full');
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.runE2E).toBe(true);
+    expect(plan.testTargets).toEqual([]);
+  });
+
   test('classifyPushTests falls back to full suite when changed files cannot be resolved', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '',
@@ -204,7 +258,12 @@ describe('scripts/test pre-push runner', () => {
 
     expect(status).toBe(0);
     expect(spawnSync.calls[0].command).toBe('bun');
-    expect(spawnSync.calls[0].args).toEqual(['run', 'test', 'test/commands/ship.test.js']);
+    expect(spawnSync.calls[0].args).toEqual([
+      'run',
+      'test',
+      'test/commands/ship.test.js',
+      ...riskTargets,
+    ]);
     expect(spawnSync.calls[1].command).toBe('bun');
     expect(spawnSync.calls[1].args).toEqual(['test', 'test-env/']);
   });
@@ -227,6 +286,7 @@ describe('scripts/test pre-push runner', () => {
       'test',
       'test/command-sync-check.test.js',
       'test/structural/command-sync.test.js',
+      ...riskTargets,
     ]);
   });
 
@@ -247,6 +307,25 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
+  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'test/e2e/helpers/scaffold.js\nscripts/new-maintenance-task.sh\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(2);
+    expect(spawnSync.calls[0].command).toBe('node');
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+    expect(spawnSync.calls[1].command).toBe('bun');
+    expect(spawnSync.calls[1].args).toEqual(['test', 'test/e2e/']);
+  });
+
   test('runLocalValidationTests reuses the same targeted runner path', () => {
     const spawnSync = makeSpawnSync(0);
     const status = runLocalValidationTests(repoRoot, {
@@ -265,6 +344,7 @@ describe('scripts/test pre-push runner', () => {
       'test',
       'test/scripts/behavioral-judge.test.js',
       'test/structural/agentic-workflow-sync.test.js',
+      ...riskTargets,
     ]);
   });
 

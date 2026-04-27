@@ -15,6 +15,26 @@ function tempRoot() {
   return root;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForSearchCount(root, query, expectedCount) {
+  const deadline = Date.now() + 1_000;
+  let results;
+  do {
+    results = projectMemory.search(root, query);
+    if (results.length === expectedCount) {
+      return results;
+    }
+    await delay(25);
+  } while (Date.now() < deadline);
+
+  return results;
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -318,7 +338,7 @@ describe('project memory', () => {
     let injected = false;
 
     fs.writeFileSync = function writeFileSyncWithInjectedFailure(target, ...args) {
-      if (!injected && String(target).endsWith(`${path.sep}owner.json`)) {
+      if (!injected && Number.isInteger(target)) {
         injected = true;
         throw new Error('injected lock metadata failure');
       }
@@ -347,6 +367,8 @@ describe('project memory', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
     fs.mkdirSync(`${memoryFile}.lock`, { recursive: true });
+    const staleTime = new Date(Date.now() - 5_000);
+    fs.utimesSync(`${memoryFile}.lock`, staleTime, staleTime);
 
     projectMemory.write(root, {
       key: 'policy.metadata-less-lock-dir',
@@ -362,6 +384,72 @@ describe('project memory', () => {
       value: 'recovered',
     });
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
+  test('recovers malformed lockfiles within the lock timeout', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
+    const staleTime = new Date(Date.now() - 5_000);
+    fs.utimesSync(`${memoryFile}.lock`, staleTime, staleTime);
+
+    projectMemory.write(root, {
+      key: 'policy.malformed-lock-file',
+      value: 'recovered',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 5,
+    });
+
+    expect(projectMemory.read(root, 'policy.malformed-lock-file')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+  });
+
+  test('does not reclaim a freshly initializing malformed lockfile before waiter timeout', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
+
+    expect(() => projectMemory.write(root, {
+      key: 'policy.fresh-invalid-lock',
+      value: 'blocked',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 100,
+    })).toThrow();
+
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(true);
+    expect(projectMemory.search(root, 'fresh-invalid-lock')).toEqual([]);
+  });
+
+  test('does not reclaim a freshly initializing lockfile with minor future mtime skew', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
+    const skewedTime = new Date(Date.now() + 500);
+    fs.utimesSync(`${memoryFile}.lock`, skewedTime, skewedTime);
+
+    expect(() => projectMemory.write(root, {
+      key: 'policy.fresh-invalid-lock-skew',
+      value: 'blocked',
+      sourceAgent: 'Codex',
+      tags: [],
+    }, {
+      lockTimeoutMs: 250,
+      lockRetryMs: 100,
+    })).toThrow();
+
+    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(true);
+    expect(projectMemory.search(root, 'fresh-invalid-lock-skew')).toEqual([]);
   });
 
   test('recovers fresh lockfiles owned by dead processes', () => {
@@ -527,7 +615,11 @@ projectMemory.write(root, {
       });
     })));
 
-    expect(projectMemory.search(root, 'concurrent')).toHaveLength(8);
+    const results = await waitForSearchCount(root, 'concurrent', 8);
+    expect(results.map((entry) => entry.key).sort()).toEqual(Array.from(
+      { length: 8 },
+      (_unused, index) => `decision.concurrent.${index}`,
+    ));
   });
 
   test('rejects schema-invalid stored JSONL entries when reading', () => {
