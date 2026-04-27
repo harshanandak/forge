@@ -204,18 +204,28 @@ jobs:
           retention-days: 7
 
   followup-tests:
-    name: Targeted PR Tests
-    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
-    runs-on: ubuntu-latest
+    name: Targeted PR Tests (${{ matrix.label }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node-version: 24
+            label: ubuntu-node24
+          - os: windows-latest
+            node-version: 22
+            label: windows-node22
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Setup Node.js 24
+      - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: ${{ matrix.node-version }}
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -293,7 +303,7 @@ jobs:
         if: steps.affected.outputs.run_test_env == 'true'
         run: node --test test-env/**/*.test.js || true
       - name: Build followup profile
-        run: node scripts/test-profile.js --input-dir test-results --output test-results/followup.profile.json --label followup-tests --integration-skipped true
+        run: node scripts/test-profile.js --input-dir test-results --output test-results/followup-${{ matrix.label }}.profile.json --label followup-${{ matrix.label }} --integration-skipped true
       - name: Publish followup summary
         if: always()
         shell: bash
@@ -304,7 +314,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-artifacts-followup
+          name: test-artifacts-followup-${{ matrix.label }}
           path: test-results/
           retention-days: 7
 
