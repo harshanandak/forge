@@ -347,6 +347,8 @@ describe('project memory', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
     fs.mkdirSync(`${memoryFile}.lock`, { recursive: true });
+    const staleTime = new Date(Date.now() - 1_000);
+    fs.utimesSync(`${memoryFile}.lock`, staleTime, staleTime);
 
     projectMemory.write(root, {
       key: 'policy.metadata-less-lock-dir',
