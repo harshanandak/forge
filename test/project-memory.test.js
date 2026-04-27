@@ -318,7 +318,7 @@ describe('project memory', () => {
     let injected = false;
 
     fs.writeFileSync = function writeFileSyncWithInjectedFailure(target, ...args) {
-      if (!injected && String(target).endsWith(`${path.sep}owner.json`)) {
+      if (!injected && Number.isInteger(target)) {
         injected = true;
         throw new Error('injected lock metadata failure');
       }
