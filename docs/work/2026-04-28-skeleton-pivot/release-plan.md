@@ -16,6 +16,8 @@ The W0–W5 wave plan answered "what order do we build it." It did not answer "w
 
 **Pitch**: Project memory and planning rigor your agent harness lacks — install once and your agent gets a spine, a memory, and a 3-harness translator on day one.
 
+**Launch mode (D42)**: **Private alpha** at v3.0 (~wk 6–7), 5–10 invited devs. No Show HN until v3.1 (which has the demoable `/plan` wedge). ProductHunt at v3.2 when team mode lands.
+
 **Cumulative timeline**: ~5–6 weeks (solo MVP).
 
 **Scope**:

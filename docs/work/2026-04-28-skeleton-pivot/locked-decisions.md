@@ -503,6 +503,51 @@ D38 kill criteria now apply per-version (gate matrix in [release-plan.md](./rele
 
 ---
 
+# Iteration #8 (2026-04-29) — Backwards-compat, Launch staging
+
+> **Note on D41 (product name)**: A product-name rename was drafted in this iteration (D41 — "Forge Run") but is **HELD pending user evaluation of name options**. Not locked. The D41 slot is intentionally skipped to preserve numbering once the rename decision is made.
+
+## D40 — Backwards-compat: Hybrid semver with deprecation lanes
+
+**Decision**: Forge follows **hybrid semver** with explicit deprecation lanes:
+- **Patches** (3.0.0 → 3.0.x): full backwards compatibility; no migration required.
+- **Minors** (3.0.x → 3.1.0): may require `forge migrate`; the migration is **announced one minor ahead** via `forge doctor` warnings (so 3.0.x emits deprecation hints before 3.1.0 lands).
+- **Majors** (3.x → 4.0): explicit breaking changes; full migration guide.
+
+Every v3.0 artifact (config, patch.md, skill SKILL.md frontmatter, bd audit events) ships with `schema_version: 1.0` envelope (already in plan; reinforced here). ACTIVE.
+
+**Rationale**: Hybrid semver gives users predictable expectations (patches always safe, minors sometimes need migration but always announced, majors are deliberate) while letting Forge iterate the schema fast at v3.x cadence. NIH dual-shape support (maintain old + new schema simultaneously inside a minor) was rejected as too expensive at our iteration pace.
+
+**Tradeoff considered**: Hard back-compat (semver-strict — no schema changes at all within 3.x) preserves user trust at the cost of locking in early schema mistakes for an entire major. Pure rolling-release (no compat guarantees, just "always upgrade") cheapest to ship but kills enterprise adoption.
+
+**Anti-decision**: We explicitly chose against semver-strict (too expensive for iteration speed) and against rolling-release with no guarantees (kills trust). Migrator cost is ~1–2 days per minor bump — acceptable.
+
+---
+
+## D41 — RESERVED (product name decision held pending user evaluation)
+
+This slot is reserved for the product-name decision. A "Forge Run" rename was drafted in iteration #8 but is **NOT locked** — the user is evaluating name options. When a name is chosen, D41 will be filled in here with the standard format (decision / rationale / tradeoff / anti-decision).
+
+---
+
+## D42 — Launch staging: Private alpha v3.0 → Show HN v3.1 → ProductHunt v3.2
+
+**Decision**: Forge Run launches in three staged moves aligned to the version cadence (D39):
+- **v3.0 (~wk 6–7)** — **Private alpha**, 5–10 invited devs. No public announcement. Goal: shake out install + L1 rails + 3-harness translator on real repos.
+- **v3.1 (~wk 9–10)** — **Show HN**. Wedge headline: *"Stop your agent from shipping plans a senior would reject"* — demoable iteration-driven `/plan` with parallel critics. Goal: developer mindshare, first wave of organic adoption.
+- **v3.2 (~wk 11–12)** — **ProductHunt**. Marketing angle: team mode (`forge recap --team` + team patches). Goal: reach team buyers / engineering managers when team capability actually exists.
+- **Build-in-public Twitter thread** runs throughout from v3.0 onward (this iteration session itself becomes proof-of-concept content).
+
+ACTIVE.
+
+**Rationale**: v3.0 alone is plumbing (memory + rails + 3-harness translator) — it gets dismissed on Show HN as "another agent harness." v3.1 finally has a demoable wedge ("plan rigor your agent lacks") that survives HN scrutiny. v3.2 reaches team buyers with concrete team functionality, not vapor. The cadence matches when each audience can actually be sold.
+
+**Tradeoff considered**: "Show HN at v3.0" was rejected — the positioning critic correctly flagged v3.0 as plumbing without a demo wedge, and a weak HN launch poisons the brand. "Show HN at v3.2" was rejected as too late — competitors may ship something similar in the 4–5 week gap, and the build-in-public thread starves without milestones.
+
+**Anti-decision**: We explicitly chose against an early HN launch at v3.0 (no wedge), against waiting until v3.2 (too slow, competitive risk), and against silent launches (no community pull, no learning loop from real users).
+
+---
+
 ## Source documents
 
 - [release-plan.md](./release-plan.md) — canonical release roadmap (v3.0 / v3.1 / v3.2 / v3.3+) per D39

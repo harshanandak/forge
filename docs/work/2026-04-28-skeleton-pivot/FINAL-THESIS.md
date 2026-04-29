@@ -177,6 +177,10 @@ Per D39, Forge v3 ships as four versioned releases, each with a customer-facing 
 | Skills | Auto-invoke (Hermes-style description match) across all 3 |
 | `/plan` | Basic 1-tier (intent + lock) — optional per D34 |
 | `/build` | Basic TDD loop (no evaluator orchestrator yet) |
+| Onboarding | `forge new` first-time wizard (1–2 days; folds into `forge init` per W1). Detects active harness, picks template variant (web-app / library / CLI), runs `forge migrate` from non-Forge state, walks user through L1 rail acknowledgment. Closes the day-1 entry-door gap. |
+| W0 NO-GO gate | **Cross-harness skill-activation parity test** — same skill must auto-invoke identically in Claude Code (`.claude/skills/`), Cursor (`.cursor/rules/*.mdc` with globs), and Codex CLI (`.codex/skills/`) on a clean fixture. If only 2/3 work, ship with 2 + flag the third as known-issue per W3 kill checkpoint. |
+| Forward-compat | Every artifact ships with `schema_version: 1.0` envelope (`.forge/config.yaml`, `patch.md` frontmatter, skill SKILL.md frontmatter, bd audit event payloads). Reserve anchor ID namespace in patch.md (`<!-- @anchor: id -->` markers) even if unused in v3.0 — enables clean v3.1 migration without forced back-compat (per D40). |
+| Pre-W0 derisking | **v2-fixture corpus**: 5 synthetic v2 repos with varied shapes — (1) clean v2 install, (2) broken Beads state, (3) stale worktrees, (4) non-master default branch, (5) no Lefthook. Stress-tests `forge migrate`, embedded Dolt, and L1 rails. Converts validation from N=1 (this repo only) to representative coverage. |
 
 **Defers to v3.1+**: iteration-driven 3-tier `/plan`, `forge insights`, evaluator orchestrator, typed memory API surface, team mode.
 

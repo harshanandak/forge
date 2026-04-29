@@ -1,7 +1,7 @@
 # Forge v3 Skeleton Pivot
 
-**Date**: 2026-04-28 (started) → 2026-04-29 (consolidated through iteration #7)
-**Status**: D1–D39 locked. Canonical "where we ended up" is **[FINAL-THESIS.md](./FINAL-THESIS.md)**. Release roadmap (v3.0 / v3.1 / v3.2 / v3.3+) locked per D39 in **[release-plan.md](./release-plan.md)**.
+**Date**: 2026-04-28 (started) → 2026-04-29 (consolidated through iteration #8)
+**Status**: D1–D42 locked (D41 deferred — name TBD). Canonical "where we ended up" is **[FINAL-THESIS.md](./FINAL-THESIS.md)**. Release roadmap (v3.0 / v3.1 / v3.2 / v3.3+) locked per D39 in **[release-plan.md](./release-plan.md)**. Iteration #8 added D40 (hybrid semver back-compat) and D42 (staged launch: private alpha v3.0 → Show HN v3.1 → ProductHunt v3.2). Product naming decision held pending evaluation.
 **Current wave**: Wave 0 (de-risk + verification spikes per D10/D38)
 **Epic**: [`forge-besw`](../../../.beads/issues.jsonl) — ~33 children
 
