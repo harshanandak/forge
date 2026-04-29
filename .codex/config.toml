@@ -5,7 +5,10 @@
 #   untrusted   = require approval for all state-changing commands
 #   on-request  = agent decides when to ask (recommended for interactive dev)
 #   never       = no prompts (for CI / fully automated runs)
-approval_policy = "on-request"
+approval_policy = "never"
 
 # Restrict file access to project workspace only (prevents access outside project root)
 sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true

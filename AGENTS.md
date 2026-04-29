@@ -112,7 +112,7 @@ Task 2: Validation logic
 
 ## State Management (Single Source of Truth)
 
-> GitHub issue lifecycle may sync to Beads via CI -- see [docs/BEADS_GITHUB_SYNC.md](docs/BEADS_GITHUB_SYNC.md).
+> GitHub issue lifecycle may sync to Beads via CI -- see [docs/guides/BEADS_GITHUB_SYNC.md](docs/guides/BEADS_GITHUB_SYNC.md).
 
 **All workflow state stored in Beads metadata** (survives compaction):
 
@@ -169,8 +169,13 @@ Task 2: Validation logic
 
 **Comprehensive workflow guide:**
 - This file (AGENTS.md) is the single source of truth for the complete workflow
-- [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Tool setup and configuration
-- [docs/VALIDATION.md](docs/VALIDATION.md) - Enforcement and validation details
+- [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) - Tool setup and configuration
+- [docs/reference/VALIDATION.md](docs/reference/VALIDATION.md) - Enforcement and validation details
+
+**Forge v3 Plan (active design):**
+- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — canonical v3 master strategy (waves, workstreams, harness targets)
+- [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D20 decisions ledger with rationale + tradeoffs + anti-decisions
+- See [docs/INDEX.md](docs/INDEX.md) for the full reading order across the v3 design folder
 
 **Load these files when you need detailed instructions for a specific stage.**
 
@@ -240,7 +245,7 @@ forge close <id>      # Complete work
 
 ### Rules
 
-- Use `forge` as the routine command surface for bd-backed issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — these are approved artifacts consumed by `/dev`, but Beads (`bd`) remains the source of truth for issue state and IDs. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/BEADS_GITHUB_SYNC.md`).
+- Use `forge` as the routine command surface for bd-backed issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — these are approved artifacts consumed by `/dev`, but Beads (`bd`) remains the source of truth for issue state and IDs. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 

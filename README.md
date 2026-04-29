@@ -83,7 +83,7 @@ bunx forge setup
 | `--verbose` | Show file-by-file detail instead of summary |
 | `--force` | Overwrite existing files even if content matches |
 
-→ [Detailed setup guide for all agents](docs/SETUP.md)
+→ [Detailed setup guide for all agents](docs/guides/SETUP.md)
 
 ---
 
@@ -143,7 +143,7 @@ bunx forge setup --agent=codex       # Codex CLI
 bunx forge setup --all
 ```
 
-→ [Agent-specific setup instructions](docs/SETUP.md)
+→ [Agent-specific setup instructions](docs/guides/SETUP.md)
 
 ---
 
@@ -202,7 +202,7 @@ bunx forge recommend                  # Recommendations for your project
 bunx forge recommend --budget free    # Only free tools
 ```
 
-→ [Validation docs](docs/VALIDATION.md) | [Plugin docs](docs/TOOLCHAIN.md)
+→ [Validation docs](docs/reference/VALIDATION.md) | [Plugin docs](docs/reference/TOOLCHAIN.md)
 
 ### 6. Enhanced Onboarding
 Smart setup that adapts to your project:
@@ -239,7 +239,7 @@ bunx forge setup --type=critical    # Set workflow manually
 bunx forge setup --interview    # Gather project context
 ```
 
-→ [Enhanced onboarding guide](docs/ENHANCED_ONBOARDING.md)
+→ [Enhanced onboarding guide](docs/guides/ENHANCED_ONBOARDING.md)
 
 ### 7. Automated Quality Gates 🆕
 Multi-layer quality enforcement before merge:
@@ -264,7 +264,7 @@ Multi-layer quality enforcement before merge:
 - Pre-push: Full test suite + lint checks
 - Branch protection: Blocks direct push to main/master
 
-→ [Greptile setup guide](docs/GREPTILE_SETUP.md)
+→ [Greptile setup guide](docs/guides/GREPTILE_SETUP.md)
 
 ---
 
@@ -306,7 +306,7 @@ bun add -g @beads/bd && bd init
 gh auth login
 ```
 
-→ [Complete toolchain guide](docs/TOOLCHAIN.md)
+→ [Complete toolchain guide](docs/reference/TOOLCHAIN.md)
 
 ---
 
@@ -351,7 +351,7 @@ gh auth login
 /verify                          # 15 min: Post-merge health check
 ```
 
-→ [More examples in docs/EXAMPLES.md](docs/EXAMPLES.md)
+→ [More examples in docs/reference/EXAMPLES.md](docs/reference/EXAMPLES.md)
 
 ---
 
@@ -376,10 +376,10 @@ gh auth login
 → [AGENTS.md](AGENTS.md) - Complete guide with examples
 
 🛠️ **Setup the toolchain**
-→ [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) - Beads, GitHub CLI
+→ [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) - Beads, GitHub CLI
 
 🎯 **See real examples**
-→ [docs/EXAMPLES.md](docs/EXAMPLES.md) - Real-world use cases
+→ [docs/reference/EXAMPLES.md](docs/reference/EXAMPLES.md) - Real-world use cases
 
 💬 **Have questions?**
 → [GitHub Discussions](https://github.com/harshanandak/forge/discussions)
