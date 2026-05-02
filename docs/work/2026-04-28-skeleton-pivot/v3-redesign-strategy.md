@@ -82,7 +82,7 @@ Resolution order: **L1 → L2 → L3 → L4**. Later layers override earlier, ex
 ### What stays (deliberately)
 
 - **Beads + Dolt** as the default issue + history substrate — but as an adapter, not the spine.
-- **HARD-GATE quality enforcement** — promoted to L1 rails (TDD gate, branch protection, hard-gate runtime, classification router, stage-entry guard).
+- **HARD-GATE quality enforcement** — enforced through the canonical L1 rails (TDD intent gate, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest).
 - **Greptile / Sonar / CodeRabbit review automation** — re-shipped as L2 extensions, each installable independently.
 - **Forge CLI as the agent abstraction layer** — agents still only call `forge`, never the underlying tools.
 - **7-dimension ambiguity rubric** — still the default scoring rubric, now in `patch.md`-tunable form.

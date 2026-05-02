@@ -1,10 +1,10 @@
 # Forge v3 — Locked Decisions Log
 
-**Date**: 2026-04-28 (D1–D7) → 2026-04-29 (D8–D39 added across iterations #3–#7)
-**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1–D39 locked, supersedes annotated inline
+**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8)
+**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D42 tracked, D41 reserved, supersedes annotated inline
 **Companion**: [release-plan.md](./release-plan.md), [v3-redesign-strategy.md](./v3-redesign-strategy.md), [FINAL-THESIS.md](./FINAL-THESIS.md), [LEARNINGS.md](./LEARNINGS.md)
 
-This is the single source of truth for which v3 questions are settled. Decisions D1–D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8–D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15–D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21–D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria).
+This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch).
 
 When a doc disagrees with this file, this file wins until a successor decisions log is dated and merged.
 
@@ -38,7 +38,7 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 ## D3 — Refuse-with-hint default + lenient opt-in + L1 always wins
 
-**Decision**: On gate violation, refuse and emit a one-line hint pointing at the fix (`forge dev`, `lenient.tdd: true` in patch.md, etc.). L3 may opt specific L2 gates into lenient mode. L1 rails (TDD gate, secret scan, branch protection, signed commits, classification router) cannot go lenient. Every `--force-skip-*` flag emits an audit record.
+**Decision**: On gate violation, refuse and emit a one-line hint pointing at the fix (`forge dev`, `lenient.tdd: true` in patch.md, etc.). L3 may opt specific L2 gates into lenient mode. L1 rails (TDD intent gate, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest) cannot go lenient. Every `--force-skip-*` flag emits an audit record.
 
 **Rationale**: Agents must not silently bypass gates. Humans get a visible emergency lever, not a hidden one. The hint keeps refuse from becoming a dead end.
 
@@ -532,7 +532,7 @@ This slot is reserved for the product-name decision. A "Forge Run" rename was dr
 
 ## D42 — Launch staging: Private alpha v3.0 → Show HN v3.1 → ProductHunt v3.2
 
-**Decision**: Forge Run launches in three staged moves aligned to the version cadence (D39):
+**Decision**: Forge launches in three staged moves aligned to the version cadence (D39). The product name remains reserved under D41 and is not decided by this launch-staging decision:
 - **v3.0 (~wk 6–7)** — **Private alpha**, 5–10 invited devs. No public announcement. Goal: shake out install + L1 rails + 3-harness translator on real repos.
 - **v3.1 (~wk 9–10)** — **Show HN**. Wedge headline: *"Stop your agent from shipping plans a senior would reject"* — demoable iteration-driven `/plan` with parallel critics. Goal: developer mindshare, first wave of organic adoption.
 - **v3.2 (~wk 11–12)** — **ProductHunt**. Marketing angle: team mode (`forge recap --team` + team patches). Goal: reach team buyers / engineering managers when team capability actually exists.

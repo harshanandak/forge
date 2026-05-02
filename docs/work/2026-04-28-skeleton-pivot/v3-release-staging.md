@@ -1,8 +1,8 @@
 # Forge v3 Release Staging Strategy
 
-**Status:** Proposal · **Date:** 2026-04-28 · **Epic:** `forge-besw`
+**Status:** SUPERSEDED by [release-plan.md](./release-plan.md) D39 versioned roadmap · **Date:** 2026-04-28 · **Epic:** `forge-besw`
 **Inputs:** `beads-operations-manifest.md`, `v3-redesign-strategy.md`, `v3-skeleton-plan.md`
-**Approach:** Map Option B (MVP-A, 4–5 wks) to alpha; Option A waves 2–3 to beta; waves 4–5 to GA; deferred items to v3.1+.
+**Approach:** Historical Option B alpha/beta/GA staging. Use [release-plan.md](./release-plan.md) for current v3.0/v3.1/v3.2/v3.3+ launch gates.
 
 ---
 

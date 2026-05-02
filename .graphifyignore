@@ -1,0 +1,10 @@
+.git/
+.beads/embeddeddolt/
+.beads/dolt-server.*
+.beads/dolt/.bd-dolt-ok
+node_modules/
+dist/
+coverage/
+.next/
+.turbo/
+graphify-out/

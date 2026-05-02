@@ -22,31 +22,32 @@ Source plans:
 ### N1. EPIC: Forge v3 Skeleton Architecture
 - **Type:** epic · **Priority:** P0 · **Wave:** — (umbrella) · **Effort:** XL · **Value:** 5
 - **Parent:** none (replaces forge-titl as top-of-tree for v3)
-- **Description:** Forge pivots from a fixed 7-stage workflow to a layered skeleton: L1 locked rails (TDD gate, branch protection, hard-gate runtime), L2 swappable defaults (stages, gates, adapters in `.forge/config.yaml`), L3 user `patch.md` overrides, L4 git-backed user profile. This epic tracks all workstreams: core contract extraction, config layer, extension system, distribution/marketplace, observed-work skill generation, docs reorg. Replaces v2 wave epics for net-new work; v2 in-flight items (forge-krfx, forge-6muf) are reframed as inputs.
+- **Description:** Forge pivots from a fixed 7-stage workflow to a layered skeleton: L1 locked rails (TDD intent gate, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest), L2 swappable defaults (stages, gates, adapters in `.forge/config.yaml`), L3 user `patch.md` overrides, L4 git-backed user profile. This epic tracks all workstreams: core contract extraction, config layer, extension system, distribution/marketplace, observed-work skill generation, docs reorg. Replaces v2 wave epics for net-new work; v2 in-flight items (forge-krfx, forge-6muf) are reframed as inputs.
 - **Blocks:** —
 - **Depends-on:** —
 - **Acceptance:**
-  1. All Wave-1 issues (N2-N5) closed and `forge options *` introspection API live.
-  2. `extension.yaml` spec frozen; at least one third-party extension installed via `forge add`.
-  3. `forge insights --review-feedback` PoC running on this repo.
+  1. D10 Wave 0 no-go gates are green before Wave 1+ implementation merges.
+  2. All Wave-1 issues (N2-N5) closed and `forge options *` introspection API live.
+  3. `extension.yaml` spec frozen; at least one third-party extension installed via `forge add`.
+  4. `forge insights --review-feedback` PoC running on this repo when v3.1 scope opens.
 
 ### N2. Extract `forge-core` contract (Stage interface, lifecycle, schema)
 - **Type:** feature · **P1** · **Wave 1** · **L** · **Value 5**
 - **Parent:** N1
 - **Description:** Carve out the immutable contract that Layer 1 enforces and Layer 2 implements against: `Stage` interface (`enter`, `run`, `exit`, `gates[]`), lifecycle events, JSON schemas for handoff context, and the registry shape. Today this is implicit in `lib/workflow/stages.js`, `lib/workflow/enforce-stage.js`, and `lib/runtime-health.js`. Extract into `lib/core/` with no behavior change, then publish as `@forge/core` for consumers. This is the load-bearing precondition for everything else — extensions, patch.md, profiles all bind to this contract.
 - **Blocks:** N3, N5, N7
-- **Depends-on:** —
+- **Depends-on:** D10 Wave 0 `forge migrate --dry-run` no-go gate
 - **Acceptance:**
   1. `lib/core/stage-contract.js` exports `StageContract`, JSON schema published.
   2. All existing stage code imports from `lib/core/` (no duplicate definitions).
   3. `bun test` passes; `forge run --dry-run plan` works against the new contract.
 
-### N3. Layer 1 lockdown spec (5 rails + audit log format)
+### N3. Layer 1 lockdown spec (canonical 5 rails + audit log format)
 - **Type:** feature · **P1** · **Wave 1** · **M** · **Value 5**
 - **Parent:** N1
-- **Description:** Define the exact 5 locked rails (tdd-gate, branch-protection, hard-gate-runtime, classification-router, stage-entry-guard) with formal "cannot be disabled" semantics and an audit log for any attempt to bypass them. Doc lives at `docs/reference/layer-1-rails.md`; runtime enforcement in `lib/core/rails.js`. `forge options why <rail>` returns `locked: core` and cites the file/line. Audit entries written to `.forge/audit.log` (NDJSON, append-only).
+- **Description:** Define the exact 5 locked rails (TDD intent gate, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest) with formal "cannot be disabled" semantics and an audit log for any attempt to bypass them. Doc lives at `docs/reference/layer-1-rails.md`; runtime enforcement in `lib/core/rails.js`. `forge options why <rail>` returns `locked: core` and cites the file/line. Audit entries written to `.forge/audit.log` (NDJSON, append-only).
 - **Blocks:** N4, N9
-- **Depends-on:** N2
+- **Depends-on:** N2; D10 Wave 0 `forge migrate --dry-run` no-go gate
 - **Acceptance:**
   1. 5 rails enumerated with code citations and test coverage.
   2. Attempt to set `core.tdd-gate.enabled: false` in config.yaml → schema validation error.
@@ -57,7 +58,7 @@ Source plans:
 - **Parent:** N1
 - **Description:** Replace the hardcoded matrix at `lib/workflow/stages.js:42` with a runtime-loaded config. `canTransition()` and `assertTransitionAllowed()` filter the matrix through `.forge/config.yaml` so disabled stages are skipped in `nextStages` computation. Six classification paths (critical/standard/refactor/simple/hotfix/docs) move from constants into config defaults. Migration writes a default `.forge/config.yaml` on `forge upgrade` for existing projects.
 - **Blocks:** N5, N6, N11
-- **Depends-on:** N3
+- **Depends-on:** N3; D10 Wave 0 `forge migrate --dry-run` no-go gate
 - **Acceptance:**
   1. Deleting `WORKFLOW_STAGE_MATRIX` constant breaks nothing; tests still pass.
   2. Setting `stages.validate.enabled: false` skips validate in transitions.

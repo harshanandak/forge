@@ -28,17 +28,17 @@ Forge v3 pivots from a fixed 7-stage opinionated workflow to a **layered skeleto
 
 ## Reading Order (canonical)
 
-1. **START HERE**: **[FINAL-THESIS.md](./FINAL-THESIS.md)** — the canonical "where we ended up" document. 3-tier architecture, 5 L1 rails, 7 typed memory categories, final stage model, 3-harness target, 39 decisions one-line summaries, release versioning, kill criteria.
+1. **START HERE**: **[FINAL-THESIS.md](./FINAL-THESIS.md)** — the canonical "where we ended up" document. 3-tier architecture, 5 L1 rails, 7 typed memory categories, final stage model, 3-harness target, D1-D42 decisions one-line summaries, release versioning, kill criteria.
 
 2. **Release roadmap**: **[release-plan.md](./release-plan.md)** — v3.0 / v3.1 / v3.2 / v3.3+ with customer pitches, scope tables, dependency graph, per-version gate criteria. Locked as D39.
 
-3. **Decisions ledger**: **[locked-decisions.md](./locked-decisions.md)** — D1–D39 with supersedes annotated inline. Each entry: rationale + tradeoff considered + anti-decision.
+3. **Decisions ledger**: **[locked-decisions.md](./locked-decisions.md)** — D1-D42 with supersedes annotated inline. Each entry: rationale + tradeoff considered + anti-decision.
 
 4. **Journey**: **[LEARNINGS.md](./LEARNINGS.md)** — 15 takeaways from the 6-iteration journey. Read this to understand *why* decisions changed across iterations.
 
 5. **Method**: **[iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md)** — the planning method this folder used, proposed as the canonical Forge `/plan` skill (Phase 1–5, classification-aware intensity, supersedes tracking). Lands in v3.1.
 
-6. **Reference strategy**: [v3-redesign-strategy.md](./v3-redesign-strategy.md) — full strategy doc with workstream verdicts, harness targets, success metrics, risks. Sections marked SUPERSEDED inline where D21–D39 changed the framing.
+6. **Reference strategy**: [v3-redesign-strategy.md](./v3-redesign-strategy.md) — full strategy doc with workstream verdicts, harness targets, success metrics, risks. Sections marked SUPERSEDED inline where D21-D42 changed the framing.
 
 6. **Design references** (read as needed):
    - [layered-skeleton-config.md](./layered-skeleton-config.md) — L1/L2/L3/L4 schema

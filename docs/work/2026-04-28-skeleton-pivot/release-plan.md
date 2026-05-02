@@ -24,7 +24,7 @@ The W0–W5 wave plan answered "what order do we build it." It did not answer "w
 
 | Area | Deliverable |
 |---|---|
-| L1 rails | 5 rails enforced (TDD intent, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest) |
+| L1 rails | 5 rails enforced (TDD intent gate, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest) |
 | Memory | Beads-backed memory via `bd remember` / `bd recall`; local Dolt in `embedded` mode (D30) |
 | Lifecycle | `forge init` / `forge migrate` / `forge upgrade` / `forge rollback` |
 | Recap | `forge recap --since=yesterday` (solo mode only) |
@@ -35,6 +35,12 @@ The W0–W5 wave plan answered "what order do we build it." It did not answer "w
 | `/build` (`/dev`) | Basic TDD loop (no evaluator orchestrator yet) |
 
 **What defers to v3.1+**: iteration-driven 3-tier `/plan`, `forge insights` pattern detector, evaluator orchestrator inside `/dev`, typed memory API surface, team mode.
+
+**v3.0 release gates**:
+- `forge migrate --dry-run` is green on this repo and the v2 fixture corpus before any Wave 1+ merge.
+- `forge init`, `forge migrate`, `forge upgrade`, and `forge rollback` each have a smoke test on a clean fixture.
+- All 5 L1 rails have enforcement tests and audit coverage, including blocked attempts to disable them through config or patch overlays.
+- The same skill auto-invokes across Claude Code, Cursor, and Codex CLI on the W0 parity fixture.
 
 ---
 
@@ -83,7 +89,7 @@ The W0–W5 wave plan answered "what order do we build it." It did not answer "w
 
 - Cline / OpenCode / Kilo Code translators (was D15 deferral)
 - Marketplace expansion beyond seed allowlist
-- `/forge map-codebase` (forge-besw.13)
+- `/forge map-codebase` (forge-besw.13), with Graphify evaluated as an optional provider/extension rather than v3.0 core
 - Profile sync (forge-besw.16) — git-backed first, optional server later
 - Skill self-improvement (auto-tune trigger keywords from acceptance/rejection signal)
 - Full evaluator suite (security judge, performance judge, accessibility judge)
