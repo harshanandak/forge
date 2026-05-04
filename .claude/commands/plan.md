@@ -520,29 +520,9 @@ bash scripts/beads-context.sh stage-transition <id> plan dev \
 
 ---
 
-## Example Output (Phase 3 complete)
+## Dynamic Phase 3 Output
 
-```
-✓ Phase 1: Design intent captured
-  - Design doc: docs/work/<date>-<slug>/design.md
-  - Approach: <selected approach> (selected over <alternatives>)
-  - Ambiguity policy: Rubric scoring (>= 80% proceed, < 80% ask)
-
-✓ Phase 2: Technical research complete
-  - OWASP Top 10: <N> risks identified, <N> mitigations planned
-  - TDD scenarios: <N> identified
-  - Sources: <N> references
-
-✓ Phase 3: Setup complete
-  - Beads: <issue-id> (in_progress)
-  - Branch: feat/<slug>
-  - Worktree: .worktrees/<slug> (baseline: <N>/<N> tests passing)
-  - Task list: docs/work/<date>-<slug>/tasks.md (<N> tasks)
-
-⏸️  Task list ready for review. Confirm to proceed.
-
-After confirming, run: /dev
-```
+Phase 3 output is generated from the live Beads issue, branch/worktree setup, baseline validation, and task list paths at runtime. It reports the Beads issue, branch, worktree, `docs/work/YYYY-MM-DD-<slug>/design.md`, and `docs/work/YYYY-MM-DD-<slug>/tasks.md` from the actual run instead of a static example.
 
 ## Integration with Workflow
 

@@ -101,7 +101,7 @@ function isKnownTargetablePath(file) {
     return true;
   }
 
-  if (file.startsWith('docs/plans/')) {
+  if (file.startsWith('docs/plans/') || file.startsWith('docs/work/')) {
     return true;
   }
 

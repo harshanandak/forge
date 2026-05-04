@@ -26,7 +26,7 @@ Closes beads-xxx
 - Automated scan: <!-- result -->
 
 ### Design Doc
-<!-- See: docs/plans/YYYY-MM-DD-<slug>-design.md -->
+<!-- See: docs/work/YYYY-MM-DD-<slug>/design.md -->
 
 ### Key Decisions
 <!-- From design doc — 3-5 key decisions with reasoning -->

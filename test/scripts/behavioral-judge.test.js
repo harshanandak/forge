@@ -29,6 +29,16 @@ function prependProcessPath(entries, existingPath = process.env.PATH || '') {
  * Run the behavioral-judge script with given input and environment overrides.
  */
 function runJudge(input, env = {}) {
+  const mergedEnv = {
+    ...process.env,
+    OPENROUTER_API_KEY: 'test-key-not-real',
+    ...env,
+  };
+
+  if (process.platform === 'win32' && Object.hasOwn(env, 'PATH')) {
+    mergedEnv.Path = env.PATH;
+  }
+
   const result = spawnSync(
     resolveBashCommand(),
     [SCRIPT],
@@ -37,11 +47,7 @@ function runJudge(input, env = {}) {
       encoding: 'utf-8',
       timeout: 15000,
       input: input,
-      env: {
-        ...process.env,
-        OPENROUTER_API_KEY: 'test-key-not-real',
-        ...env,
-      },
+      env: mergedEnv,
     }
   );
   return {
@@ -150,7 +156,7 @@ describe('scripts/behavioral-judge.sh', () => {
         const bashBin = path.dirname(resolveBashCommand());
         const result = runJudge(SAMPLE_PLAN_OUTPUT, {
           BEHAVIORAL_JUDGE_TEST_MODE: '1',
-          Path: prependProcessPath([tempBin, bashBin, path.resolve(bashBin, '..', 'usr', 'bin')]),
+          PATH: prependProcessPath([tempBin, bashBin, path.resolve(bashBin, '..', 'usr', 'bin')]),
         });
         expect(result.error).toBeUndefined();
         const parsed = parseOutput(result.stdout);

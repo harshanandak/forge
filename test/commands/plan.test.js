@@ -90,7 +90,8 @@ Major architectural impact.
 
 			const result = createBeadsIssue(featureName, researchPath, 'strategic');
 			expect(result.issueId).toBeTruthy();
-			expect(result.description.includes('docs/plans')).toBeTruthy();
+			expect(result.description.includes('docs/work')).toBeTruthy();
+			expect(result.description.endsWith('/design.md')).toBeTruthy();
 		});
 
 		test.skip('should handle Beads command failures (requires Beads CLI — PR #64)', () => {

@@ -83,6 +83,18 @@ describe('forge docs command', () => {
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
+
+    test('surfaces non-missing file read errors', () => {
+      const os = require('os');
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cmd-test-'));
+      const toolchainPath = path.join(tmpDir, 'docs', 'reference', 'TOOLCHAIN.md');
+      fs.mkdirSync(toolchainPath, { recursive: true });
+
+      const result = getTopicContent('toolchain', tmpDir);
+      expect(result.error).toContain('Failed to read documentation file');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
   });
 
   describe('TOPICS allowlist', () => {

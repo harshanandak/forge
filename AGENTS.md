@@ -79,7 +79,7 @@ Command files (`.claude/commands/*.md` and agent equivalents) must never hardcod
 
 **Subagent-driven per-task implementation loop:**
 
-1. **Read task list** → Pre-made task list from `/plan` Phase 3 at `docs/plans/YYYY-MM-DD-<slug>-tasks.md`
+1. **Read task list** → Pre-made task list from `/plan` Phase 3 at `docs/work/YYYY-MM-DD-<slug>/tasks.md`
 2. **Dispatch implementer subagent per task** → Fresh context, complete task text, relevant design doc sections
 3. **TDD inside implementer** → RED-GREEN-REFACTOR enforced by HARD-GATE:
    - RED: Write failing test first (must run test and show failing output)
@@ -92,8 +92,8 @@ Command files (`.claude/commands/*.md` and agent equivalents) must never hardcod
 **Example execution:**
 ```
 /dev starts:
-  ✓ Read task list: docs/plans/2026-02-26-stripe-billing-tasks.md (8 tasks)
-  ✓ Created decisions log: docs/plans/2026-02-26-stripe-billing-decisions.md
+  ✓ Read task list: docs/work/2026-02-26-stripe-billing/tasks.md (8 tasks)
+  ✓ Created decisions log: docs/work/2026-02-26-stripe-billing/decisions.md
 
 Task 1: Types and interfaces
   ✓ Implementer: test written → failing → implementation → passing → committed
@@ -163,9 +163,9 @@ Task 2: Validation logic
 - [.claude/commands/verify.md](.claude/commands/verify.md) - How to verify post-merge health
 
 **Planning documents** (created by `/plan`, consumed by `/dev`):
-- `docs/plans/YYYY-MM-DD-<slug>-design.md` - Design intent + technical research
-- `docs/plans/YYYY-MM-DD-<slug>-tasks.md` - Task list with TDD steps
-- `docs/plans/YYYY-MM-DD-<slug>-decisions.md` - Decisions log from /dev
+- `docs/work/YYYY-MM-DD-<slug>/design.md` - Design intent + technical research
+- `docs/work/YYYY-MM-DD-<slug>/tasks.md` - Task list with TDD steps
+- `docs/work/YYYY-MM-DD-<slug>/decisions.md` - Decisions log from /dev
 
 **Comprehensive workflow guide:**
 - This file (AGENTS.md) is the single source of truth for the complete workflow
@@ -208,7 +208,7 @@ This checks: (1) issue has a description, (2) at least one stage transition exis
 
 - **Summary**: 1-2 sentence recap of what was accomplished in this stage. Example: `--summary "All 5 tasks done, 1 decision gate fired"`
 - **Decisions**: Key choices made during this stage that affect downstream work. Example: `--decisions "Used streaming parser over DOM for memory efficiency"`
-- **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/plans/2026-03-26-parser-design.md"`
+- **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/work/2026-03-26-parser/design.md"`
 - **Next**: Guidance for the next stage on what to focus on. Example: `--next "Run lint first — streaming approach may trigger no-await rule"`
 
 ### Usage in Stage Transitions
@@ -245,7 +245,7 @@ forge close <id>      # Complete work
 
 ### Rules
 
-- Use `forge` as the routine command surface for bd-backed issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — these are approved artifacts consumed by `/dev`, but Beads (`bd`) remains the source of truth for issue state and IDs. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
+- Use `forge` as the routine command surface for bd-backed issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`, but Beads (`bd`) remains the source of truth for issue state and IDs. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 

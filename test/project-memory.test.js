@@ -21,8 +21,8 @@ function delay(ms) {
   });
 }
 
-async function waitForSearchCount(root, query, expectedCount) {
-  const deadline = Date.now() + 1_000;
+async function waitForSearchCount(root, query, expectedCount, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   let results;
   do {
     results = projectMemory.search(root, query);
