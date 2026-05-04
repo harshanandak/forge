@@ -96,6 +96,7 @@ test-env/fixtures/*
 .beads/dolt-server.*
 .beads/dolt/.bd-dolt-ok
 .beads/embeddeddolt/
+.beads/redirect
 .beads-credential-key
 
 # Forge freshness token (ephemeral validate/ship state)

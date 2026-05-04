@@ -61,7 +61,7 @@ describe('lib/dep-guard/analyzer.js', () => {
 				title: 'Logic-level dependency detection in /plan Phase 3',
 			},
 			openIssues: [],
-			taskFile: 'docs/plans/2026-03-18-logic-level-dependency-detection-tasks.md',
+			taskFile: 'docs/work/2026-03-18-logic-level-dependency-detection/tasks.md',
 		});
 
 		expect(result).toMatchObject({
@@ -166,7 +166,7 @@ describe('lib/dep-guard/analyzer.js', () => {
 				title: 'Logic-level dependency detection in /plan Phase 3',
 			},
 			openIssues: [],
-			taskFile: 'docs/plans/2026-03-18-logic-level-dependency-detection-tasks.md',
+			taskFile: 'docs/work/2026-03-18-logic-level-dependency-detection/tasks.md',
 		});
 
 		expect(Object.keys(result.rubric.weights)).toEqual(DETECTOR_KEYS);

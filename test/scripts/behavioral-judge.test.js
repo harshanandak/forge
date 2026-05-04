@@ -19,6 +19,12 @@ const { resolveBashCommand } = require('../helpers/bash.js');
 const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'behavioral-judge.sh');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
+function prependProcessPath(entries, existingPath = process.env.PATH || '') {
+  return [...(Array.isArray(entries) ? entries : [entries]), existingPath]
+    .filter(Boolean)
+    .join(path.delimiter);
+}
+
 /**
  * Run the behavioral-judge script with given input and environment overrides.
  */
@@ -141,9 +147,10 @@ describe('scripts/behavioral-judge.sh', () => {
       fs.chmodSync(pythonShim, 0o755);
 
       try {
+        const bashBin = path.dirname(resolveBashCommand());
         const result = runJudge(SAMPLE_PLAN_OUTPUT, {
           BEHAVIORAL_JUDGE_TEST_MODE: '1',
-          PATH: `${tempBin}${path.delimiter}${process.env.PATH}`,
+          Path: prependProcessPath([tempBin, bashBin, path.resolve(bashBin, '..', 'usr', 'bin')]),
         });
         expect(result.error).toBeUndefined();
         const parsed = parseOutput(result.stdout);

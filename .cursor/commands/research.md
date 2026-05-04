@@ -16,7 +16,7 @@ This command previously ran a standalone research phase. It is now embedded in `
 
 Jump to Phase 2 of `/plan` manually:
 
-1. Read or create the design doc at `docs/plans/YYYY-MM-DD-<slug>-design.md`
+1. Read or create the design doc at `docs/work/YYYY-MM-DD-<slug>/design.md`
 2. Run parallel web search using the `parallel-deep-research` skill
 3. Run OWASP Top 10 analysis for the feature
 4. Use the Explore agent for codebase exploration

@@ -2,7 +2,7 @@ const { describe, test, expect } = require('bun:test');
 const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 
-const toolchainPath = resolve(__dirname, '../docs/TOOLCHAIN.md');
+const toolchainPath = resolve(__dirname, '../docs/reference/TOOLCHAIN.md');
 
 describe('TOOLCHAIN.md beads upgrade documentation', () => {
   test('documents the current Dolt-backed beads release and migration helpers', () => {

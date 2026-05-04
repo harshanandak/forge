@@ -201,7 +201,7 @@ Propose 2-3 concrete approaches with:
 
 ### Step 4: Write design doc
 
-Save to `docs/plans/YYYY-MM-DD-<slug>-design.md` with these sections:
+Save to `docs/work/YYYY-MM-DD-<slug>/design.md` with these sections:
 - **Feature**: slug, date, status
 - **Purpose**: what problem it solves
 - **Success criteria**: measurable, specific
@@ -213,7 +213,7 @@ Save to `docs/plans/YYYY-MM-DD-<slug>-design.md` with these sections:
 
 Commit the design doc:
 ```bash
-git add docs/plans/YYYY-MM-DD-<slug>-design.md
+git add docs/work/YYYY-MM-DD-<slug>/design.md
 git commit -m "docs: add design doc for <slug>"
 ```
 
@@ -226,7 +226,7 @@ After committing the design doc, push to a proposal branch and open PR:
 git checkout -b feat/<slug>-proposal
 git push -u origin feat/<slug>-proposal
 gh pr create --title "Design: <feature-name>" \
-  --body "Design doc for review. See docs/plans/YYYY-MM-DD-<slug>-design.md"
+  --body "Design doc for review. See docs/work/YYYY-MM-DD-<slug>/design.md"
 ```
 
 **STOP here.** Present the PR URL. Wait for the user to merge the proposal PR.
@@ -238,7 +238,7 @@ After merge, run `/plan <slug> --continue` to proceed to Phase 2 + 3.
 <HARD-GATE: Phase 1 exit>
 Do NOT begin Phase 2 (web research) until:
 1. User has approved the design in this session
-2. Design doc exists at docs/plans/YYYY-MM-DD-<slug>-design.md
+2. Design doc exists at docs/work/YYYY-MM-DD-<slug>/design.md
 3. Design doc includes: success criteria, edge cases, out-of-scope, ambiguity policy
 4. Design doc is committed to git
 </HARD-GATE>
@@ -437,7 +437,7 @@ For each task, confirm it maps to a specific requirement, success criterion, or 
 
 **Before finalizing**: flag any tasks that touch areas not fully specified in the design doc. Present flagged tasks to user for quick clarification before saving.
 
-Save to `docs/plans/YYYY-MM-DD-<slug>-tasks.md`.
+Save to `docs/work/YYYY-MM-DD-<slug>/tasks.md`.
 
 ### Step 5b: Beads context
 
@@ -445,7 +445,7 @@ After saving the task list, attach design context and acceptance criteria to the
 
 ```bash
 # Link design metadata (task count + task file path) to the Beads issue
-bash scripts/beads-context.sh set-design <id> <task-count> docs/plans/YYYY-MM-DD-<slug>-tasks.md
+bash scripts/beads-context.sh set-design <id> <task-count> docs/work/YYYY-MM-DD-<slug>/tasks.md
 
 # Record the success criteria from the design doc on the issue
 bash scripts/beads-context.sh set-acceptance <id> "<success-criteria from design doc>"
@@ -459,7 +459,7 @@ After saving the task list and Beads context, extract and store contract metadat
 
 ```bash
 # Extract contracts — only call store-contracts if extract succeeds (exit 0)
-if bash scripts/dep-guard.sh extract-contracts docs/plans/YYYY-MM-DD-<slug>-tasks.md > /tmp/contracts.txt; then
+if bash scripts/dep-guard.sh extract-contracts docs/work/YYYY-MM-DD-<slug>/tasks.md > /tmp/contracts.txt; then
   bash scripts/dep-guard.sh store-contracts <id> "$(cat /tmp/contracts.txt)"
 else
   echo "No contracts found — skipping store-contracts"
@@ -498,7 +498,7 @@ Do NOT proceed to /dev until ALL are confirmed:
 2. git worktree list shows .worktrees/<slug>
 3. Baseline tests ran — either passing OR user confirmed to proceed past failures
 4. Beads issue is created with status=in_progress
-5. Task list exists at docs/plans/YYYY-MM-DD-<slug>-tasks.md
+5. Task list exists at docs/work/YYYY-MM-DD-<slug>/tasks.md
 6. User has confirmed task list is correct
 7. `beads-context.sh set-design` ran successfully (exit code 0)
 8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
@@ -514,7 +514,7 @@ bash scripts/beads-context.sh validate <id>
 bash scripts/beads-context.sh stage-transition <id> plan dev \
   --summary "<design approach chosen, task count>" \
   --decisions "<key trade-offs resolved during Q&A>" \
-  --artifacts "docs/plans/YYYY-MM-DD-<slug>-design.md docs/plans/YYYY-MM-DD-<slug>-tasks.md" \
+  --artifacts "docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
   --next "<first dev task focus area>"
 ```
 
@@ -524,7 +524,7 @@ bash scripts/beads-context.sh stage-transition <id> plan dev \
 
 ```
 ✓ Phase 1: Design intent captured
-  - Design doc: docs/plans/<date>-<slug>-design.md
+  - Design doc: docs/work/<date>-<slug>/design.md
   - Approach: <selected approach> (selected over <alternatives>)
   - Ambiguity policy: Rubric scoring (>= 80% proceed, < 80% ask)
 
@@ -537,7 +537,7 @@ bash scripts/beads-context.sh stage-transition <id> plan dev \
   - Beads: <issue-id> (in_progress)
   - Branch: feat/<slug>
   - Worktree: .worktrees/<slug> (baseline: <N>/<N> tests passing)
-  - Task list: docs/plans/<date>-<slug>-tasks.md (<N> tasks)
+  - Task list: docs/work/<date>-<slug>/tasks.md (<N> tasks)
 
 ⏸️  Task list ready for review. Confirm to proceed.
 

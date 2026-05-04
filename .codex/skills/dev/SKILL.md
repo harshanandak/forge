@@ -22,19 +22,19 @@ This command reads the task list created by `/plan` and implements each task usi
 
 ```bash
 # Find task list and design doc
-ls docs/plans/
+ls docs/work/
 ```
 
 Read:
-- **Task list**: `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — extract ALL task text upfront
-- **Design doc**: `docs/plans/YYYY-MM-DD-<slug>-design.md` — including ambiguity policy section
+- **Task list**: `docs/work/YYYY-MM-DD-<slug>/tasks.md` — extract ALL task text upfront
+- **Design doc**: `docs/work/YYYY-MM-DD-<slug>/design.md` — including ambiguity policy section
 
 ### Step 2: Create decisions log
 
 Create an empty decisions log at the start of every /dev session:
 
 ```bash
-# docs/plans/YYYY-MM-DD-<slug>-decisions.md
+# docs/work/YYYY-MM-DD-<slug>/decisions.md
 ```
 
 Format for each entry:
@@ -314,7 +314,7 @@ Document the gate count in the final commit message.
 
 ✓ Final code review: ✅ (coherent, consistent, correctly integrated)
 
-✓ Decisions log: docs/plans/2026-02-26-stripe-billing-decisions.md
+✓ Decisions log: docs/work/2026-02-26-stripe-billing/decisions.md
   - Decision 1: RESOLVED (score 2, proceeded with conservative choice)
   - Decision gates fired: 1 (plan quality: Good)
 

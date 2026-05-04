@@ -33,6 +33,12 @@ describe('forge docs command', () => {
       expect(result.content.length).toBeGreaterThan(0);
     });
 
+    test('returns setup content from guides directory', () => {
+      const result = getTopicContent('setup', packageDir);
+      expect(result.error).toBeUndefined();
+      expect(result.content).toContain('bootstrapper');
+    });
+
     test('returns error for invalid topic', () => {
       const result = getTopicContent('nonexistent', packageDir);
       expect(result.error).toBeDefined();

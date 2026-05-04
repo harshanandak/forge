@@ -33,12 +33,12 @@ const PATTERNS = [
 
 // Files to scan (relative to ROOT)
 const DOC_FILES = [
-  'docs/EXAMPLES.md',
-  'docs/TOOLCHAIN.md',
-  'docs/AGENT_INSTALL_PROMPT.md',
-  'docs/research/agent-permissions.md',
-  'docs/research/dependency-chain.md',
-  'docs/research/test-environment.md',
+  'docs/reference/EXAMPLES.md',
+  'docs/reference/TOOLCHAIN.md',
+  'docs/guides/AGENT_INSTALL_PROMPT.md',
+  'docs/reference/agent-permissions.md',
+  'docs/reference/dependency-chain.md',
+  'docs/reference/test-environment.md',
   'lib/agents/README.md',
 ];
 
