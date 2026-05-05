@@ -12,6 +12,22 @@ SMOKE_RUN_ID="${BEADS_UPGRADE_SMOKE_RUN_ID:-$(date +%s)-$$}"
 PRIMARY_ISSUE_TITLE="Beads upgrade smoke primary (${SMOKE_RUN_ID})"
 DEPENDENT_ISSUE_TITLE="Beads upgrade smoke dependent (${SMOKE_RUN_ID})"
 
+node_fs_path() {
+  case "$1" in
+    /[A-Za-z]/*)
+      _drive="$(printf '%s' "${1:1:1}" | tr '[:lower:]' '[:upper:]')"
+      printf '%s:/%s\n' "$_drive" "${1:3}"
+      ;;
+    *)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+      else
+        printf '%s\n' "$1"
+      fi
+      ;;
+  esac
+}
+
 mkdir -p "${ARTIFACT_DIR}"
 : > "${COMMAND_LOG_PATH}"
 
@@ -77,7 +93,7 @@ append_command() {
       stderrPath,
     };
     fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
-  ' "${COMMAND_LOG_PATH}" "${step}" "${command_name}" "${command_text}" "${exit_code}" "${stdout_path}" "${stderr_path}"
+  ' "$(node_fs_path "${COMMAND_LOG_PATH}")" "${step}" "${command_name}" "${command_text}" "${exit_code}" "$(node_fs_path "${stdout_path}")" "$(node_fs_path "${stderr_path}")"
 }
 
 read_output_snippet() {
@@ -91,7 +107,7 @@ read_output_snippet() {
     const [filePath] = process.argv.slice(1);
     const text = fs.readFileSync(filePath, "utf8");
     process.stdout.write(text.slice(0, 4096));
-  ' "${file_path}"
+  ' "$(node_fs_path "${file_path}")"
 }
 
 write_summary() {
@@ -126,7 +142,7 @@ write_summary() {
       artifactDir,
     };
     fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + "\n");
-  ' "${COMMAND_LOG_PATH}" "${SUMMARY_PATH}" "${ok}" "${failed_step}" "${failure_message}" "${ARTIFACT_DIR}" "$(printf '%s\n' "${created_issue_ids[@]:-}" | "${NODE_CMD}" -e 'const fs=require("node:fs"); const lines=fs.readFileSync(0,"utf8").split(/\r?\n/).filter(Boolean); process.stdout.write(JSON.stringify(lines));')" "$(printf '%s\n' "${closed_issue_ids[@]:-}" | "${NODE_CMD}" -e 'const fs=require("node:fs"); const lines=fs.readFileSync(0,"utf8").split(/\r?\n/).filter(Boolean); process.stdout.write(JSON.stringify(lines));')"
+  ' "$(node_fs_path "${COMMAND_LOG_PATH}")" "$(node_fs_path "${SUMMARY_PATH}")" "${ok}" "${failed_step}" "${failure_message}" "$(node_fs_path "${ARTIFACT_DIR}")" "$(printf '%s\n' "${created_issue_ids[@]:-}" | "${NODE_CMD}" -e 'const fs=require("node:fs"); const lines=fs.readFileSync(0,"utf8").split(/\r?\n/).filter(Boolean); process.stdout.write(JSON.stringify(lines));')" "$(printf '%s\n' "${closed_issue_ids[@]:-}" | "${NODE_CMD}" -e 'const fs=require("node:fs"); const lines=fs.readFileSync(0,"utf8").split(/\r?\n/).filter(Boolean); process.stdout.write(JSON.stringify(lines));')"
 }
 
 run_bd_step() {

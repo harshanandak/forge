@@ -27,6 +27,23 @@ set -euo pipefail
 _SMART_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_CMD="${NODE_CMD:-node}"
 JQ_CMD="${JQ_CMD:-jq}"
+
+node_script_path() {
+  case "$1" in
+    /[A-Za-z]/*)
+      _drive="$(printf '%s' "${1:1:1}" | tr '[:lower:]' '[:upper:]')"
+      printf '%s:/%s\n' "$_drive" "${1:3}"
+      ;;
+    *)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+      else
+        printf '%s\n' "$1"
+      fi
+      ;;
+  esac
+}
+
 if [ -f "$_SMART_STATUS_DIR/lib/sanitize.sh" ]; then
   source "$_SMART_STATUS_DIR/lib/sanitize.sh"
 fi
@@ -144,7 +161,7 @@ if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
   _metadata_path="$_repo_root/.beads/metadata.json"
   _bd_prefix=""
   if [ -f "$_metadata_path" ]; then
-    if _metadata_prefix="$(jq -r '(.dolt_database // "") | strings' "$_metadata_path" 2>/dev/null)"; then
+    if _metadata_prefix="$(cat "$_metadata_path" 2>/dev/null | jq -r '(.dolt_database // "") | strings')"; then
       _bd_prefix="$(printf '%s' "$_metadata_prefix" | tr -d '\r')"
     fi
   fi
@@ -202,7 +219,7 @@ if ! command -v "$NODE_CMD" >/dev/null 2>&1; then
   exit 1
 fi
 
-SCORED_JSON="$(printf '{"issues":%s,"epicStats":%s}' "$ISSUES_JSON" "$EPIC_STATS" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-score.js")"
+SCORED_JSON="$(printf '{"issues":%s,"epicStats":%s}' "$ISSUES_JSON" "$EPIC_STATS" | "$NODE_CMD" "$(node_script_path "$_SMART_STATUS_DIR/smart-status-score.js")")"
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Session detection Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
@@ -228,7 +245,7 @@ fi
 SESSIONS_JSON="$(printf '{"baseBranch":%s,"worktreePorcelain":%s,"inProgressIssues":%s}' \
   "$(printf '%s' "$BASE_BRANCH" | jq -R '.')" \
   "$(printf '%s' "$WORKTREE_PORCELAIN" | jq -Rs '.')" \
-  "$IN_PROGRESS_JSON" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-sessions.js")"
+  "$IN_PROGRESS_JSON" | "$NODE_CMD" "$(node_script_path "$_SMART_STATUS_DIR/smart-status-sessions.js")")"
 SESSION_COUNT="$(printf '%s' "$SESSIONS_JSON" | jq 'length')"
 
 if [ "$SESSION_COUNT" -ge 2 ]; then
@@ -247,7 +264,7 @@ if [ "$SESSION_COUNT" -ge 2 ]; then
 $_session_branches
 BRANCHEOF
 
-  SESSIONS_JSON="$(printf '{"sessions":%s,"branchFiles":%s}' "$SESSIONS_JSON" "$BRANCH_FILES_JSON" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-sessions.js")"
+  SESSIONS_JSON="$(printf '{"sessions":%s,"branchFiles":%s}' "$SESSIONS_JSON" "$BRANCH_FILES_JSON" | "$NODE_CMD" "$(node_script_path "$_SMART_STATUS_DIR/smart-status-sessions.js")")"
 fi
 
 TIER2_ENABLED=0
@@ -295,7 +312,7 @@ if [ "$TIER2_ENABLED" = "1" ]; then
 $_conflict_pairs
 PAIRSEOF
 
-    SESSIONS_JSON="$(printf '{"sessions":%s,"mergeTreeResults":%s}' "$SESSIONS_JSON" "$MERGE_TREE_RESULTS_JSON" | "$NODE_CMD" "$_SMART_STATUS_DIR/smart-status-sessions.js")"
+    SESSIONS_JSON="$(printf '{"sessions":%s,"mergeTreeResults":%s}' "$SESSIONS_JSON" "$MERGE_TREE_RESULTS_JSON" | "$NODE_CMD" "$(node_script_path "$_SMART_STATUS_DIR/smart-status-sessions.js")")"
   fi
 fi
 
