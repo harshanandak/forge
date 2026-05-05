@@ -1,0 +1,29 @@
+name: CodeRabbit After Tests
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  trigger-coderabbit:
+    name: Trigger CodeRabbit after tests pass
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.pull_requests[0].number
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger CodeRabbit review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          TEST_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "Tests passed in ${TEST_RUN_URL}. @coderabbitai review"

@@ -132,7 +132,7 @@ bun test    # or: npm run test, jest, vitest, etc.
 > - Did you verify OWASP Top 10 mitigations, not just check a box?
 > - Are there edge cases or integration scenarios you haven't tested?
 >
-> **If unsure**: Re-read the `## Technical Research` section in `docs/plans/YYYY-MM-DD-<slug>-design.md`
+> **If unsure**: Re-read the `## Technical Research` section in `docs/work/YYYY-MM-DD-<slug>/design.md`
 
 ## On Validation Failure: 4-Phase Debug Mode
 

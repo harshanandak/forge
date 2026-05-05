@@ -132,7 +132,7 @@ describe('scripts/test pre-push runner', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: [
         '.gitignore',
-        'docs/plans/2026-04-26-preflight-bootstrap-design.md',
+        'docs/work/2026-04-26-preflight-bootstrap/design.md',
         'lib/lefthook-check.js',
         'scripts/preflight.sh',
         'scripts/test.js',

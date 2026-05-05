@@ -155,7 +155,7 @@ Do not evaluate /dev, /validate, /ship, or any other stage. Score only what `/pl
 
 You must produce:
 1. A Phase 1 Q&A exchange (at minimum 3 questions and 3 answers)
-2. A design doc with all required sections, written to a concrete `docs/plans/<generated-file-name>`
+2. A design doc with all required sections, written to a concrete `docs/work/YYYY-MM-DD-<slug>/design.md`
    artifact path that you record as `DESIGN_DOC_PATH`
 3. A Phase 3 task list with TDD steps
 

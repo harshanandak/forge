@@ -1,5 +1,5 @@
 const { describe, test, expect } = require('bun:test');
-const { readFileSync, existsSync } = require('fs');
+const { readFileSync, existsSync, readdirSync, statSync } = require('fs');
 const { join } = require('path');
 
 /**
@@ -10,7 +10,7 @@ const { join } = require('path');
  *
  * Allowed exceptions:
  *   - CHANGELOG.md (historical)
- *   - docs/plans/ (historical design docs)
+ *   - docs/work/ before 2026-05-01 (historical design docs)
  */
 
 const ROOT = join(__dirname, '..', '..');
@@ -31,14 +31,40 @@ const PATTERNS = [
   { regex: /\.continue\//i, label: '.continue/' },
 ];
 
-// Files to scan (relative to ROOT)
+function discoverMarkdownFiles(dir, prefix = '') {
+  const rootDir = join(ROOT, dir, prefix);
+  if (!existsSync(rootDir)) {
+    return [];
+  }
+
+  return readdirSync(rootDir).flatMap((entry) => {
+    const relPath = join(dir, prefix, entry);
+    const filePath = join(ROOT, relPath);
+    const stat = statSync(filePath);
+    if (stat.isDirectory()) {
+      return discoverMarkdownFiles(dir, join(prefix, entry));
+    }
+    return entry.endsWith('.md') ? [relPath.replace(/\\/g, '/')] : [];
+  });
+}
+
+const ACTIVE_WORK_DOC_START = '2026-05-01';
+
+function isCurrentOrFutureWorkDoc(relPath) {
+  const match = /^docs\/work\/(\d{4}-\d{2}-\d{2})-/.exec(relPath);
+  return Boolean(match) && match[1] >= ACTIVE_WORK_DOC_START;
+}
+
 const DOC_FILES = [
-  'docs/EXAMPLES.md',
-  'docs/TOOLCHAIN.md',
-  'docs/AGENT_INSTALL_PROMPT.md',
-  'docs/research/agent-permissions.md',
-  'docs/research/dependency-chain.md',
-  'docs/research/test-environment.md',
+  ...discoverMarkdownFiles('docs/work')
+    .filter(isCurrentOrFutureWorkDoc),
+  'docs/reference/EXAMPLES.md',
+  'docs/reference/TOOLCHAIN.md',
+  'docs/guides/AGENT_INSTALL_PROMPT.md',
+  'docs/reference/agent-permissions.md',
+  'docs/reference/dependency-chain.md',
+  'docs/reference/test-environment.md',
+  'TROUBLESHOOTING.md',
   'lib/agents/README.md',
 ];
 

@@ -92,10 +92,12 @@ test-env/fixtures/*
 # Beads / Dolt files (added by bd init)
 .dolt/
 .beads/*.db
+*.db
 .beads/backup/*.jsonl
 .beads/dolt-server.*
 .beads/dolt/.bd-dolt-ok
 .beads/embeddeddolt/
+.beads/redirect
 .beads-credential-key
 
 # Forge freshness token (ephemeral validate/ship state)
@@ -103,6 +105,3 @@ test-env/fixtures/*
 
 # Forge push nonce token (ephemeral one-time lefthook skip)
 .forge-push-token
-
-# Beads / Dolt files (added by bd init)
-*.db

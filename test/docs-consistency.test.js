@@ -52,8 +52,8 @@ describe('README.md consistency', () => {
   });
 });
 
-describe('docs/SETUP.md consistency', () => {
-  const setup = readDoc('docs/SETUP.md');
+describe('docs/guides/SETUP.md consistency', () => {
+  const setup = readDoc('docs/guides/SETUP.md');
 
   it('mentions install.sh is a bootstrapper', () => {
     expect(setup).toContain('bootstrapper');

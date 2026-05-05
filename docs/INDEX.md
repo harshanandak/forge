@@ -89,4 +89,4 @@ See [work/](work/) for the full list of date-prefixed work folders. Each folder 
 ## Notes
 
 - `docs/forge/` (TOOLCHAIN.md, VALIDATION.md) is a **consumer-installed** directory created by `forge setup`. Do not move or rename — referenced by `lib/reset.js`, `lib/docs-copy.js`, and `lib/commands/setup.js`.
-- `docs/plans/` retains a `.gitkeep` so the runtime path constant in `bin/forge-preflight.js`, `bin/forge-cmd.js`, and `lib/commands/plan.js` continues to work for new work items created by `/plan`. Migrating those constants to `docs/work/` is a v3 feature change tracked separately (see WS17/WS19 in the unified strategy).
+- New `/plan` artifacts live under `docs/work/YYYY-MM-DD-<slug>/`. Runtime tools keep a legacy `docs/plans/` read fallback only for older work items.

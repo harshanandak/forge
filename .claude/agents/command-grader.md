@@ -44,7 +44,7 @@ Return a JSON object with the following structure:
     {
       "assertion": { "type": "contract", "check": "Output contains markdown design doc path" },
       "pass": true,
-      "reasoning": "Found 'docs/plans/2025-03-15-auth-design.md' in transcript output at line 42, matching the expected markdown file path format for downstream /dev consumption"
+      "reasoning": "Found 'docs/work/2025-03-15-auth/design.md' in transcript output at line 42, matching the expected markdown file path format for downstream /dev consumption"
     }
   ]
 }

@@ -23,10 +23,10 @@ describe('Contract: /plan task list output -> /dev task list input', () => {
   const devContent = readCommand('dev.md');
 
   /**
-   * /plan produces a task list at docs/plans/YYYY-MM-DD-<slug>-tasks.md
+   * /plan produces a task list at docs/work/YYYY-MM-DD-<slug>/tasks.md
    * /dev must expect to read from the same pattern.
    */
-  const taskFilePattern = /YYYY-MM-DD-<slug>-tasks\.md/;
+  const taskFilePattern = /docs\/work\/YYYY-MM-DD-<slug>\/tasks\.md/;
 
   test('/plan references the task list file pattern', () => {
     expect(taskFilePattern.test(planContent)).toBeTruthy();
@@ -44,10 +44,10 @@ describe('Contract: /plan design doc output -> /ship design doc reference', () =
   const shipContent = readCommand('ship.md');
 
   /**
-   * /plan produces a design doc at docs/plans/YYYY-MM-DD-<slug>-design.md
+   * /plan produces a design doc at docs/work/YYYY-MM-DD-<slug>/design.md
    * /ship must reference the same pattern in its PR body.
    */
-  const designDocPattern = /YYYY-MM-DD-<slug>-design\.md/;
+  const designDocPattern = /docs\/work\/YYYY-MM-DD-<slug>\/design\.md/;
 
   test('/plan references the design doc file pattern', () => {
     expect(designDocPattern.test(planContent)).toBeTruthy();

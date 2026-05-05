@@ -23,19 +23,19 @@ This command reads the task list created by `/plan` and implements each task usi
 
 ```bash
 # Find task list and design doc
-ls docs/plans/
+ls docs/work/
 ```
 
 Read:
-- **Task list**: `docs/plans/YYYY-MM-DD-<slug>-tasks.md` — extract ALL task text upfront
-- **Design doc**: `docs/plans/YYYY-MM-DD-<slug>-design.md` — including ambiguity policy section
+- **Task list**: `docs/work/YYYY-MM-DD-<slug>/tasks.md` — extract ALL task text upfront
+- **Design doc**: `docs/work/YYYY-MM-DD-<slug>/design.md` — including ambiguity policy section
 
 ### Step 2: Create decisions log
 
 Create an empty decisions log at the start of every /dev session:
 
 ```bash
-# docs/plans/YYYY-MM-DD-<slug>-decisions.md
+# docs/work/YYYY-MM-DD-<slug>/decisions.md
 ```
 
 Format for each entry:
@@ -298,31 +298,9 @@ Document the gate count in the final commit message.
 
 ---
 
-## Example Output (all tasks complete)
+## Dynamic Output
 
-```
-✓ Task 1: Types and interfaces — COMPLETE
-  Spec: ✅  Quality: ✅  Tests: 4/4 passing  Commit: abc1234
-  Decision gates: 0
-
-✓ Task 2: Validation logic — COMPLETE
-  Spec: ✅  Quality: ✅  Tests: 8/8 passing  Commit: def5678
-  Decision gates: 1 (PROCEED, score 2 — documented in decisions log)
-
-✓ Task 3: API endpoint — COMPLETE
-  Spec: ✅  Quality: ✅  Tests: 6/6 passing  Commit: ghi9012
-  Decision gates: 0
-
-✓ Final code review: ✅ (coherent, consistent, correctly integrated)
-
-✓ Decisions log: docs/plans/2026-02-26-stripe-billing-decisions.md
-  - Decision 1: RESOLVED (score 2, proceeded with conservative choice)
-  - Decision gates fired: 1 (plan quality: Good)
-
-✓ Beads updated: forge-xyz → implementation complete
-
-Ready for /validate
-```
+The completion summary is generated from the live task list, decisions log, Beads state, commits, and validation output at runtime. Do not copy a static example into this command file; run `/dev` to view the current task/status summary.
 
 ## Integration with Workflow
 

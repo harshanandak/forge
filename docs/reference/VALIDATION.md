@@ -124,7 +124,7 @@ Validation Results:
 
 **Checks**:
 - ✓ On feature branch (`feat/*`, `fix/*`, `docs/*`)
-- ✓ Plan file exists (`docs/plans/*.md`)
+- ✓ Plan file exists (`docs/work/**/design.md`, with legacy `docs/plans/*-design.md` fallback)
 - ✓ Research file exists (`docs/research/*.md`)
 - ✓ Test directory exists
 

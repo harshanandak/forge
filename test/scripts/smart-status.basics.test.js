@@ -24,7 +24,8 @@ describe('smart-status.sh', () => {
   });
 
   test('exits with error when jq is missing', () => {
-    const result = runSmartStatus(['--json'], { PATH: '' });
+    const missingJq = path.join(os.tmpdir(), 'definitely-missing-jq-command');
+    const result = runSmartStatus(['--json'], { JQ_CMD: missingJq });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/jq/i);
   });

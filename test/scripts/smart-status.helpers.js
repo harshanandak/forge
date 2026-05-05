@@ -47,6 +47,7 @@ function normalizeBashEnv(env = {}) {
     ...env,
     ...(env.BD_CMD ? { BD_CMD: toBashPath(env.BD_CMD) } : {}),
     ...(env.GIT_CMD ? { GIT_CMD: toBashPath(env.GIT_CMD) } : {}),
+    ...(env.JQ_CMD ? { JQ_CMD: toBashPath(env.JQ_CMD) } : {}),
     ...(env.REAL_GIT ? { REAL_GIT: toBashPath(env.REAL_GIT) } : {}),
   };
 }
@@ -58,7 +59,7 @@ function runSmartStatus(args = [], env = {}, stdin = undefined) {
     ...normalizeBashEnv(env),
   };
 
-  if (process.platform === 'win32' && env.PATH) {
+  if (process.platform === 'win32' && Object.prototype.hasOwnProperty.call(env, 'PATH')) {
     mergedEnv.Path = env.PATH;
   }
 

@@ -33,6 +33,12 @@ describe('forge docs command', () => {
       expect(result.content.length).toBeGreaterThan(0);
     });
 
+    test('returns setup content from guides directory', () => {
+      const result = getTopicContent('setup', packageDir);
+      expect(result.error).toBeUndefined();
+      expect(result.content).toContain('bootstrapper');
+    });
+
     test('returns error for invalid topic', () => {
       const result = getTopicContent('nonexistent', packageDir);
       expect(result.error).toBeDefined();
@@ -74,6 +80,18 @@ describe('forge docs command', () => {
       const result = getTopicContent('toolchain', tmpDir);
       expect(result.error).toBeDefined();
       expect(result.error).toContain('not found');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('surfaces non-missing file read errors', () => {
+      const os = require('os');
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cmd-test-'));
+      const toolchainPath = path.join(tmpDir, 'docs', 'reference', 'TOOLCHAIN.md');
+      fs.mkdirSync(toolchainPath, { recursive: true });
+
+      const result = getTopicContent('toolchain', tmpDir);
+      expect(result.error).toContain('Failed to read documentation file');
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });

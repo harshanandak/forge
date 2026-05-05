@@ -29,6 +29,45 @@ const VALID_COMMANDS = [
 	'verify',
 ];
 
+function findWorkPlanDoc(dir, slug) {
+	if (!fs.existsSync(dir)) return null;
+
+	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		const entryPath = `${dir}/${entry.name}`;
+		if (entry.isDirectory()) {
+			const found = findWorkPlanDoc(entryPath, slug);
+			if (found) return found;
+		}
+		if (entry.isFile() && (entry.name === 'design.md' || entry.name === 'tasks.md')) {
+			const workDirName = dir.split(/[\\/]/).pop() || '';
+			const workSlug = workDirName.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+			if (workSlug === slug) {
+				return entryPath;
+			}
+		}
+	}
+
+	return null;
+}
+
+function legacyPlanMatchesSlug(fileName, slug) {
+	const legacySlug = fileName
+		.replace(/\.md$/, '')
+		.replace(/^\d{4}-\d{2}-\d{2}-/, '')
+		.replace(/-(?:design|tasks|decisions)$/, '');
+	return legacySlug === slug;
+}
+
+function findPlanDocForBranch(branch) {
+	const slug = branch.replace(/^(feat|fix|docs|refactor)\//, '');
+	const workPlan = findWorkPlanDoc('docs/work', slug);
+	if (workPlan) return workPlan;
+
+	if (!fs.existsSync('docs/plans')) return null;
+	const legacy = fs.readdirSync('docs/plans').find(f => f.endsWith('.md') && legacyPlanMatchesSlug(f, slug));
+	return legacy ? `docs/plans/${legacy}` : null;
+}
+
 const COMMAND_DESCRIPTIONS = {
 	status: 'Detect current workflow stage (1-7)',
 	plan: 'Create branch + Beads + design doc',
@@ -223,11 +262,7 @@ async function main() { // NOSONAR S3776
 			const context = {
 				branch,
 				researchDoc: fs.existsSync('docs/research') ? fs.readdirSync('docs/research').find(f => f.endsWith('.md')) : null,
-				plan: (() => {
-					if (!fs.existsSync('docs/plans')) return null;
-					const slug = branch.replace(/^(feat|fix|docs|refactor)\//, '');
-					return fs.readdirSync('docs/plans').find(f => f.endsWith('.md') && f.includes(slug)) || null;
-				})(),
+				plan: findPlanDocForBranch(branch),
 				tests: (() => { try { return fs.readdirSync('test').filter(f => f.endsWith('.test.js')); } catch (error_) { void error_; return []; } })(), // NOSONAR S2486 - intentional: missing test dir
 			};
 			const stageResult = HANDLERS.status.detectStage(context);
@@ -314,4 +349,6 @@ module.exports = {
 	validateArgs,
 	validateSlug,
 	getHelpText,
+	findWorkPlanDoc,
+	findPlanDocForBranch,
 };

@@ -117,7 +117,7 @@ If a PR template exists:
    - Check applicable checkboxes (`- [x]`)
    - Fill in beads issue IDs (replace `beads-xxx` with actual ID)
    - Fill in test results, validation status, and other concrete data
-   - Reference the design doc: `docs/plans/YYYY-MM-DD-<slug>-design.md`
+   - Reference the design doc: `docs/work/YYYY-MM-DD-<slug>/design.md`
 3. **Do NOT remove any sections** — fill them all, even if "N/A"
 4. **Do NOT restructure the template** — keep the project's chosen format
 

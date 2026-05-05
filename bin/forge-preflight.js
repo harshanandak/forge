@@ -20,6 +20,30 @@ const fs = require("node:fs");
 // Validation results
 let checks = [];
 
+function hasDesignDocUnder(dir) {
+  if (!fs.existsSync(dir)) return false;
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = `${dir}/${entry.name}`;
+    if (entry.isDirectory() && hasDesignDocUnder(entryPath)) {
+      return true;
+    }
+    if (entry.isFile() && entry.name === "design.md") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasPlanDesignDoc() {
+  const legacyPlansDir = "docs/plans";
+  const hasLegacyDesign = fs.existsSync(legacyPlansDir)
+    && fs.readdirSync(legacyPlansDir).some((f) => f.endsWith("-design.md"));
+
+  return hasLegacyDesign || hasDesignDocUnder("docs/work");
+}
+
 function check(label, condition, message) {
   const passed = typeof condition === "function" ? condition() : condition;
   checks.push({ label, passed, message: passed ? "✓" : `✗ ${message}` });
@@ -130,15 +154,12 @@ function validateDev() {
     "Plan file exists",
     () => {
       try {
-        const plansDir = "docs/plans";
-        if (!fs.existsSync(plansDir)) return false;
-        const plans = fs.readdirSync(plansDir).filter((f) => f.endsWith("-design.md"));
-        return plans.length > 0;
+        return hasPlanDesignDoc();
       } catch {
         return false;
       }
     },
-    "No plan file found in docs/plans/. Run: /plan",
+    "No plan file found in docs/work/. Run: /plan",
   );
 
   check(

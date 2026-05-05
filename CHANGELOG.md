@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Embedded Dolt worktree contention** (PR #146, forge-besw.18): switched this repo's Beads metadata to embedded Dolt mode, documented the local worktree contention failure mode, and updated workflow command surfaces to the current `docs/work/YYYY-MM-DD-<slug>/` planning structure
 - **Plan file path contract** (forge-ddk3): Unified all references from `.claude/plans/` to `docs/plans/` across all 7 agent directories, tests, and source code
 - **ENHANCED_ONBOARDING.md** (forge-3tnu): Rewrote to match actual 7-stage workflow with correct `--type` values (critical|standard|simple|hotfix|docs|refactor)
 - **smart-status.sh jq errors**: Handle numeric priorities (0-4) and null types from beads 0.62+ — no more `string/number cannot be iterated` crashes
