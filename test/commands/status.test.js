@@ -415,6 +415,21 @@ describe('Status Command - Stage Detection', () => {
 			expect(slugs).toEqual(['user-auth']);
 		});
 
+		test('extracts slugs from markdown-wrapped docs/work paths', () => {
+			const slugs = extractDesignSlugs([
+				'Design: `docs/work/2026-05-05-user-auth/design.md`',
+				'Tasks: [tasks](docs/work/2026-05-05-user-auth/tasks.md)',
+			].join('\n'));
+			expect(slugs).toEqual(['user-auth']);
+		});
+
+		test('extracts slugs from adjacent punctuation-delimited paths', () => {
+			const slugs = extractDesignSlugs(
+				'docs/work/2026-05-05-user-auth/design.md,docs/work/2026-05-06-billing/tasks.md',
+			);
+			expect(slugs).toEqual(['user-auth', 'billing']);
+		});
+
 		test('deduplicates slugs across design, tasks, and decisions paths', () => {
 			const slugs = extractDesignSlugs([
 				'docs/work/2026-05-05-user-auth/design.md',
