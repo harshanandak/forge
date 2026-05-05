@@ -6,6 +6,7 @@ on:
       - '.github/agentic-workflows/*.lock.yml'
       - '.github/workflows/behavioral-test.md'
       - '.github/workflows/behavioral-test.lock.yml'
+      - 'scripts/pin-agentic-workflow-images.js'
       - 'scripts/sync-agentic-workflow.js'
 permissions:
   contents: read
@@ -28,6 +29,8 @@ jobs:
           fi
       - name: Compile active workflow
         run: gh aw compile --validate --strict .github/workflows/behavioral-test.md
+      - name: Pin compiled MCP runtime images
+        run: node scripts/pin-agentic-workflow-images.js .github/workflows/behavioral-test.lock.yml
       - name: Trial active workflow
         run: gh aw trial ./.github/workflows/behavioral-test.md --dry-run --host-repo . --yes
       - name: Verify compiled workflow artifacts exist

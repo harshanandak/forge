@@ -12,6 +12,7 @@ const {
 	detectRepoContext,
 	formatStatus,
 	resolveWorkflowState,
+	extractDesignSlugs,
 } = require('../../lib/commands/status.js');
 
 function createTempRepo(options = {}) {
@@ -400,6 +401,28 @@ describe('Status Command - Stage Detection', () => {
 			} finally {
 				fs.rmSync(tmpDir, { recursive: true, force: true });
 			}
+		});
+	});
+
+	describe('extractDesignSlugs', () => {
+		test('extracts slugs from legacy docs/plans paths', () => {
+			const slugs = extractDesignSlugs('Design: docs/plans/2026-05-05-user-auth-design.md');
+			expect(slugs).toEqual(['user-auth']);
+		});
+
+		test('extracts slugs from docs/work paths', () => {
+			const slugs = extractDesignSlugs('Design: docs/work/2026-05-05-user-auth/design.md');
+			expect(slugs).toEqual(['user-auth']);
+		});
+
+		test('deduplicates slugs across design, tasks, and decisions paths', () => {
+			const slugs = extractDesignSlugs([
+				'docs/work/2026-05-05-user-auth/design.md',
+				'docs/work/2026-05-05-user-auth/tasks.md',
+				'docs/plans/2026-05-05-api-v2-decisions.md',
+			].join('\n'));
+
+			expect(slugs).toEqual(['user-auth', 'api-v2']);
 		});
 	});
 });

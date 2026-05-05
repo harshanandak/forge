@@ -7,6 +7,7 @@ const {
 	validateArgs,
 	validateSlug,
 	getHelpText,
+	findPlanDocForBranch,
 } = require('../../bin/forge-cmd.js');
 
 describe('CLI Command Dispatcher', () => {
@@ -164,6 +165,66 @@ describe('CLI Command Dispatcher', () => {
 			const helpText = getHelpText();
 			expect(helpText).toMatch(/detect current workflow stage/i);
 			expect(helpText).toMatch(/create branch/i);
+		});
+	});
+
+	describe('Plan document lookup', () => {
+		function withTempCwd(files, callback) {
+			const fs = require('node:fs');
+			const os = require('node:os');
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-cmd-plan-'));
+			const originalCwd = process.cwd();
+
+			try {
+				for (const [filePath, content] of Object.entries(files)) {
+					const absolutePath = path.join(tempDir, filePath);
+					fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+					fs.writeFileSync(absolutePath, content, 'utf8');
+				}
+
+				process.chdir(tempDir);
+				callback();
+			} finally {
+				process.chdir(originalCwd);
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
+		}
+
+		test('matches docs/work plans by whole directory slug', () => {
+			withTempCwd({
+				'docs/work/2026-05-05-oauth/design.md': '# oauth\n',
+				'docs/work/2026-05-05-auth/design.md': '# auth\n',
+			}, () => {
+				expect(findPlanDocForBranch('feat/auth')).toBe('docs/work/2026-05-05-auth/design.md');
+			});
+		});
+
+		test('does not match partial docs/work slug substrings', () => {
+			withTempCwd({
+				'docs/work/2026-05-05-oauth/design.md': '# oauth\n',
+				'docs/work/2026-05-05-user-auth/design.md': '# user auth\n',
+			}, () => {
+				expect(findPlanDocForBranch('feat/auth')).toBeNull();
+			});
+		});
+
+		test('matches legacy docs/plans files by whole slug segment', () => {
+			withTempCwd({
+				'docs/plans/2026-05-05-oauth-design.md': '# oauth\n',
+				'docs/plans/2026-05-05-user-auth-design.md': '# user auth\n',
+				'docs/plans/2026-05-05-auth-design.md': '# auth\n',
+			}, () => {
+				expect(findPlanDocForBranch('feat/auth')).toBe('docs/plans/2026-05-05-auth-design.md');
+			});
+		});
+
+		test('does not match partial legacy docs/plans slug substrings', () => {
+			withTempCwd({
+				'docs/plans/2026-05-05-oauth-design.md': '# oauth\n',
+				'docs/plans/2026-05-05-user-auth-design.md': '# user auth\n',
+			}, () => {
+				expect(findPlanDocForBranch('feat/auth')).toBeNull();
+			});
 		});
 	});
 

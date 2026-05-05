@@ -38,12 +38,24 @@ function findWorkPlanDoc(dir, slug) {
 			const found = findWorkPlanDoc(entryPath, slug);
 			if (found) return found;
 		}
-		if (entry.isFile() && (entry.name === 'design.md' || entry.name === 'tasks.md') && entryPath.includes(slug)) {
-			return entryPath;
+		if (entry.isFile() && (entry.name === 'design.md' || entry.name === 'tasks.md')) {
+			const workDirName = dir.split(/[\\/]/).pop() || '';
+			const workSlug = workDirName.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+			if (workSlug === slug) {
+				return entryPath;
+			}
 		}
 	}
 
 	return null;
+}
+
+function legacyPlanMatchesSlug(fileName, slug) {
+	const legacySlug = fileName
+		.replace(/\.md$/, '')
+		.replace(/^\d{4}-\d{2}-\d{2}-/, '')
+		.replace(/-(?:design|tasks|decisions)$/, '');
+	return legacySlug === slug;
 }
 
 function findPlanDocForBranch(branch) {
@@ -52,7 +64,8 @@ function findPlanDocForBranch(branch) {
 	if (workPlan) return workPlan;
 
 	if (!fs.existsSync('docs/plans')) return null;
-	return fs.readdirSync('docs/plans').find(f => f.endsWith('.md') && f.includes(slug)) || null;
+	const legacy = fs.readdirSync('docs/plans').find(f => f.endsWith('.md') && legacyPlanMatchesSlug(f, slug));
+	return legacy ? `docs/plans/${legacy}` : null;
 }
 
 const COMMAND_DESCRIPTIONS = {
@@ -336,4 +349,6 @@ module.exports = {
 	validateArgs,
 	validateSlug,
 	getHelpText,
+	findWorkPlanDoc,
+	findPlanDocForBranch,
 };
