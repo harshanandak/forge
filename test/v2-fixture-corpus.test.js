@@ -41,6 +41,15 @@ describe('v2 fixture corpus', () => {
     expect(fs.readFileSync(path.join(worktreeRoot, 'old-review', 'gitdir'), 'utf8')).toContain('missing-old-review');
   });
 
+  test('manifest files override shared v2 baseline files', () => {
+    const { repoRoot } = materializeFixture('non-master-default-branch');
+    const agents = fs.readFileSync(path.join(repoRoot, 'AGENTS.md'), 'utf8');
+    const rails = JSON.parse(fs.readFileSync(path.join(repoRoot, '.forge', 'l1', 'rails.json'), 'utf8'));
+
+    expect(agents).toContain('Default branch is trunk.');
+    expect(rails.rails).toEqual(['scope-discipline', 'verified-claims', 'beads-source-of-truth']);
+  });
+
   test('non-master default branch fixture keeps master absent', () => {
     const { repoRoot } = materializeFixture('non-master-default-branch');
     const heads = fs.readdirSync(path.join(repoRoot, '.git', 'refs', 'heads')).sort();

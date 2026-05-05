@@ -205,10 +205,10 @@ function materializeFixture(name, options = {}) {
   const repoRoot = path.join(parent, manifest.name);
 
   initGitRepo(repoRoot, manifest);
+  writeCommonV2InstallFiles(repoRoot);
   for (const file of manifest.files) {
     writeFixtureFile(repoRoot, file);
   }
-  writeCommonV2InstallFiles(repoRoot);
   commitFixture(repoRoot, manifest);
   installHookShims(repoRoot, manifest.git.hooks);
   seedStaleWorktrees(repoRoot, manifest.git.staleWorktrees);
