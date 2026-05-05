@@ -10,10 +10,6 @@ on:
         description: "Run 4-prompt calibration mode"
         type: boolean
         default: false
-  workflow_run:
-    workflows: ["detect-command-file-changes"]
-    types: [completed]
-    branches: [master]
 engine:
   id: claude
   model: claude-sonnet-4-6
@@ -51,10 +47,8 @@ Follow every step below exactly. Do not skip steps. Do not summarize — execute
 
 ## Step 0: Validate sync between .md and .lock.yml (Loophole Fix 14)
 
-> Note on trigger architecture (Loophole Fix 12): This workflow is triggered by `workflow_run`
-> from `detect-command-file-changes` (a standard GitHub Actions workflow that watches
-> `.claude/commands/**` on push to master). gh-aw does not support direct path-based push
-> triggers, so this two-workflow approach is required.
+> Note on trigger architecture: this behavioral judge is intentionally schedule/manual only.
+> It requires an Anthropic API key, so post-merge health must not depend on it.
 
 Before doing anything else, verify that the compiled `.lock.yml` matches this workflow's frontmatter
 version field. The `.lock.yml` is the auditable compiled form and must stay in sync.

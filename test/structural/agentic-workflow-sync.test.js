@@ -52,6 +52,13 @@ describe('agentic-workflow sync checks', () => {
     expect(content).toMatch(/automatically generated|auto-generated/);
   });
 
+  test('behavioral-test.md stays schedule/manual only', () => {
+    const source = fs.readFileSync(mdPath, 'utf8');
+    const active = fs.readFileSync(activeMdPath, 'utf8');
+    expect(source).not.toContain('workflow_run:');
+    expect(active).not.toContain('workflow_run:');
+  });
+
   test('check-agentic-workflow-sync.yml contains "gh aw compile" in error message', () => {
     const content = fs.readFileSync(ciWorkflowPath, 'utf8');
     expect(content).toContain('gh aw compile');
