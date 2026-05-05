@@ -36,6 +36,13 @@ describe('Wave 0 verification spike benches', () => {
     expect(() => runPatchAnchorBench({ patchCount: 1.5 })).toThrow('patchCount must be a positive integer');
   });
 
+  test('patch anchor CLI defaults rename count to patch count', () => {
+    const result = runJson('patch-anchor-stability-bench.js', ['--patches', '25']);
+    expect(result.patchCount).toBe(25);
+    expect(result.renamedAnchors).toBe(25);
+    expect(result.passed).toBe(true);
+  });
+
   test('config race bench rejects zero and fractional trial counts', () => {
     expect(() => runConfigRaceBench({ trials: 0 })).toThrow('trials must be a positive integer');
     expect(() => runConfigRaceBench({ trials: 1.5 })).toThrow('trials must be a positive integer');

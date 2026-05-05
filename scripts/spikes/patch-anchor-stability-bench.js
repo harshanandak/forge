@@ -103,10 +103,11 @@ function runBench(options = {}) {
 
 function main() {
   const args = process.argv.slice(2);
+  const patchCount = readNumberFlag(args, '--patches', 50);
   const result = runBench({
     anchorCount: readNumberFlag(args, '--anchors', 500),
-    patchCount: readNumberFlag(args, '--patches', 50),
-    renameCount: readNumberFlag(args, '--renames', 50),
+    patchCount,
+    renameCount: readNumberFlag(args, '--renames', patchCount),
     unmappedCount: readNumberFlag(args, '--unmapped', 2),
     threshold: readNumberFlag(args, '--threshold', 0.10),
   });
