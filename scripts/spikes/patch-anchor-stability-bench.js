@@ -13,6 +13,18 @@ function readNumberFlag(args, name, fallback) {
   return value;
 }
 
+function assertPositiveInteger(name, value) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
+function assertNonNegativeInteger(name, value) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+}
+
 function runBench(options = {}) {
   const anchorCount = options.anchorCount ?? 500;
   const patchCount = options.patchCount ?? 50;
@@ -20,6 +32,10 @@ function runBench(options = {}) {
   const unmappedCount = options.unmappedCount ?? 2;
   const threshold = options.threshold ?? 0.10;
 
+  assertPositiveInteger('anchorCount', anchorCount);
+  assertPositiveInteger('patchCount', patchCount);
+  assertNonNegativeInteger('renameCount', renameCount);
+  assertNonNegativeInteger('unmappedCount', unmappedCount);
   if (patchCount > anchorCount) {
     throw new Error('patchCount must be <= anchorCount');
   }

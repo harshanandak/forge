@@ -1,6 +1,8 @@
 const { describe, expect, test } = require('bun:test');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
+const { runBench: runPatchAnchorBench } = require('../../scripts/spikes/patch-anchor-stability-bench');
+const { runBench: runConfigRaceBench } = require('../../scripts/spikes/config-race-bench');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -27,5 +29,15 @@ describe('Wave 0 verification spike benches', () => {
     expect(result.trials).toBe(50);
     expect(result.manualResolveRate).toBeLessThan(0.05);
     expect(result.passed).toBe(true);
+  });
+
+  test('patch anchor bench rejects zero and fractional patch counts', () => {
+    expect(() => runPatchAnchorBench({ patchCount: 0 })).toThrow('patchCount must be a positive integer');
+    expect(() => runPatchAnchorBench({ patchCount: 1.5 })).toThrow('patchCount must be a positive integer');
+  });
+
+  test('config race bench rejects zero and fractional trial counts', () => {
+    expect(() => runConfigRaceBench({ trials: 0 })).toThrow('trials must be a positive integer');
+    expect(() => runConfigRaceBench({ trials: 1.5 })).toThrow('trials must be a positive integer');
   });
 });

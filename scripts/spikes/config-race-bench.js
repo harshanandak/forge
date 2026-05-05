@@ -13,6 +13,12 @@ function readNumberFlag(args, name, fallback) {
   return value;
 }
 
+function assertPositiveInteger(name, value) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
 function machinePatch(trial, machine) {
   const sharedValue = trial % 10 === 0 ? `shared-${trial}` : undefined;
   const conflictingValue = trial === 37 ? `${machine}-conflict-${trial}` : undefined;
@@ -61,6 +67,8 @@ function mergeTrial(trial) {
 function runBench(options = {}) {
   const trials = options.trials ?? 50;
   const threshold = options.threshold ?? 0.05;
+  assertPositiveInteger('trials', trials);
+
   const start = performance.now();
   const results = Array.from({ length: trials }, (_, index) => mergeTrial(index + 1));
   const manualResolves = results.filter((result) => result.manualResolve);
