@@ -1,0 +1,50 @@
+{
+  "name": "no-lefthook-installed",
+  "description": "Otherwise healthy v2 repo with no Lefthook dependency, config, or installed hook shim.",
+  "defaultBranch": "master",
+  "initialCommit": "seed no lefthook fixture",
+  "git": {
+    "branches": ["master"],
+    "hooks": [],
+    "staleWorktrees": []
+  },
+  "expectations": {
+    "beadsBackend": "dolt",
+    "lefthookInstalled": false,
+    "staleWorktrees": 0,
+    "requiredFiles": ["AGENTS.md", ".beads/config.yaml", ".forge/l1/rails.json"]
+  },
+  "files": [
+    {
+      "path": "package.json",
+      "json": {
+        "name": "no-lefthook-installed",
+        "private": true,
+        "devDependencies": {
+          "forge": "0.0.10"
+        }
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "lines": ["# AGENTS.md", "", "<!-- BEGIN FORGE V2 GENERATED WORKFLOW -->", "No Lefthook installed.", "<!-- END FORGE V2 GENERATED WORKFLOW -->"]
+    },
+    {
+      "path": ".forge/l1/rails.json",
+      "json": {
+        "version": 1,
+        "rails": ["scope-discipline", "verified-claims", "tdd-first"]
+      }
+    },
+    {
+      "path": ".beads/config.yaml",
+      "lines": ["issue-prefix: nohook", "database:", "  backend: dolt"]
+    },
+    {
+      "path": ".beads/issues.jsonl",
+      "jsonl": [
+        { "id": "nohook-aa1", "title": "No Lefthook coverage", "status": "open" }
+      ]
+    }
+  ]
+}

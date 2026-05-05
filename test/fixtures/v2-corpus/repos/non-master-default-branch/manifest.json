@@ -1,0 +1,60 @@
+{
+  "name": "non-master-default-branch",
+  "description": "v2 repo using trunk as the default branch with no master ref.",
+  "defaultBranch": "trunk",
+  "initialCommit": "seed trunk default fixture",
+  "git": {
+    "branches": ["trunk", "release/v2-default"],
+    "hooks": [
+      {
+        "name": "pre-commit",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-commit \"$@\""]
+      }
+    ],
+    "staleWorktrees": []
+  },
+  "expectations": {
+    "beadsBackend": "dolt",
+    "lefthookInstalled": true,
+    "staleWorktrees": 0,
+    "requiredFiles": ["AGENTS.md", ".beads/config.yaml", ".forge/l1/rails.json", "lefthook.yml"]
+  },
+  "files": [
+    {
+      "path": "package.json",
+      "json": {
+        "name": "non-master-default-branch",
+        "private": true,
+        "devDependencies": {
+          "forge": "0.0.10",
+          "lefthook": "^2.1.4"
+        }
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "lines": ["# AGENTS.md", "", "<!-- BEGIN FORGE V2 GENERATED WORKFLOW -->", "Default branch is trunk.", "<!-- END FORGE V2 GENERATED WORKFLOW -->"]
+    },
+    {
+      "path": ".forge/l1/rails.json",
+      "json": {
+        "version": 1,
+        "rails": ["scope-discipline", "verified-claims", "beads-source-of-truth"]
+      }
+    },
+    {
+      "path": ".beads/config.yaml",
+      "lines": ["issue-prefix: trunk", "database:", "  backend: dolt"]
+    },
+    {
+      "path": ".beads/issues.jsonl",
+      "jsonl": [
+        { "id": "trunk-aa1", "title": "Trunk default coverage", "status": "open" }
+      ]
+    },
+    {
+      "path": "lefthook.yml",
+      "lines": ["pre-commit:", "  commands:", "    validate:", "      run: bun test"]
+    }
+  ]
+}
