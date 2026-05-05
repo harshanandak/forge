@@ -4,6 +4,8 @@ const { resolve } = require("path");
 const yaml = require("js-yaml");
 
 const configPath = resolve(__dirname, "../.github/dependabot.yml");
+const opencodePackagePath = resolve(__dirname, "../.opencode/package.json");
+const opencodeLockPath = resolve(__dirname, "../.opencode/package-lock.json");
 
 describe("dependabot.yml", () => {
   test("file exists", () => {
@@ -86,5 +88,15 @@ describe("dependabot.yml", () => {
     );
     expect(gha.labels).toContain("github-actions");
     expect(gha.labels).toContain("dependencies");
+  });
+
+  test("tracked OpenCode npm lockfile has a matching manifest", () => {
+    expect(existsSync(opencodePackagePath)).toBe(true);
+    expect(existsSync(opencodeLockPath)).toBe(true);
+
+    const manifest = JSON.parse(readFileSync(opencodePackagePath, "utf8"));
+    const lockfile = JSON.parse(readFileSync(opencodeLockPath, "utf8"));
+    expect(manifest.name).toBe(lockfile.name);
+    expect(manifest.dependencies).toEqual(lockfile.packages[""].dependencies);
   });
 });

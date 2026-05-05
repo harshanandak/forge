@@ -331,6 +331,50 @@ describe('project memory', () => {
     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
   });
 
+  test('treats Windows EPERM on existing lockfiles as lock contention', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    let injected = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: 99999999,
+      createdAt: '2026-04-26T00:00:00.000Z',
+    }), 'utf8');
+
+    fs.openSync = function openSyncWithInjectedEperm(target, flags, ...args) {
+      if (!injected && target === lockPath && flags === 'wx') {
+        injected = true;
+        const err = new Error('operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+
+    try {
+      projectMemory.write(root, {
+        key: 'policy.eperm-lock-file',
+        value: 'recovered',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 250,
+        lockRetryMs: 5,
+      });
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    expect(injected).toBe(true);
+    expect(projectMemory.read(root, 'policy.eperm-lock-file')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   test('removes lockfiles when lock metadata initialization fails', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
@@ -581,10 +625,11 @@ describe('project memory', () => {
 
   test('serializes concurrent writers without losing entries', async () => {
     const root = tempRoot();
+    const workerPath = path.join(root, 'project-memory-writer.cjs');
     const worker = `
 const projectMemory = require(${JSON.stringify(workerModulePath)});
-const root = process.argv[1];
-const index = Number(process.argv[2]);
+const root = process.argv.at(-2);
+const index = Number(process.argv.at(-1));
 projectMemory.write(root, {
   key: \`decision.concurrent.\${index}\`,
   value: \`writer-\${index}\`,
@@ -593,9 +638,10 @@ projectMemory.write(root, {
   tags: ['concurrent'],
 });
 `;
+    fs.writeFileSync(workerPath, worker);
 
     await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['-e', worker, root, String(index)], {
+      const child = spawn(process.execPath, [workerPath, root, String(index)], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
