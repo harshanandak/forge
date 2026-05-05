@@ -416,6 +416,54 @@ describe('project memory', () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  test('surfaces persistent Windows EPERM on missing lockfiles', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    const originalRmSync = fs.rmSync;
+    let openAttempts = 0;
+    let removedMissingLock = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+
+    fs.openSync = function openSyncWithPersistentEperm(target, flags, ...args) {
+      if (target === lockPath && flags === 'wx' && !fs.existsSync(lockPath)) {
+        openAttempts += 1;
+        const err = new Error('operation not permitted');
+        err.code = 'EPERM';
+        err.path = lockPath;
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+    fs.rmSync = function rmSyncTrackingMissingLock(target, ...args) {
+      if (target === lockPath && !fs.existsSync(lockPath)) {
+        removedMissingLock = true;
+      }
+      return originalRmSync.call(this, target, ...args);
+    };
+
+    try {
+      expect(() => projectMemory.write(root, {
+        key: 'policy.persistent-eperm-lock-file',
+        value: 'blocked',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 25,
+        lockRetryMs: 5,
+      })).toThrow('operation not permitted');
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.rmSync = originalRmSync;
+    }
+
+    expect(openAttempts).toBeGreaterThan(1);
+    expect(removedMissingLock).toBe(false);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   test('removes lockfiles when lock metadata initialization fails', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
