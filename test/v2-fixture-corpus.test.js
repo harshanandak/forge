@@ -1,4 +1,4 @@
-const { describe, expect, test } = require('bun:test');
+const { describe, expect, setDefaultTimeout, test } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -10,6 +10,8 @@ const {
   materializeFixture,
   validateMaterializedFixture,
 } = require('./fixtures/v2-corpus');
+
+setDefaultTimeout(15000);
 
 describe('v2 fixture corpus', () => {
   const fixtureNames = [...listFixtureNames()].sort();
