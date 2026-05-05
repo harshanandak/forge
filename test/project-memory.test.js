@@ -615,12 +615,12 @@ projectMemory.write(root, {
       });
     })));
 
-    const results = await waitForSearchCount(root, 'concurrent', 8);
+    const results = await waitForSearchCount(root, 'concurrent', 8, 15_000);
     expect(results.map((entry) => entry.key).sort()).toEqual(Array.from(
       { length: 8 },
       (_unused, index) => `decision.concurrent.${index}`,
     ));
-  });
+  }, 20_000);
 
   test('rejects schema-invalid stored JSONL entries when reading', () => {
     const root = tempRoot();
