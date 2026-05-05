@@ -40,10 +40,13 @@ describe('v2 fixture corpus', () => {
   test('stale worktree fixture creates runtime-only git worktree metadata', () => {
     const { manifest, repoRoot } = materializeFixture('stale-worktrees');
     const worktreeRoot = path.join(repoRoot, '.git', 'worktrees');
+    const oldReviewGitdir = fs.readFileSync(path.join(worktreeRoot, 'old-review', 'gitdir'), 'utf8');
 
     expect(manifest.expectations.staleWorktrees).toBe(2);
     expect(fs.readdirSync(worktreeRoot).sort()).toEqual(['old-review', 'wip-migration']);
-    expect(fs.readFileSync(path.join(worktreeRoot, 'old-review', 'gitdir'), 'utf8')).toContain('missing-old-review');
+    expect(oldReviewGitdir).toContain('missing-old-review');
+    expect(oldReviewGitdir).toContain(path.join(path.dirname(repoRoot), '.missing-worktrees'));
+    expect(fs.existsSync(path.dirname(oldReviewGitdir.trim()))).toBe(false);
   });
 
   test('manifest files override shared v2 baseline files', () => {

@@ -464,6 +464,63 @@ describe('project memory', () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  test('reclaims dangling lock paths during stale cleanup', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    const originalLstatSync = fs.lstatSync;
+    const originalRmSync = fs.rmSync;
+    let removedDanglingLock = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+
+    fs.openSync = function openSyncWithDanglingLock(target, flags, ...args) {
+      if (!removedDanglingLock && target === lockPath && flags === 'wx') {
+        const err = new Error('file already exists');
+        err.code = 'EEXIST';
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+    fs.lstatSync = function lstatSyncWithDanglingLock(target, ...args) {
+      if (!removedDanglingLock && target === lockPath) {
+        return {
+          isDirectory: () => false,
+        };
+      }
+      return originalLstatSync.call(this, target, ...args);
+    };
+    fs.rmSync = function rmSyncWithDanglingLock(target, ...args) {
+      if (target === lockPath) {
+        removedDanglingLock = true;
+        return undefined;
+      }
+      return originalRmSync.call(this, target, ...args);
+    };
+
+    try {
+      projectMemory.write(root, {
+        key: 'policy.dangling-lock',
+        value: 'recovered',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 250,
+        lockRetryMs: 5,
+      });
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.lstatSync = originalLstatSync;
+      fs.rmSync = originalRmSync;
+    }
+
+    expect(removedDanglingLock).toBe(true);
+    expect(projectMemory.read(root, 'policy.dangling-lock')).toMatchObject({
+      value: 'recovered',
+    });
+  });
+
   test('removes lockfiles when lock metadata initialization fails', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');

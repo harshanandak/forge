@@ -221,13 +221,14 @@ function installHookShims(repoRoot, hooks) {
 
 function seedStaleWorktrees(repoRoot, worktrees) {
   const gitDir = path.join(repoRoot, '.git');
+  const missingRoot = path.join(path.dirname(repoRoot), '.missing-worktrees');
   for (const worktree of worktrees || []) {
     const staleDir = path.join(gitDir, 'worktrees', worktree.name);
     ensureInside(gitDir, staleDir);
     fs.mkdirSync(staleDir, { recursive: true });
     fs.writeFileSync(
       path.join(staleDir, 'gitdir'),
-      `${path.join(os.tmpdir(), worktree.missingPath || `missing-${worktree.name}`, '.git')}\n`,
+      `${path.join(missingRoot, worktree.missingPath || `missing-${worktree.name}`, '.git')}\n`,
       'utf8',
     );
     fs.writeFileSync(path.join(staleDir, 'HEAD'), `${worktree.head || 'ref: refs/heads/stale'}\n`, 'utf8');
