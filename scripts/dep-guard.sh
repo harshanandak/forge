@@ -17,6 +17,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_CMD="${NODE_CMD:-node}"
 source "$SCRIPT_DIR/lib/sanitize.sh"
 
+node_script_path() {
+  case "$1" in
+    /[A-Za-z]/*)
+      _drive="$(printf '%s' "${1:1:1}" | tr '[:lower:]' '[:upper:]')"
+      printf '%s:/%s\n' "$_drive" "${1:3}"
+      ;;
+    *)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+      else
+        printf '%s\n' "$1"
+      fi
+      ;;
+  esac
+}
+
 # ---- Helpers ----------------------------------------------------------------
 
 usage() {
@@ -226,12 +242,12 @@ run_phase3_analyzer() {
     "${in_progress_json:-[]}" \
     "$(printf '%s' "$task_file" | jq -R '.')" \
     "$(printf '%s' "$repository_root" | jq -R '.')" \
-    | "$NODE_CMD" "$analyzer_script" --stdin
+    | "$NODE_CMD" "$(node_script_path "$analyzer_script")" --stdin
 }
 
 render_phase3_review() {
   local renderer_script="${DEP_GUARD_RENDER_SCRIPT:-scripts/dep-guard-render-review.js}"
-  "$NODE_CMD" "$renderer_script"
+  "$NODE_CMD" "$(node_script_path "$renderer_script")"
 }
 
 # ---- Subcommands ------------------------------------------------------------
@@ -344,7 +360,7 @@ cmd_check_ripple_keyword_v1() {
   ISSUE_ID="$issue_id" \
   SOURCE_TITLE="$src_title" \
   LIST_OUTPUT="$list_output" \
-  "$NODE_CMD" "$SCRIPT_DIR/dep-guard-keyword-ripple.js"
+  "$NODE_CMD" "$(node_script_path "$SCRIPT_DIR/dep-guard-keyword-ripple.js")"
   return 0
 
 }
