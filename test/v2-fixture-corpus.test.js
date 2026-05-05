@@ -1,0 +1,94 @@
+const { describe, expect, test } = require('bun:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { isBeadsInitialized } = require('../lib/beads-setup');
+const { checkHookInstallation } = require('../lib/runtime-health');
+
+const {
+  listFixtureNames,
+  materializeFixture,
+  validateMaterializedFixture,
+} = require('./fixtures/v2-corpus');
+
+describe('v2 fixture corpus', () => {
+  const fixtureNames = [...listFixtureNames()].sort();
+
+  test('defines the five W0 stress fixtures', () => {
+    expect(fixtureNames).toEqual([
+      'broken-beads-state',
+      'clean-v2-install',
+      'no-lefthook-installed',
+      'non-master-default-branch',
+      'stale-worktrees',
+    ]);
+  });
+
+  test.each(fixtureNames)('%s materializes into a valid synthetic repo', (name) => {
+    const { manifest, repoRoot } = materializeFixture(name);
+    const result = validateMaterializedFixture(repoRoot, manifest);
+
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, '.git'))).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, 'AGENTS.md'))).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, '.claude', 'commands', 'plan.md'))).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, '.codex', 'skills', 'plan', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, '.forge', 'v2', 'workflow-stage-matrix.json'))).toBe(true);
+  });
+
+  test('stale worktree fixture creates runtime-only git worktree metadata', () => {
+    const { manifest, repoRoot } = materializeFixture('stale-worktrees');
+    const worktreeRoot = path.join(repoRoot, '.git', 'worktrees');
+    const oldReviewGitdir = fs.readFileSync(path.join(worktreeRoot, 'old-review', 'gitdir'), 'utf8');
+
+    expect(manifest.expectations.staleWorktrees).toBe(2);
+    expect(fs.readdirSync(worktreeRoot).sort()).toEqual(['old-review', 'wip-migration']);
+    expect(oldReviewGitdir).toContain('missing-old-review');
+    expect(oldReviewGitdir).toContain(path.join(path.dirname(repoRoot), '.missing-worktrees'));
+    expect(fs.existsSync(path.dirname(oldReviewGitdir.trim()))).toBe(false);
+  });
+
+  test('manifest files override shared v2 baseline files', () => {
+    const { repoRoot } = materializeFixture('non-master-default-branch');
+    const agents = fs.readFileSync(path.join(repoRoot, 'AGENTS.md'), 'utf8');
+    const rails = JSON.parse(fs.readFileSync(path.join(repoRoot, '.forge', 'l1', 'rails.json'), 'utf8'));
+
+    expect(agents).toContain('Default branch is trunk.');
+    expect(rails.rails).toEqual(['scope-discipline', 'verified-claims', 'beads-source-of-truth']);
+  });
+
+  test('lefthook fixtures use runtime-health hook layout', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const hooksDir = path.join(repoRoot, '.lefthook', 'hooks');
+    const hooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+    const hookStatus = checkHookInstallation(repoRoot);
+
+    expect(fs.existsSync(path.join(hooksDir, 'pre-commit'))).toBe(true);
+    expect(fs.existsSync(path.join(hooksDir, 'pre-push'))).toBe(true);
+    expect(hooksPath).toBe('.lefthook/hooks');
+    expect(hookStatus.active).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, '.git', 'hooks', 'pre-commit'))).toBe(false);
+  });
+
+  test('dolt fixtures materialize as initialized Beads repos', () => {
+    for (const name of ['clean-v2-install', 'no-lefthook-installed', 'non-master-default-branch', 'stale-worktrees']) {
+      const { repoRoot } = materializeFixture(name);
+
+      expect(isBeadsInitialized(repoRoot)).toBe(true);
+      expect(fs.existsSync(path.join(repoRoot, '.beads', 'metadata.json'))).toBe(true);
+      expect(fs.existsSync(path.join(repoRoot, '.beads', 'README.md'))).toBe(true);
+    }
+  });
+
+  test('non-master default branch fixture keeps master absent', () => {
+    const { repoRoot } = materializeFixture('non-master-default-branch');
+    const heads = fs.readdirSync(path.join(repoRoot, '.git', 'refs', 'heads')).sort();
+
+    expect(heads).toContain('trunk');
+    expect(heads).not.toContain('master');
+  });
+});

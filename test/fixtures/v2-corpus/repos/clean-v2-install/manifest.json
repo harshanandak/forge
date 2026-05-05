@@ -1,0 +1,74 @@
+{
+  "name": "clean-v2-install",
+  "description": "Healthy v2 install with Dolt-backed Beads, installed Lefthook, v2 command assets, and L1 rail markers.",
+  "defaultBranch": "master",
+  "initialCommit": "seed clean v2 fixture",
+  "git": {
+    "branches": ["master"],
+    "hooks": [
+      {
+        "name": "pre-commit",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-commit \"$@\""]
+      },
+      {
+        "name": "pre-push",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-push \"$@\""]
+      }
+    ],
+    "staleWorktrees": []
+  },
+  "expectations": {
+    "beadsBackend": "dolt",
+    "lefthookInstalled": true,
+    "staleWorktrees": 0,
+    "requiredFiles": ["AGENTS.md", ".beads/config.yaml", ".forge/l1/rails.json", "lefthook.yml"]
+  },
+  "files": [
+    {
+      "path": "package.json",
+      "json": {
+        "name": "clean-v2-install",
+        "private": true,
+        "devDependencies": {
+          "forge": "0.0.10",
+          "lefthook": "^2.1.4"
+        },
+        "scripts": {
+          "forge:setup": "forge setup",
+          "test": "echo clean-v2-install"
+        }
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "lines": [
+        "# AGENTS.md",
+        "",
+        "<!-- BEGIN FORGE V2 GENERATED WORKFLOW -->",
+        "Use the v2 seven-stage workflow: plan, dev, validate, ship, review, premerge, verify.",
+        "<!-- END FORGE V2 GENERATED WORKFLOW -->"
+      ]
+    },
+    {
+      "path": ".forge/l1/rails.json",
+      "json": {
+        "version": 1,
+        "rails": ["scope-discipline", "verified-claims", "tdd-first", "protected-generated-artifacts", "beads-source-of-truth"]
+      }
+    },
+    {
+      "path": ".beads/config.yaml",
+      "lines": ["issue-prefix: clean", "database:", "  backend: dolt"]
+    },
+    {
+      "path": ".beads/issues.jsonl",
+      "jsonl": [
+        { "id": "clean-aa1", "title": "Seeded clean issue", "status": "open", "priority": 2 }
+      ]
+    },
+    {
+      "path": "lefthook.yml",
+      "lines": ["pre-commit:", "  commands:", "    tdd:", "      run: bun test"]
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "name": "stale-worktrees",
+  "description": "v2 repo whose git metadata contains two stale linked worktrees.",
+  "defaultBranch": "master",
+  "initialCommit": "seed stale worktree fixture",
+  "git": {
+    "branches": ["master", "review/old-review", "codex/wip-migration"],
+    "hooks": [
+      {
+        "name": "pre-commit",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-commit \"$@\""]
+      },
+      {
+        "name": "pre-push",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-push \"$@\""]
+      }
+    ],
+    "staleWorktrees": [
+      {
+        "name": "old-review",
+        "missingPath": "missing-old-review",
+        "head": "ref: refs/heads/review/old-review",
+        "locked": "fixture simulates interrupted reviewer worktree"
+      },
+      {
+        "name": "wip-migration",
+        "missingPath": "missing-wip-migration",
+        "head": "ref: refs/heads/codex/wip-migration"
+      }
+    ]
+  },
+  "expectations": {
+    "beadsBackend": "dolt",
+    "lefthookInstalled": true,
+    "staleWorktrees": 2,
+    "requiredFiles": ["AGENTS.md", ".beads/config.yaml", ".forge/l1/rails.json", "lefthook.yml"]
+  },
+  "files": [
+    {
+      "path": "package.json",
+      "json": {
+        "name": "stale-worktrees",
+        "private": true,
+        "devDependencies": {
+          "forge": "0.0.10",
+          "lefthook": "^2.1.4"
+        }
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "lines": ["# AGENTS.md", "", "<!-- BEGIN FORGE V2 GENERATED WORKFLOW -->", "Stale worktree fixture.", "<!-- END FORGE V2 GENERATED WORKFLOW -->"]
+    },
+    {
+      "path": ".forge/l1/rails.json",
+      "json": {
+        "version": 1,
+        "rails": ["scope-discipline", "protected-generated-artifacts"]
+      }
+    },
+    {
+      "path": ".beads/config.yaml",
+      "lines": ["issue-prefix: stale", "database:", "  backend: dolt"]
+    },
+    {
+      "path": ".beads/issues.jsonl",
+      "jsonl": [
+        { "id": "stale-aa1", "title": "Stale worktree coverage", "status": "open" }
+      ]
+    },
+    {
+      "path": "lefthook.yml",
+      "lines": ["pre-commit:", "  commands:", "    validate:", "      run: bun test"]
+    }
+  ]
+}

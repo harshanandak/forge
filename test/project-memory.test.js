@@ -375,6 +375,152 @@ describe('project memory', () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  test('treats transient Windows EPERM on missing lockfiles as lock contention', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    let injected = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+
+    fs.openSync = function openSyncWithTransientEperm(target, flags, ...args) {
+      if (!injected && target === lockPath && flags === 'wx' && !fs.existsSync(lockPath)) {
+        injected = true;
+        const err = new Error('operation not permitted');
+        err.code = 'EPERM';
+        err.path = lockPath;
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+
+    try {
+      projectMemory.write(root, {
+        key: 'policy.transient-eperm-lock-file',
+        value: 'recovered',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 250,
+        lockRetryMs: 5,
+      });
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    expect(injected).toBe(true);
+    expect(projectMemory.read(root, 'policy.transient-eperm-lock-file')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  test('surfaces persistent Windows EPERM on missing lockfiles', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    const originalRmSync = fs.rmSync;
+    let openAttempts = 0;
+    let removedMissingLock = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+
+    fs.openSync = function openSyncWithPersistentEperm(target, flags, ...args) {
+      if (target === lockPath && flags === 'wx' && !fs.existsSync(lockPath)) {
+        openAttempts += 1;
+        const err = new Error('operation not permitted');
+        err.code = 'EPERM';
+        err.path = lockPath;
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+    fs.rmSync = function rmSyncTrackingMissingLock(target, ...args) {
+      if (target === lockPath && !fs.existsSync(lockPath)) {
+        removedMissingLock = true;
+      }
+      return originalRmSync.call(this, target, ...args);
+    };
+
+    try {
+      expect(() => projectMemory.write(root, {
+        key: 'policy.persistent-eperm-lock-file',
+        value: 'blocked',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 25,
+        lockRetryMs: 5,
+      })).toThrow('operation not permitted');
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.rmSync = originalRmSync;
+    }
+
+    expect(openAttempts).toBeGreaterThan(1);
+    expect(removedMissingLock).toBe(false);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  test('reclaims dangling lock paths during stale cleanup', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    const originalLstatSync = fs.lstatSync;
+    const originalRmSync = fs.rmSync;
+    let removedDanglingLock = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+
+    fs.openSync = function openSyncWithDanglingLock(target, flags, ...args) {
+      if (!removedDanglingLock && target === lockPath && flags === 'wx') {
+        const err = new Error('file already exists');
+        err.code = 'EEXIST';
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+    fs.lstatSync = function lstatSyncWithDanglingLock(target, ...args) {
+      if (!removedDanglingLock && target === lockPath) {
+        return {
+          isDirectory: () => false,
+        };
+      }
+      return originalLstatSync.call(this, target, ...args);
+    };
+    fs.rmSync = function rmSyncWithDanglingLock(target, ...args) {
+      if (target === lockPath) {
+        removedDanglingLock = true;
+        return undefined;
+      }
+      return originalRmSync.call(this, target, ...args);
+    };
+
+    try {
+      projectMemory.write(root, {
+        key: 'policy.dangling-lock',
+        value: 'recovered',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 250,
+        lockRetryMs: 5,
+      });
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.lstatSync = originalLstatSync;
+      fs.rmSync = originalRmSync;
+    }
+
+    expect(removedDanglingLock).toBe(true);
+    expect(projectMemory.read(root, 'policy.dangling-lock')).toMatchObject({
+      value: 'recovered',
+    });
+  });
+
   test('removes lockfiles when lock metadata initialization fails', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');

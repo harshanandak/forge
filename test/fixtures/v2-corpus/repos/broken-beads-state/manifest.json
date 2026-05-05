@@ -1,0 +1,75 @@
+{
+  "name": "broken-beads-state",
+  "description": "v2 repo with malformed Beads JSONL, stale SQLite residue, and partial backup files.",
+  "defaultBranch": "master",
+  "initialCommit": "seed broken beads fixture",
+  "git": {
+    "branches": ["master"],
+    "hooks": [
+      {
+        "name": "pre-commit",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-commit \"$@\""]
+      },
+      {
+        "name": "pre-push",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-push \"$@\""]
+      }
+    ],
+    "staleWorktrees": []
+  },
+  "expectations": {
+    "lefthookInstalled": true,
+    "staleWorktrees": 0,
+    "requiredFiles": ["AGENTS.md", ".beads/config.yaml", ".beads/issues.jsonl", ".beads/beads.db", ".beads/backup/issues.jsonl"]
+  },
+  "files": [
+    {
+      "path": "package.json",
+      "json": {
+        "name": "broken-beads-state",
+        "private": true,
+        "devDependencies": {
+          "forge": "0.0.10",
+          "lefthook": "^2.1.4"
+        }
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "lines": ["# AGENTS.md", "", "<!-- BEGIN FORGE V2 GENERATED WORKFLOW -->", "Broken Beads fixture.", "<!-- END FORGE V2 GENERATED WORKFLOW -->"]
+    },
+    {
+      "path": ".forge/l1/rails.json",
+      "json": {
+        "version": 1,
+        "rails": ["scope-discipline", "beads-source-of-truth"]
+      }
+    },
+    {
+      "path": ".beads/config.yaml",
+      "lines": ["issue-prefix: broken", "database:", "  backend: sqlite"]
+    },
+    {
+      "path": ".beads/issues.jsonl",
+      "lines": ["{\"id\":\"broken-aa1\",\"title\":\"valid before corruption\",\"status\":\"open\"}", "{\"id\":\"broken-bad\",\"title\":"]
+    },
+    {
+      "path": ".beads/backup/issues.jsonl",
+      "jsonl": [
+        { "id": "broken-aa1", "title": "backup issue", "status": "open" }
+      ]
+    },
+    {
+      "path": ".beads/backup/config.jsonl",
+      "lines": ["{\"key\":\"issue-prefix\",\"value\":\"broken\"}"]
+    },
+    {
+      "path": ".beads/beads.db",
+      "content": "stale sqlite bytes"
+    },
+    {
+      "path": "lefthook.yml",
+      "lines": ["pre-commit:", "  commands:", "    validate:", "      run: bun test"]
+    }
+  ]
+}
