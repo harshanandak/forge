@@ -9,8 +9,10 @@ const {
 } = require('./fixtures/v2-corpus');
 
 describe('v2 fixture corpus', () => {
+  const fixtureNames = [...listFixtureNames()].sort();
+
   test('defines the five W0 stress fixtures', () => {
-    expect(listFixtureNames()).toEqual([
+    expect(fixtureNames).toEqual([
       'broken-beads-state',
       'clean-v2-install',
       'no-lefthook-installed',
@@ -19,7 +21,7 @@ describe('v2 fixture corpus', () => {
     ]);
   });
 
-  test.each(listFixtureNames())('%s materializes into a valid synthetic repo', (name) => {
+  test.each(fixtureNames)('%s materializes into a valid synthetic repo', (name) => {
     const { manifest, repoRoot } = materializeFixture(name);
     const result = validateMaterializedFixture(repoRoot, manifest);
 
@@ -48,6 +50,15 @@ describe('v2 fixture corpus', () => {
 
     expect(agents).toContain('Default branch is trunk.');
     expect(rails.rails).toEqual(['scope-discipline', 'verified-claims', 'beads-source-of-truth']);
+  });
+
+  test('lefthook fixtures use runtime-health hook layout', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const hooksDir = path.join(repoRoot, '.lefthook', 'hooks');
+
+    expect(fs.existsSync(path.join(hooksDir, 'pre-commit'))).toBe(true);
+    expect(fs.existsSync(path.join(hooksDir, 'pre-push'))).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, '.git', 'hooks', 'pre-commit'))).toBe(false);
   });
 
   test('non-master default branch fixture keeps master absent', () => {

@@ -169,12 +169,12 @@ function commitFixture(repoRoot, manifest) {
 }
 
 function installHookShims(repoRoot, hooks) {
-  const hooksDir = path.join(repoRoot, '.git', 'hooks');
+  const hooksDir = path.join(repoRoot, '.lefthook', 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
 
   for (const hook of hooks || []) {
     const hookPath = path.join(hooksDir, hook.name);
-    ensureInside(path.join(repoRoot, '.git'), hookPath);
+    ensureInside(path.join(repoRoot, '.lefthook'), hookPath);
     fs.writeFileSync(hookPath, `${hook.lines.join('\n')}\n`, 'utf8');
     fs.chmodSync(hookPath, 0o755);
   }
@@ -248,12 +248,13 @@ function validateMaterializedFixture(repoRoot, manifest) {
   }
 
   const lefthookConfig = fs.existsSync(path.join(repoRoot, 'lefthook.yml'));
-  const preCommitHook = fs.existsSync(path.join(repoRoot, '.git', 'hooks', 'pre-commit'));
-  if (manifest.expectations.lefthookInstalled && (!lefthookConfig || !preCommitHook)) {
-    failures.push('expected Lefthook config and installed pre-commit shim');
+  const preCommitHook = fs.existsSync(path.join(repoRoot, '.lefthook', 'hooks', 'pre-commit'));
+  const prePushHook = fs.existsSync(path.join(repoRoot, '.lefthook', 'hooks', 'pre-push'));
+  if (manifest.expectations.lefthookInstalled && (!lefthookConfig || !preCommitHook || !prePushHook)) {
+    failures.push('expected Lefthook config and installed pre-commit/pre-push shims');
   }
-  if (manifest.expectations.lefthookInstalled === false && (lefthookConfig || preCommitHook)) {
-    failures.push('expected no Lefthook config or installed hook shim');
+  if (manifest.expectations.lefthookInstalled === false && (lefthookConfig || preCommitHook || prePushHook)) {
+    failures.push('expected no Lefthook config or installed hook shims');
   }
 
   const worktreeRoot = path.join(repoRoot, '.git', 'worktrees');

@@ -9,6 +9,10 @@
       {
         "name": "pre-commit",
         "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-commit \"$@\""]
+      },
+      {
+        "name": "pre-push",
+        "lines": ["#!/usr/bin/env sh", "bunx lefthook run pre-push \"$@\""]
       }
     ],
     "staleWorktrees": [
