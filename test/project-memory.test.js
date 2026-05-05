@@ -375,6 +375,47 @@ describe('project memory', () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  test('treats transient Windows EPERM on missing lockfiles as lock contention', () => {
+    const root = tempRoot();
+    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+    const lockPath = `${memoryFile}.lock`;
+    const originalOpenSync = fs.openSync;
+    let injected = false;
+
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+
+    fs.openSync = function openSyncWithTransientEperm(target, flags, ...args) {
+      if (!injected && target === lockPath && flags === 'wx' && !fs.existsSync(lockPath)) {
+        injected = true;
+        const err = new Error('operation not permitted');
+        err.code = 'EPERM';
+        err.path = lockPath;
+        throw err;
+      }
+      return originalOpenSync.call(this, target, flags, ...args);
+    };
+
+    try {
+      projectMemory.write(root, {
+        key: 'policy.transient-eperm-lock-file',
+        value: 'recovered',
+        sourceAgent: 'Codex',
+        tags: [],
+      }, {
+        lockTimeoutMs: 250,
+        lockRetryMs: 5,
+      });
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    expect(injected).toBe(true);
+    expect(projectMemory.read(root, 'policy.transient-eperm-lock-file')).toMatchObject({
+      value: 'recovered',
+    });
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   test('removes lockfiles when lock metadata initialization fails', () => {
     const root = tempRoot();
     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
