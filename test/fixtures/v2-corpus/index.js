@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { isBeadsInitialized } = require('../../../lib/beads-setup');
+const { checkHookInstallation } = require('../../../lib/runtime-health');
 
 const CORPUS_ROOT = __dirname;
 const REPOS_ROOT = path.join(CORPUS_ROOT, 'repos');
@@ -156,6 +158,39 @@ function writeCommonV2InstallFiles(repoRoot) {
   }
 }
 
+function ensureDoltBeadsState(repoRoot, manifest) {
+  if (manifest.expectations.beadsBackend !== 'dolt') return;
+
+  const beadsDir = path.join(repoRoot, '.beads');
+  fs.mkdirSync(beadsDir, { recursive: true });
+
+  const metadataPath = path.join(beadsDir, 'metadata.json');
+  if (!fs.existsSync(metadataPath)) {
+    fs.writeFileSync(
+      metadataPath,
+      `${JSON.stringify({
+        dolt_database: manifest.name.replace(/[^A-Za-z0-9_]/g, '_'),
+        initialized_by: 'v2-fixture-corpus',
+      }, null, 2)}\n`,
+      'utf8',
+    );
+  }
+
+  const readmePath = path.join(beadsDir, 'README.md');
+  if (!fs.existsSync(readmePath)) {
+    fs.writeFileSync(
+      readmePath,
+      [
+        '# Synthetic Beads Dolt State',
+        '',
+        'This marker models the companion files produced by a post-bd-init Dolt-backed Beads repository.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+  }
+}
+
 function commitFixture(repoRoot, manifest) {
   git(repoRoot, ['add', '-A']);
   git(repoRoot, ['commit', '-m', manifest.initialCommit || 'seed v2 fixture']);
@@ -169,6 +204,8 @@ function commitFixture(repoRoot, manifest) {
 }
 
 function installHookShims(repoRoot, hooks) {
+  if (!hooks || hooks.length === 0) return;
+
   const hooksDir = path.join(repoRoot, '.lefthook', 'hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
 
@@ -178,6 +215,8 @@ function installHookShims(repoRoot, hooks) {
     fs.writeFileSync(hookPath, `${hook.lines.join('\n')}\n`, 'utf8');
     fs.chmodSync(hookPath, 0o755);
   }
+
+  git(repoRoot, ['config', 'core.hooksPath', '.lefthook/hooks']);
 }
 
 function seedStaleWorktrees(repoRoot, worktrees) {
@@ -209,6 +248,7 @@ function materializeFixture(name, options = {}) {
   for (const file of manifest.files) {
     writeFixtureFile(repoRoot, file);
   }
+  ensureDoltBeadsState(repoRoot, manifest);
   commitFixture(repoRoot, manifest);
   installHookShims(repoRoot, manifest.git.hooks);
   seedStaleWorktrees(repoRoot, manifest.git.staleWorktrees);
@@ -240,6 +280,9 @@ function validateMaterializedFixture(repoRoot, manifest) {
     if (!config.includes(`backend: ${manifest.expectations.beadsBackend}`)) {
       failures.push(`expected Beads backend ${manifest.expectations.beadsBackend}`);
     }
+    if (manifest.expectations.beadsBackend === 'dolt' && !isBeadsInitialized(repoRoot)) {
+      failures.push('expected initialized Dolt-backed Beads state');
+    }
   }
 
   const matrixPath = path.join(repoRoot, '.forge', 'v2', 'workflow-stage-matrix.json');
@@ -248,12 +291,11 @@ function validateMaterializedFixture(repoRoot, manifest) {
   }
 
   const lefthookConfig = fs.existsSync(path.join(repoRoot, 'lefthook.yml'));
-  const preCommitHook = fs.existsSync(path.join(repoRoot, '.lefthook', 'hooks', 'pre-commit'));
-  const prePushHook = fs.existsSync(path.join(repoRoot, '.lefthook', 'hooks', 'pre-push'));
-  if (manifest.expectations.lefthookInstalled && (!lefthookConfig || !preCommitHook || !prePushHook)) {
-    failures.push('expected Lefthook config and installed pre-commit/pre-push shims');
+  const hookStatus = checkHookInstallation(repoRoot);
+  if (manifest.expectations.lefthookInstalled && (!lefthookConfig || !hookStatus.active)) {
+    failures.push('expected Lefthook config and active pre-commit/pre-push hook wiring');
   }
-  if (manifest.expectations.lefthookInstalled === false && (lefthookConfig || preCommitHook || prePushHook)) {
+  if (manifest.expectations.lefthookInstalled === false && (lefthookConfig || hookStatus.active)) {
     failures.push('expected no Lefthook config or installed hook shims');
   }
 

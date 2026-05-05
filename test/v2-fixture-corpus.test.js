@@ -1,6 +1,9 @@
 const { describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { isBeadsInitialized } = require('../lib/beads-setup');
+const { checkHookInstallation } = require('../lib/runtime-health');
 
 const {
   listFixtureNames,
@@ -55,10 +58,27 @@ describe('v2 fixture corpus', () => {
   test('lefthook fixtures use runtime-health hook layout', () => {
     const { repoRoot } = materializeFixture('clean-v2-install');
     const hooksDir = path.join(repoRoot, '.lefthook', 'hooks');
+    const hooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+    const hookStatus = checkHookInstallation(repoRoot);
 
     expect(fs.existsSync(path.join(hooksDir, 'pre-commit'))).toBe(true);
     expect(fs.existsSync(path.join(hooksDir, 'pre-push'))).toBe(true);
+    expect(hooksPath).toBe('.lefthook/hooks');
+    expect(hookStatus.active).toBe(true);
     expect(fs.existsSync(path.join(repoRoot, '.git', 'hooks', 'pre-commit'))).toBe(false);
+  });
+
+  test('dolt fixtures materialize as initialized Beads repos', () => {
+    for (const name of ['clean-v2-install', 'no-lefthook-installed', 'non-master-default-branch', 'stale-worktrees']) {
+      const { repoRoot } = materializeFixture(name);
+
+      expect(isBeadsInitialized(repoRoot)).toBe(true);
+      expect(fs.existsSync(path.join(repoRoot, '.beads', 'metadata.json'))).toBe(true);
+      expect(fs.existsSync(path.join(repoRoot, '.beads', 'README.md'))).toBe(true);
+    }
   });
 
   test('non-master default branch fixture keeps master absent', () => {
