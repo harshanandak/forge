@@ -58,7 +58,7 @@ function runSmartStatus(args = [], env = {}, stdin = undefined) {
     ...normalizeBashEnv(env),
   };
 
-  if (process.platform === 'win32' && env.PATH) {
+  if (process.platform === 'win32' && Object.prototype.hasOwnProperty.call(env, 'PATH')) {
     mergedEnv.Path = env.PATH;
   }
 
