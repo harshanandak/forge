@@ -13,6 +13,16 @@ const os = require('node:os');
 // Will be implemented in lib/commands/_registry.js
 const { loadCommands } = require('../../lib/commands/_registry');
 
+function clearRequiredModulesUnder(dir) {
+  const normalizedDir = path.resolve(dir).toLowerCase();
+  for (const modulePath of Object.keys(require.cache)) {
+    const normalizedModulePath = path.resolve(modulePath).toLowerCase();
+    if (normalizedModulePath.startsWith(`${normalizedDir}${path.sep}`)) {
+      delete require.cache[modulePath];
+    }
+  }
+}
+
 describe('Command Registry', () => {
   let tmpDir;
 
@@ -21,6 +31,7 @@ describe('Command Registry', () => {
   });
 
   afterEach(() => {
+    clearRequiredModulesUnder(tmpDir);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
