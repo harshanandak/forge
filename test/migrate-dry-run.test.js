@@ -114,6 +114,18 @@ describe('migrate dry-run', () => {
     expect(result.output).toContain('Fixture corpus: available');
   });
 
+  test('command preserves the rendered dry-run report when validation fails', async () => {
+    const { repoRoot } = materializeFixture('broken-beads-state');
+
+    const result = await migrateCommand.handler(['--dry-run'], { dryRun: true }, repoRoot);
+
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('Result: FAIL');
+    expect(result.error).toBe(result.output);
+    expect(result.error).toContain('[FAIL] Beads issue state');
+    expect(result.error).toContain('.beads/issues.jsonl:2');
+  });
+
   test('can run the v2 fixture corpus when explicitly requested', () => {
     const result = runV2FixtureCorpusDryRun();
 
