@@ -14,13 +14,13 @@ Rationale: forge-2si5 asks for a repeatable clean-fixture test or script. Live h
 
 Decision: Cursor parity uses `.cursor/rules/<skill>.mdc` with frontmatter fields `description`, `globs`, and `alwaysApply: false`.
 
-Rationale: `docs/work/2026-05-05-w0-verification-spikes/evidence.md` records Cursor project rules and metadata as the documented target. Root `AGENTS.md` lacks the metadata needed for description-match parity.
+Rationale: `docs/work/2026-05-05-w0-verification-spikes/evidence.md` records Cursor project rules and metadata as the documented target. Root `AGENTS.md` lacks the metadata needed for description-match parity. Current Cursor rules documentation separates description-driven Agent Requested rules from glob-driven Auto Attached rules, so `globs` stays blank for this fixture.
 
-## D3: Codex target is `.codex/skills/<name>/SKILL.md`
+## D3: Codex target is `.agents/skills/<name>/SKILL.md`
 
 Decision: Codex parity uses Codex skills/instructions and explicitly rejects undocumented slash prompt files.
 
-Rationale: the Wave 0 verification spike found no primary-source support for a stable user-authored Codex slash prompt directory. The repo already uses `.codex/skills/<name>/SKILL.md`, which is the appropriate local skill surface.
+Rationale: the Wave 0 verification spike found no primary-source support for a stable user-authored Codex slash prompt directory. Current OpenAI Codex skills documentation identifies `.agents/skills` as the repository skill location, so this fixture must use `.agents/skills/<name>/SKILL.md` rather than the repo-local `.codex/skills` convention used for this Codex session's own skill discovery.
 
 ## D4: Migration dry-run is out of scope
 

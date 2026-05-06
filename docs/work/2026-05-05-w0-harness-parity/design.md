@@ -16,8 +16,8 @@ Wave 0 needs an empirical fixture that verifies whether the same skill descripti
 1. A clean temporary fixture is generated without mutating the repository root.
 2. The fixture emits the same intent text and skill description text for Claude, Cursor, and Codex targets.
 3. Claude target verification checks `.claude/skills/<skill>/SKILL.md` and its description metadata.
-4. Cursor target verification checks `.cursor/rules/*.mdc` with documented frontmatter fields: `description`, `globs`, and `alwaysApply`.
-5. Codex target verification checks `.codex/skills/<skill>/SKILL.md` or documented instruction surfaces, not undocumented slash prompt files.
+4. Cursor target verification checks `.cursor/rules/*.mdc` with documented frontmatter fields: `description`, blank `globs`, and `alwaysApply: false`.
+5. Codex target verification checks the documented repository Agent Skills path `.agents/skills/<skill>/SKILL.md`, not undocumented slash prompt files.
 6. The script reports pass/fail per harness and exits non-zero when any required harness fails.
 7. If only two of three harnesses are feasible, docs name the known issue and tie it to D38 kill criteria.
 8. Validation includes a repeatable test plus a direct script run.
@@ -46,8 +46,8 @@ This keeps the W0 evidence executable, small, and independent of full Forge inst
 
 ## Edge Cases
 
-- Cursor rules must include `globs` and `description`; `alwaysApply` should be false for description/requested behavior.
-- Codex parity must fail if the fixture tries to create `.codex/prompts` or slash-command prompt files.
+- Cursor rules must include `description`, blank `globs`, and `alwaysApply: false` for Agent Requested description behavior. A broad `**/*` glob would test file auto-attachment more than description matching.
+- Codex parity must fail if the fixture tries to create prompt/slash-command files instead of `.agents/skills`.
 - A missing target file for any harness must produce a failed harness result, not a partial success.
 - If the Codex documented surface changes later, update the fixture and evidence together.
 
@@ -61,11 +61,15 @@ Source label S1: `docs/work/2026-05-05-w0-verification-spikes/evidence.md` recor
 
 Source label S2: the same evidence records that Cursor `AGENTS.md` is plain markdown without the metadata needed for description-match parity, so the parity fixture should target `.cursor/rules/*.mdc`.
 
-Source label S3: the same evidence records that OpenAI documents built-in Codex CLI slash commands but not a stable user-authored slash prompt directory. Codex parity must target `.codex/skills/<name>/SKILL.md` or documented instructions.
+Source label S2b: current Cursor rules documentation identifies Agent Requested rules as description-driven and Auto Attached rules as glob-driven, so this fixture leaves `globs` blank instead of using `**/*`.
 
-Source label S4: the existing repo already stores Codex skills under `.codex/skills/<name>/SKILL.md`, so the fixture should mirror that local surface.
+Source label S3: the Wave 0 verification spike records that OpenAI documented built-in Codex CLI slash commands but not a stable user-authored slash prompt directory.
 
-Source label S5: `forge-2si5` in `.beads/issues.jsonl` defines the W0 NO-GO target and D38 kill criteria link.
+Source label S4: current OpenAI Codex skills documentation states that a manual skill is a folder with a `SKILL.md` file and that repository skills are read from `.agents/skills` directories from the current working directory up to the repository root. The fixture must therefore use `.agents/skills/<name>/SKILL.md`.
+
+Source label S5: OpenAI Codex AGENTS.md documentation remains relevant for persistent instructions, but AGENTS.md is not a description-match skill surface.
+
+Source label S6: `forge-2si5` in `.beads/issues.jsonl` defines the W0 NO-GO target and D38 kill criteria link.
 
 ## OWASP Notes
 
@@ -75,4 +79,4 @@ This fixture does not process untrusted network input, credentials, authenticati
 
 1. Happy path: generating the default fixture returns pass for Claude, Cursor, and Codex and prints all three harness summaries.
 2. Failure path: deleting one generated target file produces a failed result for that harness and a non-zero validation result.
-3. Edge path: Codex target generation must not create `.codex/prompts` or slash-command prompt files.
+3. Edge path: Codex target generation must not create prompt/slash-command files and must use `.agents/skills/<name>/SKILL.md`.
