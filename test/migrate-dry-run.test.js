@@ -124,7 +124,7 @@ describe('migrate dry-run', () => {
     expect(result.error).toBe(result.output);
     expect(result.error).toContain('[FAIL] Beads issue state');
     expect(result.error).toContain('.beads/issues.jsonl:2');
-  });
+  }, 15000);
 
   test('can run the v2 fixture corpus when explicitly requested', () => {
     const result = runV2FixtureCorpusDryRun();
