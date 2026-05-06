@@ -48,6 +48,21 @@ describe('migrate dry-run', () => {
     expect(output).toContain('.beads/issues.jsonl:2');
   });
 
+  test('reports unreadable Beads issue state as a structured dry-run failure', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const issuesPath = path.join(repoRoot, '.beads', 'issues.jsonl');
+    fs.rmSync(issuesPath, { force: true });
+    fs.mkdirSync(issuesPath);
+
+    const report = buildMigrationDryRunReport(repoRoot);
+    const output = renderMigrationDryRunReport(report);
+
+    expect(report.ok).toBe(false);
+    expect(output).toContain('Result: FAIL');
+    expect(output).toContain('[FAIL] Beads issue state');
+    expect(output).toContain('.beads/issues.jsonl');
+  });
+
   test('requires the Wave 0 issue marker in Beads state', () => {
     const { repoRoot } = materializeFixture('clean-v2-install');
     const issuesPath = path.join(repoRoot, '.beads', 'issues.jsonl');
@@ -94,6 +109,20 @@ describe('migrate dry-run', () => {
     expect(report.ok).toBe(true);
     expect(output).toContain('Result: PASS');
     expect(output).toContain('[PASS] Git repository');
+  });
+
+  test('keeps backend detection best-effort when Beads config cannot be read', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const configPath = path.join(repoRoot, '.beads', 'config.yaml');
+    fs.rmSync(configPath, { force: true });
+    fs.mkdirSync(configPath);
+
+    const report = buildMigrationDryRunReport(repoRoot);
+    const output = renderMigrationDryRunReport(report);
+
+    expect(report.ok).toBe(true);
+    expect(output).toContain('[PASS] Beads adapter projection: adapter=beads backend=dolt');
+    expect(output).toContain('Result: PASS');
   });
 
   test('command refuses non-dry-run migration for this Wave 0 PoC', async () => {
