@@ -1,5 +1,7 @@
 const { describe, expect, test } = require('bun:test');
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   buildMigrationDryRunReport,
@@ -44,6 +46,23 @@ describe('migrate dry-run', () => {
     expect(output).toContain('Result: FAIL');
     expect(output).toContain('[FAIL] Beads issue state');
     expect(output).toContain('.beads/issues.jsonl:2');
+  });
+
+  test('requires the Wave 0 issue marker in Beads state', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const issuesPath = path.join(repoRoot, '.beads', 'issues.jsonl');
+    const withoutWaveIssue = fs.readFileSync(issuesPath, 'utf8')
+      .split(/\r?\n/)
+      .filter(line => !line.includes('"id":"forge-0uo0"'))
+      .join('\n');
+    fs.writeFileSync(issuesPath, `${withoutWaveIssue}\n`, 'utf8');
+
+    const report = buildMigrationDryRunReport(repoRoot, { requireWaveIssue: true });
+    const output = renderMigrationDryRunReport(report);
+
+    expect(report.ok).toBe(false);
+    expect(output).toContain('[FAIL] Wave 0 issue forge-0uo0');
+    expect(output).toContain('missing from .beads/issues.jsonl');
   });
 
   test('command refuses non-dry-run migration for this Wave 0 PoC', async () => {
