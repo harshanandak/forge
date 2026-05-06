@@ -18,9 +18,9 @@ This is the entry point for all Forge documentation. The structure mirrors how d
 **Reading order** for `docs/work/2026-04-28-skeleton-pivot/`:
 
 1. **START HERE**: **[runtime-building-blocks-refinement.md](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md)** — current refinement: building blocks are the product, templates are scaffolds, releases use `0.0.x`.
-2. **Decisions**: [locked-decisions.md](work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D38 with supersedes inline (D11→D15, D17→D23). Rationale + tradeoff + anti-decision per entry.
+2. **Decisions**: [locked-decisions.md](work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D42 with supersedes inline (D11→D15, D17→D23). Rationale + tradeoff + anti-decision per entry.
 3. **Journey**: [LEARNINGS.md](work/2026-04-28-skeleton-pivot/LEARNINGS.md) — 15 takeaways from the 6-iteration journey. Why decisions changed.
-4. **Method**: [iteration-driven-planning-skill.md](work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md) — the planning method this folder used, proposed as the canonical Forge `/plan` skill (Phase 1–5, classification-aware intensity).
+4. **Method**: [iteration-driven-planning-skill.md](work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md) — the planning method this folder used, now framed as one configurable `/plan` playbook template (Phase 1–5, classification-aware intensity).
 5. **Strategy reference**: [v3-redesign-strategy.md](work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — original master strategy doc; sections 4a/6 marked SUPERSEDED inline.
 6. **Folder index**: [README.md](work/2026-04-28-skeleton-pivot/README.md) — all docs with one-line descriptions.
 

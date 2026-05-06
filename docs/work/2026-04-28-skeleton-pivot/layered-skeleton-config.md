@@ -77,7 +77,7 @@ gates:
     outcome: block
 
 templates:
-  strict_tdd:
+  strict-tdd:
     composes:
       - workflow.phases.plan
       - workflow.phases.dev

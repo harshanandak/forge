@@ -74,7 +74,7 @@ The product surface is the API + the category dimension on writes — not a new 
 
 ## 5. Final stage model — 5 stages + `/merge` hook
 
-> **`/plan` skill design**: The planning method this folder used through 6 iterations is documented as the canonical Forge `/plan` skill in [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md). It defines Phase 1–5 (intent → research → critics → synthesis → lock) with classification-aware intensity (`bug-tiny` skips most phases; `project-level` runs unbounded iterations until critics converge) and supersedes-tracked decisions. This is what `/plan` ships as in v3.
+> **`/plan` skill design**: The planning method this folder used through 6 iterations is documented as one configurable Forge `/plan` playbook template in [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md). It defines Phase 1–5 (intent → research → critics → synthesis → lock) with classification-aware intensity (`bug-tiny` skips most phases; `project-level` runs unbounded iterations until critics converge) and supersedes-tracked decisions. It is a skill/template example over the runtime building blocks, not the enforcement layer.
 
 Per D27 / D28 / D29 / D33 / D34:
 
@@ -295,10 +295,10 @@ Without explicit kill criteria the iteration trap repeats forever.
 
 **Canonical (read in order)**:
 1. [FINAL-THESIS.md](./FINAL-THESIS.md) — this doc
-2. [release-plan.md](./release-plan.md) — versioned roadmap (v3.0 / v3.1 / v3.2 / v3.3+) per D39
+2. [release-plan.md](./release-plan.md) — active `0.0.x` runtime building-block roadmap
 3. [locked-decisions.md](./locked-decisions.md) — D1-D42 with supersedes
 4. [LEARNINGS.md](./LEARNINGS.md) — 15 takeaways from 6 iterations
-5. [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md) — the planning method itself, proposed as the canonical Forge `/plan` skill (lands in v3.1)
+5. [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md) — the planning method itself, now framed as one configurable Forge `/plan` playbook template
 6. [v3-redesign-strategy.md](./v3-redesign-strategy.md) — full strategy reference
 
 **Design references**:
