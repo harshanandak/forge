@@ -11,13 +11,13 @@ This is the entry point for all Forge documentation. The structure mirrors how d
 
 ## Active Work
 
-### Featured: Forge v3 Skeleton Pivot (2026-04-28 → 2026-04-29)
+### Featured: Forge Runtime Building-Block Pivot (2026-04-28 onward)
 
-**Status**: D1–D38 locked across 6 iterations. Canonical 8-week W0–W5 plan (D37). Epic: `forge-besw` (~33 children).
+**Status**: Historical `v3` design folder refined on 2026-05-06. Active direction: configurable workflow/runtime building blocks, templates as adoption scaffolds, evaluator regions anywhere, and `0.0.x` package releases. Epic: `forge-besw`.
 
 **Reading order** for `docs/work/2026-04-28-skeleton-pivot/`:
 
-1. **START HERE**: **[FINAL-THESIS.md](work/2026-04-28-skeleton-pivot/FINAL-THESIS.md)** — canonical "where we ended up" document. 3-tier architecture, 5 L1 rails, 7 typed memory categories, final stage model, 3-harness target, 38 decisions, 8-week timeline, kill criteria.
+1. **START HERE**: **[runtime-building-blocks-refinement.md](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md)** — current refinement: building blocks are the product, templates are scaffolds, releases use `0.0.x`.
 2. **Decisions**: [locked-decisions.md](work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D38 with supersedes inline (D11→D15, D17→D23). Rationale + tradeoff + anti-decision per entry.
 3. **Journey**: [LEARNINGS.md](work/2026-04-28-skeleton-pivot/LEARNINGS.md) — 15 takeaways from the 6-iteration journey. Why decisions changed.
 4. **Method**: [iteration-driven-planning-skill.md](work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md) — the planning method this folder used, proposed as the canonical Forge `/plan` skill (Phase 1–5, classification-aware intensity).
@@ -36,7 +36,8 @@ This is the entry point for all Forge documentation. The structure mirrors how d
 
 **Tactical**:
 - [beads-operations-manifest.md](work/2026-04-28-skeleton-pivot/beads-operations-manifest.md) — bd manifest (N1–N18)
-- [v3-release-staging.md](work/2026-04-28-skeleton-pivot/v3-release-staging.md) — release gating
+- [release-plan.md](work/2026-04-28-skeleton-pivot/release-plan.md) — active `0.0.x` release phasing
+- [v3-release-staging.md](work/2026-04-28-skeleton-pivot/v3-release-staging.md) — historical release gating notes
 
 **Audits** (drove iteration #5–#6 supersedes):
 - [reality-check-audit.md](work/2026-04-28-skeleton-pivot/reality-check-audit.md) — survival audit (D37/D38)
@@ -44,7 +45,7 @@ This is the entry point for all Forge documentation. The structure mirrors how d
 - [efficiency-audit.md](work/2026-04-28-skeleton-pivot/efficiency-audit.md) — 10 efficiency wins (D23/D25/D37)
 - [quality-vs-speed-tradeoff.md](work/2026-04-28-skeleton-pivot/quality-vs-speed-tradeoff.md) — quality cuts (D32/D37)
 - [unconventional-alternatives.md](work/2026-04-28-skeleton-pivot/unconventional-alternatives.md) — alternatives considered
-- [template-library-and-merge-flow.md](work/2026-04-28-skeleton-pivot/template-library-and-merge-flow.md) — template scope (D9/D26)
+- [template-library-and-merge-flow.md](work/2026-04-28-skeleton-pivot/template-library-and-merge-flow.md) — templates as adoption scaffolds
 
 **Iteration history** (superseded earlier-iteration docs preserved with breadcrumb):
 - [_iteration-history/](work/2026-04-28-skeleton-pivot/_iteration-history/) — `v3-skeleton-plan.md`, `building-block-pivot.md`, `v3-ecosystem-audit.md` + `SUPERSEDED.md` note
@@ -53,7 +54,7 @@ This is the entry point for all Forge documentation. The structure mirrors how d
 
 | Work Item | Summary |
 |-----------|---------|
-| [2026-04-28-skeleton-pivot](work/2026-04-28-skeleton-pivot/README.md) | Forge v3 layered skeleton + skill library. **D1–D38 locked**. 5 L1 rails / 7 typed memory categories / 5 stages + `/merge` hook / 3 harness MVP / 8-week W0–W5 plan. See [FINAL-THESIS.md](work/2026-04-28-skeleton-pivot/FINAL-THESIS.md). Epic forge-besw. |
+| [2026-04-28-skeleton-pivot](work/2026-04-28-skeleton-pivot/README.md) | Forge runtime building-block pivot. D1-D42 remain historical baseline; current refinement is runtime primitives + evaluator regions + templates as scaffolds + `0.0.x` release plan. Start with [runtime-building-blocks-refinement.md](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md). |
 | [2026-04-06-v2-unified-strategy](work/2026-04-06-v2-unified-strategy/README.md) | Historical v2 strategy doc, superseded by v3 skeleton pivot. Preserved for reference on why v2 chose its specific defaults. |
 
 ## Recent Completed Work

@@ -1,16 +1,18 @@
 # Forge v3 — FINAL THESIS
 
 **Date**: 2026-04-29
-**Status**: Canonical "where we ended up" document, supersedes all earlier framings in this folder
+**Status**: Historical 2026-04-29 baseline. Superseded in part by [runtime-building-blocks-refinement.md](./runtime-building-blocks-refinement.md) for product hierarchy, evaluator regions, template positioning, and release numbering.
 **Companions**: [locked-decisions.md](./locked-decisions.md) · [LEARNINGS.md](./LEARNINGS.md) · [v3-redesign-strategy.md](./v3-redesign-strategy.md)
+
+> **2026-05-06 refinement**: treat this file as the design baseline, not the active package roadmap. The current product framing is: workflow/runtime building blocks are the product; skills are executable playbooks; templates are adoption scaffolds; releases are planned as `0.0.x`, not `v3.x`.
 
 ---
 
 ## 1. Executive summary
 
-> **Forge is invisible infrastructure for AI coding agents. Install once; your agent gets a memory, a spine, an iteration loop, and a skill library that auto-activates whenever it's needed. Bring your own planner, deploy script, and review tools — Forge enhances them. Skills are the product; the runtime is the floor.**
+> **Forge is configurable runtime infrastructure for agentic software delivery. Install once; your agents and orchestrators get workflow primitives, evidence capture, evaluator regions, gates, memory, skills, templates, and adapters they can compose without adopting one fixed workflow.**
 
-Forge v3 ships as a skeleton — five locked rails, five swappable stages, one continuous merge hook, a typed memory API, and an auto-invoking skill library — that wraps the agent harness you already use (Claude Code, Cursor, Codex CLI) without forcing a workflow. The runtime is the floor. The skill library is what you actually buy.
+The refined product is the runtime building-block layer. Skills remain important as executable playbooks, but they are not the enforcement mechanism. Templates remain important as starter compositions, but they are not the product. Gates and evaluator regions provide proof and policy.
 
 ---
 
@@ -21,17 +23,20 @@ Forge v3 ships as a skeleton — five locked rails, five swappable stages, one c
 │  HARNESSES (parallel manifests, sync via scripts/sync-commands)  │
 │  Claude Code (.claude/)  ·  Cursor (.cursor/)  ·  Codex (.codex/)│
 ├──────────────────────────────────────────────────────────────────┤
-│  SKILLS (the product) — auto-invoked via description match       │
+│  RUNTIME BUILDING BLOCKS (the product)                           │
+│  phases · actions · artifacts · evaluator regions · gates         │
+├──────────────────────────────────────────────────────────────────┤
+│  SKILLS (executable playbooks) — auto-invoked when useful         │
 │  .claude/skills/*  ·  .forge/extensions/local/<slug>/SKILL.md    │
 │  Hermes-style trigger: keyword → skill activation                │
 ├──────────────────────────────────────────────────────────────────┤
-│  RUNTIME (the floor) — typed memory + 5 stages + 5 L1 rails      │
+│  RUNTIME SUBSTRATE — typed memory + rails + audit + run state     │
 │  forge.remember/recall  ·  /plan /dev /ship /review /verify      │
 │  /merge as PR-state hook  ·  Beads as graph + audit substrate    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Three tiers, three responsibilities. **Harnesses** are how the user's agent talks to Forge — same skill renders three ways via parallel manifests. **Skills** are the product — accumulated, auto-invoked, user-owned playbooks that compound across sessions. **Runtime** is the invisible spine — typed memory, stage gates, L1 rails, agent-action audit. A user feels skills directly, harnesses transparently, and runtime never (except when it refuses an unsafe action).
+Three tiers, refined responsibilities. **Harnesses** are how the user's agent talks to Forge. **Runtime building blocks** are the product: phases, actions, artifacts, evaluator regions, gates, evidence, adapters, run ledger, and review packets. **Skills** are executable playbooks used by actions and evaluators. **Templates** are starter compositions of these primitives. **Runtime substrate** remains the invisible spine: typed memory, L1 rails, audit, and run state.
 
 ---
 
@@ -160,9 +165,9 @@ Full rationale + tradeoff + anti-decision for each: see [locked-decisions.md](./
 
 ---
 
-## 8. Release versioning (D39 — supersedes the "single MVP" wave framing)
+## 8. Historical release versioning (superseded by 0.0.x roadmap)
 
-Per D39, Forge v3 ships as four versioned releases, each with a customer-facing pitch. Full detail in [release-plan.md](./release-plan.md). The W0–W5 wave breakdown is retained inside v3.0 as the build sequence; it no longer represents the full product.
+The original D39 roadmap used `v3.0 / v3.1 / v3.2 / v3.3+` as planning labels. That language is now historical. Active package releases use the `0.0.x` roadmap in [release-plan.md](./release-plan.md). Keep the old sequence below only as context for why work was grouped.
 
 ### v3.0 — "Forge protects you AND follows you" (~5–6 weeks, solo MVP)
 
@@ -270,17 +275,17 @@ Full list in [LEARNINGS.md](./LEARNINGS.md).
 
 ---
 
-## 11. Kill criteria — when do we abandon v3?
+## 11. Kill criteria — when do we stop the building-block pivot?
 
-Per D38 (gates now apply per-version per D39 — see [release-plan.md](./release-plan.md) for full per-version gate matrix), v3.0 is killed (Forge reverts to v2 maintenance mode) if **any** of the following fail to land:
+Per D38, each release-numbered slice needs explicit stop criteria. The original `v3.0` kill criteria are now interpreted as early `0.0.x` pivot gates:
 
 1. `forge migrate --dry-run` does not produce a green diff on this repo's 228 issues.
 2. Cross-machine convergence benchmark (B5 in n1-moat) shows >8s p95 even with embedded Dolt.
 3. Two of three target harnesses (Claude / Cursor / Codex) cannot render a single skill correctly.
 4. `bd audit record` integration (D23) fails benchmarks AND the D25 `.forge/log.jsonl` fallback also fails.
-5. Zero external users show interest by end of v3.0 launch.
+5. Zero external users show interest after the first public building-block release.
 
-v3.1 / v3.2 / v3.3+ have their own per-version gates documented in [release-plan.md](./release-plan.md).
+Current per-release gates are documented in [release-plan.md](./release-plan.md).
 
 Without explicit kill criteria the iteration trap repeats forever.
 
