@@ -23,9 +23,9 @@ Expected output: `node scripts/spikes/skill-auto-invoke-parity.js --json` prints
 
 File(s): `test/w0-harness-parity.test.js`
 OWNS: `test/w0-harness-parity.test.js`
-What to implement: Add Bun tests for happy path, missing-target failure, Cursor Agent Requested `.mdc` frontmatter, and Codex no-slash-prompt behavior.
+What to implement: Add Bun tests for happy path, missing-target failure, explicit skill slash invocation, Cursor Agent Requested `.mdc` frontmatter, and Codex no-slash-prompt behavior.
 TDD steps:
-1. Write test: assert the default fixture passes, a missing Cursor rule fails Cursor only, and no prompt/slash-command path exists.
+1. Write test: assert the default fixture passes, every harness reports `/<skill-name>` explicit invocation, a missing Cursor rule fails Cursor only, and no prompt/slash-command path exists.
 2. Run test: confirm failure until the script supports fault injection or fixture inspection.
 3. Implement: extend the script only as needed for testable fixture paths and failure simulation.
 4. Run test: `bun test test/w0-harness-parity.test.js`.

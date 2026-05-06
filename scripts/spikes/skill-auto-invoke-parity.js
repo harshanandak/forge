@@ -24,6 +24,7 @@ const HARNESS_TARGETS = [
   {
     harness: 'claude-code',
     target: '.claude/skills/guard-rails-audit/SKILL.md',
+    explicitInvocation: '/guard-rails-audit',
     source: 'Claude Code skill directory target',
     buildFrontmatter: () => ({
       name: CANONICAL_SKILL.name,
@@ -33,6 +34,7 @@ const HARNESS_TARGETS = [
   {
     harness: 'cursor',
     target: '.cursor/rules/guard-rails-audit.mdc',
+    explicitInvocation: '/guard-rails-audit',
     source: 'Cursor project rule with documented description/globs/alwaysApply metadata',
     buildFrontmatter: () => ({
       description: CANONICAL_SKILL.description,
@@ -43,6 +45,7 @@ const HARNESS_TARGETS = [
   {
     harness: 'codex-cli',
     target: '.agents/skills/guard-rails-audit/SKILL.md',
+    explicitInvocation: '/guard-rails-audit',
     source: 'Codex documented repository Agent Skills surface; custom slash prompt files are intentionally not used',
     buildFrontmatter: () => ({
       name: CANONICAL_SKILL.name,
@@ -131,6 +134,9 @@ function validateHarness(root, target) {
   }
   if (negativeMatch) {
     failures.push('unrelated prompt selected the skill');
+  }
+  if (target.explicitInvocation !== `/${CANONICAL_SKILL.name}`) {
+    failures.push('explicit slash invocation does not match canonical skill name');
   }
 
   if (target.harness === 'claude-code') {

@@ -33,3 +33,9 @@ Rationale: the user explicitly excluded migration dry-run work from forge-2si5, 
 Decision: record the full-suite baseline as timed out in planning and prioritize the targeted W0 parity validation in `/dev`.
 
 Rationale: `bun test --timeout 15000` was attempted during planning on 2026-05-06 and did not return within 120 seconds. Treating it as green would be unverified.
+
+## D6: Skills are primary; commands are secondary
+
+Decision: Forge models reusable cross-harness behavior as skills first. The parity fixture records explicit slash invocation for the canonical skill name across Claude, Cursor, and Codex, while command files remain compatibility or shim surfaces rather than the canonical implementation.
+
+Rationale: the supported harnesses can invoke the intended capability as a skill by slash. Optimizing around commands would make a secondary surface the abstraction, which weakens description-match auto invocation and skill lifecycle work.

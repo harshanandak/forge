@@ -53,6 +53,16 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
     ]);
   });
 
+  test('reports explicit slash invocation for the canonical skill across all harnesses', () => {
+    const result = runParity({ cleanup: true });
+
+    expect(result.harnesses.map((harness) => [harness.harness, harness.explicitInvocation])).toEqual([
+      ['claude-code', '/guard-rails-audit'],
+      ['cursor', '/guard-rails-audit'],
+      ['codex-cli', '/guard-rails-audit'],
+    ]);
+  });
+
   test('uses Cursor rule metadata and Codex Agent Skills without undocumented slash prompt files', () => {
     const result = runParity({ cleanup: true });
     const cursor = result.harnesses.find((harness) => harness.harness === 'cursor');
@@ -85,5 +95,6 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
     expect(parsed.passed).toBe(true);
     expect(parsed.harnesses.map((harness) => harness.harness)).toEqual(['claude-code', 'cursor', 'codex-cli']);
     expect(parsed.harnesses.every((harness) => harness.passed)).toBe(true);
+    expect(parsed.harnesses.every((harness) => harness.explicitInvocation === '/guard-rails-audit')).toBe(true);
   });
 });
