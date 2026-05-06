@@ -75,8 +75,15 @@ function writeFile(root, relativePath, content) {
   fs.writeFileSync(absolutePath, content);
 }
 
+function isDirectoryEmpty(directory) {
+  return !fs.existsSync(directory) || fs.readdirSync(directory).length === 0;
+}
+
 function materializeFixture(root) {
-  fs.rmSync(root, { recursive: true, force: true });
+  if (!isDirectoryEmpty(root)) {
+    throw new Error(`fixture directory must be empty: ${root}`);
+  }
+
   fs.mkdirSync(root, { recursive: true });
   writeFile(root, FIXTURE_FILE, 'export function fixture() { return true; }\n');
 

@@ -63,6 +63,18 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
     ]);
   });
 
+  test('refuses to materialize into a non-empty fixture directory', () => {
+    const root = makeTempDir();
+    try {
+      fs.writeFileSync(path.join(root, 'keep.txt'), 'do not delete\n');
+
+      expect(() => materializeFixture(root)).toThrow('fixture directory must be empty');
+      expect(fs.readFileSync(path.join(root, 'keep.txt'), 'utf8')).toBe('do not delete\n');
+    } finally {
+      cleanup(root);
+    }
+  });
+
   test('uses Cursor rule metadata and Codex Agent Skills without undocumented slash prompt files', () => {
     const result = runParity({ cleanup: true });
     const cursor = result.harnesses.find((harness) => harness.harness === 'cursor');
