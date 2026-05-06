@@ -84,6 +84,18 @@ describe('migrate dry-run', () => {
     expect(output).toContain('[PASS] Git repository: detached HEAD');
   });
 
+  test('keeps dry-run reporting structured when package.json is malformed', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    fs.writeFileSync(path.join(repoRoot, 'package.json'), '{ "name": ', 'utf8');
+
+    const report = buildMigrationDryRunReport(repoRoot);
+    const output = renderMigrationDryRunReport(report);
+
+    expect(report.ok).toBe(true);
+    expect(output).toContain('Result: PASS');
+    expect(output).toContain('[PASS] Git repository');
+  });
+
   test('command refuses non-dry-run migration for this Wave 0 PoC', async () => {
     const result = await migrateCommand.handler([], {}, process.cwd());
 

@@ -6,7 +6,7 @@
 bun test ./test/migrate-dry-run.test.js
 ```
 
-Result: PASS, 7 tests passed.
+Result: PASS, 8 tests passed.
 
 ```bash
 npm run lint -- --quiet
