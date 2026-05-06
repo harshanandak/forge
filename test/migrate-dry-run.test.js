@@ -65,6 +65,25 @@ describe('migrate dry-run', () => {
     expect(output).toContain('missing from .beads/issues.jsonl');
   });
 
+  test('treats detached HEAD as a valid Git repository', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+    execFileSync('git', ['checkout', '--detach', head], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+
+    const report = buildMigrationDryRunReport(repoRoot);
+    const output = renderMigrationDryRunReport(report);
+
+    expect(report.ok).toBe(true);
+    expect(report.branch).toBe(null);
+    expect(output).toContain('[PASS] Git repository: detached HEAD');
+  });
+
   test('command refuses non-dry-run migration for this Wave 0 PoC', async () => {
     const result = await migrateCommand.handler([], {}, process.cwd());
 
