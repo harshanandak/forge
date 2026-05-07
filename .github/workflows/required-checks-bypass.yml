@@ -1,14 +1,18 @@
 # Bypass for required checks when path-filtered workflows don't trigger.
 #
-# Problem: Workflows like ESLint, CodeQL, and Tests use `paths:` filters so
-# they only run when code files change. But these checks are marked Required
-# in branch protection. For markdown-only PRs, the real workflows never run,
-# so GitHub shows "Waiting for status" forever and blocks the merge.
+# Problem: test workflows use `paths:` filters so they only run when code files
+# change. But these checks are marked Required in branch protection. For
+# markdown-only PRs, the real workflows never run, so GitHub shows "Waiting for
+# status" forever and blocks the merge.
 #
 # Solution: This workflow uses `paths-ignore:` with the same paths the real
 # workflows use as `paths:`. When a PR only changes non-code files (markdown,
 # configs), this workflow runs and reports success for each required check
 # name. When code files change, the real workflows handle it instead.
+#
+# CodeQL and ESLint must run in their real workflows because branch protection
+# also requires code-scanning contexts named "CodeQL" and "ESLint"; a bypass job
+# cannot create those code-scanning statuses.
 
 name: Required Checks Bypass
 
@@ -30,26 +34,6 @@ permissions: {}
 
 jobs:
   # Job names MUST match the required check names exactly.
-  # If branch protection expects "Run eslint scanning", this job must be
-  # named "Run eslint scanning" — not "eslint-bypass" or anything else.
-
-  eslint-scanning:
-    name: Run eslint scanning
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No code changes — ESLint check not needed"
-
-  analyze-actions:
-    name: Analyze (actions)
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No code changes — CodeQL analysis not needed"
-
-  analyze-javascript:
-    name: Analyze (javascript-typescript)
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No code changes — CodeQL analysis not needed"
 
   test-suite:
     name: Test Suite

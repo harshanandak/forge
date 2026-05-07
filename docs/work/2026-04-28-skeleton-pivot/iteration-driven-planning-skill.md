@@ -1,4 +1,4 @@
-# Iteration-Driven Planning — the canonical Forge `/plan` skill
+# Iteration-Driven Planning — a configurable Forge `/plan` playbook
 
 **Date**: 2026-04-29
 **Status**: Skill design proposal — captures the meta-pattern this very session used to produce 38 locked decisions across 6 iterations
@@ -8,9 +8,9 @@
 
 ## Concept
 
-The 6-iteration planning method that produced this folder — parallel critics, research validation, anti-architect cuts, edge-case audits, quality-vs-speed tradeoffs, supersedes-tracked decisions — **IS the product Forge should ship as the `/plan` skill**.
+The 6-iteration planning method that produced this folder — parallel critics, research validation, anti-architect cuts, edge-case audits, quality-vs-speed tradeoffs, supersedes-tracked decisions — is a useful Forge `/plan` playbook template.
 
-This session is the proof-of-concept. ~30 design docs, ~38 decisions, multiple supersedes, sharp final thesis from messy starting prompts. The method generalizes; the artifacts compound.
+It is not the product or the enforcement layer. The runtime building blocks are the product; this skill is one configurable composition over those primitives. This session is the proof-of-concept. ~30 design docs, 42 decisions, multiple supersedes, sharp final thesis from messy starting prompts. The method generalizes; the artifacts compound.
 
 > **Forge `/plan` is not "ask questions and write a doc." It is a structured iteration loop with parallel critics, research validation, and supersedes-tracked decisions that converges on a falsifiable thesis.**
 
@@ -234,9 +234,9 @@ Forge already ships a skeletal `/plan` with three phases. The iteration-driven v
 
 ## Beads issue concept (flagged for bd-update agent)
 
-> **Forge `/plan` skill: implement iteration-driven planning method as the canonical Forge planning skill (Phase 1–5 with HARD-GATEs and user-configurable depth).**
+> **Forge `/plan` skill: implement iteration-driven planning as a configurable playbook template (Phase 1–5 with HARD-GATEs and user-configurable depth).**
 >
-> Implements the meta-pattern documented in `docs/work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md`. Scope: Phase 1 intent capture, Phase 2 parallel research with primary-source citation, Phase 3 parallel critics (anti-architect / gap-finder / sequencer), Phase 4 synthesis + iteration loop with explicit convergence criterion, Phase 5 final-thesis lock with supersedes tracking. Configurable per project (`plan.phases`, `plan.critics`, `plan.convergence-threshold`). Acceptance: re-runs this folder's iteration #1 → #6 trajectory and produces a substantively similar D1–D38 ledger from the original starting prompt.
+> Implements the meta-pattern documented in `docs/work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md`. Scope: Phase 1 intent capture, Phase 2 parallel research with primary-source citation, Phase 3 parallel critics (anti-architect / gap-finder / sequencer), Phase 4 synthesis + iteration loop with explicit convergence criterion, Phase 5 final-thesis lock with supersedes tracking. Configurable per project (`plan.phases`, `plan.critics`, `plan.convergence-threshold`). Acceptance: re-runs this folder's iteration #1 → #6 trajectory and produces a substantively similar D1–D42 ledger from the original starting prompt.
 
 (Not yet created — left for the bd-update agent.)
 

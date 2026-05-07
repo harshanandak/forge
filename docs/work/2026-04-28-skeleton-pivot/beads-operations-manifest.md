@@ -1,4 +1,4 @@
-# Beads Operations Manifest — Forge v3 Skeleton Pivot
+# Beads Operations Manifest — Runtime Building-Block Pivot
 
 **Date:** 2026-04-28
 **Scope:** Canonical list of every beads create/reframe/close needed to align the tracker with the layered-skeleton pivot (L1 locked rails / L2 swappable defaults / L3 patch.md / L4 user profile).
@@ -14,6 +14,33 @@ Source plans:
 - `docs/plans/2026-04-28-skill-distribution-design.md`
 
 ---
+
+## 2026-05-06 Release-Numbering Overlay
+
+The N1-N18 manifest remains useful as the issue inventory, but active release planning no longer uses `v3.0 / v3.1 / v3.2` labels. Work is now phased into small `0.0.x` releases:
+
+Detailed task decomposition happens at release entry, not all upfront. After `0.0.11`, each release should claim or reframe only the Beads issues needed for that slice, record the current baseline, and avoid duplicating work that has already landed on `origin/master`.
+
+The current baseline already includes the W0 migrate dry-run slice in `docs/work/2026-05-05-w0-migrate-dry-run/`, `lib/migrate-dry-run.js`, `lib/commands/migrate.js`, and `test/migrate-dry-run.test.js`. Keep those as accepted baseline inputs when reframing N2/N3/N4/N5 and the later safety/upgrade work.
+
+| Release | Work items | Purpose |
+|---|---|---|
+| `0.0.11` | Documentation/design alignment around runtime building blocks | Establish the refined product hierarchy and release-numbered roadmap. |
+| `0.0.12` | Refined N2 | Runtime graph contract: `Phase`, `Action`, `Artifact`, `EvaluatorRegion`, `Gate`, `Evidence`. |
+| `0.0.13` | Refined N3, N4, N5 | Config loading and introspection for phases, actions, evaluators, gates, adapters. |
+| `0.0.14` | New evaluator-region slice, informed by N2/N5 | Evaluators attach to plans, research, patches, transitions, claims, and review packets. |
+| `0.0.15` | N6 plus refined N15 | Adoption templates and install profiles; templates compose primitives only. |
+| `0.0.16` | N11, N12, plus rollback and fixture work (`forge-1nh6`, `forge-c11n`) | Patch intent, rollback snapshots, upgrade dry-run, representative fixtures. |
+| `0.0.17` | N13 and planning-skill work (`forge-besw.24`) | Insights and skills as configurable playbooks/evaluator suggestions. |
+| `0.0.18` | IssueAdapter/run-ledger/dashboard work | Team runtime dashboard without a Forge-owned orchestration layer. |
+
+Deferred until adoption pressure justifies it:
+
+- N16 marketplace allowlist.
+- Full N8 five-resolver set; start with local and GitHub first.
+- Hardened sandbox.
+- Central orchestration layer.
+- Auto-merge by default.
 
 ## A. NEW ISSUES TO CREATE
 
