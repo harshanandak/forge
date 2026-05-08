@@ -174,23 +174,11 @@ forge team sync 2>&1 || true
 forge team verify 2>&1 || true
 ```
 
-## Example Output
+## Output
 
-```
-✓ Validation: /validate passed (all 4 checks — fresh output confirmed)
-✓ Freshness: Branch is up-to-date with master
-✓ Beads: PR handoff recorded (forge-xyz)
-✓ Pushed: feat/stripe-billing
-✓ PR created: https://github.com/.../pull/123
-  - PR body: Problem → Root Cause → Fix → Value (narrative format)
-  - Beads linked: forge-xyz
-  - Implementation details in collapsible section
+`/ship` reports live validation status, branch freshness, Beads PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this command file.
 
-⏸️  PR created, checks started (Greptile, SonarCloud, GitHub Actions)
-   Poll for up to 60 seconds. If checks are still pending, stop here.
-
-Next: /review <pr-number> (when automated checks complete or new feedback appears)
-```
+When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
 
 ## Integration with Workflow
 

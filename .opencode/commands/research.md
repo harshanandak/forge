@@ -2,14 +2,15 @@
 description: Deep research with parallel-deep-research, document findings
 ---
 
-> **Note**: `/research` is now Phase 2 of `/plan`.
+> **Note**: `/research` is legacy support for the research capability used by planning workflows.
 >
-> The research phase has been absorbed into the `/plan` command, which runs a full 3-phase workflow:
-> - **Phase 1**: Brainstorming — design intent, constraints, success criteria
-> - **Phase 2**: Technical research — web search, OWASP, codebase exploration, TDD scenarios
-> - **Phase 3**: Setup — branch, worktree, Beads issue, task list
+> Forge v3 treats `/plan`, `/dev`, `/validate`, `/ship`, `/review`, `/premerge`, and `/verify` as configurable building blocks over runtime skills, not a product-wide mandatory ladder.
+> `/plan` remains the default planner template and can include:
+> - Design intent: constraints, success criteria, and ambiguity policy
+> - Technical research: web search, OWASP, codebase exploration, TDD scenarios
+> - Setup: branch, worktree, Beads issue, task list
 >
-> Run `/plan <feature-slug>` to start the complete planning workflow.
+> Run `/plan <feature-slug>` when the active workflow needs the default planner template, or invoke the research skill fragment directly when the active plan permits it.
 
 # Research (Legacy Alias)
 

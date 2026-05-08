@@ -111,7 +111,7 @@ describe('Contract: workflow commands use configurable template language', () =>
     test(`${command}.md references the default template without Stage N numbering`, () => {
       const content = readCommand(`${command}.md`);
       expect(content).toContain('Default template:');
-      expect(content).not.toMatch(/Stage\s+[1-7]:/);
+      expect(content).not.toMatch(/\bStage\s+[1-7]\b\s*(?::|-|--|->|—|–)?/);
     });
   }
 });

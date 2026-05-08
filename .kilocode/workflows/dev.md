@@ -309,7 +309,6 @@ Utility: /status  -> Understand current context before starting
 
 Default template:
   /dev       -> Implement each task with subagent-driven TDD (you are here)
-  /dev       -> Implement each task with subagent-driven TDD
   /validate  -> Type check, lint, tests, security
   /ship      -> Push + create PR
   /review    -> Address PR feedback
