@@ -316,8 +316,8 @@ gh pr checks <pr-number>
 ### Step 10: Update Beads
 
 ```bash
-bd update <id> --comment "PR review complete: all issues addressed, all checks passing"
-bd sync
+forge update <id> --comment "PR review complete: all issues addressed, all checks passing"
+forge sync
 ```
 
 ## Example Output
@@ -382,14 +382,18 @@ Do NOT declare /review complete until:
 ## Integration with Workflow
 
 ```
-Utility: /status     → Understand current context before starting
-Stage 1: /plan       → Design intent → research → branch + worktree + task list
-Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /validate      → Type check, lint, tests, security — all fresh output
-Stage 4: /ship       → Push + create PR
-Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud (you are here)
-Stage 6: /premerge   → Update docs, hand off PR to user
-Stage 7: /verify     → Post-merge CI check on main
+Utility: /status  -> Understand current context before starting
+
+Default template:
+  /plan      -> Optional default planner; external planners may satisfy /dev entry
+  /dev       -> Implement each task with subagent-driven TDD
+  /validate  -> Type check, lint, tests, security
+  /ship      -> Push + create PR
+  /review    -> Address PR feedback
+  /verify    -> Post-merge health check
+
+Manual/support surfaces:
+  /premerge  -> Merge-readiness checks when the active template requires them
 ```
 
 ## Understanding the Tools

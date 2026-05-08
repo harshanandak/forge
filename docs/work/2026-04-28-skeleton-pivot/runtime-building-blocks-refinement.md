@@ -17,6 +17,7 @@ The product is not one workflow, one template library, one skill library, or one
 - what evidence is required,
 - what gates block or warn,
 - which skills implement behavior,
+- which skill fragments can be invoked independently,
 - which adapters expose the same contract to agents, trackers, and external orchestrators.
 
 Templates remain important, but only as adoption scaffolds. A template is a precomposed example of the primitives, not the primitive itself.
@@ -139,6 +140,32 @@ A skill can implement:
 
 The runtime decides whether the result passes. Skills provide behavior; evaluator regions and gates provide proof and policy.
 
+## Composable Skill Invocation
+
+Skills are hierarchical runtime nodes, not only top-level commands. A stage skill such as `plan` or `dev` can act as a super-skill that composes smaller callable sub-skills:
+
+- `plan.intent_capture`
+- `plan.parallel_research`
+- `plan.parallel_critics`
+- `plan.synthesis`
+- `plan.final_lock`
+- `dev.implement_task`
+- `dev.spec_review`
+- `dev.quality_review`
+- `validate.reproduce`
+- `validate.root_cause`
+- `validate.verify`
+
+The runtime may invoke the whole super-skill, or only one sub-skill, depending on the workflow graph, current evidence, user request, and gate state. This is how Forge keeps the strict current workflow expressible as one template without forcing every run to execute every phase.
+
+Invocation rules:
+
+- Super-skills declare the full composition and default order.
+- Sub-skills declare their own inputs, outputs, evidence requirements, evaluator regions, and gates.
+- A skipped sub-skill remains addressable in the resolved graph; it is not deleted from the contract.
+- `forge options why <skill-id>` explains why a super-skill or sub-skill was invoked, skipped, blocked, or delegated.
+- Accepted local skills can replace a sub-skill without replacing the whole stage.
+
 ## Templates
 
 Templates are starter compositions of the runtime primitives.
@@ -187,4 +214,4 @@ Every future clarity pass should:
 3. Add or update a small release-numbered slice.
 4. Keep the current strict workflow expressible as one template.
 5. Keep external orchestrator compatibility explicit.
-
+6. Keep super-skill/sub-skill invocation visible in the runtime graph and evaluator regions.

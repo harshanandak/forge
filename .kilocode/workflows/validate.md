@@ -4,7 +4,7 @@ mode: code
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
-> - `/validate` (this command): Workflow Stage 3 — rebases onto the base branch, then runs type/lint/test/security checks
+> - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
 > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
 > - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
 
@@ -206,10 +206,10 @@ If you have attempted 3+ fixes without resolution:
 If any check fails:
 ```bash
 # Create Beads issue for problems
-bd create "Fix <issue-description>"
+forge create "Fix <issue-description>"
 
 # Mark current issue as blocked
-bd update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
+forge update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
 
 # Output what needs fixing
 ```
@@ -270,14 +270,18 @@ Fix issues then re-run /validate
 ## Integration with Workflow
 
 ```
-Utility: /status     → Understand current context before starting
-Stage 1: /plan       → Design intent → research → branch + worktree + task list
-Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /validate      → Type check, lint, tests, security — all fresh output (you are here)
-Stage 4: /ship       → Push + create PR
-Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
-Stage 6: /premerge   → Update docs, hand off PR to user
-Stage 7: /verify     → Post-merge CI check on main
+Utility: /status  -> Understand current context before starting
+
+Default template:
+  /validate  -> Type check, lint, tests, security (you are here)
+  /dev       -> Implement each task with subagent-driven TDD
+  /validate  -> Type check, lint, tests, security
+  /ship      -> Push + create PR
+  /review    -> Address PR feedback
+  /verify    -> Post-merge health check
+
+Manual/support surfaces:
+  /premerge  -> Merge-readiness checks when the active template requires them
 ```
 
 ## Tips

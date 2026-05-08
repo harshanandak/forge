@@ -11,7 +11,7 @@
 [![CodeQL](https://github.com/harshanandak/forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/codeql.yml)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](https://github.com/harshanandak/forge/blob/master/SECURITY.md)
 
-Ship features with confidence using a 7-stage TDD-first workflow for AI coding agents.
+Ship features with confidence using a composable TDD-first workflow framework for AI coding agents.
 
 ```
 /plan → /dev → /validate → /ship → /review → /premerge → /verify
@@ -87,9 +87,11 @@ bunx forge setup
 
 ---
 
-## The 7 Stages
+## Default Workflow Template
 
-| Stage | Command | Purpose |
+Forge ships these commands as a default template. In v3 planning, they are configurable building blocks: use the full flow when it fits, or invoke the individual command/skill surfaces when the project plan permits a smaller path.
+
+| Default Step | Command | Purpose |
 |-------|---------|---------|
 | **utility** | `/status` | Ranked issue dashboard with conflict detection |
 | **1. Plan** | `/plan` | Design Q&A → research → branch + task list |
@@ -191,7 +193,7 @@ forge-preflight ship      # Validate before /ship stage
 ```
 
 ### 5. Smart Tool Recommendations
-Curated plugin catalog across 7 workflow stages — plan, dev, validate, ship, review, and more:
+Curated plugin catalog across workflow commands — plan, dev, validate, ship, review, and more:
 - **Auto-detection**: Scans your project for frameworks, databases, auth, payments, and more
 - **Budget modes**: free, open-source, startup, professional, custom
 - **Portability-first**: MCPs included only when they add clear value over CLI alternatives
@@ -225,7 +227,7 @@ bunx forge setup --merge=smart    # Intelligent merge
 **Workflow Profiles** *(planned — not yet wired into setup)*
 - Will adapt workflow based on work type (3-8 stages):
   - `critical`: Full 8-stage workflow (auth, payments, security-sensitive)
-  - `standard`: 7-stage workflow (typical features)
+  - `standard`: default workflow template (typical features)
   - `refactor`: Behavior-preserving 5-stage workflow
   - `simple`: Streamlined 4-stage workflow
   - `hotfix`: Minimal 3-stage workflow (production fixes)

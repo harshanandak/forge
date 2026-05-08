@@ -35,7 +35,7 @@ bunx forge setup --merge=smart
 - Tech stack details
 
 **What gets updated:**
-- Workflow instructions (7-stage TDD process)
+- Workflow instructions (composable TDD process)
 - TDD principles
 - Git conventions
 
@@ -65,7 +65,7 @@ E-commerce platform for selling widgets.
 - 80% test coverage
 
 ## Workflow Configuration
-Use the 7-stage TDD workflow:
+Use the default TDD workflow template:
 1. /plan - Design intent, research, branch + worktree + task list
 2. /dev - Subagent-driven TDD per task
 ...
@@ -165,7 +165,7 @@ Forge adapts its workflow based on the type of work you're doing.
 
 ### Six Change Classifications
 
-#### 1. Critical (7 stages)
+#### 1. Critical (full default template)
 **Use for:** Security, auth, payments, breaking changes
 
 ```bash
@@ -178,7 +178,7 @@ bunx forge setup --type=critical
 /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
 ```
 
-- Full 7-stage workflow with all gates
+- Full default Forge workflow template with all gates
 - OWASP analysis required
 - Design docs for strategic changes
 
@@ -354,7 +354,7 @@ git checkout -b feat/user-authentication
 bunx forge setup --type=critical
 
 # Uses Critical profile:
-# - Full 7-stage workflow
+# - Full default Forge workflow template
 # - OWASP analysis required
 # - Design docs for strategic changes
 ```
@@ -594,7 +594,7 @@ Share project knowledge with team.
 ## Related Documentation
 
 - [Main README](../README.md) - Overview and quick start
-- [Workflow Guide](../AGENTS.md) - Complete 7-stage workflow
+- [Workflow Guide](../AGENTS.md) - Complete default Forge workflow template
 - [Setup Guide](SETUP.md) - Agent-specific setup
 - [Agent Install Prompt](AGENT_INSTALL_PROMPT.md) - AI-assisted setup
 

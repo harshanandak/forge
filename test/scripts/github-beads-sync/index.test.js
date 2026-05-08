@@ -255,6 +255,51 @@ describe('handleOpened', () => {
     expect(createOrEditCalls[0].body).toContain('forge-existing');
   });
 
+  it('ignores stale sync comments that reference a different GitHub issue number', async () => {
+    const bdCreateCalls = [];
+    const upsertCanonicalLinkCalls = [];
+    const createOrEditCalls = [];
+    const opts = makeOptions({
+      bd: {
+        bdCreate: (o) => {
+          bdCreateCalls.push(o);
+          return 'forge-new';
+        },
+      },
+      github: {
+        findSyncComment: () => ({
+          id: 7,
+          body: buildComment('forge-stale', 99, {
+            type: 'bug',
+            priority: 1,
+            externalRef: 'gh-99',
+          }),
+        }),
+        createOrEditComment: (owner, repo, num, body) => {
+          createOrEditCalls.push({ owner, repo, num, body });
+        },
+      },
+      linkStore: {
+        resolveCanonicalLink: () => null,
+        upsertCanonicalLink: (record) => {
+          upsertCanonicalLinkCalls.push(record);
+          return record;
+        },
+      },
+    });
+
+    const result = await handleOpened(makeOpenedEvent(), opts);
+
+    expect(result.success).toBe(true);
+    expect(result.beadsId).toBe('forge-new');
+    expect(bdCreateCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls).toHaveLength(1);
+    expect(upsertCanonicalLinkCalls[0].forgeIssueId).toBe('forge-new');
+    expect(createOrEditCalls).toHaveLength(1);
+    expect(createOrEditCalls[0].body).toContain('forge-new');
+    expect(createOrEditCalls[0].body).not.toContain('forge-stale');
+  });
+
   it('throws when the legacy mapping file contains malformed JSON', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'forge-nlgg-'));
     const mappingPath = join(tempDir, 'beads-mapping.json');

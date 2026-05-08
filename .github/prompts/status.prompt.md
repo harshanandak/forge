@@ -1,7 +1,9 @@
 ---
 name: status
-description: Check current stage and context
 tools: []
+---
+﻿---
+description: Check current stage and context
 ---
 
 Check where you are in the project and what work is in progress.
@@ -44,7 +46,7 @@ DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|
 if [ -z "$DEFAULT_BRANCH" ]; then
   if git rev-parse --verify main >/dev/null 2>&1; then DEFAULT_BRANCH="main"
   elif git rev-parse --verify master >/dev/null 2>&1; then DEFAULT_BRANCH="master"
-  else echo "ERROR: No main or master branch found — skipping stale reconciliation" >&2; DEFAULT_BRANCH=""; fi
+  else echo "ERROR: No main or master branch found â€” skipping stale reconciliation" >&2; DEFAULT_BRANCH=""; fi
 fi
 
 # For each in_progress issue, check if its PR was already merged
@@ -52,7 +54,7 @@ if [ -n "$DEFAULT_BRANCH" ]; then
   bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
     # Search git log for the issue ID in commit messages (fixed-strings for literal match)
     if git log --oneline --first-parent "$DEFAULT_BRANCH" --fixed-strings --grep="$id" | grep -q .; then
-      echo "STALE: $id — found in git history, likely already merged"
+      echo "STALE: $id â€” found in git history, likely already merged"
     fi
   done
 fi
@@ -60,7 +62,7 @@ fi
 
 If stale issues are found, close them:
 ```bash
-bd close <id> --force --reason="Already merged — detected during status reconciliation"
+forge close <id> --force --reason="Already merged â€” detected during status reconciliation"
 ```
 
 ### Step 2: Review Recent Commits

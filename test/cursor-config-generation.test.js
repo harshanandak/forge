@@ -38,9 +38,9 @@ describe('Cursor config generation', () => {
     expect(content.includes('alwaysApply:')).toBeTruthy();
     expect(content.includes('alwaysApply: true')).toBeTruthy();
 
-    // Should include 7-stage workflow
+    // Should include the Forge workflow template
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
+    expect(content.includes('TDD Workflow Template')).toBeTruthy();
     expect(content.includes('/status')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();
@@ -223,6 +223,6 @@ describe('Cursor config generation', () => {
     const workflowContent = await fs.promises.readFile(workflowPath, 'utf-8');
     expect(workflowContent).toContain('/plan');
     expect(workflowContent).toContain('/validate');
-    expect(workflowContent).toContain('Forge 7-Stage TDD Workflow');
+    expect(workflowContent).toContain('Forge TDD Workflow Template');
   });
 });

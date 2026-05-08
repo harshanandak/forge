@@ -157,7 +157,7 @@ export function handleOpened(event, options = {}) {
   }
 
   const existingSyncComment = parseComment(findSyncComment(owner, repo, issueNumber)?.body);
-  if (existingSyncComment?.beadsId) {
+  if (existingSyncComment?.beadsId && existingSyncComment.issueNumber === issueNumber) {
     canonicalLinkStore.upsertCanonicalLink({
       forgeIssueId: existingSyncComment.beadsId,
       github: getGitHubLink(issue),

@@ -1,6 +1,6 @@
 # Forge Runtime Building-Block Pivot
 
-**Status**: D1-D42 remain the historical decision baseline for this folder. The current active refinement is [runtime-building-blocks-refinement.md](./runtime-building-blocks-refinement.md). The old `v3` wording is a design-folder codename, not the package version plan. The active package roadmap is `0.0.x` based in [release-plan.md](./release-plan.md), starting from the verified package baseline `forge-workflow@0.0.10`.
+**Status**: D1-D43 remain the historical decision baseline for this folder. The current active refinement is [runtime-building-blocks-refinement.md](./runtime-building-blocks-refinement.md). The old `v3` wording is a design-folder codename, not the package version plan. The active package roadmap is `0.0.x` based in [release-plan.md](./release-plan.md), starting from the verified package baseline `forge-workflow@0.0.10`.
 
 ## Summary
 
@@ -9,6 +9,7 @@ Forge pivots from a fixed 7-stage opinionated workflow to configurable workflow/
 - **L1 locked rails**: TDD intent gate, secret scan, branch protection, signed commits, schema + integrity.
 - **Runtime primitives**: phases, actions, artifacts, evaluator regions, gates, evidence, skills, adapters, run ledger, review packets.
 - **Configurable graph**: project and user config compose primitives into a workflow.
+- **Composable skills**: stage-level super-skills can invoke callable sub-skills, so partial planning/review/evaluation work does not require running the whole workflow.
 - **Templates**: starter compositions for adoption, not the product itself.
 - **Adapters**: Beads/GitHub/Linear, agent harnesses, and external orchestrators consume the same runtime contract.
 
@@ -36,7 +37,7 @@ See [release-plan.md](./release-plan.md) for scope, evaluator regions, gates, an
 1. [runtime-building-blocks-refinement.md](./runtime-building-blocks-refinement.md) - current refinement and product hierarchy.
 2. [release-plan.md](./release-plan.md) - active `0.0.x` release roadmap.
 3. [FINAL-THESIS.md](./FINAL-THESIS.md) - historical 2026-04-29 baseline; keep for context.
-4. [locked-decisions.md](./locked-decisions.md) - D1-D42 decisions with rationale, tradeoffs, and anti-decisions.
+4. [locked-decisions.md](./locked-decisions.md) - D1-D43 decisions with rationale, tradeoffs, and anti-decisions.
 5. [LEARNINGS.md](./LEARNINGS.md) - takeaways from the iteration process.
 6. [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md) - planning method, now treated as one configurable planning template/skill.
 7. [v3-redesign-strategy.md](./v3-redesign-strategy.md) - reference strategy with superseded sections preserved.
@@ -59,3 +60,4 @@ When new clarity arrives:
 3. Keep package release plans in `0.0.x` terms.
 4. Keep external orchestrator compatibility explicit.
 5. Keep the strict current workflow expressible as one template.
+6. Keep super-skill/sub-skill invocation visible in the runtime graph and evaluator regions.

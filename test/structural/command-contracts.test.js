@@ -97,30 +97,21 @@ describe('Contract: /ship creates PR -> /review references PR', () => {
   });
 });
 
-// ─── Contract 5: All 7 workflow commands have correct stage numbers ─────────
+// Contract 5: workflow commands use configurable template language
 
-describe('Contract: all 7 workflow commands reference correct stage numbers', () => {
+describe('Contract: workflow commands use configurable template language', () => {
   /**
-   * Each workflow command file must contain an "Integration with Workflow"
-   * section that assigns the correct stage number to each command:
-   *   plan=1, dev=2, validate=3, ship=4, review=5, premerge=6, verify=7
+   * v3 treats the historical 7-stage ladder as one default template over
+   * runtime building blocks. Command docs must not reintroduce hardcoded
+   * Stage N gate language.
    */
-  const expectedStages = [
-    { command: 'plan', stage: 1 },
-    { command: 'dev', stage: 2 },
-    { command: 'validate', stage: 3 },
-    { command: 'ship', stage: 4 },
-    { command: 'review', stage: 5 },
-    { command: 'premerge', stage: 6 },
-    { command: 'verify', stage: 7 },
-  ];
+  const workflowCommands = ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'];
 
-  for (const { command, stage } of expectedStages) {
-    test(`${command}.md assigns Stage ${stage} to /${command}`, () => {
+  for (const command of workflowCommands) {
+    test(`${command}.md references the default template without Stage N numbering`, () => {
       const content = readCommand(`${command}.md`);
-      // Match pattern like "Stage 3: /validate" allowing flexible whitespace
-      const pattern = new RegExp(`Stage\\s+${stage}:\\s+/${command}\\b`);
-      expect(pattern.test(content)).toBeTruthy();
+      expect(content).toContain('Default template:');
+      expect(content).not.toMatch(/Stage\s+[1-7]:/);
     });
   }
 });

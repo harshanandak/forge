@@ -37,7 +37,7 @@ describe('GitHub Copilot config generation', () => {
 
     // Should include Forge workflow
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
+    expect(content.includes('TDD Workflow Template')).toBeTruthy();
 
     // Should include all workflow stages
     expect(content.includes('/status')).toBeTruthy();

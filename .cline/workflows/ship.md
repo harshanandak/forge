@@ -73,11 +73,13 @@ bash scripts/pr-coordinator.sh auto-label <issue-id>
 bash scripts/pr-coordinator.sh stale-worktrees 2>&1 || true
 ```
 
-### Step 3: Update Beads
+### Step 3: Record PR Handoff
 ```bash
-bd update <id> --status done
-bd sync
+forge update <id> --comment "PR created: <pr-url>. Awaiting review and merge verification."
+forge sync
 ```
+
+Do not mark the Beads issue done during `/ship`. Completion happens only after merge and post-merge verification.
 
 ### Step 4: Push Branch
 
@@ -190,14 +192,18 @@ Next: /review <pr-number> (when automated checks complete or new feedback appear
 ## Integration with Workflow
 
 ```
-Utility: /status     → Understand current context before starting
-Stage 1: /plan       → Design intent → research → branch + worktree + task list
-Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /validate      → Type check, lint, tests, security — all fresh output
-Stage 4: /ship       → Push + create PR (you are here)
-Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
-Stage 6: /premerge   → Update docs, hand off PR to user
-Stage 7: /verify     → Post-merge CI check on main
+Utility: /status  -> Understand current context before starting
+
+Default template:
+  /plan      -> Optional default planner; external planners may satisfy /dev entry
+  /dev       -> Implement each task with subagent-driven TDD
+  /validate  -> Type check, lint, tests, security
+  /ship      -> Push + create PR
+  /review    -> Address PR feedback
+  /verify    -> Post-merge health check
+
+Manual/support surfaces:
+  /premerge  -> Merge-readiness checks when the active template requires them
 ```
 
 ## Tips

@@ -10,9 +10,25 @@
 
 The 6-iteration planning method that produced this folder — parallel critics, research validation, anti-architect cuts, edge-case audits, quality-vs-speed tradeoffs, supersedes-tracked decisions — is a useful Forge `/plan` playbook template.
 
-It is not the product or the enforcement layer. The runtime building blocks are the product; this skill is one configurable composition over those primitives. This session is the proof-of-concept. ~30 design docs, 42 decisions, multiple supersedes, sharp final thesis from messy starting prompts. The method generalizes; the artifacts compound.
+It is not the product or the enforcement layer. The runtime building blocks are the product; this skill is one configurable composition over those primitives. This session is the proof-of-concept. ~30 design docs, 43 decisions, multiple supersedes, sharp final thesis from messy starting prompts. The method generalizes; the artifacts compound.
 
 > **Forge `/plan` is not "ask questions and write a doc." It is a structured iteration loop with parallel critics, research validation, and supersedes-tracked decisions that converges on a falsifiable thesis.**
+
+## Super-skill shape
+
+`/plan` is a super-skill. Its five phases are callable sub-skills, and each sub-skill maps to runtime primitives instead of being hard-coded prose inside one command:
+
+| Sub-skill | Runtime phase/action | Primary artifact | Evaluator region | Gate |
+|---|---|---|---|---|
+| `plan.intent_capture` | Capture design intent through one-question-at-a-time Q&A | intent statement | intent completeness | user sign-off or external-planner evidence |
+| `plan.parallel_research` | Fan out to source-backed research agents | research findings appended to design doc | source quality | all load-bearing claims cite primary sources |
+| `plan.parallel_critics` | Run anti-architect, gap-finder, sequencer, and configured critics | critic verdict packet | critic coverage | every required critic returns verdict + evidence + action |
+| `plan.synthesis` | Collapse findings into decisions and rerun only contested surfaces | decision delta | contradiction check | explicit converge / diverge / scope-shift result |
+| `plan.final_lock` | Emit final thesis, task list, and supersedes-tracked decisions | final thesis + locked decisions + task list | lock consistency | downstream `/dev` entry contract satisfied |
+
+The runtime can invoke all five as the default deep planning flow, or invoke only one when the user asks for a partial operation such as "run critics on this plan", "refresh research", or "lock this decision". Partial invocation must still write evidence and gate state, so a skipped phase is visible as skipped rather than silently absent.
+
+This mirrors the Hermes-style model captured by D35: description matching may select the super-skill, but graph state and user intent decide whether the whole composition or a sub-skill executes.
 
 ---
 
@@ -30,7 +46,7 @@ Phase 5: Final thesis lock     ──── exit gate
 
 Surface the design intent. **One question at a time** — no batching. Each question targets the highest-information-gain ambiguity remaining. The output is a structured intent statement: what we're building, why, who it's for, what success looks like, what's out of scope.
 
-- HARD-GATE: cannot proceed to Phase 2 without intent statement signed off by user.
+- HARD-GATE: cannot proceed to Phase 2 without either (a) intent statement signed off by the user, or (b) external-planner evidence that satisfies the `/dev` entry contract from D34.
 - Anti-pattern: "let me ask 8 questions at once and you can answer in any order" — produces shallow context and skipped questions.
 - Skill mechanic: maintain an open-question queue; ask the top one; integrate the answer; recompute the queue.
 
@@ -159,6 +175,7 @@ Auto-detection is a default. The user can always override with `--type=` or `--f
 - **Some under-invest** — agents skip research on a migration touching 15 files and three services, producing a plan that ships a regression on day 1. Cost: rollback + post-mortem.
 - **The iteration-driven method's power is configurable depth**, not maximum depth. Forge `/plan` ships with classification-aware defaults so the average case is right-sized and the user only adjusts at the edges.
 - **HARD-GATEs respect classification** — the gates that fire on `project-level` (full critic convergence required before lock) do NOT fire on `hotfix` (skip-to-lock with rollback plan is the gate). One skill, multiple gate profiles.
+- **Sub-skill dispatch preserves partial work** — if a task only needs `plan.parallel_critics`, Forge invokes that sub-skill, records its evidence, and leaves the other phase nodes unchanged.
 
 This is NOT an additional feature on top of `/plan` — it is **how `/plan` actually works**. Without classification-aware intensity, the iteration-driven method is unusable for anything smaller than `project-level`.
 
@@ -229,6 +246,7 @@ Forge already ships a skeletal `/plan` with three phases. The iteration-driven v
 1. **Self-evidence**: this session produced 38 sharp decisions from messy starting prompts using exactly this method. The method works.
 2. **Compounding artifacts**: every iteration produces durable docs (decisions, learnings, FINAL-THESIS). Future sessions read the prior thesis instead of re-deriving.
 3. **Fits the typed-memory model (D22)**: decisions/episodes/skills/preferences are exactly the seven categories the memory API already routes — `/plan` is the producer of the high-value entries.
+4. **Fits the runtime graph**: the planning phases are sub-skills with inputs, outputs, evaluator regions, gates, and evidence. This keeps `/plan` compatible with external planners and partial invocation instead of making it a monolithic ritual.
 
 ---
 
@@ -236,7 +254,7 @@ Forge already ships a skeletal `/plan` with three phases. The iteration-driven v
 
 > **Forge `/plan` skill: implement iteration-driven planning as a configurable playbook template (Phase 1–5 with HARD-GATEs and user-configurable depth).**
 >
-> Implements the meta-pattern documented in `docs/work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md`. Scope: Phase 1 intent capture, Phase 2 parallel research with primary-source citation, Phase 3 parallel critics (anti-architect / gap-finder / sequencer), Phase 4 synthesis + iteration loop with explicit convergence criterion, Phase 5 final-thesis lock with supersedes tracking. Configurable per project (`plan.phases`, `plan.critics`, `plan.convergence-threshold`). Acceptance: re-runs this folder's iteration #1 → #6 trajectory and produces a substantively similar D1–D42 ledger from the original starting prompt.
+> Implements the meta-pattern documented in `docs/work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md`. Scope: Phase 1 intent capture, Phase 2 parallel research with primary-source citation, Phase 3 parallel critics (anti-architect / gap-finder / sequencer), Phase 4 synthesis + iteration loop with explicit convergence criterion, Phase 5 final-thesis lock with supersedes tracking. Configurable per project (`plan.phases`, `plan.critics`, `plan.convergence-threshold`). Acceptance: re-runs this folder's iteration #1 → #6 trajectory and produces a substantively similar D1–D43 ledger from the original starting prompt.
 
 (Not yet created — left for the bd-update agent.)
 

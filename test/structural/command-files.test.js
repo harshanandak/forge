@@ -198,7 +198,7 @@ describe('dead reference checks', () => {
     expect(hits).toEqual([]);
   });
 
-  test('no command file references "9-stage" or "nine stage" (now 7 stages)', () => {
+  test('no command file references "9-stage" or "nine stage"', () => {
     const hits = findMatches(/9-stage|nine.stage/i);
     expect(hits).toEqual([]);
   });

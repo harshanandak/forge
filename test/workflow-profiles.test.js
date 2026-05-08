@@ -29,7 +29,7 @@ describe('workflow-profiles', () => {
       expect(PROFILES.critical.tdd).toBe('strict');
     });
 
-    test('standard profile should have 7 stages', () => {
+    test('standard profile should include the default command template', () => {
       expect(PROFILES.standard.stages.length).toBe(7);
       expect(PROFILES.standard.stages.includes('/status')).toBeTruthy();
       expect(PROFILES.standard.stages.includes('/plan')).toBeTruthy();

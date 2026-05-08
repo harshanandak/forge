@@ -305,14 +305,18 @@ The completion summary is generated from the live task list, decisions log, Bead
 ## Integration with Workflow
 
 ```
-Utility: /status     → Understand current context before starting
-Stage 1: /plan       → Design intent → research → branch + worktree + task list
-Stage 2: /dev        → Implement each task with subagent-driven TDD (you are here)
-Stage 3: /validate      → Type check, lint, tests, security — all fresh output
-Stage 4: /ship       → Push + create PR
-Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
-Stage 6: /premerge   → Update docs, hand off PR to user
-Stage 7: /verify     → Post-merge CI check on main
+Utility: /status  -> Understand current context before starting
+
+Default template:
+  /dev       -> Implement each task with subagent-driven TDD (you are here)
+  /dev       -> Implement each task with subagent-driven TDD
+  /validate  -> Type check, lint, tests, security
+  /ship      -> Push + create PR
+  /review    -> Address PR feedback
+  /verify    -> Post-merge health check
+
+Manual/support surfaces:
+  /premerge  -> Merge-readiness checks when the active template requires them
 ```
 
 ## Tips
