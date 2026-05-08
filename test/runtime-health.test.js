@@ -449,6 +449,31 @@ describe('runtime health checks', () => {
     });
   });
 
+  test('configured hooksPath accepts env-prefixed hook execution commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    const beadsHooksDir = path.join(projectRoot, '.beads', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.mkdirSync(beadsHooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'FORGE_ENV=1 .forge/hooks/check-tdd.js\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'BEADS_ENV=1 bd hooks run pre-push "$@"\n');
+    fs.writeFileSync(path.join(beadsHooksDir, 'pre-push'), 'lefthook run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'forge',
+      'pre-push': 'beads->lefthook'
+    });
+  });
+
   test('configured hooksPath ignores comments and echo-only Beads hook mentions', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
