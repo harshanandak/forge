@@ -449,6 +449,50 @@ describe('runtime health checks', () => {
     });
   });
 
+  test('configured hooksPath rejects Beads hook mentions in heredoc text', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'cat <<EOF\nbd hooks run pre-commit\nEOF\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'cat <<EOF\nbd hooks run pre-push\nEOF\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects Beads hook paths passed to non-executing commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'cat bd hooks run pre-commit\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'ls bd hooks run pre-push\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
   test('configured hooksPath accepts Beads-managed hook entries that chain to Lefthook', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
