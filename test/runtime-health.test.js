@@ -361,6 +361,28 @@ describe('runtime health checks', () => {
     });
   });
 
+  test('configured hooksPath accepts Forge hook execution commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'node .forge/hooks/check-tdd.js pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '.forge/hooks/check-tdd.js pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'forge',
+      'pre-push': 'forge'
+    });
+  });
+
   test('configured hooksPath rejects Forge hook paths used only in file tests', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
@@ -368,6 +390,28 @@ describe('runtime health checks', () => {
     fs.mkdirSync(hooksDir, { recursive: true });
     fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'if [ -f .forge/hooks/check-tdd.js ]; then echo present; fi\n');
     fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'test -x check-tdd.js && echo present\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects Forge hook paths passed to non-executing commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'cat .forge/hooks/check-tdd.js\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'ls .forge/hooks/check-tdd.js\n');
 
     const result = checkRuntimeHealth(projectRoot, {
       _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
