@@ -339,6 +339,50 @@ describe('runtime health checks', () => {
     });
   });
 
+  test('configured hooksPath accepts enforcement after echo preamble', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'echo "running" && lefthook run pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'printf "running" && lefthook run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'lefthook',
+      'pre-push': 'lefthook'
+    });
+  });
+
+  test('configured hooksPath rejects Forge hook paths used only in file tests', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'if [ -f .forge/hooks/check-tdd.js ]; then echo present; fi\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'test -x check-tdd.js && echo present\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
   test('configured hooksPath ignores comments and echo-only Beads hook mentions', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
