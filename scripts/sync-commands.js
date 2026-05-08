@@ -28,6 +28,8 @@ const { listCodexSkillEntries } = require('../lib/codex-skills');
  * @returns {{ frontmatter: Record<string, unknown>, body: string }}
  */
 function parseFrontmatter(content) {
+  content = content.replace(/^\uFEFF/, '');
+
   // Frontmatter must start at the very beginning with ---
   if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
     return { frontmatter: {}, body: content };
@@ -64,7 +66,7 @@ function parseFrontmatter(content) {
   // Parse the YAML string
   const trimmed = yamlStr.trim();
   if (trimmed === '') {
-    return { frontmatter: {}, body: content.slice(bodyStart) };
+    return { frontmatter: {}, body: content.slice(bodyStart).replace(/^\uFEFF/, '') };
   }
 
   /** @type {Record<string, unknown>} */
@@ -81,7 +83,7 @@ function parseFrontmatter(content) {
     return { frontmatter: {}, body: content };
   }
 
-  return { frontmatter, body: content.slice(bodyStart) };
+  return { frontmatter, body: content.slice(bodyStart).replace(/^\uFEFF/, '') };
 }
 
 /**

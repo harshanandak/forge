@@ -1,8 +1,6 @@
 ---
-mode: code
----
-﻿---
 description: Check current stage and context
+mode: code
 ---
 
 Check where you are in the project and what work is in progress.

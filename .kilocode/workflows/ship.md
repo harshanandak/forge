@@ -180,7 +180,7 @@ forge team verify 2>&1 || true
 ```
 ✓ Validation: /validate passed (all 4 checks — fresh output confirmed)
 ✓ Freshness: Branch is up-to-date with master
-✓ Beads: Marked done & synced (forge-xyz)
+✓ Beads: PR handoff recorded (forge-xyz)
 ✓ Pushed: feat/stripe-billing
 ✓ PR created: https://github.com/.../pull/123
   - PR body: Problem → Root Cause → Fix → Value (narrative format)

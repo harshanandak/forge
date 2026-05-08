@@ -1,4 +1,4 @@
-﻿---
+---
 description: Check current stage and context
 ---
 

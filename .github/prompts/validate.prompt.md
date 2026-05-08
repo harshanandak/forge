@@ -274,9 +274,9 @@ Fix issues then re-run /validate
 Utility: /status  -> Understand current context before starting
 
 Default template:
-  /validate  -> Type check, lint, tests, security (you are here)
+  /plan      -> Optional default planner; external planners may satisfy /dev entry
   /dev       -> Implement each task with subagent-driven TDD
-  /validate  -> Type check, lint, tests, security
+  /validate  -> Type check, lint, tests, security (you are here)
   /ship      -> Push + create PR
   /review    -> Address PR feedback
   /verify    -> Post-merge health check

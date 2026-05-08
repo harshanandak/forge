@@ -282,8 +282,8 @@ describe('runtime health checks', () => {
 
   test('Windows hook-path comparisons are case-insensitive', () => {
     const projectRoot = createProjectRoot();
-    const windowsRoot = projectRoot.replace(/\//g, '\\').toUpperCase();
-    const hooksPath = `${windowsRoot}\\.LEFTHOOK\\HOOKS`;
+    const hooksPath = '.LEFTHOOK\\HOOKS';
+    writeLefthookEntries(projectRoot, path.join(projectRoot, '.LEFTHOOK', 'HOOKS'));
 
     const result = checkRuntimeHealth(projectRoot, {
       _exec: createExecStub({ hooksPath }),
@@ -315,6 +315,28 @@ describe('runtime health checks', () => {
         missingHooks: ['pre-commit', 'pre-push']
       })
     );
+  });
+
+  test('configured lefthook hooksPath ignores comments and echo-only mentions', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '# managed by lefthook\necho check-tdd.js missing\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '# lefthook run pre-push\necho lefthook\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
   });
 
   test('configured hooksPath accepts Beads-managed hook entries that chain to Lefthook', () => {
