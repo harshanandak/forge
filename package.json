@@ -1,7 +1,7 @@
 {
   "name": "forge-workflow",
   "version": "0.0.10",
-  "description": "7-stage TDD workflow for ALL AI coding agents (Claude, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)",
+  "description": "Composable TDD workflow framework for all AI coding agents (Claude, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)",
   "bin": {
     "forge": "bin/forge.js",
     "forge-workflow": "bin/forge.js",

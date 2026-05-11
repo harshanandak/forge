@@ -296,7 +296,7 @@ Without explicit kill criteria the iteration trap repeats forever.
 **Canonical (read in order)**:
 1. [FINAL-THESIS.md](./FINAL-THESIS.md) — this doc
 2. [release-plan.md](./release-plan.md) — active `0.0.x` runtime building-block roadmap
-3. [locked-decisions.md](./locked-decisions.md) — D1-D42 with supersedes
+3. [locked-decisions.md](./locked-decisions.md) — D1-D43 with supersedes
 4. [LEARNINGS.md](./LEARNINGS.md) — 15 takeaways from 6 iterations
 5. [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md) — the planning method itself, now framed as one configurable Forge `/plan` playbook template
 6. [v3-redesign-strategy.md](./v3-redesign-strategy.md) — full strategy reference

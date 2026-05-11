@@ -358,6 +358,6 @@ git push
 
 ## See Also
 
-- [Workflow Guide](../AGENTS.md) - Complete 7-stage workflow
+- [Workflow Guide](../AGENTS.md) - Complete default Forge workflow template
 - [TDD Guide](../CLAUDE.md) - TDD principles and practices
 - [Lefthook Docs](https://github.com/evilmartians/lefthook) - Full hook configuration

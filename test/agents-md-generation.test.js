@@ -35,8 +35,8 @@ describe('AGENTS.md generation', () => {
 
     const content = await fs.promises.readFile(agentsMdPath, 'utf-8');
 
-    // Verify it contains Forge 7-stage workflow
-    expect(content.includes('Forge 7-Stage TDD Workflow')).toBeTruthy();
+    // Verify it contains the Forge workflow template
+    expect(content.includes('Forge TDD Workflow Template')).toBeTruthy();
     expect(content.includes('/status')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();

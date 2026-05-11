@@ -212,17 +212,20 @@ Scope:
 - N13 and `forge-besw.24`.
 - Pattern detection proposes skills/evaluators from observed review failures.
 - Planning skill becomes one configurable template, not the canonical workflow.
+- Planning phases are exposed as callable sub-skills, so the runtime can invoke the full `/plan` super-skill or only `plan.intent_capture`, `plan.parallel_research`, `plan.parallel_critics`, `plan.synthesis`, or `plan.final_lock`.
 
 Evaluator regions:
 
 - Insight quality.
 - Skill proposal usefulness.
 - Accept/reject audit trail.
+- Super-skill stability: full-skill and sub-skill invocation produce consistent graph state, evidence, and gate outcomes.
 
 Release gate:
 
 - `forge insights --review-feedback` produces ranked proposals with evidence.
 - Accepted proposals can become skills or evaluator suggestions.
+- `forge options why <skill-id>` explains full `/plan` invocation, partial sub-skill invocation, skipped phases, and replacement by accepted local skills.
 
 ## 0.0.18 - Team Runtime Dashboard
 

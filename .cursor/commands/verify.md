@@ -180,28 +180,28 @@ fi
 ```bash
 # Close issues found in PR body
 for id in $BEADS_IDS; do
-  bd close "$id" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $id"
+  forge close "$id" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $id"
 done
 
 # If no issues found in body, try branch name match (skip if already closed above)
 if [ -z "$BEADS_IDS" ] && [ -n "$BRANCH_ID" ]; then
-  bd close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
 elif [ -n "$BRANCH_ID" ] && ! echo "$BEADS_IDS" | grep -qw "$BRANCH_ID"; then
-  bd close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
 fi
 ```
 
 **If no beads issues detected at all**, prompt the user:
 ```
 ⚠ No beads issue ID found in PR body or branch name.
-  If this PR closes a beads issue, run: bd close <id> --reason="Merged and verified on master (PR #<number>)"
+  If this PR closes a beads issue, run: forge close <id> --reason="Merged and verified on master (PR #<number>)"
 ```
 
 ```
 <HARD-GATE: /verify exit>
 Do NOT declare /verify complete until:
 1. gh run list --branch master --limit 3 shows actual CI output (not "should be fine")
-2. If healthy: Beads issues extracted from PR body/branch and closed (bd close run and confirmed)
+2. If healthy: Beads issues extracted from PR body/branch and closed (`forge close` run and confirmed)
    - If no beads ID found: user was warned and given manual close command
 3. If issues found: Beads tracking issue created for every problem
 4. Worktree removed (or confirmed already gone) — OR Step 6 was intentionally skipped because CI was unhealthy; if skipped, state explicitly: "cleanup deferred, CI was not healthy"
@@ -211,7 +211,7 @@ Do NOT declare /verify complete until:
 
 ## Rules
 
-- **Never commits** — this command is read-only
+- **Never commits code** — this command may update Beads issue state after post-merge health is verified
 - **Never creates PRs** — if fixes are needed, that's a new /dev cycle
 - **Runs after user confirms merge** — not before
 - **Reports honestly** — if CI is broken on main, say so clearly
@@ -255,12 +255,16 @@ Do NOT declare /verify complete until:
 ## Integration with Workflow
 
 ```
-Utility: /status     → Understand current context before starting
-Stage 1: /plan       → Design intent → research → branch + worktree + task list
-Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /validate      → Type check, lint, tests, security — all fresh output
-Stage 4: /ship       → Push + create PR
-Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
-Stage 6: /premerge   → Update docs, hand off PR to user
-Stage 7: /verify     → Post-merge CI check on main (you are here) ✓
+Utility: /status  -> Understand current context before starting
+
+Default template:
+  /plan      -> Optional default planner; external planners may satisfy /dev entry
+  /dev       -> Implement each task with subagent-driven TDD
+  /validate  -> Type check, lint, tests, security
+  /ship      -> Push + create PR
+  /review    -> Address PR feedback
+  /verify    -> Post-merge health check
+
+Manual/support surfaces:
+  /premerge  -> Merge-readiness checks when the active template requires them
 ```

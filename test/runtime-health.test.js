@@ -282,8 +282,8 @@ describe('runtime health checks', () => {
 
   test('Windows hook-path comparisons are case-insensitive', () => {
     const projectRoot = createProjectRoot();
-    const windowsRoot = projectRoot.replace(/\//g, '\\').toUpperCase();
-    const hooksPath = `${windowsRoot}\\.LEFTHOOK\\HOOKS`;
+    const hooksPath = '.LEFTHOOK\\HOOKS';
+    writeLefthookEntries(projectRoot, path.join(projectRoot, '.LEFTHOOK', 'HOOKS'));
 
     const result = checkRuntimeHealth(projectRoot, {
       _exec: createExecStub({ hooksPath }),
@@ -315,6 +315,321 @@ describe('runtime health checks', () => {
         missingHooks: ['pre-commit', 'pre-push']
       })
     );
+  });
+
+  test('configured lefthook hooksPath ignores comments and echo-only mentions', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '# managed by lefthook\necho check-tdd.js missing\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '# lefthook run pre-push\necho lefthook\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath accepts enforcement after echo preamble', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'echo "running" && lefthook run pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'printf "running" && lefthook run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'lefthook',
+      'pre-push': 'lefthook'
+    });
+  });
+
+  test('configured hooksPath accepts Forge hook execution commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'node .forge/hooks/check-tdd.js pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '.forge/hooks/check-tdd.js pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'forge',
+      'pre-push': 'forge'
+    });
+  });
+
+  test('configured hooksPath rejects Forge hook paths used only in file tests', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'if [ -f .forge/hooks/check-tdd.js ]; then echo present; fi\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'test -x check-tdd.js && echo present\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects Forge hook paths passed to non-executing commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'cat .forge/hooks/check-tdd.js\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'ls .forge/hooks/check-tdd.js\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects Forge hook paths stored in variable assignments', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'HOOK=.forge/hooks/check-tdd.js\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'HOOK=check-tdd.js\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath accepts env-prefixed hook execution commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    const beadsHooksDir = path.join(projectRoot, '.beads', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.mkdirSync(beadsHooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'FORGE_ENV=1 .forge/hooks/check-tdd.js\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'BEADS_ENV=1 bd hooks run pre-push "$@"\n');
+    fs.writeFileSync(path.join(beadsHooksDir, 'pre-push'), 'lefthook run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'forge',
+      'pre-push': 'beads->lefthook'
+    });
+  });
+
+  test('configured hooksPath ignores comments and echo-only Beads hook mentions', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '# bd hooks run pre-commit\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'echo bd hooks run pre-push\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects Beads hook mentions in heredoc text', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'cat <<EOF\nbd hooks run pre-commit\nEOF\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'cat <<EOF\nbd hooks run pre-push\nEOF\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects hook mentions in quoted heredoc text', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), "cat <<'EOF'\nbd hooks run pre-commit\nEOF\n");
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'cat <<"EOF"\n.forge/hooks/check-tdd.js\nEOF\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath rejects Beads hook paths passed to non-executing commands', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'cat bd hooks run pre-commit\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'ls bd hooks run pre-push\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
+    });
+  });
+
+  test('configured hooksPath accepts Beads-managed hook entries that chain to Lefthook', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    const beadsHooksDir = path.join(projectRoot, '.beads', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.mkdirSync(beadsHooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/usr/bin/env sh\nbd hooks run pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/usr/bin/env sh\nbd hooks run pre-push "$@"\n');
+    fs.writeFileSync(path.join(beadsHooksDir, 'pre-commit'), '#!/usr/bin/env sh\nlefthook run pre-commit "$@"\n');
+    fs.writeFileSync(path.join(beadsHooksDir, 'pre-push'), '#!/usr/bin/env sh\nlefthook run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.missingHooks).toEqual([]);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'beads->lefthook',
+      'pre-push': 'beads->lefthook'
+    });
+  });
+
+  test('configured hooksPath rejects pure Beads hook entries when Forge enforcement is unverified', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
+    fs.rmSync(hooksDir, { recursive: true, force: true });
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/usr/bin/env sh\nbd hooks run pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/usr/bin/env sh\nbd hooks run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'beads-unverified',
+      'pre-push': 'beads-unverified'
+    });
+  });
+
+  test('configured Beads hooksPath is accepted when hook files chain to Lefthook', () => {
+    const projectRoot = createProjectRoot();
+    const hooksDir = path.join(projectRoot, '.beads', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/usr/bin/env sh\nlefthook run pre-commit "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/usr/bin/env sh\nlefthook run pre-push "$@"\n');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.beads/hooks' }),
+      platform: 'win32',
+      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.hooks.active).toBe(true);
+    expect(result.checks.hooks.providers).toEqual({
+      'pre-commit': 'lefthook',
+      'pre-push': 'lefthook'
+    });
   });
 
   test('relative lefthook hooksPath is resolved from the git root', () => {

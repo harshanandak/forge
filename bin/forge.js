@@ -435,7 +435,7 @@ function checkPrerequisites() {
 // Universal SKILL.md content
 const SKILL_CONTENT = `---
 name: forge-workflow
-description: 7-stage TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
+description: Composable TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
 category: Development Workflow
 tags: [tdd, workflow, pr, git, testing]
 tools: [Bash, Read, Write, Edit, Grep, Glob]
@@ -453,9 +453,9 @@ Automatically invoke this skill when the user wants to:
 - Create a pull request
 - Run the development workflow
 
-## 7 Stages
+## Default Workflow Template
 
-| Stage | Command | Description |
+| Default Step | Command | Description |
 |-------|---------|-------------|
 | utility | \`/status\` | Check current context, active work, recent completions |
 | 1 | \`/plan\` | Design intent -> research -> branch + worktree + task list |
@@ -466,7 +466,9 @@ Automatically invoke this skill when the user wants to:
 | 6 | \`/premerge\` | Update docs, hand off PR to user |
 | 7 | \`/verify\` | Post-merge health check (CI on main, close Beads) |
 
-## Workflow Flow
+## Workflow Composition
+
+These commands are default building blocks. Use the whole flow when it fits, or invoke individual commands/skills when the active project plan permits a smaller path.
 
 \`\`\`
 /status -> /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
@@ -482,22 +484,22 @@ Automatically invoke this skill when the user wants to:
 
 // Cursor MDC rule content
 const CURSOR_RULE = `---
-description: Forge 7-Stage TDD Workflow
+description: Forge TDD Workflow Template
 alwaysApply: true
 ---
 
 # Forge Workflow Commands
 
-Use these commands via \`/command-name\`:
+Use these default-template commands via \`/command-name\`:
 
 - \`/status\` (utility) - Check current context, active work, recent completions
-1. \`/plan\` - Design intent Q&A, research, branch + task list
-2. \`/dev\` - Subagent-driven TDD per task (spec + quality review)
-3. \`/validate\` - Type check, lint, security, tests (HARD-GATE)
-4. \`/ship\` - Push and create PR with design doc reference
-5. \`/review\` - Handle ALL PR issues (Actions, Greptile, SonarCloud)
-6. \`/premerge\` - Complete docs on feature branch, hand off PR to user
-7. \`/verify\` - Post-merge health check (CI on main, close Beads)
+- \`/plan\` - Design intent Q&A, research, branch + task list
+- \`/dev\` - Subagent-driven TDD per task (spec + quality review)
+- \`/validate\` - Type check, lint, security, tests (HARD-GATE)
+- \`/ship\` - Push and create PR with design doc reference
+- \`/review\` - Handle ALL PR issues (Actions, Greptile, SonarCloud)
+- \`/premerge\` - Complete docs on feature branch, hand off PR to user
+- \`/verify\` - Post-merge health check (CI on main, close Beads)
 
 See AGENTS.md for full workflow details.
 `;

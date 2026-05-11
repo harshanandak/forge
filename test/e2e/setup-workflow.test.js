@@ -276,7 +276,7 @@ describe('E2E: Full setup workflow', () => {
       );
 
       expect(content).not.toBe(existingContent);
-      expect(content.includes('Forge 7-Stage TDD Workflow')).toBeTruthy();
+      expect(content.includes('Forge TDD Workflow Template')).toBeTruthy();
     });
   });
 

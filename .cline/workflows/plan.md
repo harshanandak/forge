@@ -3,7 +3,15 @@ Plan a feature from scratch: brainstorm design intent, research technical approa
 
 # Plan
 
-This command runs in **3 phases**. Each phase ends with a HARD-GATE. Do not skip phases.
+`/plan` is the default planning super-skill. A full invocation runs the three legacy sections below (intent, research, setup/task list), but v3 treats the internal planning work as callable sub-skills:
+
+- `plan.intent_capture`
+- `plan.parallel_research`
+- `plan.parallel_critics`
+- `plan.synthesis`
+- `plan.final_lock`
+
+Do not assume every invocation must run every sub-skill. Run only the requested/required sub-skill when the user asks for partial planning work, and record skipped nodes as skipped rather than silently deleting them from the graph. External planner artifacts may satisfy `/dev` entry without running `/plan`, per D34, if they provide the required structured task list and acceptance criteria.
 
 ---
 
@@ -17,13 +25,13 @@ Before ANY planning work begins:
    - Tell the user: "You are on '<branch>'. Planning must start from a clean worktree on master.
      Run: git checkout master — then re-run /plan."
 3. If on master, create the worktree NOW before asking any questions:
-   a. bd worktree create .worktrees/<slug> --branch feat/<slug>
+   a. forge worktree create <slug> --branch feat/<slug>
    b. cd .worktrees/<slug>
 4. Confirm: "Working in isolated worktree: .worktrees/<slug> (branch: feat/<slug>)"
 5. Create the epic issue and record the stage transition:
    ```bash
-   bd create --title="<feature-name>" --type=epic
-   bd update <id> --status=in_progress
+   forge create --title="<feature-name>" --type=epic
+   forge update <id> --status=in_progress
    bash scripts/beads-context.sh stage-transition <id> none plan
    ```
 6. ONLY THEN begin Phase 1.
@@ -43,6 +51,8 @@ between parallel features or sessions.
 /plan <feature-slug>
 /plan <feature-slug> --strategic   # Major architecture change: creates design doc PR before Phase 2
 /plan <feature-slug> --continue    # After --strategic PR is merged: run Phase 2 + 3
+/plan <feature-slug> --only=critics # Partial invocation: run one planning sub-skill and record evidence
+/plan <feature-slug> --only=lock    # Partial invocation: lock an already-supported plan
 ```
 
 ---
@@ -234,7 +244,7 @@ After merge, run `/plan <slug> --continue` to proceed to Phase 2 + 3.
 ```
 <HARD-GATE: Phase 1 exit>
 Do NOT begin Phase 2 (web research) until:
-1. User has approved the design in this session
+1. User has approved the design in this session OR external-planner evidence satisfies the `/dev` entry contract from D34
 2. Design doc exists at docs/work/YYYY-MM-DD-<slug>/design.md
 3. Design doc includes: success criteria, edge cases, out-of-scope, ambiguity policy
 4. Design doc is committed to git
@@ -490,7 +500,7 @@ Present the full task list. Allow the user to reorder, split, or remove tasks.
 
 ```
 <HARD-GATE: /plan exit>
-Do NOT proceed to /dev until ALL are confirmed:
+For a full `/plan` handoff only, do NOT hand off from `/plan` to `/dev` until ALL are confirmed:
 1. git branch --show-current output shows feat/<slug>
 2. git worktree list shows .worktrees/<slug>
 3. Baseline tests ran — either passing OR user confirmed to proceed past failures
@@ -501,6 +511,10 @@ Do NOT proceed to /dev until ALL are confirmed:
 8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
 9. `dep-guard.sh store-contracts` ran successfully (exit code 0) — or skipped if no contracts found
 10. `dep-guard.sh check-ripple` ran successfully and any proposed dependency mutation was reviewed with the user before calling `apply-decision`
+
+If `/dev` is entered from an external planner, this `/plan` exit gate is not required. Instead, the external artifact must satisfy the L1 `/dev` entry contract: structured task list, acceptance criteria, and enough design intent for TDD implementation.
+
+If only a sub-skill was invoked, do not claim full `/plan` completion. Record that sub-skill's evidence, gate outcome, and skipped graph nodes.
 </HARD-GATE>
 ```
 
@@ -524,14 +538,18 @@ Phase 3 output is generated from the live Beads issue, branch/worktree setup, ba
 ## Integration with Workflow
 
 ```
-Utility: /status     → Understand current context before starting
-Stage 1: /plan       → Design intent → research → branch + worktree + task list (you are here)
-Stage 2: /dev        → Implement each task with subagent-driven TDD
-Stage 3: /validate      → Type check, lint, tests, security — all fresh output
-Stage 4: /ship       → Push + create PR
-Stage 5: /review     → Address GitHub Actions, Greptile, SonarCloud
-Stage 6: /premerge   → Update docs, hand off PR to user
-Stage 7: /verify     → Post-merge CI check on main
+Utility: /status     -> Understand current context before starting
+
+Default template:
+  /plan     -> Optional default planner; external planners may satisfy /dev entry
+  /dev      -> Implement each task with subagent-driven TDD and continuous validation
+  /ship     -> Push + create PR
+  /review   -> Address GitHub Actions, Greptile, SonarCloud
+  /verify   -> Post-merge CI check on default branch
+
+Manual/support surfaces:
+  /validate  -> Cold-start or recovery validation, not a required stage boundary
+  /premerge  -> Merge-readiness checks move to PR-state hook in v3
 ```
 
 ## Tips

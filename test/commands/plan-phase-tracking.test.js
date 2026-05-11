@@ -6,21 +6,21 @@ const planPath = join(__dirname, '..', '..', '.claude', 'commands', 'plan.md');
 const planContent = readFileSync(planPath, 'utf-8');
 
 describe('/plan phase tracking', () => {
-  test('bd create appears BEFORE Phase 1 Q&A section (in Entry HARD-GATE area)', () => {
-    const bdCreateIndex = planContent.indexOf('bd create --title=');
+  test('forge create appears BEFORE Phase 1 Q&A section (in Entry HARD-GATE area)', () => {
+    const createIndex = planContent.indexOf('forge create --title=');
     const phase1HeadingIndex = planContent.indexOf('## Phase 1: Design Intent');
 
-    expect(bdCreateIndex).not.toBe(-1);
+    expect(createIndex).not.toBe(-1);
     expect(phase1HeadingIndex).not.toBe(-1);
-    expect(bdCreateIndex).toBeLessThan(phase1HeadingIndex);
+    expect(createIndex).toBeLessThan(phase1HeadingIndex);
   });
 
-  test('bd create uses --type=epic (not --type=feature)', () => {
+  test('forge create uses --type=epic (not --type=feature)', () => {
     // The early creation should be an epic
     const entryGateEnd = planContent.indexOf('## Phase 1: Design Intent');
     const entrySection = planContent.slice(0, entryGateEnd);
 
-    expect(entrySection).toMatch(/bd create\b.*--type=epic/);
+    expect(entrySection).toMatch(/forge create\b.*--type=epic/);
   });
 
   test('stage-transition with "none plan" appears at Phase 1 entry', () => {
@@ -52,11 +52,11 @@ describe('/plan phase tracking', () => {
     const step2Index = planContent.indexOf('### Step 2:', phase3Index);
     const step1Section = planContent.slice(phase3Index, step2Index);
 
-    // Should NOT have a standalone bd create for the main epic (without --parent)
-    expect(step1Section).not.toMatch(/bd create\b.*--type=epic/);
+    // Should NOT have a standalone forge create for the main epic (without --parent)
+    expect(step1Section).not.toMatch(/forge create\b.*--type=epic/);
 
-    // Any bd create in Step 1 should use --parent (child issue linking)
-    const step1Creates = step1Section.match(/bd create\b[^\n]*/g);
+    // Any forge create in Step 1 should use --parent (child issue linking)
+    const step1Creates = step1Section.match(/forge create\b[^\n]*/g);
     if (step1Creates) {
       for (const match of step1Creates) {
         expect(match).toContain('--parent');
@@ -67,17 +67,17 @@ describe('/plan phase tracking', () => {
     expect(step1Section).toMatch(/epic/i);
   });
 
-  test('bd create in Phase 3 is for child issues (--parent), not the main epic', () => {
+  test('forge create in Phase 3 is for child issues (--parent), not the main epic', () => {
     const phase3Index = planContent.indexOf('## Phase 3: Setup + Task List');
     const phase3Content = planContent.slice(phase3Index);
 
-    // Phase 3 should NOT have a standalone bd create --type=epic
-    expect(phase3Content).not.toMatch(/bd create\b.*--type=epic/);
+    // Phase 3 should NOT have a standalone forge create --type=epic
+    expect(phase3Content).not.toMatch(/forge create\b.*--type=epic/);
 
-    // Any bd create in Phase 3 should reference --parent (linking to epic)
-    const bdCreateMatches = phase3Content.match(/bd create\b[^\n]*/g);
-    if (bdCreateMatches) {
-      for (const match of bdCreateMatches) {
+    // Any forge create in Phase 3 should reference --parent (linking to epic)
+    const createMatches = phase3Content.match(/forge create\b[^\n]*/g);
+    if (createMatches) {
+      for (const match of createMatches) {
         expect(match).toContain('--parent');
       }
     }

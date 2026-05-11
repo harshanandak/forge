@@ -33,7 +33,7 @@ describe('Kilo Code config generation', () => {
 
     const content = await fs.promises.readFile(workflowPath, 'utf-8');
     expect(content.includes('Forge')).toBeTruthy();
-    expect(content.includes('7-Stage') || content.includes('7 Stage')).toBeTruthy();
+    expect(content.includes('TDD Workflow Template')).toBeTruthy();
     expect(content.includes('/status')).toBeTruthy();
     expect(content.includes('/plan')).toBeTruthy();
     expect(content.includes('/dev')).toBeTruthy();

@@ -74,7 +74,7 @@ bunx forge setup
 
 **Files created**:
 - `CLAUDE.md` → Linked to `AGENTS.md`
-- `.claude/commands/` → 7 slash commands
+- `.claude/commands/` → default Forge slash commands
 - `.claude/rules/workflow.md` → Workflow rules
 - `.claude/skills/forge-workflow/` → Skill files
 
@@ -88,7 +88,7 @@ bunx forge setup
 ```
 
 **Skills available**:
-- `forge-workflow` - All 7 stages
+- `forge-workflow` - Default Forge workflow template
 - `parallel-deep-research` - Deep analysis and web research (if PARALLEL_API_KEY configured)
 - `sonarcloud-analysis` - Code quality (if SONARCLOUD_TOKEN configured)
 
@@ -102,7 +102,7 @@ bunx forge setup
 - `.cursor/skills/forge-workflow/` → Skill files
 
 **Usage**:
-Cursor reads `.cursorrules` and follows the 7-stage workflow.
+Cursor reads `.cursorrules` and follows the default Forge workflow template.
 
 **Commands**:
 Use Composer or Chat to reference stages:
@@ -279,7 +279,7 @@ bd init --stealth
 
 ### Beads GitHub Sync
 
-The `--sync` flag during setup scaffolds a GitHub Actions workflow that syncs Beads issues with GitHub Issues bidirectionally.
+The `--sync` flag during setup scaffolds GitHub Actions workflows that synchronize shared fields between GitHub Issues and Beads.
 
 ```bash
 # Enable Beads sync during setup
@@ -287,7 +287,7 @@ bunx forge setup --sync
 ```
 
 **What gets scaffolded**:
-- `.github/workflows/beads-sync.yml` - GitHub Actions workflow for bidirectional sync
+- GitHub Actions workflows for GitHub-to-Beads and Beads-to-GitHub shared-field sync
 - PAT (Personal Access Token) configuration via `gh secret set`
 
 **PAT requirements**:
@@ -303,9 +303,11 @@ gh secret set BEADS_SYNC_TOKEN --body "ghp_your_token_here"
 ```
 
 **How sync works**:
-- On push: Beads issues are synced to GitHub Issues
-- On issue change: GitHub Issues are synced back to Beads
-- Conflict resolution: last-write-wins with timestamps
+- GitHub Issues are the human/team/public interface.
+- Beads is Forge's local issue engine for `forge ready`, `forge close`, and workflow state.
+- Shared fields sync across the boundary: title, labels/type, priority, assignee, status, and canonical links.
+- Forge-owned workflow context stays local in Beads: stage, dependencies, progress notes, decisions, and evaluator metadata.
+- Conflict handling is field-scoped; do not use broad last-write-wins semantics for Forge-owned local context.
 
 ---
 

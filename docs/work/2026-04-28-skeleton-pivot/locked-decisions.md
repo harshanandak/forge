@@ -1,10 +1,10 @@
 # Forge v3 — Locked Decisions Log
 
-**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8)
-**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D42 tracked, D41 reserved, supersedes annotated inline
+**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8) -> 2026-05-08 (D43 added)
+**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D43 tracked, D41 reserved, supersedes annotated inline
 **Companion**: [release-plan.md](./release-plan.md), [v3-redesign-strategy.md](./v3-redesign-strategy.md), [FINAL-THESIS.md](./FINAL-THESIS.md), [LEARNINGS.md](./LEARNINGS.md)
 
-This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch).
+This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch). D43 records the super-skill/sub-skill runtime contract for planning and later skill surfaces.
 
 When a doc disagrees with this file, this file wins until a successor decisions log is dated and merged.
 
@@ -545,6 +545,18 @@ ACTIVE.
 **Tradeoff considered**: "Show HN at v3.0" was rejected — the positioning critic correctly flagged v3.0 as plumbing without a demo wedge, and a weak HN launch poisons the brand. "Show HN at v3.2" was rejected as too late — competitors may ship something similar in the 4–5 week gap, and the build-in-public thread starves without milestones.
 
 **Anti-decision**: We explicitly chose against an early HN launch at v3.0 (no wedge), against waiting until v3.2 (too slow, competitive risk), and against silent launches (no community pull, no learning loop from real users).
+
+---
+
+## D43 — Skills compose as super-skills with callable sub-skills
+
+**Decision**: Forge skills are hierarchical runtime nodes. A stage-level skill such as `/plan`, `/dev`, or `/review` may act as a super-skill that composes smaller callable sub-skills. The runtime can invoke the whole super-skill or a sub-skill only, based on the workflow graph, user intent, current evidence, and gate state. For `/plan`, the initial sub-skills are `plan.intent_capture`, `plan.parallel_research`, `plan.parallel_critics`, `plan.synthesis`, and `plan.final_lock`. ACTIVE — refines D35 by adding graph-level composition beneath description-match auto-invoke.
+
+**Rationale**: D35 solved discovery: accepted skills auto-invoke by description match. It did not solve granularity. A Hermes-style skill library is useful because it can call the right slice of behavior without forcing the whole ceremony every time. Forge needs the same property: "run critics on this plan" should not run intent capture, research, synthesis, and final lock unless the graph says those nodes are stale or required.
+
+**Tradeoff considered**: Keep one file per top-level stage skill only. That preserves the current command shape but keeps phases hidden inside prose and makes partial invocation ad hoc. Split every phase into unrelated top-level skills. That maximizes reuse but loses the coherent default workflow and makes `forge options why` harder to explain.
+
+**Anti-decision**: We explicitly chose against monolithic stage-only skills and against ungrouped free-floating skill fragments. Sub-skills must remain visible under a super-skill composition.
 
 ---
 

@@ -1,6 +1,6 @@
 # Project Instructions
 
-Forge is a 7-stage TDD-first development workflow harness for AI coding agents (9 commands total, including utility stages).
+Forge is a TDD-first workflow harness for AI coding agents. The current default template has 7 named stage skills plus utility commands, and v3 treats those stages as configurable building blocks rather than a mandatory ladder for every task.
 
 **Package manager**: Bun (preferred for performance)
 
@@ -17,7 +17,7 @@ bun test         # Run tests
 
 ## Workflow
 
-> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of every session to load the complete Forge 7-stage workflow, change classification, and detailed stage instructions. AGENTS.md is the single source of truth for the workflow.
+> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of every session to load the current Forge workflow template, change classification, and detailed stage instructions. AGENTS.md is the single source of truth for the active workflow contract.
 
 ---
 

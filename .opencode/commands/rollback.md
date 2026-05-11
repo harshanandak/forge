@@ -168,7 +168,7 @@ Rollback complete!
 
 **Beads Integration**:
 - Parses commit message for issue number (`#123`)
-- If found, runs: `bd update <id> --status reverted --comment "PR reverted"`
+- If found, runs: `forge update <id> --status reverted --comment "PR reverted"`
 - Silently skips if Beads not installed
 - Updates issue tracking automatically
 
@@ -351,7 +351,7 @@ When rolling back a merged PR:
 1. Parse commit message for issue number (`#123`, `fixes #456`, etc.)
 2. If issue number found:
    ```bash
-   bd update <id> --status reverted --comment "PR reverted by rollback"
+   forge update <id> --status reverted --comment "PR reverted by rollback"
    ```
 3. Silently skip if:
    - Beads not installed
@@ -363,7 +363,7 @@ When rolling back a merged PR:
 If automatic detection doesn't work:
 ```bash
 # After rollback
-bd update 123 --status reverted --comment "Rolled back due to production issues"
+forge update 123 --status reverted --comment "Rolled back due to production issues"
 ```
 
 ## Troubleshooting

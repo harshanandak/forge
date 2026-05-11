@@ -25,6 +25,20 @@ describe('parseFrontmatter', () => {
     expect(result.body).toBe('Some body text');
   });
 
+  test('handles UTF-8 BOM before frontmatter', () => {
+    const input = '\uFEFF---\ndescription: Check current stage\n---\nSome body text';
+    const result = parseFrontmatter(input);
+    expect(result.frontmatter).toEqual({ description: 'Check current stage' });
+    expect(result.body).toBe('Some body text');
+  });
+
+  test('strips UTF-8 BOM from body after frontmatter', () => {
+    const input = '---\ndescription: Check current stage\n---\n\uFEFFSome body text';
+    const result = parseFrontmatter(input);
+    expect(result.frontmatter).toEqual({ description: 'Check current stage' });
+    expect(result.body).toBe('Some body text');
+  });
+
   test('handles multiple frontmatter keys', () => {
     const input = '---\ndescription: Plan a feature\nallowed_agents: claude\n---\nbody here';
     const result = parseFrontmatter(input);

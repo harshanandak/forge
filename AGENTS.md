@@ -1,8 +1,8 @@
 # Project Workflow Instructions
 
-## 7-Stage TDD-First Workflow
+## Default TDD-First Workflow Template
 
-This project enforces a **strict TDD-first development workflow** with 7 stages:
+This project ships a **default TDD-first workflow template** with 7 named stage skills. In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it.
 
 | Stage | Command     | Purpose                                                   | Required For |
 |-------|-------------|-----------------------------------------------------------|--------------|
@@ -20,12 +20,12 @@ This project enforces a **strict TDD-first development workflow** with 7 stages:
 
 When the user requests work, **you MUST automatically classify** the change type:
 
-### Critical (Full 7-stage workflow)
+### Critical (Full default workflow template)
 **Triggers:** Security, authentication, payments, breaking changes, new architecture, data migrations
 **Example:** "Add OAuth login", "Migrate database schema", "Implement payment gateway"
 **Workflow:** plan → dev → validate → ship → review → premerge → verify
 
-### Standard (6-stage workflow)
+### Standard (default workflow without post-merge verify)
 **Triggers:** Normal features, enhancements, new components
 **Example:** "Add user profile page", "Create notification system"
 **Workflow:** plan → dev → validate → ship → review → premerge
@@ -75,7 +75,7 @@ When the user requests work, **you MUST automatically classify** the change type
 
 Command files (`.claude/commands/*.md` and agent equivalents) must never hardcode example output when a script generates that output dynamically. Reference the script and describe what it does — don't duplicate its output with fake data that becomes stale.
 
-## TDD Development (Stage 2: /dev)
+## TDD Development (`/dev` Command)
 
 **Subagent-driven per-task implementation loop:**
 
@@ -114,7 +114,7 @@ Task 2: Validation logic
 
 > GitHub issue lifecycle may sync to Beads via CI -- see [docs/guides/BEADS_GITHUB_SYNC.md](docs/guides/BEADS_GITHUB_SYNC.md).
 
-**All workflow state stored in Beads metadata** (survives compaction):
+**Beads is the durable issue-state authority** (survives compaction). Forge may keep local adapter/cache files such as `.forge-state.json` for stage-entry recovery, but those files must not override current Beads issue state when Beads metadata is available.
 
 ```json
 {

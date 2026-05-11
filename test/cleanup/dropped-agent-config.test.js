@@ -8,8 +8,9 @@ describe('dropped-agent refs in config files', () => {
   describe('package.json', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
-    test('description contains "7-stage" (not "9-stage")', () => {
-      expect(pkg.description).toContain('7-stage');
+    test('description uses composable workflow language (not fixed stage count)', () => {
+      expect(pkg.description).toContain('Composable TDD workflow framework');
+      expect(pkg.description).not.toContain('7-stage');
       expect(pkg.description).not.toContain('9-stage');
     });
 
