@@ -143,6 +143,26 @@ describe('migrate dry-run', () => {
     expect(result.output).toContain('Fixture corpus: available');
   });
 
+  test('prints the resolved runtime graph in dry-run output without mutating the target repo', () => {
+    const { repoRoot } = materializeFixture('clean-v2-install');
+    const before = readGitStatus(repoRoot);
+
+    const report = buildMigrationDryRunReport(repoRoot);
+    const output = renderMigrationDryRunReport(report);
+
+    expect(report.runtimeGraph.kind).toBe('forge.runtimeGraph');
+    expect(output).toContain('Runtime graph');
+    expect(output).toContain('Phases: plan -> dev -> validate -> ship');
+    expect(output).toContain('Actions: action.plan.command, action.dev.command, action.validate.command, action.ship.command');
+    expect(output).toContain(
+      'Artifacts: artifact.design-doc, artifact.task-list, artifact.changed-files, artifact.validation-output, artifact.pull-request'
+    );
+    expect(output).toContain('Evaluator regions: evaluator.plan-entry, evaluator.tdd-loop, evaluator.validation-suite');
+    expect(output).toContain('Gates: gate.plan-exit, gate.dev-exit, gate.validate-exit, gate.ship-entry');
+    expect(output).toContain('Evidence: evidence.command-docs, evidence.tdd-tests, evidence.validation-output, evidence.dry-run-report');
+    expect(readGitStatus(repoRoot)).toBe(before);
+  });
+
   test('command preserves the rendered dry-run report when validation fails', async () => {
     const { repoRoot } = materializeFixture('broken-beads-state');
 
