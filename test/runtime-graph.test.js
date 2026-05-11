@@ -68,4 +68,21 @@ describe('runtime graph contract', () => {
       expect(doc).toContain(`/${action.command}`);
     }
   });
+
+  test('does not make phase entry gates depend on artifacts produced by the same phase', () => {
+    const graph = getResolvedRuntimeGraph();
+
+    for (const gate of graph.gates.filter(candidate => candidate.label.includes('entry'))) {
+      const phase = graph.phases.find(candidate => candidate.id === gate.phase);
+      const phaseActions = graph.actions.filter(action => phase.actions.includes(action.id));
+      const samePhaseWrites = new Set(phaseActions.flatMap(action => action.writes));
+
+      for (const requirement of gate.requires) {
+        expect(
+          samePhaseWrites.has(requirement),
+          `${gate.id} should not require ${requirement} before ${phase.id} actions run`
+        ).toBe(false);
+      }
+    }
+  });
 });
