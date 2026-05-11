@@ -16,6 +16,8 @@ describe('runtime graph contract', () => {
     expect(envelope.schemaVersion).toBe(RUNTIME_GRAPH_SCHEMA_VERSION);
     expect(envelope.kind).toBe('forge.runtimeGraph');
     expect(envelope.schema).toEqual(RUNTIME_GRAPH_SCHEMA);
+    expect(envelope.schema.required).toContain('schema');
+    expect(envelope.schema.properties.schema.required).toEqual(['$schema', '$id']);
     expect(envelope.graph).toEqual(getResolvedRuntimeGraph());
     expect(JSON.parse(JSON.stringify(envelope))).toEqual(envelope);
   });
@@ -38,6 +40,8 @@ describe('runtime graph contract', () => {
       Gate: 'gates',
       Evidence: 'evidence',
     });
+    expect(graph.evidence.find(evidence => evidence.id === 'evidence.validation-output').source)
+      .toBe('bun run typecheck; bun run lint; bun test; bun audit');
   });
 
   test('represents the current plan to ship command flow as a resolved graph', () => {
