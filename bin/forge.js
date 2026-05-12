@@ -4130,7 +4130,8 @@ async function main() {
   SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
-  if (NON_INTERACTIVE) {
+  const suppressNonInteractiveBanner = command === 'options' && args.includes('--json');
+  if (NON_INTERACTIVE && !suppressNonInteractiveBanner) {
     const agentFlag = flags.agents;
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")
