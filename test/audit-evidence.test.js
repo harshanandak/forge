@@ -173,6 +173,22 @@ describe('audit evidence adapter', () => {
 		expect(result.fallback.error).toBe('disk unavailable');
 	});
 
+	test('requires JSON ids from bd audit record output', () => {
+		const result = recordSubagentAuditEvent({
+			command: 'dev',
+			role: 'implementer',
+			prompt: 'prompt',
+			response: 'response',
+		}, {
+			runCommand: () => 'help text with int-fallback',
+			metaJsonSupported: true,
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.entryId).toBe(null);
+		expect(result.fallback).toBe(null);
+	});
+
 	test('skips fallback metadata when upstream meta-json support is present', () => {
 		const commands = [];
 		const fsDouble = createFsDouble();
@@ -242,7 +258,7 @@ describe('audit evidence adapter', () => {
 			role: 'spec_reviewer',
 			verdict: 'PASS',
 		}, {
-			runCommand: () => JSON.stringify({ ok: true }),
+			runCommand: () => 'help text with int-pass',
 		});
 		const thrown = labelSubagentAuditEvent('int-fail', {
 			role: 'quality_reviewer',
@@ -307,7 +323,7 @@ describe('audit evidence adapter', () => {
 	test('detects whether bd audit record exposes meta-json support', () => {
 		expect(hasAuditMetaJsonSupport(() => 'Usage: bd audit record --meta-json string')).toBe(true);
 		expect(hasAuditMetaJsonSupport(() => 'Usage: bd audit record --prompt string')).toBe(false);
-		expect(hasAuditMetaJsonSupport(() => { throw new Error('missing bd'); })).toBe(false);
+		expect(() => hasAuditMetaJsonSupport(() => { throw new Error('missing bd'); })).toThrow('missing bd');
 	});
 
 	test('exports verdict label map', () => {
