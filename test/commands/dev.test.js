@@ -236,6 +236,22 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(commands[0].args).toContain('llm_call');
 		});
 
+		test('fails dev execution when audit evidence persistence fails', async () => {
+			const result = await executeDev('audit-feature', {
+				phase: 'RED',
+				audit: true,
+				auditOptions: {
+					runCommand: () => 'missing-json-id',
+					metaJsonSupported: true,
+				},
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/Audit evidence persistence failed/);
+			expect(result.auditEvidence.record.success).toBe(false);
+			expect(result.auditEvidence.record.entryId).toBe(null);
+		});
+
 		test('records failed GREEN audit evidence with the concrete error response', async () => {
 			const commands = [];
 			const runCommand = (cmd, args) => {
