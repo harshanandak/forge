@@ -56,8 +56,9 @@ describe('audit evidence adapter', () => {
 			command: 'dev',
 			role: 'implementer',
 			prompt:
-				'Payload: {"token":"abc123","password": "hunter2","api_key": "key-123","private_key":"pk-123"} authorization: abc credential=xyz',
-			response: "Result: {'secret':'value-123'} private-key sk-private authorization bearer-token standalone sk-12345678",
+				'Payload: {"token":"abc123","password": "hunter2","api_key": "key-123","private_key":"pk-123"} authorization: abc credential=xyz api key: spaced-api-123 private key spaced-private-123',
+			response:
+				"Result: {'secret':'value-123'} private-key sk-private authorization bearer-token token is phrase-token-123 standalone sk-12345678",
 		});
 
 		const serialized = JSON.stringify(payload);
@@ -74,10 +75,14 @@ describe('audit evidence adapter', () => {
 		expect(serialized).not.toContain('pk-123');
 		expect(serialized).not.toContain('abc');
 		expect(serialized).not.toContain('xyz');
+		expect(serialized).not.toContain('spaced-api-123');
+		expect(serialized).not.toContain('spaced-private-123');
 		expect(serialized).not.toContain('value-123');
 		expect(serialized).not.toContain('sk-private');
 		expect(serialized).not.toContain('sk-12345678');
 		expect(serialized).not.toContain('bearer-token');
+		expect(serialized).not.toContain('phrase-token-123');
+		expect(serialized).toContain('token is [REDACTED]');
 		expect(serialized).not.toMatch(/\d+=\[REDACTED\]/);
 	});
 
