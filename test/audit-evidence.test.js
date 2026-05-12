@@ -206,7 +206,7 @@ describe('audit evidence adapter', () => {
 		const commands = [];
 		const runCommand = (cmd, args) => {
 			commands.push({ cmd, args });
-			return JSON.stringify({ id: 'int-label' });
+			return JSON.stringify({ id: args[2] });
 		};
 
 		const pass = labelSubagentAuditEvent('int-pass', {
@@ -219,7 +219,11 @@ describe('audit evidence adapter', () => {
 		}, { runCommand });
 
 		expect(pass.label).toBe('good');
+		expect(pass.success).toBe(true);
+		expect(pass.entryId).toBe('int-pass');
 		expect(fail.label).toBe('bad');
+		expect(fail.success).toBe(true);
+		expect(fail.entryId).toBe('int-fail');
 		expect(commands[0].args).toEqual([
 			'audit',
 			'label',
@@ -231,6 +235,28 @@ describe('audit evidence adapter', () => {
 			'spec_reviewer verdict: PASS',
 		]);
 		expect(commands[1].args).toContain('bad');
+	});
+
+	test('reports label failures when bd output is invalid or the command fails', () => {
+		const invalid = labelSubagentAuditEvent('int-pass', {
+			role: 'spec_reviewer',
+			verdict: 'PASS',
+		}, {
+			runCommand: () => JSON.stringify({ ok: true }),
+		});
+		const thrown = labelSubagentAuditEvent('int-fail', {
+			role: 'quality_reviewer',
+			verdict: 'FAIL',
+		}, {
+			runCommand: () => {
+				throw new Error('bd label failed');
+			},
+		});
+
+		expect(invalid.success).toBe(false);
+		expect(invalid.entryId).toBe(null);
+		expect(thrown.success).toBe(false);
+		expect(thrown.error).toBe('bd label failed');
 	});
 
 	test('does not label implementer or unknown verdict events', () => {
@@ -267,13 +293,14 @@ describe('audit evidence adapter', () => {
 		}, {
 			runCommand: (cmd, args) => {
 				commands.push({ cmd, args });
-				return JSON.stringify({ id: commands.length === 1 ? 'int-record' : 'int-label' });
+				return JSON.stringify({ id: 'int-record' });
 			},
 			metaJsonSupported: true,
 		});
 
 		expect(result.record.entryId).toBe('int-record');
 		expect(result.label.label).toBe('good');
+		expect(result.label.success).toBe(true);
 		expect(commands.length).toBe(2);
 	});
 
