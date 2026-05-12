@@ -78,6 +78,20 @@ workflow:
     expect(result.errors[0].message).toContain('enabled must be a boolean');
   });
 
+  test('rejects scalar workflow primitive config entries', () => {
+    const projectRoot = makeProject(`
+workflow:
+  gates:
+    gate.ship-entry: false
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_PRIMITIVE_CONFIG');
+    expect(result.errors[0].message).toContain('config must be an object');
+  });
+
   test('validates protected path policy entries', () => {
     const projectRoot = makeProject(`
 protectedPaths:
