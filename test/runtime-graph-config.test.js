@@ -92,6 +92,32 @@ workflow:
     expect(result.errors[0].message).toContain('config must be an object');
   });
 
+  test('rejects scalar workflow section config entries', () => {
+    const projectRoot = makeProject(`
+workflow:
+  gates: false
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_CONFIG_SECTION');
+    expect(result.errors[0].message).toContain('workflow.gates must be an object');
+  });
+
+  test('rejects scalar adapter config entries', () => {
+    const projectRoot = makeProject(`
+adapters:
+  issue: false
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_ADAPTER_CONFIG');
+    expect(result.errors[0].message).toContain("adapter 'issue' config must be an object");
+  });
+
   test('validates protected path policy entries', () => {
     const projectRoot = makeProject(`
 protectedPaths:
