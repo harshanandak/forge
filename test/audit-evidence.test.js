@@ -123,6 +123,7 @@ describe('audit evidence adapter', () => {
 	});
 
 	test('skips fallback metadata when upstream meta-json support is present', () => {
+		const commands = [];
 		const fsDouble = createFsDouble();
 		const result = recordSubagentAuditEvent({
 			command: 'dev',
@@ -134,11 +135,19 @@ describe('audit evidence adapter', () => {
 			metadata: { files: ['test/audit-evidence.test.js'] },
 		}, {
 			fs: fsDouble,
-			runCommand: () => JSON.stringify({ id: 'int-meta' }),
+			runCommand: (cmd, args) => {
+				commands.push({ cmd, args });
+				return JSON.stringify({ id: 'int-meta' });
+			},
 			metaJsonSupported: true,
 		});
 
 		expect(result.entryId).toBe('int-meta');
+		expect(commands[0].args).toContain('--meta-json');
+		const metaIndex = commands[0].args.indexOf('--meta-json');
+		expect(JSON.parse(commands[0].args[metaIndex + 1])).toEqual({
+			files: ['test/audit-evidence.test.js'],
+		});
 		expect(fsDouble.writes.length).toBe(0);
 	});
 
