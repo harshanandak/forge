@@ -303,6 +303,22 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(JSON.parse(commands[0].args[promptIndex + 1]).content).toBe('forge dev audit-feature RED');
 		});
 
+		test('handler rejects missing issue-id and phase flag values', async () => {
+			const missingIssueId = await handler(['audit-feature', '--issue-id'], {});
+			const missingIssueIdBeforeFlag = await handler(['audit-feature', '--issue-id', '--phase', 'RED'], {});
+			const missingIssueIdEquals = await handler(['audit-feature', '--issue-id=', 'RED'], {});
+			const missingPhase = await handler(['audit-feature', '--phase'], {});
+			const missingPhaseBeforeFlag = await handler(['audit-feature', '--phase', '--issue-id', 'forge-besw.20'], {});
+			const missingPhaseEquals = await handler(['audit-feature', '--phase='], {});
+
+			expect(missingIssueId).toEqual({ success: false, error: '--issue-id requires a value' });
+			expect(missingIssueIdBeforeFlag).toEqual({ success: false, error: '--issue-id requires a value' });
+			expect(missingIssueIdEquals).toEqual({ success: false, error: '--issue-id requires a value' });
+			expect(missingPhase).toEqual({ success: false, error: '--phase requires a value' });
+			expect(missingPhaseBeforeFlag).toEqual({ success: false, error: '--phase requires a value' });
+			expect(missingPhaseEquals).toEqual({ success: false, error: '--phase requires a value' });
+		});
+
 		test('should validate tests pass before allowing REFACTOR', async () => {
 			const result = await executeDev('feature', { phase: 'REFACTOR', testsPassing: false });
 			expect(result.success).toBe(false);
