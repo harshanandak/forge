@@ -81,6 +81,15 @@ protectedPaths:
     expect(parsed.item.requires).toContain('artifact.validation-output');
   });
 
+  test('why --json reports unknown primitives as parseable JSON', async () => {
+    const result = await run(['why', 'gate.nope', '--json']);
+    const parsed = JSON.parse(result.output);
+
+    expect(result.success).toBe(false);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.errors[0].code).toBe('UNKNOWN_GRAPH_PRIMITIVE');
+  });
+
   test('forge explain is a thin alias over options why', async () => {
     const result = await explainCommand.handler(['gate.ship-entry', '--json'], {}, makeProject(null));
     const parsed = JSON.parse(result.output);

@@ -63,6 +63,21 @@ workflow:
     expect(result.errors[0].message).toContain('Unknown gate');
   });
 
+  test('rejects non-boolean enabled values in workflow config', () => {
+    const projectRoot = makeProject(`
+workflow:
+  gates:
+    gate.ship-entry:
+      enabled: "false"
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_ENABLED_VALUE');
+    expect(result.errors[0].message).toContain('enabled must be a boolean');
+  });
+
   test('validates protected path policy entries', () => {
     const projectRoot = makeProject(`
 protectedPaths:
