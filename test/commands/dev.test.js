@@ -536,6 +536,35 @@ describe('Dev Command - TDD Cycle Management', () => {
 			]);
 		});
 
+		test('keeps reviewer helper phases pinned to reviewer roles', () => {
+			const specRunner = createRunner();
+			const qualityRunner = createRunner();
+
+			emitSpecReviewerAuditEvidence({
+				phase: 'GREEN',
+				prompt: 'spec prompt',
+				response: 'PASS',
+				verdict: 'PASS',
+			}, {
+				runCommand: specRunner.runCommand,
+				metaJsonSupported: true,
+			});
+			emitQualityReviewerAuditEvidence({
+				phase: 'GREEN',
+				prompt: 'quality prompt',
+				response: 'FAIL',
+				verdict: 'FAIL',
+			}, {
+				runCommand: qualityRunner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			const specPromptIndex = specRunner.commands[0].args.indexOf('--prompt');
+			const qualityPromptIndex = qualityRunner.commands[0].args.indexOf('--prompt');
+			expect(JSON.parse(specRunner.commands[0].args[specPromptIndex + 1]).phase).toBe('SPEC');
+			expect(JSON.parse(qualityRunner.commands[0].args[qualityPromptIndex + 1]).phase).toBe('QUALITY');
+		});
+
 		test('emits quality reviewer FAIL evidence and labels it bad', () => {
 			const runner = createRunner();
 			const result = emitQualityReviewerAuditEvidence({
