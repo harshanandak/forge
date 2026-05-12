@@ -211,6 +211,30 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(['RED', 'GREEN', 'REFACTOR'].includes(result.detectedPhase)).toBeTruthy();
 		});
 
+		test('records audit evidence when enabled during dev execution', async () => {
+			const commands = [];
+			const runCommand = (cmd, args) => {
+				commands.push({ cmd, args });
+				return JSON.stringify({ id: 'int-record' });
+			};
+
+			const result = await executeDev('audit-feature', {
+				phase: 'RED',
+				audit: true,
+				auditOptions: {
+					runCommand,
+					metaJsonSupported: true,
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.auditEvidence.record.entryId).toBe('int-record');
+			expect(commands.length).toBe(1);
+			expect(commands[0].cmd).toBe('bd');
+			expect(commands[0].args).toContain('record');
+			expect(commands[0].args).toContain('llm_call');
+		});
+
 		test('should validate tests pass before allowing REFACTOR', async () => {
 			const result = await executeDev('feature', { phase: 'REFACTOR', testsPassing: false });
 			expect(result.success).toBe(false);
