@@ -51,6 +51,25 @@ describe('audit evidence adapter', () => {
 		expect(serialized).not.toContain('secret-token');
 	});
 
+	test('redacts JSON-style secret assignments in free-form strings', () => {
+		const payload = buildSubagentAuditPayload({
+			command: 'dev',
+			role: 'implementer',
+			prompt: 'Payload: {"token":"abc123","password": "hunter2","api_key": "key-123"}',
+			response: "Result: {'secret':'value-123'}",
+		});
+
+		const serialized = JSON.stringify(payload);
+		expect(serialized).toContain('[REDACTED]');
+		expect(serialized).toContain('token');
+		expect(serialized).toContain('password');
+		expect(serialized).toContain('api_key');
+		expect(serialized).not.toContain('abc123');
+		expect(serialized).not.toContain('hunter2');
+		expect(serialized).not.toContain('key-123');
+		expect(serialized).not.toContain('value-123');
+	});
+
 	test('records subagent calls through bd audit record and writes fallback metadata without replacing Beads', () => {
 		const commands = [];
 		const fsDouble = createFsDouble();

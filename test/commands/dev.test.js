@@ -412,6 +412,19 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(runner.commands[0].args.join(' ')).toContain('llm_call');
 		});
 
+		test('emits implementer evidence with a default event object', () => {
+			const runner = createRunner();
+			const result = emitImplementerAuditEvidence(undefined, {
+				runCommand: runner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			expect(result.record.entryId).toBe('int-record');
+			expect(result.label.skipped).toBe(true);
+			expect(runner.commands.length).toBe(1);
+			expect(runner.commands[0].args).toContain('record');
+		});
+
 		test('emits spec reviewer PASS evidence and labels it good', () => {
 			const runner = createRunner();
 			const result = emitSpecReviewerAuditEvidence({
