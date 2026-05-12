@@ -55,8 +55,9 @@ describe('audit evidence adapter', () => {
 		const payload = buildSubagentAuditPayload({
 			command: 'dev',
 			role: 'implementer',
-			prompt: 'Payload: {"token":"abc123","password": "hunter2","api_key": "key-123"}',
-			response: "Result: {'secret':'value-123'}",
+			prompt:
+				'Payload: {"token":"abc123","password": "hunter2","api_key": "key-123","private_key":"pk-123"} authorization: abc credential=xyz',
+			response: "Result: {'secret':'value-123'} private-key sk-private authorization bearer-token",
 		});
 
 		const serialized = JSON.stringify(payload);
@@ -64,10 +65,18 @@ describe('audit evidence adapter', () => {
 		expect(serialized).toContain('token');
 		expect(serialized).toContain('password');
 		expect(serialized).toContain('api_key');
+		expect(serialized).toContain('private_key');
+		expect(serialized).toContain('authorization');
+		expect(serialized).toContain('credential');
 		expect(serialized).not.toContain('abc123');
 		expect(serialized).not.toContain('hunter2');
 		expect(serialized).not.toContain('key-123');
+		expect(serialized).not.toContain('pk-123');
+		expect(serialized).not.toContain('abc');
+		expect(serialized).not.toContain('xyz');
 		expect(serialized).not.toContain('value-123');
+		expect(serialized).not.toContain('sk-private');
+		expect(serialized).not.toContain('bearer-token');
 	});
 
 	test('records subagent calls through bd audit record and writes fallback metadata without replacing Beads', () => {
