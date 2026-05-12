@@ -7,6 +7,9 @@ const {
 	generateCommitMessage,
 	identifyParallelWork,
 	executeDev,
+	emitImplementerAuditEvidence,
+	emitSpecReviewerAuditEvidence,
+	emitQualityReviewerAuditEvidence,
 	calculateDecisionRoute,
 	DECISION_ROUTES,
 } = require('../../lib/commands/dev.js');
@@ -372,6 +375,108 @@ describe('Dev Command - TDD Cycle Management', () => {
 				expect(result.route).toBe('BLOCKED');
 				expect(result.mandatoryOverride).toBe(true);
 			});
+		});
+	});
+
+	describe('/dev audit evidence helpers', () => {
+		function createRunner() {
+			const commands = [];
+			return {
+				commands,
+				runCommand: (cmd, args) => {
+					commands.push({ cmd, args });
+					return JSON.stringify({ id: commands.length === 1 ? 'int-record' : 'int-label' });
+				},
+			};
+		}
+
+		test('emits implementer evidence through bd audit record', () => {
+			const runner = createRunner();
+			const result = emitImplementerAuditEvidence({
+				issueId: 'forge-besw.20',
+				phase: 'GREEN',
+				taskId: 'task-1',
+				taskTitle: 'Implement audit helper',
+				prompt: 'implement prompt',
+				response: 'implementation complete',
+			}, {
+				runCommand: runner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			expect(result.record.entryId).toBe('int-record');
+			expect(result.label.skipped).toBe(true);
+			expect(runner.commands.length).toBe(1);
+			expect(runner.commands[0].args).toContain('record');
+			expect(runner.commands[0].args).toContain('forge-besw.20');
+			expect(runner.commands[0].args.join(' ')).toContain('llm_call');
+		});
+
+		test('emits spec reviewer PASS evidence and labels it good', () => {
+			const runner = createRunner();
+			const result = emitSpecReviewerAuditEvidence({
+				issueId: 'forge-besw.20',
+				taskId: 'task-1',
+				taskTitle: 'Spec review',
+				prompt: 'spec prompt',
+				response: 'PASS',
+				verdict: 'PASS',
+			}, {
+				runCommand: runner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			expect(result.record.entryId).toBe('int-record');
+			expect(result.label.label).toBe('good');
+			expect(runner.commands[1].args).toEqual([
+				'audit',
+				'label',
+				'int-record',
+				'--json',
+				'--label',
+				'good',
+				'--reason',
+				'spec_reviewer verdict: PASS',
+			]);
+		});
+
+		test('emits quality reviewer FAIL evidence and labels it bad', () => {
+			const runner = createRunner();
+			const result = emitQualityReviewerAuditEvidence({
+				issueId: 'forge-besw.20',
+				taskId: 'task-2',
+				taskTitle: 'Quality review',
+				prompt: 'quality prompt',
+				response: 'FAIL',
+				verdict: 'FAIL',
+			}, {
+				runCommand: runner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			expect(result.record.entryId).toBe('int-record');
+			expect(result.label.label).toBe('bad');
+			expect(runner.commands[1].args).toContain('bad');
+			expect(runner.commands[1].args).toContain('quality_reviewer verdict: FAIL');
+		});
+
+		test('does not label reviewer events with unknown verdicts', () => {
+			const runner = createRunner();
+			const result = emitQualityReviewerAuditEvidence({
+				issueId: 'forge-besw.20',
+				taskId: 'task-3',
+				taskTitle: 'Quality review pending',
+				prompt: 'quality prompt',
+				response: 'needs more data',
+				verdict: 'UNKNOWN',
+			}, {
+				runCommand: runner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			expect(result.record.entryId).toBe('int-record');
+			expect(result.label.skipped).toBe(true);
+			expect(runner.commands.length).toBe(1);
 		});
 	});
 });
