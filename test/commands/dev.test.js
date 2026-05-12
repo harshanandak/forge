@@ -308,6 +308,31 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(result.success).toBe(false);
 			expect(result.error).toMatch(/tests.*fail/i);
 		});
+
+		test('records audit evidence when REFACTOR is blocked by failing tests', async () => {
+			const commands = [];
+			const result = await executeDev('feature', {
+				phase: 'REFACTOR',
+				testsPassing: false,
+				audit: true,
+				auditOptions: {
+					runCommand: (cmd, args) => {
+						commands.push({ cmd, args });
+						return JSON.stringify({ id: 'int-record' });
+					},
+					metaJsonSupported: true,
+				},
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.auditEvidence.record.entryId).toBe('int-record');
+			expect(commands.length).toBe(1);
+			expect(commands[0].args).toContain('record');
+			const responseIndex = commands[0].args.indexOf('--response');
+			const response = JSON.parse(commands[0].args[responseIndex + 1]);
+			expect(response.verdict).toBe('FAIL');
+			expect(response.content).toMatch(/Cannot proceed to REFACTOR phase/);
+		});
 	});
 
 	describe('Parallel development support', () => {
