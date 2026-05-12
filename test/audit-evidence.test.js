@@ -189,6 +189,27 @@ describe('audit evidence adapter', () => {
 		expect(result.fallback).toBe(null);
 	});
 
+	test('normalizes malformed metadata before audit recording', () => {
+		const commands = [];
+		const result = recordSubagentAuditEvent({
+			command: 'dev',
+			role: 'implementer',
+			prompt: 'prompt',
+			response: 'response',
+			metadata: 'token=should-not-be-meta-json',
+		}, {
+			runCommand: (cmd, args) => {
+				commands.push({ cmd, args });
+				return JSON.stringify({ id: 'int-record' });
+			},
+			metaJsonSupported: true,
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.payload.metadata).toEqual({});
+		expect(commands[0].args).not.toContain('--meta-json');
+	});
+
 	test('skips fallback metadata when upstream meta-json support is present', () => {
 		const commands = [];
 		const fsDouble = createFsDouble();
