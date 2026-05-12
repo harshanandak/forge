@@ -177,17 +177,23 @@ function getShardPlan(args, { allUnitTests, durationMap }) {
   };
 }
 
-function runTests(label, files) {
-  fs.mkdirSync(reportDir, { recursive: true });
-  const junitPath = path.join(reportDir, `${label}.xml`);
-  const bunCommand = process.env.BUN_EXE || 'bun';
-  const result = spawnSync(bunCommand, [
+function buildBunTestArgs({ junitPath, files }) {
+  return [
     'test',
+    '--timeout',
+    '15000',
     '--reporter=junit',
     '--reporter-outfile',
     junitPath,
     ...files,
-  ], {
+  ];
+}
+
+function runTests(label, files) {
+  fs.mkdirSync(reportDir, { recursive: true });
+  const junitPath = path.join(reportDir, `${label}.xml`);
+  const bunCommand = process.env.BUN_EXE || 'bun';
+  const result = spawnSync(bunCommand, buildBunTestArgs({ junitPath, files }), {
     cwd: rootDir,
     stdio: 'inherit',
     shell: process.platform === 'win32',
@@ -226,6 +232,7 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_SMOKE_FILES,
   PROFILE_MAX_AGE_MS,
+  buildBunTestArgs,
   createDurationMap,
   ensureFilesExist,
   getShardPlan,

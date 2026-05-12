@@ -31,6 +31,8 @@ describe('runtime graph contract', () => {
     expect(graph.evaluatorRegions.length).toBeGreaterThanOrEqual(3);
     expect(graph.gates.length).toBeGreaterThanOrEqual(4);
     expect(graph.evidence.length).toBeGreaterThanOrEqual(4);
+    expect(graph.rails.length).toBeGreaterThanOrEqual(5);
+    expect(graph.adapters.length).toBeGreaterThanOrEqual(2);
 
     expect(graph.primitives).toEqual({
       Phase: 'phases',
@@ -39,6 +41,8 @@ describe('runtime graph contract', () => {
       EvaluatorRegion: 'evaluatorRegions',
       Gate: 'gates',
       Evidence: 'evidence',
+      Rail: 'rails',
+      Adapter: 'adapters',
     });
     expect(graph.evidence.find(evidence => evidence.id === 'evidence.validation-output').source)
       .toBe('bun run typecheck; bun run lint; bun test; bun audit');

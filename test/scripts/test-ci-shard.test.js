@@ -7,6 +7,7 @@ const { afterEach, describe, expect, test } = require('bun:test');
 
 const {
   PROFILE_MAX_AGE_MS,
+  buildBunTestArgs,
   createDurationMap,
   getShardPlan,
   listAllUnitTests,
@@ -107,6 +108,21 @@ describe('scripts/test-ci-shard.js', () => {
 
     expect(plan.source).toBe('runtime-balanced');
     expect(plan.files).toEqual(['test/a.test.js']);
+  });
+
+  test('buildBunTestArgs uses the repo timeout for CI shard runs', () => {
+    expect(buildBunTestArgs({
+      junitPath: 'test-results/unit.xml',
+      files: ['test/a.test.js'],
+    })).toEqual([
+      'test',
+      '--timeout',
+      '15000',
+      '--reporter=junit',
+      '--reporter-outfile',
+      'test-results/unit.xml',
+      'test/a.test.js',
+    ]);
   });
 
   test('listAllUnitTests includes package test roots for shard planning', () => {

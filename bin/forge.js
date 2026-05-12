@@ -3834,14 +3834,16 @@ async function interactiveSetupWithFlags(flags) {
 
 // Main
 // Helper: Handle --path setup
-function handlePathSetup(targetPath) {
+function handlePathSetup(targetPath, options = {}) {
   const resolvedPath = path.resolve(targetPath);
 
   // Create directory if it doesn't exist
   if (!fs.existsSync(resolvedPath)) {
     try {
-      fs.mkdirSync(resolvedPath, { recursive: true });
+    fs.mkdirSync(resolvedPath, { recursive: true });
+    if (!options.quiet) {
       console.log(`Created directory: ${resolvedPath}`);
+    }
     } catch (err) {
       console.error(`Error creating directory: ${err.message}`);
       process.exit(1);
@@ -3857,8 +3859,10 @@ function handlePathSetup(targetPath) {
   // Change to target directory
   try {
     process.chdir(resolvedPath);
-    console.log(`Working directory: ${resolvedPath}`);
-    console.log('');
+    if (!options.quiet) {
+      console.log(`Working directory: ${resolvedPath}`);
+      console.log('');
+    }
   } catch (err) {
     console.error(`Error changing to directory: ${err.message}`);
     process.exit(1);
@@ -4121,6 +4125,7 @@ async function handleExternalServices(skipExternal, selectedAgents) {
 async function main() {
   const command = args[0];
   const flags = parseFlags();
+  const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
@@ -4130,7 +4135,7 @@ async function main() {
   SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
-  if (NON_INTERACTIVE) {
+  if (NON_INTERACTIVE && !suppressJsonIntrospectionOutput) {
     const agentFlag = flags.agents;
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")
@@ -4156,7 +4161,7 @@ async function main() {
   // Handle --path option: change to target directory
   if (flags.path) {
     // Update projectRoot after changing directory to maintain state consistency
-    projectRoot = handlePathSetup(flags.path);
+    projectRoot = handlePathSetup(flags.path, { quiet: suppressJsonIntrospectionOutput });
   }
 
   // Load command registry (auto-discovered commands from lib/commands/)
