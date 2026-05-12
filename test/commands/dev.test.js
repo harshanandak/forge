@@ -1,5 +1,6 @@
 const { describe, test, expect } = require('bun:test');
 const {
+	handler,
 	detectTDDPhase,
 	identifyFilePairs,
 	runTests,
@@ -235,6 +236,51 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(commands[0].args).toContain('llm_call');
 		});
 
+		test('records failed GREEN audit evidence with the concrete error response', async () => {
+			const commands = [];
+			const runCommand = (cmd, args) => {
+				commands.push({ cmd, args });
+				return JSON.stringify({ id: 'int-record' });
+			};
+
+			const result = await executeDev('audit-feature', {
+				phase: 'GREEN',
+				audit: true,
+				runTests: async () => ({ success: false, error: 'unit tests failed hard' }),
+				auditOptions: {
+					runCommand,
+					metaJsonSupported: true,
+				},
+			});
+
+			const responseIndex = commands[0].args.indexOf('--response');
+			const response = JSON.parse(commands[0].args[responseIndex + 1]);
+			expect(result.success).toBe(false);
+			expect(response.content).toBe('unit tests failed hard');
+		});
+
+		test('handler parses issue-id flags before emitting audit evidence', async () => {
+			const commands = [];
+			const runCommand = (cmd, args) => {
+				commands.push({ cmd, args });
+				return JSON.stringify({ id: 'int-record' });
+			};
+
+			const result = await handler(['audit-feature', '--issue-id', 'forge-besw.20', 'RED'], {
+				auditOptions: {
+					runCommand,
+					metaJsonSupported: true,
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.phase).toBe('RED');
+			expect(commands[0].args).toContain('--issue-id');
+			expect(commands[0].args).toContain('forge-besw.20');
+			const promptIndex = commands[0].args.indexOf('--prompt');
+			expect(JSON.parse(commands[0].args[promptIndex + 1]).content).toBe('forge dev audit-feature RED');
+		});
+
 		test('should validate tests pass before allowing REFACTOR', async () => {
 			const result = await executeDev('feature', { phase: 'REFACTOR', testsPassing: false });
 			expect(result.success).toBe(false);
@@ -439,6 +485,19 @@ describe('Dev Command - TDD Cycle Management', () => {
 		test('emits implementer evidence with a default event object', () => {
 			const runner = createRunner();
 			const result = emitImplementerAuditEvidence(undefined, {
+				runCommand: runner.runCommand,
+				metaJsonSupported: true,
+			});
+
+			expect(result.record.entryId).toBe('int-record');
+			expect(result.label.skipped).toBe(true);
+			expect(runner.commands.length).toBe(1);
+			expect(runner.commands[0].args).toContain('record');
+		});
+
+		test('emits implementer evidence with a null event object', () => {
+			const runner = createRunner();
+			const result = emitImplementerAuditEvidence(null, {
 				runCommand: runner.runCommand,
 				metaJsonSupported: true,
 			});
