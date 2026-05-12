@@ -281,6 +281,28 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(JSON.parse(commands[0].args[promptIndex + 1]).content).toBe('forge dev audit-feature RED');
 		});
 
+		test('handler parses issue-id equals flags before emitting audit evidence', async () => {
+			const commands = [];
+			const runCommand = (cmd, args) => {
+				commands.push({ cmd, args });
+				return JSON.stringify({ id: 'int-record' });
+			};
+
+			const result = await handler(['audit-feature', '--issue-id=forge-besw.20', 'RED'], {
+				auditOptions: {
+					runCommand,
+					metaJsonSupported: true,
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.phase).toBe('RED');
+			expect(commands[0].args).toContain('--issue-id');
+			expect(commands[0].args).toContain('forge-besw.20');
+			const promptIndex = commands[0].args.indexOf('--prompt');
+			expect(JSON.parse(commands[0].args[promptIndex + 1]).content).toBe('forge dev audit-feature RED');
+		});
+
 		test('should validate tests pass before allowing REFACTOR', async () => {
 			const result = await executeDev('feature', { phase: 'REFACTOR', testsPassing: false });
 			expect(result.success).toBe(false);
