@@ -58,7 +58,7 @@ describe('audit evidence adapter', () => {
 			prompt:
 				'Payload: {"token":"abc123","password": "hunter2","api_key": "key-123","private_key":"pk-123"} authorization: abc credential=xyz api key: spaced-api-123 private key spaced-private-123',
 			response:
-				"Result: {'secret':'value-123'} private-key sk-private authorization bearer-token token is phrase-token-123 standalone sk-12345678",
+				"Result: {'secret':'value-123'} private-key sk-private authorization bearer-token token is phrase-token-123, password is correct horse battery staple standalone sk-12345678",
 		});
 
 		const serialized = JSON.stringify(payload);
@@ -82,7 +82,9 @@ describe('audit evidence adapter', () => {
 		expect(serialized).not.toContain('sk-12345678');
 		expect(serialized).not.toContain('bearer-token');
 		expect(serialized).not.toContain('phrase-token-123');
+		expect(serialized).not.toContain('correct horse battery staple');
 		expect(serialized).toContain('token is [REDACTED]');
+		expect(serialized).toContain('password is [REDACTED]');
 		expect(serialized).not.toMatch(/\d+=\[REDACTED\]/);
 	});
 
@@ -100,10 +102,10 @@ describe('audit evidence adapter', () => {
 			role: 'quality_reviewer',
 			phase: 'QUALITY',
 			taskId: 'task-2',
-			taskTitle: 'Quality review',
+			taskTitle: 'Quality review password is correct horse battery staple',
 			prompt: 'review prompt',
 			response: 'review response',
-			metadata: { rubric: 'quality', token: 'hide-me' },
+			metadata: { rubric: 'quality', token: 'hide-me', 'api key': 'spaced-meta-key' },
 		}, {
 			cwd: 'C:/repo',
 			fs: fsDouble,
@@ -136,6 +138,37 @@ describe('audit evidence adapter', () => {
 		expect(fallback.sourceOfTruth).toBe('beads');
 		expect(fallback.beadsEntryId).toBe('int-test123');
 		expect(JSON.stringify(fallback)).not.toContain('hide-me');
+		expect(JSON.stringify(fallback)).not.toContain('spaced-meta-key');
+		expect(JSON.stringify(fallback)).not.toContain('correct horse battery staple');
+		expect(fallback.taskTitle).toContain('password is [REDACTED]');
+	});
+
+	test('keeps fallback metadata best-effort after Beads recording succeeds', () => {
+		const result = recordSubagentAuditEvent({
+			command: 'dev',
+			role: 'quality_reviewer',
+			phase: 'QUALITY',
+			prompt: 'review prompt',
+			response: 'review response',
+			metadata: { files: ['test/audit-evidence.test.js'] },
+		}, {
+			cwd: 'C:/repo',
+			fs: {
+				mkdirSync: () => {
+					throw new Error('disk unavailable');
+				},
+				appendFileSync: () => {
+					throw new Error('should not write');
+				},
+			},
+			runCommand: () => JSON.stringify({ id: 'int-test123', kind: 'llm_call', schema_version: 1 }),
+			metaJsonSupported: false,
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.entryId).toBe('int-test123');
+		expect(result.fallback.skipped).toBe(true);
+		expect(result.fallback.error).toBe('disk unavailable');
 	});
 
 	test('skips fallback metadata when upstream meta-json support is present', () => {
