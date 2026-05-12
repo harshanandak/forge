@@ -1,21 +1,30 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { describe, expect, test } = require('bun:test');
+const { afterEach, describe, expect, test } = require('bun:test');
 
 const {
   getResolvedRuntimeGraph,
   lintRuntimeGraphConfig,
 } = require('../lib/core/runtime-graph');
 
+const tempRoots = [];
+
 function makeProject(configBody) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-graph-config-'));
+  tempRoots.push(root);
   fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
   if (configBody !== null) {
     fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), configBody);
   }
   return root;
 }
+
+afterEach(() => {
+  for (const root of tempRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe('runtime graph config resolution', () => {
   test('loads .forge/config.yaml and preserves disabled primitives with provenance', () => {
