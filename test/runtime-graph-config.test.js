@@ -38,6 +38,24 @@ adapters:
     expect(graph.adapters.find(adapter => adapter.id === 'adapter.issue').config.primary).toBe('github');
   });
 
+  test('loads adapter enabled state separately from adapter config', () => {
+    const projectRoot = makeProject(`
+adapters:
+  issue:
+    enabled: false
+    primary: github
+`);
+
+    const graph = getResolvedRuntimeGraph({ projectRoot });
+    const issueAdapter = graph.adapters.find(adapter => adapter.id === 'adapter.issue');
+
+    expect(issueAdapter.enabled).toBe(false);
+    expect(issueAdapter.disabled).toBe(true);
+    expect(issueAdapter.configSource).toBe('.forge/config.yaml');
+    expect(issueAdapter.config.primary).toBe('github');
+    expect(issueAdapter.config.enabled).toBeUndefined();
+  });
+
   test('rejects config that disables a locked L1 rail', () => {
     const projectRoot = makeProject(`
 rails:
@@ -129,6 +147,20 @@ adapters:
     expect(result.ok).toBe(false);
     expect(result.errors[0].code).toBe('INVALID_ADAPTER_CONFIG');
     expect(result.errors[0].message).toContain("adapter 'issue' config must be an object");
+  });
+
+  test('rejects non-boolean enabled values in adapter config', () => {
+    const projectRoot = makeProject(`
+adapters:
+  issue:
+    enabled: "false"
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_ENABLED_VALUE');
+    expect(result.errors[0].message).toContain("adapter 'issue' enabled must be a boolean");
   });
 
   test('validates protected path policy entries', () => {
