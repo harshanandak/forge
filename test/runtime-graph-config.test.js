@@ -93,8 +93,9 @@ workflow:
   test('rejects non-object top-level config roots', () => {
     const scalarRoot = makeProject('false');
     const arrayRoot = makeProject('[]');
+    const nullRoot = makeProject('null');
 
-    for (const projectRoot of [scalarRoot, arrayRoot]) {
+    for (const projectRoot of [scalarRoot, arrayRoot, nullRoot]) {
       const result = lintRuntimeGraphConfig({ projectRoot });
 
       expect(result.ok).toBe(false);
@@ -123,6 +124,20 @@ workflow:
 workflow:
   gates:
     gate.ship-entry: false
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_PRIMITIVE_CONFIG');
+    expect(result.errors[0].message).toContain('config must be an object');
+  });
+
+  test('rejects null workflow primitive config entries', () => {
+    const projectRoot = makeProject(`
+workflow:
+  gates:
+    gate.ship-entry: null
 `);
 
     const result = lintRuntimeGraphConfig({ projectRoot });
