@@ -63,6 +63,19 @@ workflow:
     expect(result.errors[0].message).toContain('Unknown gate');
   });
 
+  test('rejects non-object top-level config roots', () => {
+    const scalarRoot = makeProject('false');
+    const arrayRoot = makeProject('[]');
+
+    for (const projectRoot of [scalarRoot, arrayRoot]) {
+      const result = lintRuntimeGraphConfig({ projectRoot });
+
+      expect(result.ok).toBe(false);
+      expect(result.errors[0].code).toBe('CONFIG_ROOT_INVALID');
+      expect(result.errors[0].message).toContain('root must be an object');
+    }
+  });
+
   test('rejects non-boolean enabled values in workflow config', () => {
     const projectRoot = makeProject(`
 workflow:
