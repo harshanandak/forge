@@ -81,6 +81,18 @@ describe('CI Workflow Configuration', () => {
       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
     });
 
+    test('Bun test commands use the repo timeout in CI', () => {
+      const directBunTestCommands = workflowContent
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('run: bun test ') || line.startsWith('bun test '));
+
+      expect(directBunTestCommands.length).toBeGreaterThan(0);
+      for (const command of directBunTestCommands) {
+        expect(command).toContain('--timeout 15000');
+      }
+    });
+
     test('beads integration is isolated into its own job', () => {
       expectSection('beads-integration');
       expect(workflowContent.includes("RUN_BEADS_INTEGRATION: '1'")).toBe(true);
