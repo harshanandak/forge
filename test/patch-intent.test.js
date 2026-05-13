@@ -332,6 +332,22 @@ describe('patch intent records', () => {
     expect(result.records[0].anchorId).toBe('stage.staged');
   });
 
+  test('records staged managed hunks on unborn branches', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.unborn -->',
+      'Initial text.',
+      '',
+    ].join('\n'));
+    execFileSync('git', ['add', 'commands/validate.md'], { cwd: root });
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
+    expect(result.records[0].anchorId).toBe('stage.unborn');
+  });
+
   test('round-trips record output back through git apply', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/dev.md', [
