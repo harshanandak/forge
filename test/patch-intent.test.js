@@ -440,6 +440,27 @@ describe('patch intent records', () => {
     expect(() => resolvePatchIntentRecords(root)).toThrow('inside the project root');
   });
 
+  test('rejects patchIntent.path that escapes through a symlink', () => {
+    const root = makeRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-patch-outside-'));
+    tempRoots.push(outside);
+    try {
+      fs.symlinkSync(outside, path.join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      return;
+    }
+    writeFile(root, '.forge/config.yaml', [
+      'patchIntent:',
+      '  path: link/patch.md',
+      '',
+    ].join('\n'));
+
+    const config = loadPatchIntentConfig(root);
+
+    expect(config.errors[0].code).toBe('PATCH_INTENT_PATH_OUTSIDE_ROOT');
+    expect(() => recordPatchIntentFromDiff(root)).toThrow('inside the project root');
+  });
+
   test('skips deleted files while recording valid patch intents from mixed diffs', () => {
     const root = makeRepo();
     writeFile(root, 'commands/validate.md', [
