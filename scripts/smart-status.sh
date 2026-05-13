@@ -25,6 +25,9 @@ set -euo pipefail
 # sync-utils.sh: get_session_identity for current developer identity
 
 _SMART_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$_SMART_STATUS_DIR/bootstrap-windows-tools.sh" ]; then
+  source "$_SMART_STATUS_DIR/bootstrap-windows-tools.sh"
+fi
 NODE_CMD="${NODE_CMD:-node}"
 JQ_CMD="${JQ_CMD:-jq}"
 

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+_BEADS_UPGRADE_SMOKE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$_BEADS_UPGRADE_SMOKE_DIR/bootstrap-windows-tools.sh" ]]; then
+  source "$_BEADS_UPGRADE_SMOKE_DIR/bootstrap-windows-tools.sh"
+fi
+
 BD_CMD="${BD_CMD:-bd}"
 NODE_CMD="${NODE_CMD:-node}"
 PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"

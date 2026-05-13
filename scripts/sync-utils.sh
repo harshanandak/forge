@@ -13,6 +13,9 @@ fi
 
 # Source shared sanitize library
 _SU_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$_SU_SCRIPT_DIR/bootstrap-windows-tools.sh" ]]; then
+  source "$_SU_SCRIPT_DIR/bootstrap-windows-tools.sh"
+fi
 source "$_SU_SCRIPT_DIR/lib/sanitize.sh"
 
 # ── Session Identity ───────────────────────────────────────────────────

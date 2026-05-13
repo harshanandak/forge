@@ -21,6 +21,9 @@ fi
 
 # Source shared libraries
 _FI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$_FI_SCRIPT_DIR/bootstrap-windows-tools.sh" ]]; then
+  source "$_FI_SCRIPT_DIR/bootstrap-windows-tools.sh"
+fi
 source "$_FI_SCRIPT_DIR/lib/sanitize.sh"
 if [[ -f "$_FI_SCRIPT_DIR/lib/jsonl-lock.sh" ]]; then
   source "$_FI_SCRIPT_DIR/lib/jsonl-lock.sh"

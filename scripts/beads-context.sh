@@ -17,6 +17,9 @@ set -euo pipefail
 
 # Source shared sanitize library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/bootstrap-windows-tools.sh" ]]; then
+  source "$SCRIPT_DIR/bootstrap-windows-tools.sh"
+fi
 source "$SCRIPT_DIR/lib/sanitize.sh"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
