@@ -245,6 +245,29 @@ describe('patch intent records', () => {
     expect(result.records[0].anchorId).toBe('docs.space');
   });
 
+  test('records managed files with Git-quoted diff paths', () => {
+    const root = makeRepo();
+    execFileSync('git', ['config', 'core.quotePath', 'true'], { cwd: root });
+    const quotedPath = 'caf\u00e9.md';
+    writeFile(root, quotedPath, [
+      '<!-- forge-anchor:docs.quoted -->',
+      'Old text.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, quotedPath, [
+      '<!-- forge-anchor:docs.quoted -->',
+      'New text.',
+      '',
+    ].join('\n'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe(quotedPath);
+    expect(result.records[0].anchorId).toBe('docs.quoted');
+  });
+
   test('round-trips record output back through git apply', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/dev.md', [
