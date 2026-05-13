@@ -95,11 +95,11 @@ async function runSetup(args, cwd, env = {}) {
       PKG_MANAGER: 'npm',
     });
 
-    await setupCommand.handler(args, { commandRunner }, cwd);
+    const commandResult = await setupCommand.handler(args, { commandRunner }, cwd);
     return {
-      status: 0,
+      status: commandResult && commandResult.success === false ? 1 : 0,
       stdout: stdout.join(''),
-      stderr: stderr.join(''),
+      stderr: `${stderr.join('')}${commandResult && commandResult.error ? commandResult.error : ''}`,
     };
   } catch (error) {
     return {
@@ -163,6 +163,16 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.forge', 'config.yaml'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, '.beads'))).toBe(false);
     expect(fs.readFileSync(path.join(tmpDir, '.forge', 'config.yaml'), 'utf8')).toContain('profile: minimal');
+  });
+
+  serialTest('setup rejects conflicting adoption profile flags', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--minimal', '--full'], tmpDir);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Conflicting profile flags');
+    expect(fs.existsSync(path.join(tmpDir, '.forge', 'config.yaml'))).toBe(false);
   });
 
   serialTest('--keep preserves existing Claude commands at runtime', async () => {

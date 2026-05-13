@@ -75,6 +75,19 @@ describe('forge init command', () => {
     expect(config.template.profile).toBe('standard');
   });
 
+  test('non-interactive CLI init defaults to standard instead of hanging or no-oping', () => {
+    const projectRoot = makeCleanRepo();
+    const result = spawnSync(process.execPath, [forgePath, 'init', '--path', projectRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      input: '',
+    });
+    const config = YAML.parse(fs.readFileSync(path.join(projectRoot, '.forge', 'config.yaml'), 'utf8'));
+
+    expect(result.status).toBe(0);
+    expect(config.template.profile).toBe('standard');
+  });
+
   test('preserves existing config unless --force is supplied', async () => {
     const projectRoot = makeCleanRepo();
     const forgeDir = path.join(projectRoot, '.forge');
