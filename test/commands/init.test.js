@@ -103,6 +103,23 @@ describe('forge init command', () => {
     expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
   });
 
+  test('non-interactive CLI init dry-run does not create a missing --path target', () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-init-dry-run-parent-'));
+    tempRoots.push(parent);
+    const projectRoot = path.join(parent, 'missing-target');
+    const result = spawnSync(process.execPath, [forgePath, 'init', '--dry-run', '--path', projectRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      input: '',
+    });
+    const parsed = YAML.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(parsed.template.profile).toBe('standard');
+    expect(fs.existsSync(projectRoot)).toBe(false);
+  });
+
   test('non-interactive CLI setup profile dry-run prints parseable YAML only', () => {
     const projectRoot = makeCleanRepo();
     const result = spawnSync(process.execPath, [forgePath, 'setup', '--minimal', '--dry-run', '--path', projectRoot], {
@@ -116,6 +133,23 @@ describe('forge init command', () => {
     expect(result.stderr).toBe('');
     expect(parsed.template.profile).toBe('minimal');
     expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
+  });
+
+  test('non-interactive CLI setup profile dry-run does not create a missing --path target', () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-dry-run-parent-'));
+    tempRoots.push(parent);
+    const projectRoot = path.join(parent, 'missing-target');
+    const result = spawnSync(process.execPath, [forgePath, 'setup', '--minimal', '--dry-run', '--path', projectRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      input: '',
+    });
+    const parsed = YAML.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(parsed.template.profile).toBe('minimal');
+    expect(fs.existsSync(projectRoot)).toBe(false);
   });
 
   test('rejects empty profile values instead of defaulting', () => {

@@ -3872,6 +3872,15 @@ function handlePathSetup(targetPath, options = {}) {
   return resolvedPath;
 }
 
+function resolvePathForDryRun(targetPath) {
+  const resolvedPath = path.resolve(targetPath);
+  if (fs.existsSync(resolvedPath) && !fs.statSync(resolvedPath).isDirectory()) {
+    console.error(`Error: ${resolvedPath} is not a directory`);
+    process.exit(1);
+  }
+  return resolvedPath;
+}
+
 // Helper: Determine selected agents from flags
 function determineSelectedAgents(flags) {
   if (flags.all) {
@@ -4166,7 +4175,9 @@ async function main() {
   // Handle --path option: change to target directory
   if (flags.path) {
     // Update projectRoot after changing directory to maintain state consistency
-    projectRoot = handlePathSetup(flags.path, { quiet: suppressStructuredOutput });
+    projectRoot = suppressAdoptionDryRunOutput
+      ? resolvePathForDryRun(flags.path)
+      : handlePathSetup(flags.path, { quiet: suppressStructuredOutput });
   }
 
   // Load command registry (auto-discovered commands from lib/commands/)
