@@ -31,14 +31,32 @@ function resolveBashCommand() {
   return cachedBashCommand;
 }
 
+function toBashPath(filePath) {
+  if (process.platform !== 'win32') {
+    return filePath;
+  }
+  return filePath.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
+}
+
+function normalizeBashEnv(env = {}) {
+  return {
+    ...env,
+    ...(env.BD_CMD ? { BD_CMD: toBashPath(env.BD_CMD) } : {}),
+    ...(env.DEP_GUARD_ANALYZE_SCRIPT ? { DEP_GUARD_ANALYZE_SCRIPT: toBashPath(env.DEP_GUARD_ANALYZE_SCRIPT) } : {}),
+    ...(env.DEP_GUARD_RENDER_SCRIPT ? { DEP_GUARD_RENDER_SCRIPT: toBashPath(env.DEP_GUARD_RENDER_SCRIPT) } : {}),
+    ...(env.DEP_GUARD_REPOSITORY_ROOT ? { DEP_GUARD_REPOSITORY_ROOT: toBashPath(env.DEP_GUARD_REPOSITORY_ROOT) } : {}),
+    ...(env.NODE_CMD ? { NODE_CMD: toBashPath(env.NODE_CMD) } : {}),
+  };
+}
+
 function runDepGuard(args = [], env = {}, cwd = PROJECT_ROOT) {
-  const result = spawnSync(resolveBashCommand(), [SCRIPT, ...args], {
+  const result = spawnSync(resolveBashCommand(), [toBashPath(SCRIPT), ...args], {
     cwd,
     encoding: 'utf-8',
     timeout: 15000,
     env: {
       ...process.env,
-      ...env,
+      ...normalizeBashEnv(env),
     },
   });
 
@@ -77,7 +95,9 @@ function createTempRepo(files) {
 module.exports = {
   createMockBd,
   createTempRepo,
+  normalizeBashEnv,
   PROJECT_ROOT,
   runDepGuard,
   SCRIPT,
+  toBashPath,
 };

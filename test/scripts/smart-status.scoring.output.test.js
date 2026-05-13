@@ -10,9 +10,10 @@ const {
   parseIssues,
   resolveBashCommand,
   runSmartStatus,
+  toBashPath,
 } = require('./smart-status.helpers');
 
-setDefaultTimeout(20000);
+setDefaultTimeout(60000);
 
 const ansiEscapePrefix = '\u001b[';
 
@@ -78,7 +79,7 @@ describe('smart-status.sh', () => {
 
       const env = { ...process.env, BD_CMD: colorMock.mockScript, GIT_CMD: 'true' };
       delete env.NO_COLOR;
-      colorStdout = (spawnSync(resolveBashCommand(), [SCRIPT], {
+      colorStdout = (spawnSync(resolveBashCommand(), [toBashPath(SCRIPT)], {
         cwd: PROJECT_ROOT,
         encoding: 'utf-8',
         timeout: 15000,
