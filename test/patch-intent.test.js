@@ -87,6 +87,21 @@ describe('patch intent records', () => {
     expect(anchors.get('docs.patch-format').path).toBe('docs/reference/patch-md-format.md');
   });
 
+  test('ignores anchor literals in source and test fixtures', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', '<!-- forge-anchor:stage.validate -->\nRun checks.\n');
+    writeFile(root, 'test/patch-intent.test.js', [
+      "const fixture = '<!-- forge-anchor:stage.validate -->';",
+      "const other = '<!-- forge-anchor:fixture.only -->';",
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.get('stage.validate').path).toBe('commands/validate.md');
+    expect(anchors.has('fixture.only')).toBe(false);
+  });
+
   test('records diff hunks with stable IDs and replaces existing patch.md blocks', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/validate.md', [
@@ -301,6 +316,7 @@ describe('patch intent records', () => {
     const config = loadPatchIntentConfig(root);
 
     expect(config.errors.some(error => error.code === 'PATCH_INTENT_CONFIG_INVALID')).toBe(true);
+    expect(() => resolvePatchIntentRecords(root)).toThrow('PATCH_INTENT_CONFIG_INVALID');
   });
 
   test('excludes configured patchIntent.path from anchor discovery and git diff recording', () => {
@@ -345,6 +361,7 @@ describe('patch intent records', () => {
 
     expect(config.errors[0].code).toBe('PATCH_INTENT_PATH_OUTSIDE_ROOT');
     expect(() => recordPatchIntentFromDiff(root)).toThrow('inside the project root');
+    expect(() => resolvePatchIntentRecords(root)).toThrow('inside the project root');
   });
 
   test('skips deleted files while recording valid patch intents from mixed diffs', () => {
