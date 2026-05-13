@@ -88,6 +88,21 @@ describe('forge init command', () => {
     expect(config.template.profile).toBe('standard');
   });
 
+  test('non-interactive CLI init dry-run prints parseable YAML only', () => {
+    const projectRoot = makeCleanRepo();
+    const result = spawnSync(process.execPath, [forgePath, 'init', '--dry-run', '--path', projectRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      input: '',
+    });
+    const parsed = YAML.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(parsed.template.profile).toBe('standard');
+    expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
+  });
+
   test('preserves existing config unless --force is supplied', async () => {
     const projectRoot = makeCleanRepo();
     const forgeDir = path.join(projectRoot, '.forge');

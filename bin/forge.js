@@ -4126,6 +4126,8 @@ async function main() {
   const command = args[0];
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
+  const suppressInitDryRunOutput = command === 'init' && flags.dryRun;
+  const suppressStructuredOutput = suppressJsonIntrospectionOutput || suppressInitDryRunOutput;
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
@@ -4135,7 +4137,7 @@ async function main() {
   SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
-  if (NON_INTERACTIVE && !suppressJsonIntrospectionOutput) {
+  if (NON_INTERACTIVE && !suppressStructuredOutput) {
     const agentFlag = flags.agents;
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")
@@ -4161,7 +4163,7 @@ async function main() {
   // Handle --path option: change to target directory
   if (flags.path) {
     // Update projectRoot after changing directory to maintain state consistency
-    projectRoot = handlePathSetup(flags.path, { quiet: suppressJsonIntrospectionOutput });
+    projectRoot = handlePathSetup(flags.path, { quiet: suppressStructuredOutput });
   }
 
   // Load command registry (auto-discovered commands from lib/commands/)
