@@ -39,28 +39,40 @@ _forge_resolve_tool() {
 }
 
 if [[ -z "${BD_CMD:-}" ]]; then
-  BD_CMD="$(_forge_resolve_tool bd || printf '%s\n' bd)"
+  BD_CMD="$(_forge_resolve_tool bd || true)"
+fi
+if [[ -n "${BD_CMD:-}" ]]; then
   export BD_CMD
 fi
 
 if [[ -z "${JQ_CMD:-}" ]]; then
-  JQ_CMD="$(_forge_resolve_tool jq || printf '%s\n' jq)"
+  JQ_CMD="$(_forge_resolve_tool jq || true)"
+fi
+if [[ -n "${JQ_CMD:-}" ]]; then
   export JQ_CMD
 fi
 
 if [[ -z "${GH_CMD:-}" ]]; then
-  GH_CMD="$(_forge_resolve_tool gh || printf '%s\n' gh)"
+  GH_CMD="$(_forge_resolve_tool gh || true)"
+fi
+if [[ -n "${GH_CMD:-}" ]]; then
   export GH_CMD
 fi
 
-bd() {
-  command "${BD_CMD:-bd}" "$@"
-}
+if [[ -n "${BD_CMD:-}" ]]; then
+  bd() {
+    command "$BD_CMD" "$@"
+  }
+fi
 
-jq() {
-  command "${JQ_CMD:-jq}" "$@"
-}
+if [[ -n "${JQ_CMD:-}" ]]; then
+  jq() {
+    command "$JQ_CMD" "$@"
+  }
+fi
 
-gh() {
-  command "${GH_CMD:-gh}" "$@"
-}
+if [[ -n "${GH_CMD:-}" ]]; then
+  gh() {
+    command "$GH_CMD" "$@"
+  }
+fi

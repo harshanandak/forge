@@ -25,7 +25,19 @@ const entrypointPaths = [
 ];
 
 function readsTool(content) {
-  return /(^|[^A-Za-z0-9_])(bd|jq|gh)([^A-Za-z0-9_]|$)/m.test(content);
+  return stripCommentLines(content)
+    .some((line) => /(^|[^A-Za-z0-9_])(bd|jq|gh)([^A-Za-z0-9_]|$)/.test(line));
+}
+
+function stripCommentLines(content) {
+  return content
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith('#'));
+}
+
+function sourcesBootstrapHelper(content) {
+  return stripCommentLines(content)
+    .some((line) => /\b(?:source|\.)\s+["']?[^#\n]*bootstrap-windows-tools\.sh["']?/.test(line));
 }
 
 describe('Windows/WSL bash bootstrap sourcing', () => {
@@ -37,7 +49,7 @@ describe('Windows/WSL bash bootstrap sourcing', () => {
     const offenders = entrypointPaths.filter((relativePath) => {
       const absolutePath = path.join(repoRoot, relativePath);
       const content = fs.readFileSync(absolutePath, 'utf8');
-      return readsTool(content) && !content.includes('bootstrap-windows-tools.sh');
+      return readsTool(content) && !sourcesBootstrapHelper(content);
     });
 
     expect(offenders).toEqual([]);
