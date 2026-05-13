@@ -252,6 +252,26 @@ describe('Dev Command - TDD Cycle Management', () => {
 			expect(result.auditEvidence.record.entryId).toBe(null);
 		});
 
+		test('keeps dev execution successful when audit command is unavailable', async () => {
+			const missingBd = new Error('bd not found');
+			missingBd.code = 'ENOENT';
+
+			const result = await executeDev('audit-feature', {
+				phase: 'RED',
+				audit: true,
+				auditOptions: {
+					runCommand: () => {
+						throw missingBd;
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.auditEvidence.success).toBe(false);
+			expect(result.auditEvidence.skipped).toBe(true);
+			expect(result.auditEvidence.error).toBe('bd not found');
+		});
+
 		test('records failed GREEN audit evidence with the concrete error response', async () => {
 			const commands = [];
 			const runCommand = (cmd, args) => {
