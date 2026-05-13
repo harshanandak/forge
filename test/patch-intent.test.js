@@ -87,6 +87,45 @@ describe('patch intent records', () => {
     expect(anchors.get('docs.patch-format').path).toBe('docs/reference/patch-md-format.md');
   });
 
+  test('tracks markdown fence delimiters by marker and length', () => {
+    const root = makeRepo();
+    writeFile(root, 'docs/reference/patch-md-format.md', [
+      '# Patch format',
+      '',
+      '````md',
+      '<!-- forge-anchor:stage.validate -->',
+      '```',
+      '<!-- forge-anchor:stage.validate -->',
+      '```',
+      '````',
+      '',
+      '<!-- forge-anchor:docs.patch-format -->',
+      'Reference text.',
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.has('stage.validate')).toBe(false);
+    expect(anchors.get('docs.patch-format').path).toBe('docs/reference/patch-md-format.md');
+  });
+
+  test('ignores inline code anchor examples', () => {
+    const root = makeRepo();
+    writeFile(root, 'docs/work/decisions.md', [
+      'Use `<!-- forge-anchor:stage.validate -->` as an example.',
+      '',
+      '<!-- forge-anchor:docs.decisions -->',
+      'Decision text.',
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.has('stage.validate')).toBe(false);
+    expect(anchors.get('docs.decisions').path).toBe('docs/work/decisions.md');
+  });
+
   test('ignores anchor literals in source and test fixtures', () => {
     const root = makeRepo();
     writeFile(root, 'commands/validate.md', '<!-- forge-anchor:stage.validate -->\nRun checks.\n');
@@ -131,6 +170,28 @@ describe('patch intent records', () => {
     expect(result.records).toHaveLength(1);
     expect(result.records[0].anchorId).toBe('stage.real');
     expect(result.records[0].diff).toContain('new fenced text');
+  });
+
+  test('does not treat txt fence markers as markdown fences during attribution', () => {
+    const root = makeRepo();
+    writeFile(root, 'notes.txt', [
+      '```',
+      '<!-- forge-anchor:txt.real -->',
+      'Old text.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'notes.txt', [
+      '```',
+      '<!-- forge-anchor:txt.real -->',
+      'New text.',
+      '',
+    ].join('\n'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].anchorId).toBe('txt.real');
   });
 
   test('records diff hunks with stable IDs and replaces existing patch.md blocks', () => {
@@ -459,6 +520,21 @@ describe('patch intent records', () => {
 
     expect(config.errors[0].code).toBe('PATCH_INTENT_PATH_OUTSIDE_ROOT');
     expect(() => recordPatchIntentFromDiff(root)).toThrow('inside the project root');
+  });
+
+  test('rejects diff paths outside the project root', () => {
+    const root = makeRepo();
+    const diff = [
+      'diff --git a/../outside.md b/../outside.md',
+      '--- a/../outside.md',
+      '+++ b/../outside.md',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    expect(() => recordPatchIntentFromDiff(root, { diff })).toThrow('Diff path must stay inside the project root');
   });
 
   test('skips deleted files while recording valid patch intents from mixed diffs', () => {

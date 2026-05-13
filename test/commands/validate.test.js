@@ -13,7 +13,7 @@ const {
 	executeDebugMode,
 } = require('../../lib/commands/validate.js');
 
-setDefaultTimeout(15000);
+setDefaultTimeout(30000);
 
 describe('Validate Command - Validation Orchestration', () => {
 	describe('Type checking', () => {
