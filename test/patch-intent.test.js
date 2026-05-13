@@ -268,6 +268,51 @@ describe('patch intent records', () => {
     expect(resolved.orphans[0].anchorId).toBe('stage.missing');
   });
 
+  test('parses CRLF patch intent record files', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/patch.md', [
+      '# Forge Patch Intent',
+      '',
+      '<!-- forge-patch-intent:v1',
+      'id: patch_stage_validate_example',
+      'anchorId: stage.validate',
+      'path: commands/validate.md',
+      'createdAt: 2026-05-13T00:00:00.000Z',
+      'source: git-diff',
+      'status: active',
+      '-->',
+      '```diff',
+      'diff --git a/commands/validate.md b/commands/validate.md',
+      '--- a/commands/validate.md',
+      '+++ b/commands/validate.md',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '```',
+      '<!-- /forge-patch-intent -->',
+      '',
+    ].join('\r\n'));
+
+    const loaded = loadPatchIntentRecords(root);
+
+    expect(loaded.records).toHaveLength(1);
+    expect(loaded.records[0].anchorId).toBe('stage.validate');
+  });
+
+  test('fails loudly on malformed patch intent record blocks', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/patch.md', [
+      '# Forge Patch Intent',
+      '',
+      '<!-- forge-patch-intent:v1',
+      'id: patch_broken',
+      'anchorId: stage.broken',
+      '',
+    ].join('\n'));
+
+    expect(() => loadPatchIntentRecords(root)).toThrow('Malformed patch intent record block');
+  });
+
   test('honors patchIntent config path, aliases, and disabled state', () => {
     const root = makeRepo();
     writeFile(root, '.forge/config.yaml', [
@@ -415,6 +460,27 @@ describe('patch intent records', () => {
 
     expect(result.records).toHaveLength(1);
     expect(result.records[0].path).toBe('commands/validate.md');
+  });
+
+  test('does not attribute edits to anchors that only appear after the changed lines', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      'Edit me.',
+      '',
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      'Edited above anchor.',
+      '',
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks.',
+      '',
+    ].join('\n'));
+
+    expect(() => recordPatchIntentFromDiff(root)).toThrow('no declared forge anchor before diff hunk');
   });
 
   test('forge patch record --from-diff writes patch.md', () => {
