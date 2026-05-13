@@ -152,6 +152,19 @@ describe('setup runtime flags', () => {
     expect(result.stdout).not.toContain('.claude/commands/plan.md');
   });
 
+  serialTest('--minimal delegates to forge init minimal profile without requiring Beads', async () => {
+    const tmpDir = makeTempDir();
+
+    const result = await runSetup(['--minimal'], tmpDir, {
+      FORGE_TEST_DISABLE_GH: '1',
+    });
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, '.forge', 'config.yaml'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.beads'))).toBe(false);
+    expect(fs.readFileSync(path.join(tmpDir, '.forge', 'config.yaml'), 'utf8')).toContain('profile: minimal');
+  });
+
   serialTest('--keep preserves existing Claude commands at runtime', async () => {
     const tmpDir = makeTempDir();
     const claudeDir = path.join(tmpDir, '.claude', 'commands');

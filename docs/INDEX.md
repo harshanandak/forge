@@ -66,6 +66,7 @@ See [work/](work/) for the full list of date-prefixed work folders. Each folder 
 - [ROADMAP.md](reference/ROADMAP.md) — Forge roadmap
 - [TOOLCHAIN.md](reference/TOOLCHAIN.md) — Toolchain conventions (Bun, lefthook, beads, MCP, shell model)
 - [VALIDATION.md](reference/VALIDATION.md) — Validation stage requirements
+- [TEMPLATES.md](reference/TEMPLATES.md) — Adoption templates and `forge init` profiles
 - [EXAMPLES.md](reference/EXAMPLES.md) — Worked examples
 - [RESEARCH_TEMPLATE.md](reference/RESEARCH_TEMPLATE.md) — Template for research docs (formerly docs/research/TEMPLATE.md)
 
