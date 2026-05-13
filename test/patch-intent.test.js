@@ -632,6 +632,26 @@ describe('patch intent records', () => {
     expect(() => recordPatchIntentFromDiff(root)).toThrow('crosses multiple forge anchors');
   });
 
+  test('rejects hunks that delete a later anchor', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.one -->',
+      'One old.',
+      '',
+      '<!-- forge-anchor:stage.two -->',
+      'Two old.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.one -->',
+      'One new.',
+      '',
+    ].join('\n'));
+
+    expect(() => recordPatchIntentFromDiff(root)).toThrow('crosses multiple forge anchors');
+  });
+
   test('forge patch record --from-diff writes patch.md', () => {
     const root = makeRepo();
     writeFile(root, 'AGENTS.md', '# Agent\n');
