@@ -103,6 +103,21 @@ describe('forge init command', () => {
     expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
   });
 
+  test('rejects empty profile values instead of defaulting', () => {
+    for (const profileArgs of [['--profile='], ['--profile']]) {
+      const projectRoot = makeCleanRepo();
+      const result = spawnSync(process.execPath, [forgePath, 'init', ...profileArgs, '--path', projectRoot], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        input: '',
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('--profile requires a non-empty value');
+      expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
+    }
+  });
+
   test('preserves existing config unless --force is supplied', async () => {
     const projectRoot = makeCleanRepo();
     const forgeDir = path.join(projectRoot, '.forge');
