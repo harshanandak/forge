@@ -66,6 +66,27 @@ describe('patch intent records', () => {
     expect(() => discoverAnchors(root)).toThrow('Duplicate forge anchor');
   });
 
+  test('ignores anchor examples inside markdown fences', () => {
+    const root = makeRepo();
+    writeFile(root, 'docs/reference/patch-md-format.md', [
+      '# Patch format',
+      '',
+      '```md',
+      '<!-- forge-anchor:stage.validate -->',
+      '<!-- forge-anchor:stage.validate -->',
+      '```',
+      '',
+      '<!-- forge-anchor:docs.patch-format -->',
+      'Reference text.',
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.has('stage.validate')).toBe(false);
+    expect(anchors.get('docs.patch-format').path).toBe('docs/reference/patch-md-format.md');
+  });
+
   test('records diff hunks with stable IDs and replaces existing patch.md blocks', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/validate.md', [
@@ -245,6 +266,43 @@ describe('patch intent records', () => {
     expect(() => recordPatchIntentFromDiff(root)).toThrow('disabled');
   });
 
+  test('normalizes absolute patchIntent.path values inside the project root', () => {
+    const root = makeRepo();
+    const absolutePatchPath = path.join(root, '.forge', 'absolute-patch.md').replace(/\\/g, '/');
+    writeFile(root, '.forge/config.yaml', [
+      'patchIntent:',
+      `  path: ${absolutePatchPath}`,
+      '',
+    ].join('\n'));
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks carefully.',
+      '',
+    ].join('\n'));
+
+    const config = loadPatchIntentConfig(root);
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(config.path).toBe('.forge/absolute-patch.md');
+    expect(result.path).toBe('.forge/absolute-patch.md');
+    expect(fs.existsSync(path.join(root, '.forge', 'absolute-patch.md'))).toBe(true);
+  });
+
+  test('reports scalar patchIntent config values as invalid', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/config.yaml', 'patchIntent: false\n');
+
+    const config = loadPatchIntentConfig(root);
+
+    expect(config.errors.some(error => error.code === 'PATCH_INTENT_CONFIG_INVALID')).toBe(true);
+  });
+
   test('excludes configured patchIntent.path from anchor discovery and git diff recording', () => {
     const root = makeRepo();
     writeFile(root, '.forge/config.yaml', [
@@ -287,6 +345,28 @@ describe('patch intent records', () => {
 
     expect(config.errors[0].code).toBe('PATCH_INTENT_PATH_OUTSIDE_ROOT');
     expect(() => recordPatchIntentFromDiff(root)).toThrow('inside the project root');
+  });
+
+  test('skips deleted files while recording valid patch intents from mixed diffs', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks.',
+      '',
+    ].join('\n'));
+    writeFile(root, 'deleted.md', 'Remove me.\n');
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks carefully.',
+      '',
+    ].join('\n'));
+    fs.unlinkSync(path.join(root, 'deleted.md'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
   });
 
   test('forge patch record --from-diff writes patch.md', () => {
