@@ -58,6 +58,14 @@ describe('patch intent records', () => {
     expect(anchors.get('stage.validate').line).toBe(3);
   });
 
+  test('fails fast when duplicate anchor IDs are declared', () => {
+    const root = makeRepo();
+    writeFile(root, 'one.md', '<!-- forge-anchor:stage.validate -->\nOne.\n');
+    writeFile(root, 'two.md', '<!-- forge-anchor:stage.validate -->\nTwo.\n');
+
+    expect(() => discoverAnchors(root)).toThrow('Duplicate forge anchor');
+  });
+
   test('records diff hunks with stable IDs and replaces existing patch.md blocks', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/validate.md', [
@@ -237,6 +245,50 @@ describe('patch intent records', () => {
     expect(() => recordPatchIntentFromDiff(root)).toThrow('disabled');
   });
 
+  test('excludes configured patchIntent.path from anchor discovery and git diff recording', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/config.yaml', [
+      'patchIntent:',
+      '  path: .forge/custom-patch.md',
+      '',
+    ].join('\n'));
+    writeFile(root, '.forge/custom-patch.md', '<!-- forge-anchor:stored.diff -->\nStored record text.\n');
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, '.forge/custom-patch.md', '<!-- forge-anchor:stored.diff -->\nChanged stored record text.\n');
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.validate -->',
+      'Run checks carefully.',
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root, { excludedPatchPath: '.forge/custom-patch.md' });
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(anchors.has('stored.diff')).toBe(false);
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
+    expect(result.records[0].diff).not.toContain('custom-patch.md');
+  });
+
+  test('rejects patchIntent.path outside the project root', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/config.yaml', [
+      'patchIntent:',
+      '  path: ../outside-patch.md',
+      '',
+    ].join('\n'));
+
+    const config = loadPatchIntentConfig(root);
+
+    expect(config.errors[0].code).toBe('PATCH_INTENT_PATH_OUTSIDE_ROOT');
+    expect(() => recordPatchIntentFromDiff(root)).toThrow('inside the project root');
+  });
+
   test('forge patch record --from-diff writes patch.md', () => {
     const root = makeRepo();
     writeFile(root, 'AGENTS.md', '# Agent\n');
@@ -266,4 +318,3 @@ describe('patch intent records', () => {
     expect(fs.readFileSync(path.join(root, '.forge', 'patch.md'), 'utf8')).toContain('stage.ship');
   });
 });
-
