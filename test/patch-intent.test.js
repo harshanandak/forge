@@ -268,6 +268,28 @@ describe('patch intent records', () => {
     expect(result.records[0].anchorId).toBe('docs.quoted');
   });
 
+  test('records managed files with mnemonic Git diff prefixes', () => {
+    const root = makeRepo();
+    execFileSync('git', ['config', 'diff.mnemonicPrefix', 'true'], { cwd: root });
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.mnemonic -->',
+      'Old text.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.mnemonic -->',
+      'New text.',
+      '',
+    ].join('\n'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
+    expect(result.records[0].anchorId).toBe('stage.mnemonic');
+  });
+
   test('round-trips record output back through git apply', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/dev.md', [
