@@ -127,6 +127,26 @@ describe('patch intent records', () => {
     expect(anchors.get('docs.decisions').path).toBe('docs/work/decisions.md');
   });
 
+  test('ignores indented markdown code anchor examples', () => {
+    const root = makeRepo();
+    writeFile(root, 'docs/work/decisions.md', [
+      'Example:',
+      '',
+      '    <!-- forge-anchor:stage.validate -->',
+      '    example text',
+      '',
+      '<!-- forge-anchor:docs.decisions -->',
+      'Decision text.',
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.has('stage.validate')).toBe(false);
+    expect(anchors.get('docs.decisions').path).toBe('docs/work/decisions.md');
+  });
+
+
   test('ignores anchor literals in source and test fixtures', () => {
     const root = makeRepo();
     writeFile(root, 'commands/validate.md', '<!-- forge-anchor:stage.validate -->\nRun checks.\n');
@@ -288,6 +308,28 @@ describe('patch intent records', () => {
     expect(result.records).toHaveLength(1);
     expect(result.records[0].path).toBe('commands/validate.md');
     expect(result.records[0].anchorId).toBe('stage.mnemonic');
+  });
+
+  test('records staged managed hunks from diff', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.staged -->',
+      'Old text.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.staged -->',
+      'New text.',
+      '',
+    ].join('\n'));
+    execFileSync('git', ['add', 'commands/validate.md'], { cwd: root });
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
+    expect(result.records[0].anchorId).toBe('stage.staged');
   });
 
   test('round-trips record output back through git apply', () => {
