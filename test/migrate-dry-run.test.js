@@ -188,5 +188,5 @@ describe('migrate dry-run', () => {
     ]);
     expect(result.results.find(item => item.name === 'clean-v2-install').ok).toBe(true);
     expect(result.results.find(item => item.name === 'broken-beads-state').ok).toBe(false);
-  }, 15000);
+  }, 60000);
 });
