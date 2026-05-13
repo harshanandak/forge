@@ -17,6 +17,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/bootstrap-windows-tools.sh" ]]; then
+  source "$SCRIPT_DIR/bootstrap-windows-tools.sh"
+fi
 
 # Source file-index helpers (file_index_read, file_index_get)
 source "$SCRIPT_DIR/file-index.sh" || { echo "FATAL: failed to source file-index.sh" >&2; exit 2; }

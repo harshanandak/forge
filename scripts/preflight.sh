@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/bootstrap-windows-tools.sh" ]; then
+  source "$SCRIPT_DIR/bootstrap-windows-tools.sh"
+fi
+
 exit_code=0
 have_bd=0
 have_gh=0

@@ -15,6 +15,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/bootstrap-windows-tools.sh" ]]; then
+  source "$SCRIPT_DIR/bootstrap-windows-tools.sh"
+fi
 source "$SCRIPT_DIR/lib/sanitize.sh" || { echo "FATAL: failed to source sanitize.sh" >&2; exit 2; }
 
 # Source these but don't fail if missing (tests may not have them)

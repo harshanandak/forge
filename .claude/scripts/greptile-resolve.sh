@@ -5,6 +5,11 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../../scripts/bootstrap-windows-tools.sh" ]; then
+    source "$SCRIPT_DIR/../../scripts/bootstrap-windows-tools.sh"
+fi
+
 # Colors for output (defined before use)
 RED='\033[0;31m'
 GREEN='\033[0;32m'

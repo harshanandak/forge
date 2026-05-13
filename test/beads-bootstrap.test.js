@@ -49,7 +49,7 @@ describe('bootstrapBeads', () => {
     expect(result).toEqual({
       success: false,
       strategy: 'fresh-init-failed',
-      warning: 'Beads bootstrap fresh init failed: spawn bd ENOENT'
+      warning: 'Beads bootstrap fresh init failed: spawn bd ENOENT. Recovery hint: run bd doctor --fix from the worktree or check that bd is installed and reachable on PATH.'
     });
     expect(calls).toContainEqual({
       cmd: 'bd',
@@ -114,6 +114,34 @@ describe('bootstrapBeads', () => {
       cmd: 'bd',
       args: ['init', '--force', '--database', 'forge-shared-db']
     });
+  });
+
+  test('resolves absolute git common dir to the main worktree root for external worktrees', () => {
+    const symlinkCalls = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'git' && args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
+        return '/main/repo/.git';
+      }
+      throw new Error(`unexpected exec ${cmd} ${args.join(' ')}`);
+    };
+    const mockFs = {
+      existsSync: (targetPath) => targetPath === path.resolve('/main/repo', '.beads'),
+      symlinkSync: (fromPath, toPath) => {
+        symlinkCalls.push({ fromPath, toPath });
+      },
+    };
+
+    const result = bootstrapBeads('/external/worktree', {
+      _exec: mockExec,
+      _fs: mockFs,
+      _platform: 'linux',
+    });
+
+    expect(result).toEqual({ success: true, strategy: 'linked', warning: null });
+    expect(symlinkCalls).toEqual([{
+      fromPath: path.resolve('/main/repo', '.beads'),
+      toPath: path.resolve('/external/worktree', '.beads')
+    }]);
   });
 
   test('does not treat metadata.database backend field as the recovery database name', () => {
