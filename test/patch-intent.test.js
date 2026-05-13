@@ -11,6 +11,7 @@ const {
   loadPatchIntentRecords,
   recordPatchIntentFromDiff,
   resolvePatchIntentRecords,
+  writePatchIntentRecords,
 } = require('../lib/patch-intent');
 
 const tempRoots = [];
@@ -221,6 +222,27 @@ describe('patch intent records', () => {
     expect(records).toHaveLength(1);
     expect(records[0].anchorId).toBe('stage.validate');
     expect(records[0].diff).toContain('Run checks carefully.');
+  });
+
+  test('records managed files with spaces in their diff paths', () => {
+    const root = makeRepo();
+    writeFile(root, 'a b/c.md', [
+      '<!-- forge-anchor:docs.space -->',
+      'Old text.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'a b/c.md', [
+      '<!-- forge-anchor:docs.space -->',
+      'New text.',
+      '',
+    ].join('\n'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('a b/c.md');
+    expect(result.records[0].anchorId).toBe('docs.space');
   });
 
   test('round-trips record output back through git apply', () => {
@@ -501,6 +523,13 @@ describe('patch intent records', () => {
     expect(() => resolvePatchIntentRecords(root)).toThrow('inside the project root');
   });
 
+  test('validates explicit patchPath overrides before loading or writing records', () => {
+    const root = makeRepo();
+
+    expect(() => loadPatchIntentRecords(root, { patchPath: '../outside.md' })).toThrow('inside the project root');
+    expect(() => writePatchIntentRecords(root, [], { patchPath: '../outside.md' })).toThrow('inside the project root');
+  });
+
   test('rejects patchIntent.path that escapes through a symlink', () => {
     const root = makeRepo();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-patch-outside-'));
@@ -578,6 +607,29 @@ describe('patch intent records', () => {
     ].join('\n'));
 
     expect(() => recordPatchIntentFromDiff(root)).toThrow('no declared forge anchor before diff hunk');
+  });
+
+  test('rejects hunks that cross multiple anchors', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.one -->',
+      'One old.',
+      '',
+      '<!-- forge-anchor:stage.two -->',
+      'Two old.',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '<!-- forge-anchor:stage.one -->',
+      'One new.',
+      '',
+      '<!-- forge-anchor:stage.two -->',
+      'Two new.',
+      '',
+    ].join('\n'));
+
+    expect(() => recordPatchIntentFromDiff(root)).toThrow('crosses multiple forge anchors');
   });
 
   test('forge patch record --from-diff writes patch.md', () => {
