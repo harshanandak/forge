@@ -103,6 +103,21 @@ describe('forge init command', () => {
     expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
   });
 
+  test('non-interactive CLI setup profile dry-run prints parseable YAML only', () => {
+    const projectRoot = makeCleanRepo();
+    const result = spawnSync(process.execPath, [forgePath, 'setup', '--minimal', '--dry-run', '--path', projectRoot], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      input: '',
+    });
+    const parsed = YAML.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(parsed.template.profile).toBe('minimal');
+    expect(fs.existsSync(path.join(projectRoot, '.forge', 'config.yaml'))).toBe(false);
+  });
+
   test('rejects empty profile values instead of defaulting', () => {
     for (const profileArgs of [['--profile='], ['--profile=   '], ['--profile']]) {
       const projectRoot = makeCleanRepo();
