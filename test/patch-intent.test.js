@@ -102,6 +102,37 @@ describe('patch intent records', () => {
     expect(anchors.has('fixture.only')).toBe(false);
   });
 
+  test('ignores fenced markdown anchors while attributing diff hunks', () => {
+    const root = makeRepo();
+    writeFile(root, 'docs/tool.md', [
+      '<!-- forge-anchor:stage.real -->',
+      'Intro text.',
+      '',
+      '```md',
+      '<!-- forge-anchor:stage.example -->',
+      'old fenced text',
+      '```',
+      '',
+    ].join('\n'));
+    commitAll(root);
+    writeFile(root, 'docs/tool.md', [
+      '<!-- forge-anchor:stage.real -->',
+      'Intro text.',
+      '',
+      '```md',
+      '<!-- forge-anchor:stage.example -->',
+      'new fenced text',
+      '```',
+      '',
+    ].join('\n'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].anchorId).toBe('stage.real');
+    expect(result.records[0].diff).toContain('new fenced text');
+  });
+
   test('records diff hunks with stable IDs and replaces existing patch.md blocks', () => {
     const root = makeRepo();
     writeFile(root, '.claude/commands/validate.md', [
