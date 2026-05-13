@@ -3872,6 +3872,15 @@ function handlePathSetup(targetPath, options = {}) {
   return resolvedPath;
 }
 
+function resolvePathForDryRun(targetPath) {
+  const resolvedPath = path.resolve(targetPath);
+  if (fs.existsSync(resolvedPath) && !fs.statSync(resolvedPath).isDirectory()) {
+    console.error(`Error: ${resolvedPath} is not a directory`);
+    process.exit(1);
+  }
+  return resolvedPath;
+}
+
 // Helper: Determine selected agents from flags
 function determineSelectedAgents(flags) {
   if (flags.all) {
@@ -4126,6 +4135,11 @@ async function main() {
   const command = args[0];
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
+  const profileDryRunArgs = ['--minimal', '--standard', '--full'];
+  const suppressAdoptionDryRunOutput = flags.dryRun && (
+    command === 'init' || (command === 'setup' && profileDryRunArgs.some(arg => args.includes(arg)))
+  );
+  const suppressStructuredOutput = suppressJsonIntrospectionOutput || suppressAdoptionDryRunOutput;
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
@@ -4135,7 +4149,7 @@ async function main() {
   SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
-  if (NON_INTERACTIVE && !suppressJsonIntrospectionOutput) {
+  if (NON_INTERACTIVE && !suppressStructuredOutput) {
     const agentFlag = flags.agents;
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")
@@ -4161,7 +4175,9 @@ async function main() {
   // Handle --path option: change to target directory
   if (flags.path) {
     // Update projectRoot after changing directory to maintain state consistency
-    projectRoot = handlePathSetup(flags.path, { quiet: suppressJsonIntrospectionOutput });
+    projectRoot = suppressAdoptionDryRunOutput
+      ? resolvePathForDryRun(flags.path)
+      : handlePathSetup(flags.path, { quiet: suppressStructuredOutput });
   }
 
   // Load command registry (auto-discovered commands from lib/commands/)

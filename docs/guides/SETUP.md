@@ -17,6 +17,19 @@ Complete setup instructions for all AI agents and optional toolchain.
 
 ## Installation Options
 
+### Option 0: Fresh Repo Adoption Config
+
+```bash
+# Writes only .forge/config.yaml
+bunx forge init --profile minimal --yes
+
+# Inspect the generated runtime graph config
+bunx forge options lint
+bunx forge options diff
+```
+
+Use `minimal`, `standard`, or `full`. These profiles are adoption scaffolds over runtime primitives; see [Adoption Templates](../reference/TEMPLATES.md).
+
 ### Option 1: Bun (Recommended)
 
 ```bash
