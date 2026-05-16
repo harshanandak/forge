@@ -350,6 +350,33 @@ describe('patch intent records', () => {
     expect(result.records[0].anchorId).toBe('stage.unborn');
   });
 
+  test('records one final hunk for staged then edited files on unborn branches', () => {
+    const root = makeRepo();
+    writeFile(root, 'commands/validate.md', [
+      '# Validate',
+      '',
+      '<!-- forge-anchor:stage.unborn-final -->',
+      'Staged text.',
+      '',
+    ].join('\n'));
+    execFileSync('git', ['add', 'commands/validate.md'], { cwd: root });
+    writeFile(root, 'commands/validate.md', [
+      '# Validate',
+      '',
+      '<!-- forge-anchor:stage.unborn-final -->',
+      'Final text.',
+      '',
+    ].join('\n'));
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
+    expect(result.records[0].anchorId).toBe('stage.unborn-final');
+    expect(result.records[0].diff).toContain('Final text.');
+    expect(result.records[0].diff).not.toContain('Staged text.');
+  });
+
   test('records staged added managed files with anchors after headings', () => {
     const root = makeRepo();
     writeFile(root, 'AGENTS.md', '# Agent\n');
