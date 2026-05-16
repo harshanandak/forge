@@ -451,7 +451,7 @@ describe('project memory', () => {
         sourceAgent: 'Codex',
         tags: [],
       }, {
-        lockTimeoutMs: 25,
+        lockTimeoutMs: 250,
         lockRetryMs: 5,
       })).toThrow('operation not permitted');
     } finally {

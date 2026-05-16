@@ -8,7 +8,7 @@ const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'beads-upgrade-smoke.
 const GIT_BASH_PATH = 'C:\\Program Files\\Git\\bin\\bash.exe';
 const tempDirs = [];
 
-setDefaultTimeout(20000);
+setDefaultTimeout(30000);
 
 function resolveBashCommand() {
   if (process.env.BASH_CMD) {

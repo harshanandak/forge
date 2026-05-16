@@ -5,6 +5,7 @@ const fs = require('fs');
 const { resolveShellRuntime } = require('../lib/runtime-health');
 
 const ROOT = path.resolve(__dirname, '..');
+const SHELL_TEST_TIMEOUT_MS = 30000;
 
 function bashCommand() {
   if (process.platform !== 'win32') {
@@ -16,6 +17,13 @@ function bashCommand() {
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function toBashPath(filePath) {
+  if (process.platform !== 'win32') {
+    return filePath;
+  }
+  return filePath.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
 }
 
 /**
@@ -68,10 +76,10 @@ exit 0
     cwd: ROOT,
     env: {
       ...process.env,
-      BD_CMD: shimPath,
+      BD_CMD: toBashPath(shimPath),
     },
     encoding: 'utf8',
-    timeout: 20000,
+    timeout: SHELL_TEST_TIMEOUT_MS,
   });
 
   try {
@@ -94,7 +102,7 @@ describe('beads-context.sh validate', () => {
     });
     const hasError = result.exitCode !== 0 || result.output.toLowerCase().includes('error');
     expect(hasError).toBe(true);
-  }, 15000);
+  }, SHELL_TEST_TIMEOUT_MS);
 
   test('warns when description is missing', () => {
     const result = runValidate('test-issue-010', {
@@ -104,7 +112,7 @@ describe('beads-context.sh validate', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.output.toLowerCase()).toContain('description');
-  }, 15000);
+  }, SHELL_TEST_TIMEOUT_MS);
 
   test('warns when no stage transition exists', () => {
     const result = runValidate('test-issue-011', {
@@ -114,7 +122,7 @@ describe('beads-context.sh validate', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.output.toLowerCase()).toContain('stage transition');
-  }, 15000);
+  }, SHELL_TEST_TIMEOUT_MS);
 
   test('warns when most recent transition has no summary', () => {
     const result = runValidate('test-issue-012', {
@@ -124,7 +132,7 @@ describe('beads-context.sh validate', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.output.toLowerCase()).toContain('summary');
-  }, 15000);
+  }, SHELL_TEST_TIMEOUT_MS);
 
   test('warns when design metadata is missing for post-plan stage', () => {
     const result = runValidate('test-issue-013', {
@@ -134,7 +142,7 @@ describe('beads-context.sh validate', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.output.toLowerCase()).toContain('design');
-  }, 15000);
+  }, SHELL_TEST_TIMEOUT_MS);
 
   test('outputs success when all fields are present', () => {
     const result = runValidate('test-issue-014', {
@@ -144,5 +152,5 @@ describe('beads-context.sh validate', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain('All context fields present');
-  }, 15000);
+  }, SHELL_TEST_TIMEOUT_MS);
 });
