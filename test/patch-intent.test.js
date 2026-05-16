@@ -335,6 +335,8 @@ describe('patch intent records', () => {
   test('records staged managed hunks on unborn branches', () => {
     const root = makeRepo();
     writeFile(root, 'commands/validate.md', [
+      '# Validate',
+      '',
       '<!-- forge-anchor:stage.unborn -->',
       'Initial text.',
       '',
@@ -346,6 +348,27 @@ describe('patch intent records', () => {
     expect(result.records).toHaveLength(1);
     expect(result.records[0].path).toBe('commands/validate.md');
     expect(result.records[0].anchorId).toBe('stage.unborn');
+  });
+
+  test('records staged added managed files with anchors after headings', () => {
+    const root = makeRepo();
+    writeFile(root, 'AGENTS.md', '# Agent\n');
+    commitAll(root);
+    writeFile(root, 'commands/validate.md', [
+      '# Validate',
+      '',
+      '<!-- forge-anchor:stage.added -->',
+      'Initial text.',
+      '',
+    ].join('\n'));
+    execFileSync('git', ['add', 'commands/validate.md'], { cwd: root });
+
+    const result = recordPatchIntentFromDiff(root);
+
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].path).toBe('commands/validate.md');
+    expect(result.records[0].anchorId).toBe('stage.added');
+    expect(result.records[0].anchorLine).toBe(3);
   });
 
   test('round-trips record output back through git apply', () => {
