@@ -37,7 +37,7 @@ Implement a small local trust foundation rather than a full installer:
 2. Add registry commands:
    - `forge add <source> [--name <id>] [--allow-untrusted]`
    - `forge audit verify`
-   - `forge upgrade --dry-run [--self-heal]`
+   - `forge upgrade [--dry-run] [--self-heal]`
 3. Keep source resolution conservative:
    - local filesystem paths are trusted and integrity-verifiable;
    - remote/package locator strings are untrusted and require explicit opt-in;
@@ -64,4 +64,3 @@ Implement a small local trust foundation rather than a full installer:
   - `bun run lint`
   - `bun test`
   - `bun run check`
-

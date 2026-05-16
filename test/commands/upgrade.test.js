@@ -40,7 +40,7 @@ describe('forge upgrade command', () => {
     expect(result.output).toContain('Forge upgrade dry-run');
     expect(result.output).toContain('[PASS] Runtime config');
     expect(result.output).toContain('[PASS] Patch intent: 0 record(s), 0 orphan(s)');
-    expect(result.output).toContain('[PASS] Lock trust: 2 extension(s), 1 untrusted opt-in');
+    expect(result.output).toContain('[FAIL] Lock trust: 2 extension(s), 1 untrusted opt-in');
     expect(result.output).toContain('[WARN] remote: remote source integrity cannot be rechecked');
     expect(result.output).toContain('Non-scope: rollback snapshots and full restore are not implemented');
     expect(fs.readFileSync(path.join(root, '.forge', 'log.jsonl'), 'utf8')).toBe(beforeLog);
@@ -75,4 +75,3 @@ describe('forge upgrade command', () => {
     expect(fs.readFileSync(path.join(root, 'plugin.json'), 'utf8')).toContain('tampered');
   });
 });
-

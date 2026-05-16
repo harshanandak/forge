@@ -36,5 +36,15 @@ describe('forge audit command', () => {
     expect(tampered.output).toContain('[FAIL] local');
     expect(tampered.error).toBe(tampered.output);
   });
-});
 
+  test('reports malformed lockfiles as structured failures', async () => {
+    const root = makeRepo();
+    fs.writeFileSync(path.join(root, 'forge.lock'), '{not json', 'utf8');
+
+    const result = await auditCommand.handler(['verify'], {}, root);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('JSON');
+    expect(result.output).toBeUndefined();
+  });
+});

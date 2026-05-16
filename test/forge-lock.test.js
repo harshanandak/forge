@@ -7,6 +7,7 @@ const {
   addLockEntry,
   readForgeLock,
   verifyForgeLock,
+  writeForgeLock,
 } = require('../lib/forge-lock');
 
 const tempRoots = [];
@@ -88,5 +89,51 @@ describe('forge lock trust policy', () => {
     expect(report.results[0].status).toBe('fail');
     expect(report.results[0].reason).toContain('integrity mismatch');
   });
-});
 
+  test('refuses symlinked local sources that resolve outside the project root', () => {
+    const root = makeRepo();
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-lock-outside-'));
+    tempRoots.push(outsideRoot);
+    const outsideFile = path.join(outsideRoot, 'external.plugin.json');
+    const linkPath = path.join(root, 'extensions', 'external.plugin.json');
+    fs.writeFileSync(outsideFile, '{"name":"external"}\n', 'utf8');
+    try {
+      fs.symlinkSync(outsideFile, linkPath);
+    } catch (error) {
+      expect(['EACCES', 'EPERM']).toContain(error.code);
+      return;
+    }
+
+    expect(() => addLockEntry(root, {
+      name: 'external',
+      source: './extensions/external.plugin.json',
+    })).toThrow(/project root/);
+  });
+
+  test('fails verification when a crafted lock entry escapes the project root', () => {
+    const root = makeRepo();
+    writeForgeLock(root, {
+      version: 1,
+      generatedBy: 'forge',
+      extensions: [{
+        name: 'escape',
+        source: '../outside.plugin.json',
+        resolvedPath: '../outside.plugin.json',
+        integrity: 'sha512-invalid',
+        verification: 'sri',
+        trust: {
+          trusted: true,
+          allowUntrusted: false,
+          reason: 'crafted test entry',
+        },
+        lockedAt: new Date().toISOString(),
+      }],
+    });
+
+    const report = verifyForgeLock(root);
+
+    expect(report.ok).toBe(false);
+    expect(report.results[0].status).toBe('fail');
+    expect(report.results[0].reason).toContain('project root');
+  });
+});
