@@ -453,6 +453,31 @@ describe('patch intent records', () => {
     expect(actualDiff).toBe(expectedDiff);
   });
 
+  test('preserves diff payload trailing whitespace in patch records', () => {
+    const root = makeRepo();
+    const diff = [
+      'diff --git a/docs/example.md b/docs/example.md',
+      '--- a/docs/example.md',
+      '+++ b/docs/example.md',
+      '@@ -1,2 +1,2 @@',
+      '-old',
+      '+new   ',
+      ' ',
+    ].join('\n') + '\n';
+
+    writePatchIntentRecords(root, [{
+      id: 'patch_docs_trailing',
+      anchorId: 'docs.trailing',
+      path: 'docs/example.md',
+      createdAt: '2026-05-16T00:00:00.000Z',
+      source: 'git-diff',
+      status: 'active',
+      diff,
+    }]);
+
+    expect(loadPatchIntentRecords(root).records[0].diff).toBe(diff);
+  });
+
   test('resolves record paths after a managed file rename', () => {
     const root = makeRepo();
     writeFile(root, 'old/validate.md', [
@@ -733,6 +758,25 @@ describe('patch intent records', () => {
     writeFile(outside, 'external.md', '<!-- forge-anchor:external.anchor -->\nOutside text.\n');
     try {
       fs.symlinkSync(outside, path.join(root, 'linked-docs'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(err.code)) {
+        return;
+      }
+      throw err;
+    }
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.has('external.anchor')).toBe(false);
+  });
+
+  test('ignores symlinked anchor files during discovery', () => {
+    const root = makeRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-patch-outside-'));
+    tempRoots.push(outside);
+    writeFile(outside, 'external.md', '<!-- forge-anchor:external.anchor -->\nOutside text.\n');
+    try {
+      fs.symlinkSync(path.join(outside, 'external.md'), path.join(root, 'linked.md'), 'file');
     } catch (err) {
       if (['EPERM', 'EACCES', 'ENOTSUP'].includes(err.code)) {
         return;
