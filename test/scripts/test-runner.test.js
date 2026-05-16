@@ -152,6 +152,25 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: [
+        'docs/INDEX.md',
+        'docs/reference/upgrade-safety.md',
+        'lib/upgrade-safety.js',
+        'lib/commands/upgrade.js',
+      ].join('\n'),
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/commands/upgrade.test.js',
+      'test/docs-consistency.test.js',
+      ...riskTargets,
+    ]);
+  });
+
   test('buildTestExecutionPlan always includes curated risk tests in targeted mode', () => {
     const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
       changedFiles: 'scripts/behavioral-judge.sh\n',
