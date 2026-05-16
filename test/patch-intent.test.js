@@ -662,8 +662,11 @@ describe('patch intent records', () => {
     tempRoots.push(outside);
     try {
       fs.symlinkSync(outside, path.join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
-    } catch {
-      return;
+    } catch (err) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(err.code)) {
+        return;
+      }
+      throw err;
     }
     writeFile(root, '.forge/config.yaml', [
       'patchIntent:',
