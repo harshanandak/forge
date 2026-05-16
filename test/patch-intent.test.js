@@ -263,6 +263,31 @@ describe('patch intent records', () => {
     expect(records[0].diff).toContain('Run checks carefully.');
   });
 
+  test('distinguishes patch IDs for anchors with the same normalized prefix', () => {
+    const root = makeRepo();
+    const diff = [
+      'diff --git a/commands/validate.md b/commands/validate.md',
+      '--- a/commands/validate.md',
+      '+++ b/commands/validate.md',
+      '@@ -2 +2 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    writeFile(root, 'commands/validate.md', '<!-- forge-anchor:stage-one -->\nnew\n');
+    const first = recordPatchIntentFromDiff(root, { diff, now: new Date('2026-05-13T00:00:00Z') });
+    writeFile(root, 'commands/validate.md', '<!-- forge-anchor:stage:one -->\nnew\n');
+    const second = recordPatchIntentFromDiff(root, { diff, now: new Date('2026-05-13T00:00:01Z') });
+
+    const records = loadPatchIntentRecords(root).records;
+    const secondRecord = second.records.find(record => record.anchorId === 'stage:one');
+
+    expect(first.records[0].id).not.toBe(secondRecord.id);
+    expect(records).toHaveLength(2);
+    expect(records.map(record => record.anchorId).sort()).toEqual(['stage-one', 'stage:one']);
+  });
+
   test('records managed files with spaces in their diff paths', () => {
     const root = makeRepo();
     writeFile(root, 'a b/c.md', [
@@ -591,6 +616,42 @@ describe('patch intent records', () => {
     ].join('\n'));
 
     expect(() => loadPatchIntentRecords(root)).toThrow('Malformed patch intent record block');
+  });
+
+  test('rejects patch intent records with missing required metadata', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/patch.md', [
+      '# Forge Patch Intent',
+      '',
+      '<!-- forge-patch-intent:v1',
+      'anchorId: stage.missing-id',
+      'path: commands/validate.md',
+      'createdAt: 2026-05-13T00:00:00.000Z',
+      'source: git-diff',
+      'status: active',
+      '-->',
+      '```diff',
+      'diff --git a/commands/validate.md b/commands/validate.md',
+      '--- a/commands/validate.md',
+      '+++ b/commands/validate.md',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '```',
+      '<!-- /forge-patch-intent -->',
+      '',
+    ].join('\n'));
+
+    expect(() => loadPatchIntentRecords(root)).toThrow('missing required metadata: id');
+    expect(() => writePatchIntentRecords(root, [])).toThrow('missing required metadata: id');
+
+    const cleanRoot = makeRepo();
+    expect(() => writePatchIntentRecords(cleanRoot, [{
+      id: '',
+      anchorId: 'stage.missing-id',
+      path: 'commands/validate.md',
+      diff: 'diff --git a/commands/validate.md b/commands/validate.md\n',
+    }])).toThrow('missing required metadata: id');
   });
 
   test('honors patchIntent config path, aliases, and disabled state', () => {
