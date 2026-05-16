@@ -146,6 +146,25 @@ describe('patch intent records', () => {
     expect(anchors.get('docs.decisions').path).toBe('docs/work/decisions.md');
   });
 
+  test('does not treat indented code fences as markdown fences', () => {
+    const root = makeRepo();
+    writeFile(root, 'docs/work/decisions.md', [
+      'Example:',
+      '',
+      '    ```',
+      '    code fence example',
+      '    ```',
+      '',
+      '<!-- forge-anchor:docs.decisions -->',
+      'Decision text.',
+      '',
+    ].join('\n'));
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.get('docs.decisions').path).toBe('docs/work/decisions.md');
+  });
+
 
   test('ignores anchor literals in source and test fixtures', () => {
     const root = makeRepo();
