@@ -1,994 +1,167 @@
-const { describe, test, expect, afterEach } = require('bun:test');
-const { spawn } = require('node:child_process');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const { describe, test, expect } = require('bun:test');
 
 const projectMemory = require('../lib/project-memory');
 
-const tempRoots = [];
-const workerModulePath = path.resolve(__dirname, '..', 'lib', 'project-memory');
-
-function tempRoot() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-project-memory-'));
-  tempRoots.push(root);
-  return root;
+function runner(responses = {}) {
+  const calls = [];
+  return {
+    calls,
+    run(command, args) {
+      calls.push({ command, args });
+      const key = `${command} ${args.join(' ')}`;
+      if (responses[key] instanceof Error) {
+        throw responses[key];
+      }
+      return responses[key] ?? '{}';
+    },
+  };
 }
 
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+describe('project memory Beads adapter', () => {
+  test('writes entries with bd remember and a stable key', () => {
+    const beads = runner({
+      'bd remember {"value":"Use Beads for durable memory.","sourceAgent":"Codex","tags":["memory"],"timestamp":"2026-05-16T10:00:00.000Z","scope":"project"} --key policy.memory': '{"key":"policy.memory","value":"stored"}',
+    });
 
-async function waitForSearchCount(root, query, expectedCount, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  let results;
-  do {
-    results = projectMemory.search(root, query);
-    if (results.length === expectedCount) {
-      return results;
-    }
-    await delay(25);
-  } while (Date.now() < deadline);
-
-  return results;
-}
-
-afterEach(() => {
-  for (const root of tempRoots.splice(0)) {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-describe('project memory', () => {
-  test('writes entries to the default .forge/memory JSONL file and reads them back', () => {
-    const root = tempRoot();
-
-    const entry = projectMemory.write(root, {
-      key: 'policy.stage-order',
-      value: 'Run /plan before /dev for standard feature work.',
+    const entry = projectMemory.write(process.cwd(), {
+      key: 'policy.memory',
+      value: 'Use Beads for durable memory.',
       sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['policy', 'workflow'],
+      tags: ['memory'],
+      timestamp: '2026-05-16T10:00:00.000Z',
       scope: 'project',
-      confidence: 0.95,
-      beadsRefs: ['forge-xdh7', 'forge-f3lx'],
-    });
-
-    expect(entry).toEqual({
-      key: 'policy.stage-order',
-      value: 'Run /plan before /dev for standard feature work.',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['policy', 'workflow'],
-      scope: 'project',
-      confidence: 0.95,
-      beadsRefs: ['forge-xdh7', 'forge-f3lx'],
-    });
-
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    expect(fs.existsSync(memoryFile)).toBe(true);
-    const lines = fs.readFileSync(memoryFile, 'utf8').trim().split('\n');
-    expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0])).toMatchObject({
-      key: 'policy.stage-order',
-      'source-agent': 'Codex',
-      'beads-refs': ['forge-xdh7', 'forge-f3lx'],
-    });
-    expect(projectMemory.read(root, 'policy.stage-order')).toEqual(entry);
-    expect(projectMemory.list(root)).toEqual([entry]);
-  });
-
-  test('upserts entries by key without duplicating previous decisions', () => {
-    const root = tempRoot();
-
-    projectMemory.write(root, {
-      key: 'preference.agent-surface',
-      value: 'Support Claude and Codex first.',
-      sourceAgent: 'Claude',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['preference'],
-    });
-    projectMemory.write(root, {
-      key: 'preference.agent-surface',
-      value: 'Support Claude, Cursor, Codex, Cline, and OpenCode.',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:01:00.000Z',
-      tags: ['preference', 'agents'],
-    });
-
-    expect(projectMemory.list(root)).toHaveLength(1);
-    expect(projectMemory.read(root, 'preference.agent-surface')).toMatchObject({
-      value: 'Support Claude, Cursor, Codex, Cline, and OpenCode.',
-      sourceAgent: 'Codex',
-      tags: ['preference', 'agents'],
-    });
-  });
-
-  test('normalizes read keys before lookup', () => {
-    const root = tempRoot();
-
-    projectMemory.write(root, {
-      key: ' preference.trimmed-read ',
-      value: 'read callers may pass padded keys',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['preference'],
-    });
-
-    expect(projectMemory.read(root, ' preference.trimmed-read ')).toMatchObject({
-      key: 'preference.trimmed-read',
-      value: 'read callers may pass padded keys',
-    });
-  });
-
-  test('deduplicates all existing records for a key during upsert', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(memoryFile, [
-      JSON.stringify({
-        key: 'decision.duplicate',
-        value: 'stale manual merge copy',
-        'source-agent': 'Claude',
-        timestamp: '2026-04-26T00:00:00.000Z',
-        tags: ['stale'],
-      }),
-      JSON.stringify({
-        key: 'decision.keep',
-        value: 'unrelated entry',
-        'source-agent': 'Cursor',
-        timestamp: '2026-04-26T00:01:00.000Z',
-        tags: ['keep'],
-      }),
-      JSON.stringify({
-        key: 'decision.duplicate',
-        value: 'second stale manual merge copy',
-        'source-agent': 'Codex',
-        timestamp: '2026-04-26T00:02:00.000Z',
-        tags: ['stale'],
-      }),
-    ].join('\n') + '\n', 'utf8');
-
-    projectMemory.write(root, {
-      key: 'decision.duplicate',
-      value: 'current value',
-      sourceAgent: 'OpenCode',
-      timestamp: '2026-04-26T00:03:00.000Z',
-      tags: ['current'],
-    });
-
-    expect(projectMemory.list(root).map((entry) => entry.key)).toEqual([
-      'decision.duplicate',
-      'decision.keep',
-    ]);
-    expect(projectMemory.search(root, 'stale')).toEqual([]);
-    expect(projectMemory.read(root, 'decision.duplicate')).toMatchObject({
-      value: 'current value',
-      sourceAgent: 'OpenCode',
-      tags: ['current'],
-    });
-  });
-
-  test('searches keys, string values, source agents, and tags case-insensitively', () => {
-    const root = tempRoot();
-
-    projectMemory.write(root, {
-      key: 'decision.memory-format',
-      value: { format: 'json', directory: '.forge/memory' },
-      sourceAgent: 'Cursor',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['decision', 'memory'],
-    });
-    projectMemory.write(root, {
-      key: 'policy.issue-tracking',
-      value: 'Memory complements Beads and does not replace issue lifecycle state.',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:01:00.000Z',
-      tags: ['policy', 'beads'],
-    });
-
-    expect(projectMemory.search(root, 'json')).toHaveLength(1);
-    expect(projectMemory.search(root, 'BEADS')[0].key).toBe('policy.issue-tracking');
-    expect(projectMemory.search(root, 'cursor')[0].key).toBe('decision.memory-format');
-    expect(projectMemory.search(root, 'memory')).toHaveLength(2);
-  });
-
-  test('searches optional shared-memory metadata fields', () => {
-    const root = tempRoot();
-
-    projectMemory.write(root, {
-      key: 'decision.canonical-store',
-      value: 'Forge memory is canonical; agent-native stores are caches or adapters.',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['decision'],
-      scope: 'repo',
-      confidence: 1,
-      supersedes: ['decision.agent-private-memory'],
-      beadsRefs: ['forge-xdh7'],
-    });
-
-    expect(projectMemory.search(root, 'repo')[0].key).toBe('decision.canonical-store');
-    expect(projectMemory.search(root, 'forge-xdh7')[0].key).toBe('decision.canonical-store');
-    expect(projectMemory.search(root, 'agent-private')[0].key).toBe('decision.canonical-store');
-  });
-
-  test('resolves relative filePath overrides from the project root', () => {
-    const root = tempRoot();
-    const originalCwd = process.cwd();
-    const overridePath = path.join('.forge', 'memory', `${path.basename(root)}-custom.jsonl`);
-
-    try {
-      process.chdir(os.tmpdir());
-      projectMemory.write(root, {
-        key: 'decision.relative-override',
-        value: 'Relative override paths stay project-scoped.',
-        sourceAgent: 'Codex',
-        timestamp: '2026-04-26T00:00:00.000Z',
-        tags: ['paths'],
-      }, {
-        filePath: overridePath,
-      });
-    } finally {
-      process.chdir(originalCwd);
-    }
-
-    expect(fs.existsSync(path.join(root, overridePath))).toBe(true);
-    expect(fs.existsSync(path.join(os.tmpdir(), overridePath))).toBe(false);
-    expect(projectMemory.read(root, 'decision.relative-override', {
-      filePath: overridePath,
-    })).toMatchObject({
-      key: 'decision.relative-override',
-      sourceAgent: 'Codex',
-    });
-  });
-
-  test('rejects filePath overrides outside the project root', () => {
-    const root = tempRoot();
-
-    expect(() => projectMemory.write(root, {
-      key: 'policy.escape',
-      value: 'must stay in repo',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      filePath: path.join('..', 'outside.jsonl'),
-    })).toThrow('projectRoot');
-
-    expect(() => projectMemory.write(root, {
-      key: 'policy.absolute-escape',
-      value: 'must stay in repo',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      filePath: path.join(os.tmpdir(), `outside-${path.basename(root)}.jsonl`),
-    })).toThrow('projectRoot');
-  });
-
-  test('rejects memory paths that traverse symlinks outside the project root', () => {
-    if (process.platform === 'win32') {
-      return;
-    }
-
-    const root = tempRoot();
-    const outside = tempRoot();
-    fs.symlinkSync(outside, path.join(root, '.forge'), 'dir');
-
-    expect(() => projectMemory.write(root, {
-      key: 'policy.symlink-escape',
-      value: 'must stay in repo',
-      sourceAgent: 'Codex',
-      tags: [],
-    })).toThrow('projectRoot');
-  });
-
-  test('rejects symlinked memory files outside the project root', () => {
-    if (process.platform === 'win32') {
-      return;
-    }
-
-    const root = tempRoot();
-    const outside = tempRoot();
-    const memoryDir = path.join(root, '.forge', 'memory');
-    const outsideFile = path.join(outside, 'entries.jsonl');
-    fs.mkdirSync(memoryDir, { recursive: true });
-    fs.writeFileSync(outsideFile, JSON.stringify({
-      key: 'policy.external',
-      value: 'external data',
-      'source-agent': 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: [],
-    }) + '\n', 'utf8');
-    fs.symlinkSync(outsideFile, path.join(memoryDir, 'entries.jsonl'), 'file');
-
-    expect(() => projectMemory.list(root)).toThrow('projectRoot');
-  });
-
-  test('recovers stale lockfiles owned by dead processes', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
-      pid: 99999999,
-      createdAt: '2026-04-26T00:00:00.000Z',
-    }), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.stale-lock',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.stale-lock')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('treats Windows EPERM on existing lockfiles as lock contention', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    const lockPath = `${memoryFile}.lock`;
-    const originalOpenSync = fs.openSync;
-    let injected = false;
-
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({
-      pid: 99999999,
-      createdAt: '2026-04-26T00:00:00.000Z',
-    }), 'utf8');
-
-    fs.openSync = function openSyncWithInjectedEperm(target, flags, ...args) {
-      if (!injected && target === lockPath && flags === 'wx') {
-        injected = true;
-        const err = new Error('operation not permitted');
-        err.code = 'EPERM';
-        throw err;
-      }
-      return originalOpenSync.call(this, target, flags, ...args);
-    };
-
-    try {
-      projectMemory.write(root, {
-        key: 'policy.eperm-lock-file',
-        value: 'recovered',
-        sourceAgent: 'Codex',
-        tags: [],
-      }, {
-        lockTimeoutMs: 250,
-        lockRetryMs: 5,
-      });
-    } finally {
-      fs.openSync = originalOpenSync;
-    }
-
-    expect(injected).toBe(true);
-    expect(projectMemory.read(root, 'policy.eperm-lock-file')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  test('treats transient Windows EPERM on missing lockfiles as lock contention', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    const lockPath = `${memoryFile}.lock`;
-    const originalOpenSync = fs.openSync;
-    let injected = false;
-
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-
-    fs.openSync = function openSyncWithTransientEperm(target, flags, ...args) {
-      if (!injected && target === lockPath && flags === 'wx' && !fs.existsSync(lockPath)) {
-        injected = true;
-        const err = new Error('operation not permitted');
-        err.code = 'EPERM';
-        err.path = lockPath;
-        throw err;
-      }
-      return originalOpenSync.call(this, target, flags, ...args);
-    };
-
-    try {
-      projectMemory.write(root, {
-        key: 'policy.transient-eperm-lock-file',
-        value: 'recovered',
-        sourceAgent: 'Codex',
-        tags: [],
-      }, {
-        lockTimeoutMs: 250,
-        lockRetryMs: 5,
-      });
-    } finally {
-      fs.openSync = originalOpenSync;
-    }
-
-    expect(injected).toBe(true);
-    expect(projectMemory.read(root, 'policy.transient-eperm-lock-file')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  test('surfaces persistent Windows EPERM on missing lockfiles', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    const lockPath = `${memoryFile}.lock`;
-    const originalOpenSync = fs.openSync;
-    const originalRmSync = fs.rmSync;
-    let openAttempts = 0;
-    let removedMissingLock = false;
-
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-
-    fs.openSync = function openSyncWithPersistentEperm(target, flags, ...args) {
-      if (target === lockPath && flags === 'wx' && !fs.existsSync(lockPath)) {
-        openAttempts += 1;
-        const err = new Error('operation not permitted');
-        err.code = 'EPERM';
-        err.path = lockPath;
-        throw err;
-      }
-      return originalOpenSync.call(this, target, flags, ...args);
-    };
-    fs.rmSync = function rmSyncTrackingMissingLock(target, ...args) {
-      if (target === lockPath && !fs.existsSync(lockPath)) {
-        removedMissingLock = true;
-      }
-      return originalRmSync.call(this, target, ...args);
-    };
-
-    try {
-      expect(() => projectMemory.write(root, {
-        key: 'policy.persistent-eperm-lock-file',
-        value: 'blocked',
-        sourceAgent: 'Codex',
-        tags: [],
-      }, {
-        lockTimeoutMs: 250,
-        lockRetryMs: 5,
-      })).toThrow('operation not permitted');
-    } finally {
-      fs.openSync = originalOpenSync;
-      fs.rmSync = originalRmSync;
-    }
-
-    expect(openAttempts).toBeGreaterThan(1);
-    expect(removedMissingLock).toBe(false);
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  test('reclaims dangling lock paths during stale cleanup', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    const lockPath = `${memoryFile}.lock`;
-    const originalOpenSync = fs.openSync;
-    const originalLstatSync = fs.lstatSync;
-    const originalRmSync = fs.rmSync;
-    let removedDanglingLock = false;
-
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-
-    fs.openSync = function openSyncWithDanglingLock(target, flags, ...args) {
-      if (!removedDanglingLock && target === lockPath && flags === 'wx') {
-        const err = new Error('file already exists');
-        err.code = 'EEXIST';
-        throw err;
-      }
-      return originalOpenSync.call(this, target, flags, ...args);
-    };
-    fs.lstatSync = function lstatSyncWithDanglingLock(target, ...args) {
-      if (!removedDanglingLock && target === lockPath) {
-        return {
-          isDirectory: () => false,
-        };
-      }
-      return originalLstatSync.call(this, target, ...args);
-    };
-    fs.rmSync = function rmSyncWithDanglingLock(target, ...args) {
-      if (target === lockPath) {
-        removedDanglingLock = true;
-        return undefined;
-      }
-      return originalRmSync.call(this, target, ...args);
-    };
-
-    try {
-      projectMemory.write(root, {
-        key: 'policy.dangling-lock',
-        value: 'recovered',
-        sourceAgent: 'Codex',
-        tags: [],
-      }, {
-        lockTimeoutMs: 250,
-        lockRetryMs: 5,
-      });
-    } finally {
-      fs.openSync = originalOpenSync;
-      fs.lstatSync = originalLstatSync;
-      fs.rmSync = originalRmSync;
-    }
-
-    expect(removedDanglingLock).toBe(true);
-    expect(projectMemory.read(root, 'policy.dangling-lock')).toMatchObject({
-      value: 'recovered',
-    });
-  });
-
-  test('removes lockfiles when lock metadata initialization fails', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    const originalWriteFileSync = fs.writeFileSync;
-    let injected = false;
-
-    fs.writeFileSync = function writeFileSyncWithInjectedFailure(target, ...args) {
-      if (!injected && Number.isInteger(target)) {
-        injected = true;
-        throw new Error('injected lock metadata failure');
-      }
-      return originalWriteFileSync.call(this, target, ...args);
-    };
-
-    try {
-      expect(() => projectMemory.write(root, {
-        key: 'policy.lock-init-failure',
-        value: 'not written',
-        sourceAgent: 'Codex',
-        tags: [],
-      }, {
-        lockTimeoutMs: 50,
-        lockRetryMs: 5,
-      })).toThrow('injected lock metadata failure');
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
-
-    expect(injected).toBe(true);
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('recovers metadata-less lock directories within the lock timeout', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(`${memoryFile}.lock`, { recursive: true });
-    const staleTime = new Date(Date.now() - 5_000);
-    fs.utimesSync(`${memoryFile}.lock`, staleTime, staleTime);
-
-    projectMemory.write(root, {
-      key: 'policy.metadata-less-lock-dir',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.metadata-less-lock-dir')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('recovers malformed lockfiles within the lock timeout', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
-    const staleTime = new Date(Date.now() - 5_000);
-    fs.utimesSync(`${memoryFile}.lock`, staleTime, staleTime);
-
-    projectMemory.write(root, {
-      key: 'policy.malformed-lock-file',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.malformed-lock-file')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('does not reclaim a freshly initializing malformed lockfile before waiter timeout', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
-
-    expect(() => projectMemory.write(root, {
-      key: 'policy.fresh-invalid-lock',
-      value: 'blocked',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 100,
-    })).toThrow();
-
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(true);
-    expect(projectMemory.search(root, 'fresh-invalid-lock')).toEqual([]);
-  });
-
-  test('does not reclaim a freshly initializing lockfile with minor future mtime skew', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, '', 'utf8');
-    const skewedTime = new Date(Date.now() + 500);
-    fs.utimesSync(`${memoryFile}.lock`, skewedTime, skewedTime);
-
-    expect(() => projectMemory.write(root, {
-      key: 'policy.fresh-invalid-lock-skew',
-      value: 'blocked',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 100,
-    })).toThrow();
-
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(true);
-    expect(projectMemory.search(root, 'fresh-invalid-lock-skew')).toEqual([]);
-  });
-
-  test('recovers fresh lockfiles owned by dead processes', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
-      pid: 99999999,
-      createdAt: new Date().toISOString(),
-    }), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.fresh-dead-lock',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.fresh-dead-lock')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('recovers fresh dead locks immediately when lock timeout is shorter than grace', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
-      pid: 99999999,
-      createdAt: new Date().toISOString(),
-    }), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.short-timeout-dead-lock',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 50,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.short-timeout-dead-lock')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('recovers dead locks when lock timeout equals grace boundary', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
-      pid: 99999999,
-      createdAt: new Date().toISOString(),
-    }), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.equal-timeout-dead-lock',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 100,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.equal-timeout-dead-lock')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('recovers fresh tokenized dead locks within the lock timeout', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
-      pid: 99999999,
-      createdAt: new Date().toISOString(),
-      token: 'dead-owner-token',
-    }), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.tokenized-dead-lock',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.tokenized-dead-lock')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('recovers future-dated lockfiles owned by dead processes', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    const future = new Date(Date.now() + 60_000).toISOString();
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
-      pid: 99999999,
-      createdAt: future,
-    }), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.future-dead-lock',
-      value: 'recovered',
-      sourceAgent: 'Codex',
-      tags: [],
-    }, {
-      lockTimeoutMs: 250,
-      lockRetryMs: 5,
-    });
-
-    expect(projectMemory.read(root, 'policy.future-dead-lock')).toMatchObject({
-      value: 'recovered',
-    });
-    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
-  });
-
-  test('serializes concurrent writers without losing entries', async () => {
-    const root = tempRoot();
-    const workerPath = path.join(root, 'project-memory-writer.cjs');
-    const worker = `
-const projectMemory = require(${JSON.stringify(workerModulePath)});
-const root = process.argv.at(-2);
-const index = Number(process.argv.at(-1));
-projectMemory.write(root, {
-  key: \`decision.concurrent.\${index}\`,
-  value: \`writer-\${index}\`,
-  sourceAgent: 'Codex',
-  timestamp: '2026-04-26T00:00:00.000Z',
-  tags: ['concurrent'],
-});
-`;
-    fs.writeFileSync(workerPath, worker);
-
-    await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [workerPath, root, String(index)], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout.on('data', (chunk) => { stdout += chunk; });
-      child.stderr.on('data', (chunk) => { stderr += chunk; });
-      child.on('error', (err) => {
-        reject(new Error(`worker ${index} failed to spawn: ${err.message}`));
-      });
-      child.on('close', (status) => {
-        if (status === 0) {
-          resolve();
-          return;
-        }
-        reject(new Error(`worker ${index} exited with ${status}: ${stderr || stdout}`));
-      });
-    })));
-
-    const results = await waitForSearchCount(root, 'concurrent', 8, 15_000);
-    expect(results.map((entry) => entry.key).sort()).toEqual(Array.from(
-      { length: 8 },
-      (_unused, index) => `decision.concurrent.${index}`,
-    ));
-  }, 20_000);
-
-  test('rejects schema-invalid stored JSONL entries when reading', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(memoryFile, [
-      JSON.stringify({
-        key: 'policy.valid',
-        value: 'valid',
-        'source-agent': 'Codex',
-        timestamp: '2026-04-26T00:00:00.000Z',
-        tags: [],
-      }),
-      JSON.stringify({
-        key: 'policy.invalid',
-        value: 'missing disk source-agent',
-        sourceAgent: 'Codex',
-        tags: [],
-      }),
-    ].join('\n') + '\n', 'utf8');
-
-    expect(() => projectMemory.list(root)).toThrow('invalid project memory entry at line 2');
-  });
-
-  test('ignores a torn trailing JSONL append when reading', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(memoryFile, [
-      JSON.stringify({
-        key: 'policy.valid-before-torn-tail',
-        value: 'valid',
-        'source-agent': 'Codex',
-        timestamp: '2026-04-26T00:00:00.000Z',
-        tags: ['valid'],
-      }),
-      '{"key":"policy.torn-tail"',
-    ].join('\n'), 'utf8');
-
-    expect(projectMemory.list(root)).toEqual([{
-      key: 'policy.valid-before-torn-tail',
-      value: 'valid',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['valid'],
+    }, { runner: beads.run });
+
+    expect(beads.calls).toEqual([{
+      command: 'bd',
+      args: [
+        'remember',
+        JSON.stringify({
+          value: 'Use Beads for durable memory.',
+          sourceAgent: 'Codex',
+          tags: ['memory'],
+          timestamp: '2026-05-16T10:00:00.000Z',
+          scope: 'project',
+        }),
+        '--key',
+        'policy.memory',
+      ],
     }]);
+    expect(entry.key).toBe('policy.memory');
+    expect(entry.value).toBe('Use Beads for durable memory.');
   });
 
-  test('ignores a valid but unterminated trailing JSONL record when reading', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(memoryFile, JSON.stringify({
-      key: 'policy.unterminated',
-      value: 'valid json without commit newline',
-      'source-agent': 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['unterminated'],
-    }), 'utf8');
-
-    expect(projectMemory.list(root)).toEqual([]);
-  });
-
-  test('repairs a torn trailing JSONL append before the next write', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    const validEntry = {
-      key: 'policy.valid-before-repair',
-      value: 'valid',
-      'source-agent': 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['valid'],
-    };
-    fs.writeFileSync(memoryFile, [
-      JSON.stringify(validEntry),
-      '{"key":"policy.torn-tail"',
-    ].join('\n'), 'utf8');
-
-    projectMemory.write(root, {
-      key: 'policy.after-repair',
-      value: 'written',
-      sourceAgent: 'Codex',
-      timestamp: '2026-04-26T00:01:00.000Z',
-      tags: ['repair'],
+  test('reads entries with bd recall and returns null when missing', () => {
+    const beads = runner({
+      'bd recall policy.memory --json': JSON.stringify({
+        key: 'policy.memory',
+        content: '{"value":"stored","sourceAgent":"Codex","tags":["memory"]}',
+      }),
+      'bd recall missing.key --json': '',
     });
 
-    const rawLines = fs.readFileSync(memoryFile, 'utf8').trim().split(/\r?\n/);
-    expect(rawLines).toHaveLength(2);
-    expect(rawLines.map((line) => JSON.parse(line).key)).toEqual([
-      'policy.valid-before-repair',
-      'policy.after-repair',
-    ]);
+    expect(projectMemory.read(process.cwd(), ' policy.memory ', { runner: beads.run })).toMatchObject({
+      key: 'policy.memory',
+      value: 'stored',
+      sourceAgent: 'Codex',
+      tags: ['memory'],
+    });
+    expect(projectMemory.read(process.cwd(), 'missing.key', { runner: beads.run })).toBe(null);
   });
 
-  test('rolls back an appended record when fsync fails', () => {
-    const root = tempRoot();
-    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
-    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
-    fs.writeFileSync(memoryFile, JSON.stringify({
-      key: 'policy.before-fsync-failure',
-      value: 'valid',
-      'source-agent': 'Codex',
-      timestamp: '2026-04-26T00:00:00.000Z',
-      tags: ['valid'],
-    }) + '\n', 'utf8');
+  test('searches and lists entries through bd memories', () => {
+    const memoryRows = JSON.stringify({
+      'decision.one': '{"value":"one","sourceAgent":"Codex","tags":["decision"]}',
+      'decision.two': '{"value":"two","sourceAgent":"Claude","tags":["decision"]}',
+      schema_version: 1,
+    });
+    const beads = runner({
+      'bd memories decision --json': memoryRows,
+      'bd memories --json': memoryRows,
+    });
 
-    const originalOpenSync = fs.openSync;
-    const originalFsyncSync = fs.fsyncSync;
-    const entryFileDescriptors = new Set();
-    let injected = false;
-
-    fs.openSync = function openSyncWithTrackedEntryFile(target, ...args) {
-      const fd = originalOpenSync.call(this, target, ...args);
-      if (path.resolve(String(target)) === memoryFile) {
-        entryFileDescriptors.add(fd);
-      }
-      return fd;
-    };
-    fs.fsyncSync = function fsyncSyncWithInjectedFailure(fd) {
-      if (!injected && entryFileDescriptors.has(fd)) {
-        injected = true;
-        throw new Error('injected entry fsync failure');
-      }
-      return originalFsyncSync.call(this, fd);
-    };
-
-    try {
-      expect(() => projectMemory.write(root, {
-        key: 'policy.fsync-failure',
-        value: 'must not persist',
-        sourceAgent: 'Codex',
-        timestamp: '2026-04-26T00:01:00.000Z',
-        tags: ['failure'],
-      })).toThrow('injected entry fsync failure');
-    } finally {
-      fs.fsyncSync = originalFsyncSync;
-      fs.openSync = originalOpenSync;
-    }
-
-    expect(injected).toBe(true);
-    expect(projectMemory.list(root).map((entry) => entry.key)).toEqual([
-      'policy.before-fsync-failure',
+    expect(projectMemory.search(process.cwd(), 'decision', { runner: beads.run }).map(entry => entry.key)).toEqual([
+      'decision.one',
+      'decision.two',
     ]);
+    expect(projectMemory.list(process.cwd(), { runner: beads.run })).toHaveLength(2);
   });
 
-  test('validates required schema fields before writing', () => {
-    const root = tempRoot();
+  test('falls back to plain text recall output and surfaces Beads command failures', () => {
+    const failed = runner({
+      'bd recall policy.memory --json': new Error('bd failed'),
+    });
+    const plainText = runner({
+      'bd recall policy.memory --json': 'Use Beads for durable memory.',
+    });
 
-    expect(() => projectMemory.write(root, {
-      key: '',
-      value: 'missing key',
+    expect(() => projectMemory.read(process.cwd(), 'policy.memory', { runner: failed.run })).toThrow('bd failed');
+    expect(projectMemory.read(process.cwd(), 'policy.memory', { runner: plainText.run })).toMatchObject({
+      key: 'policy.memory',
+      value: 'Use Beads for durable memory.',
+      sourceAgent: 'bd',
+    });
+  });
+
+  test('keeps brace-prefixed plain text memory content readable', () => {
+    const beads = runner({
+      'bd recall draft.memory --json': JSON.stringify({
+        key: 'draft.memory',
+        content: '{draft notes',
+      }),
+    });
+
+    expect(projectMemory.read(process.cwd(), 'draft.memory', { runner: beads.run })).toMatchObject({
+      key: 'draft.memory',
+      value: '{draft notes',
+      sourceAgent: 'bd',
+    });
+  });
+
+  test('adds a timestamp to compatibility memory writes when omitted', () => {
+    const beads = runner();
+
+    projectMemory.write(process.cwd(), {
+      key: 'decision.timestamped',
+      value: 'timestamp should be generated',
       sourceAgent: 'Codex',
-      tags: [],
-    })).toThrow('key');
+    }, { runner: beads.run });
 
-    expect(() => projectMemory.write(root, {
-      key: 'policy.invalid-tags',
-      value: 'tags must be an array',
+    const payload = JSON.parse(beads.calls[0].args[1]);
+    expect(Number.isNaN(Date.parse(payload.timestamp))).toBe(false);
+  });
+
+  test('validates beads-refs alias before writing', () => {
+    expect(() => projectMemory.write(process.cwd(), {
+      key: 'decision.bad-ref',
+      value: 'invalid alias refs must fail',
       sourceAgent: 'Codex',
-      tags: 'policy',
-    })).toThrow('tags');
+      'beads-refs': ['forge-besw.19', 42],
+    }, { runner: runner().run })).toThrow('beads-refs');
+  });
 
-    expect(() => projectMemory.write(root, {
-      key: 'policy.invalid-agent',
-      value: 'source agent is required',
-      sourceAgent: '',
-      tags: [],
-    })).toThrow('sourceAgent');
+  test('validates compatibility metadata before writing', () => {
+    const beads = runner();
 
-    expect(() => projectMemory.write(root, {
-      key: 'policy.invalid-confidence',
-      value: 'confidence is bounded',
+    expect(() => projectMemory.write(process.cwd(), {
+      key: 'decision.bad-confidence',
+      value: 'bad confidence must fail',
       sourceAgent: 'Codex',
-      confidence: 2,
-      tags: [],
-    })).toThrow('confidence');
+      confidence: Number.POSITIVE_INFINITY,
+    }, { runner: beads.run })).toThrow('confidence');
+
+    expect(() => projectMemory.write(process.cwd(), {
+      key: 'decision.bad-scope',
+      value: 'bad scope must fail',
+      sourceAgent: 'Codex',
+      scope: '',
+    }, { runner: beads.run })).toThrow('scope');
+
+    expect(() => projectMemory.write(process.cwd(), {
+      key: 'decision.bad-timestamp',
+      value: 'bad timestamp must fail',
+      sourceAgent: 'Codex',
+      timestamp: 'not-a-date',
+    }, { runner: beads.run })).toThrow('timestamp');
   });
 });

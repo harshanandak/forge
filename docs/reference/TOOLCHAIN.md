@@ -140,6 +140,24 @@ See the script help for explicit path overrides:
 bash scripts/beads-migrate-to-dolt.sh --help
 ```
 
+### Project Memory
+
+Forge project memory uses Beads as the durable store. Compatibility helpers in `lib/project-memory.js` route writes to `bd remember --key <key>`, reads to `bd recall <key> --json`, and search/list operations to `bd memories --json`.
+
+Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions, but they do not create a new datastore. The supported categories are:
+
+| Category | Key prefix | Durable backend |
+| --- | --- | --- |
+| decisions | `decisions:` | Beads memory index for canonical docs/plans decisions |
+| episodes | `episodes:` | Beads-backed memory/audit context |
+| skills | `skills:` | Beads memory index for skill references |
+| state | `state:` | Forge-owned state references |
+| issues | `issues:` | Beads issue references |
+| audit | `audit:` | Beads-backed audit references |
+| preferences | `preferences:` | Beads memory preferences |
+
+Every typed write must include provenance fields: `actor`, `reason`, and `source`. If `bd` is missing or returns malformed JSON, Forge surfaces the Beads command failure instead of falling back to local JSONL files.
+
 ### Post-Upgrade Smoke Verification
 
 Run the repo smoke harness after upgrading:

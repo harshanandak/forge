@@ -6,6 +6,7 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const {
   getResolvedRuntimeGraph,
   lintRuntimeGraphConfig,
+  resolveRuntimeGraph,
 } = require('../lib/core/runtime-graph');
 
 const tempRoots = [];
@@ -199,5 +200,94 @@ protectedPaths:
     expect(result.ok).toBe(false);
     expect(result.errors.map(error => error.code)).toContain('PROTECTED_PATH_TOO_BROAD');
     expect(result.errors.map(error => error.code)).toContain('PROTECTED_PATH_INVALID');
+  });
+
+  test('exposes configurable planning template defaults in the resolved graph', () => {
+    const graph = getResolvedRuntimeGraph({ projectRoot: makeProject(null) });
+
+    expect(graph.planning.template.mode).toBe('full');
+    expect(graph.planning.template.criticSet).toEqual(['spec', 'risk', 'test']);
+    expect(graph.planning.subSkills.map(skill => skill.id)).toEqual([
+      'plan.intent_capture',
+      'plan.parallel_research',
+      'plan.parallel_critics',
+      'plan.synthesis',
+      'plan.final_lock',
+    ]);
+    expect(graph.primitives.PlanningSubSkill).toBe('planning.subSkills');
+    expect(graph.phases.find(phase => phase.id === 'plan').actions).toEqual([
+      'action.plan.intent_capture',
+      'action.plan.parallel_research',
+      'action.plan.parallel_critics',
+      'action.plan.synthesis',
+      'action.plan.final_lock',
+    ]);
+    expect(graph.actions.find(action => action.id === 'action.plan.intent_capture')).toBeTruthy();
+  });
+
+  test('loads planning template configuration from .forge/config.yaml', () => {
+    const projectRoot = makeProject(`
+planning:
+  template:
+    mode: partial
+    convergenceThreshold: 0.82
+    criticSet:
+      - spec
+      - security
+    partialInvocation:
+      only:
+        - plan.parallel_critics
+      skip:
+        - plan.parallel_research
+`);
+
+    const graph = getResolvedRuntimeGraph({ projectRoot });
+
+    expect(graph.planning.template.mode).toBe('partial');
+    expect(graph.planning.template.convergenceThreshold).toBe(0.82);
+    expect(graph.planning.template.criticSet).toEqual(['spec', 'security']);
+    expect(graph.planning.template.partialInvocation.only).toEqual(['plan.parallel_critics']);
+    expect(graph.planning.template.partialInvocation.skip).toEqual(['plan.parallel_research']);
+    expect(graph.planning.template.configSource).toBe('.forge/config.yaml');
+  });
+
+  test('rejects invalid planning template configuration', () => {
+    const projectRoot = makeProject(`
+planning:
+  template:
+    mode: all-at-once
+    convergenceThreshold: .nan
+    criticSet:
+      - ""
+    partialInvocation:
+      only:
+        - plan.nope
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.map(error => error.code)).toContain('INVALID_PLANNING_MODE');
+    expect(result.errors.map(error => error.code)).toContain('INVALID_CONVERGENCE_THRESHOLD');
+    expect(result.errors.map(error => error.code)).toContain('INVALID_CRITIC');
+    expect(result.errors.map(error => error.code)).toContain('UNKNOWN_PLAN_SUBSKILL');
+  });
+
+  test('fails closed when planning template partial invocation contains unknown subskills', () => {
+    const projectRoot = makeProject(`
+planning:
+  template:
+    partialInvocation:
+      only:
+        - plan.intent_capture
+        - plan.nope
+      skip:
+        - plan.final_lock
+`);
+
+    const { graph } = resolveRuntimeGraph({ projectRoot, throwOnError: false });
+
+    expect(graph.planning.template.partialInvocation.only).toEqual([]);
+    expect(graph.planning.template.partialInvocation.skip).toEqual(['plan.final_lock']);
   });
 });

@@ -12,6 +12,43 @@ forge init --profile full --yes
 
 `forge init --yes` uses `standard`. `forge setup --minimal` is a shortcut for clean repositories that only need the minimal adoption config and do not want Beads or agent files installed yet.
 
+## Planning Template
+
+`/plan` is represented as a configurable planning template in the runtime graph. The default template runs the full planning loop:
+
+- `plan.intent_capture`
+- `plan.parallel_research`
+- `plan.parallel_critics`
+- `plan.synthesis`
+- `plan.final_lock`
+
+Projects can tune planning depth in `.forge/config.yaml` without introducing another planner-specific config file:
+
+```yaml
+planning:
+  template:
+    mode: partial
+    convergenceThreshold: 0.8
+    criticSet:
+      - spec
+      - security
+    partialInvocation:
+      only:
+        - plan.parallel_critics
+      skip:
+        - plan.parallel_research
+```
+
+Inspect the resolved behavior with:
+
+```bash
+forge options why plan.parallel_critics
+forge options diff
+forge options lint
+```
+
+Invalid planning modes, thresholds outside `0..1`, blank critics, and unknown planning sub-skills fail through `forge options lint`.
+
 ## Profiles
 
 | Profile | Purpose | Output |

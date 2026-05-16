@@ -39,7 +39,7 @@ describe('adoption profiles', () => {
     for (const config of configs) {
       expect(config.template.kind).toBe('forge.adoptionTemplate');
       expect(config.template.version).toBe('0.0.15');
-      expect(config.template.ancestry).toContain('forge.runtimeGraph.currentCommandFlow@0.0.12');
+      expect(config.template.ancestry).toContain('forge.runtimeGraph.currentCommandFlow@0.0.17');
     }
   });
 

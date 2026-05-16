@@ -153,7 +153,7 @@ describe('migrate dry-run', () => {
     expect(report.runtimeGraph.kind).toBe('forge.runtimeGraph');
     expect(output).toContain('Runtime graph');
     expect(output).toContain('Phases: plan -> dev -> validate -> ship');
-    expect(output).toContain('Actions: action.plan.command, action.dev.command, action.validate.command, action.ship.command');
+    expect(output).toContain('Actions: action.plan.command, action.plan.intent_capture, action.plan.parallel_research, action.plan.parallel_critics, action.plan.synthesis, action.plan.final_lock, action.dev.command, action.validate.command, action.ship.command');
     expect(output).toContain(
       'Artifacts: artifact.design-doc, artifact.task-list, artifact.changed-files, artifact.validation-output, artifact.pull-request'
     );
