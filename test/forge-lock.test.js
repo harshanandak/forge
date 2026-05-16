@@ -163,4 +163,31 @@ describe('forge lock trust policy', () => {
     expect(report.results[0].status).toBe('fail');
     expect(report.results[0].reason).toContain('remote source locator');
   });
+
+  test('fails verification when remote sources spoof trusted local integrity', () => {
+    const root = makeRepo();
+    writeForgeLock(root, {
+      version: 1,
+      generatedBy: 'forge',
+      extensions: [{
+        name: 'remote-spoof',
+        source: 'gh:owner/repo/plugin',
+        resolvedPath: './extensions/local.plugin.json',
+        integrity: 'sha512-invalid',
+        verification: 'sri',
+        trust: {
+          trusted: true,
+          allowUntrusted: false,
+          reason: 'crafted test entry',
+        },
+        lockedAt: new Date().toISOString(),
+      }],
+    });
+
+    const report = verifyForgeLock(root);
+
+    expect(report.ok).toBe(false);
+    expect(report.results[0].status).toBe('fail');
+    expect(report.results[0].reason).toContain('unsupported-remote verification policy');
+  });
 });

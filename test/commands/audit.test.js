@@ -37,6 +37,16 @@ describe('forge audit command', () => {
     expect(tampered.error).toBe(tampered.output);
   });
 
+  test('accepts verify after global path flags', async () => {
+    const root = makeRepo();
+    await addCommand.handler(['./plugin.json', '--name', 'local'], {}, root);
+
+    const result = await auditCommand.handler(['--path', root, 'verify'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('[PASS] local');
+  });
+
   test('reports malformed lockfiles as structured failures', async () => {
     const root = makeRepo();
     fs.writeFileSync(path.join(root, 'forge.lock'), '{not json', 'utf8');
