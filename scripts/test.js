@@ -101,7 +101,10 @@ function isKnownTargetablePath(file) {
     return true;
   }
 
-  if (file.startsWith('docs/plans/') || file.startsWith('docs/work/')) {
+  if (file === 'docs/INDEX.md'
+    || file.startsWith('docs/plans/')
+    || file.startsWith('docs/reference/')
+    || file.startsWith('docs/work/')) {
     return true;
   }
 

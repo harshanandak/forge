@@ -274,6 +274,35 @@ describe('forge test command', () => {
 			expect(call.args).toContain('test/bar.test.js');
 		});
 
+		test('maps upgrade safety support files to targeted tests', async () => {
+			const spawnSpy = makeSpawnSync();
+			await testCommand.handler([], { affected: true }, '/fake/root', {
+				fs: makeFsStub({
+					existingPaths: [
+						'/fake/root/test/commands/upgrade.test.js',
+						'/fake/root/test/docs-consistency.test.js',
+					],
+				}),
+				execFileSync: makeExecFileSync({
+					mergeBaseOutput: 'abc123',
+					gitDiffOutput: [
+						'docs/INDEX.md',
+						'docs/reference/upgrade-safety.md',
+						'lib/upgrade-safety.js',
+						'lib/commands/upgrade.js',
+					].join('\n'),
+				}),
+				spawnSync: spawnSpy,
+			});
+
+			expect(spawnSpy.calls[0].args).toEqual([
+				'run',
+				'test',
+				'test/commands/upgrade.test.js',
+				'test/docs-consistency.test.js',
+			]);
+		});
+
 		test('uses merge-base for diff by default', async () => {
 			const execCalls = [];
 			const execStub = (cmd, args, _opts) => {
