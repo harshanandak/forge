@@ -18,6 +18,8 @@ Plan a feature from scratch: brainstorm design intent, research technical approa
 
 Do not assume every invocation must run every sub-skill. Run only the requested/required sub-skill when the user asks for partial planning work, and record skipped nodes as skipped rather than silently deleting them from the graph. External planner artifacts may satisfy `/dev` entry without running `/plan`, per D34, if they provide the required structured task list and acceptance criteria.
 
+Planning template behavior is resolved through the runtime graph and `.forge/config.yaml`, not through a separate planner-only config file. Use `forge options why <plan-subskill>`, `forge options diff`, and `forge options lint` to inspect configured planning mode, convergence threshold, critic set, and partial invocation choices.
+
 ---
 
 ```

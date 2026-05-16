@@ -81,6 +81,15 @@ protectedPaths:
     expect(parsed.item.requires).toContain('artifact.validation-output');
   });
 
+  test('explains planning sub-skill primitives', async () => {
+    const result = await run(['why', 'plan.parallel_critics', '--json']);
+    const parsed = JSON.parse(result.output);
+
+    expect(result.success).toBe(true);
+    expect(parsed.type).toBe('planningSubSkill');
+    expect(parsed.item.id).toBe('plan.parallel_critics');
+  });
+
   test('why --json reports unknown primitives as parseable JSON', async () => {
     const result = await run(['why', 'gate.nope', '--json']);
     const parsed = JSON.parse(result.output);
@@ -114,6 +123,20 @@ workflow:
       before: true,
       after: false,
     }));
+  });
+
+  test('diff reports planning template config changes', async () => {
+    const projectRoot = makeProject(`
+planning:
+  template:
+    mode: partial
+    convergenceThreshold: 0.8
+`);
+
+    const result = await run(['diff'], projectRoot);
+
+    expect(result.output).toContain('planning.template.config');
+    expect(result.output).toContain('"mode":"partial"');
   });
 
   test('lint reports invalid config as JSON and human output', async () => {

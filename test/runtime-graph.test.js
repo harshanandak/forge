@@ -37,6 +37,7 @@ describe('runtime graph contract', () => {
     expect(graph.primitives).toEqual({
       Phase: 'phases',
       Action: 'actions',
+      PlanningSubSkill: 'planning.subSkills',
       Artifact: 'artifacts',
       EvaluatorRegion: 'evaluatorRegions',
       Gate: 'gates',
