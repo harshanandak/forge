@@ -36,8 +36,9 @@ describe('forge upgrade command', () => {
 
     const result = await upgradeCommand.handler(['--dry-run'], { dryRun: true }, root);
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
     expect(result.output).toContain('Forge upgrade dry-run');
+    expect(result.error).toBe(result.output);
     expect(result.output).toContain('[PASS] Runtime config');
     expect(result.output).toContain('[PASS] Patch intent: 0 record(s), 0 orphan(s)');
     expect(result.output).toContain('[FAIL] Lock trust: 2 extension(s), 1 untrusted opt-in');

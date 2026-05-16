@@ -67,4 +67,13 @@ describe('forge add command', () => {
     expect(result.output).toContain('Added plugin');
     expect(fs.readFileSync(path.join(root, 'forge.lock'), 'utf8')).toContain('"name": "plugin"');
   });
+
+  test('skips global path flag values when selecting source', async () => {
+    const root = makeRepo();
+
+    const result = await addCommand.handler(['--path', root, './plugin.json', '--name', 'local'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(root, 'forge.lock'), 'utf8')).toContain('"source": "./plugin.json"');
+  });
 });

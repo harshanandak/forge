@@ -136,4 +136,31 @@ describe('forge lock trust policy', () => {
     expect(report.results[0].status).toBe('fail');
     expect(report.results[0].reason).toContain('project root');
   });
+
+  test('fails verification when local paths spoof unsupported remote entries', () => {
+    const root = makeRepo();
+    writeForgeLock(root, {
+      version: 1,
+      generatedBy: 'forge',
+      extensions: [{
+        name: 'spoofed',
+        source: './extensions/local.plugin.json',
+        resolvedPath: null,
+        integrity: null,
+        verification: 'unsupported-remote',
+        trust: {
+          trusted: false,
+          allowUntrusted: true,
+          reason: 'crafted test entry',
+        },
+        lockedAt: new Date().toISOString(),
+      }],
+    });
+
+    const report = verifyForgeLock(root);
+
+    expect(report.ok).toBe(false);
+    expect(report.results[0].status).toBe('fail');
+    expect(report.results[0].reason).toContain('remote source locator');
+  });
 });
