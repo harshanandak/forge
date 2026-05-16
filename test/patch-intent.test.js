@@ -726,6 +726,25 @@ describe('patch intent records', () => {
     expect(() => recordPatchIntentFromDiff(root)).toThrow('inside the project root');
   });
 
+  test('ignores anchor files that escape through a symlink', () => {
+    const root = makeRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-patch-outside-'));
+    tempRoots.push(outside);
+    writeFile(outside, 'external.md', '<!-- forge-anchor:external.anchor -->\nOutside text.\n');
+    try {
+      fs.symlinkSync(outside, path.join(root, 'linked-docs'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(err.code)) {
+        return;
+      }
+      throw err;
+    }
+
+    const anchors = discoverAnchors(root);
+
+    expect(anchors.has('external.anchor')).toBe(false);
+  });
+
   test('rejects diff paths outside the project root', () => {
     const root = makeRepo();
     const diff = [
