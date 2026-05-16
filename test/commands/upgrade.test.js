@@ -62,6 +62,15 @@ describe('forge upgrade command', () => {
     expect(second.output).toContain('No self-heal actions needed');
   });
 
+  test('honors parsed kebab-case dry-run flags', async () => {
+    const root = makeRepo();
+
+    const result = await upgradeCommand.handler([], { 'dry-run': true }, root);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Forge upgrade dry-run');
+  });
+
   test('self-heal reports integrity failures without repairing them', async () => {
     const root = makeRepo();
     await addCommand.handler(['./plugin.json', '--name', 'local'], {}, root);

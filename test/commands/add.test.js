@@ -57,4 +57,14 @@ describe('forge add command', () => {
     expect(result.output).toContain('Added local');
     expect(fs.readFileSync(path.join(root, 'forge.lock'), 'utf8')).toContain('"source": "./plugin.json"');
   });
+
+  test('does not treat another flag as a --name value', async () => {
+    const root = makeRepo();
+
+    const result = await addCommand.handler(['./plugin.json', '--name', '--allow-untrusted'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Added plugin');
+    expect(fs.readFileSync(path.join(root, 'forge.lock'), 'utf8')).toContain('"name": "plugin"');
+  });
 });
