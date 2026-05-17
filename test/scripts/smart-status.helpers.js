@@ -55,6 +55,8 @@ function normalizeBashEnv(env = {}) {
 function runSmartStatus(args = [], env = {}, stdin = undefined) {
   const mergedEnv = {
     ...process.env,
+    PATH: BASH_PATH_ENV,
+    Path: BASH_PATH_ENV,
     GIT_CMD: 'true',
     ...normalizeBashEnv(env),
   };
