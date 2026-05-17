@@ -115,7 +115,7 @@ describe('CI Workflow Configuration', () => {
     });
 
     test('dashboard jobs aggregate artifacts into test-dashboard.json', () => {
-      expect(workflowContent.includes('uses: actions/download-artifact@v5')).toBe(true);
+      expect(workflowContent.includes('uses: actions/download-artifact@v8')).toBe(true);
       expect(workflowContent.includes('scripts/test-dashboard.js')).toBe(true);
       expect(workflowContent.includes('path: test-dashboard.json')).toBe(true);
     });
