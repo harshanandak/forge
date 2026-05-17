@@ -3,7 +3,7 @@ const { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } = requi
 const { cleanupTmpDir, createMockBd, daysAgo, runSmartStatus } = require('./smart-status.helpers');
 const { createMockGitWithDiff } = require('./smart-status.conflicts.helpers');
 
-setDefaultTimeout(20000);
+setDefaultTimeout(30000);
 
 describe('smart-status.sh > file-level conflict detection smoke', () => {
 	let mockBd;

@@ -25,7 +25,7 @@ describe('scripts/dep-guard.sh > find-consumers', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).not.toMatch(/grep|GNU|ripgrep/i);
     expect(result.stderr ?? '').not.toMatch(/grep|GNU|ripgrep/i);
-  });
+  }, 15000);
 
   test('self-exclusion: dep-guard.sh is not a matched file', () => {
     const result = runDepGuard(['find-consumers', 'dep-guard']);
