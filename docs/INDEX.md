@@ -69,6 +69,7 @@ See [work/](work/) for the full list of date-prefixed work folders. Each folder 
 - [TEMPLATES.md](reference/TEMPLATES.md) — Adoption templates and `forge init` profiles
 - [EXAMPLES.md](reference/EXAMPLES.md) — Worked examples
 - [upgrade-safety.md](reference/upgrade-safety.md) — Lockfile trust policy, upgrade dry-run, and self-heal limitations
+- [INSIGHTS_RECAP.md](reference/INSIGHTS_RECAP.md) — `forge insights` and `forge recap` evidence sources, output, and limitations
 - [RESEARCH_TEMPLATE.md](reference/RESEARCH_TEMPLATE.md) — Template for research docs (formerly docs/research/TEMPLATE.md)
 
 ## Guides

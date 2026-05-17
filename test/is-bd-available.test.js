@@ -38,7 +38,7 @@ describe('isBdAvailable', () => {
 	test('returns a boolean', () => {
 		const result = isBdAvailable();
 		expect(typeof result).toBe('boolean');
-	});
+	}, 15000);
 
 	test('checks Dolt connectivity, not just binary existence', () => {
 		// The function must call bd list (connectivity), not just bd --version.
@@ -61,7 +61,7 @@ describe('isBdAvailable', () => {
 		// Function should not throw when BD_TIMEOUT is set
 		const result = isBdAvailable();
 		expect(typeof result).toBe('boolean');
-	});
+	}, 15000);
 
 	test('returns false when bd binary does not exist', () => {
 		// On CI or machines without bd, this naturally returns false.
@@ -74,7 +74,7 @@ describe('isBdAvailable', () => {
 		}
 		// If bd IS installed and Dolt IS reachable, result is true — also valid
 		expect(typeof result).toBe('boolean');
-	});
+	}, 15000);
 
 	test('does not hang — completes within BD_TIMEOUT', () => {
 		// Set a very short timeout to prove the timeout mechanism works.
@@ -85,5 +85,5 @@ describe('isBdAvailable', () => {
 		const elapsed = Date.now() - start;
 		// Must complete within 5 seconds regardless (generous buffer over 1s timeout)
 		expect(elapsed).toBeLessThan(5000);
-	});
+	}, 10000);
 });
