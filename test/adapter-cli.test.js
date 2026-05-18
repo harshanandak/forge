@@ -160,6 +160,36 @@ describe('adapter CLI commands', () => {
     expect(result.error).toContain('Fixture replay failed');
   });
 
+  test('forge adapter test awaits async adapter scoring', async () => {
+    const adapterDir = path.join(projectRoot, '.forge', 'adapters', 'review');
+    fs.mkdirSync(adapterDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(adapterDir, 'async-score.js'),
+      `'use strict';
+module.exports = {
+  id: 'async-score',
+  kind: 'review',
+  async fetchThreads() {},
+  parse(payload) { return payload; },
+  async reply() {},
+  async resolve() {},
+  async score(threads) { return threads.map((thread) => ({ ...thread, resolved: true })); },
+};
+`
+    );
+    const fixturePath = path.join(projectRoot, 'async-fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({ input: [{ file: 'README.md', line: 1 }], expect: { threads: 1 } }));
+
+    const result = await adapterCommand.handler(
+      ['test', 'async-score', `--fixture=${fixturePath}`],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('1 scored result');
+  });
+
   test('forge adapter list returns deterministic adapter order', async () => {
     await newCommand.handler(
       ['adapter', 'zeta', '--kind=review', '--template=greptile'],
@@ -191,5 +221,13 @@ describe('adapter CLI commands', () => {
 
     expect(result.success).toBe(true);
     expect(config.review.coderabbit).toEqual({ provider: 'api', enabled: true });
+  });
+
+  test('forge adapter enable rejects invalid adapter names before writing config', async () => {
+    const result = await adapterCommand.handler(['enable', '__proto__'], {}, projectRoot);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Adapter name must start');
+    expect(fs.existsSync(path.join(projectRoot, '.forge', 'adapters.json'))).toBe(false);
   });
 });
