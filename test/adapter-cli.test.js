@@ -37,6 +37,58 @@ describe('adapter CLI commands', () => {
     expect(fs.readFileSync(adapterPath, 'utf8')).toContain('class CoderabbitReviewAdapter');
   });
 
+  test('generated review adapter can be loaded by fixture replay without package dependencies', async () => {
+    await newCommand.handler(
+      ['adapter', 'coderabbit', '--kind=review', '--template=greptile'],
+      {},
+      projectRoot
+    );
+    const fixturePath = path.join(projectRoot, 'empty-fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({ input: [], expect: { threads: 0 } }));
+
+    const result = await adapterCommand.handler(
+      ['test', 'coderabbit', `--fixture=${fixturePath}`],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects unsafe adapter names before composing paths', async () => {
+    const result = await newCommand.handler(
+      ['adapter', '../escape', '--kind=review', '--template=greptile'],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Adapter name must start');
+    expect(fs.existsSync(path.join(projectRoot, '.forge', 'adapters', 'escape.js'))).toBe(false);
+  });
+
+  test('rejects adapter names that cannot produce valid class names', async () => {
+    const result = await newCommand.handler(
+      ['adapter', '123', '--kind=review', '--template=greptile'],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Adapter name must start');
+  });
+
+  test('does not treat the next flag as a missing option value', async () => {
+    const result = await newCommand.handler(
+      ['adapter', 'coderabbit', '--kind', '--template=greptile'],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Only --kind=review');
+  });
+
   test('forge adapter test replays a Greptile fixture offline', async () => {
     const fixturePath = path.join(projectRoot, 'greptile-fixture.json');
     fs.writeFileSync(
@@ -98,6 +150,6 @@ describe('adapter CLI commands', () => {
     const result = await adapterCommand.handler(['list'], {}, projectRoot);
 
     expect(result.success).toBe(true);
-    expect(result.output.split('\n')).toEqual(['alpha', 'greptile', 'zeta']);
+    expect(result.output.trim().split('\n')).toEqual(['alpha', 'greptile', 'zeta']);
   });
 });
