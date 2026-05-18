@@ -143,6 +143,19 @@ describe('status command authoritative workflow state', () => {
     expect(inputs.bdComments).toBe('WorkflowState: {}');
   });
 
+  test('parseStatusInputs supports runtime option flags', () => {
+    const inputs = statusCommand.parseStatusInputs([
+      '--json',
+      '--now=2026-05-18T08:00:00Z',
+      '--stale-after-days',
+      '10',
+    ], {});
+
+    expect(inputs.json).toBe(true);
+    expect(inputs.now).toBe('2026-05-18T08:00:00Z');
+    expect(inputs.staleAfterDays).toBe('10');
+  });
+
   test('handler accepts --workflow-state=value syntax', async () => {
     const workflowState = JSON.stringify(createWorkflowState('validate'));
 
@@ -278,6 +291,19 @@ describe('status command beads snapshot helpers', () => {
 
     expect(snapshot.blocked.map(issue => issue.id)).toEqual(['forge-blocked']);
     expect(snapshot.stale.map(issue => issue.id)).toEqual(['forge-ready', 'forge-blocked', 'forge-active-old']);
+  });
+
+  test('readBeadsSnapshot accepts string runtime options for stale classification', () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-stale', title: 'Stale', status: 'open', dependency_count: 0, updated_at: '2026-04-01T08:00:00Z' },
+    ]);
+
+    const snapshot = readBeadsSnapshot(repoRoot, {
+      now: '2026-05-18T08:00:00Z',
+      staleAfterDays: '14',
+    });
+
+    expect(snapshot.stale.map(issue => issue.id)).toEqual(['forge-stale']);
   });
 
   test('readBeadsSnapshot sorts recent completions by updated_at descending', () => {

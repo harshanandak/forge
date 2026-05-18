@@ -58,6 +58,22 @@ describe('forge board command', () => {
     expect(parsed.limits.join('\n')).toContain('local Beads');
   });
 
+  test('accepts runtime option flags from CLI-style args', async () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-stale', title: 'Stale issue', status: 'open', updated_at: '2026-04-01T08:00:00Z' },
+    ]);
+
+    const result = await boardCommand.handler([
+      '--json',
+      '--now=2026-05-18T08:00:00Z',
+      '--stale-after-days',
+      '14',
+    ], {}, repoRoot);
+    const parsed = JSON.parse(result.output);
+
+    expect(parsed.board.stale.map(issue => issue.id)).toEqual(['forge-stale']);
+  });
+
   test('renders explicit empty columns when no issues exist', async () => {
     const repoRoot = createTempBeadsRepo([]);
 

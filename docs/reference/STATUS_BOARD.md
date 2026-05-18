@@ -13,13 +13,12 @@ forge status --json
 forge board --json
 ```
 
-The JSON shape mirrors the human sections:
+The JSON shape mirrors each command's human sections:
 
-- `context`: branch, worktree path, and working-tree cleanliness.
-- `personal`: `forge status` personal issue groups.
-- `board`: `forge board` team issue groups.
-- `workflow`: detected workflow state for zero-argument status when available.
-- `limits`: local-source caveats.
+- `forge status --json` returns `context`, `personal`, `workflow` when detected, and `limits`.
+- `forge board --json` returns `context`, `board`, and `limits`.
+- `personal` contains the status-focused issue groups for the current developer.
+- `board` contains the team issue groups over the same local snapshot.
 
 ## Sample Output
 
