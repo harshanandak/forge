@@ -54,6 +54,10 @@ function createTempBeadsRepo(entries, options = {}) {
       'utf8'
     );
   }
+  if (options.clean) {
+    execFileSync('git', ['add', '.'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('git', ['commit', '--no-verify', '--no-gpg-sign', '-m', 'fixture'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+  }
 
   return repoRoot;
 }
@@ -226,7 +230,9 @@ describe('status command beads snapshot helpers', () => {
       { id: 'forge-a', title: 'Mine active', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-10T08:00:00Z' },
       { id: 'forge-b', title: 'Other active', status: 'in_progress', owner: 'other@example.com', updated_at: '2026-04-10T07:00:00Z' },
       { id: 'forge-c', title: 'Mine open', status: 'open', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-10T06:00:00Z' },
-    ]);
+    ], {
+      clean: true,
+    });
 
     const snapshot = readBeadsSnapshot(repoRoot);
 
@@ -258,12 +264,30 @@ describe('status command beads snapshot helpers', () => {
     expect(snapshot.ready.map(issue => issue.id)).toEqual(['forge-ready']);
   });
 
+  test('readBeadsSnapshot exposes blocked and stale issue categories', () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-active-old', title: 'Old active', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-01T08:00:00Z' },
+      { id: 'forge-blocked', title: 'Blocked', status: 'open', owner: 'harshanandak@users.noreply.github.com', dependency_count: 2, updated_at: '2026-04-17T08:00:00Z' },
+      { id: 'forge-ready', title: 'Ready', status: 'open', dependency_count: 0, updated_at: '2026-04-18T08:00:00Z' },
+    ]);
+
+    const snapshot = readBeadsSnapshot(repoRoot, {
+      now: new Date('2026-05-18T08:00:00Z'),
+      staleAfterDays: 14,
+    });
+
+    expect(snapshot.blocked.map(issue => issue.id)).toEqual(['forge-blocked']);
+    expect(snapshot.stale.map(issue => issue.id)).toEqual(['forge-ready', 'forge-blocked', 'forge-active-old']);
+  });
+
   test('readBeadsSnapshot sorts recent completions by updated_at descending', () => {
     const repoRoot = createTempBeadsRepo([
       { id: 'forge-old', title: 'Older completion', status: 'closed', updated_at: '2026-04-07T08:00:00Z' },
       { id: 'forge-new', title: 'Newer completion', status: 'closed', updated_at: '2026-04-10T08:00:00Z' },
       { id: 'forge-open', title: 'Still open', status: 'open', updated_at: '2026-04-09T08:00:00Z' },
-    ]);
+    ], {
+      clean: true,
+    });
 
     const snapshot = readBeadsSnapshot(repoRoot);
 
@@ -503,6 +527,56 @@ describe('status command zero-arg presentation', () => {
     expect(result.output).toContain('none');
   });
 
+  test('zero-arg status includes blocked and stale personal focus sections', async () => {
+    const repoRoot = createTempBeadsRepo([
+      {
+        id: 'forge-active-old',
+        title: 'Old active issue',
+        status: 'in_progress',
+        owner: 'harshanandak@users.noreply.github.com',
+        comments: [{ text: `WorkflowState: ${JSON.stringify(createWorkflowState('dev'))}` }],
+        updated_at: '2026-04-01T08:00:00Z',
+      },
+      {
+        id: 'forge-blocked',
+        title: 'Blocked issue',
+        status: 'open',
+        owner: 'harshanandak@users.noreply.github.com',
+        dependency_count: 1,
+        updated_at: '2026-04-17T08:00:00Z',
+      },
+    ], {
+      branch: 'feat/status-blocked-stale',
+    });
+
+    const result = await statusCommand.handler([], {
+      now: new Date('2026-05-18T08:00:00Z'),
+      staleAfterDays: 14,
+    }, repoRoot);
+
+    expect(result.output).toContain('Blocked');
+    expect(result.output).toContain('Stale');
+    expect(result.output).toContain('forge-blocked');
+    expect(result.output).toContain('forge-active-old');
+  });
+
+  test('zero-arg status returns JSON for the same personal focus state', async () => {
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-active', title: 'Active issue', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-05-18T08:00:00Z' },
+      { id: 'forge-blocked', title: 'Blocked issue', status: 'open', dependency_count: 1, updated_at: '2026-05-17T08:00:00Z' },
+    ], {
+      clean: true,
+    });
+
+    const result = await statusCommand.handler(['--json'], {}, repoRoot);
+    const parsed = JSON.parse(result.output);
+
+    expect(parsed.context.workingTree.clean).toBe(true);
+    expect(parsed.personal.activeAssigned.map(issue => issue.id)).toEqual(['forge-active']);
+    expect(parsed.personal.blocked.map(issue => issue.id)).toEqual(['forge-blocked']);
+    expect(parsed.personal.ready).toEqual([]);
+  });
+
   test('zero-arg status caps ready and completion sections for readability', async () => {
     const readyIssues = Array.from({ length: 6 }, (_value, index) => ({
       id: `forge-ready-${index + 1}`,
@@ -537,7 +611,11 @@ describe('status command zero-arg presentation', () => {
 
     expect(result.output).toContain('...and 1 more');
     expect(result.output).toContain('forge-ready-5');
-    expect(result.output).not.toContain('forge-ready-6 Ready 6');
+    const readySection = result.output.slice(
+      result.output.indexOf('Ready'),
+      result.output.indexOf('Blocked')
+    );
+    expect(readySection).not.toContain('forge-ready-6 Ready 6');
     expect(result.output).toContain('forge-done-6');
     expect(result.output).toContain('forge-done-2');
     expect(result.output).not.toContain('forge-done-1 Done 1');
