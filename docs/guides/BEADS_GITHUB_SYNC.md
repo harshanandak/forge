@@ -2,14 +2,17 @@
 
 Automatic synchronization between GitHub Issues and Beads issue tracking.
 
-**GitHub Issues** = human/team/public interface.
-**Beads** = issue engine behind Forge (`forge ready`, `forge close`).
+**GitHub Issues** = human/team/public shared issue state.
+**Forge** = issue authority layer, workflow context owner, and supported command/API surface.
+**Beads** = reference issue adapter and local cache/backend behind Forge (`forge ready`, `forge close`).
 
 Neither side needs to know about the other. Contributors file issues on GitHub; AI agents pick up work via Beads. Status changes propagate automatically.
 
 For human and agent workflows, prefer the Forge wrapper commands (`forge ready`,
-`forge create`, `forge close`, `forge sync`). The workflow automation shown below
-still calls `bd` directly as an internal implementation detail.
+`forge create`, `forge close`, `forge sync`). Forge routes issue operations
+through the `IssueAdapter` SPI, with Beads as the reference adapter. The workflow
+automation shown below still calls `bd` directly as an internal implementation
+detail.
 
 ---
 
@@ -69,7 +72,9 @@ Three guards prevent infinite ping-pong:
 2. **Commit message prefix** -- Phase 2 workflow skips commits starting with `chore(beads):`
 3. **Opt-out label** -- `skip-beads-sync` label on any issue disables sync entirely
 
-### Normalized Core
+### Authority Model
+
+Forge owns the authority decision for every synchronized field:
 
 GitHub-owned shared fields are the only fields that steady-state pull and initial import are allowed to overwrite:
 
@@ -84,7 +89,15 @@ GitHub-owned shared fields are the only fields that steady-state pull and initia
 - `shared.milestone`
 - `sync.remoteUpdatedAt`
 
-Forge-owned workflow context stays local in Beads. That includes workflow stage, dependencies, progress notes, decisions, and other issue-engine metadata.
+Forge-owned workflow context stays local in Forge/Beads. That includes Forge issue ids, workflow stage, dependencies, progress notes, stage transitions, decisions, memory, and other issue-engine metadata.
+
+Beads is the reference adapter and cache backend. It does not own shared team-visible GitHub fields. Cache fields such as materialized GitHub snapshots and legacy link hints are derived and can be rebuilt.
+
+### Conflict Behavior
+
+When GitHub-owned shared fields differ during pull/import, Forge applies the remote value and records drift diagnostics. When Forge-owned fields appear in a remote/import payload, Forge preserves the local value and ignores the remote value. Unknown fields are rejected until the authority model assigns ownership.
+
+### Normalized Core
 
 Both ongoing pull sync and the `forge-ij1` import bootstrap use the same primitive layer:
 
@@ -94,6 +107,10 @@ Both ongoing pull sync and the `forge-ij1` import bootstrap use the same primiti
 - `lib/issue-sync/import-primitives.js` exposes `listRemoteIssues`, `normalizeRemoteIssue`, `resolveSharedLink`, and `materializeLocalIssue` for import backfill.
 
 `forge-ij1` depends on these primitives directly. It does not use a separate import-specific sync contract or an alternate reconciliation path.
+
+### Sync Boundaries
+
+Forge does not own GitHub Projects boards, GitHub discussion/comment history, external provider schemas, or team dashboard UI. Forge only owns the adapter contract, authority decisions, local workflow context, and the reconciliation rules that decide what may be copied between GitHub and the local issue backend.
 
 ---
 

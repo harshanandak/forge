@@ -108,6 +108,30 @@ describe('forge issue service contract', () => {
     });
   });
 
+  test('maps legacy show dispatch to the IssueAdapter read contract', async () => {
+    const { createIssueService } = require('../lib/forge-issues');
+    const calls = [];
+    const adapter = {
+      async read(args, context) {
+        calls.push({ args, context, thisRef: this });
+        return { success: true, output: `read:${args[0]}` };
+      },
+    };
+
+    const context = { projectRoot: '/repo' };
+    const service = createIssueService({ backend: adapter });
+
+    await expect(service.run('show', ['forge-123'], context)).resolves.toEqual({
+      success: true,
+      output: 'read:forge-123',
+    });
+    expect(calls).toEqual([{
+      args: ['forge-123'],
+      context,
+      thisRef: adapter,
+    }]);
+  });
+
   test('uses dependency injection in the top-level operation runner', async () => {
     const { runIssueOperation } = require('../lib/forge-issues');
     const calls = [];
@@ -246,6 +270,32 @@ describe('forge issue service contract', () => {
         projectRoot: '/repo',
       },
     ]);
+  });
+
+  test('default beads backend lets per-call deps override construction deps', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const calls = [];
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      runBdCommand: async () => ({ code: 1, stdout: '', stderr: 'construction deps used' }),
+    });
+
+    await expect(backend.show(['forge-1'], {
+      projectRoot: '/repo',
+      deps: {
+        runBdCommand: async (args, projectRoot) => {
+          calls.push({ args, projectRoot });
+          return { code: 0, stdout: '{"id":"forge-1"}', stderr: '' };
+        },
+      },
+    })).resolves.toEqual({
+      success: true,
+      operation: 'show',
+      output: '{"id":"forge-1"}',
+      stderr: '',
+    });
+    expect(calls).toEqual([{ args: ['show', 'forge-1'], projectRoot: '/repo' }]);
   });
 
   test('default beads backend translates missing bd binary into a forge-level error', async () => {
