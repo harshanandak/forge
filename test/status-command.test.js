@@ -637,10 +637,12 @@ describe('status command zero-arg presentation', () => {
 
     expect(result.output).toContain('...and 1 more');
     expect(result.output).toContain('forge-ready-5');
-    const readySection = result.output.slice(
-      result.output.indexOf('Ready'),
-      result.output.indexOf('Blocked')
-    );
+    const readyStart = result.output.indexOf('Ready');
+    const blockedStart = result.output.indexOf('Blocked');
+    expect(readyStart).toBeGreaterThan(-1);
+    expect(blockedStart).toBeGreaterThan(-1);
+    expect(blockedStart).toBeGreaterThan(readyStart);
+    const readySection = result.output.slice(readyStart, blockedStart);
     expect(readySection).not.toContain('forge-ready-6 Ready 6');
     expect(result.output).toContain('forge-done-6');
     expect(result.output).toContain('forge-done-2');
