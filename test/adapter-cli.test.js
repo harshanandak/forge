@@ -78,6 +78,17 @@ describe('adapter CLI commands', () => {
     expect(result.error).toContain('Adapter name must start');
   });
 
+  test('rejects local adapters that collide with the built-in Greptile adapter', async () => {
+    const result = await newCommand.handler(
+      ['adapter', 'greptile', '--kind=review', '--template=greptile'],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('reserved');
+  });
+
   test('does not treat the next flag as a missing option value', async () => {
     const result = await newCommand.handler(
       ['adapter', 'coderabbit', '--kind', '--template=greptile'],
@@ -135,6 +146,20 @@ describe('adapter CLI commands', () => {
     expect(result.output).toContain('1 parsed thread');
   });
 
+  test('forge adapter test returns structured errors for invalid fixtures', async () => {
+    const fixturePath = path.join(projectRoot, 'invalid-fixture.json');
+    fs.writeFileSync(fixturePath, '{not-json');
+
+    const result = await adapterCommand.handler(
+      ['test', 'greptile', `--fixture=${fixturePath}`],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Fixture replay failed');
+  });
+
   test('forge adapter list returns deterministic adapter order', async () => {
     await newCommand.handler(
       ['adapter', 'zeta', '--kind=review', '--template=greptile'],
@@ -151,5 +176,20 @@ describe('adapter CLI commands', () => {
 
     expect(result.success).toBe(true);
     expect(result.output.trim().split('\n')).toEqual(['alpha', 'greptile', 'zeta']);
+  });
+
+  test('forge adapter enable preserves existing adapter settings', async () => {
+    const configDir = path.join(projectRoot, '.forge');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'adapters.json'),
+      JSON.stringify({ review: { coderabbit: { provider: 'api', enabled: false } } })
+    );
+
+    const result = await adapterCommand.handler(['enable', 'coderabbit'], {}, projectRoot);
+    const config = JSON.parse(fs.readFileSync(path.join(configDir, 'adapters.json'), 'utf8'));
+
+    expect(result.success).toBe(true);
+    expect(config.review.coderabbit).toEqual({ provider: 'api', enabled: true });
   });
 });

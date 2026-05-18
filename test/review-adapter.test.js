@@ -119,6 +119,15 @@ describe('GreptileReviewAdapter', () => {
     ]);
   });
 
+  test('allows author filtering to be explicitly disabled', () => {
+    const adapter = new GreptileReviewAdapter({ authorPrefix: '' });
+
+    expect(adapter.parse(reviewThreadsResponse).map((thread) => thread.author)).toEqual([
+      'greptile-apps[bot]',
+      'human-reviewer',
+    ]);
+  });
+
   test('keeps matchThreadsToCommits public API behavior compatible', () => {
     const execCalls = [];
     const threads = [{ file: 'lib/example.js', line: 12 }];
