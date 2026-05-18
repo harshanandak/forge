@@ -190,6 +190,58 @@ module.exports = {
     expect(result.output).toContain('1 scored result');
   });
 
+  test('forge adapter test rejects non-array parse output', async () => {
+    const adapterDir = path.join(projectRoot, '.forge', 'adapters', 'review');
+    fs.mkdirSync(adapterDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(adapterDir, 'bad-parse.js'),
+      `'use strict';
+module.exports = {
+  id: 'bad-parse',
+  kind: 'review',
+  async fetchThreads() {},
+  parse() { return { file: 'README.md' }; },
+  async reply() {},
+  async resolve() {},
+  score() { return []; },
+};
+`
+    );
+    const fixturePath = path.join(projectRoot, 'bad-parse-fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({ input: [] }));
+
+    const result = await adapterCommand.handler(['test', 'bad-parse', `--fixture=${fixturePath}`], {}, projectRoot);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('parse must return an array');
+  });
+
+  test('forge adapter test rejects non-array score output', async () => {
+    const adapterDir = path.join(projectRoot, '.forge', 'adapters', 'review');
+    fs.mkdirSync(adapterDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(adapterDir, 'bad-score.js'),
+      `'use strict';
+module.exports = {
+  id: 'bad-score',
+  kind: 'review',
+  async fetchThreads() {},
+  parse(payload) { return payload; },
+  async reply() {},
+  async resolve() {},
+  score() { return { resolved: true }; },
+};
+`
+    );
+    const fixturePath = path.join(projectRoot, 'bad-score-fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({ input: [{ file: 'README.md', line: 1 }] }));
+
+    const result = await adapterCommand.handler(['test', 'bad-score', `--fixture=${fixturePath}`], {}, projectRoot);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('score must return an array');
+  });
+
   test('forge adapter list returns deterministic adapter order', async () => {
     await newCommand.handler(
       ['adapter', 'zeta', '--kind=review', '--template=greptile'],
