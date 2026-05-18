@@ -37,7 +37,7 @@ describe('adapter CLI commands', () => {
     expect(fs.readFileSync(adapterPath, 'utf8')).toContain('class CoderabbitReviewAdapter');
   });
 
-  test('generated review adapter can be loaded by fixture replay without package dependencies', async () => {
+  test('generated review adapter loads and fails closed until parse is implemented', async () => {
     await newCommand.handler(
       ['adapter', 'coderabbit', '--kind=review', '--template=greptile'],
       {},
@@ -52,7 +52,8 @@ describe('adapter CLI commands', () => {
       projectRoot
     );
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('parse must normalize provider payloads');
   });
 
   test('rejects unsafe adapter names before composing paths', async () => {
@@ -170,7 +171,18 @@ module.exports = {
   id: 'async-score',
   kind: 'review',
   async fetchThreads() {},
-  parse(payload) { return payload; },
+  parse(payload) {
+    return payload.map((thread, index) => ({
+      id: String(index),
+      commentId: index,
+      file: thread.file,
+      line: thread.line,
+      body: '',
+      author: 'fixture',
+      isResolved: false,
+      raw: thread,
+    }));
+  },
   async reply() {},
   async resolve() {},
   async score(threads) { return threads.map((thread) => ({ ...thread, resolved: true })); },
@@ -226,7 +238,18 @@ module.exports = {
   id: 'bad-score',
   kind: 'review',
   async fetchThreads() {},
-  parse(payload) { return payload; },
+  parse(payload) {
+    return payload.map((thread, index) => ({
+      id: String(index),
+      commentId: index,
+      file: thread.file,
+      line: thread.line,
+      body: '',
+      author: 'fixture',
+      isResolved: false,
+      raw: thread,
+    }));
+  },
   async reply() {},
   async resolve() {},
   score() { return { resolved: true }; },
@@ -240,6 +263,32 @@ module.exports = {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('score must return an array');
+  });
+
+  test('forge adapter test rejects non-normalized parse output', async () => {
+    const adapterDir = path.join(projectRoot, '.forge', 'adapters', 'review');
+    fs.mkdirSync(adapterDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(adapterDir, 'raw-parse.js'),
+      `'use strict';
+module.exports = {
+  id: 'raw-parse',
+  kind: 'review',
+  async fetchThreads() {},
+  parse(payload) { return payload; },
+  async reply() {},
+  async resolve() {},
+  score(threads) { return threads; },
+};
+`
+    );
+    const fixturePath = path.join(projectRoot, 'raw-parse-fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({ input: [{ file: 'README.md', line: 1 }] }));
+
+    const result = await adapterCommand.handler(['test', 'raw-parse', `--fixture=${fixturePath}`], {}, projectRoot);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('normalized review threads');
   });
 
   test('forge adapter list returns deterministic adapter order', async () => {
