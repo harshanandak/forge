@@ -202,6 +202,47 @@ module.exports = {
     expect(result.output).toContain('1 scored result');
   });
 
+  test('forge adapter test preserves explicit falsy fixture input', async () => {
+    const adapterDir = path.join(projectRoot, '.forge', 'adapters', 'review');
+    fs.mkdirSync(adapterDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(adapterDir, 'falsy-input.js'),
+      `'use strict';
+module.exports = {
+  id: 'falsy-input',
+  kind: 'review',
+  async fetchThreads() {},
+  parse(payload) {
+    return [{
+      id: 'thread-1',
+      commentId: 'comment-1',
+      file: 'README.md',
+      line: 1,
+      body: String(payload),
+      author: 'fixture',
+      isResolved: false,
+      raw: payload,
+    }];
+  },
+  async reply() {},
+  async resolve() {},
+  score(threads) { return threads; },
+};
+`
+    );
+    const fixturePath = path.join(projectRoot, 'falsy-input-fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({ input: false, expect: { threads: 1 } }));
+
+    const result = await adapterCommand.handler(
+      ['test', 'falsy-input', `--fixture=${fixturePath}`],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('1 parsed thread');
+  });
+
   test('forge adapter test rejects non-array parse output', async () => {
     const adapterDir = path.join(projectRoot, '.forge', 'adapters', 'review');
     fs.mkdirSync(adapterDir, { recursive: true });
