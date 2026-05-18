@@ -365,6 +365,29 @@ module.exports = {
     expect(config.review.coderabbit).toEqual({ provider: 'api', enabled: true });
   });
 
+  test('forge adapter enable returns structured errors for invalid config JSON', async () => {
+    const configDir = path.join(projectRoot, '.forge');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'adapters.json'), '{not-json');
+
+    const result = await adapterCommand.handler(['enable', 'coderabbit'], {}, projectRoot);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Failed to update adapter config');
+  });
+
+  test('forge adapter enable replaces non-object config roots', async () => {
+    const configDir = path.join(projectRoot, '.forge');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'adapters.json'), '[]');
+
+    const result = await adapterCommand.handler(['enable', 'coderabbit'], {}, projectRoot);
+    const config = JSON.parse(fs.readFileSync(path.join(configDir, 'adapters.json'), 'utf8'));
+
+    expect(result.success).toBe(true);
+    expect(config).toEqual({ review: { coderabbit: { enabled: true } } });
+  });
+
   test('forge adapter enable rejects invalid adapter names before writing config', async () => {
     const result = await adapterCommand.handler(['enable', '__proto__'], {}, projectRoot);
 
