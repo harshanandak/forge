@@ -82,4 +82,22 @@ describe('adapter CLI commands', () => {
     expect(result.output).toContain('Adapter greptile fixture replay passed');
     expect(result.output).toContain('1 parsed thread');
   });
+
+  test('forge adapter list returns deterministic adapter order', async () => {
+    await newCommand.handler(
+      ['adapter', 'zeta', '--kind=review', '--template=greptile'],
+      {},
+      projectRoot
+    );
+    await newCommand.handler(
+      ['adapter', 'alpha', '--kind=review', '--template=greptile'],
+      {},
+      projectRoot
+    );
+
+    const result = await adapterCommand.handler(['list'], {}, projectRoot);
+
+    expect(result.success).toBe(true);
+    expect(result.output.split('\n')).toEqual(['alpha', 'greptile', 'zeta']);
+  });
 });
