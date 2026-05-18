@@ -156,6 +156,24 @@ describe('status command authoritative workflow state', () => {
     expect(inputs.staleAfterDays).toBe('10');
   });
 
+  test('parseStatusInputs does not swallow adjacent flags and preserves zero values', () => {
+    const inputs = statusCommand.parseStatusInputs([
+      '--now',
+      '--json',
+      '--stale-after-days',
+      '0',
+    ], {});
+
+    expect(inputs.json).toBe(true);
+    expect(inputs.now).toBeUndefined();
+    expect(inputs.staleAfterDays).toBe('0');
+
+    const flagInputs = statusCommand.parseStatusInputs([], {
+      staleAfterDays: 0,
+    });
+    expect(flagInputs.staleAfterDays).toBe(0);
+  });
+
   test('handler accepts --workflow-state=value syntax', async () => {
     const workflowState = JSON.stringify(createWorkflowState('validate'));
 

@@ -74,6 +74,23 @@ describe('forge board command', () => {
     expect(parsed.board.stale.map(issue => issue.id)).toEqual(['forge-stale']);
   });
 
+  test('runtime option parsing avoids adjacent flags and preserves zero values', async () => {
+    expect(boardCommand.getFlagValue(['--now', '--json'], '--now', '--now')).toBeNull();
+    expect(boardCommand.getFlagValue(['--stale-after-days', '0'], '--stale-after-days', '--staleAfterDays')).toBe('0');
+
+    const repoRoot = createTempBeadsRepo([
+      { id: 'forge-stale-now', title: 'Stale now', status: 'open', updated_at: '2026-05-18T07:59:59Z' },
+    ]);
+
+    const result = await boardCommand.handler(['--json'], {
+      now: '2026-05-18T08:00:00Z',
+      staleAfterDays: 0,
+    }, repoRoot);
+    const parsed = JSON.parse(result.output);
+
+    expect(parsed.board.stale.map(issue => issue.id)).toEqual(['forge-stale-now']);
+  });
+
   test('renders explicit empty columns when no issues exist', async () => {
     const repoRoot = createTempBeadsRepo([]);
 
