@@ -67,6 +67,7 @@ See [work/](work/) for the full list of date-prefixed work folders. Each folder 
 - [TOOLCHAIN.md](reference/TOOLCHAIN.md) — Toolchain conventions (Bun, lefthook, beads, MCP, shell model)
 - [VALIDATION.md](reference/VALIDATION.md) — Validation stage requirements
 - [TEMPLATES.md](reference/TEMPLATES.md) — Adoption templates and `forge init` profiles
+- [ADAPTERS.md](reference/ADAPTERS.md) — Review adapter contract, lifecycle, scaffold, and fixture replay expectations
 - [EXAMPLES.md](reference/EXAMPLES.md) — Worked examples
 - [upgrade-safety.md](reference/upgrade-safety.md) — Lockfile trust policy, upgrade dry-run, and self-heal limitations
 - [INSIGHTS_RECAP.md](reference/INSIGHTS_RECAP.md) — `forge insights` and `forge recap` evidence sources, output, and limitations
