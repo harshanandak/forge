@@ -4135,11 +4135,12 @@ async function main() {
   const command = args[0];
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
+  const suppressCommandJsonOutput = args.includes('--json');
   const profileDryRunArgs = ['--minimal', '--standard', '--full'];
   const suppressAdoptionDryRunOutput = flags.dryRun && (
     command === 'init' || (command === 'setup' && profileDryRunArgs.some(arg => args.includes(arg)))
   );
-  const suppressStructuredOutput = suppressJsonIntrospectionOutput || suppressAdoptionDryRunOutput;
+  const suppressStructuredOutput = suppressJsonIntrospectionOutput || suppressCommandJsonOutput || suppressAdoptionDryRunOutput;
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
