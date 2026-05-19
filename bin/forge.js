@@ -4357,13 +4357,13 @@ async function main() {
       let result;
       try {
         result = validateDocs(projectRoot, { baselinePath, minDocstringCoverage });
+        if (writeBaselinePath) {
+          writeDocsBaseline(projectRoot, writeBaselinePath, result);
+        }
       } catch (error) {
         console.error(`Error: ${error.message}`);
         process.exitCode = 1;
         return;
-      }
-      if (writeBaselinePath) {
-        writeDocsBaseline(projectRoot, writeBaselinePath, result);
       }
       if (args.includes('--json') || topic === 'detect') {
         console.log(JSON.stringify(result, null, 2));
