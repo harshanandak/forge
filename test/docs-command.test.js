@@ -226,6 +226,32 @@ describe('docs validation', () => {
     }
   });
 
+  test('CLI rejects invalid docstring coverage thresholds', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-threshold-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'verify',
+        '--path',
+        tmpDir,
+        '--min-docstring-coverage',
+        'nope',
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('--min-docstring-coverage must be a number between 0 and 100');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('CLI docs detect validates the --path project instead of Forge package docs', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-path-test-'));
     try {
