@@ -65,6 +65,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('ignores protocol-relative external links', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-protocol-relative-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[CDN](//cdn.example.com/app.js)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+      expect(result.links.linksChecked).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('ignores markdown links inside fenced code blocks', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-fence-test-'));
     try {
@@ -171,6 +189,24 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Second](docs/releases.md#section-1)\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'docs', 'releases.md'), '# Section\n\n# Section\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('collects setext heading anchors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-setext-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Intro](docs/guide.md#intro)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), 'Intro\n=====\n', 'utf8');
 
       const result = validateDocs(tmpDir);
 
