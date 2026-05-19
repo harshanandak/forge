@@ -352,33 +352,32 @@ Post-0.0.18 releases:
 
 ### 0.0.19: Protected State Surfaces
 
-- protected-path policy model
-- Forge API-only mutations for critical state
-- protected-write intent records
-- dry-run previews before state changes
-- adapter health and dirty-state visibility
-- no raw `.beads` writes from agents
+- protected-path enforcement for Beads, config, memory, hook, and generated state files
+- API-only writes for sensitive state surfaces
+- transaction logs and rollback snapshots for state mutations
+- generated harness previews before mutation
+- agent-facing guardrails for restricted file edits
 
 ### 0.0.20: Issue Graph And Beads Control Plane
 
-- Beads remains the default local issue adapter
-- indexed issue cache
-- paginated search/filter
-- bulk priority/status updates through `IssueAdapter`
-- dependency graph detail view
-- visible GitHub/Beads field ownership and sync drift
+- IssueAdapter SPI over Beads first
+- Forge-owned Beads mutation APIs instead of agent file edits
+- indexed issue graph read model
+- GitHub/Beads field ownership and sync drift visibility
+- scaled list/detail access without N+1 behavior
 
 ### 0.0.21: Local Control Plane UI/TUI
 
-- `lib/config-workspace` read model
-- config transaction writer
-- local TUI or web app shell only after the shared core exists
+- local TUI or web app shell over the shared runtime core
 - multi-project discovery
 - read-only project config views
 - `forge options` JSON backend hardening
 - `forge config plan/apply/rollback`
 - transaction-based `.forge/config.yaml` edits
 - rollback snapshots and generated harness previews
+- read-only and editable project config views
+- stage/substage toggles by project
+- issue search, filtering, priority/status updates, and adapter health panels
 
 ### 0.0.22: Hook Projection Layer
 
@@ -386,7 +385,7 @@ Post-0.0.18 releases:
 - Codex hook projection
 - Claude hook projection
 - Cursor fallback/projection
-- hook trust and timeout policy
+- hook trust, timeout, success, and failure policy
 - Codex adapter capability update: hooks are supported now, but command-only and subject to current Codex limitations
 
 ### 0.0.23: Memory Projection And Continuous Learning
@@ -395,18 +394,19 @@ Post-0.0.18 releases:
 - AGENTS/CLAUDE/Cursor/Codex projection rules
 - provenance/freshness renderer
 - stale-memory warnings
+- continuous-learning hooks that update memory through Forge-owned APIs
 
 ### 0.0.24: Extension-Contributed Runtime Components
 
-- extension-contributed stages/substages/evaluators/hooks
+- extension-contributed stages, substages, evaluators, hooks, and UI panels
 - first-class `evidenceCollectors`
-- first-class `uiPanels`
-- UI toggles
-- trust/permission review
+- extension install/remove/update records
+- UI toggles and trust/permission review
 - rollback extension updates
 
 ### 0.0.25: Scaled Team Runtime And External Orchestrator Bridge
 
+- scaled team runtime for thousands of issues and multi-agent runs
 - synthetic 5k/20k issue fixtures
 - no N+1 list/detail pattern
 - lease-bound worker contract
