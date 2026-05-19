@@ -40,8 +40,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # TODO: Raise this incrementally as docstring coverage stabilizes.
-  MIN_DOCSTRING_COVERAGE: 10
+  MIN_DOCSTRING_COVERAGE: ${{ vars.MIN_DOCSTRING_COVERAGE || '70' }}
 
 jobs:
   docs:
