@@ -4331,9 +4331,9 @@ async function main() {
       const writeBaselineIndex = args.indexOf('--write-baseline');
       const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
       const writeBaselinePath = writeBaselineIndex >= 0 ? args[writeBaselineIndex + 1] : null;
-      const result = validateDocs(packageDir, { baselinePath, minDocstringCoverage });
+      const result = validateDocs(projectRoot, { baselinePath, minDocstringCoverage });
       if (writeBaselinePath) {
-        writeDocsBaseline(packageDir, writeBaselinePath, result);
+        writeDocsBaseline(projectRoot, writeBaselinePath, result);
       }
       if (args.includes('--json') || topic === 'detect') {
         console.log(JSON.stringify(result, null, 2));

@@ -63,6 +63,7 @@ Design references:
 - [research/2026-05-18-evaluator-synthesis-protected-state-release-train.md](./research/2026-05-18-evaluator-synthesis-protected-state-release-train.md) - evaluator synthesis for protected state, Beads control plane, and public release train.
 - [research/2026-05-18-team-runtime-board-inspiration.md](./research/2026-05-18-team-runtime-board-inspiration.md) - runtime board and evidence cockpit inspiration.
 - [research/2026-05-19-skills-first-agent-packaging.md](./research/2026-05-19-skills-first-agent-packaging.md) - skills-first agent packaging, `skills.sh`, and command compatibility direction.
+- [research/2026-05-19-docs-validation-adapters-and-discovery.md](./research/2026-05-19-docs-validation-adapters-and-discovery.md) - adapter-driven docs validation discovery, baseline modes, and projection strategy.
 
 ## Continuous Refinement Rule
 

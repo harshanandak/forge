@@ -98,6 +98,7 @@ What "Codex hook projection" means:
 Forge should define stable Forge events:
 
 - `forge.session.start`
+- `forge.session.stop`
 - `forge.prompt.submit`
 - `forge.tool.before`
 - `forge.tool.after.success`
