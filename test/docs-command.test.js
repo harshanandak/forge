@@ -86,6 +86,27 @@ describe('docs validation', () => {
     }
   });
 
+  test('removes local absolute path prefixes from reported broken targets', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-absolute-target-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'README.md'),
+        '[Worktree](C:/Users/example/Downloads/forge/.worktrees/demo/bin/forge.js)\n',
+        'utf8'
+      );
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks[0].target).toBe('<repo>/.worktrees/demo/bin/forge.js');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports docstring coverage for public JavaScript functions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-test-'));
     try {
@@ -107,6 +128,63 @@ describe('docs validation', () => {
       expect(result.docstrings.documented).toBe(1);
       expect(result.docstrings.missing[0].name).toBe('missing');
       expect(formatDocsValidation(result)).toContain('Docstring coverage: 1/2 (50%)');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('parses ES module sources when checking docstring coverage', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-esm-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'esm.js'), 'export function missing() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.missing[0].name).toBe('missing');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('treats JavaScript parse errors as failed docstring coverage', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-parse-error-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'broken.js'), 'function broken( {\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.missing[0].name).toBe('<parse-error>');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports malformed docs baseline JSON with the baseline path', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-bad-baseline-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'bad-baseline.json'), '{ nope', 'utf8');
+
+      expect(() => validateDocs(tmpDir, { baselinePath: 'bad-baseline.json' }))
+        .toThrow(/Invalid docs baseline JSON/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

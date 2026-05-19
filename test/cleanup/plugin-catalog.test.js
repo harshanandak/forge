@@ -50,6 +50,13 @@ describe('agent plugin catalog — capability flags', () => {
     });
   });
 
+  describe('codex — hooks capability', () => {
+    test('capabilities.hooks is true', () => {
+      const plugin = loadPlugin('codex');
+      expect(plugin.capabilities.hooks).toBe(true);
+    });
+  });
+
   describe('no dropped agent plugin files', () => {
     test('continue.plugin.json does not exist', () => {
       const filePath = join(AGENTS_DIR, 'continue.plugin.json');
