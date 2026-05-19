@@ -758,6 +758,26 @@ describe('docs validation', () => {
     }
   });
 
+  test('counts underscored named default exports as public defaults', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-underscored-default-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'handler.js'), 'export default function _handler() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.missing[0].name).toBe('default');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('treats JavaScript parse errors as failed docstring coverage', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-parse-error-test-'));
     try {
@@ -883,6 +903,33 @@ describe('docs validation', () => {
       expect(result.status).toBe(1);
       expect(result.stdout).toContain('Docs validation failed');
       expect(fs.existsSync(path.join(tmpDir, 'baseline.json'))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI docs verify handles write-baseline I/O errors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-write-baseline-io-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'verify',
+        '--path',
+        tmpDir,
+        '--write-baseline',
+        'docs',
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Error:');
+      expect(result.stderr).not.toContain('at writeDocsBaseline');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
