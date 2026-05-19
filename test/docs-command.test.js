@@ -520,6 +520,25 @@ describe('docs validation', () => {
     }
   });
 
+  test('skips common test directories for docstring coverage', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-test-dirs-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'src', '__tests__'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'foo', 'test'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'src', '__tests__', 'helper.js'), 'export function testHelper() {}\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'foo', 'test', 'helpers.js'), 'export function packageTestHelper() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(true);
+      expect(result.docstrings.filesChecked).toBe(0);
+      expect(result.docstrings.total).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('checks docstring coverage for root index entrypoints', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-root-index-test-'));
     try {
