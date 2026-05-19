@@ -365,6 +365,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('keeps root-relative targets unchanged in broken link reports', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-root-report-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Missing](/docs/missing.md)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks[0].target).toBe('/docs/missing.md');
+      expect(result.links.brokenLinks[0].reason).toBe('Target file does not exist');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('normalizes anchor targets with the same slug rules as headings', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-slug-test-'));
     try {
