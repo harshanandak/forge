@@ -145,11 +145,11 @@ Phase 2 confirms that Forge still runs as a mixed-model workflow rather than a s
 
 Key repo evidence:
 
-- [`bin/forge.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/bin/forge.js) dispatches commands but does not own stage-state enforcement.
-- [`lib/commands/setup.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/setup.js) provisions assets and attempts hook installation, but stage gates do not reuse that logic consistently.
-- [`commands/plan.md`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/commands/plan.md), [`commands/dev.md`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/commands/dev.md), and [`commands/validate.md`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/commands/validate.md) still encode most hard-gate behavior.
-- [`scripts/beads-context.sh`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/beads-context.sh) records stage transitions as comments and validates context advisorially.
-- [`lib/commands/status.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/status.js) infers stage heuristically from branch/files/PRs instead of authoritative stage metadata.
+- [`bin/forge.js`](/bin/forge.js) dispatches commands but does not own stage-state enforcement.
+- [`lib/commands/setup.js`](/lib/commands/setup.js) provisions assets and attempts hook installation, but stage gates do not reuse that logic consistently.
+- [`commands/plan.md`](/.claude/commands/plan.md), [`commands/dev.md`](/.claude/commands/dev.md), and [`commands/validate.md`](/.claude/commands/validate.md) still encode most hard-gate behavior.
+- [`scripts/beads-context.sh`](/scripts/beads-context.sh) records stage transitions as comments and validates context advisorially.
+- [`lib/commands/status.js`](/lib/commands/status.js) infers stage heuristically from branch/files/PRs instead of authoritative stage metadata.
 
 ### Agent capability matrix
 
@@ -158,23 +158,23 @@ Research across the repo and available primary sources supports a tiered model r
 #### Strong first-class keep
 
 1. **Claude**
-   - Best native surface in the repo today: commands, rules, skills, scripts, `CLAUDE.md`, and hook support are all modeled explicitly in [`lib/agents/claude.plugin.json`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents/claude.plugin.json).
+   - Best native surface in the repo today: commands, rules, skills, scripts, `CLAUDE.md`, and hook support are all modeled explicitly in [`lib/agents/claude.plugin.json`](/lib/agents/claude.plugin.json).
    - Anthropic's official docs confirm strong lifecycle surfaces including hooks, MCP, and subagents: [Claude Code](https://docs.anthropic.com/de/release-notes/claude-code), [Subagents](https://docs.anthropic.com/de/docs/claude-code/sub-agents).
    - Conclusion: Claude remains the reference implementation for the new enforcement contract.
 
 #### Fix-first strategic keep
 
-2. **Codex**
-   - Repo support is materially under-declared: [`lib/agents/codex.plugin.json`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents/codex.plugin.json) says `skills:false` and `hooks:false`, but the repo ships a real `.codex/skills` stage surface and sync adapter support.
+1. **Codex**
+   - Repo support is materially under-declared: [`lib/agents/codex.plugin.json`](/lib/agents/codex.plugin.json) says `skills:false` and `hooks:false`, but the repo ships a real `.codex/skills` stage surface and sync adapter support.
    - Codex support should be preserved because this PR explicitly targets Codex parity, but parity is not credible until plugin metadata, detection, and setup are aligned.
    - Official external confirmation is weaker than Claude's lifecycle surface; the design should therefore route Codex through Forge runtime enforcement instead of assuming native hook blocking.
 
-3. **Cursor**
-   - Repo metadata models Cursor as commands + rules + skills in [`lib/agents/cursor.plugin.json`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents/cursor.plugin.json).
-   - The repo also contains richer Cursor-specific generation paths in [`lib/agents-config.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents-config.js), but setup is not wired to them consistently.
+2. **Cursor**
+   - Repo metadata models Cursor as commands + rules + skills in [`lib/agents/cursor.plugin.json`](/lib/agents/cursor.plugin.json).
+   - The repo also contains richer Cursor-specific generation paths in [`lib/agents-config.js`](/lib/agents-config.js), but setup is not wired to them consistently.
    - Cursor should remain supported, but the implementation should treat it as an editor-native adapter over the central Forge contract.
 
-4. **OpenCode**
+3. **OpenCode**
    - Repo support is credible enough to keep if setup is upgraded to generate the fuller OpenCode native config surface.
    - Official docs confirm MCP-driven tool configuration and agent config support: [OpenCode Agents](https://opencode.ai/docs/de/agents/), [OpenCode MCP Servers](https://opencode.ai/docs/mcp-servers).
 
@@ -220,8 +220,8 @@ Implication:
 The strongest enforcement reliability risks are currently operational rather than conceptual:
 
 1. **Hooks are not reliable enough in worktrees**
-   - [`package.json`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/package.json) treats `lefthook` as an optional peer and the `prepare` script tolerates missing hooks.
-   - [`lib/commands/setup.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/setup.js) skips hook setup when the binary is unavailable.
+   - [`package.json`](/package.json) treats `lefthook` as an optional peer and the `prepare` script tolerates missing hooks.
+   - [`lib/commands/setup.js`](/lib/commands/setup.js) skips hook setup when the binary is unavailable.
    - Worktree commits in this planning session already hit the same gap.
 
 2. **Current hook-state detection is worktree-fragile**
@@ -354,33 +354,33 @@ Phase 2 confirms the selected approach rather than weakening it:
 This work has a wide but manageable blast radius. Likely touch points include:
 
 1. Runtime stage entry and dispatch:
-   - [`bin/forge.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/bin/forge.js)
-   - [`lib/commands/_registry.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/_registry.js)
+   - [`bin/forge.js`](/bin/forge.js)
+   - [`lib/commands/_registry.js`](/lib/commands/_registry.js)
    - `lib/commands/*.js` for each stage
 
 2. Workflow state and Beads integration:
-   - [`scripts/beads-context.sh`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/beads-context.sh)
+   - [`scripts/beads-context.sh`](/scripts/beads-context.sh)
    - likely new JS workflow-state helpers under `lib/`
 
 3. Setup, repair, and hook enforcement:
-   - [`lib/commands/setup.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/setup.js)
-   - [`lib/lefthook-check.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/lefthook-check.js)
-   - [`lib/husky-migration.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/husky-migration.js)
+   - [`lib/commands/setup.js`](/lib/commands/setup.js)
+   - [`lib/lefthook-check.js`](/lib/lefthook-check.js)
+   - [`lib/husky-migration.js`](/lib/husky-migration.js)
 
 4. Agent metadata, detection, and discovery:
-   - [`lib/agents/*.plugin.json`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents)
-   - [`lib/plugin-manager.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/plugin-manager.js)
-   - [`lib/detect-agent.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/detect-agent.js)
-   - [`lib/project-discovery.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/project-discovery.js)
-   - [`lib/agents-config.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents-config.js)
+   - [`lib/agents/*.plugin.json`](/lib/agents)
+   - [`lib/plugin-manager.js`](/lib/plugin-manager.js)
+   - [`lib/detect-agent.js`](/lib/detect-agent.js)
+   - [`lib/project-discovery.js`](/lib/project-discovery.js)
+   - [`lib/agents-config.js`](/lib/agents-config.js)
 
 5. Canonical command/skill generation and downstream adapters:
-   - [`scripts/sync-commands.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/sync-commands.js)
+   - [`scripts/sync-commands.js`](/scripts/sync-commands.js)
    - `commands/`
    - agent-specific generated directories under `.claude`, `.cursor`, `.cline`, `.roo`, `.codex`, `.kilocode`, `.opencode`, `.github`
 
 6. Status/reporting and validation helpers:
-   - [`lib/commands/status.js`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/status.js)
-   - [`scripts/validate.sh`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/validate.sh)
-   - [`scripts/pr-coordinator.sh`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/pr-coordinator.sh)
-   - [`scripts/smart-status.sh`](C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/smart-status.sh)
+   - [`lib/commands/status.js`](/lib/commands/status.js)
+   - [`scripts/validate.sh`](/scripts/validate.sh)
+   - [`scripts/pr-coordinator.sh`](/scripts/pr-coordinator.sh)
+   - [`scripts/smart-status.sh`](/scripts/smart-status.sh)

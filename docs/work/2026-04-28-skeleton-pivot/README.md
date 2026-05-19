@@ -29,6 +29,13 @@ Use small `0.0.x` package releases, not `v3.x` product versions.
 | `0.0.16` | Safety, patch, rollback, upgrade |
 | `0.0.17` | Skills and insights |
 | `0.0.18` | Team runtime dashboard |
+| `0.0.19` | Protected state surfaces |
+| `0.0.20` | Issue graph and Beads control plane |
+| `0.0.21` | Local control plane UI/TUI |
+| `0.0.22` | Hook projection layer |
+| `0.0.23` | Memory projection and continuous learning |
+| `0.0.24` | Extension-contributed runtime components |
+| `0.0.25` | Scaled team runtime and external orchestrator bridge |
 
 See [release-plan.md](./release-plan.md) for scope, evaluator regions, gates, and deployment steps.
 
@@ -50,6 +57,12 @@ Design references:
 - [skill-generation.md](./skill-generation.md) - observed-work mining into skill proposals.
 - [agent-memory-architecture.md](./agent-memory-architecture.md) - typed memory categories and storage choices.
 - [template-library-and-merge-flow.md](./template-library-and-merge-flow.md) - templates as adoption scaffolds, plus optional community merge flow.
+- [research/2026-05-18-open-questions-memory-ui-beads-post-018.md](./research/2026-05-18-open-questions-memory-ui-beads-post-018.md) - post-`0.0.18` memory, hooks, local UI, Beads scale, and control-plane findings.
+- [research/2026-05-18-v3-runtime-control-plane-plan.md](./research/2026-05-18-v3-runtime-control-plane-plan.md) - local runtime control-plane plan.
+- [research/2026-05-18-v3-runtime-agent-orchestration-research.md](./research/2026-05-18-v3-runtime-agent-orchestration-research.md) - agent orchestration, protected paths, ledger, and external runtime inspiration.
+- [research/2026-05-18-evaluator-synthesis-protected-state-release-train.md](./research/2026-05-18-evaluator-synthesis-protected-state-release-train.md) - evaluator synthesis for protected state, Beads control plane, and public release train.
+- [research/2026-05-19-docs-validation-adapters-and-discovery.md](./research/2026-05-19-docs-validation-adapters-and-discovery.md) - adapter-driven docs validation discovery, baseline modes, and projection strategy.
+- [research/2026-05-19-skills-first-agent-packaging.md](./research/2026-05-19-skills-first-agent-packaging.md) - skills-first agent packaging, command compatibility, and skills.sh import direction.
 
 ## Continuous Refinement Rule
 
@@ -61,3 +74,4 @@ When new clarity arrives:
 4. Keep external orchestrator compatibility explicit.
 5. Keep the strict current workflow expressible as one template.
 6. Keep super-skill/sub-skill invocation visible in the runtime graph and evaluator regions.
+7. Keep protected state surfaces explicit: agents must use Forge CLI/MCP/API writes for Beads, config, memory projections, generated files, lockfiles, hooks, and workflows.
