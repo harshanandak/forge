@@ -74,9 +74,11 @@ The local UI or TUI should not be a cloud control plane. It should be a local co
 
 The active roadmap had a solid `0.0.11` to `0.0.18` path but stopped before the new control-plane ideas. The updated train should add `0.0.19` to `0.0.25`, each with a single user value, an evaluator region, and a release gate.
 
-### 6. Documentation Automation Exists As A Planned Substage, Not A Shipped Flow
+### 6. Documentation Automation Should Be Adapter-Driven
 
-The current code has a read-only `forge docs <topic>` viewer and setup-time doc copying, but no implemented doc linker, docstring coverage, `forge docs detect`, `forge docs verify`, or automatic docs-update flow. The v2 research already designed this as doc automation, and Beads has `forge-30k` open for the documentation link checker. Keep it in the `0.0.16` safety/docs-validation slice first, then allow extensions to contribute richer documentation substages later.
+The current code now has an early `forge docs verify` surface, but it should not become a permanent Forge-only clone of established documentation tools. Research on 2026-05-19 found existing solutions that should be adapted through Forge adapters: Lychee for broad link checking, Linkspector/reviewdog for PR comments, remark-validate-links for local Markdown anchors, and eslint-plugin-jsdoc for JavaScript/TypeScript docstring requirements.
+
+The required correction is to treat docs validation as a discovery-driven, toggleable substage. Forge should first detect each project's docs roots and systems, then recommend adapters, generate config through plan/apply, and expose modes such as `report`, `new-only`, and `strict`. Existing broken links or sparse docstrings should be baselined rather than blocking first adoption. The local UI/TUI should show detected docs roots, selected adapters, baseline size, coverage, GitHub Action projection, local hook projection, and rollback state.
 
 ## Updated Post-0.0.18 Release Sequence
 

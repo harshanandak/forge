@@ -203,7 +203,9 @@ Scope:
 - v2 fixture corpus.
 - Upgrade dry-run.
 - Protected-write intent records for config, generated files, lockfiles, memory projections, and Beads-related state.
-- Documentation automation substage: `forge docs detect/verify` direction, markdown link checking, stale-doc detection, and docs-update prompts before premerge/release.
+- Documentation automation substage: `forge docs detect/verify` direction, markdown link checking, stale-doc detection, docstring coverage, and docs-update prompts before premerge/release.
+- Docs validation must be adapter-driven, not a permanent Forge-only clone of existing tools. Discovery should detect docs roots and documentation systems, then select adapters such as Lychee for broad link checks, Linkspector/reviewdog for PR comments, remark-validate-links for local Markdown anchors, and eslint-plugin-jsdoc for JavaScript/TypeScript docstring requirements.
+- Docs validation should support project-specific modes: `report`, `new-only`, and `strict`, with baselines for existing link/docstring debt and generated GitHub Action/Lefthook projections that can be toggled on or off per project.
 
 Evaluator regions:
 
@@ -217,7 +219,7 @@ Release gate:
 - Rollback restores the previous managed surfaces.
 - Patch intent survives upstream changes.
 - Protected state changes have before/after diffs and rollback snapshots.
-- Documentation checks can catch broken internal markdown links before push and report docs that likely need updates.
+- Documentation checks can catch broken internal markdown links before push, report docstring coverage, and expose the selected adapter/config/baseline so projects with different docs structures can adapt without hand-editing generated files.
 
 ## 0.0.17 - Skills And Insights
 
@@ -429,6 +431,7 @@ Primary value:
 Scope:
 
 - Extension manifest `contributes` schema for stages, substages, evaluator regions, evidence collectors, hooks, adapters, templates, commands, and local UI panels.
+- Documentation validators are a required example extension type: a docs adapter can declare supported file types, discovery signals, config files, CI projections, local hook projections, and UI fields.
 - Resolver adds source, trust, permission, collision, and config-source metadata into the runtime graph.
 - UI and CLI can enable/disable extension components with `why`, `diff`, and rollback.
 - Sandboxed lifecycle hooks stay opt-in and audited.
