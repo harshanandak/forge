@@ -13,7 +13,7 @@
  *   bunx forge setup --agents claude,cursor
  *
  * CLI Flags:
- *   --path, -p <dir>     Target project directory (creates if needed)
+ *   --path, -p <dir>     Target project directory (docs verify|detect require existing dir)
  *   --quick, -q          Use all defaults, minimal prompts
  *   --skip-external      Skip external services configuration
  *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
@@ -2765,6 +2765,7 @@ function showHelp() {
   console.log('Options:');
   console.log('  --path, -p <dir>     Target project directory (default: current directory)');
   console.log('                       Creates the directory if it doesn\'t exist');
+  console.log('                       Exception: docs verify|detect --path requires an existing directory');
   console.log('  --quick, -q          Use all defaults, minimal prompts');
   console.log('                       Auto-selects: all agents, GitHub Code Quality, ESLint');
   console.log('  --skip-external      Skip external services configuration');
@@ -4324,8 +4325,10 @@ async function main() {
       }
       console.log('');
       console.log('  Usage: forge docs <topic>');
-      console.log('         forge docs verify [--json] [--baseline <file>] [--write-baseline <file>] [--min-docstring-coverage <percent>]');
-      console.log('         forge docs detect [--json]');
+      console.log('         forge docs verify [--path <dir>] [--json] [--baseline <file>] [--write-baseline <file>] [--min-docstring-coverage <percent>]');
+      console.log('         forge docs detect [--path <dir>] [--json]');
+      console.log('');
+      console.log('  Note: forge docs verify|detect --path requires an existing directory.');
       console.log('');
     } else if (topic === 'verify' || topic === 'detect') {
       const minCoverageIndex = args.indexOf('--min-docstring-coverage');
