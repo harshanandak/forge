@@ -474,6 +474,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('matches GitHub-style ampersand heading anchors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-ampersand-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Plan](docs/roadmap.md#pr-sequence--dependencies)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'roadmap.md'), '# PR Sequence & Dependencies\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports docstring coverage for public JavaScript functions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-test-'));
     try {
@@ -484,7 +502,7 @@ describe('docs validation', () => {
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
       fs.writeFileSync(
         path.join(tmpDir, 'lib', 'coverage.js'),
-        '/** Documented. */\nfunction documented() {}\nfunction missing() {}\n',
+        '/** Documented. */\nexport function documented() {}\nexport function missing() {}\n',
         'utf8'
       );
 
@@ -500,6 +518,22 @@ describe('docs validation', () => {
     }
   });
 
+  test('skips non-exported declarations for docstring coverage', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-internal-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'internal.js'), 'function internalHelper() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(true);
+      expect(result.docstrings.total).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('checks docstring coverage in common src roots', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-src-test-'));
     try {
@@ -508,7 +542,7 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
-      fs.writeFileSync(path.join(tmpDir, 'src', 'feature.js'), 'function missingFromSrc() {}\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'src', 'feature.js'), 'export function missingFromSrc() {}\n', 'utf8');
 
       const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
 
