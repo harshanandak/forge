@@ -49,7 +49,13 @@ const VERSION = packageJson.version;
 const PluginManager = require('../lib/plugin-manager');
 const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
-const { listTopics, getTopicContent } = require('../lib/docs-command');
+const {
+  listTopics,
+  getTopicContent,
+  validateDocs,
+  formatDocsValidation,
+  writeDocsBaseline,
+} = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
@@ -4136,11 +4142,15 @@ async function main() {
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
   const suppressCommandJsonOutput = args.includes('--json');
+  const suppressDocsDetectOutput = command === 'docs' && args[1] === 'detect';
   const profileDryRunArgs = ['--minimal', '--standard', '--full'];
   const suppressAdoptionDryRunOutput = flags.dryRun && (
     command === 'init' || (command === 'setup' && profileDryRunArgs.some(arg => args.includes(arg)))
   );
-  const suppressStructuredOutput = suppressJsonIntrospectionOutput || suppressCommandJsonOutput || suppressAdoptionDryRunOutput;
+  const suppressStructuredOutput = suppressJsonIntrospectionOutput ||
+    suppressCommandJsonOutput ||
+    suppressDocsDetectOutput ||
+    suppressAdoptionDryRunOutput;
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
@@ -4309,7 +4319,30 @@ async function main() {
       }
       console.log('');
       console.log('  Usage: forge docs <topic>');
+      console.log('         forge docs verify [--json] [--baseline <file>] [--write-baseline <file>] [--min-docstring-coverage <percent>]');
+      console.log('         forge docs detect [--json]');
       console.log('');
+    } else if (topic === 'verify' || topic === 'detect') {
+      const minCoverageIndex = args.indexOf('--min-docstring-coverage');
+      const minDocstringCoverage = minCoverageIndex >= 0 && args[minCoverageIndex + 1]
+        ? Number(args[minCoverageIndex + 1])
+        : 0;
+      const baselineIndex = args.indexOf('--baseline');
+      const writeBaselineIndex = args.indexOf('--write-baseline');
+      const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
+      const writeBaselinePath = writeBaselineIndex >= 0 ? args[writeBaselineIndex + 1] : null;
+      const result = validateDocs(packageDir, { baselinePath, minDocstringCoverage });
+      if (writeBaselinePath) {
+        writeDocsBaseline(packageDir, writeBaselinePath, result);
+      }
+      if (args.includes('--json') || topic === 'detect') {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(formatDocsValidation(result));
+      }
+      if (!writeBaselinePath && !result.ok) {
+        process.exitCode = 1;
+      }
     } else {
       const result = getTopicContent(topic, packageDir);
       if (result.error) {
