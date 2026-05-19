@@ -133,6 +133,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves URL-encoded local markdown paths', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-encoded-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](docs/my%20guide.md)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'my guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('rejects local links that escape to a sibling with the same root prefix', () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-prefix-test-'));
     const projectDir = path.join(parentDir, 'project');
@@ -261,6 +279,25 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Release](docs/releases.md#v0.0.19)\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'docs', 'releases.md'), '# v0.0.19\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('slugifies headings using rendered markdown link text', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-link-heading-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[API](docs/guide.md#api-reference)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '# [API](./api.md) Reference\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'api.md'), '# API\n', 'utf8');
 
       const result = validateDocs(tmpDir);
 
