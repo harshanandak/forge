@@ -150,6 +150,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves escaped spaces in markdown destinations', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-escaped-space-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](docs/my\\ guide.md)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'my guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolves URL-encoded local markdown paths', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-encoded-link-test-'));
     try {
@@ -198,6 +216,28 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '[CDN](//cdn.example.com/app.js)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+      expect(result.links.linksChecked).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores external links with non-web URI schemes', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-uri-scheme-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'README.md'),
+        '[Repo](ssh://git@example.com/repo)\n[Editor](vscode://file/C:/tmp/file.md)\n',
+        'utf8'
+      );
 
       const result = validateDocs(tmpDir);
 
