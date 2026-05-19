@@ -1,0 +1,623 @@
+{
+  "generatedBy": "forge docs verify --write-baseline",
+  "brokenLinks": [
+    {
+      "file": "docs/forge/VALIDATION.md",
+      "line": 361,
+      "target": "../AGENTS.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/forge/VALIDATION.md",
+      "line": 362,
+      "target": "../CLAUDE.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/BEADS_GITHUB_SYNC.md",
+      "line": 297,
+      "target": "plans/2026-03-21-github-beads-sync-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/BEADS_GITHUB_SYNC.md",
+      "line": 298,
+      "target": "TOOLCHAIN.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/ENHANCED_ONBOARDING.md",
+      "line": 596,
+      "target": "../README.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/ENHANCED_ONBOARDING.md",
+      "line": 597,
+      "target": "../AGENTS.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/GREPTILE_SETUP.md",
+      "line": 374,
+      "target": "../.github/BRANCH_PROTECTION_GUIDE.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/SETUP.md",
+      "line": 247,
+      "target": "TOOLCHAIN.md#beads---issue-tracking-across-sessions",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/SETUP.md",
+      "line": 668,
+      "target": "../QUICKSTART.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/SETUP.md",
+      "line": 670,
+      "target": "../AGENTS.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/SETUP.md",
+      "line": 672,
+      "target": "TOOLCHAIN.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/guides/SETUP.md",
+      "line": 674,
+      "target": "EXAMPLES.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/EXAMPLES.md",
+      "line": 476,
+      "target": "../QUICKSTART.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/EXAMPLES.md",
+      "line": 478,
+      "target": "../AGENTS.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/EXAMPLES.md",
+      "line": 480,
+      "target": "SETUP.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 16,
+      "target": "#pr-sequence--dependencies",
+      "reason": "Target anchor does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 19,
+      "target": "#tracking--management",
+      "reason": "Target anchor does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 178,
+      "target": "docs/research/advanced-testing.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 207,
+      "target": "docs/research/plugin-architecture.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 339,
+      "target": "docs/research/advanced-testing.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 340,
+      "target": "docs/research/plugin-architecture.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 352,
+      "target": "../AGENTS.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/ROADMAP.md",
+      "line": 353,
+      "target": "./ARCHITECTURE.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/VALIDATION.md",
+      "line": 361,
+      "target": "../AGENTS.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/reference/VALIDATION.md",
+      "line": 362,
+      "target": "../CLAUDE.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-10-command-creator-and-eval/design.md",
+      "line": 329,
+      "target": "docs/plans/2026-03-04-agent-command-parity-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-10-command-creator-and-eval/design.md",
+      "line": 330,
+      "target": "docs/research/agent-instructions-sync.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-10-command-creator-and-eval/design.md",
+      "line": 331,
+      "target": "skills/",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-14-skill-eval-loop/decisions.md",
+      "line": 3,
+      "target": "2026-03-14-skill-eval-loop-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-14-skill-eval-loop/tasks.md",
+      "line": 3,
+      "target": "2026-03-14-skill-eval-loop-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-21-github-beads-sync/tasks.md",
+      "line": 3,
+      "target": "2026-03-21-github-beads-sync-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-22-docs-accuracy/tasks.md",
+      "line": 89,
+      "target": "lib/agents/README.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-22-docs-accuracy/tasks.md",
+      "line": 89,
+      "target": "docs/TOOLCHAIN.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-22-multi-dev-awareness/design.md",
+      "line": 163,
+      "target": "2026-03-22-multi-dev-awareness-owasp-analysis.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-22-multi-dev-awareness/tasks.md",
+      "line": 3,
+      "target": "2026-03-22-multi-dev-awareness-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-22-smart-setup-ux/design.md",
+      "line": 65,
+      "target": "2026-03-22-agent-detection-research.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-22-smart-setup-ux/tasks.md",
+      "line": 4,
+      "target": "2026-03-22-smart-setup-ux-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-24-p1-bugfixes/decisions.md",
+      "line": 3,
+      "target": "2026-03-24-p1-bugfixes-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-24-p1-bugfixes/tasks.md",
+      "line": 3,
+      "target": "2026-03-24-p1-bugfixes-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-26-parallel-prs/tasks.md",
+      "line": 6,
+      "target": "2026-03-26-parallel-prs-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-03-27-team-orchestration/tasks.md",
+      "line": 6,
+      "target": "2026-03-27-team-orchestration-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 148,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/bin/forge.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 149,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/setup.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 150,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/commands/plan.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 150,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/commands/dev.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 150,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/commands/validate.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 151,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/beads-context.sh",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 152,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/status.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 161,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents/claude.plugin.json",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 168,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents/codex.plugin.json",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 173,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents/cursor.plugin.json",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 174,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents-config.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 223,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/package.json",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 224,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/setup.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 357,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/bin/forge.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 358,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/_registry.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 362,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/beads-context.sh",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 366,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/setup.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 367,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/lefthook-check.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 368,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/husky-migration.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 371,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 372,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/plugin-manager.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 373,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/detect-agent.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 374,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/project-discovery.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 375,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/agents-config.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 378,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/sync-commands.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 383,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/lib/commands/status.js",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 384,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/validate.sh",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 385,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/pr-coordinator.sh",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 386,
+      "target": "C:/Users/harsha_befach/Downloads/forge/.worktrees/setup-hardening-codex-parity/scripts/smart-status.sh",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 434,
+      "target": "ws1-cli-abstraction-risks.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 434,
+      "target": "ws1-forge-pr-risks.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 434,
+      "target": "ws1-hook-enforcement-risks.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 434,
+      "target": "ws1-cross-platform-risks.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 655,
+      "target": "ws2-dispatch-model-risks.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 1012,
+      "target": "v2-evaluator-synthesis.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 1695,
+      "target": "forge-issues-risk-inventory.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md",
+      "line": 2182,
+      "target": "ws-beads-issues-v2-impact.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/SUPERSEDED.md",
+      "line": 15,
+      "target": "../FINAL-THESIS.md#8-the-8-week-realistic-timeline-w0w5",
+      "reason": "Target anchor does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/SUPERSEDED.md",
+      "line": 15,
+      "target": "../v3-redesign-strategy.md#6-wave-plan--release-staging",
+      "reason": "Target anchor does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/v3-skeleton-plan.md",
+      "line": 4,
+      "target": "./2026-04-06-forge-v2-unified-strategy.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/v3-skeleton-plan.md",
+      "line": 7,
+      "target": "./2026-04-28-layered-skeleton-config-proposal.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/v3-skeleton-plan.md",
+      "line": 8,
+      "target": "./2026-04-28-extension-system-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/v3-skeleton-plan.md",
+      "line": 9,
+      "target": "./2026-04-28-skill-generation-from-observed-work-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/_iteration-history/v3-skeleton-plan.md",
+      "line": 10,
+      "target": "./2026-04-28-skill-distribution-design.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/locked-decisions.md",
+      "line": 567,
+      "target": "./v3-ecosystem-audit.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md",
+      "line": 8,
+      "target": "./v3-skeleton-plan.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md",
+      "line": 14,
+      "target": "./building-block-pivot.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md",
+      "line": 95,
+      "target": "./FINAL-THESIS.md#7-the-38-locked-decisions-one-line-summaries",
+      "reason": "Target anchor does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md",
+      "line": 484,
+      "target": "./v3-ecosystem-audit.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md",
+      "line": 486,
+      "target": "./v3-skeleton-plan.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md",
+      "line": 492,
+      "target": "./building-block-pivot.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 25,
+      "target": "../research/skills-restructure.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 45,
+      "target": "../research/dependency-chain.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 67,
+      "target": "../research/skills-restructure.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 93,
+      "target": "../research/plugin-architecture.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 131,
+      "target": "../research/advanced-testing.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 204,
+      "target": "../../.claude/plans/enumerated-watching-chipmunk.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 240,
+      "target": "../../.claude/plans/enumerated-watching-chipmunk.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 279,
+      "target": "../../.claude/plans/enumerated-watching-chipmunk.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 312,
+      "target": "../../.claude/plans/enumerated-watching-chipmunk.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 363,
+      "target": "../research/test-environment.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/_archive/planning-snapshots/PROGRESS.md",
+      "line": 392,
+      "target": "../research/plugin-architecture.md",
+      "reason": "Target file does not exist"
+    }
+  ]
+}
