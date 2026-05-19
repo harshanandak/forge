@@ -174,9 +174,9 @@ The UI must not write tool configs directly. It should call Forge config plan/ap
 
 For current release slicing:
 
-- `0.0.16`: ship docs-validation discovery, adapter selection, baseline, and GitHub Action/Lefthook projection for one default adapter path.
-- `0.0.21`: expose the local UI/TUI toggle and status panel.
-- `0.0.24`: allow third-party docs adapters as extension-contributed substages.
+- `0.0.16`: keep the release-plan responsibilities centered on safety, patch, upgrade, rollback, fixtures, protected-write intent records, and the existing migrate dry-run baseline. Track docs-validation through `forge-30k` as the documentation link checking and docs-validation automation slice: the first deliverable is a report/new-only/strict baseline model and a generated GitHub Action/Lefthook projection, with adapter selection documented before broader rollout.
+- `0.0.21`: expose docs-validation status through the local UI/TUI only through the same local control-plane APIs used for project runtime graph, stage, substage, hook, extension, and issue views.
+- `0.0.24`: generalize docs-validation under extension-contributed components, where third-party adapters can contribute substages, evaluator regions, evidence collectors, hooks, templates, commands, and local UI panels.
 
 ## Correction To Current Branch
 

@@ -7,7 +7,7 @@
   "capabilities": {
     "commands": true,
     "skills": true,
-    "hooks": false
+    "hooks": true
   },
   "directories": {
     "skills": ".codex/skills"

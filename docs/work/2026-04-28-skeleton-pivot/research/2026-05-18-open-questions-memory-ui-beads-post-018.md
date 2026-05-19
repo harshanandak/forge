@@ -91,7 +91,7 @@ Local verification:
   - `PreToolUse` -> `context-mode hook codex pretooluse`
   - `PostToolUse` -> `context-mode hook codex posttooluse`
   - `SessionStart` -> `context-mode hook codex sessionstart`
-- Forge's current repo-local Codex adapter metadata still declares hooks unsupported in `lib/agents/codex.plugin.json`; that is stale relative to current Codex docs and this machine's enabled hook config.
+- Forge's repo-local Codex adapter metadata now declares hooks supported in `lib/agents/codex.plugin.json`; future hook-projection work still needs per-event capability metadata for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, and `Stop`.
 
 What "Codex hook projection" means:
 

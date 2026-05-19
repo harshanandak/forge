@@ -267,7 +267,7 @@ Memory files by harness:
 
 - Codex may have its own memory registry and AGENTS.md behavior.
 - Claude uses `CLAUDE.md`, project/user/local settings, rules, hooks, and skills.
-- Cursor supports project/user rules and `AGENTS.md`.
+- Cursor supports project/user rules in `.cursor/rules` such as `.cursor/rules/*.md` and `.cursor/rules/*.mdc`.
 - Forge should generate or update harness-facing instruction files from typed memory, with provenance and opt-in sync.
 
 Rules:
@@ -294,11 +294,11 @@ Forge typed memory
 
 Projection rules:
 
-- Forge runtime state remains the canonical source for workflow graph, stage composition, typed memory, hooks, adapters, and protected-write policy.
+- As a Forge design goal, runtime state remains the canonical source for workflow graph, stage composition, typed memory, hooks, adapters, and protected-write policy.
 - `AGENTS.md` is the generated generic-agent instruction projection from that runtime source, not a separately edited authority.
-- `CLAUDE.md` should delegate to the generated generic projection and contain only Claude-specific affordances.
+- Forge-generated `CLAUDE.md` should delegate to the generated generic projection where safe and contain only Claude-specific affordances; this is a Forge projection choice, not a claim that Claude and Codex share one native memory system today.
 - Cursor rules, Codex-facing memory surfaces, commands, hooks, and skill trigger indexes are projections, not peer canon.
-- Codex `MEMORY.md` should be treated as external agent memory: read/import only when explicitly available, but project writes go through Forge typed memory or `bd remember`.
+- Codex `MEMORY.md` and Claude-native memory should be treated as external agent memory: read/import only when explicitly available, but project writes go through Forge typed memory or `bd remember`.
 - Every projection needs source, freshness, and supersession metadata so stale decisions cannot silently re-enter generated files.
 
 ## Beads Position
