@@ -164,17 +164,17 @@ Research across the repo and available primary sources supports a tiered model r
 
 #### Fix-first strategic keep
 
-2. **Codex**
+1. **Codex**
    - Repo support is materially under-declared: [`lib/agents/codex.plugin.json`](/lib/agents/codex.plugin.json) says `skills:false` and `hooks:false`, but the repo ships a real `.codex/skills` stage surface and sync adapter support.
    - Codex support should be preserved because this PR explicitly targets Codex parity, but parity is not credible until plugin metadata, detection, and setup are aligned.
    - Official external confirmation is weaker than Claude's lifecycle surface; the design should therefore route Codex through Forge runtime enforcement instead of assuming native hook blocking.
 
-3. **Cursor**
+2. **Cursor**
    - Repo metadata models Cursor as commands + rules + skills in [`lib/agents/cursor.plugin.json`](/lib/agents/cursor.plugin.json).
    - The repo also contains richer Cursor-specific generation paths in [`lib/agents-config.js`](/lib/agents-config.js), but setup is not wired to them consistently.
    - Cursor should remain supported, but the implementation should treat it as an editor-native adapter over the central Forge contract.
 
-4. **OpenCode**
+3. **OpenCode**
    - Repo support is credible enough to keep if setup is upgraded to generate the fuller OpenCode native config surface.
    - Official docs confirm MCP-driven tool configuration and agent config support: [OpenCode Agents](https://opencode.ai/docs/de/agents/), [OpenCode MCP Servers](https://opencode.ai/docs/mcp-servers).
 

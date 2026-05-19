@@ -444,6 +444,31 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks docstring coverage for JSX sources', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-jsx-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'Panel.jsx'),
+        'export function MissingPanel() { return <section />; }\n',
+        'utf8'
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.filesChecked).toBe(1);
+      expect(result.docstrings.missing[0].file).toBe('src/Panel.jsx');
+      expect(result.docstrings.missing[0].name).toBe('MissingPanel');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('parses non-TSX TypeScript angle-bracket assertions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-ts-assertion-test-'));
     try {
