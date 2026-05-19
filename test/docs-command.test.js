@@ -62,6 +62,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves markdown links with balanced parentheses in destinations', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-parentheses-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](docs/guide(v1).md)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide(v1).md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('rejects local links that escape to a sibling with the same root prefix', () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-prefix-test-'));
     const projectDir = path.join(parentDir, 'project');
@@ -300,6 +318,26 @@ describe('docs validation', () => {
       expect(result.ok).toBe(false);
       expect(result.docstrings.total).toBe(2);
       expect(result.docstrings.missing.map((item) => item.name)).toEqual(['missing', 'alsoMissing']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks docstring coverage for direct CommonJS function exports', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-direct-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.js'), 'module.exports = function () {};\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.missing[0].name).toBe('module.exports');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
