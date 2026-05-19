@@ -262,6 +262,30 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks docstring coverage for CommonJS export assignments', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'exports.js'),
+        'exports.missing = function () {};\nmodule.exports.alsoMissing = () => {};\n',
+        'utf8'
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(2);
+      expect(result.docstrings.missing.map((item) => item.name)).toEqual(['missing', 'alsoMissing']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('parses ES module sources when checking docstring coverage', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-esm-test-'));
     try {
