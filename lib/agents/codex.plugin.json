@@ -7,7 +7,15 @@
   "capabilities": {
     "commands": true,
     "skills": true,
-    "hooks": true
+    "hooks": true,
+    "hookEvents": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PermissionRequest",
+      "PostToolUse",
+      "Stop"
+    ]
   },
   "directories": {
     "skills": ".codex/skills"
