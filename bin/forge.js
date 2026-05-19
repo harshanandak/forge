@@ -3845,6 +3845,10 @@ function handlePathSetup(targetPath, options = {}) {
 
   // Create directory if it doesn't exist
   if (!fs.existsSync(resolvedPath)) {
+    if (options.create === false) {
+      console.error(`Error: ${resolvedPath} does not exist`);
+      process.exit(1);
+    }
     try {
     fs.mkdirSync(resolvedPath, { recursive: true });
     if (!options.quiet) {
@@ -4185,10 +4189,11 @@ async function main() {
 
   // Handle --path option: change to target directory
   if (flags.path) {
+    const createTargetPath = !(command === 'docs' && ['verify', 'detect'].includes(args[1]));
     // Update projectRoot after changing directory to maintain state consistency
     projectRoot = suppressAdoptionDryRunOutput
       ? resolvePathForDryRun(flags.path)
-      : handlePathSetup(flags.path, { quiet: suppressStructuredOutput });
+      : handlePathSetup(flags.path, { quiet: suppressStructuredOutput, create: createTargetPath });
   }
 
   // Load command registry (auto-discovered commands from lib/commands/)

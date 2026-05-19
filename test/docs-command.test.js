@@ -43,6 +43,25 @@ describe('docs validation', () => {
     }
   });
 
+  test('reports broken reference-style markdown links', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reference-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide][guide]\n\n[guide]: docs/missing.md\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.linksChecked).toBe(1);
+      expect(result.links.brokenLinks[0].target).toBe('docs/missing.md');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('rejects local links that escape to a sibling with the same root prefix', () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-prefix-test-'));
     const projectDir = path.join(parentDir, 'project');
@@ -401,6 +420,26 @@ describe('docs validation', () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('--min-docstring-coverage must be a number between 0 and 100');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI docs verify rejects missing --path targets', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-missing-path-parent-'));
+    const missingDir = path.join(tmpDir, 'missing');
+    try {
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'verify',
+        '--path',
+        missingDir,
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('does not exist');
+      expect(fs.existsSync(missingDir)).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
