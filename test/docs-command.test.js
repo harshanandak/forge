@@ -80,6 +80,41 @@ describe('docs validation', () => {
     }
   });
 
+  test('ignores markdown link syntax inside inline code spans', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-inline-code-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), 'Use ``[Guide](docs/missing.md)`` as an example.\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves angle-bracket markdown destinations with spaces', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-spaced-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](<docs/my guide.md> "Guide")\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'my guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('rejects local links that escape to a sibling with the same root prefix', () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-prefix-test-'));
     const projectDir = path.join(parentDir, 'project');
@@ -332,6 +367,30 @@ describe('docs validation', () => {
       expect(result.ok).toBe(false);
       expect(result.docstrings.filesChecked).toBe(1);
       expect(result.docstrings.missing[0].file).toBe('src/feature.ts');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('parses non-TSX TypeScript angle-bracket assertions', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-ts-assertion-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'feature.ts'),
+        'type Foo = string;\n/** Covers TS assertion parsing. */\nexport function coveredTs(value: unknown) { return <Foo>value; }\n',
+        'utf8',
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(true);
+      expect(result.docstrings.filesChecked).toBe(1);
+      expect(result.docstrings.percent).toBe(100);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
