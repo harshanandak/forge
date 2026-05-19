@@ -16,8 +16,8 @@ This note answers the open questions from the v3 runtime control-plane plan with
 Sources:
 - Codex Memories: https://developers.openai.com/codex/memories
 - Codex Hooks: https://developers.openai.com/codex/hooks
-- Local Codex config: `C:\Users\harsha_befach\.codex\config.toml`
-- Local Codex hooks: `C:\Users\harsha_befach\.codex\hooks.json`
+- Local Codex config: `~/.codex/config.toml` (machine-local example)
+- Local Codex hooks: `~/.codex/hooks.json` (machine-local example)
 
 ## 1. How Codex Uses Memory
 
@@ -33,9 +33,9 @@ Codex official docs say memories are:
 
 Local verification:
 
-- `C:\Users\harsha_befach\.codex\config.toml` has `[features] memories = true`.
+- `~/.codex/config.toml` has `[features] memories = true`.
 - It also has `[memories] no_memories_if_mcp_or_web_search = true`, which aligns with the idea that memory generation should skip sessions with external context.
-- `C:\Users\harsha_befach\.codex\memories` contains `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, rollout summaries, and evidence files.
+- `~/.codex/memories` contains `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, rollout summaries, and evidence files.
 
 Implication for Forge:
 
@@ -87,7 +87,7 @@ The docs show hooks configured in JSON or TOML, with matchers and command handle
 
 Local verification:
 
-- `C:\Users\harsha_befach\.codex\hooks.json` defines:
+- `~/.codex/hooks.json` defines:
   - `PreToolUse` -> `context-mode hook codex pretooluse`
   - `PostToolUse` -> `context-mode hook codex posttooluse`
   - `SessionStart` -> `context-mode hook codex sessionstart`

@@ -107,6 +107,42 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves leading-slash markdown links from the project root', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-root-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](/docs/guide.md)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('normalizes anchor targets with the same slug rules as headings', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-slug-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Release](docs/releases.md#v0.0.19)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'releases.md'), '# v0.0.19\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports docstring coverage for public JavaScript functions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-test-'));
     try {
