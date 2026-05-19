@@ -43,6 +43,22 @@ describe('docs validation', () => {
     }
   });
 
+  test('ignores markdown links inside indented code blocks', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-indented-code-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '    [Missing](docs/missing.md)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(0);
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports broken reference-style markdown links', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reference-link-test-'));
     try {
@@ -604,6 +620,24 @@ describe('docs validation', () => {
       expect(result.ok).toBe(false);
       expect(result.docstrings.filesChecked).toBe(1);
       expect(result.docstrings.missing[0].file).toBe('dist/main.js');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks docstring coverage for package.json bin entrypoints', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-package-bin-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ bin: 'cli.js' }), 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'cli.js'), 'export function missingPackageBin() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.filesChecked).toBe(1);
+      expect(result.docstrings.missing[0].file).toBe('cli.js');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
