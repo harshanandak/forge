@@ -746,6 +746,30 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks docstring coverage for identifier CommonJS member exports', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-member-identifier-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'index.js'),
+        'function foo() {}\nconst bar = () => {};\nmodule.exports.foo = foo;\nexports.bar = bar;\n',
+        'utf8',
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(2);
+      expect(result.docstrings.missing.map((item) => item.name)).toEqual(['foo', 'bar']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('checks docstring coverage for object-style CommonJS exports', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-object-test-'));
     try {
