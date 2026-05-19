@@ -460,6 +460,27 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks docstring coverage for anonymous default exports', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-default-export-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'default-function.js'), 'export default function () {}\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'default-arrow.js'), 'export default () => {};\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(2);
+      expect(result.docstrings.missing.map((item) => item.name)).toEqual(['default', 'default']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('treats JavaScript parse errors as failed docstring coverage', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-parse-error-test-'));
     try {
@@ -555,6 +576,36 @@ describe('docs validation', () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('--min-docstring-coverage must be a number between 0 and 100');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI docs verify --write-baseline still fails docstring coverage errors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-write-baseline-docstrings-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'missing.js'), 'export function missing() {}\n', 'utf8');
+
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'verify',
+        '--path',
+        tmpDir,
+        '--write-baseline',
+        'baseline.json',
+        '--min-docstring-coverage',
+        '100',
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('Docs validation failed');
+      expect(fs.existsSync(path.join(tmpDir, 'baseline.json'))).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
