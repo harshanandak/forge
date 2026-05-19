@@ -55,6 +55,18 @@ describe('agent plugin catalog — capability flags', () => {
       const plugin = loadPlugin('codex');
       expect(plugin.capabilities.hooks).toBe(true);
     });
+
+    test('declares supported hook lifecycle events', () => {
+      const plugin = loadPlugin('codex');
+      expect(plugin.capabilities.hookEvents).toEqual([
+        'SessionStart',
+        'UserPromptSubmit',
+        'PreToolUse',
+        'PermissionRequest',
+        'PostToolUse',
+        'Stop',
+      ]);
+    });
   });
 
   describe('no dropped agent plugin files', () => {
