@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
     paths:
+      - '.github/docs-link-baseline.json'
       - 'README.md'
       - 'CHANGELOG.md'
       - 'AGENTS.md'
@@ -16,6 +17,7 @@ on:
       - '.github/workflows/docs-validation.yml'
   pull_request:
     paths:
+      - '.github/docs-link-baseline.json'
       - 'README.md'
       - 'CHANGELOG.md'
       - 'AGENTS.md'

@@ -4324,9 +4324,17 @@ async function main() {
       console.log('');
     } else if (topic === 'verify' || topic === 'detect') {
       const minCoverageIndex = args.indexOf('--min-docstring-coverage');
-      const minDocstringCoverage = minCoverageIndex >= 0 && args[minCoverageIndex + 1]
-        ? Number(args[minCoverageIndex + 1])
-        : 0;
+      let minDocstringCoverage = 0;
+      if (minCoverageIndex >= 0) {
+        const rawMinCoverage = args[minCoverageIndex + 1];
+        const parsedMinCoverage = Number(rawMinCoverage);
+        if (!rawMinCoverage || !Number.isFinite(parsedMinCoverage) || parsedMinCoverage < 0 || parsedMinCoverage > 100) {
+          console.error('Error: --min-docstring-coverage must be a number between 0 and 100');
+          process.exitCode = 1;
+          return;
+        }
+        minDocstringCoverage = parsedMinCoverage;
+      }
       const baselineIndex = args.indexOf('--baseline');
       const writeBaselineIndex = args.indexOf('--write-baseline');
       const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
