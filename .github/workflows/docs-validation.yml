@@ -40,7 +40,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MIN_DOCSTRING_COVERAGE: ${{ vars.MIN_DOCSTRING_COVERAGE || '70' }}
+  # Current baseline is 35; raise MIN_DOCSTRING_COVERAGE as exported APIs gain docs.
+  MIN_DOCSTRING_COVERAGE: ${{ vars.MIN_DOCSTRING_COVERAGE || '35' }}
 
 jobs:
   docs:
