@@ -4353,7 +4353,8 @@ async function main() {
       } else {
         console.log(formatDocsValidation(result));
       }
-      if (!writeBaselinePath && !result.ok) {
+      const hasUnbaselinedFailure = result.failures.some((failure) => failure.type !== 'broken-link');
+      if ((!writeBaselinePath && !result.ok) || (writeBaselinePath && hasUnbaselinedFailure)) {
         process.exitCode = 1;
       }
     } else {
