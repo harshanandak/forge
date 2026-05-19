@@ -350,62 +350,58 @@ Keep 0.0.18 narrow:
 
 Post-0.0.18 releases:
 
-### 0.0.19: Local Control Plane Foundation
+### 0.0.19: Protected State Surfaces
 
-- `lib/config-workspace` read model
-- config transaction writer
-- local TUI or web app shell only after the shared core exists
+- protected-path enforcement for Beads, config, memory, hook, and generated state files
+- API-only writes for sensitive state surfaces
+- transaction logs and rollback snapshots for state mutations
+- generated harness previews before mutation
+- agent-facing guardrails for restricted file edits
+
+### 0.0.20: Issue Graph And Beads Control Plane
+
+- IssueAdapter SPI over Beads first
+- Forge-owned Beads mutation APIs instead of agent file edits
+- indexed issue graph read model
+- GitHub/Beads field ownership and sync drift visibility
+- scaled list/detail access without N+1 behavior
+
+### 0.0.21: Local Control Plane UI/TUI
+
+- local TUI or web app shell over the shared runtime core
 - multi-project discovery
-- read-only project config views
-- `forge options` JSON backend hardening
+- read-only and editable project config views
+- stage/substage toggles by project
+- issue search, filtering, priority/status updates, and adapter health panels
 
-### 0.0.20: Safe Config Editing
-
-- `forge config plan/apply/rollback`
-- transaction-based `.forge/config.yaml` edits
-- patch intent records
-- dry-run diff
-- rollback snapshot
-- generated harness preview
-
-### 0.0.21: Hook Projection Layer
+### 0.0.22: Hook Projection Layer
 
 - normalized `forge.*` hook lifecycle
 - Codex hook projection
 - Claude hook projection
 - Cursor fallback/projection
-- hook trust and timeout policy
+- hook trust, timeout, success, and failure policy
 - Codex adapter capability update: hooks are supported now, but command-only and subject to current Codex limitations
 
-### 0.0.22: Memory Projection Layer
+### 0.0.23: Memory Projection And Continuous Learning
 
 - typed Forge memory projection manifest
 - AGENTS/CLAUDE/Cursor/Codex projection rules
 - provenance/freshness renderer
 - stale-memory warnings
+- continuous-learning hooks that update memory through Forge-owned APIs
 
-### 0.0.23: Extension Component Toggles
+### 0.0.24: Extension-Contributed Runtime Components
 
-- extension-contributed stages/substages/evaluators/hooks
+- extension-contributed stages, substages, evaluators, hooks, and UI panels
 - first-class `evidenceCollectors`
-- first-class `uiPanels`
-- UI toggles
-- trust/permission review
+- extension install/remove/update records
+- UI toggles and trust/permission review
 - rollback extension updates
 
-### 0.0.24: Beads Scale UI
+### 0.0.25: Scaled Team Runtime And External Orchestrator Bridge
 
-- indexed issue cache
-- paginated search/filter
-- bulk priority/status updates through `IssueAdapter`
-- adapter health panel
-- dependency graph detail view
-- synthetic 5k/20k issue fixtures
-- no N+1 list/detail pattern
-- visible GitHub/Beads field ownership and sync drift
-
-### 0.0.25: External Orchestrator Bridge
-
+- scaled team runtime for thousands of issues and multi-agent runs
 - lease-bound worker contract
 - run ledger correlation
 - handoff packets

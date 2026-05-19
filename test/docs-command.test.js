@@ -62,6 +62,24 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves reference-style angle-bracket destinations with spaces', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reference-spaced-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide][guide]\n\n[guide]: <docs/my guide.md>\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'my guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolves markdown links with balanced parentheses in destinations', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-parentheses-link-test-'));
     try {
@@ -440,6 +458,30 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks docstring coverage for object-style CommonJS exports', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-object-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'index.js'),
+        'module.exports = { foo() {}, bar: () => {} };\n',
+        'utf8',
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(2);
+      expect(result.docstrings.missing.map((item) => item.name)).toEqual(['module.exports.foo', 'module.exports.bar']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('parses ES module sources when checking docstring coverage', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-esm-test-'));
     try {
@@ -606,6 +648,59 @@ describe('docs validation', () => {
       expect(result.status).toBe(1);
       expect(result.stdout).toContain('Docs validation failed');
       expect(fs.existsSync(path.join(tmpDir, 'baseline.json'))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI docs verify rejects missing baseline option values', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-baseline-value-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'verify',
+        '--path',
+        tmpDir,
+        '--baseline',
+        '--json',
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('--baseline requires a file path');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI docs verify reports malformed baseline errors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-bad-baseline-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'bad-baseline.json'), '{ nope', 'utf8');
+
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'verify',
+        '--path',
+        tmpDir,
+        '--baseline',
+        'bad-baseline.json',
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Invalid docs baseline JSON');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

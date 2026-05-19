@@ -4344,7 +4344,24 @@ async function main() {
       const writeBaselineIndex = args.indexOf('--write-baseline');
       const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
       const writeBaselinePath = writeBaselineIndex >= 0 ? args[writeBaselineIndex + 1] : null;
-      const result = validateDocs(projectRoot, { baselinePath, minDocstringCoverage });
+      if (baselineIndex >= 0 && (!baselinePath || baselinePath.startsWith('-'))) {
+        console.error('Error: --baseline requires a file path');
+        process.exitCode = 1;
+        return;
+      }
+      if (writeBaselineIndex >= 0 && (!writeBaselinePath || writeBaselinePath.startsWith('-'))) {
+        console.error('Error: --write-baseline requires a file path');
+        process.exitCode = 1;
+        return;
+      }
+      let result;
+      try {
+        result = validateDocs(projectRoot, { baselinePath, minDocstringCoverage });
+      } catch (error) {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+        return;
+      }
       if (writeBaselinePath) {
         writeDocsBaseline(projectRoot, writeBaselinePath, result);
       }
