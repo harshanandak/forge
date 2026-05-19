@@ -86,6 +86,25 @@ describe('docs validation', () => {
     }
   });
 
+  test('ignores headings inside fenced code blocks when checking anchors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-fence-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Fenced](docs/guide.md#fake-heading)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '```md\n# Fake Heading\n```\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(1);
+      expect(result.links.brokenLinks[0].reason).toBe('Target anchor does not exist');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('removes local absolute path prefixes from reported broken targets', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-absolute-target-test-'));
     try {
@@ -221,6 +240,43 @@ describe('docs validation', () => {
 
       expect(() => validateDocs(tmpDir, { baselinePath: 'bad-baseline.json' }))
         .toThrow(/Invalid docs baseline JSON/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps baseline entries scoped to the broken link line', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-baseline-line-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'README.md'),
+        '[Missing](docs/missing.md)\n\n[Missing again](docs/missing.md)\n',
+        'utf8'
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, 'baseline.json'),
+        JSON.stringify({
+          brokenLinks: [
+            {
+              file: 'README.md',
+              line: 1,
+              target: 'docs/missing.md',
+              reason: 'Target file does not exist',
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      const result = validateDocs(tmpDir, { baselinePath: 'baseline.json' });
+
+      expect(result.links.knownBrokenLinks).toBe(1);
+      expect(result.links.brokenLinks).toHaveLength(1);
+      expect(result.links.brokenLinks[0].line).toBe(3);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
