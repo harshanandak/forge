@@ -55,8 +55,46 @@ describe('docs validation', () => {
       const result = validateDocs(tmpDir);
 
       expect(result.ok).toBe(false);
-      expect(result.links.linksChecked).toBe(1);
+      expect(result.links.linksChecked).toBe(2);
       expect(result.links.brokenLinks[0].target).toBe('docs/missing.md');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports missing reference-style link definitions', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-missing-reference-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide][missing]\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.linksChecked).toBe(1);
+      expect(result.links.brokenLinks[0].target).toBe('missing');
+      expect(result.links.brokenLinks[0].reason).toBe('Reference link definition does not exist');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves collapsed reference-style link usages', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-collapsed-reference-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide][]\n\n[Guide]: docs/guide.md\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -459,6 +497,42 @@ describe('docs validation', () => {
       expect(result.ok).toBe(false);
       expect(result.docstrings.filesChecked).toBe(1);
       expect(result.docstrings.missing[0].file).toBe('src/feature.js');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks docstring coverage for root index entrypoints', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-root-index-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'index.js'), 'export function missingRootEntrypoint() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.filesChecked).toBe(1);
+      expect(result.docstrings.missing[0].file).toBe('index.js');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks docstring coverage for package.json main entrypoints', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-package-main-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ main: 'dist/main.js' }), 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'dist', 'main.js'), 'export function missingPackageMain() {}\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.filesChecked).toBe(1);
+      expect(result.docstrings.missing[0].file).toBe('dist/main.js');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
