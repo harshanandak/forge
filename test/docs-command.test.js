@@ -130,6 +130,23 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves multiline reference-style markdown definitions', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-multiline-reference-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide][guide]\n\n[guide]:\n  docs/guide.md\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(2);
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports missing reference-style link definitions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-missing-reference-test-'));
     try {
@@ -416,6 +433,25 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Fenced](docs/guide.md#fake-heading)\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '```md\n# Fake Heading\n```\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(1);
+      expect(result.links.brokenLinks[0].reason).toBe('Target anchor does not exist');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('matches fenced code delimiters when checking anchors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-fence-delimiter-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Fenced](docs/guide.md#fake-heading)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '~~~md\n```\n# Fake Heading\n~~~\n', 'utf8');
 
       const result = validateDocs(tmpDir);
 
