@@ -48,6 +48,23 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks package markdown files', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-package-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'sample'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'sample', 'README.md'), '[Missing](docs/missing.md)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.linksChecked).toBe(1);
+      expect(result.links.brokenLinks[0].file).toBe('packages/sample/README.md');
+      expect(result.links.brokenLinks[0].target).toBe('docs/missing.md');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('ignores markdown links inside indented code blocks', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-indented-code-link-test-'));
     try {
@@ -269,6 +286,22 @@ describe('docs validation', () => {
 
       const result = validateDocs(tmpDir);
 
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores escaped inline markdown links', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-escaped-inline-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '\\[Guide](docs/missing.md)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(0);
       expect(result.links.brokenLinks).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
