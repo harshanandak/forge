@@ -59,6 +59,22 @@ describe('docs validation', () => {
     }
   });
 
+  test('checks markdown links inside list continuation lines', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-list-continuation-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '- See:\n    [Missing](docs/missing.md)\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.linksChecked).toBe(1);
+      expect(result.links.brokenLinks[0].target).toBe('docs/missing.md');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports broken reference-style markdown links', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reference-link-test-'));
     try {
@@ -411,6 +427,22 @@ describe('docs validation', () => {
 
       const result = validateDocs(tmpDir);
 
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('decodes percent-encoded anchor fragments before matching headings', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-encoded-anchor-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](docs/guide.md#hello%20world)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '# Hello World\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
       expect(result.links.brokenLinks).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
