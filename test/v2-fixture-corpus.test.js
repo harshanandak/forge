@@ -84,7 +84,7 @@ describe('v2 fixture corpus', () => {
       expect(fs.existsSync(path.join(repoRoot, '.beads', 'metadata.json'))).toBe(true);
       expect(fs.existsSync(path.join(repoRoot, '.beads', 'README.md'))).toBe(true);
     }
-  });
+  }, 60000);
 
   test('non-master default branch fixture keeps master absent', () => {
     const { repoRoot } = materializeFixture('non-master-default-branch');

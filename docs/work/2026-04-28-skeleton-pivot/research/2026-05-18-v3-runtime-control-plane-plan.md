@@ -267,7 +267,7 @@ Memory files by harness:
 
 - Codex may have its own memory registry and AGENTS.md behavior.
 - Claude uses `CLAUDE.md`, project/user/local settings, rules, hooks, and skills.
-- Cursor supports project/user rules and `AGENTS.md`.
+- Cursor supports project/user rules in `.cursor/rules` such as `.cursor/rules/*.md` and `.cursor/rules/*.mdc`.
 - Forge should generate or update harness-facing instruction files from typed memory, with provenance and opt-in sync.
 
 Rules:
@@ -294,10 +294,11 @@ Forge typed memory
 
 Projection rules:
 
-- `AGENTS.md` remains the project workflow/instruction source for generic agent behavior.
-- `CLAUDE.md` should delegate to `AGENTS.md` and contain Claude-specific affordances.
-- Cursor rules and Codex-facing memory surfaces are projections, not peer canon.
-- Codex `MEMORY.md` should be treated as external agent memory: read/import only when explicitly available, but project writes go through Forge typed memory or `bd remember`.
+- As a Forge design goal, runtime state remains the canonical source for workflow graph, stage composition, typed memory, hooks, adapters, and protected-write policy.
+- `AGENTS.md` is the generated generic-agent instruction projection from that runtime source, not a separately edited authority.
+- Forge-generated `CLAUDE.md` should delegate to the generated generic projection where safe and contain only Claude-specific affordances; this is a Forge projection choice, not a claim that Claude and Codex share one native memory system today.
+- Cursor rules, Codex-facing memory surfaces, commands, hooks, and skill trigger indexes are projections, not peer canon.
+- Codex `MEMORY.md` and Claude-native memory should be treated as external agent memory: read/import only when explicitly available, but project writes go through Forge typed memory or `bd remember`.
 - Every projection needs source, freshness, and supersession metadata so stale decisions cannot silently re-enter generated files.
 
 ## Beads Position
@@ -569,7 +570,7 @@ Defer matrix views, scorecards, ownership workflows, and full parallel-agent con
 - Should UI write only `patch.md`, or also edit `.forge/config.yaml` through a CLI transaction?
 - How much of hook execution should be Forge-owned versus harness-owned?
 - What is the minimum Codex hook projection available today, and should Forge fall back to shell/git hooks where native hooks are absent?
-- Should Memory.md become a canonical Forge projection file, or should Forge keep `AGENTS.md` canonical and generate harness-specific memory files?
+- Should `MEMORY.md` become one generated Forge projection target, or should Forge keep memory projection limited to generic instructions plus harness-specific memory files?
 - What is the migration path for existing Beads-heavy projects if Beads remains difficult to update?
 
 ## Working Thesis

@@ -203,7 +203,10 @@ Scope:
 - v2 fixture corpus.
 - Upgrade dry-run.
 - Protected-write intent records for config, generated files, lockfiles, memory projections, and Beads-related state.
-- Documentation automation substage: `forge docs detect/verify` direction, markdown link checking, stale-doc detection, and docs-update prompts before premerge/release.
+- Documentation automation substage: `forge docs detect/verify` direction, markdown link checking, stale-doc detection, docstring coverage, and docs-update prompts before premerge/release.
+- Docs validation must be adapter-driven, not a permanent Forge-only clone of existing tools. Discovery should detect docs roots and documentation systems, then select adapters such as Lychee for broad link checks, Linkspector/reviewdog for PR comments, remark-validate-links for local Markdown anchors, and eslint-plugin-jsdoc for JavaScript/TypeScript docstring requirements.
+- Docs validation should support project-specific modes: `report`, `new-only`, and `strict`, with baselines for existing link/docstring debt and generated GitHub Action/Lefthook projections that can be toggled on or off per project.
+- Package docs validation as a skill-backed validation substage. `forge docs detect/verify` remains the CLI projection, while `.forge/config.yaml`, local hooks, GitHub Actions, and the local UI/TUI all resolve the same skill metadata and baseline policy.
 
 Evaluator regions:
 
@@ -217,7 +220,7 @@ Release gate:
 - Rollback restores the previous managed surfaces.
 - Patch intent survives upstream changes.
 - Protected state changes have before/after diffs and rollback snapshots.
-- Documentation checks can catch broken internal markdown links before push and report docs that likely need updates.
+- Documentation checks can catch broken internal markdown links before push, report docstring coverage, and expose the selected adapter/config/baseline so projects with different docs structures can adapt without hand-editing generated files.
 
 ## 0.0.17 - Skills And Insights
 
@@ -227,6 +230,7 @@ Scope:
 - Pattern detection proposes skills/evaluators from observed review failures.
 - Planning skill becomes one configurable template, not the canonical workflow.
 - Planning phases are exposed as callable sub-skills, so the runtime can invoke the full `/plan` super-skill or only `plan.intent_capture`, `plan.parallel_research`, `plan.parallel_critics`, `plan.synthesis`, or `plan.final_lock`.
+- Built-in Claude command files become compatibility aliases for stage skills. The canonical source moves to `SKILL.md` packages that can sync into `.claude/skills/`, `.codex/skills/`, Cursor-compatible locations, and future agent skill roots.
 - Memory and proposal records carry category, source, written_by, timestamp, cited interactions, and accept/reject decision.
 
 Evaluator regions:
@@ -235,6 +239,7 @@ Evaluator regions:
 - Skill proposal usefulness.
 - Accept/reject audit trail.
 - Super-skill stability: full-skill and sub-skill invocation produce consistent graph state, evidence, and gate outcomes.
+- Command-shadowing detection: stale `.claude/commands/*` files cannot silently diverge from same-named skills.
 
 Release gate:
 
@@ -242,6 +247,7 @@ Release gate:
 - Accepted proposals can become skills or evaluator suggestions.
 - `forge options why <skill-id>` explains full `/plan` invocation, partial sub-skill invocation, skipped phases, and replacement by accepted local skills.
 - Memory and skill proposals cannot mutate shared projection files without a recorded proposal and audit trail.
+- `skills sync` can project canonical stage skills into Claude and Codex without making command files the source of truth.
 
 ## 0.0.18 - Team Runtime Dashboard
 
@@ -372,6 +378,7 @@ Scope:
 - Codex projection for supported events such as `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, and `Stop`.
 - Claude projection for hook events and `CLAUDE.md`/rules loading boundaries.
 - Cursor projection for stop-hook and file-watcher patterns where direct pre-edit hooks are unavailable.
+- Skill lifecycle and command-compatibility events: `forge.skill.installed`, `forge.skill.enabled`, `forge.skill.disabled`, `forge.skill.invoked`, and `forge.command.alias.invoked`.
 - Hook trust, timeout, blocking, and audit policy.
 - Agent capability metadata moves from coarse booleans to per-event support, fallback mode, blocking support, timeout policy, and generated-file targets.
 
@@ -429,6 +436,9 @@ Primary value:
 Scope:
 
 - Extension manifest `contributes` schema for stages, substages, evaluator regions, evidence collectors, hooks, adapters, templates, commands, and local UI panels.
+- `SKILL.md` package contribution is the canonical agent-facing format. Commands, slash aliases, hook files, generated docs, and UI panels are projections from the manifest, not separate hand-maintained sources.
+- skills.sh/GitHub import path through `packages/skills`: import disabled by default, pin source/ref, validate `SKILL.md`, record trust/permission metadata, then allow project-level enablement through config or UI.
+- Documentation validators are a required example extension type: a docs adapter can declare supported file types, discovery signals, config files, CI projections, local hook projections, and UI fields.
 - Resolver adds source, trust, permission, collision, and config-source metadata into the runtime graph.
 - UI and CLI can enable/disable extension components with `why`, `diff`, and rollback.
 - Sandboxed lifecycle hooks stay opt-in and audited.
@@ -438,10 +448,12 @@ Evaluator regions:
 - Manifest validation.
 - Collision and trust handling.
 - Toggle/rollback correctness.
+- Skill package provenance and permission review.
 
 Release gate:
 
 - A local extension can contribute a verification substage and UI panel, be toggled on for one project, and be removed without leaving generated artifacts behind.
+- A third-party skill package can be imported, reviewed, pinned, enabled for one project, projected into at least Claude and Codex, and disabled without leaving stale command aliases.
 
 ## 0.0.25 - Scaled Team Runtime And External Orchestrator Bridge
 
