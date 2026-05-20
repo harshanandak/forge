@@ -3,9 +3,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
-const { getTopicContent, validateDocs, formatDocsValidation } = require('../lib/docs-command');
+const { getTopicContent, validateDocs, formatDocsValidation, writeDocsBaseline } = require('../lib/docs-command');
 
 const forgePath = path.resolve(__dirname, '..', 'bin', 'forge.js');
+const cliSpawnOptions = {
+  encoding: 'utf8',
+  maxBuffer: 10 * 1024 * 1024,
+  timeout: 30000,
+};
 
 describe('docs command file reads', () => {
   test('surfaces non-missing file read errors', () => {
@@ -462,6 +467,23 @@ describe('docs validation', () => {
 
       const result = validateDocs(tmpDir);
 
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('slugifies headings using rendered reference-style link text', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reference-heading-anchor-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](docs/guide.md#api-reference)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '# [API][guide] Reference\n\n[guide]: api.md\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'api.md'), '# API\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
       expect(result.links.brokenLinks).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -965,6 +987,46 @@ describe('docs validation', () => {
     }
   });
 
+  test('counts identifier default exports as public defaults', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-default-identifier-export-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'handler.js'), 'function handler() {}\nexport default handler;\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(false);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.missing[0].name).toBe('default');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('uses identifier default export declaration docs for coverage', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-default-identifier-jsdoc-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'lib', 'handler.js'), '/** Handles requests. */\nfunction handler() {}\nexport default handler;\n', 'utf8');
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(true);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.documented).toBe(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('treats JavaScript parse errors as failed docstring coverage', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-parse-error-test-'));
     try {
@@ -1039,6 +1101,21 @@ describe('docs validation', () => {
     }
   });
 
+  test('rejects docs baseline paths outside the project root', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-baseline-containment-test-'));
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+
+      expect(() => validateDocs(tmpDir, { baselinePath: '..\\outside-baseline.json' }))
+        .toThrow(/Baseline path escapes project root/);
+      expect(() => writeDocsBaseline(tmpDir, '..\\outside-baseline.json', {
+        links: { brokenLinks: [] },
+      })).toThrow(/Baseline path escapes project root/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('CLI rejects invalid docstring coverage thresholds', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-threshold-test-'));
     try {
@@ -1056,7 +1133,7 @@ describe('docs validation', () => {
         tmpDir,
         '--min-docstring-coverage',
         'nope',
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('--min-docstring-coverage must be a number between 0 and 100');
@@ -1085,7 +1162,7 @@ describe('docs validation', () => {
         'baseline.json',
         '--min-docstring-coverage',
         '100',
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       expect(result.status).toBe(1);
       expect(result.stdout).toContain('Docs validation failed');
@@ -1112,7 +1189,7 @@ describe('docs validation', () => {
         tmpDir,
         '--write-baseline',
         'docs',
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('Error:');
@@ -1139,7 +1216,7 @@ describe('docs validation', () => {
         tmpDir,
         '--baseline',
         '--json',
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('--baseline requires a file path');
@@ -1166,7 +1243,7 @@ describe('docs validation', () => {
         tmpDir,
         '--baseline',
         'bad-baseline.json',
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('Invalid docs baseline JSON');
@@ -1185,7 +1262,7 @@ describe('docs validation', () => {
         'verify',
         '--path',
         missingDir,
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('does not exist');
@@ -1209,7 +1286,7 @@ describe('docs validation', () => {
         'detect',
         '--path',
         tmpDir,
-      ], { encoding: 'utf8' });
+      ], cliSpawnOptions);
 
       const output = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
 
