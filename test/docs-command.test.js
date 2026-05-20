@@ -1153,6 +1153,31 @@ describe('docs validation', () => {
     }
   });
 
+  test('skips underscored object-style CommonJS export members', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-private-object-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'index.js'),
+        '/** Public API. */\nfunction publicApi() {}\nmodule.exports = { publicApi, _internal() {} };\n',
+        'utf8',
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(true);
+      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.documented).toBe(1);
+      expect(result.docstrings.missing).toEqual([]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('checks docstring coverage for CommonJS shorthand exports', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-shorthand-test-'));
     try {
@@ -1308,11 +1333,12 @@ describe('docs validation', () => {
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'lib', 'broken.js'), 'function broken( {\n', 'utf8');
 
-      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 0 });
 
       expect(result.ok).toBe(false);
       expect(result.docstrings.total).toBe(1);
       expect(result.docstrings.missing[0].name).toBe('<parse-error>');
+      expect(result.failures[0].type).toBe('docstring-parse-error');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
