@@ -439,6 +439,22 @@ describe('docs validation', () => {
     }
   });
 
+  test('does not close fenced code blocks on indented fence lines', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-fence-indent-close-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '```\n    ```\n[Missing](docs/missing.md)\n```\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(0);
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('ignores headings inside fenced code blocks when checking anchors', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-fence-test-'));
     try {
@@ -448,6 +464,25 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Fenced](docs/guide.md#fake-heading)\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '```md\n# Fake Heading\n```\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(1);
+      expect(result.links.brokenLinks[0].reason).toBe('Target anchor does not exist');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not close anchor fenced code blocks on indented fence lines', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-fence-indent-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Fenced](docs/guide.md#fake-heading)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '```\n    ```\n# Fake Heading\n```\n', 'utf8');
 
       const result = validateDocs(tmpDir);
 
