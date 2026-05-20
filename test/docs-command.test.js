@@ -99,6 +99,37 @@ describe('docs validation', () => {
     }
   });
 
+  test('uses the first duplicate reference-style link definition', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reference-duplicate-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide]\n\n[Guide]: docs/ok.md\n[Guide]: docs/missing.md\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'ok.md'), '# Guide\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks shortcut reference-style markdown links', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-shortcut-reference-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide]\n\n[Guide]: docs/missing.md\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.brokenLinks[0].target).toBe('docs/missing.md');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('reports missing reference-style link definitions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-missing-reference-test-'));
     try {
@@ -338,6 +369,22 @@ describe('docs validation', () => {
 
       const result = validateDocs(tmpDir);
 
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('matches fenced code closing delimiter before scanning links again', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-fence-delimiter-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '~~~\n```\n[Missing](docs/missing.md)\n~~~\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(0);
       expect(result.links.brokenLinks).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
