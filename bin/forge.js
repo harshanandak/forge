@@ -4347,6 +4347,11 @@ async function main() {
       const writeBaselineIndex = args.indexOf('--write-baseline');
       const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
       const writeBaselinePath = writeBaselineIndex >= 0 ? args[writeBaselineIndex + 1] : null;
+      if (topic === 'detect' && writeBaselineIndex >= 0) {
+        console.error('Error: --write-baseline is only supported with `forge docs verify`');
+        process.exitCode = 1;
+        return;
+      }
       if (baselineIndex >= 0 && (!baselinePath || baselinePath.startsWith('-'))) {
         console.error('Error: --baseline requires a file path');
         process.exitCode = 1;

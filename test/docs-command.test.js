@@ -1551,6 +1551,33 @@ describe('docs validation', () => {
     }
   }, 30000);
 
+  test('CLI docs detect rejects write-baseline because detect is read-only', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-detect-write-baseline-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+
+      const result = spawnSync(process.execPath, [
+        forgePath,
+        'docs',
+        'detect',
+        '--path',
+        tmpDir,
+        '--write-baseline',
+        'baseline.json',
+      ], cliSpawnOptions);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('--write-baseline is only supported with `forge docs verify`');
+      expect(fs.existsSync(path.join(tmpDir, 'baseline.json'))).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('CLI docs verify rejects missing --path targets', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-missing-path-parent-'));
     const missingDir = path.join(tmpDir, 'missing');
