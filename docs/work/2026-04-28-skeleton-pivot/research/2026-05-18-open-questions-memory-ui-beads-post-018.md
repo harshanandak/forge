@@ -16,8 +16,8 @@ This note answers the open questions from the v3 runtime control-plane plan with
 Sources:
 - Codex Memories: https://developers.openai.com/codex/memories
 - Codex Hooks: https://developers.openai.com/codex/hooks
-- Local Codex config: `C:\Users\harsha_befach\.codex\config.toml`
-- Local Codex hooks: `C:\Users\harsha_befach\.codex\hooks.json`
+- Local Codex config example path: `~/.codex/config.toml`
+- Local Codex hooks example path: `~/.codex/hooks.json`
 
 ## 1. How Codex Uses Memory
 
@@ -33,9 +33,9 @@ Codex official docs say memories are:
 
 Local verification:
 
-- `C:\Users\harsha_befach\.codex\config.toml` has `[features] memories = true`.
+- A local `~/.codex/config.toml` can enable memories with `[features] memories = true`.
 - It also has `[memories] no_memories_if_mcp_or_web_search = true`, which aligns with the idea that memory generation should skip sessions with external context.
-- `C:\Users\harsha_befach\.codex\memories` contains `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, rollout summaries, and evidence files.
+- A local `~/.codex/memories` directory can contain `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, rollout summaries, and evidence files.
 
 Implication for Forge:
 
@@ -87,7 +87,7 @@ The docs show hooks configured in JSON or TOML, with matchers and command handle
 
 Local verification:
 
-- `C:\Users\harsha_befach\.codex\hooks.json` defines:
+- A local `~/.codex/hooks.json` can define:
   - `PreToolUse` -> `context-mode hook codex pretooluse`
   - `PostToolUse` -> `context-mode hook codex posttooluse`
   - `SessionStart` -> `context-mode hook codex sessionstart`
@@ -349,7 +349,25 @@ Keep 0.0.18 narrow:
 
 Post-0.0.18 releases:
 
-### 0.0.19: Local Control Plane Foundation
+### 0.0.19: Protected State Surfaces
+
+- protected-path policy model
+- Forge API-only mutations for critical state
+- protected-write intent records
+- dry-run previews before state changes
+- adapter health and dirty-state visibility
+- no raw `.beads` writes from agents
+
+### 0.0.20: Issue Graph And Beads Control Plane
+
+- Beads remains the default local issue adapter
+- indexed issue cache
+- paginated search/filter
+- bulk priority/status updates through `IssueAdapter`
+- dependency graph detail view
+- visible GitHub/Beads field ownership and sync drift
+
+### 0.0.21: Local Control Plane UI/TUI
 
 - `lib/config-workspace` read model
 - config transaction writer
@@ -357,17 +375,11 @@ Post-0.0.18 releases:
 - multi-project discovery
 - read-only project config views
 - `forge options` JSON backend hardening
-
-### 0.0.20: Safe Config Editing
-
 - `forge config plan/apply/rollback`
 - transaction-based `.forge/config.yaml` edits
-- patch intent records
-- dry-run diff
-- rollback snapshot
-- generated harness preview
+- rollback snapshots and generated harness previews
 
-### 0.0.21: Hook Projection Layer
+### 0.0.22: Hook Projection Layer
 
 - normalized `forge.*` hook lifecycle
 - Codex hook projection
@@ -376,14 +388,14 @@ Post-0.0.18 releases:
 - hook trust and timeout policy
 - Codex adapter capability update: hooks are supported now, but command-only and subject to current Codex limitations
 
-### 0.0.22: Memory Projection Layer
+### 0.0.23: Memory Projection And Continuous Learning
 
 - typed Forge memory projection manifest
 - AGENTS/CLAUDE/Cursor/Codex projection rules
 - provenance/freshness renderer
 - stale-memory warnings
 
-### 0.0.23: Extension Component Toggles
+### 0.0.24: Extension-Contributed Runtime Components
 
 - extension-contributed stages/substages/evaluators/hooks
 - first-class `evidenceCollectors`
@@ -392,19 +404,10 @@ Post-0.0.18 releases:
 - trust/permission review
 - rollback extension updates
 
-### 0.0.24: Beads Scale UI
+### 0.0.25: Scaled Team Runtime And External Orchestrator Bridge
 
-- indexed issue cache
-- paginated search/filter
-- bulk priority/status updates through `IssueAdapter`
-- adapter health panel
-- dependency graph detail view
 - synthetic 5k/20k issue fixtures
 - no N+1 list/detail pattern
-- visible GitHub/Beads field ownership and sync drift
-
-### 0.0.25: External Orchestrator Bridge
-
 - lease-bound worker contract
 - run ledger correlation
 - handoff packets
