@@ -61,6 +61,8 @@ Design references:
 - [research/2026-05-18-v3-runtime-control-plane-plan.md](./research/2026-05-18-v3-runtime-control-plane-plan.md) - local runtime control-plane plan.
 - [research/2026-05-18-v3-runtime-agent-orchestration-research.md](./research/2026-05-18-v3-runtime-agent-orchestration-research.md) - agent orchestration, protected paths, ledger, and external runtime inspiration.
 - [research/2026-05-18-evaluator-synthesis-protected-state-release-train.md](./research/2026-05-18-evaluator-synthesis-protected-state-release-train.md) - evaluator synthesis for protected state, Beads control plane, and public release train.
+- [research/2026-05-18-team-runtime-board-inspiration.md](./research/2026-05-18-team-runtime-board-inspiration.md) - runtime board and evidence cockpit inspiration.
+- [research/2026-05-19-skills-first-agent-packaging.md](./research/2026-05-19-skills-first-agent-packaging.md) - skills-first agent packaging, `skills.sh`, and command compatibility direction.
 
 ## Continuous Refinement Rule
 
