@@ -346,6 +346,36 @@ describe('docs validation', () => {
     }
   });
 
+  test('rejects local links that resolve outside the project through symlinks', () => {
+    const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-symlink-link-test-'));
+    const projectDir = path.join(parentDir, 'project');
+    const outsideDir = path.join(parentDir, 'outside');
+    try {
+      fs.mkdirSync(path.join(projectDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(projectDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(projectDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(projectDir, 'scripts'), { recursive: true });
+      fs.mkdirSync(outsideDir, { recursive: true });
+      try {
+        fs.symlinkSync(outsideDir, path.join(projectDir, 'docs', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+          return;
+        }
+        throw error;
+      }
+      fs.writeFileSync(path.join(projectDir, 'README.md'), '[Escaped](docs/linked/outside.md)\n', 'utf8');
+      fs.writeFileSync(path.join(outsideDir, 'outside.md'), '# Outside\n', 'utf8');
+
+      const result = validateDocs(projectDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.brokenLinks[0].reason).toBe('Link escapes project root');
+    } finally {
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
   test('ignores protocol-relative external links', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-protocol-relative-test-'));
     try {
@@ -1301,6 +1331,34 @@ describe('docs validation', () => {
       })).toThrow(/Baseline path escapes project root/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects docs baseline paths that resolve outside the project through symlinks', () => {
+    const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-baseline-symlink-test-'));
+    const projectDir = path.join(parentDir, 'project');
+    const outsideDir = path.join(parentDir, 'outside');
+    try {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.mkdirSync(outsideDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(path.join(outsideDir, 'baseline.json'), '{"brokenLinks":[]}\n', 'utf8');
+      try {
+        fs.symlinkSync(outsideDir, path.join(projectDir, 'linked-baseline'), process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+          return;
+        }
+        throw error;
+      }
+
+      expect(() => validateDocs(projectDir, { baselinePath: 'linked-baseline/baseline.json' }))
+        .toThrow(/Baseline path escapes project root/);
+      expect(() => writeDocsBaseline(projectDir, 'linked-baseline/generated.json', {
+        links: { brokenLinks: [] },
+      })).toThrow(/Baseline path escapes project root/);
+    } finally {
+      fs.rmSync(parentDir, { recursive: true, force: true });
     }
   });
 
