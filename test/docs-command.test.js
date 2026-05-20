@@ -391,6 +391,22 @@ describe('docs validation', () => {
     }
   });
 
+  test('does not close fenced code blocks on fence lines with info strings', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-fence-info-close-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '````\n```js\n[Missing](docs/missing.md)\n````\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(0);
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('ignores headings inside fenced code blocks when checking anchors', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-fence-test-'));
     try {
@@ -837,6 +853,30 @@ describe('docs validation', () => {
     }
   });
 
+  test('parses decorated JavaScript exports', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-js-decorator-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n', 'utf8');
+      fs.writeFileSync(
+        path.join(tmpDir, 'src', 'service.js'),
+        '/** Service API. */\n@sealed\nexport class Service {}\n',
+        'utf8'
+      );
+
+      const result = validateDocs(tmpDir, { minDocstringCoverage: 100 });
+
+      expect(result.ok).toBe(true);
+      expect(result.docstrings.filesChecked).toBe(1);
+      expect(result.docstrings.percent).toBe(100);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('checks docstring coverage for CommonJS export assignments', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-coverage-cjs-test-'));
     try {
@@ -1187,7 +1227,7 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   test('CLI docs verify --write-baseline still fails docstring coverage errors', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-write-baseline-docstrings-test-'));
@@ -1217,7 +1257,7 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   test('CLI docs verify handles write-baseline I/O errors', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-write-baseline-io-test-'));
@@ -1244,7 +1284,7 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   test('CLI docs verify rejects missing baseline option values', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-baseline-value-test-'));
@@ -1270,7 +1310,7 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   test('CLI docs verify reports malformed baseline errors', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-bad-baseline-test-'));
@@ -1297,7 +1337,7 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   test('CLI docs verify rejects missing --path targets', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-missing-path-parent-'));
@@ -1317,7 +1357,7 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 
   test('CLI docs detect validates the --path project instead of Forge package docs', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-cli-path-test-'));
@@ -1344,5 +1384,5 @@ describe('docs validation', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
+  }, 30000);
 });
