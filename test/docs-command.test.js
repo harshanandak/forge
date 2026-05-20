@@ -309,6 +309,21 @@ describe('docs validation', () => {
     }
   });
 
+  test('resolves URL-encoded reserved characters in local markdown paths', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-reserved-encoded-link-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Spec](docs/a%23b.md)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'a#b.md'), '# Spec\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('rejects local links that escape to a sibling with the same root prefix', () => {
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-prefix-test-'));
     const projectDir = path.join(parentDir, 'project');
@@ -528,6 +543,21 @@ describe('docs validation', () => {
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Release](docs/releases.md#v0.0.19)\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'docs', 'releases.md'), '# v0.0.19\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.links.brokenLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts tabs after ATX heading markers when collecting anchors', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-anchor-tab-heading-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Guide](docs/guide.md#api)\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'guide.md'), '#\tAPI\n', 'utf8');
 
       const result = validateDocs(tmpDir);
 
