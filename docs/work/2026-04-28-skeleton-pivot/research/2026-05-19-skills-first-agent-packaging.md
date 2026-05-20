@@ -9,7 +9,7 @@ Claude still has Forge stage workflows under `.claude/commands/`, while Codex al
 ## Verified Current State
 
 - Claude stage workflow files still exist as command files in `.claude/commands/`: `plan.md`, `dev.md`, `validate.md`, `ship.md`, `review.md`, `premerge.md`, `verify.md`, plus support commands.
-- Claude project skills currently cover helper capabilities only: `parallel-data-enrichment`, `parallel-deep-research`, `parallel-web-extract`, `parallel-web-search`, and `sonarcloud-analysis`.
+- This repo currently has no committed `.claude/skills/` tree, so Claude is still command-first in the project checkout.
 - Codex stage workflow skills already exist in `.codex/skills/`: `plan`, `dev`, `validate`, `ship`, `review`, `premerge`, `verify`, and support skills.
 - Forge already carries a local skills manager at `packages/skills/bin/skills.js` with `init`, `create`, `list`, `sync`, `remove`, `validate`, `add`, `publish`, `search`, and `config`.
 
