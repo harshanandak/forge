@@ -167,6 +167,26 @@ describe('docs validation', () => {
     }
   });
 
+  test('reports missing shortcut reference-style link definitions', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-missing-shortcut-reference-test-'));
+    try {
+      fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Missing Guide]\n', 'utf8');
+
+      const result = validateDocs(tmpDir);
+
+      expect(result.ok).toBe(false);
+      expect(result.links.linksChecked).toBe(1);
+      expect(result.links.brokenLinks[0].target).toBe('Missing Guide');
+      expect(result.links.brokenLinks[0].reason).toBe('Reference link definition does not exist');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolves collapsed reference-style link usages', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-collapsed-reference-test-'));
     try {

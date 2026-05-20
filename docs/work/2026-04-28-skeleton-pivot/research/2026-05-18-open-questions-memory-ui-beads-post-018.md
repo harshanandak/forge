@@ -419,7 +419,7 @@ What is clear now:
 - `patch.md` is still needed for upgrade intent and provenance.
 - Beads must be hidden behind an adapter and indexed UI views at scale.
 - Post-0.0.18 is the right place for the new control-plane upgrades.
-- Forge's Codex harness metadata should be updated because Codex hooks now exist.
+- Forge's Codex harness metadata should be refined with per-event capability details in `lib/agents/codex.plugin.json`.
 - Local UI/TUI should share a `config-workspace` backend instead of implementing two separate editors.
 
 What remains unknown:
