@@ -184,21 +184,20 @@ describe('docs validation', () => {
     }
   });
 
-  test('reports missing shortcut reference-style link definitions', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-missing-shortcut-reference-test-'));
+  test('ignores undefined shortcut-like bracket text and task list markers', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-shortcut-nonlink-test-'));
     try {
       fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'lib'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'bin'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'README.md'), '[Missing Guide]\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'README.md'), '- [x] Done\n- [ ] Todo\nPlain [bracketed text]\n', 'utf8');
 
       const result = validateDocs(tmpDir);
 
-      expect(result.ok).toBe(false);
-      expect(result.links.linksChecked).toBe(1);
-      expect(result.links.brokenLinks[0].target).toBe('Missing Guide');
-      expect(result.links.brokenLinks[0].reason).toBe('Reference link definition does not exist');
+      expect(result.ok).toBe(true);
+      expect(result.links.linksChecked).toBe(0);
+      expect(result.links.brokenLinks).toEqual([]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1336,7 +1335,8 @@ describe('docs validation', () => {
       const result = validateDocs(tmpDir, { minDocstringCoverage: 0 });
 
       expect(result.ok).toBe(false);
-      expect(result.docstrings.total).toBe(1);
+      expect(result.docstrings.total).toBe(0);
+      expect(result.docstrings.percent).toBe(100);
       expect(result.docstrings.missing[0].name).toBe('<parse-error>');
       expect(result.failures[0].type).toBe('docstring-parse-error');
     } finally {
