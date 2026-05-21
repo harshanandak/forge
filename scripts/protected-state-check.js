@@ -14,7 +14,7 @@ function getStagedFiles() {
 			.filter(Boolean);
 	}
 
-	const output = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMR'], {
+	const output = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRD'], {
 		encoding: 'utf8',
 		stdio: ['ignore', 'pipe', 'pipe'],
 	});
@@ -33,7 +33,10 @@ function main() {
 		.filter(decision => !decision.allowed);
 
 	for (const decision of decisions) {
-		recordProtectedStateAuditEvent(decision, { cwd: process.cwd() });
+		const audit = recordProtectedStateAuditEvent(decision, { cwd: process.cwd() });
+		if (!audit.success) {
+			console.error(`WARN: Failed to record protected-state audit for ${decision.path}: ${audit.error}`);
+		}
 	}
 
 	if (decisions.length === 0) {

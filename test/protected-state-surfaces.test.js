@@ -80,6 +80,28 @@ describe('protected state surfaces', () => {
 		}
 	});
 
+	test('canonicalizes absolute and dot-segment paths before protected write decisions', () => {
+		const root = createTempDir();
+		try {
+			const absoluteConfig = path.join(root, '.forge', 'config.yaml');
+			const absoluteDecision = writeProtectedFile(root, absoluteConfig, 'bad: true\n', {
+				actor: 'codex',
+			});
+			expect(absoluteDecision.allowed).toBe(false);
+			expect(absoluteDecision.path).toBe('.forge/config.yaml');
+			expect(absoluteDecision.requiredSurface).toBe('forge_config');
+
+			const dotSegmentDecision = writeProtectedFile(root, '.forge/../.forge/config.yaml', 'bad: true\n', {
+				actor: 'codex',
+			});
+			expect(dotSegmentDecision.allowed).toBe(false);
+			expect(dotSegmentDecision.path).toBe('.forge/config.yaml');
+			expect(dotSegmentDecision.requiredSurface).toBe('forge_config');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test('builds complete audit payloads for protected edit attempts', () => {
 		const decision = assertProtectedWriteAllowed('.forge/log.jsonl', {
 			actor: 'codex',
@@ -163,5 +185,10 @@ describe('scripts/protected-state-check.js', () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout.toString()).toContain('No protected state edits detected');
+	});
+
+	test('includes deletions in the staged protected-state query', () => {
+		const content = fs.readFileSync(scriptPath, 'utf8');
+		expect(content).toContain('--diff-filter=ACMRD');
 	});
 });
