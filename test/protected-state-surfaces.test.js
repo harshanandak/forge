@@ -102,6 +102,32 @@ describe('protected state surfaces', () => {
 		}
 	});
 
+	test('blocks symlink targets before writing protected files', () => {
+		if (process.platform === 'win32') {
+			return;
+		}
+
+		const root = createTempDir();
+		const outside = createTempDir();
+		try {
+			fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+			fs.symlinkSync(path.join(outside, 'config.yaml'), path.join(root, '.forge', 'config.yaml'));
+
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+			});
+
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain('symlink');
+			expect(fs.existsSync(path.join(outside, 'config.yaml'))).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
 	test('builds complete audit payloads for protected edit attempts', () => {
 		const decision = assertProtectedWriteAllowed('.forge/log.jsonl', {
 			actor: 'codex',
@@ -180,6 +206,21 @@ describe('scripts/protected-state-check.js', () => {
 			env: {
 				...process.env,
 				FORGE_PROTECTED_STATE_STAGED_FILES: 'lib/safe.js\ntest/safe.test.js',
+			},
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.toString()).toContain('No protected state edits detected');
+	});
+
+	test('allows sanctioned protected surfaces when Forge command context declares them', () => {
+		const result = spawnSync('node', [scriptPath], {
+			cwd: path.join(__dirname, '..'),
+			stdio: 'pipe',
+			env: {
+				...process.env,
+				FORGE_PROTECTED_STATE_STAGED_FILES: 'bun.lock',
+				FORGE_PROTECTED_STATE_ALLOWED_SURFACES: 'lockfiles',
 			},
 		});
 

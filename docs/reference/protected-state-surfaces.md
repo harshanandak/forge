@@ -1,6 +1,6 @@
 # Protected State Surfaces
 
-Forge protects runtime state that agents must not hand-edit. The protected-state check blocks direct staged edits and prints a repair hint that points to the owning command or Forge API surface.
+Forge protects runtime state that agents must not hand-edit. The protected-state check blocks direct staged additions, copies, modifications, renames, and deletions, then prints a repair hint that points to the owning command or Forge API surface.
 
 The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is implemented in `lib/protected-state-surfaces.js`; the manifest keeps the protected surface contract visible to agents and reviewers.
 
@@ -14,15 +14,16 @@ The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is 
 | `memory_projection` | `docs/sessions/`, `docs/memory/`, `.forge/memory/` | Forge memory projection writer |
 | `workflows` | `.github/workflows/`, `.claude/commands/`, `.forge/hooks/`, `lefthook.yml` | Forge workflow/setup commands |
 | `lockfiles` | `bun.lock`, `package-lock.json`, `.forge/extensions.lock` | Package manager or extension installer |
-| `extension_manifests` | `.forge/extensions/*/manifest.json`, plugin manifests | Forge extension/plugin manager |
+| `extension_manifests` | `.forge/extensions/*/manifest.json`, `plugins/*/{plugin,extension,manifest}.json`, `.github/PLUGIN_TEMPLATE.json` | Forge extension/plugin manager |
 | `secrets` | `.env.local`, `secrets.json`, credential files | Secret manager or local env setup |
 | `immutable` | `.git/` | Git or owning runtime tool |
 | `append_only_logs` | `.forge/log.jsonl`, `.forge/audit.log`, `.beads/interactions.jsonl` | Append-only audit writer |
 
 ## Behavior
 
-- Direct edits to protected files are blocked by `scripts/protected-state-check.js`.
+- Direct edits, additions, modifications, renames, and deletions of protected files are blocked by `scripts/protected-state-check.js`.
 - Allowed Forge API writes must declare the matching required surface. For example, a Forge config writer must call the protected writer with `surface: "forge_config"` and `viaForgeApi: true`.
+- Forge-owned commands that intentionally stage generated protected changes can set `FORGE_PROTECTED_STATE_ALLOWED_SURFACES` to the comma-separated surfaces they own for that command invocation.
 - Blocked decisions include actor, path, decision, required surface, reason, and repair hint.
 - Audit-ready events use kind `protected_state_write` and are recorded through Beads audit when available.
 

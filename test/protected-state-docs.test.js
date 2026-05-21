@@ -1,6 +1,8 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const YAML = require('yaml');
+const { PROTECTED_SURFACES } = require('../lib/protected-state-surfaces');
 
 describe('protected state surface docs', () => {
 	test('documents protected surfaces and is linked from the docs index', () => {
@@ -30,7 +32,8 @@ describe('protected state surface docs', () => {
 		}
 
 		expect(index).toContain('protected-state-surfaces.md');
-		expect(manifest).toContain('append_only_logs');
-		expect(manifest).toContain('memory_projection');
+		const manifestIds = Object.keys(YAML.parse(manifest).surfaces).sort();
+		const runtimeIds = PROTECTED_SURFACES.map(surface => surface.id).sort();
+		expect(manifestIds).toEqual(runtimeIds);
 	});
 });

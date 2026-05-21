@@ -13,7 +13,7 @@ Protect Forge's local runtime state from direct agent edits. The protected surfa
 
 - Direct edits to protected paths are blocked or flagged with a repair hint.
 - Allowed Forge API writes can still write protected paths when they declare the required surface.
-- Bypass attempts are detectable from staged file changes before commit.
+- Bypass attempts are detectable from staged additions, copies, modifications, renames, and deletions before commit.
 - Edit attempts produce audit-ready events with actor, path, decision, and required surface.
 - Tests cover allowed writes, blocked writes, bypass detection, audit completeness, and repair hints.
 - Documentation explains protected categories, repair hints, and the sanctioned API write path.

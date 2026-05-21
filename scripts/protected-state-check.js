@@ -21,6 +21,15 @@ function getStagedFiles() {
 	return output.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
 }
 
+function getAllowedSurfaces() {
+	return new Set(
+		String(process.env.FORGE_PROTECTED_STATE_ALLOWED_SURFACES || '')
+			.split(',')
+			.map(surface => surface.trim())
+			.filter(Boolean),
+	);
+}
+
 function main() {
 	const actor =
 		process.env.FORGE_PROTECTED_STATE_ACTOR ||
@@ -28,8 +37,20 @@ function main() {
 		process.env.USER ||
 		process.env.USERNAME ||
 		'unknown';
+	const allowedSurfaces = getAllowedSurfaces();
 	const decisions = getStagedFiles()
-		.map(file => assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' }))
+		.map(file => {
+			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
+			if (probe.requiredSurface && allowedSurfaces.has(probe.requiredSurface)) {
+				return assertProtectedWriteAllowed(file, {
+					actor,
+					operation: 'staged_edit',
+					viaForgeApi: true,
+					surface: probe.requiredSurface,
+				});
+			}
+			return probe;
+		})
 		.filter(decision => !decision.allowed);
 
 	for (const decision of decisions) {
