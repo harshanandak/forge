@@ -111,13 +111,15 @@ describe('forge init command', () => {
     const root = makeProject();
     fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
     fs.writeFileSync(path.join(root, '.forge', 'patch.md'), 'user patch\n');
+    fs.writeFileSync(path.join(root, '.forge', 'protected-paths.yaml'), 'user manifest\n');
 
     const result = await handler(['--yes'], {}, root);
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('.forge/patch.md already exists');
+    expect(result.error).toContain('.forge/patch.md, .forge/protected-paths.yaml already exist');
     expect(result.error).toContain('Re-run with --force');
     expect(fs.readFileSync(path.join(root, '.forge', 'patch.md'), 'utf8')).toBe('user patch\n');
+    expect(fs.readFileSync(path.join(root, '.forge', 'protected-paths.yaml'), 'utf8')).toBe('user manifest\n');
     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
   });
 
