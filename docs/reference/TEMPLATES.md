@@ -5,12 +5,44 @@ Forge templates are adoption scaffolds over runtime graph primitives. They are n
 ## Entry Point
 
 ```bash
-forge init --profile minimal --yes
-forge init --profile standard --yes
-forge init --profile full --yes
+forge init
+forge init --yes
+forge init --profile minimal --classification standard --harness codex --yes
 ```
 
-`forge init --yes` uses `standard`. `forge setup --minimal` is a shortcut for clean repositories that only need the minimal adoption config and do not want Beads or agent files installed yet.
+`forge init` is the day-one entry door for fresh repositories. It creates the local `.forge/` skeleton without assuming a prior v2 install or running the `forge new` onboarding wizard.
+
+Generated files:
+
+- `.forge/config.yaml` records the adoption profile, default classification, Layer 1 rail confirmation, and harness targets.
+- `.forge/patch.md` is an empty patch-intent placeholder for future local overrides.
+- `.forge/protected-paths.yaml` records the protected path manifest scaffold. Currently, only the manifest structure is generated; protected-state enforcement is not yet implemented.
+
+When run interactively, `forge init` asks for:
+
+- default classification: `critical`, `standard`, or `refactor`.
+- Layer 1 rail confirmation.
+- harness targets: `claude`, `cursor`, and/or `codex`.
+
+Harness defaults are detected from filesystem markers:
+
+- `.claude` selects `claude`.
+- `.cursor` selects `cursor`.
+- `.codex` selects `codex`.
+
+`forge init --yes` is deterministic for automation: it uses the `standard` profile, `standard` classification, confirms Layer 1 rails, and selects detected harness targets or `codex` when none are detected.
+
+`forge init` does not overwrite existing generated files. Re-run with `--force` only when replacing `.forge/config.yaml`, `.forge/patch.md`, and `.forge/protected-paths.yaml` is intentional.
+
+Profile shortcuts remain available:
+
+```bash
+forge init --minimal
+forge init --standard
+forge init --full
+```
+
+`forge setup --minimal` remains a separate shortcut for repositories that want setup behavior rather than only the day-one `.forge/` skeleton.
 
 ## Planning Template
 
@@ -53,9 +85,9 @@ Invalid planning modes, thresholds outside `0..1`, blank critics, and unknown pl
 
 | Profile | Purpose | Output |
 |---------|---------|--------|
-| `minimal` | Config-only adoption for a clean repository. | Writes `.forge/config.yaml`, disables workflow gates and adapters, and records template ancestry. |
-| `standard` | Default Forge command flow metadata. | Writes `.forge/config.yaml` with default gates enabled and Beads/GitHub issue adapter metadata. |
-| `full` | Explicit full scaffold. | Writes `.forge/config.yaml` with rails, gates, adapters, and protected paths made explicit. |
+| `minimal` | Smallest adoption skeleton for a clean repository. | Writes the day-one `.forge/` files with workflow gates and issue adapters disabled unless selected later. |
+| `standard` | Default Forge command flow metadata. | Writes the day-one `.forge/` files with default gates enabled and Beads/GitHub issue adapter metadata. |
+| `full` | Explicit full scaffold. | Writes the day-one `.forge/` files with rails, gates, adapters, and protected paths made explicit. |
 
 ## Inspect The Result
 
@@ -69,4 +101,4 @@ The generated config includes `template.kind`, `template.version`, `template.pro
 
 ## Non-Scope
 
-This flow does not implement harness translation, adapter marketplace installation, upgrade or rollback, or patch intent.
+This flow does not implement harness translation, adapter marketplace installation, upgrade or rollback, protected-state enforcement, `forge new`, or patch intent execution.
