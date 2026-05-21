@@ -53,7 +53,14 @@ describe('forge init command', () => {
     expect(parseInitFlags(['--classification', 'minor']).error)
       .toContain('Choose one of: critical, standard, refactor');
     expect(parseInitFlags(['--harness', 'vscode']).error)
-      .toContain('Choose from: claude, cursor, codex');
+      .toContain('Choose from: claude, cursor, codex, opencode, copilot');
+  });
+
+  test('accepts full-profile harness targets in explicit input', () => {
+    const parsed = parseInitFlags(['--harness', 'opencode,copilot']);
+
+    expect(parsed.error).toBeNull();
+    expect(parsed.harnessTargets).toEqual(['opencode', 'copilot']);
   });
 
   test('detects active harness targets from filesystem markers', () => {
