@@ -19,6 +19,8 @@ Do not describe active package plans with the old major-version labels.
 
 Future releases get detailed task breakdowns only when that release starts. The roadmap should define sequence, contracts, gates, and release value now; it should not pre-split every future issue into implementation tasks before the preceding release has landed.
 
+After `0.0.18`, keep the same release discipline but shift the product lens from "board/dashboard" to "local runtime control plane." Boards remain views over the runtime ledger. Forge owns the graph, protected state surfaces, memory projections, and adapter contracts; Beads, GitHub, Linear, Claude, Cursor, Codex, and other agents are projections or adapters over that control plane.
+
 ## Current Baseline After Recent Merges
 
 The latest `origin/master` baseline already includes the initial migrate dry-run slice from `docs/work/2026-05-05-w0-migrate-dry-run/`, `lib/migrate-dry-run.js`, `lib/commands/migrate.js`, and `test/migrate-dry-run.test.js`.
@@ -105,6 +107,7 @@ Scope:
   - `EvaluatorRegion`
   - `Gate`
   - `Evidence`
+- Define the placeholder `IssueAdapter` contract shape early enough that graph, evidence, dashboard, and extension work do not leak Beads-specific fields into core.
 - Start from N2, but refine it beyond `Stage { enter, run, exit }`.
 
 Evaluator regions:
@@ -118,6 +121,7 @@ Release gate:
 - A workflow graph schema is published.
 - Current command flow can be represented by the graph.
 - `forge run --dry-run` can print the resolved graph without side effects.
+- Issue-facing runtime fields have an adapter boundary, even though Beads remains the only implementation until the later dashboard/control-plane releases.
 
 ## 0.0.13 - Config And Introspection
 
@@ -126,6 +130,7 @@ Scope:
 - Refined N3, N4, N5.
 - `.forge/config.yaml` loads workflow graph defaults and project overrides.
 - `forge options *` explains phases, actions, gates, evaluators, adapters, and why each is active.
+- `protectedPaths` appear in `forge options *` output with source, owner, status, and validation state.
 
 Evaluator regions:
 
@@ -138,6 +143,7 @@ Release gate:
 - `forge options why <id>` cites the source of each decision.
 - L1 rails cannot be disabled by config, template, or patch.
 - Disabled phases/actions remain known, addressable, and auditable.
+- Protected paths are explainable before they become fully enforced.
 
 ## 0.0.14 - Evaluator Regions And Evidence
 
@@ -145,6 +151,7 @@ Scope:
 
 - Evaluators attach anywhere: plan, research, dev, validation, review, claim, transition, run failure, and dashboard recommendation.
 - Evidence capture becomes first-class.
+- Gate and evaluator records include trace identity, target, policy, evidence pointers, and result.
 
 Evaluator regions:
 
@@ -158,6 +165,7 @@ Release gate:
 - An evaluator region can target a plan artifact before development.
 - An evaluator region can target a patch before validation.
 - Evidence is captured in a structured report.
+- Trace ids connect gate decisions to evidence and later dashboard/audit views.
 
 ## 0.0.15 - Adoption Templates And Install Profiles
 
@@ -185,6 +193,8 @@ Release gate:
 
 ## 0.0.16 - Safety, Patch, Upgrade
 
+Beads: includes `forge-30k` for documentation link checking and docs-validation automation.
+
 Scope:
 
 - N11, N12, `forge-1nh6`, `forge-c11n`.
@@ -192,6 +202,11 @@ Scope:
 - Rollback snapshots.
 - v2 fixture corpus.
 - Upgrade dry-run.
+- Protected-write intent records for config, generated files, lockfiles, memory projections, and Beads-related state.
+- Documentation automation substage: `forge docs detect/verify` direction, markdown link checking, stale-doc detection, docstring coverage, and docs-update prompts before premerge/release.
+- Docs validation must be adapter-driven, not a permanent Forge-only clone of existing tools. Discovery should detect docs roots and documentation systems, then select adapters such as Lychee for broad link checks, Linkspector/reviewdog for PR comments, remark-validate-links for local Markdown anchors, and eslint-plugin-jsdoc for JavaScript/TypeScript docstring requirements.
+- Docs validation should support project-specific modes: `report`, `new-only`, and `strict`, with baselines for existing link/docstring debt and generated GitHub Action/Lefthook projections that can be toggled on or off per project.
+- Package docs validation as a skill-backed validation substage. `forge docs detect/verify` remains the CLI projection, while `.forge/config.yaml`, local hooks, GitHub Actions, and the local UI/TUI all resolve the same skill metadata and baseline policy.
 
 Evaluator regions:
 
@@ -204,6 +219,8 @@ Release gate:
 - Upgrade can be dry-run against representative fixtures.
 - Rollback restores the previous managed surfaces.
 - Patch intent survives upstream changes.
+- Protected state changes have before/after diffs and rollback snapshots.
+- Documentation checks can catch broken internal markdown links before push, report docstring coverage, and expose the selected adapter/config/baseline so projects with different docs structures can adapt without hand-editing generated files.
 
 ## 0.0.17 - Skills And Insights
 
@@ -213,6 +230,8 @@ Scope:
 - Pattern detection proposes skills/evaluators from observed review failures.
 - Planning skill becomes one configurable template, not the canonical workflow.
 - Planning phases are exposed as callable sub-skills, so the runtime can invoke the full `/plan` super-skill or only `plan.intent_capture`, `plan.parallel_research`, `plan.parallel_critics`, `plan.synthesis`, or `plan.final_lock`.
+- Built-in Claude command files become compatibility aliases for stage skills. The canonical source moves to `SKILL.md` packages that can sync into `.claude/skills/`, `.codex/skills/`, Cursor-compatible locations, and future agent skill roots.
+- Memory and proposal records carry category, source, written_by, timestamp, cited interactions, and accept/reject decision.
 
 Evaluator regions:
 
@@ -220,12 +239,15 @@ Evaluator regions:
 - Skill proposal usefulness.
 - Accept/reject audit trail.
 - Super-skill stability: full-skill and sub-skill invocation produce consistent graph state, evidence, and gate outcomes.
+- Command-shadowing detection: stale `.claude/commands/*` files cannot silently diverge from same-named skills.
 
 Release gate:
 
 - `forge insights --review-feedback` produces ranked proposals with evidence.
 - Accepted proposals can become skills or evaluator suggestions.
 - `forge options why <skill-id>` explains full `/plan` invocation, partial sub-skill invocation, skipped phases, and replacement by accepted local skills.
+- Memory and skill proposals cannot mutate shared projection files without a recorded proposal and audit trail.
+- `skills sync` can project canonical stage skills into Claude and Codex without making command files the source of truth.
 
 ## 0.0.18 - Team Runtime Dashboard
 
@@ -247,14 +269,242 @@ Release gate:
 
 - Team dashboard can operate without a Forge-owned orchestrator.
 - External orchestrators can consume the same runtime state.
+- Runtime ledger, evidence records, adapter health, and bounded memory/context summaries are present before dashboard views claim confidence.
+- Dashboard views use the IssueAdapter/Beads command surface and do not perform raw `.beads` file writes.
+- Ready, blocked, stale, review-needed, and conflict-risk views have deterministic fixtures and evaluator outputs.
+
+Non-goals:
+
+- No local config-editing UI yet.
+- No direct `.beads` file mutation from the dashboard.
+- No memory projection or hook projection layer beyond the existing runtime/evidence surfaces.
+- No rich thousand-issue UI beyond bounded dashboard views.
+
+## 0.0.19 - Protected State Surfaces
+
+Beads: `forge-2agy.1` under parent epic `forge-2agy`.
+
+Primary value:
+
+- Agents can work quickly while Forge prevents unsafe edits to state files that must be mutated through controlled APIs.
+
+Scope:
+
+- `.forge/protected-paths.yaml` or equivalent resolved config surface.
+- Protected categories for Beads state, Forge config, memory projection files, generated harness files, extension manifests, lockfiles, workflows, secrets, immutable paths, and append-only logs.
+- Pre-edit enforcement where the harness supports hooks, plus pre-commit and CI fallback checks.
+- Refuse-with-hint messages that tell the agent which Forge command or MCP method to use.
+- Append-only edit-attempt audit records.
+
+Evaluator regions:
+
+- Protected-path policy coverage.
+- Bypass detection and audit completeness.
+- Refuse-with-hint clarity.
+
+Release gate:
+
+- Direct edits to protected Beads/config/memory/generated files are blocked or flagged with a repair hint.
+- Allowed writes through Forge APIs still work.
+- The audit log records attempted, blocked, and accepted mutations with actor, path, decision, and required surface.
+
+## 0.0.20 - Issue Graph And Beads Control Plane
+
+Beads: `forge-2agy.2`; depends on `forge-2agy.1`.
+
+Primary value:
+
+- Agents and UI stop thinking in raw Beads files. They use a Forge issue graph API backed by Beads as the default local issue engine.
+
+Scope:
+
+- Canonical Forge Issue Graph contract: issue identity, dependencies, priority, status, assignee, labels, external links, sync state, conflict state, and workflow stage.
+- `IssueAdapter` v2 with operations for create, update, close, delete/supersede, dependency changes, priority changes, assignment, comments, sync, and health.
+- Beads adapter uses `bd`/Dolt-backed commands as the write path; JSON/JSONL is read-model/export only.
+- Field authority generalizes from GitHub-specific ownership to adapter-owned, Forge-owned, and cache-owned fields.
+- Conflict/drift reporting for GitHub/Linear/remote projections.
+
+Evaluator regions:
+
+- Beads round-trip fidelity.
+- Adapter ownership/drift correctness.
+- Dependency graph correctness.
+- Multi-agent write safety.
+
+Release gate:
+
+- A UI, CLI, or MCP caller can update issue priority/status/dependencies through Forge without touching `.beads` files.
+- Beads state remains the durable source for the default adapter.
+- A synthetic large issue set has bounded list/filter latency and no N+1 detail fetch in default views.
+
+## 0.0.21 - Local Control Plane UI/TUI
+
+Beads: `forge-2agy.3`; depends on `forge-2agy.2`.
+
+Primary value:
+
+- Users can inspect projects, runtime graphs, stages, extensions, hooks, memories, and issue state locally without cloud infrastructure.
+
+Scope:
+
+- Local-only web UI on `127.0.0.1` or a TUI over the same read/write API.
+- Project picker for explicit local paths only.
+- Runtime graph, stage, substage, hook, extension, and issue views.
+- Read-only default mode with explicit apply flow.
+- Writes go through `forge config plan/apply/rollback`, `forge issue *`, `forge memory *`, and `forge extension *` APIs.
+
+Evaluator regions:
+
+- Local-only boundary.
+- Safe config edit path.
+- UI-to-CLI/MCP parity.
+
+Release gate:
+
+- Users can toggle a non-locked stage/substage from the local UI, preview the diff, apply it transactionally, and roll it back.
+- UI does not write generated agent files, Beads internals, or lockfiles directly.
+
+## 0.0.22 - Hook Projection Layer
+
+Beads: `forge-2agy.4`; depends on `forge-2agy.3`.
+
+Primary value:
+
+- Forge lifecycle events can be projected into Codex, Claude, Cursor, and future agents without rewriting the runtime for each harness.
+
+Scope:
+
+- Normalized Forge hook events such as `forge.session.start`, `forge.prompt.submit`, `forge.tool.before`, `forge.tool.after`, `forge.issue.changed`, `forge.memory.changed`, `forge.stage.started`, and `forge.stage.completed`.
+- Codex projection for supported events such as `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, and `Stop`.
+- Claude projection for hook events and `CLAUDE.md`/rules loading boundaries.
+- Cursor projection for stop-hook and file-watcher patterns where direct pre-edit hooks are unavailable.
+- Skill lifecycle and command-compatibility events: `forge.skill.installed`, `forge.skill.enabled`, `forge.skill.disabled`, `forge.skill.invoked`, and `forge.command.alias.invoked`.
+- Hook trust, timeout, blocking, and audit policy.
+- Agent capability metadata moves from coarse booleans to per-event support, fallback mode, blocking support, timeout policy, and generated-file targets.
+
+Evaluator regions:
+
+- Harness projection correctness.
+- Hook timeout/failure handling.
+- Protected-state enforcement coverage per harness.
+
+Release gate:
+
+- One protected-path rule and one memory-context rule project correctly into Codex, Claude, and Cursor where each harness supports it.
+- Hook output is audited and does not become the source of truth.
+- Codex, Claude, and Cursor capability manifests list supported Forge events and fallback behavior.
+
+## 0.0.23 - Memory Projection And Continuous Learning
+
+Beads: `forge-2agy.5`; depends on `forge-2agy.4`.
+
+Primary value:
+
+- Forge turns durable learning into controlled, project-scoped memory projections instead of letting each agent create divergent private memory.
+
+Scope:
+
+- Forge canonical memory categories and provenance requirements remain the source.
+- Typed memory hardening: all categories round-trip with provenance; `forget` and `compact` behavior is defined or explicitly rejected for the backing adapter.
+- Redaction runs before memory writes and proposal generation, with tests for tokens, absolute paths, env names, URLs, and secrets.
+- Continuous-learning pass mines high-signal episodes, recurring corrections, accepted insights, and stable workspace facts.
+- Continuous-learning config is parsed from `.forge/config.yaml` with observe/detect/propose autonomy levels, rate limits, and dry-run output.
+- Projection adapters emit controlled updates to `AGENTS.md`, `CLAUDE.md`/rules, Cursor rules or `AGENTS.md`, Codex memory/context surfaces, and MCP resources.
+- Memory updates use reviewable proposals or transaction manifests for shared files.
+- Secrets, one-off instructions, and stale facts are filtered out.
+
+Evaluator regions:
+
+- Durable-signal precision.
+- Cross-agent memory consistency.
+- Secret/stale-memory rejection.
+
+Release gate:
+
+- A completed session can produce a memory proposal, show evidence/provenance, update the chosen projection surface, and audit the change.
+- Existing agent-native memories are treated as generated/local recall, not canonical Forge state.
+- Memory writes cannot reach shared projection files until redaction, provenance, and proposal/accept audit checks pass.
+
+## 0.0.24 - Extension-Contributed Runtime Components
+
+Beads: `forge-2agy.6`; depends on `forge-2agy.5`.
+
+Primary value:
+
+- Users and third parties can add stages, substages, verification regions, evidence collectors, hooks, adapters, templates, commands, and UI panels without forking Forge.
+
+Scope:
+
+- Extension manifest `contributes` schema for stages, substages, evaluator regions, evidence collectors, hooks, adapters, templates, commands, and local UI panels.
+- `SKILL.md` package contribution is the canonical agent-facing format. Commands, slash aliases, hook files, generated docs, and UI panels are projections from the manifest, not separate hand-maintained sources.
+- skills.sh/GitHub import path through `packages/skills`: import disabled by default, pin source/ref, validate `SKILL.md`, record trust/permission metadata, then allow project-level enablement through config or UI.
+- Documentation validators are a required example extension type: a docs adapter can declare supported file types, discovery signals, config files, CI projections, local hook projections, and UI fields.
+- Resolver adds source, trust, permission, collision, and config-source metadata into the runtime graph.
+- UI and CLI can enable/disable extension components with `why`, `diff`, and rollback.
+- Sandboxed lifecycle hooks stay opt-in and audited.
+
+Evaluator regions:
+
+- Manifest validation.
+- Collision and trust handling.
+- Toggle/rollback correctness.
+- Skill package provenance and permission review.
+
+Release gate:
+
+- A local extension can contribute a verification substage and UI panel, be toggled on for one project, and be removed without leaving generated artifacts behind.
+- A third-party skill package can be imported, reviewed, pinned, enabled for one project, projected into at least Claude and Codex, and disabled without leaving stale command aliases.
+
+## 0.0.25 - Scaled Team Runtime And External Orchestrator Bridge
+
+Beads: `forge-2agy.7`; depends on `forge-2agy.6`.
+
+Primary value:
+
+- Forge can coordinate large issue sets and external agent teams while staying local-first and adapter-driven.
+
+Scope:
+
+- Indexed issue cache and paginated/filterable views for thousands of issues.
+- Bulk issue updates through the IssueAdapter, never through raw files.
+- Worker lease/claim/heartbeat/complete/block/fail contract.
+- External orchestrator bridge for tools such as Hermes-style agents, T3-style multi-agent runtimes, Codex, Claude, Cursor, and future MCP-backed workers.
+- Run ledger correlation across issues, agents, hooks, evidence, and review packets.
+
+Evaluator regions:
+
+- Thousand-issue performance.
+- Lease correctness.
+- Stale/crashed worker detection.
+- Cross-adapter consistency.
+
+Release gate:
+
+- Forge can display and filter a large issue graph, claim work for multiple agents, detect stale work, and keep issue updates consistent across Beads plus at least one remote projection.
+
+## Public Release Train Discipline After 0.0.18
+
+Each release after `0.0.18` must ship through the same public cadence:
+
+1. Create a Beads issue or epic for the release slice.
+2. Open a release branch/worktree.
+3. Add or update the design note, acceptance matrix, and evaluator region before implementation.
+4. Implement only the release slice.
+5. Run targeted tests, release-specific evaluators, `bun run check`, and `npm pack --dry-run`.
+6. Publish release notes that include: user value, migration notes, feature flags, known limitations, rollback path, and adapter compatibility.
+7. Publish through GitHub Release to npm.
+8. Verify the installed package in a clean repo and close or update the Beads/GitHub release issue.
 
 ## Deferred
 
 - Marketplace allowlist N16.
 - Full five resolver set N8; start with local and GitHub only.
 - Hardened sandbox.
-- Central orchestration layer.
+- Central orchestration layer before the external orchestrator bridge contract is proven.
 - Auto-merge by default.
+- Cloud control plane.
+- Direct agent writes to Beads internals, generated harness files, memory projection files, or Forge lock/config state.
+- Treating agent-native memory files as Forge's canonical memory store.
 
 ## Deployment Per Release
 

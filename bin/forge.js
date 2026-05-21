@@ -13,7 +13,7 @@
  *   bunx forge setup --agents claude,cursor
  *
  * CLI Flags:
- *   --path, -p <dir>     Target project directory (creates if needed)
+ *   --path, -p <dir>     Target project directory (docs verify|detect require existing dir)
  *   --quick, -q          Use all defaults, minimal prompts
  *   --skip-external      Skip external services configuration
  *   --agents <list>      Specify agents (--agents claude cursor OR --agents=claude,cursor)
@@ -49,7 +49,13 @@ const VERSION = packageJson.version;
 const PluginManager = require('../lib/plugin-manager');
 const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
-const { listTopics, getTopicContent } = require('../lib/docs-command');
+const {
+  listTopics,
+  getTopicContent,
+  validateDocs,
+  formatDocsValidation,
+  writeDocsBaseline,
+} = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
@@ -2759,6 +2765,7 @@ function showHelp() {
   console.log('Options:');
   console.log('  --path, -p <dir>     Target project directory (default: current directory)');
   console.log('                       Creates the directory if it doesn\'t exist');
+  console.log('                       Exception: docs verify|detect --path requires an existing directory');
   console.log('  --quick, -q          Use all defaults, minimal prompts');
   console.log('                       Auto-selects: all agents, GitHub Code Quality, ESLint');
   console.log('  --skip-external      Skip external services configuration');
@@ -3839,6 +3846,10 @@ function handlePathSetup(targetPath, options = {}) {
 
   // Create directory if it doesn't exist
   if (!fs.existsSync(resolvedPath)) {
+    if (options.create === false) {
+      console.error(`Error: ${resolvedPath} does not exist`);
+      process.exit(1);
+    }
     try {
     fs.mkdirSync(resolvedPath, { recursive: true });
     if (!options.quiet) {
@@ -4135,11 +4146,16 @@ async function main() {
   const command = args[0];
   const flags = parseFlags();
   const suppressJsonIntrospectionOutput = ['options', 'explain'].includes(command) && args.includes('--json');
+  const suppressCommandJsonOutput = args.includes('--json');
+  const suppressDocsDetectOutput = command === 'docs' && args[1] === 'detect';
   const profileDryRunArgs = ['--minimal', '--standard', '--full'];
   const suppressAdoptionDryRunOutput = flags.dryRun && (
     command === 'init' || (command === 'setup' && profileDryRunArgs.some(arg => args.includes(arg)))
   );
-  const suppressStructuredOutput = suppressJsonIntrospectionOutput || suppressAdoptionDryRunOutput;
+  const suppressStructuredOutput = suppressJsonIntrospectionOutput ||
+    suppressCommandJsonOutput ||
+    suppressDocsDetectOutput ||
+    suppressAdoptionDryRunOutput;
 
   // Wire up incremental setup state from parsed flags
   FORCE_MODE = flags.force;
@@ -4174,10 +4190,11 @@ async function main() {
 
   // Handle --path option: change to target directory
   if (flags.path) {
+    const createTargetPath = !(command === 'docs' && ['verify', 'detect'].includes(args[1]));
     // Update projectRoot after changing directory to maintain state consistency
     projectRoot = suppressAdoptionDryRunOutput
       ? resolvePathForDryRun(flags.path)
-      : handlePathSetup(flags.path, { quiet: suppressStructuredOutput });
+      : handlePathSetup(flags.path, { quiet: suppressStructuredOutput, create: createTargetPath });
   }
 
   // Load command registry (auto-discovered commands from lib/commands/)
@@ -4308,7 +4325,63 @@ async function main() {
       }
       console.log('');
       console.log('  Usage: forge docs <topic>');
+      console.log('         forge docs verify [--path <dir>] [--json] [--baseline <file>] [--write-baseline <file>] [--min-docstring-coverage <percent>]');
+      console.log('         forge docs detect [--path <dir>] [--json]');
       console.log('');
+      console.log('  Note: forge docs verify|detect --path requires an existing directory.');
+      console.log('');
+    } else if (topic === 'verify' || topic === 'detect') {
+      const minCoverageIndex = args.indexOf('--min-docstring-coverage');
+      let minDocstringCoverage = 0;
+      if (minCoverageIndex >= 0) {
+        const rawMinCoverage = args[minCoverageIndex + 1];
+        const parsedMinCoverage = Number(rawMinCoverage);
+        if (!rawMinCoverage || !Number.isFinite(parsedMinCoverage) || parsedMinCoverage < 0 || parsedMinCoverage > 100) {
+          console.error('Error: --min-docstring-coverage must be a number between 0 and 100');
+          process.exitCode = 1;
+          return;
+        }
+        minDocstringCoverage = parsedMinCoverage;
+      }
+      const baselineIndex = args.indexOf('--baseline');
+      const writeBaselineIndex = args.indexOf('--write-baseline');
+      const baselinePath = baselineIndex >= 0 ? args[baselineIndex + 1] : null;
+      const writeBaselinePath = writeBaselineIndex >= 0 ? args[writeBaselineIndex + 1] : null;
+      if (topic === 'detect' && writeBaselineIndex >= 0) {
+        console.error('Error: --write-baseline is only supported with `forge docs verify`');
+        process.exitCode = 1;
+        return;
+      }
+      if (baselineIndex >= 0 && (!baselinePath || baselinePath.startsWith('-'))) {
+        console.error('Error: --baseline requires a file path');
+        process.exitCode = 1;
+        return;
+      }
+      if (writeBaselineIndex >= 0 && (!writeBaselinePath || writeBaselinePath.startsWith('-'))) {
+        console.error('Error: --write-baseline requires a file path');
+        process.exitCode = 1;
+        return;
+      }
+      let result;
+      try {
+        result = validateDocs(projectRoot, { baselinePath, minDocstringCoverage });
+        if (writeBaselinePath) {
+          writeDocsBaseline(projectRoot, writeBaselinePath, result);
+        }
+      } catch (error) {
+        console.error(`Error: ${error.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (args.includes('--json') || topic === 'detect') {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(formatDocsValidation(result));
+      }
+      const hasUnbaselinedFailure = result.failures.some((failure) => failure.type !== 'broken-link');
+      if ((!writeBaselinePath && !result.ok) || (writeBaselinePath && hasUnbaselinedFailure)) {
+        process.exitCode = 1;
+      }
     } else {
       const result = getTopicContent(topic, packageDir);
       if (result.error) {

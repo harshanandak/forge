@@ -49,4 +49,11 @@ describe('CLI flags for bin/forge.js', () => {
     const content = fs.readFileSync(forgePath, 'utf-8');
     expect(content.includes('overwrite')).toBeTruthy();
   });
+
+  test('should suppress non-interactive banner for command JSON output', () => {
+    const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+    const content = fs.readFileSync(forgePath, 'utf-8');
+    expect(content).toContain('suppressCommandJsonOutput');
+    expect(content).toContain("args.includes('--json')");
+  });
 });
