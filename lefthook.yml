@@ -13,6 +13,10 @@ commit-msg:
 
 pre-commit:
   commands:
+    protected-state:
+      run: node scripts/protected-state-check.js
+      stage_fixed: false
+      tags: protected-state
     tdd-check:
       run: node .forge/hooks/check-tdd.js
       stage_fixed: false

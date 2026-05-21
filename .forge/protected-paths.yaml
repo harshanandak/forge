@@ -1,0 +1,58 @@
+version: 1
+surfaces:
+  immutable:
+    examples:
+      - .git/
+    repair: Use git or the owning runtime tool.
+  secrets:
+    examples:
+      - .env.local
+      - secrets.json
+    repair: Use the secret manager or local environment setup command.
+  append_only_logs:
+    examples:
+      - .forge/log.jsonl
+      - .forge/audit.log
+      - .beads/interactions.jsonl
+    repair: Use the append-only Forge or Beads audit writer.
+  beads_state:
+    examples:
+      - .beads/issues.jsonl
+      - .beads/config.yaml
+    repair: Use bd or Forge issue commands.
+  forge_config:
+    examples:
+      - .forge/config.yaml
+      - .forge/protected-paths.yaml
+    repair: Use Forge setup/config commands or the protected Forge API writer.
+  extension_manifests:
+    examples:
+      - .forge/extensions/example/manifest.json
+      - .github/PLUGIN_TEMPLATE.json
+    repair: Use the Forge extension/plugin manager.
+  lockfiles:
+    examples:
+      - bun.lock
+      - package-lock.json
+      - .forge/extensions.lock
+    repair: Regenerate through the package manager or extension installer.
+  workflows:
+    examples:
+      - .github/workflows/
+      - .claude/commands/
+      - .forge/hooks/
+      - lefthook.yml
+    repair: Use Forge workflow/setup commands.
+  generated_harness:
+    examples:
+      - AGENTS.md
+      - CLAUDE.md
+      - .codex/skills/
+      - .cursor/rules/
+    repair: Regenerate with forge setup or the owning Forge API surface.
+  memory_projection:
+    examples:
+      - docs/sessions/
+      - docs/memory/
+      - .forge/memory/
+    repair: Use the Forge memory projection writer.

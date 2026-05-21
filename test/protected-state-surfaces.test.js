@@ -1,0 +1,303 @@
+const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const {
+	PROTECTED_SURFACES,
+	classifyProtectedPath,
+	assertProtectedWriteAllowed,
+	writeProtectedFile,
+	buildProtectedStateAuditEvent,
+	recordProtectedStateAuditEvent,
+} = require('../lib/protected-state-surfaces');
+
+function createTempDir() {
+	return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-protected-state-'));
+}
+
+describe('protected state surfaces', () => {
+	test('classifies the locked protected path categories', () => {
+		expect(classifyProtectedPath('.beads/issues.jsonl').surface).toBe('beads_state');
+		expect(classifyProtectedPath('.forge/config.yaml').surface).toBe('forge_config');
+		expect(classifyProtectedPath('.forge/log.jsonl').surface).toBe('append_only_logs');
+		expect(classifyProtectedPath('docs/sessions/2026-05-21.md').surface).toBe('memory_projection');
+		expect(classifyProtectedPath('.github/workflows/ci.yml').surface).toBe('workflows');
+		expect(classifyProtectedPath('bun.lock').surface).toBe('lockfiles');
+		expect(classifyProtectedPath('.forge/extensions/example/manifest.json').surface).toBe('extension_manifests');
+		expect(classifyProtectedPath('.env.local').surface).toBe('secrets');
+		expect(classifyProtectedPath('apps/api/.env').surface).toBe('secrets');
+		expect(classifyProtectedPath('.git/config').surface).toBe('immutable');
+		expect(classifyProtectedPath('lib/file-utils.js')).toBe(null);
+		expect(PROTECTED_SURFACES.map(surface => surface.id)).toContain('generated_harness');
+	});
+
+	test('blocks direct writes with surface-specific repair hints', () => {
+		const decision = assertProtectedWriteAllowed('.beads/issues.jsonl', {
+			actor: 'codex',
+			operation: 'write',
+		});
+
+		expect(decision.allowed).toBe(false);
+		expect(decision.decision).toBe('blocked');
+		expect(decision.requiredSurface).toBe('beads_state');
+		expect(decision.repairHint).toContain('bd');
+		expect(decision.reason).toContain('Direct edits');
+	});
+
+	test('allows declared Forge API writes for the matching required surface', () => {
+		const decision = assertProtectedWriteAllowed('.beads/config.yaml', {
+			actor: 'forge',
+			operation: 'write',
+			viaForgeApi: true,
+			surface: 'beads_state',
+		});
+
+		expect(decision.allowed).toBe(true);
+		expect(decision.decision).toBe('allowed');
+		expect(decision.requiredSurface).toBe('beads_state');
+	});
+
+	test('writes protected files only through the declared Forge API surface', () => {
+		const root = createTempDir();
+		try {
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'version: 1\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+			});
+
+			expect(result.allowed).toBe(true);
+			expect(fs.readFileSync(path.join(root, '.forge/config.yaml'), 'utf8')).toBe('version: 1\n');
+
+			const blocked = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
+				actor: 'codex',
+			});
+			expect(blocked.allowed).toBe(false);
+			expect(fs.readFileSync(path.join(root, '.forge/config.yaml'), 'utf8')).toBe('version: 1\n');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('canonicalizes absolute and dot-segment paths before protected write decisions', () => {
+		const root = createTempDir();
+		try {
+			const absoluteConfig = path.join(root, '.forge', 'config.yaml');
+			const absoluteDecision = writeProtectedFile(root, absoluteConfig, 'bad: true\n', {
+				actor: 'codex',
+			});
+			expect(absoluteDecision.allowed).toBe(false);
+			expect(absoluteDecision.path).toBe('.forge/config.yaml');
+			expect(absoluteDecision.requiredSurface).toBe('forge_config');
+
+			const dotSegmentDecision = writeProtectedFile(root, '.forge/../.forge/config.yaml', 'bad: true\n', {
+				actor: 'codex',
+			});
+			expect(dotSegmentDecision.allowed).toBe(false);
+			expect(dotSegmentDecision.path).toBe('.forge/config.yaml');
+			expect(dotSegmentDecision.requiredSurface).toBe('forge_config');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('blocks symlink targets before writing protected files', () => {
+		if (process.platform === 'win32') {
+			return;
+		}
+
+		const root = createTempDir();
+		const outside = createTempDir();
+		try {
+			fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+			fs.symlinkSync(path.join(outside, 'config.yaml'), path.join(root, '.forge', 'config.yaml'));
+
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+			});
+
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain('symlink');
+			expect(fs.existsSync(path.join(outside, 'config.yaml'))).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	test('blocks symlink ancestors before creating parent directories', () => {
+		if (process.platform === 'win32') {
+			return;
+		}
+
+		const root = createTempDir();
+		const outside = createTempDir();
+		try {
+			fs.symlinkSync(outside, path.join(root, '.forge'));
+
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+			});
+
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain('ancestor');
+			expect(fs.existsSync(path.join(outside, 'config.yaml'))).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	test('blocks dangling symlink ancestors before creating parent directories', () => {
+		if (process.platform === 'win32') {
+			return;
+		}
+
+		const root = createTempDir();
+		const outside = createTempDir();
+		const missingOutsideTarget = path.join(outside, 'missing');
+		try {
+			fs.symlinkSync(missingOutsideTarget, path.join(root, '.forge'));
+
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+			});
+
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain('ancestor');
+			expect(fs.existsSync(missingOutsideTarget)).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	test('builds complete audit payloads for protected edit attempts', () => {
+		const decision = assertProtectedWriteAllowed('.forge/log.jsonl', {
+			actor: 'codex',
+			operation: 'append',
+		});
+		const event = buildProtectedStateAuditEvent(decision);
+
+		expect(event.kind).toBe('protected_state_write');
+		expect(event.actor).toBe('codex');
+		expect(event.path).toBe('.forge/log.jsonl');
+		expect(event.decision).toBe('blocked');
+		expect(event.requiredSurface).toBe('append_only_logs');
+		expect(event.repairHint).toContain('append-only');
+		expect(event.metadata).toMatchObject({
+			operation: 'append',
+			requiredSurface: 'append_only_logs',
+			decision: 'blocked',
+		});
+	});
+
+	test('records protected edit attempts through the existing Beads audit model when available', () => {
+		const calls = [];
+		const decision = assertProtectedWriteAllowed('.forge/config.yaml', {
+			actor: 'codex',
+			operation: 'staged_edit',
+		});
+
+		const result = recordProtectedStateAuditEvent(decision, {
+			cwd: 'C:/repo',
+			runCommand: (cmd, args, options) => {
+				calls.push({ cmd, args, options });
+				return JSON.stringify({ id: 'int-protected' });
+			},
+		});
+
+		expect(result.success).toBe(true);
+		expect(calls[0].cmd).toBe('bd');
+		expect(calls[0].args).toContain('protected_state_write');
+		expect(calls[0].args).toContain('--meta-json');
+		const meta = JSON.parse(calls[0].args[calls[0].args.indexOf('--meta-json') + 1]);
+		expect(meta).toMatchObject({
+			actor: 'codex',
+			path: '.forge/config.yaml',
+			decision: 'blocked',
+			requiredSurface: 'forge_config',
+		});
+	});
+});
+
+describe('scripts/protected-state-check.js', () => {
+	const scriptPath = path.join(__dirname, '..', 'scripts', 'protected-state-check.js');
+
+	test('fails staged direct edits to protected state with repair hints', () => {
+		const result = spawnSync('node', [scriptPath], {
+			cwd: path.join(__dirname, '..'),
+			stdio: 'pipe',
+			env: {
+				...process.env,
+				FORGE_PROTECTED_STATE_STAGED_FILES: '.beads/issues.jsonl\nlib/safe.js',
+				FORGE_PROTECTED_STATE_ACTOR: 'codex-test',
+			},
+		});
+
+		expect(result.status).toBe(1);
+		const output = `${result.stdout}${result.stderr}`;
+		expect(output).toContain('.beads/issues.jsonl');
+		expect(output).toContain('beads_state');
+		expect(output).toContain('Repair:');
+		expect(output).toContain('bd');
+	});
+
+	test('passes when staged edits do not touch protected state', () => {
+		const result = spawnSync('node', [scriptPath], {
+			cwd: path.join(__dirname, '..'),
+			stdio: 'pipe',
+			env: {
+				...process.env,
+				FORGE_PROTECTED_STATE_STAGED_FILES: 'lib/safe.js\ntest/safe.test.js',
+			},
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.toString()).toContain('No protected state edits detected');
+	});
+
+	test('allows sanctioned protected surfaces when Forge command context declares them', () => {
+		const result = spawnSync('node', [scriptPath], {
+			cwd: path.join(__dirname, '..'),
+			stdio: 'pipe',
+			env: {
+				...process.env,
+				FORGE_PROTECTED_STATE_STAGED_FILES: 'bun.lock',
+				FORGE_PROTECTED_STATE_ALLOWED_SURFACES: 'lockfiles',
+			},
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.toString()).toContain('No protected state edits detected');
+	});
+
+	test('includes deletions in the staged protected-state query', () => {
+		const content = fs.readFileSync(scriptPath, 'utf8');
+		expect(content).toContain('--diff-filter=ACMRDT');
+	});
+
+	test('checks both source and destination paths for staged renames and copies', () => {
+		const result = spawnSync('node', [scriptPath], {
+			cwd: path.join(__dirname, '..'),
+			stdio: 'pipe',
+			env: {
+				...process.env,
+				FORGE_PROTECTED_STATE_STAGED_NAME_STATUS: 'R100\t.beads/issues.jsonl\tdocs/issues.jsonl',
+			},
+		});
+
+		expect(result.status).toBe(1);
+		const output = `${result.stdout}${result.stderr}`;
+		expect(output).toContain('.beads/issues.jsonl');
+		expect(output).toContain('beads_state');
+	});
+});
