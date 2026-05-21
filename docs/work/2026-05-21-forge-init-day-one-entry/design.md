@@ -33,7 +33,7 @@ Keep the command in `lib/commands/init.js` because registry dispatch already rou
 The generated config will continue to use `renderAdoptionConfigYaml(profile)` as the base. Day-one selections then patch the parsed config before rendering:
 
 - `workflow.classification.default`: `critical`, `standard`, or `refactor`.
-- `rails.layer1.confirmed`: boolean confirmation recorded by the wizard or non-interactive default.
+- `layer1Rails.confirmed`: boolean confirmation recorded by the wizard or non-interactive default.
 - `adapters.harness.targets`: selected harness targets.
 
 Scaffold `.forge/protected-paths.yaml` as a manifest, not enforcement:
@@ -51,7 +51,7 @@ Non-interactive mode (`--yes`, profile shortcuts, or non-TTY stdin) uses:
 - profile: `standard`.
 - classification: `standard`.
 - Layer 1 rails: confirmed.
-- harness targets: detected targets, or `codex` when none are detected.
+- harness targets: explicit `--harness`, explicit profile defaults, detected targets, or `codex` when none are detected.
 
 Interactive mode prompts only when no explicit flag is supplied.
 

@@ -118,6 +118,18 @@ describe('forge init command', () => {
     expect(config.adapters.harness.targets).toEqual(['codex', 'claude', 'cursor', 'opencode', 'copilot']);
   });
 
+  test('preserves explicit profile harness defaults over detected markers', async () => {
+    const root = makeProject();
+    fs.mkdirSync(path.join(root, '.codex'));
+
+    const result = await handler(['--full', '--yes'], {}, root);
+
+    expect(result.success).toBe(true);
+    const config = readYaml(path.join(root, '.forge', 'config.yaml'));
+    expect(config.template.profile).toBe('full');
+    expect(config.adapters.harness.targets).toEqual(['codex', 'claude', 'cursor', 'opencode', 'copilot']);
+  });
+
   test('does not clobber existing generated files without force', async () => {
     const root = makeProject();
     fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
