@@ -83,16 +83,21 @@ describe('forge init command', () => {
   test('renders protected path and patch scaffolds', () => {
     const root = makeProject();
     fs.mkdirSync(path.join(root, '.cursor'));
+    fs.mkdirSync(path.join(root, '.github'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'opencode.json'), '{}\n');
+    fs.writeFileSync(path.join(root, '.github', 'copilot-instructions.md'), '# Copilot\n');
     const protectedYaml = readYamlFromString(renderProtectedPathsYaml({
       classification: 'standard',
-      harnessTargets: ['cursor'],
+      harnessTargets: ['cursor', 'opencode', 'copilot'],
       projectRoot: root,
     }));
 
     expect(protectedYaml.kind).toBe('forge.protectedPaths');
-    expect(protectedYaml.harness.targets).toEqual(['cursor']);
+    expect(protectedYaml.harness.targets).toEqual(['cursor', 'opencode', 'copilot']);
     expect(protectedYaml.paths.map(entry => entry.path)).toContain('.forge/config.yaml');
     expect(protectedYaml.paths.map(entry => entry.path)).toContain('.cursor/**');
+    expect(protectedYaml.paths.map(entry => entry.path)).toContain('opencode.json');
+    expect(protectedYaml.paths.map(entry => entry.path)).toContain('.github/copilot-instructions.md');
     expect(protectedYaml.paths.map(entry => entry.path)).not.toContain('.codex/**');
     expect(renderPatchMd()).toContain('# Forge Patch Intent');
   });
