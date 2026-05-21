@@ -27,6 +27,7 @@ describe('protected state surfaces', () => {
 		expect(classifyProtectedPath('bun.lock').surface).toBe('lockfiles');
 		expect(classifyProtectedPath('.forge/extensions/example/manifest.json').surface).toBe('extension_manifests');
 		expect(classifyProtectedPath('.env.local').surface).toBe('secrets');
+		expect(classifyProtectedPath('apps/api/.env').surface).toBe('secrets');
 		expect(classifyProtectedPath('.git/config').surface).toBe('immutable');
 		expect(classifyProtectedPath('lib/file-utils.js')).toBe(null);
 		expect(PROTECTED_SURFACES.map(surface => surface.id)).toContain('generated_harness');
