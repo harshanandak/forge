@@ -51,7 +51,7 @@ Non-interactive mode (`--yes`, profile shortcuts, or non-TTY stdin) uses:
 - profile: `standard`.
 - classification: `standard`.
 - Layer 1 rails: confirmed.
-- harness targets: explicit `--harness`, explicit profile defaults, detected targets, or `codex` when none are detected.
+- harness targets: explicit `--harness`, detected targets, explicit profile defaults, or `codex` when none are configured.
 
 Interactive mode prompts only when no explicit flag is supplied.
 
