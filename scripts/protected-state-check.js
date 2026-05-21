@@ -6,7 +6,27 @@ const {
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
 
+function parseNameStatus(output) {
+	const files = [];
+	for (const line of output.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		const parts = trimmed.split('\t').filter(Boolean);
+		const status = parts[0] || '';
+		if (/^[RC]/.test(status)) {
+			files.push(...parts.slice(1, 3));
+		} else {
+			files.push(parts[1]);
+		}
+	}
+	return [...new Set(files.filter(Boolean))];
+}
+
 function getStagedFiles() {
+	if (process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS !== undefined) {
+		return parseNameStatus(process.env.FORGE_PROTECTED_STATE_STAGED_NAME_STATUS);
+	}
+
 	if (process.env.FORGE_PROTECTED_STATE_STAGED_FILES !== undefined) {
 		return process.env.FORGE_PROTECTED_STATE_STAGED_FILES
 			.split(/\r?\n/)
@@ -14,11 +34,11 @@ function getStagedFiles() {
 			.filter(Boolean);
 	}
 
-	const output = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRD'], {
+	const output = execFileSync('git', ['diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
 		encoding: 'utf8',
 		stdio: ['ignore', 'pipe', 'pipe'],
 	});
-	return output.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+	return parseNameStatus(output);
 }
 
 function getAllowedSurfaces() {
