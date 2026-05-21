@@ -16,7 +16,7 @@ Generated files:
 
 - `.forge/config.yaml` records the adoption profile, default classification, Layer 1 rail confirmation, and harness targets.
 - `.forge/patch.md` is an empty patch-intent placeholder for future local overrides.
-- `.forge/protected-paths.yaml` records the protected path manifest scaffold. This PR only scaffolds the manifest; protected-state enforcement belongs to the later protected-state work.
+- `.forge/protected-paths.yaml` records the protected path manifest scaffold. Currently, only the manifest structure is generated; protected-state enforcement is not yet implemented.
 
 When run interactively, `forge init` asks for:
 

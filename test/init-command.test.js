@@ -159,6 +159,24 @@ describe('forge init command', () => {
     expect(result.error).toContain('Re-run forge init');
     expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
   });
+
+  test('validates unknown profile before interactive wizard prompts', async () => {
+    const root = makeProject();
+    const prompts = [];
+
+    const result = await handler(['--profile', 'unknown'], {}, root, {
+      stdinIsTTY: true,
+      prompt: async (question) => {
+        prompts.push(question);
+        return '';
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown adoption profile 'unknown'");
+    expect(prompts).toEqual([]);
+    expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
+  });
 });
 
 function readYamlFromString(value) {
