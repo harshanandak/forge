@@ -123,6 +123,22 @@ describe('forge init command', () => {
     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
   });
 
+  test('dry-run previews config when generated files already exist', async () => {
+    const root = makeProject();
+    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.forge', 'patch.md'), 'user patch\n');
+    fs.writeFileSync(path.join(root, '.forge', 'protected-paths.yaml'), 'user manifest\n');
+
+    const result = await handler(['--yes', '--dry-run'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(result.files).toEqual(['.forge/config.yaml']);
+    expect(result.output).toContain('workflow:');
+    expect(fs.readFileSync(path.join(root, '.forge', 'patch.md'), 'utf8')).toBe('user patch\n');
+    expect(fs.readFileSync(path.join(root, '.forge', 'protected-paths.yaml'), 'utf8')).toBe('user manifest\n');
+    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
+  });
+
   test('first-time wizard asks classification, L1 confirmation, and harness targets in order', async () => {
     const root = makeProject();
     fs.mkdirSync(path.join(root, '.claude'));
