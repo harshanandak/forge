@@ -153,6 +153,32 @@ describe('protected state surfaces', () => {
 		}
 	});
 
+	test('blocks dangling symlink ancestors before creating parent directories', () => {
+		if (process.platform === 'win32') {
+			return;
+		}
+
+		const root = createTempDir();
+		const outside = createTempDir();
+		const missingOutsideTarget = path.join(outside, 'missing');
+		try {
+			fs.symlinkSync(missingOutsideTarget, path.join(root, '.forge'));
+
+			const result = writeProtectedFile(root, '.forge/config.yaml', 'bad: true\n', {
+				actor: 'forge',
+				surface: 'forge_config',
+				viaForgeApi: true,
+			});
+
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain('ancestor');
+			expect(fs.existsSync(missingOutsideTarget)).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
 	test('builds complete audit payloads for protected edit attempts', () => {
 		const decision = assertProtectedWriteAllowed('.forge/log.jsonl', {
 			actor: 'codex',
