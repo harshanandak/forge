@@ -260,7 +260,7 @@ Context7 provides current documentation that may be more recent than the AI's tr
   "mcpServers": {
     "context7": {
       "command": "bunx",
-      "args": ["--bun", "@upstash/context7-mcp@latest"]
+      "args": ["--bun", "@upstash/context7-mcp@2"]
     }
   }
 }
@@ -307,7 +307,7 @@ Add to `.mcp.json` in your project root:
   "mcpServers": {
     "context7": {
       "command": "bunx",
-      "args": ["--bun", "@upstash/context7-mcp@latest"]
+      "args": ["--bun", "@upstash/context7-mcp@2"]
     },
     "grep-app": {
       "command": "bunx",

@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.0.11 release-note draft
+
+This is the planned public documentation and positioning release. The package remains unpublished until the release process runs after merge.
+
+#### User value
+
+- Reframes Forge as a local runtime control plane for AI-assisted engineering, not only a fixed TDD stage ladder.
+- Makes the repository docs the canonical source for README, quickstart, support, command reference, release flow, and DeepWiki indexing.
+- Gives new users a clearer first-run path for `forge init`, `forge setup`, `forge status`, Beads/GitHub sync, worktrees, validation, and PR review workflows.
+- Adds support paths for setup failures, Beads/Dolt recovery, protected state, branch protection, worktree cleanup, and validation failures.
+
+#### Migration notes
+
+- Treat `/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify` as an agent workflow template. Do not assume every stage is a standalone `forge <stage>` CLI command.
+- Use `forge init` for the `.forge/` adoption skeleton and `forge setup` for agent instructions, Beads/GitHub sync scaffolding, and harness files.
+- Use `--agents`, not the stale singular `--agent`, when documenting or invoking setup.
+- Internal roadmap labels such as `0.0.19` are future planning labels, not current public package availability.
+
+#### Feature flags and experimental areas
+
+- Protected-state enforcement is active only where the protected-state checker is wired into hooks or CI.
+- `forge migrate` is a dry-run proof of concept.
+- Review adapters currently support the review-adapter contract and Greptile-shaped starter template.
+- Greptile, SonarCloud, branch protection, and GitHub sync depend on repository configuration and credentials.
+
+#### Known limitations
+
+- Beads/Dolt state can fail independently of Git state; use the support guide before changing issue metadata.
+- Windows worktrees can leave locked Dolt or tool processes behind during cleanup.
+- DeepWiki is generated from repository files and can lag behind `master` after merge.
+- Some stage enforcement remains agent/harness dependent.
+
+#### Rollback path
+
+- Revert this documentation PR if the public docs create release confusion.
+- Keep package versioning and publishing separate from this docs PR.
+- If generated DeepWiki output keeps old TDD-only framing after refresh, file a follow-up issue and correct the repository docs first.
+
+#### Adapter compatibility
+
+- Existing issue wrappers continue to use Beads as the local/reference issue adapter.
+- Existing Greptile review shell compatibility remains documented as the current review-adapter starter path.
+
+#### Post-merge DeepWiki checklist
+
+- Refresh DeepWiki after merge to `master`.
+- Confirm the DeepWiki index date and commit changed to the merged commit.
+- Compare generated Overview, Getting Started, and Core Concepts pages against `README.md`, `QUICKSTART.md`, `docs/INDEX.md`, and `docs/reference/COMMANDS.md`.
+- File a follow-up issue if generated docs still describe Forge as only the old seven-stage TDD workflow.
+
 ### Added
 
 - **Normalized shared GitHub/Beads issue sync state** (PR #134, forge-nlgg): added canonical link reconciliation and shared import primitives so steady-state GitHub sync and existing-issue import use the same normalized issue contract

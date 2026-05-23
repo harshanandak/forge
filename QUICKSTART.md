@@ -1,401 +1,117 @@
-# Quickstart Guide
+# Quickstart
 
-Get started with Forge in 5 minutes. Ship your first feature with tests, security, and documentation.
-
----
+This guide gets Forge installed and visible to an AI coding agent without assuming the old seven-stage workflow is the whole product.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
+- Git
+- Node.js and Bun
+- A GitHub repository if you want PR, sync, and branch-protection workflows
+- GitHub CLI for PR-oriented flows: `gh auth login`
+- Optional: Beads (`bd`) for durable local issue state
 
-- **Node.js** (v16 or higher) - [Download here](https://nodejs.org)
-- **Git** installed and configured
-- **GitHub account** with repository access
-- **GitHub CLI** (recommended):
-  ```bash
-  # macOS
-  brew install gh && gh auth login
-
-  # Windows
-  winget install GitHub.cli && gh auth login
-
-  # Linux
-  sudo apt install gh && gh auth login
-  ```
-
-**Time required**: 5 minutes for first feature
-
----
-
-## Installation
-
-### Step 1: Install Forge
+## 1. Install The Package
 
 ```bash
-bun install forge-workflow
+bun add -D forge-workflow
 ```
 
-This installs the package and creates `AGENTS.md` in your project.
+You can also run one-off commands with `bunx forge ...`.
 
-### Step 2: Configure for Your AI Agent
+## 2. Initialize Runtime Config
+
+Use `forge init` for the day-one `.forge/` skeleton:
 
 ```bash
-bunx forge setup
+bunx forge init --profile minimal --classification standard --harness codex --yes
 ```
 
-**Interactive setup** will ask:
-```
-? Which AI agents are you using?
-  ◉ Claude Code
-  ◯ Cursor
-  ◯ GitHub Copilot
-  (use space to select, enter to confirm)
-```
+Generated files:
 
-**Or specify directly**:
-```bash
-bunx forge setup --agents claude,cursor,cline
-```
+- `.forge/config.yaml` - adoption profile, default classification, Layer 1 rail confirmation, and harness targets.
+- `.forge/patch.md` - local patch-intent placeholder.
+- `.forge/protected-paths.yaml` - protected-path manifest scaffold.
 
-**What this creates**:
-- `AGENTS.md` - Universal instructions
-- Agent-specific files (`.claude/commands/`, `.cursorrules`, etc.)
-- `AGENTS.md` - Complete workflow guide
-- `docs/TOOLCHAIN.md` - Toolchain reference
-
----
-
-## Your First Feature (5 Minutes)
-
-Let's add a health check endpoint to demonstrate the full workflow.
-
-### Utility: Check Status
+Useful checks:
 
 ```bash
-$ bunx forge /status
+bunx forge options lint
+bunx forge options diff
 ```
 
-**Output:**
-```
-✓ Current branch: main
-✓ Working directory: clean
-✓ No active issues
-✓ No active work in progress
+## 3. Install Agent Instructions
 
-Ready to start!
-```
-
-**What it checks**:
-- Git branch and status
-- Active issues (if Beads installed)
-- Current work state
-
----
-
-### Stage 1: Plan
+Use `forge setup` when you want Forge to install agent-facing files:
 
 ```bash
-$ bunx forge /plan health-check-endpoint
+bunx forge setup --agents codex --yes
 ```
 
-**What happens**:
-1. Design Q&A captures intent (Phase 1)
-2. AI researches best practices, OWASP Top 10 analysis (Phase 2)
-3. Creates feature branch, tracking issue, and task list (Phase 3)
-
-**Output:**
-```
-✓ Created branch: feat/health-check-endpoint
-✓ Created issue: forge-abc1 (in_progress)
-✓ Design Q&A complete, research done, task list ready
-
-Next: /dev to start TDD implementation
-```
-
-**Time**: ~3 minutes
-
----
-
-### Stage 2: Development (TDD)
+Other safe examples:
 
 ```bash
-$ bunx forge /dev
+bunx forge setup --agents claude,cursor
+bunx forge setup --agents claude cursor
+bunx forge setup --all --quick
+bunx forge setup --path ./my-project --agents codex --dry-run
+bunx forge setup --sync --agents claude,cursor
 ```
 
-**The AI guides you through RED-GREEN-REFACTOR**:
+Use `--agents`, not `--agent`.
 
-**RED** - Write failing test first:
-```javascript
-// tests/health.test.js
-describe('GET /health', () => {
-  it('returns 200 OK with status', async () => {
-    const response = await request(app).get('/health');
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: 'ok' });
-  });
-});
-```
-
-Run test → ❌ Fails (endpoint doesn't exist)
-
-**GREEN** - Minimal code to pass:
-```javascript
-// routes/health.js
-router.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-```
-
-Run test → ✅ Passes
-
-**REFACTOR** - Clean up if needed, then commit:
-```bash
-git add .
-git commit -m "test: add health check endpoint test
-
-- Returns 200 OK
-- JSON response with status field
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
-```
-
-**Repeat for edge cases** (if any)
-
-**Time**: ~8 minutes
-
----
-
-### Stage 3: Validate
+## 4. Inspect Local State
 
 ```bash
-$ bunx forge /validate
+bunx forge status --json
+bunx forge board --json
 ```
 
-**What runs**:
-```
-Running type check... ✓
-Running linter...     ✓
-Running unit tests... ✓ (1 test passed)
-Running security scan... ✓ (no vulnerabilities)
-```
+These are local runtime state views. They can read Beads-backed issue metadata when Beads is configured, but they are not a hosted project-management service.
 
-**If anything fails**, fix it before proceeding.
+## 5. Work With Issues And Worktrees
 
-**Time**: ~1 minute
-
----
-
-### Stage 4: Ship
+When Beads is available:
 
 ```bash
-$ bunx forge /ship
+bunx forge ready
+bunx forge show <issue-id>
+bunx forge claim <issue-id>
 ```
 
-**What happens**:
-1. Pushes branch to GitHub
-2. Creates pull request with documentation
-
-**PR includes**:
-```markdown
-## Summary
-- Added GET /health endpoint
-- Returns 200 OK with status: ok
-- Minimal information disclosure
-
-## Research
-See: design doc from /plan phase
-
-## Test Coverage
-- 1 unit test (health endpoint returns 200 OK)
-
-## Security
-- ✓ OWASP A01: No sensitive data exposed
-- ✓ OWASP A03: No injection vectors
-```
-
-**Output:**
-```
-✓ Pushed branch: feat/health-check-endpoint
-✓ Created PR: #42
-✓ URL: https://github.com/you/project/pull/42
-
-Next: /review to address feedback
-```
-
-**Time**: ~1 minute
-
----
-
-### Stage 5: Review (if needed)
+For isolated feature work:
 
 ```bash
-$ bunx forge /review 42
+bunx forge worktree create docs-overhaul --branch codex/docs-overhaul
+bunx forge worktree remove docs-overhaul
 ```
 
-**Addresses**:
-- GitHub Actions failures
-- Code review comments
-- Security scan issues
-- CI/CD feedback
+If Beads reports a Dolt database or server error, use [Support and troubleshooting](docs/guides/SUPPORT.md) before changing issue state.
 
-Fix issues, commit, push - PR updates automatically.
+## 6. Run Validation
 
----
-
-### Stage 6: Premerge
+For this repository:
 
 ```bash
-$ bunx forge /premerge 42
+bun run check
+npm pack --dry-run
 ```
 
-**Before merging**, updates:
-- `docs/planning/PROGRESS.md` (if exists)
-- API documentation (if needed)
-- README (if user-facing)
+`bun run check` runs typecheck, lint, security audit, and tests through `scripts/validate.js`.
 
-Then merges the PR with squash commit.
+## 7. Understand Stage Commands
 
-**Output:**
-```
-✓ Updated documentation
-✓ Merged PR #42
-✓ Deleted branch: feat/health-check-endpoint
-✓ Issue PROJ-42: closed
+The agent workflow stages are documented in `AGENTS.md` and the installed agent skill files:
 
-Back on main branch. Ready for next feature!
+```text
+/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
 ```
 
-**Time**: ~1 minute
+These are agent workflow stages. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
 
----
+## Next Reading
 
-### Stage 7: Verify
-
-```bash
-$ bunx forge /verify
-```
-
-**Final checks**:
-- Documentation cross-references valid
-- Examples work
-- No broken links
-- Everything up to date
-
----
-
-## What You Just Did
-
-In **5 minutes**, you:
-
-✅ Researched best practices with AI
-✅ Created plan with security analysis
-✅ Wrote tests BEFORE code (TDD)
-✅ Validated with type checking, linting, security scan
-✅ Created PR with full documentation
-✅ Merged with confidence
-
-**All with tests, security, and docs built-in.**
-
----
-
-## What's Next?
-
-### Try These Common Workflows
-
-**Simple feature** (like you just did):
-```bash
-/plan → /dev → /validate → /ship
-```
-
-**Bug fix with security**:
-```bash
-/plan sql-injection-fix
-/dev  # Fix + tests
-/validate  # Security scan critical
-/ship
-```
-
-**Architecture change** (uses design doc):
-```bash
-/plan user-authentication  # Design Q&A + research + branch
-/dev
-/validate
-/ship
-/review
-/premerge
-/verify
-```
-
----
-
-### Optional: Install Toolchain
-
-**Beads** - Issue tracking that persists across sessions:
-```bash
-bun add -g @beads/bd
-bd init
-bd ready  # Find work to do
-```
-
----
-
-### Learn More
-
-📖 **Full Workflow Guide**
-→ [AGENTS.md](AGENTS.md)
-
-🛠️ **Toolchain Reference**
-→ [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md)
-
-🎯 **Real-World Examples**
-→ [docs/EXAMPLES.md](docs/EXAMPLES.md)
-
-🔧 **Agent Setup**
-→ [docs/SETUP.md](docs/SETUP.md)
-
-💬 **Questions?**
-→ [GitHub Discussions](https://github.com/harshanandak/forge/discussions)
-
----
-
-## Quick Reference
-
-```bash
-/status       # Check current state
-/plan X       # Design Q&A + research + branch + task list
-/dev          # TDD development
-/validate        # Validate everything
-/ship         # Create PR
-/review N     # Address PR #N feedback
-/premerge N   # Prepare PR #N for merge
-/verify       # Post-merge health check
-```
-
----
-
-## Tips for Success
-
-**1. Always start with /status**
-Know where you are before starting new work.
-
-**2. Don't skip research**
-2 minutes of research saves hours of refactoring.
-
-**3. Write tests first (RED-GREEN-REFACTOR)**
-Tests written after code are half as effective.
-
-**4. Use Beads for multi-session work**
-Don't rely on memory - track issues in git.
-
-**5. Design docs for architecture changes**
-Get approval on design before implementing.
-
----
-
-**Ready to ship your next feature?**
-
-```bash
-/status
-```
-
-Then start with `/plan <your-feature-name>`
+- [Docs index](docs/INDEX.md)
+- [Setup guide](docs/guides/SETUP.md)
+- [Migration guide](docs/guides/MIGRATION.md)
+- [Support and troubleshooting](docs/guides/SUPPORT.md)
+- [Command reference](docs/reference/COMMANDS.md)

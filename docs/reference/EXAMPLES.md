@@ -473,10 +473,10 @@ forge sync
 
 ## Next Steps
 
-📚 **New to Forge?** → [QUICKSTART.md](../QUICKSTART.md)
+📚 **New to Forge?** → [QUICKSTART.md](../../QUICKSTART.md)
 
-📖 **Learn workflow** → [AGENTS.md](../AGENTS.md)
+📖 **Learn workflow** → [AGENTS.md](../../AGENTS.md)
 
-🛠️ **Setup tools** → [SETUP.md](SETUP.md)
+🛠️ **Setup tools** → [SETUP.md](../guides/SETUP.md)
 
 💬 **Questions?** → [GitHub Discussions](https://github.com/harshanandak/forge/discussions)

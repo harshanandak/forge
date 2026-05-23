@@ -1,5 +1,7 @@
 # Forge Enhancement Roadmap
 
+> Historical snapshot: this roadmap is preserved for context only. Current public release guidance lives in [Release Reference](RELEASE.md), [CHANGELOG](../../CHANGELOG.md), and the runtime building-block work under `docs/work/2026-04-28-skeleton-pivot/`. References to `v3`, `/research`, or old PR sequences are historical/internal labels, not current package release instructions.
+
 **Comprehensive implementation plan for transforming Forge into a fully automated, orchestrated workflow system.**
 
 **Plan Created**: 2026-02-10
@@ -175,7 +177,7 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ### **PR5: Advanced Testing Expansion** 🔬
 **Beads Issue**: `forge-01p`
-**Research**: [docs/research/advanced-testing.md](docs/research/advanced-testing.md) (PR #36)
+**Research**: historical `docs/research/advanced-testing.md` (PR #36)
 **Status**: Research complete, ready for `/plan`
 **Timeline**: 2-3 days
 **Impact**: Medium
@@ -204,7 +206,7 @@ PR0 (Simplification) → PR1 (Fixes) → PR2 (Security) → PR3 (Test Infra)
 
 ### **PR6: Plugin Architecture & Smart Recommendations** 🔌
 **Beads Issue**: `forge-a7n`
-**Research**: [docs/research/plugin-architecture.md](docs/research/plugin-architecture.md) (PR #37)
+**Research**: historical `docs/research/plugin-architecture.md` (PR #37)
 **Status**: Research complete, ready for `/plan`
 **Timeline**: 4-5 days
 **Impact**: High (flagship feature)
@@ -336,8 +338,8 @@ Each PR is self-contained and can be rolled back independently:
 1. ✅ **PR4 Completed** — CLI command automation merged (PR #33)
 
 2. ✅ **Research complete** for PR5 and PR6:
-   - PR5 research: [docs/research/advanced-testing.md](docs/research/advanced-testing.md) (PR #36)
-   - PR6 research: [docs/research/plugin-architecture.md](docs/research/plugin-architecture.md) (PR #37)
+   - PR5 research: historical `docs/research/advanced-testing.md` (PR #36)
+   - PR6 research: historical `docs/research/plugin-architecture.md` (PR #37)
    - PR6 scope expanded: smart plugin recommendations, CLI-first, pricing transparency
    - forge-mlm absorbed into PR5.5 + PR6 + PR8
 
@@ -349,8 +351,8 @@ Each PR is self-contained and can be rolled back independently:
 
 - **Master Plan**: `docs/plans/*.md`
 - **Beads Issues**: `forge list` or `forge show <issue-id>`
-- **Workflow Guide**: [AGENTS.md](../AGENTS.md)
-- **Architecture Docs**: Coming in PR0 - [ARCHITECTURE.md](./ARCHITECTURE.md)
+- **Workflow Guide**: [AGENTS.md](../../AGENTS.md)
+- **Architecture Docs**: historical PR0 placeholder, superseded by [Docs Index](../INDEX.md)
 
 ---
 

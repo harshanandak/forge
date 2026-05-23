@@ -22,9 +22,9 @@ When run interactively, `forge init` asks for:
 
 - default classification: `critical`, `standard`, or `refactor`.
 - Layer 1 rail confirmation.
-- harness targets: `claude`, `cursor`, and/or `codex`.
+- harness targets: `claude`, `cursor`, `codex`, `opencode`, and/or `copilot`.
 
-Harness defaults are detected from filesystem markers:
+Harness defaults are detected from filesystem markers where supported:
 
 - `.claude` selects `claude`.
 - `.cursor` selects `cursor`.
@@ -43,6 +43,8 @@ forge init --full
 ```
 
 `forge setup --minimal` remains a separate shortcut for repositories that want setup behavior rather than only the day-one `.forge/` skeleton.
+
+Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow stages. Do not present them as standalone `forge review`, `forge premerge`, or `forge verify` CLI commands unless those commands exist in the current CLI registry.
 
 ## Planning Template
 
@@ -101,4 +103,4 @@ The generated config includes `template.kind`, `template.version`, `template.pro
 
 ## Non-Scope
 
-This flow does not implement harness translation, adapter marketplace installation, upgrade or rollback, protected-state enforcement, `forge new`, or patch intent execution.
+This flow does not implement harness translation, adapter marketplace installation, upgrade or rollback, guaranteed protected-state enforcement in every repository, `forge new`, or patch intent execution.
