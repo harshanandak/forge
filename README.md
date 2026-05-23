@@ -82,7 +82,7 @@ Setup flags used in existing repositories:
 | `--dry-run` | Preview planned writes. |
 | `--sync` | Scaffold Beads/GitHub sync support. |
 | `--symlink` | Create supported instruction links instead of copies where available. |
-| `--merge smart|preserve|replace` | Choose how setup handles existing instruction files. |
+| `--merge smart\|preserve\|replace` | Choose how setup handles existing instruction files. |
 
 ## Common Commands
 
