@@ -27,7 +27,7 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
 
       const claudeSkill = path.join(root, '.claude', 'skills', 'guard-rails-audit', 'SKILL.md');
       const cursorRule = path.join(root, '.cursor', 'rules', 'guard-rails-audit.mdc');
-      const codexSkill = path.join(root, '.agents', 'skills', 'guard-rails-audit', 'SKILL.md');
+      const codexSkill = path.join(root, '.codex', 'skills', 'guard-rails-audit', 'SKILL.md');
 
       expect(fs.existsSync(claudeSkill)).toBe(true);
       expect(fs.existsSync(cursorRule)).toBe(true);
@@ -85,10 +85,37 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
       globs: null,
       alwaysApply: false,
     });
-    expect(codex.target).toBe('.agents/skills/guard-rails-audit/SKILL.md');
+    expect(codex.target).toBe('.codex/skills/guard-rails-audit/SKILL.md');
     expect(codex.target).not.toContain('prompt');
     expect(codex.target).not.toContain('slash');
-    expect(codex.target).not.toContain('.codex');
+  });
+
+  test('reports source labels and proof boundary for machine-readable evidence', () => {
+    const result = runParity({ cleanup: true });
+
+    expect(result.proofBoundary).toEqual({
+      level: 'metadata-surface',
+      liveAgentInvocation: 'not-run',
+      codexRuntimeDiscovery: 'not-run',
+      reason: 'closed-source harness model invocation is outside this deterministic fixture; .codex/skills is the Forge repository packaging surface, not proof of direct Codex runtime discovery',
+    });
+    expect(result.harnesses.map((harness) => [harness.harness, harness.sourceLabel])).toEqual([
+      ['claude-code', 'S1'],
+      ['cursor', 'S2'],
+      ['codex-cli', 'S4'],
+    ]);
+    expect(result.sources.map((source) => source.label)).toEqual(['S1', 'S2', 'S3', 'S4']);
+  });
+
+  test('committed evidence resolves every harness source label', () => {
+    const evidence = JSON.parse(fs.readFileSync(
+      path.join(__dirname, '..', 'docs', 'work', '2026-05-23-cross-harness-skill-parity', 'evidence.json'),
+      'utf8',
+    ));
+    const sourceLabels = new Set(evidence.sources.map((source) => source.label));
+
+    expect(evidence.harnesses.every((harness) => sourceLabels.has(harness.sourceLabel))).toBe(true);
+    expect(evidence.proofBoundary.codexRuntimeDiscovery).toBe('not-run');
   });
 
   test('description matcher has a positive and negative control', () => {
@@ -108,5 +135,21 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
     expect(parsed.harnesses.map((harness) => harness.harness)).toEqual(['claude-code', 'cursor', 'codex-cli']);
     expect(parsed.harnesses.every((harness) => harness.passed)).toBe(true);
     expect(parsed.harnesses.every((harness) => harness.explicitInvocation === '/guard-rails-audit')).toBe(true);
+    expect(parsed.harnesses.every((harness) => typeof harness.sourceLabel === 'string')).toBe(true);
+    expect(parsed.proofBoundary.level).toBe('metadata-surface');
+  });
+
+  test('CLI ignores missing string flag values instead of consuming the next flag', () => {
+    const accidentalFixture = path.join(__dirname, '..', '--json');
+    fs.rmSync(accidentalFixture, { recursive: true, force: true });
+
+    const result = spawnSync(process.execPath, ['scripts/spikes/skill-auto-invoke-parity.js', '--fixture-dir', '--json'], {
+      cwd: path.join(__dirname, '..'),
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).passed).toBe(true);
+    expect(fs.existsSync(accidentalFixture)).toBe(false);
   });
 });

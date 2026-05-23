@@ -52,6 +52,25 @@ describe('README.md consistency', () => {
   });
 });
 
+describe('docs/INDEX.md reference links', () => {
+  const index = readDoc('docs/INDEX.md');
+
+  it('links to agent skill parity proof boundary docs', () => {
+    expect(index).toContain('reference/AGENT_SKILL_PARITY.md');
+  });
+});
+
+describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {
+  const parity = readDoc('docs/reference/AGENT_SKILL_PARITY.md');
+
+  it('documents the skills-first stage graph follow-up', () => {
+    expect(parity).toContain('Required Follow-Up: Skills-First Stage Graph');
+    expect(parity).toContain('Tracked as `forge-wj36`');
+    expect(parity).toContain('Claude commands should become compatibility shims');
+    expect(parity).toContain('Cursor Agent Skills are not proven in this W0 fixture');
+  });
+});
+
 describe('docs/guides/SETUP.md consistency', () => {
   const setup = readDoc('docs/guides/SETUP.md');
 

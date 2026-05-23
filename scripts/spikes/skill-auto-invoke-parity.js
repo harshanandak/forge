@@ -20,11 +20,39 @@ const MATCHING_PROMPT = 'Inspect Forge L1 rail enforcement and audit events for 
 const NON_MATCHING_PROMPT = 'Draft release notes for a minor README copy edit.';
 const FIXTURE_FILE = 'src/index.js';
 
+const SOURCES = [
+  {
+    label: 'S1',
+    harness: 'claude-code',
+    url: 'https://code.claude.com/docs/en/skills',
+    summary: 'Claude Code project skills live under .claude/skills/<skill>/SKILL.md and use description metadata for automatic invocation.',
+  },
+  {
+    label: 'S2',
+    harness: 'cursor',
+    url: 'https://docs.cursor.com/en/context',
+    summary: 'Cursor Project Rules live under .cursor/rules as .mdc files; Agent Requested rules are description-driven.',
+  },
+  {
+    label: 'S3',
+    harness: 'codex-cli',
+    url: 'https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/skill-creator/SKILL.md',
+    summary: 'Codex skills use SKILL.md frontmatter name and description to determine when the skill gets used.',
+  },
+  {
+    label: 'S4',
+    harness: 'forge',
+    url: 'lib/codex-skills.js',
+    summary: 'Forge packages repository Codex skills from .codex/skills for installation into $CODEX_HOME/skills.',
+  },
+];
+
 const HARNESS_TARGETS = [
   {
     harness: 'claude-code',
     target: '.claude/skills/guard-rails-audit/SKILL.md',
     explicitInvocation: '/guard-rails-audit',
+    sourceLabel: 'S1',
     source: 'Claude Code skill directory target',
     buildFrontmatter: () => ({
       name: CANONICAL_SKILL.name,
@@ -35,6 +63,7 @@ const HARNESS_TARGETS = [
     harness: 'cursor',
     target: '.cursor/rules/guard-rails-audit.mdc',
     explicitInvocation: '/guard-rails-audit',
+    sourceLabel: 'S2',
     source: 'Cursor project rule with documented description/globs/alwaysApply metadata',
     buildFrontmatter: () => ({
       description: CANONICAL_SKILL.description,
@@ -44,9 +73,10 @@ const HARNESS_TARGETS = [
   },
   {
     harness: 'codex-cli',
-    target: '.agents/skills/guard-rails-audit/SKILL.md',
+    target: '.codex/skills/guard-rails-audit/SKILL.md',
     explicitInvocation: '/guard-rails-audit',
-    source: 'Codex documented repository Agent Skills surface; custom slash prompt files are intentionally not used',
+    sourceLabel: 'S4',
+    source: 'Forge repository Codex skills package surface; custom slash prompt files are intentionally not used',
     buildFrontmatter: () => ({
       name: CANONICAL_SKILL.name,
       description: CANONICAL_SKILL.description,
@@ -156,8 +186,8 @@ function validateHarness(root, target) {
   }
 
   if (target.harness === 'codex-cli') {
-    if (!target.target.startsWith('.agents/skills/') || target.target.includes('/prompts/')) {
-      failures.push('Codex target must use .agents/skills, not undocumented prompt/slash files');
+    if (!target.target.startsWith('.codex/skills/') || target.target.includes('/prompts/')) {
+      failures.push('Codex target must use .codex/skills, not undocumented prompt/slash files');
     }
   }
 
@@ -193,6 +223,13 @@ function runParity(options = {}) {
       nonMatchingPrompt: NON_MATCHING_PROMPT,
       canonicalSkill: CANONICAL_SKILL,
       harnesses,
+      sources: SOURCES,
+      proofBoundary: {
+        level: 'metadata-surface',
+        liveAgentInvocation: 'not-run',
+        codexRuntimeDiscovery: 'not-run',
+        reason: 'closed-source harness model invocation is outside this deterministic fixture; .codex/skills is the Forge repository packaging surface, not proof of direct Codex runtime discovery',
+      },
       passed,
       knownIssues,
     };
@@ -220,7 +257,9 @@ function printText(result) {
 function readStringFlag(args, name) {
   const index = args.indexOf(name);
   if (index === -1) return undefined;
-  return args[index + 1];
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) return undefined;
+  return value;
 }
 
 function main() {
@@ -245,6 +284,7 @@ module.exports = {
   HARNESS_TARGETS,
   MATCHING_PROMPT,
   NON_MATCHING_PROMPT,
+  SOURCES,
   descriptionMatches,
   materializeFixture,
   parseFrontmatter,
