@@ -7,13 +7,13 @@
 **Supersedes**: [v2 unified strategy](../2026-04-06-v2-unified-strategy/unified-strategy.md) (preserved for historical reference)
 **Superseded by (in part)**: [FINAL-THESIS.md](./FINAL-THESIS.md), [locked-decisions.md](./locked-decisions.md) (D21–D38)
 **Source design docs (same folder)**:
-- [v3-skeleton-plan.md](./v3-skeleton-plan.md)
+- [v3-skeleton-plan.md](./_iteration-history/v3-skeleton-plan.md)
 - [layered-skeleton-config.md](./layered-skeleton-config.md)
 - [extension-system.md](./extension-system.md)
 - [skill-generation.md](./skill-generation.md)
 - [skill-distribution.md](./skill-distribution.md)
 - [beads-operations-manifest.md](./beads-operations-manifest.md)
-- [building-block-pivot.md](./building-block-pivot.md)
+- [building-block-pivot.md](./_iteration-history/building-block-pivot.md)
 
 ---
 
@@ -94,7 +94,7 @@ Resolution order: **L1 → L2 → L3 → L4**. Later layers override earlier, ex
 
 ## 4. Locked Decisions D1–D20
 
-> **FORWARD POINTER**: D21–D38 (added in iterations #5–#6 on 2026-04-29) cover memory architecture (D21–D25), stage model reframing (D26–D29), and Beads under-utilization + ship discipline (D30–D38). They live in [locked-decisions.md](./locked-decisions.md), summarized in [FINAL-THESIS.md §7](./FINAL-THESIS.md#7-the-38-locked-decisions-one-line-summaries). Decisions D11 and D17 are annotated with supersedes (by D15 and D23 respectively).
+> **FORWARD POINTER**: D21–D38 (added in iterations #5–#6 on 2026-04-29) cover memory architecture (D21–D25), stage model reframing (D26–D29), and Beads under-utilization + ship discipline (D30–D38). They live in [locked-decisions.md](./locked-decisions.md), summarized in [FINAL-THESIS.md §7](./FINAL-THESIS.md#7-the-39-locked-decisions-one-line-summaries). Decisions D11 and D17 are annotated with supersedes (by D15 and D23 respectively).
 
 > Full decision rationale, tradeoffs, and anti-decisions for every entry below live in [locked-decisions.md](./locked-decisions.md). This section is the in-strategy summary.
 
@@ -483,14 +483,14 @@ All v3 design docs live in this folder (`docs/work/2026-04-28-skeleton-pivot/`).
 - [README.md](./README.md) — folder index + reading order + status
 - [locked-decisions.md](./locked-decisions.md) — canonical D1–D20 decisions ledger (this doc summarizes; that doc has full rationale + tradeoffs + anti-decisions)
 - [n1-moat-technical-deep-dive.md](./n1-moat-technical-deep-dive.md) — moat analysis underpinning D8/D9
-- [v3-ecosystem-audit.md](./v3-ecosystem-audit.md) — harness landscape underpinning D11/D13
+- [v3-ecosystem-audit.md](./_iteration-history/v3-ecosystem-audit.md) — harness landscape underpinning D11/D13
 - [template-library-and-merge-flow.md](./template-library-and-merge-flow.md) — template scope underpinning D9
-- [v3-skeleton-plan.md](./v3-skeleton-plan.md) — wave plan + workstream table
+- [v3-skeleton-plan.md](./_iteration-history/v3-skeleton-plan.md) — wave plan + workstream table
 - [layered-skeleton-config.md](./layered-skeleton-config.md) — L1/L2/L3/L4 config schema
 - [extension-system.md](./extension-system.md) — manifest spec, resolvers, lockfile, sandbox
 - [skill-generation.md](./skill-generation.md) — observed-work mining → skill proposals
 - [skill-distribution.md](./skill-distribution.md) — marketplace allowlist + name collisions
 - [beads-operations-manifest.md](./beads-operations-manifest.md) — beads create/reframe/close manifest (N1–N18)
-- [building-block-pivot.md](./building-block-pivot.md) — building-block framing of the pivot
+- [building-block-pivot.md](./_iteration-history/building-block-pivot.md) — building-block framing of the pivot
 
 v2 reference: [`../2026-04-06-v2-unified-strategy/unified-strategy.md`](../2026-04-06-v2-unified-strategy/unified-strategy.md).
