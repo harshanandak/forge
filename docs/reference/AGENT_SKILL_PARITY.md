@@ -22,6 +22,19 @@ Cursor rules are included here because `forge-2si5` explicitly asked for `.curso
 
 Tracked as `forge-wj36`.
 
+This follow-up now has a machine-readable contract in `lib/harness-capability-matrix.js`.
+Generate the current evidence artifact with:
+
+```bash
+node scripts/spikes/harness-capability-matrix.js
+```
+
+The output is JSON with three top-level contracts:
+
+- `harnesses[]`: Claude, Cursor, and Codex capability support across instructions, skills, rules, MCP, hooks, commands, agents/subagents, stages, Beads, typed memory, patch overrides, marketplace trust, and extension packs.
+- `stageGraph`: default Forge stages as skills-first super skills with addressable subskills.
+- `rendererContract`: the evidence a renderer must provide before Forge emits broad harness files.
+
 Forge stage parity should become skills-first across Claude, Cursor, and Codex:
 
 | Forge stage | Canonical surface | Claude render | Cursor render | Codex render |
@@ -65,11 +78,31 @@ The full Forge extension parity model must cover more than skills:
 | Agents/subagents | Forge agent role spec | Claude subagents | Cursor agent/subagent config if supported | Codex skill/agent fallback | role mapping or known issue |
 | Marketplace/extensions | `extension.yaml` plus lock metadata | plugin/skills/commands/hooks | skills/rules/MCP config | skills/MCP/hooks | lockfile, SHA, trust, generated targets |
 
-The next implementation should start with a machine-readable harness capability matrix and renderer contract before adding more generated files.
+The machine-readable matrix intentionally separates similar-looking surfaces:
+
+- Skills are on-demand workflows: `.claude/skills/<skill>/SKILL.md`, `.cursor/skills/<skill>/SKILL.md`, and `.codex/skills/<skill>/SKILL.md`.
+- Rules are policy/context projections: Cursor uses `.cursor/rules/<rule>.mdc`; Claude and Codex receive policy through instruction projections unless a native rule surface is verified.
+- Commands are shims: Claude command files remain useful for compatibility, but the command body must point to the canonical stage skill instead of duplicating the workflow.
+- MCP is config plumbing: each harness gets native MCP config only when the matrix records a target path and probe evidence.
+- Hooks are lifecycle adapters: Claude and Codex have native hook targets; Cursor remains a known issue until a hook surface is proven.
+- Distribution is not a skill directory dump: Codex can use plugins and marketplaces; Forge extension packs must carry lock/trust metadata before installation.
+
+No broad renderer should be added until its capability has a matrix entry, target path contract, activation metadata contract, machine-readable evidence, and a known-issue record for any unproven harness.
+
+## External Compatibility Pattern
+
+The current ecosystem pattern is a canonical payload with native harness renderers:
+
+- Claude Code documents skills as `SKILL.md` files whose `description` controls automatic loading, and notes that commands and skills can both expose slash affordances.
+- Cursor documents `.cursor/rules/*.mdc` as persistent scoped context with `description`, `globs`, and `alwaysApply`; Cursor skills are treated by Forge as the on-demand workflow target, while rules remain the policy target.
+- Codex documents skills as reusable workflow packages, uses description-based implicit invocation, and uses plugins/marketplaces to distribute reusable skills, MCP servers, hooks, and apps.
+- AGENTS.md remains the shared instruction projection for agents that read repository instructions directly.
+
+Forge adopts that pattern by keeping one canonical Forge capability and rendering the smallest verified native wrapper per harness. It does not duplicate every feature blindly into every directory.
 
 ## Evidence Command
 
-Run the parity fixture from the repository root:
+Run the W0 parity fixture from the repository root:
 
 ```bash
 node scripts/spikes/skill-auto-invoke-parity.js --json
@@ -84,6 +117,20 @@ The JSON output includes:
 - `proofBoundary`
 - `knownIssues[]`
 
+Run the broader capability matrix evidence from the repository root:
+
+```bash
+node scripts/spikes/harness-capability-matrix.js
+```
+
+The JSON output includes:
+
+- `harnesses[].capabilities`
+- `stageGraph.stages[].subskills`
+- `stageGraph.stages[].renderTargets`
+- `rendererContract.rendererFamilies`
+- `sources[]`
+
 ## Proof Boundary
 
 This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime. For Codex specifically, it validates the Forge packaging source for Codex skills, not direct runtime discovery.
@@ -96,6 +143,7 @@ No harness-specific metadata issue is known for this fixture. Live proprietary-a
 
 Known gaps intentionally left for follow-up:
 
-- Cursor Agent Skills are not proven in this W0 fixture; Cursor rules were the requested target for `forge-2si5`.
-- Claude still has command-first stage distribution in the current Forge setup; this must move to skills-first with commands as shims.
-- MCPs, hooks, stage/gate renderers, Beads wiring, typed memory, patch overrides, marketplace trust, and extension packs are not covered by this fixture.
+- Cursor Agent Skills are not proven in the W0 fixture; the capability matrix records `.cursor/skills` as the intended on-demand target and `.cursor/rules` as the policy target.
+- Claude still has command-first stage distribution in the current Forge setup; the skills-first graph records commands as shims over `.claude/skills`.
+- Cursor hooks remain unsupported until a verified hook surface exists; use Forge-owned hooks or file-watcher fallback for protected-path enforcement.
+- MCPs, hooks, stage/gate renderers, Beads wiring, typed memory, patch overrides, marketplace trust, and extension packs are covered by the capability matrix contract, but broad renderer implementation remains future work.
