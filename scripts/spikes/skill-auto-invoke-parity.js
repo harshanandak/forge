@@ -75,7 +75,7 @@ const HARNESS_TARGETS = [
     harness: 'codex-cli',
     target: '.codex/skills/guard-rails-audit/SKILL.md',
     explicitInvocation: '/guard-rails-audit',
-    sourceLabel: 'S3',
+    sourceLabel: 'S4',
     source: 'Forge repository Codex skills package surface; custom slash prompt files are intentionally not used',
     buildFrontmatter: () => ({
       name: CANONICAL_SKILL.name,

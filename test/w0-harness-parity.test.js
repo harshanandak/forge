@@ -102,7 +102,7 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
     expect(result.harnesses.map((harness) => [harness.harness, harness.sourceLabel])).toEqual([
       ['claude-code', 'S1'],
       ['cursor', 'S2'],
-      ['codex-cli', 'S3'],
+      ['codex-cli', 'S4'],
     ]);
     expect(result.sources.map((source) => source.label)).toEqual(['S1', 'S2', 'S3', 'S4']);
   });

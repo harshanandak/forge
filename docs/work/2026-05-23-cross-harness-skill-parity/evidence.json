@@ -55,7 +55,7 @@
     {
       "harness": "codex-cli",
       "target": ".codex/skills/guard-rails-audit/SKILL.md",
-      "sourceLabel": "S3",
+      "sourceLabel": "S4",
       "descriptionMatched": true,
       "negativePromptIgnored": true,
       "explicitInvocation": "/guard-rails-audit",
