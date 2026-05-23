@@ -1,8 +1,10 @@
 # Forge Enhancement Roadmap
 
+> Historical design artifact. Do not use this page for current package release planning, command availability, or public positioning. Current public release guidance lives in [Release Reference](RELEASE.md), [CHANGELOG](../../CHANGELOG.md), [Workflow templates](../guides/WORKFLOW_TEMPLATES.md), and [Skills and command projections](SKILLS.md).
+
 > Historical snapshot: this roadmap is preserved for context only. Current public release guidance lives in [Release Reference](RELEASE.md), [CHANGELOG](../../CHANGELOG.md), and the runtime building-block work under `docs/work/2026-04-28-skeleton-pivot/`. References to `v3`, `/research`, or old PR sequences are historical/internal labels, not current package release instructions.
 
-**Comprehensive implementation plan for transforming Forge into a fully automated, orchestrated workflow system.**
+**Historical implementation plan for an earlier automation-heavy Forge direction.**
 
 **Plan Created**: 2026-02-10
 **Status**: Phase 2 complete. PRs 0-6 merged, PR7-PR8 pending.
@@ -24,7 +26,7 @@
 
 ## Overview
 
-Transform Forge from a documentation-driven workflow into a fully automated, orchestrated workflow system with:
+Historical goal from this snapshot:
 
 - ✅ **Enhanced Multi-Agent Support**: Universal AGENTS.md + 8 supported agents (Claude Code, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)
 - ✅ **Comprehensive Testing**: 80%+ code coverage, E2E tests, mutation testing

@@ -62,6 +62,8 @@ After merge to `master`:
    - [README](../../README.md)
    - [Quickstart](../../QUICKSTART.md)
    - [Docs index](../INDEX.md)
+   - [Workflow templates](../guides/WORKFLOW_TEMPLATES.md)
+   - [Skills and command projections](SKILLS.md)
    - [Command reference](COMMANDS.md)
 4. File a follow-up issue if generated docs still reflect old seven-stage-only framing.
-
+5. Record evidence in a PR comment or follow-up issue: DeepWiki index date, indexed commit, pages checked, pass/fail result, and any repository-doc corrections needed.

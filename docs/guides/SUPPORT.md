@@ -22,6 +22,12 @@ forge sync
 
 If `forge` wrappers fail because Beads is unavailable, use direct `git`, `gh`, and `bd` commands only after identifying the source of truth.
 
+For branch-specific checks, resolve the default branch first:
+
+```powershell
+$defaultBranch = git remote show origin | Select-String 'HEAD branch' | ForEach-Object { $_.ToString().Split(':')[-1].Trim() }
+```
+
 ## FAQ
 
 ### Is DeepWiki the source of truth?
@@ -67,10 +73,12 @@ If the Dolt server is serving the wrong database or data directory, stop and dia
 
 Recovery guidance:
 
+- Preserve current state first: copy `.beads/backup` or export a Beads backup if the command is available.
 - Prefer `forge sync` when Beads is configured and healthy.
 - Use `bd close`, `bd comments`, or `bd dep` directly only for operations Forge does not wrap or when wrappers fail.
 - If default branch protection blocks Beads metadata changes, route the metadata through a small follow-up PR.
 - Do not hand-edit `.beads` live state unless a recovery procedure explicitly requires it.
+- Success proof is concrete: `bd doctor` exits cleanly, `bd dolt status` is understandable, and `forge ready` or `forge show <id>` can read current issue state.
 
 ## GitHub Sync
 
@@ -82,9 +90,12 @@ When sync fails:
 
 ```bash
 gh auth status
-gh run list --branch master --limit 10
 bd doctor
 bd dolt status
+```
+
+```powershell
+gh run list --branch $defaultBranch --limit 10
 ```
 
 Check whether GitHub owns the field you are trying to update. GitHub owns shared remote issue fields; Forge/Beads owns local workflow context and recovery metadata.
@@ -107,8 +118,9 @@ If removal fails on Windows:
 
 1. Stop any active `node`, `bun`, `gh`, or Dolt process using the worktree.
 2. Run `git worktree list`.
-3. Retry `forge worktree remove <slug>`.
-4. If Git already unregistered the worktree but files remain locked, wait for the process to exit before deleting the leftover directory.
+3. Prove the branch is preserved: `git status --short --branch` and `git log --oneline -1`.
+4. Retry `forge worktree remove <slug>`.
+5. If Git already unregistered the worktree but files remain locked, wait for the process to exit before deleting the leftover directory.
 
 Never delete a worktree before verifying that its branch is pushed or intentionally disposable.
 
@@ -122,11 +134,24 @@ Recovery:
 
 ```bash
 git status --short --branch
-git fetch origin master
 gh pr checks <pr-number>
 ```
 
+```powershell
+git fetch origin $defaultBranch
+```
+
 If metadata cannot land directly, create a narrow follow-up branch for the state update.
+
+## Rollback And Recovery Paths
+
+Choose the rollback path by surface:
+
+- Docs PR confusion: revert the docs PR or open a corrective docs PR. Do not publish while README, CHANGELOG, Quickstart, and release docs disagree.
+- Setup-generated files: rerun `forge setup --dry-run` first, then rerun setup with the intended `--merge` mode. Preserve existing instruction files before replacing them.
+- Beads metadata: prefer `forge sync` or a narrow follow-up PR. Avoid direct `.beads` edits unless a documented recovery path requires them.
+- Failed GitHub sync commit: inspect the workflow run, preserve the generated backup or snapshot, then replay through the configured sync workflow or a follow-up branch.
+- Worktree cleanup: prove the branch is pushed or disposable before removal, then remove through `forge worktree remove <slug>` or Git's worktree command if Forge is unavailable.
 
 ## Protected State
 
@@ -158,4 +183,3 @@ Fix the first failing stage first. Do not hide a validation failure by documenti
 - Review adapters currently focus on review adapters and Greptile-shaped scaffolding.
 - DeepWiki can lag after merge until refreshed.
 - Some external services require credentials and branch protection setup outside Forge.
-

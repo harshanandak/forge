@@ -1,5 +1,7 @@
 # Forge v3 Redesign Strategy
 
+> Historical design artifact. Do not use this page for current package release planning, command availability, or public positioning. Current public package release guidance lives in `CHANGELOG.md`, `docs/reference/RELEASE.md`, and `docs/guides/WORKFLOW_TEMPLATES.md`.
+
 **Date**: 2026-04-28 (originally) → 2026-04-29 (sections marked SUPERSEDED inline by iterations #5–#7)
 **Status**: Reference doc — **canonical "where we ended up" is now [FINAL-THESIS.md](./FINAL-THESIS.md)** + **release roadmap is [release-plan.md](./release-plan.md)** (D39). This doc retains its strategic framing but several sections have been superseded by D21–D39 (memory architecture, audit collapse, stage model, harness narrowing, release versioning, kill criteria). See inline SUPERSEDED notes.
 **Supersedes**: [v2 unified strategy](../2026-04-06-v2-unified-strategy/unified-strategy.md) (preserved for historical reference)

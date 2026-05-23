@@ -245,7 +245,7 @@ Install flow:
 
 **What it means**: Don't install Superpowers. Don't rewrite commands. Just add HARD-GATE blocks to existing Forge commands where stage-skipping is the problem.
 
-**Changes needed** (6 edits, ~15 minutes):
+**Changes needed** (historical estimate; not a current timing guarantee):
 
 `/research` command — add:
 ```
@@ -307,7 +307,7 @@ Delete any code written before its test. There are no exceptions.
 **Do Option 5** — Add HARD-GATE blocks to `/research`, `/plan`, `/dev` commands.
 - Zero risk, zero new dependencies
 - Directly fixes the scope discipline problem surfaced in this session
-- Takes ~15 minutes
+- Historical time estimate only; not a current guarantee
 
 ### Phase 2: Short-Term (Next 1-2 Sessions)
 **Do Option 3 partially** — Cherry-pick these specific ideas into Forge:

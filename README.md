@@ -14,6 +14,8 @@ Forge is a local runtime control plane for AI-assisted engineering. It gives cod
 
 The default Forge workflow is TDD-first, but Forge is not just a fixed prompt pack. The stages are adoption scaffolding over local runtime primitives: state, gates, artifacts, adapters, Beads issue metadata, GitHub sync, validation, and handoff context.
 
+In plain terms: Forge helps keep AI-assisted repository work recoverable, reviewable, and grounded in local evidence. The workflow template is a core feature, and the ability to inspect, customize, and eventually swap workflow stages is part of the product direction.
+
 ## Why It Matters
 
 AI coding sessions fail most often at the project boundary: lost state, unclear ownership, stale TODOs, unverified claims, broken worktrees, and PRs that cannot be recovered after context changes. Forge is designed to make that boundary explicit.
@@ -31,6 +33,7 @@ Forge helps you:
 - Solo builders using AI coding agents who want fewer lost handoffs.
 - Teams coordinating multiple AI or developer sessions in the same repository.
 - Technical users who need local state, auditability, validation, recovery paths, and command examples grounded in code.
+- Maintainers responsible for keeping agent-authored work safe enough to review, resume, and release.
 
 ## Ready Now
 
@@ -51,6 +54,17 @@ Forge helps you:
 - Future roadmap labels such as `0.0.19` describe internal planning targets, not the current public package version.
 - DeepWiki is generated from this repository. It is useful for navigation, but the repository docs remain authoritative.
 
+v0.0.11 is a documentation and positioning release: canonical docs, corrected command boundaries, clearer setup paths, and DeepWiki-ready source material. It is separate from the later package version bump and publish step.
+
+## Terms
+
+- Runtime control plane: local commands, files, and checks that give agents a shared operating surface.
+- Workflow template: the default stage path Forge installs for agents, such as `/plan -> /dev -> /validate -> /ship -> /review -> /premerge`.
+- Harness: an agent-specific instruction surface such as Codex, Claude, Cursor, or OpenCode.
+- Beads: the optional local issue-state backend used by Forge issue wrappers.
+- Adapter: an integration boundary for review or issue tools.
+- Protected state: files that should be changed through their owning command or API, not by casual edits.
+
 ## Quickstart
 
 For a clean first run, use the full guide:
@@ -59,6 +73,8 @@ For a clean first run, use the full guide:
 - [Setup guide](docs/guides/SETUP.md)
 - [Support and troubleshooting](docs/guides/SUPPORT.md)
 - [Command reference](docs/reference/COMMANDS.md)
+- [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md)
+- [Skills and command projections](docs/reference/SKILLS.md)
 
 Basic adoption:
 
@@ -70,6 +86,8 @@ bunx forge status --json
 ```
 
 Use `forge init` when you want the `.forge/` runtime skeleton first. Use `forge setup` when you want Forge to install agent instructions, skills, Beads/GitHub sync scaffolding, or agent-specific files.
+
+Use `bunx forge ...` in first-run examples. Bare `forge ...` works once the package bin is available on PATH, for example through your package manager or local script environment.
 
 Setup flags used in existing repositories:
 
@@ -87,7 +105,7 @@ Setup flags used in existing repositories:
 ## Common Commands
 
 ```bash
-forge init --help
+forge --help
 forge setup --help
 forge status --json
 forge board --json
@@ -106,6 +124,8 @@ Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow 
 
 - [Docs index](docs/INDEX.md) - canonical reading order.
 - [Migration guide](docs/guides/MIGRATION.md) - moving from older Forge versions and old workflow framing.
+- [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) - the default workflow, customization model, and live feature rollout path.
+- [Skills and command projections](docs/reference/SKILLS.md) - current stage packaging across commands and skills.
 - [Beads/GitHub sync](docs/guides/BEADS_GITHUB_SYNC.md) - issue lifecycle sync and recovery notes.
 - [Adapters](docs/reference/ADAPTERS.md) - review adapter contract.
 - [Templates](docs/reference/TEMPLATES.md) - adoption profiles and workflow templates.

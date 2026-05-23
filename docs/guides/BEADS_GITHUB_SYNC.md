@@ -32,6 +32,8 @@ bunx forge setup --sync --agents claude,cursor
 
 This scaffolds GitHub sync files and workflow support. It does not mean every repository already has branch protection, tokens, and required checks configured.
 
+Generated sync material includes `.github/workflows/github-to-beads.yml`, `.github/workflows/beads-to-github.yml`, `.github/beads-mapping.json`, and `scripts/github-beads-sync.config.json` when the setup path is selected. GitHub Actions needs a `BEADS_SYNC_TOKEN` repository secret with permissions appropriate for the repository.
+
 ## Routine Sync
 
 ```bash
@@ -67,10 +69,16 @@ When GitHub sync fails:
 
 ```bash
 gh auth status
-gh run list --branch master --limit 10
 bd doctor
 bd dolt status
 forge sync
+```
+
+On PowerShell, resolve the default branch before checking workflow runs:
+
+```powershell
+$defaultBranch = git remote show origin | Select-String 'HEAD branch' | ForEach-Object { $_.ToString().Split(':')[-1].Trim() }
+gh run list --branch $defaultBranch --limit 10
 ```
 
 If the failure is branch protection (`GH006`), route the Beads metadata change through a follow-up PR or the configured sync workflow.
@@ -83,4 +91,3 @@ If the failure is Dolt runtime state, repair Beads/Dolt before closing or mutati
 - GitHub Projects automation is not Forge issue sync.
 - Full comment/discussion import is outside the current adapter contract.
 - Credentials and PAT configuration are repository-specific.
-

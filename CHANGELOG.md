@@ -56,7 +56,7 @@ This is the planned public documentation and positioning release. The package re
 
 - Refresh DeepWiki after merge to `master`.
 - Confirm the DeepWiki index date and commit changed to the merged commit.
-- Compare generated Overview, Getting Started, and Core Concepts pages against `README.md`, `QUICKSTART.md`, `docs/INDEX.md`, and `docs/reference/COMMANDS.md`.
+- Compare generated Overview, Getting Started, Core Concepts, and workflow pages against `README.md`, `QUICKSTART.md`, `docs/INDEX.md`, `docs/guides/WORKFLOW_TEMPLATES.md`, `docs/reference/SKILLS.md`, and `docs/reference/COMMANDS.md`.
 - File a follow-up issue if generated docs still describe Forge as only the old seven-stage TDD workflow.
 
 ### Added
@@ -66,7 +66,7 @@ This is the planned public documentation and positioning release. The package re
 ### Fixed
 
 - **Embedded Dolt worktree contention** (PR #146, forge-besw.18): switched this repo's Beads metadata to embedded Dolt mode, documented the local worktree contention failure mode, and updated workflow command surfaces to the current `docs/work/YYYY-MM-DD-<slug>/` planning structure
-- **Plan file path contract** (forge-ddk3): Unified all references from `.claude/plans/` to `docs/plans/` across all 7 agent directories, tests, and source code
+- **Historical plan file path contract** (forge-ddk3): earlier work unified `.claude/plans/` references to `docs/plans/`; current v0.0.11 docs use `docs/work/YYYY-MM-DD-<slug>/` as the canonical planning artifact path, with older path references treated as compatibility or historical notes
 - **ENHANCED_ONBOARDING.md** (forge-3tnu): Rewrote to match actual 7-stage workflow with correct `--type` values (critical|standard|simple|hotfix|docs|refactor)
 - **smart-status.sh jq errors**: Handle numeric priorities (0-4) and null types from beads 0.62+ — no more `string/number cannot be iterated` crashes
 - **smart-status.sh display**: Numeric priorities now display as `P2` not `2` in dashboard; numeric `4` correctly groups into BACKLOG
@@ -507,7 +507,7 @@ This is the planned public documentation and positioning release. The package re
   - Troubleshooting section
   - Environment variables reference
 - **docs/EXAMPLES.md**: Real-world workflow examples
-  - Simple feature (15 minutes)
+  - Simple feature example (historical timing reference; not a current guarantee)
   - Bug fix with security (30 minutes)
   - Multi-file refactor (2-3 hours)
   - Architecture change with OpenSpec (2-3 days)

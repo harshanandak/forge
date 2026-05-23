@@ -7,6 +7,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [README](../README.md) - product positioning, ready-now features, limits, and DeepWiki note.
 - [Quickstart](../QUICKSTART.md) - first install, `forge init`, `forge setup`, status, worktrees, and validation.
 - [Setup guide](guides/SETUP.md) - install and adoption options for supported agents.
+- [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - the default workflow as a core template, customization model, and live rollout rules.
 - [Support guide](guides/SUPPORT.md) - FAQ, troubleshooting, recovery, known limits, branch protection, worktrees, and Beads/Dolt notes.
 
 ## Tutorials
@@ -18,6 +19,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 
 - [Setup](guides/SETUP.md) - install package, initialize runtime config, install agent instructions.
 - [Migration](guides/MIGRATION.md) - move from older Forge versions and old stage-only framing.
+- [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - understand the default template and how customization should be documented.
 - [Beads/GitHub sync](guides/BEADS_GITHUB_SYNC.md) - configure and recover issue sync.
 - [Manual review guide](guides/MANUAL_REVIEW_GUIDE.md) - process PR feedback without inventing CLI commands.
 - [Greptile setup](guides/GREPTILE_SETUP.md) - optional review integration.
@@ -25,7 +27,8 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 
 ## Reference
 
-- [Command reference](reference/COMMANDS.md) - verified CLI and stage command boundaries.
+- [Command reference](reference/COMMANDS.md) - verified `forge` CLI commands and package binaries.
+- [Skills and command projections](reference/SKILLS.md) - current stage packaging across skills, commands, prompts, and harness projections.
 - [Release reference](reference/RELEASE.md) - validation, packaging, release handoff, and DeepWiki checklist.
 - [Toolchain](reference/TOOLCHAIN.md) - Bun, Node, Git, GitHub CLI, Beads, shell, and MCP conventions.
 - [Validation](reference/VALIDATION.md) - `bun run check`, failure meanings, and recovery.
@@ -41,16 +44,18 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Dependency chain](reference/dependency-chain.md) - historical dependency-chain notes.
 - [Research template](reference/RESEARCH_TEMPLATE.md) - research artifact template.
 
-## Explanation And Architecture
+## Advanced And Historical Context
 
-- [Runtime building-block refinement](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md) - current architecture direction: runtime primitives, evaluator regions, and templates as scaffolds.
+The links below are for maintainers and architecture readers. They are not part of the normal getting-started path and may contain historical design labels.
+
+- [Runtime building-block refinement](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md) - advanced architecture direction: runtime primitives, evaluator regions, and templates as scaffolds.
 - [Locked decisions](work/2026-04-28-skeleton-pivot/locked-decisions.md) - historical decision ledger.
 - [Release plan](work/2026-04-28-skeleton-pivot/release-plan.md) - internal release phasing. Internal labels are not npm package versions.
 - [Beads/Supabase and Forge memory design](work/2026-04-28-skeleton-pivot/beads-supabase-and-forge-memory-design.md) - Beads coexistence analysis.
 
 ## Historical Or Superseded Material
 
-The `docs/work/**` tree contains planning artifacts, decisions, and historical research. These files are useful context, but public user guidance should prefer the start-here, how-to, and reference files above.
+The [docs/work archive](work/README.md) contains planning artifacts, decisions, and historical research. These files are useful context, but public user guidance should prefer the start-here, how-to, and reference files above.
 
 Historical references that should not be treated as current release instructions:
 

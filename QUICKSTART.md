@@ -18,6 +18,12 @@ bun add -D forge-workflow
 
 You can also run one-off commands with `bunx forge ...`.
 
+Terms used below:
+
+- Runtime config means local `.forge/` files that describe adoption choices.
+- Harness means an agent-specific install target such as Codex, Claude, Cursor, or OpenCode.
+- Beads means the optional `bd` issue backend used by `forge ready`, `forge show`, and related wrappers.
+
 ## 2. Initialize Runtime Config
 
 Use `forge init` for the day-one `.forge/` skeleton:
@@ -70,6 +76,8 @@ These are local runtime state views. They can read Beads-backed issue metadata w
 
 ## 5. Work With Issues And Worktrees
 
+Skip the issue commands until `bd --version` works and Beads is initialized for the repository. If `forge ready` reports that Beads is not initialized, run the Beads setup path in [Setup guide](docs/guides/SETUP.md) or use [Support and troubleshooting](docs/guides/SUPPORT.md) before changing issue state.
+
 When Beads is available:
 
 ```bash
@@ -108,6 +116,18 @@ The agent workflow stages are documented in `AGENTS.md` and the installed agent 
 
 These are agent workflow stages. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
 
+The workflow template is core to Forge. It is also designed to become more configurable as runtime graph, stage-skill, adapter, and extension surfaces ship. See [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) and [Skills and command projections](docs/reference/SKILLS.md).
+
+## 8. First Useful Loop
+
+After setup, a small end-to-end loop looks like this:
+
+1. Pick existing work with `bunx forge ready`, or create work in your normal tracker.
+2. Ask the selected agent to run the appropriate stage, such as `/plan` for planned work or `/dev` for a small fix.
+3. Run `bun run check`.
+4. Use `/ship` or your normal PR flow to open a reviewable branch.
+5. Keep the PR evidence in the repository so future agents and DeepWiki read the same source material.
+
 ## Next Reading
 
 - [Docs index](docs/INDEX.md)
@@ -115,3 +135,5 @@ These are agent workflow stages. Do not assume every stage is a standalone `forg
 - [Migration guide](docs/guides/MIGRATION.md)
 - [Support and troubleshooting](docs/guides/SUPPORT.md)
 - [Command reference](docs/reference/COMMANDS.md)
+- [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md)
+- [Skills and command projections](docs/reference/SKILLS.md)
