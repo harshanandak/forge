@@ -1,7 +1,6 @@
 # Forge Enhancement Roadmap
 
 > Historical design artifact. Do not use this page for current package release planning, command availability, or public positioning. Current public release guidance lives in [Release Reference](RELEASE.md), [CHANGELOG](../../CHANGELOG.md), [Workflow templates](../guides/WORKFLOW_TEMPLATES.md), and [Skills and command projections](SKILLS.md).
-
 > Historical snapshot: this roadmap is preserved for context only. Current public release guidance lives in [Release Reference](RELEASE.md), [CHANGELOG](../../CHANGELOG.md), and the runtime building-block work under `docs/work/2026-04-28-skeleton-pivot/`. References to `v3`, `/research`, or old PR sequences are historical/internal labels, not current package release instructions.
 
 **Historical implementation plan for an earlier automation-heavy Forge direction.**
