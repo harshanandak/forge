@@ -14,6 +14,8 @@ This page documents the W0 metadata fixture only. It is not the full Forge exten
 
 The shared rule is: keep the skill name, description, and task body canonical, then generate the smallest native wrapper each harness needs.
 
+For Codex, this W0 fixture validates Forge's repository packaging surface (`.codex/skills`) plus the metadata needed for installed Codex skills. It does not prove direct Codex runtime discovery from a repo-local skill directory.
+
 Cursor rules are included here because `forge-2si5` explicitly asked for `.cursor/rules/*.mdc` evidence. They are not the final Cursor skill target. The broader parity model must treat Cursor Agent Skills as the primary on-demand workflow surface and Cursor rules as the always-on or scoped-policy surface.
 
 ## Required Follow-Up: Skills-First Stage Graph
@@ -84,7 +86,7 @@ The JSON output includes:
 
 ## Proof Boundary
 
-This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime.
+This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime. For Codex specifically, it validates the Forge packaging source for Codex skills, not direct runtime discovery.
 
 If a future release needs live invocation proof, add a separate transcript-producing eval for Claude Code, Cursor, and Codex and keep this fixture as the fast CI gate.
 

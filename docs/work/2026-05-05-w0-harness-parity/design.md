@@ -66,8 +66,7 @@ Source label S2b: current Cursor rules documentation identifies Agent Requested 
 
 Source label S3: the Wave 0 verification spike records that OpenAI documented built-in Codex CLI slash commands but not a stable user-authored slash prompt directory.
 
-Source label S4: current OpenAI Codex skill guidance states that 
-ame and description are the metadata Codex reads to determine skill use, and Forge's local packaging helper reads repository skills from .codex/skills. The fixture must therefore use .codex/skills/<name>/SKILL.md for this repo.
+Source label S4: current OpenAI Codex skill guidance states that name and description are the metadata Codex reads to determine skill use, and Forge's local packaging helper reads repository skills from .codex/skills. The fixture must therefore use .codex/skills/<name>/SKILL.md for this repo.
 
 Source label S5: OpenAI Codex AGENTS.md documentation remains relevant for persistent instructions, but AGENTS.md is not a description-match skill surface.
 

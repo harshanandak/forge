@@ -227,7 +227,8 @@ function runParity(options = {}) {
       proofBoundary: {
         level: 'metadata-surface',
         liveAgentInvocation: 'not-run',
-        reason: 'closed-source harness model invocation is outside this deterministic fixture',
+        codexRuntimeDiscovery: 'not-run',
+        reason: 'closed-source harness model invocation is outside this deterministic fixture; .codex/skills is the Forge repository packaging surface, not proof of direct Codex runtime discovery',
       },
       passed,
       knownIssues,
@@ -256,7 +257,9 @@ function printText(result) {
 function readStringFlag(args, name) {
   const index = args.indexOf(name);
   if (index === -1) return undefined;
-  return args[index + 1];
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) return undefined;
+  return value;
 }
 
 function main() {
