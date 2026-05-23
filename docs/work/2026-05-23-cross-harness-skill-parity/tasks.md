@@ -24,6 +24,13 @@ TDD:
 2. Run the focused docs test and confirm failure.
 3. Add `docs/reference/AGENT_SKILL_PARITY.md` and the minimal `docs/INDEX.md` link.
 
+## Task 4: Record full parity follow-up boundary
+
+TDD:
+1. Add a docs consistency assertion that the parity docs mention skills-first stage graph follow-up.
+2. Run the focused docs test and confirm failure.
+3. Document that current PR covers W0 metadata evidence only, while full parity requires a harness capability matrix, Cursor skills, Claude command shims, MCP config renderers, hook adapters, Beads/stage/gate wiring, typed memory, patch overrides, marketplace trust, and extension pack renderers.
+
 ## Validation Plan
 
 1. `bun test test/w0-harness-parity.test.js test/docs-consistency.test.js`

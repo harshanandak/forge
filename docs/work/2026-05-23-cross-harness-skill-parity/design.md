@@ -26,6 +26,8 @@ Prove the smallest shared skill auto-invoke contract Forge can depend on across 
 - No broad docs overhaul.
 - No migration dry-run or full harness translator.
 - No live proprietary-agent execution automation.
+- No Cursor Agent Skills proof yet; this PR keeps the `.cursor/rules/*.mdc` target because `forge-2si5` requested that surface.
+- No migration of Claude stage commands into skills-first stage super skills.
 
 ## Research Summary
 
@@ -42,6 +44,23 @@ The compatibility pattern used by the ecosystem is not one magic universal file 
 Adapt the existing W0 fixture instead of adding a separate harness. The script remains deterministic and local, but its output becomes the machine-readable evidence artifact. It proves metadata-surface parity, not a live model decision inside closed-source agents.
 
 If future work needs live proof, it should add a separate eval that launches the three tools and stores transcripts. This PR documents that as a proof boundary rather than pretending the local fixture proves proprietary model behavior.
+
+## Follow-Up Architecture
+
+Follow-up issue: `forge-wj36`.
+
+The next PR must define a full harness capability matrix before adding more renderers. That matrix should cover project instructions, skills, rules, MCPs, hooks, commands, agents/subagents, typed memory, patch overrides, marketplace trust, and extension packs.
+
+The stage workflow should become skills-first:
+
+- each stage is a super skill;
+- each phase inside a stage is an addressable subskill;
+- Claude commands become thin compatibility shims over `.claude/skills`;
+- Cursor uses `.cursor/skills` for on-demand workflows and `.cursor/rules` for always-on or scoped policy;
+- Codex uses `.codex/skills` for on-demand workflows;
+- unsupported harness surfaces are recorded as known issues with evidence.
+
+For example, `plan` should be modeled as a super skill with subskills such as `plan.intent_capture`, `plan.research`, `plan.critics`, `plan.synthesis`, and `plan.final_lock`. This follows the same style as richer skills such as `impeccable`, where the top-level skill routes work and phase-specific references/subcommands carry the details.
 
 ## Validation
 
