@@ -1,0 +1,45 @@
+{
+  "fixture": "w0-skill-auto-invoke-parity",
+  "issue": "forge-2si5",
+  "generatedOn": "2026-05-23",
+  "passed": true,
+  "canonicalSkill": {
+    "name": "guard-rails-audit",
+    "description": "Use when asked to inspect Forge L1 rail enforcement, audit events, or protected path policy."
+  },
+  "harnesses": [
+    {
+      "harness": "claude-code",
+      "target": ".claude/skills/guard-rails-audit/SKILL.md",
+      "sourceLabel": "S1",
+      "descriptionMatched": true,
+      "negativePromptIgnored": true,
+      "explicitInvocation": "/guard-rails-audit",
+      "passed": true
+    },
+    {
+      "harness": "cursor",
+      "target": ".cursor/rules/guard-rails-audit.mdc",
+      "sourceLabel": "S2",
+      "descriptionMatched": true,
+      "negativePromptIgnored": true,
+      "explicitInvocation": "/guard-rails-audit",
+      "passed": true
+    },
+    {
+      "harness": "codex-cli",
+      "target": ".codex/skills/guard-rails-audit/SKILL.md",
+      "sourceLabel": "S3",
+      "descriptionMatched": true,
+      "negativePromptIgnored": true,
+      "explicitInvocation": "/guard-rails-audit",
+      "passed": true
+    }
+  ],
+  "proofBoundary": {
+    "level": "metadata-surface",
+    "liveAgentInvocation": "not-run",
+    "reason": "closed-source harness model invocation is outside this deterministic fixture"
+  },
+  "knownIssues": []
+}

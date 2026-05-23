@@ -17,7 +17,7 @@ Wave 0 needs an empirical fixture that verifies whether the same skill descripti
 2. The fixture emits the same intent text and skill description text for Claude, Cursor, and Codex targets.
 3. Claude target verification checks `.claude/skills/<skill>/SKILL.md` and its description metadata.
 4. Cursor target verification checks `.cursor/rules/*.mdc` with documented frontmatter fields: `description`, blank `globs`, and `alwaysApply: false`.
-5. Codex target verification checks the documented repository Agent Skills path `.agents/skills/<skill>/SKILL.md`, not undocumented slash prompt files.
+5. Codex target verification checks the Forge-packaged repository skill path `.codex/skills/<skill>/SKILL.md`, not undocumented slash prompt files.
 6. The fixture reports explicit slash invocation for the canonical skill name on all three harnesses.
 7. The script reports pass/fail per harness and exits non-zero when any required harness fails.
 8. If only two of three harnesses are feasible, docs name the known issue and tie it to D38 kill criteria.
@@ -33,7 +33,7 @@ Wave 0 needs an empirical fixture that verifies whether the same skill descripti
 
 ## Approach Selected
 
-Build a deterministic Node/Bun script at `scripts/spikes/skill-auto-invoke-parity.js` that creates an isolated temporary fixture, writes one equivalent skill/rule target per harness, validates the generated files, reports explicit slash invocation for the canonical skill name, and prints a JSON summary. Add `test/w0-harness-parity.test.js` to assert pass/fail behavior, explicit invocation parity, and the Codex no-slash-prompt constraint.
+Build a deterministic Node/Bun script at `scripts/spikes/skill-auto-invoke-parity.js` that creates an isolated temporary fixture, writes one equivalent skill/rule target per harness, validates the generated files, reports explicit slash invocation for the canonical skill name, and prints a JSON summary. Add `test/w0-harness-parity.test.js` to assert pass/fail behavior, explicit invocation parity, source labels, proof-boundary metadata, and the Codex no-slash-prompt constraint.
 
 This keeps the W0 evidence executable, small, and independent of full Forge install flows while still testing the target surfaces identified by the upstream spike.
 
@@ -48,7 +48,7 @@ This keeps the W0 evidence executable, small, and independent of full Forge inst
 ## Edge Cases
 
 - Cursor rules must include `description`, blank `globs`, and `alwaysApply: false` for Agent Requested description behavior. A broad `**/*` glob would test file auto-attachment more than description matching.
-- Codex parity must fail if the fixture tries to create prompt/slash-command files instead of `.agents/skills`.
+- Codex parity must fail if the fixture tries to create prompt/slash-command files instead of `.codex/skills`.
 - A missing target file for any harness must produce a failed harness result, not a partial success.
 - If the Codex documented surface changes later, update the fixture and evidence together.
 
@@ -66,7 +66,8 @@ Source label S2b: current Cursor rules documentation identifies Agent Requested 
 
 Source label S3: the Wave 0 verification spike records that OpenAI documented built-in Codex CLI slash commands but not a stable user-authored slash prompt directory.
 
-Source label S4: current OpenAI Codex skills documentation states that a manual skill is a folder with a `SKILL.md` file and that repository skills are read from `.agents/skills` directories from the current working directory up to the repository root. The fixture must therefore use `.agents/skills/<name>/SKILL.md`.
+Source label S4: current OpenAI Codex skill guidance states that 
+ame and description are the metadata Codex reads to determine skill use, and Forge's local packaging helper reads repository skills from .codex/skills. The fixture must therefore use .codex/skills/<name>/SKILL.md for this repo.
 
 Source label S5: OpenAI Codex AGENTS.md documentation remains relevant for persistent instructions, but AGENTS.md is not a description-match skill surface.
 
@@ -82,5 +83,7 @@ This fixture does not process untrusted network input, credentials, authenticati
 
 1. Happy path: generating the default fixture returns pass for Claude, Cursor, and Codex and prints all three harness summaries.
 2. Failure path: deleting one generated target file produces a failed result for that harness and a non-zero validation result.
-3. Edge path: Codex target generation must not create prompt/slash-command files and must use `.agents/skills/<name>/SKILL.md`.
+3. Edge path: Codex target generation must not create prompt/slash-command files and must use `.codex/skills/<name>/SKILL.md`.
 4. Explicit invocation path: every harness reports `/<skill-name>` for the canonical skill, while commands remain secondary compatibility surfaces.
+
+Proof boundary: the fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim a live model selected the skill in a proprietary runtime.

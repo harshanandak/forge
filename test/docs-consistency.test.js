@@ -52,6 +52,14 @@ describe('README.md consistency', () => {
   });
 });
 
+describe('docs/INDEX.md reference links', () => {
+  const index = readDoc('docs/INDEX.md');
+
+  it('links to agent skill parity proof boundary docs', () => {
+    expect(index).toContain('reference/AGENT_SKILL_PARITY.md');
+  });
+});
+
 describe('docs/guides/SETUP.md consistency', () => {
   const setup = readDoc('docs/guides/SETUP.md');
 

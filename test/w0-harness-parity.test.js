@@ -27,7 +27,7 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
 
       const claudeSkill = path.join(root, '.claude', 'skills', 'guard-rails-audit', 'SKILL.md');
       const cursorRule = path.join(root, '.cursor', 'rules', 'guard-rails-audit.mdc');
-      const codexSkill = path.join(root, '.agents', 'skills', 'guard-rails-audit', 'SKILL.md');
+      const codexSkill = path.join(root, '.codex', 'skills', 'guard-rails-audit', 'SKILL.md');
 
       expect(fs.existsSync(claudeSkill)).toBe(true);
       expect(fs.existsSync(cursorRule)).toBe(true);
@@ -85,10 +85,25 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
       globs: null,
       alwaysApply: false,
     });
-    expect(codex.target).toBe('.agents/skills/guard-rails-audit/SKILL.md');
+    expect(codex.target).toBe('.codex/skills/guard-rails-audit/SKILL.md');
     expect(codex.target).not.toContain('prompt');
     expect(codex.target).not.toContain('slash');
-    expect(codex.target).not.toContain('.codex');
+  });
+
+  test('reports source labels and proof boundary for machine-readable evidence', () => {
+    const result = runParity({ cleanup: true });
+
+    expect(result.proofBoundary).toEqual({
+      level: 'metadata-surface',
+      liveAgentInvocation: 'not-run',
+      reason: 'closed-source harness model invocation is outside this deterministic fixture',
+    });
+    expect(result.harnesses.map((harness) => [harness.harness, harness.sourceLabel])).toEqual([
+      ['claude-code', 'S1'],
+      ['cursor', 'S2'],
+      ['codex-cli', 'S3'],
+    ]);
+    expect(result.sources.map((source) => source.label)).toEqual(['S1', 'S2', 'S3', 'S4']);
   });
 
   test('description matcher has a positive and negative control', () => {
@@ -108,5 +123,7 @@ describe('W0 cross-harness skill auto-invoke parity fixture', () => {
     expect(parsed.harnesses.map((harness) => harness.harness)).toEqual(['claude-code', 'cursor', 'codex-cli']);
     expect(parsed.harnesses.every((harness) => harness.passed)).toBe(true);
     expect(parsed.harnesses.every((harness) => harness.explicitInvocation === '/guard-rails-audit')).toBe(true);
+    expect(parsed.harnesses.every((harness) => typeof harness.sourceLabel === 'string')).toBe(true);
+    expect(parsed.proofBoundary.level).toBe('metadata-surface');
   });
 });
