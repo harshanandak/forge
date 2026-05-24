@@ -75,6 +75,7 @@ See [work/](work/) for the full list of date-prefixed work folders. Each folder 
 - [INSIGHTS_RECAP.md](reference/INSIGHTS_RECAP.md) — `forge insights` and `forge recap` evidence sources, output, and limitations
 - [STATUS_BOARD.md](reference/STATUS_BOARD.md) — `forge status` and `forge board` local runtime state surfaces, JSON mode, and limits
 - [protected-state-surfaces.md](reference/protected-state-surfaces.md) — Protected paths, allowed Forge API writes, audit payloads, and repair hints
+- [PROTECTED_PATH_MANIFEST.md](reference/PROTECTED_PATH_MANIFEST.md) — Protected path manifest schema, harness enforcement mapping, and evidence command
 - [RESEARCH_TEMPLATE.md](reference/RESEARCH_TEMPLATE.md) — Template for research docs (formerly docs/research/TEMPLATE.md)
 
 ## Guides
