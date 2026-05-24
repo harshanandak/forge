@@ -156,6 +156,8 @@ The resolved workflow graph generates harness-specific files:
 | Codex | skills, config, MCP config, lifecycle hooks where supported, `AGENTS.md` sections |
 | Cursor | `.cursor/rules`, Cursor skills where supported, MCP config, `AGENTS.md`, fallback hook checks |
 
+Cursor projection must explicitly separate on-demand Cursor skills from always-on or scoped `.cursor/rules` policy, and it must keep protected-path hook behavior on fallback unless native Cursor hook evidence exists.
+
 Every projection must report one of:
 
 - `native`
