@@ -455,12 +455,14 @@ Evaluator regions:
 - Skill package provenance and permission review.
 - Required skill loading and gated-skill non-invocation.
 - Harness projection status: `native`, `translated`, `fallback`, `unsupported_known_issue`, or `disabled_by_policy`.
+- Evaluator cross-check loop that compares the resolved workflow graph to generated harness projections, proposes minimal repair diffs, and re-runs until `pass`, `blocked`, or `known_issue`.
 
 Release gate:
 
 - A local extension can contribute a verification substage and UI panel, be toggled on for one project, and be removed without leaving generated artifacts behind.
 - A third-party skill package can be imported, reviewed, pinned, enabled for one project, projected into at least Claude and Codex, and disabled without leaving stale command aliases.
 - A project can replace Forge `/plan` with a Superpowers-style planning pack, extend frontend review with an Impeccable-style pack, and emit machine-readable evidence showing required skills loaded, optional skills skipped, and per-harness projection status.
+- The evaluator catches at least one intentionally broken projection, emits a repair recommendation, and passes after the projection is regenerated.
 
 ## 0.0.25 - Scaled Team Runtime And External Orchestrator Bridge
 

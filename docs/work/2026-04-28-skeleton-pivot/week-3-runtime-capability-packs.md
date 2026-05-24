@@ -164,6 +164,42 @@ Every projection must report one of:
 - `unsupported_known_issue`
 - `disabled_by_policy`
 
+## Evaluator Cross-Check Loop
+
+Week 3 implementation must include an evaluator loop so the runtime does not silently drift from the configured workflow.
+
+The loop runs after capability discovery, workflow resolution, and harness projection:
+
+1. **Collect** installed packs, project/user preferences, task classification, harness support, and current generated files.
+2. **Resolve** the active workflow graph with replacement, extension, disabled, gated, hidden, and execution-only rules applied.
+3. **Project** the graph into Claude, Codex, and Cursor surfaces.
+4. **Cross-check** projections against the graph:
+   - every `required` capability is loaded or blocked with a hard error
+   - every `gated` capability has an approval record before use
+   - every `hidden` capability stays hidden unless a policy dependency opens it
+   - every unsupported harness surface is marked `unsupported_known_issue`
+   - generated command shims point back to canonical skills or runtime actions
+   - disabled packs leave no stale aliases, hooks, rules, or MCP config
+5. **Improve** by proposing a minimal config or projection patch when the cross-check fails.
+6. **Re-run** the evaluator until it reaches `pass`, `blocked`, or `known_issue`.
+
+The evaluator must emit machine-readable results:
+
+```json
+{
+  "kind": "forge.capabilityPackEvaluation",
+  "workflowId": "project-default",
+  "status": "pass",
+  "requiredLoaded": ["forge.plan", "forge.tdd"],
+  "gatedAwaitingApproval": [],
+  "hiddenOpenedByPolicy": [],
+  "projectionFindings": [],
+  "knownIssues": []
+}
+```
+
+This evaluator is the safety net for customer-installed workflows. If a user installs Superpowers, Impeccable, or a private workflow pack, Forge must re-evaluate the graph, recommend the right replacement or extension, and prove the harness projections still match the active project policy.
+
 ## Week 3 Deliverables
 
 1. Add `.forge/capabilities.yaml` with Forge default pack metadata, visibility, invocation policy, and stage bindings.
@@ -172,7 +208,8 @@ Every projection must report one of:
 4. Add an on-demand skills MCP contract with stubbed tools and JSON evidence.
 5. Add generated harness projection evidence for Claude, Codex, and Cursor.
 6. Add docs showing how to replace Forge `/plan` with Superpowers and extend frontend review with Impeccable.
-7. Add tests proving required skills cannot be skipped at stage boundaries.
+7. Add an evaluator loop that cross-checks active workflow graph, required skills, gated/hidden policy, generated projections, stale artifacts, and known issues.
+8. Add tests proving required skills cannot be skipped at stage boundaries and evaluator failures produce repair recommendations.
 
 ## Acceptance Evidence
 
@@ -185,3 +222,4 @@ Week 3 is complete only when Forge can emit machine-readable evidence for:
 - harness projection status for Claude, Codex, and Cursor
 - known issues when a harness cannot provide native parity
 - rollback cleanup for disabled or replaced packs
+- evaluator result showing `pass`, `blocked`, or `known_issue` after every generated projection

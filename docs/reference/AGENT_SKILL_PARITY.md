@@ -73,6 +73,8 @@ Week 3 expands that into a runtime capability registry. The registry must cover 
 
 Invocation policy is part of parity. Required skills must be loaded by Forge runtime at stage or gate boundaries; expensive, dangerous, or long-running skills must remain gated, hidden, or execution-only until the user or runtime explicitly requests them.
 
+Parity is not accepted until an evaluator cross-checks the resolved workflow graph against generated harness projections and either passes, blocks, or records a known issue with evidence. The evaluator must also propose minimal repair diffs when a customer-installed workflow pack changes the active stage implementation.
+
 ## Evidence Command
 
 Run the parity fixture from the repository root:
