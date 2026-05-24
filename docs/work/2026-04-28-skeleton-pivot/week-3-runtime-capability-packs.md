@@ -199,6 +199,8 @@ The loop runs after capability discovery, workflow resolution, and harness proje
 5. **Improve** by proposing a minimal config or projection patch when the cross-check fails.
 6. **Re-run** the evaluator until it reaches `pass`, `blocked`, or `known_issue`.
 
+The re-run loop must be bounded. The default limit is three repair attempts or five minutes of wall-clock time, whichever comes first. If the evaluator still fails after the limit, it must stop with `blocked`, emit the remaining findings, and include the last proposed repair diff. It must not continue regenerating projections indefinitely.
+
 ### Negative Fixtures
 
 Week 3 must include intentionally broken projection fixtures so the evaluator proves it can catch and repair real drift. Required negative fixtures:
