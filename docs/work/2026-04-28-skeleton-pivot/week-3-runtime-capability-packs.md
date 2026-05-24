@@ -11,7 +11,7 @@ Current Forge implementation does not yet match the full parity model discussed 
 What exists:
 
 - W0 skill metadata parity: one canonical skill fixture rendered to Claude Code, Cursor, and Codex surfaces, documented in [AGENT_SKILL_PARITY.md](../../reference/AGENT_SKILL_PARITY.md).
-- W1 protected-path parity work: a protected-path manifest and evidence command prove seven protected-path categories across Claude, Cursor, and Codex, with Cursor marked as fallback.
+- W1 protected-path parity work exists as PR #187 at verification time, not as landed `master` behavior. That PR adds a protected-path manifest and evidence command for seven protected-path categories across Claude, Cursor, and Codex, with Cursor marked as fallback.
 - v3 docs already frame templates as adoption scaffolds and runtime building blocks as the product.
 
 What is missing:
@@ -168,6 +168,20 @@ Every projection must report one of:
 
 Week 3 implementation must include an evaluator loop so the runtime does not silently drift from the configured workflow.
 
+### Evaluator Inputs
+
+The evaluator must read the same inputs the runtime uses, not an independent checklist:
+
+- `.forge/capabilities.yaml` and any project-local pack manifests
+- user profile preferences and project workflow overrides
+- task classification and explicit CLI/UI run overrides
+- installed pack lock metadata and marketplace trust records
+- MCP server configs and discovered MCP capability metadata
+- generated Claude, Codex, and Cursor projection files
+- protected-path manifest and generated hook/fallback policy
+- stage ledger entries showing required, loaded, skipped, gated, and hidden capabilities
+- known-issue records for unsupported harness surfaces
+
 The loop runs after capability discovery, workflow resolution, and harness projection:
 
 1. **Collect** installed packs, project/user preferences, task classification, harness support, and current generated files.
@@ -182,6 +196,18 @@ The loop runs after capability discovery, workflow resolution, and harness proje
    - disabled packs leave no stale aliases, hooks, rules, or MCP config
 5. **Improve** by proposing a minimal config or projection patch when the cross-check fails.
 6. **Re-run** the evaluator until it reaches `pass`, `blocked`, or `known_issue`.
+
+### Negative Fixtures
+
+Week 3 must include intentionally broken projection fixtures so the evaluator proves it can catch and repair real drift. Required negative fixtures:
+
+- a required stage skill omitted from one harness projection
+- a gated skill invoked without approval evidence
+- a hidden skill exposed in an always-on harness rule
+- a disabled pack leaving behind a stale command alias or hook
+- a Cursor projection claiming native hook support when only fallback evidence exists
+
+Each negative fixture must fail before repair, emit a minimal repair recommendation, regenerate or update the projection, and pass on the next evaluator run.
 
 The evaluator must emit machine-readable results:
 
