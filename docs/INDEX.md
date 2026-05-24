@@ -29,6 +29,7 @@ This is the entry point for all Forge documentation. The structure mirrors how d
 - [extension-system.md](work/2026-04-28-skeleton-pivot/extension-system.md) — manifest spec, resolvers, lockfile, sandbox
 - [skill-distribution.md](work/2026-04-28-skeleton-pivot/skill-distribution.md) — marketplace allowlist + name collisions
 - [skill-generation.md](work/2026-04-28-skeleton-pivot/skill-generation.md) — observed-work mining → skill proposals (D18)
+- [week-3-runtime-capability-packs.md](work/2026-04-28-skeleton-pivot/week-3-runtime-capability-packs.md) — Week 3 capability pack registry, on-demand skills MCP, workflow composer, and plugin discovery plan
 - [agent-memory-architecture.md](work/2026-04-28-skeleton-pivot/agent-memory-architecture.md) — 7 typed memory categories (D22/D24)
 - [marketplace-patchmd-use-case-kits.md](work/2026-04-28-skeleton-pivot/marketplace-patchmd-use-case-kits.md) — use-case validation
 - [n1-moat-technical-deep-dive.md](work/2026-04-28-skeleton-pivot/n1-moat-technical-deep-dive.md) — moat analysis (D8/D9, kill criteria for D38)

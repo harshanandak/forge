@@ -437,6 +437,10 @@ Scope:
 
 - Extension manifest `contributes` schema for stages, substages, evaluator regions, evidence collectors, hooks, adapters, templates, commands, and local UI panels.
 - `SKILL.md` package contribution is the canonical agent-facing format. Commands, slash aliases, hook files, generated docs, and UI panels are projections from the manifest, not separate hand-maintained sources.
+- Week 3 capability-pack resolver from [week-3-runtime-capability-packs.md](./week-3-runtime-capability-packs.md): Forge keeps the stable workflow shell while project/user-selected packs replace, extend, disable, or gate individual stage implementations.
+- On-demand skills MCP contract: installed skills can remain discoverable, hidden, gated, or execution-only until `resolve_required_capabilities` or `load_skill` is called by the runtime.
+- Runtime-enforced invocation policy: required stage/gate skills cannot be skipped by harness prompt discretion, and expensive or risky skills cannot be randomly auto-invoked.
+- Plugin/workflow discovery and recommendation: Forge scans installed packs, harness configs, MCP configs, and marketplace cache, then proposes project-level workflow changes with evidence, config diff, rollback path, and harness projection impact.
 - skills.sh/GitHub import path through `packages/skills`: import disabled by default, pin source/ref, validate `SKILL.md`, record trust/permission metadata, then allow project-level enablement through config or UI.
 - Documentation validators are a required example extension type: a docs adapter can declare supported file types, discovery signals, config files, CI projections, local hook projections, and UI fields.
 - Resolver adds source, trust, permission, collision, and config-source metadata into the runtime graph.
@@ -449,11 +453,14 @@ Evaluator regions:
 - Collision and trust handling.
 - Toggle/rollback correctness.
 - Skill package provenance and permission review.
+- Required skill loading and gated-skill non-invocation.
+- Harness projection status: `native`, `translated`, `fallback`, `unsupported_known_issue`, or `disabled_by_policy`.
 
 Release gate:
 
 - A local extension can contribute a verification substage and UI panel, be toggled on for one project, and be removed without leaving generated artifacts behind.
 - A third-party skill package can be imported, reviewed, pinned, enabled for one project, projected into at least Claude and Codex, and disabled without leaving stale command aliases.
+- A project can replace Forge `/plan` with a Superpowers-style planning pack, extend frontend review with an Impeccable-style pack, and emit machine-readable evidence showing required skills loaded, optional skills skipped, and per-harness projection status.
 
 ## 0.0.25 - Scaled Team Runtime And External Orchestrator Bridge
 

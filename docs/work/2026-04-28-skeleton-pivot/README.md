@@ -47,7 +47,8 @@ See [release-plan.md](./release-plan.md) for scope, evaluator regions, gates, an
 4. [locked-decisions.md](./locked-decisions.md) - D1-D43 decisions with rationale, tradeoffs, and anti-decisions.
 5. [LEARNINGS.md](./LEARNINGS.md) - takeaways from the iteration process.
 6. [iteration-driven-planning-skill.md](./iteration-driven-planning-skill.md) - planning method, now treated as one configurable planning template/skill.
-7. [v3-redesign-strategy.md](./v3-redesign-strategy.md) - reference strategy with superseded sections preserved.
+7. [week-3-runtime-capability-packs.md](./week-3-runtime-capability-packs.md) - Week 3 target for replaceable workflow packs, on-demand skills MCP, runtime-enforced skill loading, and per-project workflow composition.
+8. [v3-redesign-strategy.md](./v3-redesign-strategy.md) - reference strategy with superseded sections preserved.
 
 Design references:
 
@@ -55,6 +56,7 @@ Design references:
 - [extension-system.md](./extension-system.md) - extension manifest, resolvers, lockfile, and sandbox notes.
 - [skill-distribution.md](./skill-distribution.md) - skill distribution and name collision rules.
 - [skill-generation.md](./skill-generation.md) - observed-work mining into skill proposals.
+- [week-3-runtime-capability-packs.md](./week-3-runtime-capability-packs.md) - capability pack registry, workflow composer, and plugin discovery plan.
 - [agent-memory-architecture.md](./agent-memory-architecture.md) - typed memory categories and storage choices.
 - [template-library-and-merge-flow.md](./template-library-and-merge-flow.md) - templates as adoption scaffolds, plus optional community merge flow.
 - [research/2026-05-18-open-questions-memory-ui-beads-post-018.md](./research/2026-05-18-open-questions-memory-ui-beads-post-018.md) - post-`0.0.18` memory, hooks, local UI, Beads scale, and control-plane findings.

@@ -4,6 +4,8 @@ Forge treats cross-agent skill compatibility as one canonical capability rendere
 
 This page documents the W0 metadata fixture only. It is not the full Forge extension parity model.
 
+For Week 3 planning, see [Week 3 Runtime Capability Packs](../work/2026-04-28-skeleton-pivot/week-3-runtime-capability-packs.md). That plan defines replaceable workflow packs, on-demand skill loading through MCP, runtime-enforced required skill policies, and per-project workflow composition.
+
 ## Supported Surfaces
 
 | Harness | Forge fixture path | Activation metadata | Proof status |
@@ -66,6 +68,10 @@ The full Forge extension parity model must cover more than skills:
 | Marketplace/extensions | `extension.yaml` plus lock metadata | plugin/skills/commands/hooks | skills/rules/MCP config | skills/MCP/hooks | lockfile, SHA, trust, generated targets |
 
 The next implementation should start with a machine-readable harness capability matrix and renderer contract before adding more generated files.
+
+Week 3 expands that into a runtime capability registry. The registry must cover skills, commands, hooks, MCPs, ACPs, books/docs, agents, memory policies, protected paths, marketplace metadata, and workflow stages. Harness files should be generated projections from the active project workflow, not the authority.
+
+Invocation policy is part of parity. Required skills must be loaded by Forge runtime at stage or gate boundaries; expensive, dangerous, or long-running skills must remain gated, hidden, or execution-only until the user or runtime explicitly requests them.
 
 ## Evidence Command
 
