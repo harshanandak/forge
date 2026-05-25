@@ -38,6 +38,34 @@ describe('protected path manifest contract', () => {
     expect(invalid.errors.join('\n')).toContain('immutable');
   });
 
+  test('accepts the legacy forge init protected paths scaffold identity', () => {
+    const legacy = validateProtectedPathManifest({
+      kind: 'forge.protectedPaths',
+      version: 1,
+      classification: 'standard',
+      harness: { targets: ['codex'] },
+      paths: [{ path: '.forge/config.yaml', reason: 'Forge runtime configuration' }],
+    });
+
+    expect(legacy.ok).toBe(true);
+    expect(legacy.errors).toEqual([]);
+  });
+
+  test('rejects categories that use the wrong protected-path mode', () => {
+    const manifest = getDefaultProtectedPathManifest();
+    const invalid = validateProtectedPathManifest({
+      ...manifest,
+      categories: manifest.categories.map(category =>
+        category.id === 'secrets'
+          ? { ...category, mode: 'tool-owned' }
+          : category,
+      ),
+    });
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('Category secrets must use mode secret-scan-blocked.');
+  });
+
   test('loads the repository default YAML manifest', () => {
     const loaded = loadProtectedPathManifest(path.join(ROOT, '.forge', 'protected-paths.yaml'));
 
