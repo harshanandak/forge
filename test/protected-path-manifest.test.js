@@ -140,6 +140,7 @@ describe('protected path manifest contract', () => {
     const manifest = getDefaultProtectedPathManifest();
     const custom = {
       ...manifest,
+      categoryIds: PROTECTED_PATH_CATEGORY_IDS,
       categories: manifest.categories.filter(category => category.id !== 'immutable'),
     };
     const evidence = buildProtectedPathManifestEvidence(custom);
