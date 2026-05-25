@@ -102,6 +102,17 @@ describe('protected path manifest contract', () => {
     expect(invalid.errors.join('\n')).toContain('Legacy surface forge_config example is not covered by category paths');
   });
 
+  test('reports null categories without crashing legacy surface coverage', () => {
+    const manifest = loadProtectedPathManifest(path.join(ROOT, '.forge', 'protected-paths.yaml'));
+    const invalid = validateProtectedPathManifest({
+      ...manifest,
+      categories: [...manifest.categories, null],
+    });
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('Each category must be an object.');
+  });
+
   test('documents harness enforcement without pretending Cursor hooks are proven', () => {
     const enforcement = getProtectedPathHarnessEnforcement();
 
