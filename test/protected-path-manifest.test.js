@@ -51,6 +51,18 @@ describe('protected path manifest contract', () => {
     expect(legacy.errors).toEqual([]);
   });
 
+  test('requires schemaVersion for canonical manifests', () => {
+    const manifest = getDefaultProtectedPathManifest();
+    const invalid = validateProtectedPathManifest({
+      ...manifest,
+      schemaVersion: undefined,
+      version: 1,
+    });
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('schemaVersion/version must be 1.0.0 or 1.');
+  });
+
   test('rejects categories that use the wrong protected-path mode', () => {
     const manifest = getDefaultProtectedPathManifest();
     const invalid = validateProtectedPathManifest({
@@ -73,6 +85,23 @@ describe('protected path manifest contract', () => {
     expect(validateProtectedPathManifest(loaded).ok).toBe(true);
   });
 
+  test('rejects legacy surface examples outside canonical category paths', () => {
+    const manifest = loadProtectedPathManifest(path.join(ROOT, '.forge', 'protected-paths.yaml'));
+    const invalid = validateProtectedPathManifest({
+      ...manifest,
+      surfaces: {
+        ...manifest.surfaces,
+        forge_config: {
+          ...manifest.surfaces.forge_config,
+          examples: [...manifest.surfaces.forge_config.examples, 'uncovered/protected-file.yaml'],
+        },
+      },
+    });
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('Legacy surface forge_config example is not covered by category paths');
+  });
+
   test('documents harness enforcement without pretending Cursor hooks are proven', () => {
     const enforcement = getProtectedPathHarnessEnforcement();
 
@@ -91,8 +120,21 @@ describe('protected path manifest contract', () => {
     const parsed = JSON.parse(output);
 
     expect(parsed.kind).toBe('forge.protectedPathManifest');
+    expect(parsed.categoryIds).toEqual(PROTECTED_PATH_CATEGORY_IDS);
     expect(parsed.validation.ok).toBe(true);
     expect(parsed.harnessEnforcement.cursor.status).toBe('fallback');
+  });
+
+  test('derives evidence categoryIds from the passed manifest', () => {
+    const manifest = getDefaultProtectedPathManifest();
+    const custom = {
+      ...manifest,
+      categories: manifest.categories.filter(category => category.id !== 'immutable'),
+    };
+    const evidence = buildProtectedPathManifestEvidence(custom);
+
+    expect(evidence.categoryIds).toEqual(PROTECTED_PATH_CATEGORY_IDS.filter(id => id !== 'immutable'));
+    expect(evidence.validation.ok).toBe(false);
   });
 });
 

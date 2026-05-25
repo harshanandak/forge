@@ -27,6 +27,30 @@ Forge owns a canonical protected path manifest and projects enforcement into har
 
 The validator proves the manifest has the seven W1 categories from `forge-5146`: `forge_core`, `user_protocol`, `generated_artifacts`, `append_only_logs`, `secrets`, `beads_state`, and `immutable`.
 
+## Technical Research (/plan)
+
+### Goals
+
+The plan phase scoped this as a machine-readable protected-path contract that can be projected into Claude, Cursor, and Codex harness enforcement without installing broad hooks in this PR. The contract must preserve the seven W1 categories from `forge-5146` while leaving later runtime work a stable manifest, validator, and evidence command.
+
+### Alternatives Considered
+
+- Full hook rollout now: rejected because the PR only needs a shared manifest and evidence boundary.
+- Harness-only rules: rejected because Claude, Cursor, and Codex expose different enforcement surfaces and need one Forge-owned source of truth.
+- Category-only manifest with no legacy surface record: rejected because the 0.0.19 protected-state docs/runtime still use named surfaces such as `forge_config`, `lockfiles`, `workflows`, and `memory_projection`.
+
+### Tradeoffs
+
+The canonical validator stays category-driven, using `forge_core`, `user_protocol`, `generated_artifacts`, `append_only_logs`, `secrets`, `beads_state`, and `immutable` as the durable W1 vocabulary. The legacy `surfaces` block remains as deprecated compatibility context, and its examples must be covered by the authoritative category path patterns so drift is visible in evidence.
+
+### Risks
+
+Cursor remains on fallback enforcement until a verified first-party hook surface is proven. Legacy surface names can also drift from the category contract unless the validator keeps checking coverage for the examples listed in `.forge/protected-paths.yaml`.
+
+### Next Steps
+
+Later runtime PRs should wire the protected-path manifest into harness-specific write gates, produce blocked-write repair hints per category, and remove or migrate the deprecated `surfaces` block after the protected-state docs no longer need it.
+
 ## Evidence
 
 The evidence command should print JSON:
@@ -34,4 +58,3 @@ The evidence command should print JSON:
 ```bash
 node scripts/spikes/protected-path-manifest.js
 ```
-

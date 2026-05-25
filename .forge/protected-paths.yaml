@@ -2,6 +2,8 @@ version: 1
 schemaVersion: 1.0.0
 kind: ProtectedPathManifest
 manifestPath: .forge/protected-paths.yaml
+surfacesDeprecated: true
+surfacesMigrationNote: Legacy surfaces remain for 0.0.19 protected-state docs/runtime parity; every example below must be covered by the authoritative W1 categories.
 surfaces:
   immutable:
     examples:
@@ -76,6 +78,11 @@ categories:
       - CLAUDE.md
       - .cursorrules
       - opencode.json
+      - .mcp.json
+      - .forge/config.yaml
+      - .forge/config.yml
+      - .forge/config.json
+      - .forge/protected-paths.yaml
     ownerSurface: forge setup or forge options
     repairHint: Use Forge setup/options commands so harness protocol files stay synchronized.
   - id: generated_artifacts
@@ -86,13 +93,45 @@ categories:
       - .cursor/rules/**
       - .cursor/skills/**
       - .codex/skills/**
+      - .cline/**
+      - .roo/**
+      - .kilocode/**
+      - .opencode/**
+      - .github/prompts/**
+      - .github/workflows/**
+      - .forge/hooks/**
+      - lefthook.yml
+      - .forge/extensions/*/manifest.json
+      - .github/PLUGIN_TEMPLATE.json
+      - plugins/*/plugin.json
+      - plugins/*/extension.json
+      - plugins/*/manifest.json
+      - bun.lock
+      - package-lock.json
+      - pnpm-lock.yaml
+      - yarn.lock
+      - requirements.lock
+      - poetry.lock
+      - Cargo.lock
+      - go.sum
+      - .forge/extensions.lock
+      - docs/sessions/**
+      - docs/memory/**
+      - .forge/memory/**
+      - memory.md
+      - MEMORY.md
+      - "**/memory.md"
+      - "**/MEMORY.md"
     ownerSurface: Forge harness renderer
     repairHint: Regenerate harness artifacts from the canonical Forge contract.
   - id: append_only_logs
     mode: runtime-only
     paths:
       - .forge/*.jsonl
+      - .forge/audit.log
+      - .forge/agent-log.ndjson
       - .beads/*.jsonl
+      - .beads/interactions.jsonl
     ownerSurface: Forge or Beads audit writer
     repairHint: Append through the runtime writer; do not rewrite audit history.
   - id: secrets
@@ -102,6 +141,10 @@ categories:
       - .env.*
       - "**/.env"
       - "**/.env.*"
+      - secrets.json
+      - "**/secrets.json"
+      - credentials.json
+      - "**/credentials.json"
     ownerSurface: secret manager
     repairHint: Move secrets to the configured secret manager or local ignored env file.
   - id: beads_state
