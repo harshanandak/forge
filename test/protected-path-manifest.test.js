@@ -175,6 +175,18 @@ describe('protected path manifest contract', () => {
     expect(evidence.categoryIds).toEqual(PROTECTED_PATH_CATEGORY_IDS.filter(id => id !== 'immutable'));
     expect(evidence.validation.ok).toBe(false);
   });
+
+  test('does not report canonical categoryIds for legacy manifests without categories', () => {
+    const evidence = buildProtectedPathManifestEvidence({
+      kind: 'forge.protectedPaths',
+      version: 1,
+      paths: [{ path: '.forge/config.yaml', reason: 'Forge runtime configuration' }],
+    });
+
+    expect(evidence.validation.ok).toBe(true);
+    expect(evidence.categoryIds).toEqual([]);
+    expect(evidence.categories).toBeUndefined();
+  });
 });
 
 describe('protected path manifest docs', () => {
