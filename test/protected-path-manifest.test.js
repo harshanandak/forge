@@ -78,11 +78,38 @@ describe('protected path manifest contract', () => {
     expect(invalid.errors.join('\n')).toContain('Category secrets must use mode secret-scan-blocked.');
   });
 
+  test('reports missing category modes with a readable placeholder', () => {
+    const manifest = getDefaultProtectedPathManifest();
+    const invalid = validateProtectedPathManifest({
+      ...manifest,
+      categories: manifest.categories.map(category =>
+        category.id === 'secrets'
+          ? { ...category, mode: undefined }
+          : category,
+      ),
+    });
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.errors).toContain('Invalid mode for secrets: <missing>.');
+  });
+
   test('loads the repository default YAML manifest', () => {
     const loaded = loadProtectedPathManifest(path.join(ROOT, '.forge', 'protected-paths.yaml'));
 
     expect(loaded.kind).toBe('ProtectedPathManifest');
     expect(validateProtectedPathManifest(loaded).ok).toBe(true);
+  });
+
+  test('adds file path context to manifest load failures', () => {
+    const missingPath = path.join(ROOT, '.forge', 'missing-protected-paths.yaml');
+
+    try {
+      loadProtectedPathManifest(missingPath);
+      throw new Error('Expected missing manifest load to fail');
+    } catch (error) {
+      expect(error.message).toContain(`Failed to load protected path manifest at ${missingPath}`);
+      expect(error.code).toBe('ENOENT');
+    }
   });
 
   test('rejects legacy surface examples outside canonical category paths', () => {
