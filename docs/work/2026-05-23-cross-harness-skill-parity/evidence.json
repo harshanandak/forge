@@ -1,0 +1,72 @@
+{
+  "fixture": "w0-skill-auto-invoke-parity",
+  "issue": "forge-2si5",
+  "generatedOn": "2026-05-23",
+  "passed": true,
+  "canonicalSkill": {
+    "name": "guard-rails-audit",
+    "description": "Use when asked to inspect Forge L1 rail enforcement, audit events, or protected path policy."
+  },
+  "sources": [
+    {
+      "label": "S1",
+      "harness": "claude-code",
+      "url": "https://code.claude.com/docs/en/skills",
+      "summary": "Claude Code project skills live under .claude/skills/<skill>/SKILL.md and use description metadata for automatic invocation."
+    },
+    {
+      "label": "S2",
+      "harness": "cursor",
+      "url": "https://docs.cursor.com/en/context",
+      "summary": "Cursor Project Rules live under .cursor/rules as .mdc files; Agent Requested rules are description-driven."
+    },
+    {
+      "label": "S3",
+      "harness": "codex-cli",
+      "url": "https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/skill-creator/SKILL.md",
+      "summary": "Codex skills use SKILL.md frontmatter name and description to determine when the skill gets used."
+    },
+    {
+      "label": "S4",
+      "harness": "forge",
+      "url": "lib/codex-skills.js",
+      "summary": "Forge packages repository Codex skills from .codex/skills for installation into $CODEX_HOME/skills."
+    }
+  ],
+  "harnesses": [
+    {
+      "harness": "claude-code",
+      "target": ".claude/skills/guard-rails-audit/SKILL.md",
+      "sourceLabel": "S1",
+      "descriptionMatched": true,
+      "negativePromptIgnored": true,
+      "explicitInvocation": "/guard-rails-audit",
+      "passed": true
+    },
+    {
+      "harness": "cursor",
+      "target": ".cursor/rules/guard-rails-audit.mdc",
+      "sourceLabel": "S2",
+      "descriptionMatched": true,
+      "negativePromptIgnored": true,
+      "explicitInvocation": "/guard-rails-audit",
+      "passed": true
+    },
+    {
+      "harness": "codex-cli",
+      "target": ".codex/skills/guard-rails-audit/SKILL.md",
+      "sourceLabel": "S4",
+      "descriptionMatched": true,
+      "negativePromptIgnored": true,
+      "explicitInvocation": "/guard-rails-audit",
+      "passed": true
+    }
+  ],
+  "proofBoundary": {
+    "level": "metadata-surface",
+    "liveAgentInvocation": "not-run",
+    "codexRuntimeDiscovery": "not-run",
+    "reason": "closed-source harness model invocation is outside this deterministic fixture; .codex/skills is the Forge repository packaging surface, not proof of direct Codex runtime discovery"
+  },
+  "knownIssues": []
+}

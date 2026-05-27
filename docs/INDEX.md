@@ -35,9 +35,12 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Templates](reference/TEMPLATES.md) - adoption profiles and the default workflow template.
 - [Adapters](reference/ADAPTERS.md) - issue and review adapter contracts.
 - [Status and board](reference/STATUS_BOARD.md) - local runtime state surfaces.
+- [Agent skill parity](reference/AGENT_SKILL_PARITY.md) - cross-harness skill metadata parity surfaces, evidence command, and proof boundary.
 - [Protected state surfaces](reference/protected-state-surfaces.md) - protected-path model, enforcement limits, and repair hints.
+- [Protected path manifest](reference/PROTECTED_PATH_MANIFEST.md) - protected path manifest schema, harness enforcement mapping, and evidence command.
 - [Patch format](reference/patch-md-format.md) - `.forge/patch.md` conventions.
 - [Upgrade safety](reference/upgrade-safety.md) - trust policy and rollback limits.
+- [Insights and recap](reference/INSIGHTS_RECAP.md) - `forge insights` and `forge recap` evidence sources, output, and limitations.
 - [Examples](reference/EXAMPLES.md) - worked examples.
 - [Test environment](reference/test-environment.md) - test harness notes.
 - [Agent permissions](reference/agent-permissions.md) - agent permission model.
