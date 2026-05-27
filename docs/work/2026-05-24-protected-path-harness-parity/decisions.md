@@ -7,4 +7,3 @@ The first protected-path PR is a contract/evidence slice. Runtime hook installer
 ## D2: Cursor Fallback
 
 Cursor enforcement is documented as a file-watcher or Forge CLI/pre-commit fallback until a native hook surface is proven by fixture evidence.
-

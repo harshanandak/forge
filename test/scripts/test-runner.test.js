@@ -144,6 +144,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/docs-consistency.test.js',
       'test/lefthook-check.test.js',
       'test/runtime-health.test.js',
       'test/scripts/preflight.test.js',
@@ -166,6 +167,27 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
       'test/commands/upgrade.test.js',
+      'test/docs-consistency.test.js',
+      ...riskTargets,
+    ]);
+  });
+
+  test('classifyPushTests maps canonical docs without forcing shell-heavy full suite tests', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: [
+        'README.md',
+        'QUICKSTART.md',
+        'CHANGELOG.md',
+        'AGENTS.md',
+        'docs/guides/SUPPORT.md',
+        'docs/forge/TOOLCHAIN.md',
+        'docs/work/README.md',
+      ].join('\n'),
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
       'test/docs-consistency.test.js',
       ...riskTargets,
     ]);

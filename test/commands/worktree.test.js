@@ -503,6 +503,43 @@ describe('forge worktree command', () => {
     expect(wtAdd.args).toContain('fix/custom-branch');
   });
 
+  test('create parses documented --branch argument syntax from registry args', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const calls = [];
+    const mockExec = (cmd, args, _opts) => {
+      calls.push({ cmd, args });
+      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
+      return Buffer.from('');
+    };
+    const mockSpawn = () => ({ status: 0 });
+    const mockFs = {
+      mkdirSync: () => {},
+      existsSync: (p) => p.endsWith('.beads'),
+      symlinkSync: () => {},
+      readdirSync: () => [],
+      cpSync: () => {},
+    };
+
+    await mod.handler(
+      ['create', 'custom', '--branch', 'fix/custom-branch'], {}, '/fake/root',
+      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
+    );
+
+    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[0] === 'worktree' && c.args[1] === 'add');
+    expect(wtAdd).toBeTruthy();
+    expect(wtAdd.args).toContain('fix/custom-branch');
+    expect(wtAdd.args).not.toContain('feat/custom');
+  });
+
+  test('create returns an error when --branch is missing a value', async () => {
+    const mod = require('../../lib/commands/worktree');
+    const result = await mod.handler(['create', 'custom', '--branch'], {}, '/fake/root', {});
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing value for --branch');
+  });
+
   // (m) create: runs package install after worktree creation
   test('create runs package manager install in worktree', async () => {
     const mod = require('../../lib/commands/worktree');

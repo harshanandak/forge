@@ -1,5 +1,7 @@
 # Research: Per-Agent Permissions Configuration
 
+> Historical research artifact. Do not treat this page as current setup behavior or current permission defaults. Current user-facing setup guidance lives in [Setup Guide](../guides/SETUP.md), and current skills/command packaging boundaries live in [Skills and command projections](SKILLS.md).
+
 **Feature slug**: `agent-permissions`
 **Beads issue**: forge-bo2
 **Date**: 2026-02-24

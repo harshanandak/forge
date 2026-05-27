@@ -1,6 +1,6 @@
 # Protected State Surfaces
 
-Forge protects runtime state that agents must not hand-edit. The protected-state check blocks direct staged additions, copies, modifications, renames, and deletions, then prints a repair hint that points to the owning command or Forge API surface.
+Forge defines protected runtime state that agents must not hand-edit. When `scripts/protected-state-check.js` is wired into hooks or CI, the protected-state check blocks direct staged additions, copies, modifications, renames, and deletions, then prints a repair hint that points to the owning command or Forge API surface.
 
 The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is implemented in `lib/protected-state-surfaces.js`; the manifest keeps the protected surface contract visible to agents and reviewers.
 
@@ -30,6 +30,21 @@ The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is 
 ## Repair Hint
 
 Every blocked path prints a repair hint. A repair hint is specific guidance such as using `bd update` for `beads_state`, `forge setup` for generated harness files, or the package manager for `lockfiles`.
+
+Example blocked output shape:
+
+```text
+Protected state write blocked
+path: .forge/config.yaml
+required surface: forge_config
+repair: use the Forge config/setup API for generated config changes
+```
+
+Common support notes:
+
+- If the check is not installed in hooks or CI, the model is documented but not enforced for that repository.
+- If Beads metadata needs to change after a merge and branch protection rejects the push, use a follow-up PR or the configured sync workflow.
+- Forge-owned commands may set `FORGE_PROTECTED_STATE_ALLOWED_SURFACES` narrowly for the surfaces they own.
 
 ## Forge API Example
 

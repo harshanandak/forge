@@ -6,6 +6,8 @@ Intelligent onboarding that adapts to your project and preserves existing conten
 
 ## Key Features
 
+> This guide describes the broader onboarding experience and workflow-profile ideas. For current first-run setup, start with [Quickstart](../../QUICKSTART.md). For the current workflow-template boundary, use [Workflow templates](WORKFLOW_TEMPLATES.md).
+
 ### Key Features
 
 1. **Intelligent File Merging** - Preserves your existing AGENTS.md content
@@ -182,7 +184,7 @@ bunx forge setup --type=critical
 - OWASP analysis required
 - Design docs for strategic changes
 
-#### 2. Standard (6 stages)
+#### 2. Standard (6 stages plus `/status` utility)
 **Use for:** Normal features, enhancements
 
 ```bash
@@ -199,7 +201,7 @@ bunx forge setup --type=standard
 - Auto-escalates to **Critical** if keywords detected:
   - auth, security, payment, crypto, password, token, session, migration, breaking
 
-#### 3. Simple (3 stages)
+#### 3. Simple (4 stages)
 **Use for:** Bug fixes, small changes
 
 ```bash
@@ -209,7 +211,7 @@ bunx forge setup --type=simple
 
 **Workflow:**
 ```
-/dev -> /validate -> /ship
+/dev -> /validate -> /ship -> /premerge
 ```
 
 - Streamlined for quick fixes
@@ -232,7 +234,7 @@ bunx forge setup --type=hotfix
 - Skip planning and research
 - TDD to reproduce, then fix
 
-#### 5. Docs (2 stages)
+#### 5. Docs (3 stages)
 **Use for:** Documentation only
 
 ```bash
@@ -242,7 +244,7 @@ bunx forge setup --type=docs
 
 **Workflow:**
 ```
-/verify -> /ship
+/verify -> /ship -> /premerge
 ```
 
 - Minimal workflow for documentation changes
@@ -593,8 +595,8 @@ Share project knowledge with team.
 
 ## Related Documentation
 
-- [Main README](../README.md) - Overview and quick start
-- [Workflow Guide](../AGENTS.md) - Complete default Forge workflow template
+- [Main README](../../README.md) - Overview and quick start
+- [Workflow Guide](../../AGENTS.md) - Complete default Forge workflow template
 - [Setup Guide](SETUP.md) - Agent-specific setup
 - [Agent Install Prompt](AGENT_INSTALL_PROMPT.md) - AI-assisted setup
 
