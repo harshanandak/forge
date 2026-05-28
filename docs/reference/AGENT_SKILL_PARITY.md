@@ -79,7 +79,7 @@ The full Forge extension parity model must cover more than skills:
 | Hooks | Forge hook manifest | Claude hook adapter if supported | unsupported unless verified | Codex hook adapter if supported | supported/unsupported matrix |
 | Commands | Forge command shim manifest | `.claude/commands` thin shims | native command surface if supported | CLI docs or skill fallback | shim points to canonical skill |
 | Agents/subagents | Forge agent role spec | Claude subagents | Cursor agent/subagent config if supported | Codex skill/agent fallback | role mapping or known issue |
-| Marketplace/extensions | `extension.yaml` plus lock metadata | plugin/skills/commands/hooks | skills/rules/MCP config | skills/MCP/hooks | lockfile, SHA, trust, generated targets |
+| Marketplace/extensions | `extension.yaml` plus lock metadata | plugin/skills/commands/hooks | skills/rules/`.cursor/mcp.json` config | skills/MCP/hooks | lockfile, SHA, trust, generated targets |
 
 The machine-readable matrix intentionally separates similar-looking surfaces:
 
