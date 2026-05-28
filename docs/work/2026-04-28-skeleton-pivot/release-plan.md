@@ -294,7 +294,7 @@ Scope:
 
 - `.forge/protected-paths.yaml` or equivalent resolved config surface.
 - Protected categories for Beads state, Forge config, memory projection files, generated harness files, extension manifests, lockfiles, workflows, secrets, immutable paths, and append-only logs.
-- Pre-edit enforcement where the harness supports hooks, plus pre-commit and CI fallback checks.
+- Pre-edit enforcement where the harness supports hooks, plus pre-commit and CI backstop checks.
 - Refuse-with-hint messages that tell the agent which Forge command or MCP method to use.
 - Append-only edit-attempt audit records.
 
@@ -384,7 +384,7 @@ Scope:
 - Cursor projection for stop-hook and file-watcher patterns where direct pre-edit hooks are unavailable.
 - Skill lifecycle and command-compatibility events: `forge.skill.installed`, `forge.skill.enabled`, `forge.skill.disabled`, `forge.skill.invoked`, and `forge.command.alias.invoked`.
 - Hook trust, timeout, blocking, and audit policy.
-- Agent capability metadata moves from coarse booleans to per-event support, fallback mode, blocking support, timeout policy, and generated-file targets.
+- Agent capability metadata moves from coarse booleans to per-event support, projection support, blocking support, timeout policy, and generated-file targets.
 
 Evaluator regions:
 
@@ -396,7 +396,7 @@ Release gate:
 
 - One protected-path rule and one memory-context rule project correctly into Codex, Claude, and Cursor where each harness supports it.
 - Hook output is audited and does not become the source of truth.
-- Codex, Claude, and Cursor capability manifests list supported Forge events and fallback behavior.
+- Codex, Claude, and Cursor capability manifests list supported Forge events and backstop behavior.
 
 ## 0.0.23 - Memory Projection And Continuous Learning
 
@@ -460,7 +460,7 @@ Evaluator regions:
 - Toggle/rollback correctness.
 - Skill package provenance and permission review.
 - Required skill loading and gated-skill non-invocation.
-- Harness projection status: `native`, `translated`, `fallback`, `unsupported_known_issue`, or `disabled_by_policy`.
+- Harness projection status: `native`, `translated`, `backstop_only`, `unsupported_known_issue`, or `disabled_by_policy`.
 - Evaluator cross-check loop that compares the resolved workflow graph to generated harness projections, proposes minimal repair diffs, and re-runs until `pass`, `blocked`, or `known_issue`.
 - Negative evaluator fixtures for omitted required skills, ungated gated skills, leaked hidden skills, stale disabled-pack artifacts, and unsupported native hook claims.
 
@@ -468,7 +468,7 @@ Release gate:
 
 - A local extension can contribute a verification substage and UI panel, be toggled on for one project, and be removed without leaving generated artifacts behind.
 - A third-party skill package can be imported, reviewed, pinned, enabled for one project, projected into at least Claude and Codex, and disabled without leaving stale command aliases.
-- A project can replace Forge `/plan` with a Superpowers-style planning pack, extend frontend review with an Impeccable-style pack, and emit machine-readable evidence showing required skills loaded, optional skills skipped, and per-harness projection status.
+- A project can replace Forge `/plan` with a Superpowers-style planning pack, extend frontend review with an Impeccable-style pack, and emit machine-readable evidence showing required skills loaded, recommended/manual skills skipped, and per-harness projection status.
 - The evaluator catches at least one intentionally broken projection, emits a repair recommendation, and passes after the projection is regenerated.
 - The release evidence distinguishes landed behavior from in-flight PR behavior so the plan never claims unmerged parity as current `master` capability.
 

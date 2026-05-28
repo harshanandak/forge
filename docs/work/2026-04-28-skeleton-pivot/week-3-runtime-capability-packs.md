@@ -11,7 +11,7 @@ Current Forge implementation does not yet match the full parity model discussed 
 What exists:
 
 - W0 skill metadata parity: one canonical skill fixture rendered to Claude Code, Cursor, and Codex surfaces, documented in [AGENT_SKILL_PARITY.md](../../reference/AGENT_SKILL_PARITY.md).
-- W1 protected-path parity work exists as PR #187 at verification time, not as landed `master` behavior. That PR adds a protected-path manifest and evidence command for seven protected-path categories across Claude, Cursor, and Codex, with Cursor marked as fallback.
+- W1 protected-path parity work exists as PR #187 at verification time, not as landed `master` behavior. That PR adds a protected-path manifest and evidence command for seven protected-path categories across Claude, Cursor, and Codex, with Cursor marked as backstop-only where native hooks are not verified.
 - v3 docs already frame templates as adoption scaffolds and runtime building blocks as the product.
 
 What is missing:
@@ -42,7 +42,7 @@ A pack can contribute:
 - stages and substages
 - skills and subskills
 - commands and command shims
-- hooks and fallback checks
+- hooks and backstop checks
 - MCP servers, tools, and resources
 - ACP adapters
 - books, docs, and reference bundles
@@ -72,9 +72,9 @@ Project configuration must support stage-level composition:
 | `replace` | Use this pack instead of the default stage implementation. | Replace Forge `/plan` with Superpowers planning. |
 | `extend_before` | Run this pack before the default stage. | Add project context discovery before `/dev`. |
 | `extend_after` | Run this pack after the default stage. | Add Impeccable design review after frontend implementation. |
-| `optional` | Recommend but do not require the capability. | Offer a security review for low-risk UI copy changes. |
-| `disabled` | Do not expose or invoke this capability. | Disable Forge default planning in a Superpowers-only project. |
-| `blocked` | Never auto-load; explicit user approval only. | Dangerous migrations, destructive cleanup, or paid long-running scans. |
+| `recommended` | Warn if unavailable, record the warning, and continue. | Offer a security review for low-risk UI copy changes. |
+| `manual` | Keep discoverable but do not invoke unless the user asks. | Keep an experimental review pack available without running it automatically. |
+| `disabled_by_policy` | Do not expose or invoke this capability in the active workflow. | Disable Forge default planning in a Superpowers-only project. |
 
 Resolution precedence:
 
@@ -88,16 +88,18 @@ Resolution precedence:
 
 Skills cannot rely only on model discretion. The runtime must enforce loading policy.
 
+Workflow strictness uses the three-mode model from [Workflow Assembly Control Plane](./workflow-assembly-control-plane.md): `required`, `recommended`, and `manual`. The rows below are skill loading states used by the resolver; they must not create silent fallback behavior.
+
 | Policy | Runtime behavior |
 | --- | --- |
 | `required` | Must load before a stage, gate, or protected action can proceed. |
 | `recommended` | Router should load when task metadata matches. |
-| `on_demand` | Metadata is visible, body is loaded only after selection. |
+| `manual` | Metadata is visible, body is loaded only after explicit user/runtime selection. |
 | `gated` | Requires explicit user/runtime approval before loading. |
 | `hidden` | Not discoverable unless an explicit command, dependency, or policy asks for it. |
 | `execution_only` | Agent never receives full instructions; MCP/runtime executes and returns evidence. |
 
-Mandatory examples:
+Required examples:
 
 - `/plan` loads the active planning pack and any required research/critic subskills.
 - `/dev` loads TDD, protected-path, task execution, and decision-gate policies.
@@ -141,7 +143,7 @@ Recommendation examples:
 - Superpowers can replace Forge `/plan`.
 - Impeccable can extend frontend design review.
 - A GitHub MCP can strengthen `/review`.
-- Cursor lacks a verified native hook for a gate, so Forge should keep fallback enforcement.
+- Cursor lacks a verified native hook for a gate, so Forge should keep backstop enforcement.
 - A hidden or expensive skill should stay gated because the project prefers low-cost runs.
 
 Recommendations must include evidence, a config diff, rollback path, and affected harness projections.
@@ -154,15 +156,15 @@ The resolved workflow graph generates harness-specific files:
 | --- | --- |
 | Claude Code | plugin manifest, skills, hooks, MCP config, command shims, `CLAUDE.md` if needed |
 | Codex | skills, config, MCP config, lifecycle hooks where supported, `AGENTS.md` sections |
-| Cursor | `.cursor/rules`, Cursor skills where supported, MCP config, `AGENTS.md`, fallback hook checks |
+| Cursor | `.cursor/rules`, Cursor skills where supported, MCP config, `AGENTS.md`, backstop hook checks |
 
-Cursor projection must explicitly separate on-demand Cursor skills from always-on or scoped `.cursor/rules` policy, and it must keep protected-path hook behavior on fallback unless native Cursor hook evidence exists.
+Cursor projection must explicitly separate manual Cursor skills from always-on or scoped `.cursor/rules` policy, and it must keep protected-path hook behavior on a backstop path unless native Cursor hook evidence exists.
 
 Every projection must report one of:
 
 - `native`
 - `translated`
-- `fallback`
+- `backstop_only`
 - `unsupported_known_issue`
 - `disabled_by_policy`
 
@@ -180,14 +182,14 @@ The evaluator must read the same inputs the runtime uses, not an independent che
 - installed pack lock metadata and marketplace trust records
 - MCP server configs and discovered MCP capability metadata
 - generated Claude, Codex, and Cursor projection files
-- protected-path manifest and generated hook/fallback policy
+- protected-path manifest and generated hook/backstop policy
 - stage ledger entries showing required, loaded, skipped, gated, and hidden capabilities
 - known-issue records for unsupported harness surfaces
 
 The loop runs after capability discovery, workflow resolution, and harness projection:
 
 1. **Collect** installed packs, project/user preferences, task classification, harness support, and current generated files.
-2. **Resolve** the active workflow graph with replacement, extension, disabled, gated, hidden, and execution-only rules applied.
+2. **Resolve** the active workflow graph with replacement, extension, `disabled_by_policy`, gated, hidden, and execution-only rules applied.
 3. **Project** the graph into Claude, Codex, and Cursor surfaces.
 4. **Cross-check** projections against the graph:
    - every `required` capability is loaded or blocked with a hard error
@@ -209,7 +211,7 @@ Week 3 must include intentionally broken projection fixtures so the evaluator pr
 - a gated skill invoked without approval evidence
 - a hidden skill exposed in an always-on harness rule
 - a disabled pack leaving behind a stale command alias or hook
-- a Cursor projection claiming native hook support when only fallback evidence exists
+- a Cursor projection claiming native hook support when only backstop evidence exists
 
 Each negative fixture must fail before repair, emit a minimal repair recommendation, regenerate or update the projection, and pass on the next evaluator run.
 

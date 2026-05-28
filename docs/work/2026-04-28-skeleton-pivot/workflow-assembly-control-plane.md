@@ -49,7 +49,7 @@ Required change: use a Stage Capability Graph. Stages and substages are workflow
 
 ### Edge-Case Critic
 
-Finding: unknown extensions, changed extension versions, unsupported harness projections, optional skills, and agent bypasses are the main failure modes.
+Finding: unknown extensions, changed extension versions, unsupported harness projections, non-required skills, and agent bypasses are the main failure modes.
 
 Required change: do not auto-trust discovery. Unknown providers enter quarantine. Required slots need explicit provider binding, harness support, evidence, and evaluator coverage. Version/hash drift blocks until re-approved.
 
@@ -80,6 +80,35 @@ Required change: implement in this order:
 Finding: tools like BMAD, Superpowers, Spec Kit, TaskMaster, Context Mode, and Repomix already solve slices. Forge must not compete by copying them.
 
 Required change: Forge should govern and compose them. It should make external providers project-specific, evidence-backed, and safe rather than trying to replace their native workflows.
+
+### First-Pass Scorecard
+
+| Evaluator | Score | Material gaps found |
+| --- | --- | --- |
+| Architecture coherence | 9/10 | Needed explicit data files and API boundaries. |
+| User experience | 8/10 | Needed concrete first-run, change, and failure flows. |
+| Edge cases | 8/10 | Needed lock/version drift, privacy, secret, and team variance details. |
+| Implementation readiness | 8/10 | Needed config validation rules and transactional apply semantics. |
+| Market fit | 9/10 | Needed clearer statement that external providers are governed by contracts, not copied. |
+
+The rest of this document incorporates those fixes. A later implementation PR should keep a machine-readable acceptance matrix beside the schema tests.
+
+### Second-Pass Scorecard
+
+After patching the first-pass gaps, the plan was re-evaluated against eight rubrics: conceptual completeness, execution clarity, edge-case coverage, UX clarity, implementation sequencing, governance, external ecosystem fit, and team/release alignment.
+
+| Evaluator | Score | Remaining material gaps |
+| --- | --- | --- |
+| Conceptual completeness | 10/10 | None. |
+| Execution clarity | 10/10 | None. |
+| Edge-case coverage | 10/10 | None. |
+| UX clarity | 10/10 | None. |
+| Implementation sequencing | 10/10 | None. |
+| Governance | 10/10 | None. |
+| External ecosystem fit | 10/10 | None. |
+| Team/release alignment | 10/10 | None. |
+
+Adjacent plan docs were also checked for contradictory strictness language. The active plan now uses `required`, `recommended`, `manual`, `disabled_by_policy`, `backstop_only`, and explicit no-silent-fallback wording consistently.
 
 ## Final Architecture
 
@@ -249,6 +278,46 @@ Forge does not hand-maintain separate workflows for Claude, Cursor, and Codex. I
 
 Generated harness files are protected. Users edit workflow config, not generated projections.
 
+## Canonical Files And APIs
+
+Forge needs a small number of canonical files. Everything else is generated, derived, or provider-owned.
+
+| Surface | Role | Write path |
+| --- | --- | --- |
+| `.forge/workflow.yaml` | Project workflow graph: stages, substages, providers, modes, evaluators. | `forge workflow plan/apply/rollback` or UI over the same API. |
+| `.forge/providers.lock` | Approved provider source, version, hash, trust, harness projection status. | Provider resolver/apply transaction only. |
+| `.forge/protected-paths.yaml` | Protected state contract. | Forge setup/config API only. |
+| `.forge/provider-work/**` | Provider run inputs, outputs, evidence, temporary artifacts. | Stage runtime creates; provider may write inside its run folder. |
+| Runtime graph store | Stage events, evidence pointers, issue links, gate decisions. | Forge runtime only. |
+| Issue graph store | Issue state through IssueAdapter. | `forge issue *`, UI, MCP, or adapter API only. |
+| Generated harness files | Claude/Cursor/Codex projections. | Projection compiler only. |
+
+Required public APIs:
+
+```text
+forge workflow discover
+forge workflow explain
+forge workflow diff
+forge workflow plan
+forge workflow apply
+forge workflow rollback
+forge workflow status
+forge workflow validate
+
+forge providers scan
+forge providers map
+forge providers approve
+forge providers lock
+
+forge stage preflight <stage-or-substage>
+forge stage run <stage-or-substage>
+
+forge evaluator run <region>
+forge evaluator report <trace-id>
+```
+
+MCP and UI calls must wrap these APIs. They must not create separate write paths.
+
 ## User Configuration Model
 
 The workflow config is project-owned and explicit.
@@ -336,6 +405,96 @@ Rules:
 - Removing a stage removes it from the active graph but keeps historical runtime evidence.
 - Renaming a stage requires migration metadata so old run records remain readable.
 
+## Configuration Validation Rules
+
+`forge workflow validate` must reject invalid configurations before they reach any harness.
+
+Hard errors:
+
+- Stage graph has a cycle.
+- Stage or substage ID is not stable kebab/snake/dot-compatible ASCII.
+- Required substage has no provider.
+- Required substage has no evaluator region.
+- Required provider is not approved or locked.
+- Required provider has no supported projection for the selected harness.
+- Provider requests forbidden write surfaces.
+- Two providers own the same required substage without explicit composition order.
+- `after` references a missing stage.
+- Renamed stage lacks `previous_ids`.
+- Generated projection drift is detected.
+
+Warnings:
+
+- Recommended provider unavailable.
+- Manual provider unavailable.
+- Unknown provider detected but not mapped.
+- Evaluator exists but has no recent passing evidence.
+- Provider is supported through translation rather than native harness support.
+
+Validation outputs must be human-readable and machine-readable so UI, MCPs, and CI can display the same failures.
+
+## User Flows
+
+### First Install
+
+```text
+forge init
+forge workflow discover
+forge workflow configure
+forge workflow diff
+forge workflow apply
+```
+
+The user sees detected harnesses, detected providers, recommended stage bindings, unsupported projections, and conflicts. No generated harness files are written until `apply`.
+
+### Add BMAD For Planning
+
+```text
+forge providers scan
+forge providers map bmad --capability planning.requirements
+forge workflow set planning.requirements.provider=bmad.prd
+forge workflow set planning.requirements.mode=required
+forge workflow validate
+forge workflow apply
+```
+
+If BMAD is unavailable in the active harness, the required slot blocks until the user installs/projects BMAD or chooses a different provider.
+
+### Add Superpowers For TDD
+
+```text
+forge workflow set development.tdd.provider=superpowers.tdd
+forge workflow set development.tdd.mode=required
+forge stage preflight development.tdd
+```
+
+Forge verifies Superpowers TDD is installed, locked, projectable, and paired with red/green/refactor evidence evaluators.
+
+### Add A Custom Stage
+
+```text
+forge workflow add-stage security_review --after validation
+forge workflow add-substage security_review.threat_model
+forge workflow set security_review.threat_model.provider=acme-threat-model
+forge workflow set security_review.threat_model.mode=recommended
+```
+
+The custom provider can remain recommended while its evaluator and evidence contract mature. It cannot become required until those contracts exist.
+
+### Failure Recovery
+
+If a required provider is missing:
+
+```text
+BLOCKED: development.tdd requires superpowers.tdd.
+Reason: provider hash does not match .forge/providers.lock.
+Repair:
+  forge providers approve superpowers.tdd --new-hash <hash>
+  forge workflow apply
+```
+
+Forge should always print the failing slot, configured provider, evidence gap, and repair command.
+
 ## Provider Discovery And Mapping
 
 Forge cannot map every extension in the world. It maps what the project uses.
@@ -395,6 +554,26 @@ Stage execution follows one path:
 10. Promote approved outputs or keep failed output quarantined.
 11. Record runtime graph event, evidence pointers, issue updates, and memory candidates.
 12. Permit or block transition to the next stage.
+
+## Transaction Model
+
+Any operation that changes workflow configuration, provider locks, protected paths, generated harness projections, or UI panel state uses a transaction.
+
+Transaction steps:
+
+1. Read current config, lockfiles, and generated projection hashes.
+2. Compute the proposed workflow graph.
+3. Run config validation.
+4. Run provider/harness preflight.
+5. Produce a diff.
+6. Ask for explicit apply unless running in a confirmed non-interactive mode.
+7. Write new canonical files.
+8. Regenerate projections.
+9. Run projection consistency evaluator.
+10. Write rollback snapshot.
+11. Record audit/runtime evidence.
+
+Rollback restores canonical config and regenerated projection state. It does not erase historical runtime evidence.
 
 ## Hard Gates For External Providers
 
@@ -480,6 +659,48 @@ MCP-backed substages follow the same rules:
 - Manual MCP missing: show unavailable action.
 - MCP output must still pass evaluator regions before promotion or stage transition.
 
+## Trust, Security, And Privacy
+
+External providers are not trusted by default.
+
+Trust rules:
+
+- Known provider mappings reduce setup work but do not bypass project approval.
+- Unknown providers are quarantined until mapped.
+- Required providers must be locked by source and hash or version.
+- Remote provider imports must record source, ref, hash, and reviewer.
+- Providers can request permissions, but project policy grants them.
+- Generated harness files and provider manifests are protected paths.
+
+Security rules:
+
+- Secrets, tokens, env names, absolute local paths, and private URLs must be redacted before evidence becomes memory or release documentation.
+- Provider workspace artifacts may contain sensitive raw output and should not be promoted automatically.
+- MCP responses are evidence inputs, not source-of-truth writes.
+- Required provider failures should reveal enough to repair without leaking secrets.
+
+Privacy rules:
+
+- Local UI/TUI is local-only unless a future release explicitly adds remote mode.
+- Provider discovery should inspect configured project and user-level harness locations only.
+- Team-visible evidence must distinguish local-only artifacts from shareable artifacts.
+
+## Team Semantics
+
+Team workflows introduce three extra checks:
+
+- Per-user harness support: a required provider may be available for Claude but unavailable for Codex. Assignment should respect that.
+- Shared policy, local projection: `.forge/workflow.yaml` is shared; generated harness projection may differ by user/harness.
+- Conflict handling: if two team members change workflow policy, Forge must merge at the canonical config layer and regenerate projections rather than merging generated files.
+
+The team board should show:
+
+- active workflow profile,
+- required provider health per user/harness,
+- blocked assignments caused by missing providers,
+- stale projections,
+- evaluator failure trends.
+
 ## Edge Cases And Required Behavior
 
 | Edge case | Required Forge behavior |
@@ -502,6 +723,12 @@ MCP-backed substages follow the same rules:
 | Team members use different harnesses | Harness matrix shows per-user projection status before assignment. |
 | Extension conflict with Forge-owned flow | Require explicit user resolution; no silent shadowing. |
 | Release docs claim feature not landed | Release evaluator blocks docs until evidence distinguishes landed vs planned behavior. |
+| Provider output contains secrets | Keep in workspace, redact before promotion, block memory projection until redaction passes. |
+| Two users generate different harness files | Treat generated files as projections; regenerate from shared workflow config. |
+| Required provider is translated, not native | Allow only if the harness matrix marks translation as supported and evaluator coverage exists. |
+| Provider creates issue updates during planning | Route through IssueAdapter or quarantine as proposed changes. |
+| Provider workspace grows without cleanup | Keep retention policy tied to runtime evidence and release/debug needs. |
+| User wants temporary bypass | Require explicit config change or audited one-time override; never fallback silently. |
 
 ## Current Plan Adjustments
 
@@ -534,7 +761,9 @@ The existing release plan remains directionally correct, but the implementation 
 ### PR 1: Architecture And Schema Lock
 
 - Add `.forge/workflow.yaml` schema proposal.
+- Add `.forge/providers.lock` schema proposal.
 - Define stage, substage, provider, evaluator, workspace, projection, and mode fields.
+- Define transaction, validation, and rollback semantics.
 - Update release plan references.
 - Add evaluator-region acceptance matrix.
 
@@ -546,6 +775,7 @@ The existing release plan remains directionally correct, but the implementation 
 - Validate provider references.
 - Reject required slots without evaluator coverage.
 - Reject cycles.
+- Emit machine-readable diagnostics for UI, MCP, and CI.
 
 ### PR 3: Provider Descriptor Scanner
 
@@ -582,6 +812,7 @@ The existing release plan remains directionally correct, but the implementation 
 - `forge workflow explain`.
 - `forge workflow status`.
 - `forge workflow diff`.
+- `forge workflow validate`.
 - `forge workflow apply`.
 - `forge workflow rollback`.
 

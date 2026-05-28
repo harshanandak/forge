@@ -77,8 +77,8 @@ The full Forge extension parity model must cover more than skills:
 | Rules/policies | Forge rule manifest | `CLAUDE.md` or `.claude/rules` if supported | `.cursor/rules/*.mdc` | `AGENTS.md` section | rule target and unsupported-surface notes |
 | MCP tools/resources | Forge MCP manifest | Claude MCP config | `.cursor/mcp.json` | Codex MCP config | config render and server probe |
 | Hooks | Forge hook manifest | Claude hook adapter if supported | unsupported unless verified | Codex hook adapter if supported | supported/unsupported matrix |
-| Commands | Forge command shim manifest | `.claude/commands` thin shims | native command surface if supported | CLI docs or skill fallback | shim points to canonical skill |
-| Agents/subagents | Forge agent role spec | Claude subagents | Cursor agent/subagent config if supported | Codex skill/agent fallback | role mapping or known issue |
+| Commands | Forge command shim manifest | `.claude/commands` thin shims | native command surface if supported | CLI docs or skill-mediated projection | shim points to canonical skill |
+| Agents/subagents | Forge agent role spec | Claude subagents | Cursor agent/subagent config if supported | Codex skill/agent projection | role mapping or known issue |
 | Marketplace/extensions | `extension.yaml` plus lock metadata | plugin/skills/commands/hooks | skills/rules/`.cursor/mcp.json` config | skills/MCP/hooks | lockfile, SHA, trust, generated targets |
 
 The machine-readable matrix intentionally separates similar-looking surfaces:
@@ -154,5 +154,5 @@ Known gaps intentionally left for follow-up:
 
 - Cursor Agent Skills are not proven in the W0 fixture; the capability matrix records `.cursor/skills` as the intended on-demand target and `.cursor/rules` as the policy target.
 - Claude still has command-first stage distribution in the current Forge setup; the skills-first graph records commands as shims over `.claude/skills`.
-- Cursor hooks remain unsupported until a verified hook surface exists; use Forge-owned hooks or file-watcher fallback for protected-path enforcement.
+- Cursor hooks remain unsupported until a verified hook surface exists; use Forge-owned hooks or a file-watcher backstop for protected-path enforcement.
 - MCPs, hooks, stage/gate renderers, Beads wiring, typed memory, patch overrides, marketplace trust, and extension packs are covered by the capability matrix contract, but broad renderer implementation remains future work.
