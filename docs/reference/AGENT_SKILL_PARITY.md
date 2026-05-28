@@ -12,11 +12,11 @@ For Week 3 planning, see [Week 3 Runtime Capability Packs](../work/2026-04-28-sk
 | --- | --- | --- | --- |
 | Claude Code | `.claude/skills/<name>/SKILL.md` | `description` in `SKILL.md` frontmatter | Proven by metadata fixture |
 | Cursor | `.cursor/rules/<name>.mdc` | `description`, blank `globs`, `alwaysApply: false` | Proven by metadata fixture |
-| Codex CLI | `.agents/skills/<name>/SKILL.md` | `name` and `description` in `SKILL.md` frontmatter | Proven by metadata fixture and current Codex repo-scoped skill discovery docs |
+| Codex CLI | `.codex/skills/<name>/SKILL.md` | `name` and `description` in `SKILL.md` frontmatter | Proven by metadata fixture and Forge packaging helper |
 
 The shared rule is: keep the skill name, description, and task body canonical, then generate the smallest native wrapper each harness needs.
 
-For Codex, this W0 fixture validates Forge's repository skill surface (`.agents/skills`) plus the metadata needed for installed Codex skills. It does not launch Codex to prove live auto-invocation.
+For Codex, this W0 fixture validates Forge's current repository packaging surface (`.codex/skills`) plus the metadata needed for installed Codex skills. Current Codex docs use `.agents/skills` for direct repo discovery; Forge should migrate the generator before treating that as the renderer target.
 
 Cursor rules are included here because `forge-2si5` explicitly asked for `.cursor/rules/*.mdc` evidence. They are not the final Cursor skill target. The broader parity model must treat Cursor Agent Skills as the primary on-demand workflow surface and Cursor rules as the always-on or scoped-policy surface.
 
@@ -41,14 +41,14 @@ Forge stage parity should become skills-first across Claude, Cursor, and Codex:
 
 | Forge stage | Canonical surface | Claude render | Cursor render | Codex render |
 | --- | --- | --- | --- | --- |
-| `status` | super skill with subskills | `.claude/skills/status/SKILL.md` plus command shim | `.cursor/skills/status/SKILL.md` | `.agents/skills/status/SKILL.md` |
-| `plan` | super skill with phases | `.claude/skills/plan/SKILL.md` plus command shim | `.cursor/skills/plan/SKILL.md` | `.agents/skills/plan/SKILL.md` |
-| `dev` | super skill with TDD subskills | `.claude/skills/dev/SKILL.md` plus command shim | `.cursor/skills/dev/SKILL.md` | `.agents/skills/dev/SKILL.md` |
-| `validate` | super skill with check subskills | `.claude/skills/validate/SKILL.md` plus command shim | `.cursor/skills/validate/SKILL.md` | `.agents/skills/validate/SKILL.md` |
-| `ship` | super skill with PR subskills | `.claude/skills/ship/SKILL.md` plus command shim | `.cursor/skills/ship/SKILL.md` | `.agents/skills/ship/SKILL.md` |
-| `review` | super skill with feedback subskills | `.claude/skills/review/SKILL.md` plus command shim | `.cursor/skills/review/SKILL.md` | `.agents/skills/review/SKILL.md` |
-| `premerge` | super skill with readiness subskills | `.claude/skills/premerge/SKILL.md` plus command shim | `.cursor/skills/premerge/SKILL.md` | `.agents/skills/premerge/SKILL.md` |
-| `verify` | super skill with post-merge subskills | `.claude/skills/verify/SKILL.md` plus command shim | `.cursor/skills/verify/SKILL.md` | `.agents/skills/verify/SKILL.md` |
+| `status` | super skill with subskills | `.claude/skills/status/SKILL.md` plus command shim | `.cursor/skills/status/SKILL.md` (unproven) | `.codex/skills/status/SKILL.md` |
+| `plan` | super skill with phases | `.claude/skills/plan/SKILL.md` plus command shim | `.cursor/skills/plan/SKILL.md` (unproven) | `.codex/skills/plan/SKILL.md` |
+| `dev` | super skill with TDD subskills | `.claude/skills/dev/SKILL.md` plus command shim | `.cursor/skills/dev/SKILL.md` (unproven) | `.codex/skills/dev/SKILL.md` |
+| `validate` | super skill with check subskills | `.claude/skills/validate/SKILL.md` plus command shim | `.cursor/skills/validate/SKILL.md` (unproven) | `.codex/skills/validate/SKILL.md` |
+| `ship` | super skill with PR subskills | `.claude/skills/ship/SKILL.md` plus command shim | `.cursor/skills/ship/SKILL.md` (unproven) | `.codex/skills/ship/SKILL.md` |
+| `review` | super skill with feedback subskills | `.claude/skills/review/SKILL.md` plus command shim | `.cursor/skills/review/SKILL.md` (unproven) | `.codex/skills/review/SKILL.md` |
+| `premerge` | super skill with readiness subskills | `.claude/skills/premerge/SKILL.md` plus command shim | `.cursor/skills/premerge/SKILL.md` (unproven) | `.codex/skills/premerge/SKILL.md` |
+| `verify` | super skill with post-merge subskills | `.claude/skills/verify/SKILL.md` plus command shim | `.cursor/skills/verify/SKILL.md` (unproven) | `.codex/skills/verify/SKILL.md` |
 
 Claude commands should become compatibility shims, not the workflow authority. The canonical workflow should live in stage skills and subskills.
 
@@ -72,7 +72,7 @@ The full Forge extension parity model must cover more than skills:
 | Capability | Canonical Forge source | Claude | Cursor | Codex | Required evidence |
 | --- | --- | --- | --- | --- | --- |
 | Project instructions | structured `AGENTS.md` sections | `CLAUDE.md` shim or generated file | `.cursor/rules/*.mdc` for scoped policy | `AGENTS.md` | semantic section comparison |
-| Skills/playbooks | agentskills.io-compatible `SKILL.md` | `.claude/skills` | `.cursor/skills` | `.agents/skills` | generated file and trigger metadata |
+| Skills/playbooks | agentskills.io-compatible `SKILL.md` | `.claude/skills` | `.cursor/skills` | `.codex/skills` packaging source; `.agents/skills` after generator migration | generated file and trigger metadata |
 | Rules/policies | Forge rule manifest | `CLAUDE.md` or `.claude/rules` if supported | `.cursor/rules/*.mdc` | `AGENTS.md` section | rule target and unsupported-surface notes |
 | MCP tools/resources | Forge MCP manifest | Claude MCP config | Cursor MCP config | Codex MCP config | config render and server probe |
 | Hooks | Forge hook manifest | Claude hook adapter if supported | unsupported unless verified | Codex hook adapter if supported | supported/unsupported matrix |
@@ -82,7 +82,7 @@ The full Forge extension parity model must cover more than skills:
 
 The machine-readable matrix intentionally separates similar-looking surfaces:
 
-- Skills are on-demand workflows: `.claude/skills/<skill>/SKILL.md`, `.cursor/skills/<skill>/SKILL.md`, and `.agents/skills/<skill>/SKILL.md` for Codex repository-scoped skills.
+- Skills are on-demand workflows: `.claude/skills/<skill>/SKILL.md`, `.cursor/skills/<skill>/SKILL.md`, and Forge's current `.codex/skills/<skill>/SKILL.md` packaging source for Codex. Direct Codex repo discovery should use `.agents/skills/<skill>/SKILL.md` after the Forge generator migrates.
 - Rules are policy/context projections: Cursor uses `.cursor/rules/<rule>.mdc`; Claude and Codex receive policy through instruction projections unless a native rule surface is verified.
 - Commands are shims: Claude command files remain useful for compatibility, but the command body must point to the canonical stage skill instead of duplicating the workflow.
 - MCP is config plumbing: each harness gets native MCP config only when the matrix records a target path and probe evidence.
@@ -97,7 +97,7 @@ The current ecosystem pattern is a canonical payload with native harness rendere
 
 - Claude Code documents skills as `SKILL.md` files whose `description` controls automatic loading, and notes that commands and skills can both expose slash affordances.
 - Cursor documents `.cursor/rules/*.mdc` as persistent scoped context with `description`, `globs`, and `alwaysApply`; Cursor skills are treated by Forge as the on-demand workflow target, while rules remain the policy target.
-- Codex documents skills as reusable workflow packages under `.agents/skills` for repository scope, uses description-based implicit invocation, and uses plugins/marketplaces to distribute reusable skills, MCP servers, hooks, and apps.
+- Codex documents skills as reusable workflow packages under `.agents/skills` for repository scope, uses description-based implicit invocation, and uses plugins/marketplaces to distribute reusable skills, MCP servers, hooks, and apps. Forge's current generator still emits `.codex/skills` packages for installation.
 - AGENTS.md remains the shared instruction projection for agents that read repository instructions directly.
 
 Forge adopts that pattern by keeping one canonical Forge capability and rendering the smallest verified native wrapper per harness. It does not duplicate every feature blindly into every directory.
@@ -141,7 +141,7 @@ The JSON output includes:
 
 ## Proof Boundary
 
-This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime. For Codex specifically, it validates the documented repo-scoped skill path and metadata, not live auto-invocation.
+This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime. For Codex specifically, it validates the current Forge packaging source and metadata, not live auto-invocation or direct `.agents/skills` repo discovery.
 
 If a future release needs live invocation proof, add a separate transcript-producing eval for Claude Code, Cursor, and Codex and keep this fixture as the fast CI gate.
 

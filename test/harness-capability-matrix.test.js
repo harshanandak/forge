@@ -68,7 +68,10 @@ describe('skills-first stage graph', () => {
       expect(stage.subskills.length).toBeGreaterThan(0);
       expect(stage.renderTargets.claude.skill).toBe(`.claude/skills/${stage.id}/SKILL.md`);
       expect(stage.renderTargets.cursor.skill).toBe(`.cursor/skills/${stage.id}/SKILL.md`);
-      expect(stage.renderTargets.codex.skill).toBe(`.agents/skills/${stage.id}/SKILL.md`);
+      expect(stage.renderTargets.cursor.status).toBe('unproven');
+      expect(stage.renderTargets.cursor.knownIssue).toContain('matching source evidence');
+      expect(stage.renderTargets.codex.skill).toBe(`.codex/skills/${stage.id}/SKILL.md`);
+      expect(stage.renderTargets.codex.directRepoDiscoveryTarget).toBe(`.agents/skills/${stage.id}/SKILL.md`);
     }
   });
 
