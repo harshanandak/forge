@@ -1,363 +1,82 @@
-# Validation & Enforcement
+# Validation Reference
 
-Forge includes built-in validation and TDD enforcement to ensure quality and consistency.
+Forge validation is evidence, not a slogan. Record the command, result, and failure text when validation fails.
 
-## Table of Contents
+## Project Validation
 
-- [Git Hooks](#git-hooks)
-- [Validation CLI](#validation-cli)
-- [Validators by Stage](#validators-by-stage)
-- [Override Mechanisms](#override-mechanisms)
-- [Configuration](#configuration)
-
----
-
-## Git Hooks
-
-Forge uses [Lefthook](https://github.com/evilmartians/lefthook) for fast, language-agnostic git hooks.
-
-### Pre-Commit Hook
-
-**Purpose**: Enforce TDD by blocking commits of source code without tests.
-
-**Trigger**: Before every commit
-
-**Checks**:
-- Detects staged source files (`.js`, `.ts`, `.py`, `.go`, `.java`, `.rb`, etc.)
-- Verifies corresponding test files exist (`.test.js`, `.spec.ts`, etc.)
-- Excludes config files, test files, and documentation
-
-**Behavior**:
-When source code lacks tests, offers guided recovery:
-
-```
-⚠️  Looks like you're committing source code without tests:
-
-  - src/user-service.js
-
-📋 TDD Reminder:
-  Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-
-What would you like to do?
-  1. Unstage source files (keep tests staged)
-  2. Continue anyway (I have a good reason)
-  3. Abort commit (let me add tests)
-
-Your choice (1-3):
-```
-
-**Override**:
-```bash
-git commit --no-verify  # Skip in emergencies
-```
-
-### Pre-Push Hook
-
-**Purpose**: Ensure all tests pass before pushing to remote.
-
-**Trigger**: Before every push
-
-**Checks**:
-- Runs `bun test`
-- Verifies all tests pass
-
-**Override**:
-```bash
-LEFTHOOK=0 git push  # Skip all hooks
-```
-
----
-
-## Validation CLI
-
-The `forge-preflight` CLI checks prerequisites for each workflow stage.
-
-### Usage
+In this repository:
 
 ```bash
-forge-preflight <command>
+bun run check
 ```
 
-### Commands
+`bun run check` runs `scripts/validate.js` in this order:
 
-| Command | Purpose | When to Use |
-|---------|---------|-------------|
-| `status` | Check project prerequisites | Setup, onboarding |
-| `dev` | Validate before `/dev` | Before implementation |
-| `ship` | Validate before `/ship` | Before creating PR |
+1. `bun run typecheck`
+2. `bun run lint`
+3. `bun audit`
+4. `node scripts/test.js --validate`
 
----
+Security audit behavior distinguishes blocking high/critical vulnerabilities from lower-severity warnings.
 
-## Validators by Stage
-
-### `forge-preflight status`
-
-**Purpose**: Check basic project setup
-
-**Checks**:
-- ✓ Git repository initialized
-- ✓ `package.json` exists
-- ✓ Test framework configured (`bun test` script)
-- ✓ Node.js installed
-
-**Example**:
-```bash
-$ forge-preflight status
-
-Checking project prerequisites...
-
-Validation Results:
-
-  ✓ Git repository
-  ✓ package.json exists
-  ✓ Test framework configured
-  ✓ Node.js installed
-
-✅ All checks passed!
-```
-
----
-
-### `forge-preflight dev`
-
-**Purpose**: Validate before starting implementation (`/dev`)
-
-**Checks**:
-- ✓ On feature branch (`feat/*`, `fix/*`, `docs/*`)
-- ✓ Plan file exists (`docs/work/**/design.md`, with legacy `docs/plans/*-design.md` fallback)
-- ✓ Research file exists (`docs/research/*.md`)
-- ✓ Test directory exists
-
-**Example**:
-```bash
-$ forge-preflight dev
-
-Validating prerequisites for /dev stage...
-
-Validation Results:
-
-  ✓ On feature branch
-  ✓ Plan file exists
-  ✓ Research file exists
-  ✓ Test directory exists
-
-✅ All checks passed!
-```
-
-**Failed Example**:
-```bash
-$ forge-preflight dev
-
-Validating prerequisites for /dev stage...
-
-Validation Results:
-
-  ✗ On feature branch
-    Not on a feature branch. Create one: git checkout -b feat/your-feature
-  ✓ Plan file exists
-  ✗ Research file exists
-    No research file found in docs/research/. Run: /research
-
-❌ Some checks failed. Please fix the issues above.
-```
-
----
-
-### `forge-preflight ship`
-
-**Purpose**: Validate before creating PR (`/ship`)
-
-**Checks**:
-- ✓ Tests exist (`.test.js`, `.spec.ts` files)
-- ✓ Tests pass (`bun test` succeeds)
-- ✓ Documentation updated (`README.md` or `docs/`)
-- ✓ No uncommitted changes
-
-**Example**:
-```bash
-$ forge-preflight ship
-
-Validating prerequisites for /ship stage...
-
-Validation Results:
-
-  ✓ Tests exist
-  ✓ Tests pass
-  ✓ Documentation updated
-  ✓ No uncommitted changes
-
-✅ All checks passed!
-```
-
----
-
-## Override Mechanisms
-
-### Git Hooks
-
-**Emergency Override** (use sparingly):
+## Supporting Commands
 
 ```bash
-# Skip pre-commit hook
-git commit --no-verify -m "Emergency hotfix"
-
-# Skip pre-push hook
-LEFTHOOK=0 git push
+bun run typecheck
+bun run lint
+bun test --timeout 15000
+bun run validate:yaml
+npm pack --dry-run
 ```
 
-**When to use**:
-- Emergency hotfixes
-- Work-in-progress commits (before pushing)
-- Non-code commits (docs, config)
+Use `npm pack --dry-run` for package contents and release-readiness checks. It does not publish.
 
-**When NOT to use**:
-- Regular development
-- Public repositories
-- Production deployments
+## Agent Stage Validation
 
-### Validation CLI
+`/validate` is an agent workflow stage. It may include rebase/freshness checks, local validation, manual security review, and Beads context updates according to the installed stage instructions.
 
-The CLI provides guidance but doesn't block actions. You can proceed manually if checks fail.
+Do not confuse:
 
----
+- `/validate` - agent stage workflow
+- `forge-preflight` - prerequisite checker
+- `bun run check` - repository validation script
 
-## Configuration
+## Work Artifact Paths
 
-### Lefthook Configuration
+Current planning and validation evidence should point to:
 
-Edit `lefthook.yml` to customize hooks:
-
-```yaml
-pre-commit:
-  commands:
-    tdd-check:
-      run: node .forge/hooks/check-tdd.js
-      stage_fixed: false
-      tags: tdd
-      glob: "*.{js,ts,jsx,tsx,py,go,java,rb}"
-
-pre-push:
-  commands:
-    tests:
-      run: bun test
-      tags: tests
+```text
+docs/work/YYYY-MM-DD-<slug>/
 ```
 
-**Options**:
-- `run`: Command to execute
-- `stage_fixed`: Auto-stage modified files (false = safer)
-- `tags`: Categorize hooks
-- `glob`: File patterns to trigger hook
+Legacy `docs/research/` or `docs/plans/` examples are historical unless a specific tool documents a compatibility fallback.
 
-### Custom Test Patterns
+## Failure Recovery
 
-Edit `.forge/hooks/check-tdd.js` to add custom test patterns:
+Fix failures in order:
 
-```javascript
-// Around line 72
-const testPatterns = [
-  `${basename}.test${ext}`,
-  `${basename}.spec${ext}`,
-  `test/${basename}.test${ext}`,
-  `tests/${basename}.test${ext}`,
-  `__tests__/${basename}.test${ext}`,
-  // Add custom patterns here
-  `${dir}/__tests__/${basename}${ext}`,
-  `spec/${basename}_spec${ext}`,  // RSpec style
-];
-```
+1. Typecheck
+2. Lint
+3. Security audit
+4. Tests
+5. Packaging
 
-### Validation CLI Customization
+For each failure:
 
-Edit `bin/forge-preflight.js` to add custom validators:
+1. Reproduce with the exact command.
+2. Read the first real error.
+3. Fix the root cause.
+4. Rerun the full validation command.
 
-```javascript
-function validateCustomStage() {
-  console.log('Validating custom stage...\n');
+Do not proceed to ship with "should pass" or stale output.
 
-  check('Custom check', () => {
-    // Your validation logic
-    return true;
-  }, 'Custom error message');
+## Documentation Changes
 
-  return printResults();
-}
-```
-
----
-
-## Installation
-
-Hooks are automatically installed when you run:
+For docs-only changes, still run:
 
 ```bash
-# Install lefthook (one-time)
-bun add -d lefthook
-
-# Set up Forge
-bunx forge setup
+bun run check
+npm pack --dry-run
 ```
 
-The hooks will be automatically installed in your project's `.git/hooks/` directory.
-
-**Manual installation** (if needed):
-
-```bash
-# If you prefer global installation
-bun install -g lefthook
-
-# Install hooks
-lefthook install
-```
-
----
-
-## Troubleshooting
-
-### Hooks not running
-
-```bash
-# Check lefthook installation
-lefthook version
-
-# Reinstall hooks
-lefthook install
-
-# Check git hooks directory
-ls -la .git/hooks/
-```
-
-### False positives
-
-If the hook incorrectly flags a file:
-
-1. **Short-term**: Use `--no-verify` to skip
-2. **Long-term**: Update exclusion patterns in `.forge/hooks/check-tdd.js`
-
-### Tests failing on push
-
-```bash
-# Run tests locally
-bun test
-
-# Fix failures, then
-git push
-```
-
----
-
-## Best Practices
-
-1. **Write tests first**: Let the hooks guide you to TDD
-2. **Don't abuse overrides**: Only use `--no-verify` in emergencies
-3. **Keep tests fast**: Pre-push hooks run on every push
-4. **Document exceptions**: If you override, explain why in commit message
-5. **Update validators**: Customize for your project's needs
-
----
-
-## See Also
-
-- [Workflow Guide](../AGENTS.md) - Complete default Forge workflow template
-- [TDD Guide](../CLAUDE.md) - TDD principles and practices
-- [Lefthook Docs](https://github.com/evilmartians/lefthook) - Full hook configuration
+Run a Markdown link check when available. If adding docs tooling would broaden the PR, file follow-up work instead.

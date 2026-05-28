@@ -83,6 +83,12 @@ describe('package distribution (npm pack --dry-run)', () => {
     }
   });
 
+  describe('.forge/ protected state manifest', () => {
+    it('includes the canonical protected-path manifest used by runtime defaults', () => {
+      expect(packFiles).toContain('.forge/protected-paths.yaml');
+    });
+  });
+
   describe('excludes development/test artifacts', () => {
     it('does NOT include test/ directory files', () => {
       const testFiles = packFiles.filter((f) => f.startsWith('test/'));

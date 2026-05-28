@@ -1,5 +1,7 @@
 # Forge v3 Release Staging Strategy
 
+> Historical design artifact. Do not use this page for current package release planning, command availability, or public positioning. Current public package release guidance lives in `CHANGELOG.md`, `docs/reference/RELEASE.md`, and `docs/guides/WORKFLOW_TEMPLATES.md`.
+
 **Status:** SUPERSEDED by [release-plan.md](./release-plan.md) D39 versioned roadmap · **Date:** 2026-04-28 · **Epic:** `forge-besw`
 **Inputs:** `beads-operations-manifest.md`, `v3-redesign-strategy.md`, `v3-skeleton-plan.md`
 **Approach:** Historical Option B alpha/beta/GA staging. Use [release-plan.md](./release-plan.md) for current v3.0/v3.1/v3.2/v3.3+ launch gates.
