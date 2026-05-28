@@ -1,5 +1,7 @@
 # Forge Workflow Examples
 
+> Historical examples. These transcripts are illustrative, not current setup or timing guarantees. Use [Quickstart](../../QUICKSTART.md), [Workflow templates](../guides/WORKFLOW_TEMPLATES.md), and [Command reference](COMMANDS.md) for current behavior.
+
 Real-world examples showing how to use Forge for different scenarios.
 
 ---
@@ -17,7 +19,7 @@ Real-world examples showing how to use Forge for different scenarios.
 
 **Task**: Add a health check endpoint
 
-**Estimated Time**: 15 minutes
+**Estimated Time**: Historical example only; do not treat as a guarantee.
 
 **Workflow**: Tactical
 
@@ -88,7 +90,7 @@ git commit -m "feat: add health check endpoint"
 # URL: https://github.com/you/project/pull/42
 ```
 
-**Result**: Feature shipped in 15 minutes with tests and documentation.
+**Result**: Historical transcript showing the intended flow with tests and documentation. Do not treat the timing or output as a current guarantee.
 
 ---
 
@@ -473,10 +475,10 @@ forge sync
 
 ## Next Steps
 
-📚 **New to Forge?** → [QUICKSTART.md](../QUICKSTART.md)
+📚 **New to Forge?** → [QUICKSTART.md](../../QUICKSTART.md)
 
-📖 **Learn workflow** → [AGENTS.md](../AGENTS.md)
+📖 **Learn workflow** → [AGENTS.md](../../AGENTS.md)
 
-🛠️ **Setup tools** → [SETUP.md](SETUP.md)
+🛠️ **Setup tools** → [SETUP.md](../guides/SETUP.md)
 
 💬 **Questions?** → [GitHub Discussions](https://github.com/harshanandak/forge/discussions)

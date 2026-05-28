@@ -1,7 +1,7 @@
 {
   "name": "forge-workflow",
   "version": "0.0.10",
-  "description": "Composable TDD workflow framework for all AI coding agents (Claude, Cursor, Cline, OpenCode, Copilot, Kilo Code, Roo Code, Codex)",
+  "description": "Local runtime control plane for AI-assisted engineering workflows, gates, evidence, and all AI agents",
   "bin": {
     "forge": "bin/forge.js",
     "forge-workflow": "bin/forge.js",
@@ -105,7 +105,11 @@
     ".github/workflows/github-to-beads.yml",
     ".github/workflows/beads-to-github.yml",
     ".forge/hooks/",
+    ".forge/protected-paths.yaml",
     "docs/*.md",
+    "docs/guides/*.md",
+    "docs/reference/*.md",
+    "docs/forge/*.md",
     "install.sh",
     "lefthook.yml",
     "AGENTS.md",

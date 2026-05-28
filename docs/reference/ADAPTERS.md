@@ -2,6 +2,8 @@
 
 Forge adapters normalize provider-specific surfaces behind Forge-owned contracts. The bundled adapters are reference implementations; Forge owns the contract and authority rules.
 
+Current public support is narrow: Beads is the reference issue adapter, and review-adapter scaffolding supports review adapters with a Greptile-shaped starter template. Other adapter kinds are roadmap or internal design work until implemented and tested.
+
 ## Issue Adapters
 
 Issue adapters expose issue tracking operations without making Beads, GitHub, Linear, Jira, or another provider the Forge API. The bundled reference adapter is `BeadsIssueAdapter`.

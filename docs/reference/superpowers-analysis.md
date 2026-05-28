@@ -1,6 +1,7 @@
 # Research: obra/superpowers — Integration Analysis for Forge
 
 **Feature slug**: `superpowers`
+**Status**: Historical analysis. Current user guidance lives in [Docs Index](../INDEX.md), [Command Reference](COMMANDS.md), and [Release Reference](RELEASE.md).
 **Date**: 2026-02-26
 **Sources**: All claims below cite exact URLs.
 

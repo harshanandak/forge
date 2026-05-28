@@ -1,6 +1,7 @@
 # Research: Superpowers Integration Possibilities for Forge
 
 **Feature slug**: `superpowers-integration`
+**Status**: Historical analysis. Current user guidance lives in [Docs Index](../INDEX.md), [Command Reference](COMMANDS.md), and [Release Reference](RELEASE.md).
 **Date**: 2026-02-26
 **Prerequisite**: Read `docs/research/superpowers.md` first for Superpowers overview.
 **Sources**: All claims cite exact URLs.
@@ -234,7 +235,7 @@ Install flow:
 - Complete rewrite of Forge commands as skills (high effort)
 - Forge then has a runtime dependency on Superpowers
 - Users must install two plugins instead of one
-- Forge's value proposition (beads + OpenSpec + 9-stage) must be re-expressed as skills
+- Forge's older value proposition (beads + OpenSpec + multi-stage workflow) must be re-expressed as skills
 
 **Verdict**: Best long-term distribution model IF Forge wants to be a Claude Code plugin available in a marketplace. High effort, high payoff for adoption.
 
@@ -244,7 +245,7 @@ Install flow:
 
 **What it means**: Don't install Superpowers. Don't rewrite commands. Just add HARD-GATE blocks to existing Forge commands where stage-skipping is the problem.
 
-**Changes needed** (6 edits, ~15 minutes):
+**Changes needed** (historical estimate; not a current timing guarantee):
 
 `/research` command — add:
 ```
@@ -306,7 +307,7 @@ Delete any code written before its test. There are no exceptions.
 **Do Option 5** — Add HARD-GATE blocks to `/research`, `/plan`, `/dev` commands.
 - Zero risk, zero new dependencies
 - Directly fixes the scope discipline problem surfaced in this session
-- Takes ~15 minutes
+- Historical time estimate only; not a current guarantee
 
 ### Phase 2: Short-Term (Next 1-2 Sessions)
 **Do Option 3 partially** — Cherry-pick these specific ideas into Forge:

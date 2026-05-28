@@ -1,5 +1,8 @@
 # Forge Workflow: Dependency Chain Research
 
+> Historical note: this file describes an older setup dependency map. Current user-facing setup guidance lives in [Setup Guide](../guides/SETUP.md) and [Command Reference](COMMANDS.md).
+> Known-stale content may appear below because this file is retained as research context for maintainers, not as current setup authority.
+
 **Date**: 2026-02-23
 **Branch**: feat/skills-restructure
 **Objective**: Map every dependency the Forge workflow installs, how it installs them, what their own prerequisites are, and how the user is informed throughout.
@@ -35,11 +38,11 @@ quickSetup()
 | **OpenSpec** | Skip if missing | `openspec init` only if found | No |
 | **Skills** | Skip if missing | `skills init` only if found | No |
 | **Git hooks** | via lefthook | `lefthook install` → hooks from lefthook.yml | No |
-| **Context7 MCP** | npx at runtime | `npx -y @upstash/context7-mcp@latest` | Auto for Claude Code, Continue |
+| **Context7 MCP** | npx/bunx at runtime | pin `@upstash/context7-mcp@2` in current examples | Auto for configured agents |
 | **Grep.app MCP** | npx at runtime | `npx -y @ai-tools-all/grep_app_mcp` | Auto for Claude Code, Continue |
 | **Agent config files** | File copy | Copies .claude/, .cursor/, .github/, etc. | Yes (path handling) |
 | **AGENTS.md** | File copy | from package | No |
-| **docs/WORKFLOW.md** | File copy | from package | No |
+| **docs/forge/TOOLCHAIN.md / docs/forge/VALIDATION.md** | File copy | from package | No |
 
 ---
 
@@ -114,9 +117,9 @@ quickSetup()
 ### MCP Servers (Context7, Grep.app)
 
 - **Not pre-installed** — downloaded at runtime when agent first uses them
-- **Mechanism**: `npx -y @upstash/context7-mcp@latest` — npx downloads and runs on demand
+- **Mechanism**: current examples pin `@upstash/context7-mcp@2`; older notes used on-demand `@latest`
 - **Prerequisites**: npx (comes with npm) or bunx
-- **Context7 own deps**: Unknown — uses `@latest`, no version pinned
+- **Context7 own deps**: Historical note; current examples pin `@upstash/context7-mcp@2`.
 - **Grep.app own deps**: Unknown — no version pinned
 - **Version pinning gap**: Both use `@latest` — breaking changes can silently break research workflow
 - **Auto-configured for**: Claude Code (`.mcp.json`)
@@ -143,7 +146,7 @@ Forge setup triggers:
 │   └── pre-push hook → bunx eslint (runtime)
 │       └── eslint (in devDeps ✓)
 │
-├── npx @upstash/context7-mcp@latest (at agent runtime)
+├── pinned Context7 MCP runtime (at agent runtime)
 │   └── Unknown — @latest, not audited
 │
 └── npx @ai-tools-all/grep_app_mcp (at agent runtime)
@@ -191,7 +194,7 @@ Installing git hooks (TDD enforcement)...
 
 Next steps:
   1. Start with: /status
-  2. Read the guide: docs/WORKFLOW.md
+  2. Read the current setup and command guides under docs/guides/ and docs/reference/
 ```
 
 ### What's MISSING from the UX
@@ -307,7 +310,7 @@ lefthook version  # should work (ships Windows binary via npm)
 | P0 | No post-install verification | Run `bd version` after install, fail loudly if not working |
 | P1 | OpenSpec/Skills silently skipped | Show clear message: "OpenSpec not found — install with: ..." |
 | P1 | lefthook.yml pre-push uses bash syntax | Replace `if [ $? -ne 0 ]` with cross-platform Node.js scripts |
-| P1 | MCP servers use @latest | Pin versions: `@upstash/context7-mcp@1.x.x` |
+| P1 | Historical MCP server notes used `@latest` | Current examples pin `@upstash/context7-mcp@2` |
 | P2 | No spinner during installs | Add ora (already a dep of OpenSpec — ironic) |
 | P2 | No step counter in quick mode | "Step 3/6: Installing Beads..." |
 | P2 | No versions in success summary | Show installed versions at end |
