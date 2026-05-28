@@ -45,6 +45,7 @@ describe('harness capability matrix', () => {
     expect(matrix.harnesses.cursor.capabilities.hooks.knownIssue).toContain('No verified Cursor hook surface');
     expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('unproven');
     expect(matrix.harnesses.claude.capabilities.commands.role).toBe('compatibility shim');
+    expect(matrix.harnesses.cursor.capabilities.mcp.primarySurface).toBe('.cursor/mcp.json');
   });
 
   test('evidence object is machine-readable and source-backed', () => {
