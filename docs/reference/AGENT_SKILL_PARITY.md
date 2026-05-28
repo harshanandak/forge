@@ -34,14 +34,13 @@ node scripts/spikes/harness-capability-matrix.js
 The output is JSON with three top-level contracts:
 
 - `harnesses[]`: Claude, Cursor, and Codex capability support across instructions, skills, rules, MCP, hooks, commands, agents/subagents, stages, Beads, typed memory, patch overrides, marketplace trust, and extension packs.
-- `stageGraph`: default Forge stages as skills-first super skills with addressable subskills.
+- `stageGraph`: canonical Forge workflow stages as skills-first super skills with addressable subskills, plus utility skills such as `status` outside workflow transitions.
 - `rendererContract`: the evidence a renderer must provide before Forge emits broad harness files.
 
 Forge stage parity should become skills-first across Claude, Cursor, and Codex:
 
 | Forge stage | Canonical surface | Claude render | Cursor render | Codex render |
 | --- | --- | --- | --- | --- |
-| `status` | super skill with subskills | `.claude/skills/status/SKILL.md` plus command shim | `.cursor/skills/status/SKILL.md` (unproven) | `.codex/skills/status/SKILL.md` |
 | `plan` | super skill with phases | `.claude/skills/plan/SKILL.md` plus command shim | `.cursor/skills/plan/SKILL.md` (unproven) | `.codex/skills/plan/SKILL.md` |
 | `dev` | super skill with TDD subskills | `.claude/skills/dev/SKILL.md` plus command shim | `.cursor/skills/dev/SKILL.md` (unproven) | `.codex/skills/dev/SKILL.md` |
 | `validate` | super skill with check subskills | `.claude/skills/validate/SKILL.md` plus command shim | `.cursor/skills/validate/SKILL.md` (unproven) | `.codex/skills/validate/SKILL.md` |
@@ -49,6 +48,8 @@ Forge stage parity should become skills-first across Claude, Cursor, and Codex:
 | `review` | super skill with feedback subskills | `.claude/skills/review/SKILL.md` plus command shim | `.cursor/skills/review/SKILL.md` (unproven) | `.codex/skills/review/SKILL.md` |
 | `premerge` | super skill with readiness subskills | `.claude/skills/premerge/SKILL.md` plus command shim | `.cursor/skills/premerge/SKILL.md` (unproven) | `.codex/skills/premerge/SKILL.md` |
 | `verify` | super skill with post-merge subskills | `.claude/skills/verify/SKILL.md` plus command shim | `.cursor/skills/verify/SKILL.md` (unproven) | `.codex/skills/verify/SKILL.md` |
+
+`status` remains a utility skill, not a workflow stage. The stage graph exposes it in `utilitySkills[]` so renderers can still generate status affordances without adding invalid workflow transitions.
 
 Claude commands should become compatibility shims, not the workflow authority. The canonical workflow should live in stage skills and subskills.
 

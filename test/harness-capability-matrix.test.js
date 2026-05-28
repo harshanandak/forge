@@ -6,6 +6,7 @@ const {
   CAPABILITY_IDS,
   HARNESS_IDS,
   STAGE_IDS,
+  UTILITY_SKILL_IDS,
   buildHarnessCapabilityEvidence,
   getHarnessCapabilityMatrix,
   getRendererContract,
@@ -62,8 +63,10 @@ describe('skills-first stage graph', () => {
     const graph = getSkillsFirstStageGraph();
 
     expect(graph.stages.map(stage => stage.id)).toEqual(STAGE_IDS);
+    expect(graph.stages.map(stage => stage.id)).not.toContain('status');
     for (const stage of graph.stages) {
       expect(stage.canonicalSurface).toBe('skill');
+      expect(stage.workflowStage).toBe(true);
       expect(stage.superSkill).toBe(`${stage.id}`);
       expect(stage.subskills.length).toBeGreaterThan(0);
       expect(stage.renderTargets.claude.skill).toBe(`.claude/skills/${stage.id}/SKILL.md`);
@@ -73,6 +76,18 @@ describe('skills-first stage graph', () => {
       expect(stage.renderTargets.codex.skill).toBe(`.codex/skills/${stage.id}/SKILL.md`);
       expect(stage.renderTargets.codex.directRepoDiscoveryTarget).toBe(`.agents/skills/${stage.id}/SKILL.md`);
     }
+  });
+
+  test('models status as a utility skill outside workflow stages', () => {
+    const graph = getSkillsFirstStageGraph();
+
+    expect(graph.utilitySkills.map(skill => skill.id)).toEqual(UTILITY_SKILL_IDS);
+    expect(graph.utilitySkills).toContainEqual(expect.objectContaining({
+      id: 'status',
+      canonicalSurface: 'skill',
+      workflowStage: false,
+      superSkill: 'status',
+    }));
   });
 
   test('keeps Claude commands as shims instead of canonical workflow authority', () => {
