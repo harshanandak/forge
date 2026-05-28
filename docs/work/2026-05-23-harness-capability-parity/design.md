@@ -36,7 +36,7 @@ The pattern is a canonical payload plus native harness renderers, not one univer
 Sources used:
 
 - https://code.claude.com/docs/en/skills
-- https://code.claude.com/docs/en/agent-sdk/skills
+- https://code.claude.com/docs/en/agent-sdk/skills.md
 - https://docs.cursor.com/en/context
 - https://docs.cursor.com/context/model-context-protocol
 - https://developers.openai.com/codex/skills

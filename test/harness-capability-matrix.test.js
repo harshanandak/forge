@@ -27,8 +27,11 @@ describe('harness capability matrix', () => {
   test('models Cursor skills and rules as different surfaces', () => {
     const cursor = getHarnessCapabilityMatrix().harnesses.cursor.capabilities;
 
+    expect(cursor.skills.status).toBe('unproven');
     expect(cursor.skills.primarySurface).toBe('.cursor/skills/<skill>/SKILL.md');
     expect(cursor.skills.role).toBe('on-demand workflow');
+    expect(cursor.skills.evidence).toEqual([]);
+    expect(cursor.skills.knownIssue).toContain('matching source evidence');
     expect(cursor.rules.primarySurface).toBe('.cursor/rules/<rule>.mdc');
     expect(cursor.rules.role).toBe('always-on or scoped policy');
     expect(cursor.rules.activation).toContain('description');
@@ -46,7 +49,7 @@ describe('harness capability matrix', () => {
   test('evidence object is machine-readable and source-backed', () => {
     const evidence = buildHarnessCapabilityEvidence();
 
-    expect(evidence.kind).toBe('forge.harnessCapabilityMatrix');
+    expect(evidence.kind).toBe('forge.harnessCapabilityEvidence');
     expect(evidence.schemaVersion).toBe('1.0.0');
     expect(evidence.harnesses.map(harness => harness.id)).toEqual(HARNESS_IDS);
     expect(evidence.sources.every(source => source.label && source.url)).toBe(true);
@@ -65,7 +68,7 @@ describe('skills-first stage graph', () => {
       expect(stage.subskills.length).toBeGreaterThan(0);
       expect(stage.renderTargets.claude.skill).toBe(`.claude/skills/${stage.id}/SKILL.md`);
       expect(stage.renderTargets.cursor.skill).toBe(`.cursor/skills/${stage.id}/SKILL.md`);
-      expect(stage.renderTargets.codex.skill).toBe(`.codex/skills/${stage.id}/SKILL.md`);
+      expect(stage.renderTargets.codex.skill).toBe(`.agents/skills/${stage.id}/SKILL.md`);
     }
   });
 
@@ -137,7 +140,7 @@ describe('harness capability evidence CLI', () => {
     );
     const parsed = JSON.parse(output);
 
-    expect(parsed.kind).toBe('forge.harnessCapabilityMatrix');
+    expect(parsed.kind).toBe('forge.harnessCapabilityEvidence');
     expect(parsed.stageGraph.kind).toBe('forge.skillsFirstStageGraph');
     expect(parsed.rendererContract.kind).toBe('forge.harnessRendererContract');
   });
