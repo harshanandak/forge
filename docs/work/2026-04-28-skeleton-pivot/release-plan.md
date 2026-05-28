@@ -21,6 +21,8 @@ Future releases get detailed task breakdowns only when that release starts. The 
 
 After `0.0.18`, keep the same release discipline but shift the product lens from "board/dashboard" to "local runtime control plane." Boards remain views over the runtime ledger. Forge owns the graph, protected state surfaces, memory projections, and adapter contracts; Beads, GitHub, Linear, Claude, Cursor, Codex, and other agents are projections or adapters over that control plane.
 
+The consolidated architecture for the next slices is [workflow-assembly-control-plane.md](./workflow-assembly-control-plane.md). Treat it as the shared contract before implementing workflow config, provider packs, provider workspaces, evaluator-backed hard gates, MCP integration, local UI/TUI toggles, or extension-contributed runtime components.
+
 ## Current Baseline After Recent Merges
 
 The latest `origin/master` baseline already includes the initial migrate dry-run slice from `docs/work/2026-05-05-w0-migrate-dry-run/`, `lib/migrate-dry-run.js`, `lib/commands/migrate.js`, and `test/migrate-dry-run.test.js`.
@@ -323,6 +325,7 @@ Scope:
 - Beads adapter uses `bd`/Dolt-backed commands as the write path; JSON/JSONL is read-model/export only.
 - Field authority generalizes from GitHub-specific ownership to adapter-owned, Forge-owned, and cache-owned fields.
 - Conflict/drift reporting for GitHub/Linear/remote projections.
+- Workflow assembly dependency: issue mutations from CLI, UI, MCP, or provider stages must use the Issue Graph API. Provider workspaces and evaluator regions may reference issue IDs, but external providers must not mutate `.beads` files directly.
 
 Evaluator regions:
 
@@ -352,6 +355,7 @@ Scope:
 - Runtime graph, stage, substage, hook, extension, and issue views.
 - Read-only default mode with explicit apply flow.
 - Writes go through `forge config plan/apply/rollback`, `forge issue *`, `forge memory *`, and `forge extension *` APIs.
+- Workflow composer view from [workflow-assembly-control-plane.md](./workflow-assembly-control-plane.md): users can add stages/substages, bind providers, choose `required`, `recommended`, or `manual`, inspect evaluator requirements, preview harness projection impact, and apply or roll back transactionally.
 
 Evaluator regions:
 
@@ -436,6 +440,8 @@ Primary value:
 Scope:
 
 - Extension manifest `contributes` schema for stages, substages, evaluator regions, evidence collectors, hooks, adapters, templates, commands, and local UI panels.
+- Provider/capability descriptors from [workflow-assembly-control-plane.md](./workflow-assembly-control-plane.md): Forge maps agent-native providers such as BMAD, Superpowers, Spec Kit, Context Mode, local scripts, and MCP servers into stage/substage slots without treating them as Forge-owned agents.
+- Provider workspace contracts: external providers write stage artifacts and evidence into `.forge/provider-work/...` unless the stage policy explicitly allows repo edits with evidence.
 - `SKILL.md` package contribution is the canonical agent-facing format. Commands, slash aliases, hook files, generated docs, and UI panels are projections from the manifest, not separate hand-maintained sources.
 - Week 3 capability-pack resolver from [week-3-runtime-capability-packs.md](./week-3-runtime-capability-packs.md): Forge keeps the stable workflow shell while project/user-selected packs replace, extend, disable, or gate individual stage implementations.
 - On-demand skills MCP contract: installed skills can remain discoverable, hidden, gated, or execution-only until `resolve_required_capabilities` or `load_skill` is called by the runtime.

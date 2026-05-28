@@ -8,6 +8,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Quickstart](../QUICKSTART.md) - first install, `forge init`, `forge setup`, status, worktrees, and validation.
 - [Setup guide](guides/SETUP.md) - install and adoption options for supported agents.
 - [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - the default workflow as a core template, customization model, and live rollout rules.
+- [Workflow assembly architecture](work/2026-04-28-skeleton-pivot/workflow-assembly-control-plane.md) - final model for configurable stages/substages, external providers, evaluator-backed gates, MCPs, and UI/TUI controls.
 - [Support guide](guides/SUPPORT.md) - FAQ, troubleshooting, recovery, known limits, branch protection, worktrees, and Beads/Dolt notes.
 
 ## Tutorials
