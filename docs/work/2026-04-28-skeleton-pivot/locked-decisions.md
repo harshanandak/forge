@@ -582,7 +582,7 @@ ACTIVE.
 
 - [release-plan.md](./release-plan.md) — canonical release roadmap (v3.0 / v3.1 / v3.2 / v3.3+) per D39
 - [n1-moat-technical-deep-dive.md](./n1-moat-technical-deep-dive.md) — moat analysis underpinning D8/D9, kill criteria substrate for D38
-- [v3-ecosystem-audit.md](./v3-ecosystem-audit.md) — harness landscape underpinning D11/D13/D15
+- [v3-ecosystem-audit.md](./_iteration-history/v3-ecosystem-audit.md) — harness landscape underpinning D11/D13/D15
 - [template-library-and-merge-flow.md](./template-library-and-merge-flow.md) — template scope underpinning D9/D26
 - [v3-redesign-strategy.md](./v3-redesign-strategy.md) — canonical strategy doc, references this log
 - [agent-memory-architecture.md](./agent-memory-architecture.md) — 7 typed memory categories underpinning D22/D24
