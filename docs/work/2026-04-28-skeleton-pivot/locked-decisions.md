@@ -236,7 +236,7 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 ## D19 — Protected Path Manifest enforces L1 rail #5 (no new rail)
 
-**Decision**: Forge ships `.forge/protected-paths.yaml` defining seven categories of protected paths: `forge_core` (checksum-verified), `user_protocol` (CLI-only mods), `generated_artifacts` (CI-blocked hand-edits), `append_only_logs` (runtime-only writes), `secrets` (already covered by rail #2), `beads_state` (bd CLI only), `immutable` (`.git`, etc). Enforcement layers: per-harness PreToolUse hooks (Claude Code + Codex CLI), Cursor file-watcher fallback, pre-commit lefthook entry, session-start checksum verification, CI lint job. Refuse-with-hint UX guides agents toward the proper CLI commands. **Total L1 rail count stays at 5** — this expands rail #5 (schema + integrity) scope; it does not add a new rail.
+**Decision**: Forge ships `.forge/protected-paths.yaml` defining seven categories of protected paths: `forge_core` (checksum-verified), `user_protocol` (CLI-only mods), `generated_artifacts` (CI-blocked hand-edits), `append_only_logs` (runtime-only writes), `secrets` (already covered by rail #2), `beads_state` (bd CLI only), `immutable` (`.git`, etc). Enforcement layers: per-harness PreToolUse hooks (Claude Code + Codex CLI), Cursor file-watcher backstop, pre-commit lefthook entry, session-start checksum verification, CI lint job. Refuse-with-hint UX guides agents toward the proper CLI commands. **Total L1 rail count stays at 5** — this expands rail #5 (schema + integrity) scope; it does not add a new rail.
 
 **Rationale**: Without protected paths, an agent that drifts into editing generated artifacts, beads internals, or the audit log silently breaks project state. The hooks + lefthook + CI lint stack catches drift at the earliest possible point in the loop. Treating this as expansion of rail #5 (schema + integrity) keeps the rail count honest — the underlying protocol opinion ("the protocol surface is integrity-verified") is the same opinion already encoded in rail #5.
 
@@ -310,9 +310,9 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 ## D25 — Three append-only logs collapse into one `.forge/log.jsonl` *only if* D23 is reverted
 
-**Decision**: If for any reason D23 cannot land (e.g., Beads `bd audit record` proves insufficient on benchmark), Forge collapses D17 + D19 + `.beads/interactions.jsonl` into a single `.forge/log.jsonl` with `kind: audit | agent | interaction` discriminator. One writer, one `prev_hash` chain, one redaction pipeline reusing `lib/project-memory.js` redactor. ACTIVE as fallback to D23.
+**Decision**: If for any reason D23 cannot land (e.g., Beads `bd audit record` proves insufficient on benchmark), Forge collapses D17 + D19 + `.beads/interactions.jsonl` into a single `.forge/log.jsonl` with `kind: audit | agent | interaction` discriminator. One writer, one `prev_hash` chain, one redaction pipeline reusing `lib/project-memory.js` redactor. ACTIVE as backstop to D23.
 
-**Rationale**: Per `efficiency-audit.md` win #4, three separate writers with three redactors and three rotation policies is duplicated work; one stream with a discriminator preserves all retrieval cases. This is the pre-Beads-integration plan kept as the kill-criterion fallback.
+**Rationale**: Per `efficiency-audit.md` win #4, three separate writers with three redactors and three rotation policies is duplicated work; one stream with a discriminator preserves all retrieval cases. This is the pre-Beads-integration plan kept as the kill-criterion backstop.
 
 **Tradeoff considered**: Maintain three streams (preserves separation of concerns at the cost of triple code paths); collapse into Beads (D23 path, preferred when feasible).
 
@@ -400,7 +400,7 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 **Decision**: The "sandboxed agent cannot run Forge" worry that drove ~3 design iterations is descoped from v3.0 / v3.1. The single concrete instance ([Beads #3582](https://github.com/gastownhall/beads/issues/3582)) has an upstream fix in flight and a workaround (D30 embedded mode). Hardened sandbox support is deferred to v3.2+ pending real user demand. ACTIVE.
 
-**Rationale**: Per iteration #6 review, sandboxing affected ~1 known user case and consumed disproportionate design surface. The kill-criterion fallback (D21 + D31 IssueAdapter) covers the long-tail recovery path without front-loading the build.
+**Rationale**: Per iteration #6 review, sandboxing affected ~1 known user case and consumed disproportionate design surface. The kill-criterion backstop (D21 + D31 IssueAdapter) covers the long-tail recovery path without front-loading the build.
 
 **Tradeoff considered**: Build sandboxed-agent support into v3.0 (preserves coverage but adds 2+ weeks for a small audience); skip sandboxing entirely with no future plan (closes the door on a real future audience).
 
@@ -472,7 +472,7 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 ## D38 — Kill criteria: when do we abandon v3?
 
-**Decision**: Forge v3 is killed (rolled back to v2 maintenance mode) if **any** of the following land within W0–W2: (a) `forge migrate --dry-run` does not produce a green diff on this repo's 228 issues by end of W0; (b) the cross-machine convergence benchmark (B5 in `n1-moat-technical-deep-dive.md`) shows >8s p95 even with embedded Dolt; (c) two of the three target harnesses (Claude / Cursor / Codex) cannot render a single skill correctly by end of W3; (d) Beads `bd audit record` integration (D23) fails benchmarks and D25 fallback also fails; (e) no external user shows interest by end of W5 launch. ACTIVE.
+**Decision**: Forge v3 is killed (rolled back to v2 maintenance mode) if **any** of the following land within W0–W2: (a) `forge migrate --dry-run` does not produce a green diff on this repo's 228 issues by end of W0; (b) the cross-machine convergence benchmark (B5 in `n1-moat-technical-deep-dive.md`) shows >8s p95 even with embedded Dolt; (c) two of the three target harnesses (Claude / Cursor / Codex) cannot render a single skill correctly by end of W3; (d) Beads `bd audit record` integration (D23) fails benchmarks and D25 backstop also fails; (e) no external user shows interest by end of W5 launch. ACTIVE.
 
 **Rationale**: Without explicit kill criteria, the iteration trap repeats — every audit produces "improve" or "defer", never "stop". Five concrete W0–W5 gates give the project a falsifiable definition of failure.
 
@@ -490,7 +490,7 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 - **v3.0 — "Forge protects you AND follows you"** (~5–6 weeks, solo MVP). 5 L1 rails enforced; Beads-backed memory (`bd remember` / `bd recall` with Dolt in `embedded` mode); `forge init` / `migrate` / `upgrade` / `rollback`; `forge recap --since=yesterday` (solo mode); `/merge` continuous PR-state hook; **mandatory full 3-harness translator** (Claude + Cursor + Codex CLI); skills auto-invoke (Hermes-style description match) across all 3; `/plan` basic 1-tier (intent + lock); `/build` basic TDD loop (no evaluator orchestrator).
 - **v3.1 — "Forge plans with rigor"** (~+3 weeks → ~9 weeks cumulative). Iteration-driven `/plan` 3 tiers (quick / standard / deep); classification auto-detect; parallel critics in deep mode; supersedes-tracked decisions ledger; continuous learning loop ON; `forge insights` pattern detector; `/build` evaluator orchestrator (test + spec-compliance + lint judges).
-- **v3.2 — "Forge for teams"** (~+2 weeks → ~11 weeks cumulative). `forge recap --team` aggregates across team members; team patches (per-user overlays + shared `team-patch.md`); bidirectional agent-log ↔ docs links; `bd audit upstream --meta-json PR` (Plan A) or `.forge/log.jsonl` fallback (Plan B); docs-as-memory 7-category navigation.
+- **v3.2 — "Forge for teams"** (~+2 weeks → ~11 weeks cumulative). `forge recap --team` aggregates across team members; team patches (per-user overlays + shared `team-patch.md`); bidirectional agent-log ↔ docs links; `bd audit upstream --meta-json PR` (Plan A) or `.forge/log.jsonl` backstop (Plan B); docs-as-memory 7-category navigation.
 - **v3.3+ — Ecosystem**. Cline / OpenCode / Kilo Code translators; marketplace expansion beyond seed; `/forge map-codebase`; profile sync; skill self-improvement; full evaluator suite; hardened sandbox.
 
 D38 kill criteria now apply per-version (gate matrix in [release-plan.md](./release-plan.md)). ACTIVE — supersedes D37.
@@ -557,6 +557,24 @@ ACTIVE.
 **Tradeoff considered**: Keep one file per top-level stage skill only. That preserves the current command shape but keeps phases hidden inside prose and makes partial invocation ad hoc. Split every phase into unrelated top-level skills. That maximizes reuse but loses the coherent default workflow and makes `forge options why` harder to explain.
 
 **Anti-decision**: We explicitly chose against monolithic stage-only skills and against ungrouped free-floating skill fragments. Sub-skills must remain visible under a super-skill composition.
+
+---
+
+## D44 - Forge Kernel replaces Beads/Dolt as issue authority; Beads becomes import/export adapter
+
+**Decision**: Forge adopts a native issue authority model: Forge Kernel API, local SQLite WAL broker for solo multi-worktree coordination, and optional Cloudflare team authority for multi-user mode. Beads is no longer the target runtime authority. Beads remains a migration source and optional projection/export adapter. GitHub and Linear are server-side projections, not local runtime authorities. ACTIVE - supersedes Beads-only portions of D21, D22, D23, D30, D31, and D36.
+
+**Rationale**: Forge is internal-only today, so public backward compatibility is not a constraint. The Beads/Dolt path solved early local issue storage but now creates the wrong center of gravity: direct Beads command wrapping, `.beads/issues.jsonl` snapshot reads, Dolt lifecycle concerns, and team coordination through a local issue engine. The product direction is a governed runtime: workflow assembly controls how work runs, while Forge Kernel controls what work exists, who owns it, and how state is synchronized.
+
+**Architecture**: Local mode uses a single SQLite WAL broker keyed by Git common-dir so one user can run many worktrees without double-claiming or corrupting state. Team mode requires server authority: Cloudflare Worker API routes authenticated requests to a per-project Durable Object, the Durable Object serializes mutations and claims, D1 stores the query/read model, Queues handle retryable projections, and R2 stores large evidence bundles.
+
+**Field authority**: Forge owns issue id, dependencies, execution priority, workflow stage/substage, claim lease, worktree/session/run state, evaluator evidence, conflict state, and projection bookkeeping. Beads owns no runtime fields in the target architecture. GitHub/Linear own only mapped public fields when configured.
+
+**Conflict rule**: Resolve conflicts in Forge before projection. Do not resolve conflicts inside Beads. Stale revisions reject or quarantine writes; duplicate idempotency keys return the original result; projection failures do not roll back Forge authority.
+
+**Tradeoff considered**: Keep Beads as primary authority (less immediate code but keeps Dolt/worktree/team limitations); fork Beads (preserves concepts but inherits maintenance and Dolt/storage history); build Forge Kernel now (more work, but removes the wrong authority dependency while there are no outside users).
+
+**Anti-decision**: We explicitly reject Beads parity as a blocker, fixed heartbeat spam as the primary liveness signal, and GitHub/Linear as the local source of truth.
 
 ---
 

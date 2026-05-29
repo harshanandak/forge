@@ -54,6 +54,7 @@ The links below are for maintainers and architecture readers. They are not part 
 - [Runtime building-block refinement](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md) - advanced architecture direction: runtime primitives, evaluator regions, and templates as scaffolds.
 - [Locked decisions](work/2026-04-28-skeleton-pivot/locked-decisions.md) - historical decision ledger.
 - [Release plan](work/2026-04-28-skeleton-pivot/release-plan.md) - internal release phasing. Internal labels are not npm package versions.
+- [Forge Kernel authority control plane](work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) - current authority reset plan: Forge-native issue kernel, local broker, Cloudflare team authority, and Beads as import/export adapter.
 - [Beads/Supabase and Forge memory design](work/2026-04-28-skeleton-pivot/beads-supabase-and-forge-memory-design.md) - Beads coexistence analysis.
 
 ## Historical Or Superseded Material
