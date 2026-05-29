@@ -98,6 +98,29 @@ Durable Objects are the coordination primitive. They avoid a custom distributed 
 
 ## Forge Kernel Data Model
 
+Forge Kernel owns the normalized contracts and state. It does not hardcode every provider implementation.
+
+Kernel-owned modules:
+
+- `IssueGraph`: issues, statuses, priorities, comments, dependencies, parent/child links, supersession.
+- `WorkflowGraph`: user-configured stages, substages, modes, gates, and evaluator bindings.
+- `StageGraph`: active Stage Capability Graph resolved from workflow config and provider capabilities.
+- `ProviderRegistry`: discovered skills, MCPs, agents, commands, hooks, scripts, docs/context packs, and extension manifests.
+- `RunLedger`: stage/substage runs, provider runs, outcomes, evidence references, and gate results.
+- `ClaimLeaseStore`: local/server claim state, stale/reclaimable/released transitions, and ownership.
+- `EvidenceStore`: references to logs, artifacts, evaluator reports, and R2/local archive objects.
+- `ProjectionState`: Beads/GitHub/Linear export/import state, provider delivery ids, dead letters, and repair status.
+- `MigrationState`: Beads import checkpoints, validation reports, rollback notes, and unresolved import issues.
+- `BlockerDependencyGraph`: blockers, prerequisites, release dependencies, issue dependencies, and implementation readiness gates.
+
+External implementations stay outside the Kernel:
+
+- Superpowers, BMAD, Context Mode, Spec Kit, project scripts, and MCP servers are providers.
+- Claude, Cursor, Codex, and future agents are harness adapters.
+- GitHub and Linear are server-side projections.
+- Beads is import/export compatibility.
+- Cloudflare is the team authority backend.
+
 Minimum kernel tables/entities:
 
 - `issues`: identity, title, status, type, priority, source, current revision.
@@ -245,6 +268,153 @@ The workflow assembly control-plane decisions are preserved with a new base auth
 - Workflow changes use transactional plan/apply/rollback.
 
 The Issue Graph Store named by workflow assembly is now the Forge Kernel store, not Beads.
+
+## Provider And User Configuration
+
+Users configure which external capabilities Forge uses. Forge provides the schema, discovery, validation, transaction model, and evaluator gates.
+
+Configurable by project/user:
+
+- stages and substages,
+- provider per substage,
+- strictness mode per substage,
+- required evaluators and evidence contracts,
+- enabled/disabled provider capabilities,
+- harness projections,
+- local mode versus team mode,
+- Beads import/export,
+- GitHub/Linear projection mappings.
+
+Provider manifests declare what an installed external thing can do:
+
+```yaml
+apiVersion: forge.dev/v1
+kind: Provider
+id: superpowers
+name: Superpowers
+source:
+  type: local
+  path: .agents/superpowers
+capabilities:
+  - id: dev.tdd
+    type: skill
+    entry: skills/tdd/SKILL.md
+    evidence:
+      required:
+        - failing_test
+        - passing_test
+```
+
+Workflow bindings decide where this project uses those capabilities:
+
+```yaml
+apiVersion: forge.dev/v1
+kind: Workflow
+stages:
+  dev:
+    substages:
+      tdd:
+        provider: superpowers.dev.tdd
+        mode: required
+        evaluators:
+          - red_green_refactor
+  plan:
+    substages:
+      research:
+        provider: context-mode.code_search
+        mode: recommended
+```
+
+MVP provider configuration includes manifest discovery, declared capabilities, stage binding, required-capability validation, on-demand loading, and evidence recording.
+
+Later governance can add provider locks, version/hash checks, approval metadata, and stricter trust policies. Those are not assumed as shipped features today.
+
+## Skills, MCPs, Agents, Commands, Hooks, And Extensions
+
+Forge treats all executable/helping systems as capability providers:
+
+- skills: reusable instructions/workflows loaded on demand,
+- MCPs: tool providers such as context search, issue server access, docs lookup, or evidence indexing,
+- agents/subagents: role-bound workers such as security reviewer or implementer,
+- commands: entry-point shims over canonical Forge APIs,
+- hooks: timing/enforcement surfaces such as session start, before write, stage complete, and PR opened,
+- scripts: local commands wrapped as project providers,
+- docs/context packs: project knowledge loaded for specific stages,
+- extensions: bundles that may include skills, commands, MCP config, hooks, evaluators, and docs/context.
+
+The authority split is:
+
+```text
+Capabilities describe what a thing can do.
+WorkflowGraph decides when it should be used.
+Mode decides how strict it is.
+Harness adapters decide how to expose it.
+Forge Kernel records what happened.
+Evaluators decide whether it passed.
+```
+
+Skills are loaded on demand. The loader or Skills MCP is the loading mechanism; Forge Kernel and WorkflowGraph are the decision authority.
+
+Example loading flow:
+
+```text
+dev.tdd requires superpowers.dev.tdd
+  -> resolve_required_capabilities(dev.tdd)
+  -> verify provider manifest and capability
+  -> load_skill(superpowers.dev.tdd)
+  -> run provider inside provider-work folder
+  -> record run event and evidence
+  -> evaluator verifies output
+  -> stage completes or blocks
+```
+
+Required provider rules:
+
+- `required`: must load and pass before the stage/substage can proceed.
+- `recommended`: load when task metadata/context matches.
+- `manual`: load only when user/agent explicitly asks.
+- `disabled_by_policy`: never load.
+- `backstop_only`: used only for enforcement/checking, not normal task context.
+
+Unknown providers are not silently trusted. They can be discovered and proposed, but cannot become `required` until they have a manifest, capability mapping, evidence contract, and evaluator.
+
+## Harness Adapters
+
+Harness adapters project the active workflow and provider bindings into the smallest native surface each harness supports:
+
+- Claude: skills, command shims, hooks where supported, CLAUDE/rules projections.
+- Codex: `.codex/skills`, AGENTS.md projection, tool policy, command guidance.
+- Cursor: rules, commands, MCP config, and `backstop_only` checks where native hooks are unverified.
+
+Harness files are generated projections. Users edit Forge workflow/provider config, not generated harness files.
+
+## Blockers And Dependencies
+
+The authority reset has explicit blockers. They must be tracked before implementation claims release readiness:
+
+- Current `forge issue` commands still route through Beads in places.
+- Status/board code still reads `.beads/issues.jsonl` in places.
+- SQLite package choice and migration strategy are not finalized.
+- Beads import fidelity is unproven.
+- Kernel event schema is not implemented.
+- Provider/user configuration needs schema validation and transaction semantics.
+- Cloudflare account, auth, project identity, and deployment strategy are undecided.
+- UI/TUI depends on stable Kernel APIs.
+
+Dependency order:
+
+```text
+1. Plan reset
+2. Kernel schema
+3. Local broker
+4. Beads import
+5. Lease/conflict engine
+6. Workflow/provider configuration
+7. Workflow assembly over Kernel
+8. Local UI/TUI
+9. Cloudflare team authority
+10. GitHub/Linear projections
+```
 
 ## Evaluator Loop
 
