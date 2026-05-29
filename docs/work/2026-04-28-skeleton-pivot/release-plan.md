@@ -518,9 +518,10 @@ Each release after `0.0.18` must ship through the same public cadence:
 3. Add or update the design note, acceptance matrix, and evaluator region before implementation.
 4. Implement only the release slice.
 5. Run targeted tests, release-specific evaluators, `bun run check`, and `npm pack --dry-run`.
-6. Publish release notes that include: user value, migration notes, feature flags, known limitations, rollback path, and adapter compatibility.
-7. Publish through GitHub Release to npm.
-8. Verify the installed package in a clean repo and close or update the Forge Kernel/Beads/GitHub release issue.
+6. Run the [Decision drift guards](../../reference/DECISION_DRIFT_GUARDS.md) evaluator checklist for authority, storage, providers, projections, and security/privacy.
+7. Publish release notes that include: user value, migration notes, feature flags, known limitations, rollback path, and adapter compatibility.
+8. Publish through GitHub Release to npm.
+9. Verify the installed package in a clean repo and close or update the Forge Kernel/Beads/GitHub release issue.
 
 ## Deferred
 

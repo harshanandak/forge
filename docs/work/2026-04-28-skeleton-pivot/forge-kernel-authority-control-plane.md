@@ -3,6 +3,7 @@
 **Date**: 2026-05-29
 **Status**: Canonical plan reset proposal
 **Scope**: Replace Beads/Dolt as Forge's issue authority with a Forge-native kernel, local SQLite broker, and optional Cloudflare team authority while preserving Beads as an import/export adapter.
+**Companion references**: [Forge Kernel storage model](../../reference/FORGE_KERNEL_STORAGE_MODEL.md), [Decision drift guards](../../reference/DECISION_DRIFT_GUARDS.md).
 
 ## Decision
 
