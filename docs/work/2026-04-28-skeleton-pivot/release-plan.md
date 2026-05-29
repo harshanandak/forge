@@ -1,6 +1,7 @@
 # Incremental Runtime Building-Block Release Plan
 
 **Date**: 2026-05-06
+**Last updated**: 2026-05-29 (Forge Kernel authority reset)
 **Status**: Active release-numbered roadmap
 **Supersedes**: the old major-version roadmap from D39
 

@@ -1,10 +1,10 @@
 # Forge v3 — Locked Decisions Log
 
-**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8) -> 2026-05-08 (D43 added)
-**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D43 tracked, D41 reserved, supersedes annotated inline
+**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8) -> 2026-05-08 (D43 added) -> 2026-05-29 (D44 added)
+**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D44 tracked, D41 reserved, supersedes annotated inline
 **Companion**: [release-plan.md](./release-plan.md), [v3-redesign-strategy.md](./v3-redesign-strategy.md), [FINAL-THESIS.md](./FINAL-THESIS.md), [LEARNINGS.md](./LEARNINGS.md)
 
-This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch). D43 records the super-skill/sub-skill runtime contract for planning and later skill surfaces.
+This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch). D43 records the super-skill/sub-skill runtime contract for planning and later skill surfaces. D44 records the Forge Kernel authority reset and supersedes Beads-only authority portions of earlier decisions.
 
 When a doc disagrees with this file, this file wins until a successor decisions log is dated and merged.
 
@@ -236,7 +236,7 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 ## D19 — Protected Path Manifest enforces L1 rail #5 (no new rail)
 
-**Decision**: Forge ships `.forge/protected-paths.yaml` defining seven categories of protected paths: `forge_core` (checksum-verified), `user_protocol` (CLI-only mods), `generated_artifacts` (CI-blocked hand-edits), `append_only_logs` (runtime-only writes), `secrets` (already covered by rail #2), `beads_state` (bd CLI only), `immutable` (`.git`, etc). Enforcement layers: per-harness PreToolUse hooks (Claude Code + Codex CLI), Cursor file-watcher backstop, pre-commit lefthook entry, session-start checksum verification, CI lint job. Refuse-with-hint UX guides agents toward the proper CLI commands. **Total L1 rail count stays at 5** — this expands rail #5 (schema + integrity) scope; it does not add a new rail.
+**Decision**: Forge ships `.forge/protected-paths.yaml` defining seven categories of protected paths: `forge_core` (checksum-verified), `user_protocol` (CLI-only mods), `generated_artifacts` (CI-blocked hand-edits), `append_only_logs` (runtime-only writes), `secrets` (already covered by rail #2), `beads_state` (bd CLI only), `immutable` (`.git`, etc.). Enforcement layers: per-harness PreToolUse hooks (Claude Code + Codex CLI), Cursor file-watcher backstop, pre-commit lefthook entry, session-start checksum verification, CI lint job. Refuse-with-hint UX guides agents toward the proper CLI commands. **Total L1 rail count stays at 5** — this expands rail #5 (schema + integrity) scope; it does not add a new rail.
 
 **Rationale**: Without protected paths, an agent that drifts into editing generated artifacts, beads internals, or the audit log silently breaks project state. The hooks + lefthook + CI lint stack catches drift at the earliest possible point in the loop. Treating this as expansion of rail #5 (schema + integrity) keeps the rail count honest — the underlying protocol opinion ("the protocol surface is integrity-verified") is the same opinion already encoded in rail #5.
 
@@ -260,9 +260,11 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 # Iteration #5 (2026-04-29) — Memory architecture + audit collapse
 
-## D21 — IssueAdapter interface as future-proofing; Beads stays the only implementation
+## D21 — IssueAdapter interface as future-proofing; Beads-only implementation superseded by D44
 
-**Decision**: Forge ships a `lib/issue-adapter.js` interface (`create / update / list / close / ready / depAdd / sync`) during contract extraction (N2). **Beads is the only shipped implementation through v3.0 and v3.1.** The `forge-memory` JSONL+SQLite adapter described in `beads-supabase-and-forge-memory-design.md` is **deferred indefinitely** — it ships only if the Wave-3 cross-machine convergence benchmark fails or if [Beads issue #3582](https://github.com/gastownhall/beads/issues/3582) (sandboxed Linux Dolt access) stays unfixed >60 days. ACTIVE.
+**Status note (2026-05-29)**: SUPERSEDED-BY-D44 for authority and implementation exclusivity. Keep only the adapter-boundary lesson: callers should bind to a Forge-owned issue API, not Beads internals.
+
+**Decision**: Forge ships a `lib/issue-adapter.js` interface (`create / update / list / close / ready / depAdd / sync`) during contract extraction (N2). The original Beads-only implementation plan is SUPERSEDED-BY-D44 for authority and implementation exclusivity. The surviving rule is that callers bind to the Forge-owned issue API, not Beads internals.
 
 **Rationale**: Defining the interface up-front prevents extension authors from binding to `bd`-specific concepts (Dolt branches, hash IDs, federation) that we'd then have to deprecate. Building a second adapter without an external trigger is ~2k LOC of unjustified maintenance burden. The interface is the cheap insurance policy; the second implementation is the expensive one we don't take until forced.
 
@@ -384,9 +386,11 @@ When a doc disagrees with this file, this file wins until a successor decisions 
 
 ---
 
-## D31 — Forge does NOT replace Beads. Lean on Beads harder; build typed memory API over existing backends
+## D31 — Historical Beads utilization plan; target architecture superseded by D44
 
-**Decision**: Forge does **NOT** replace Beads. Forge actively under-uses Beads' shipped surface (~25% utilization). The plan: lean on Beads harder — adopt `bd remember` / `bd recall` (durable memory keys), `bd audit record` (per D23), `bd preflight --check` (stage gate verification), `bd doctor validate` (config integrity), `bd formula` / `bd pour` (recipe-style stage templates), `bd prime` (cold-start state hydration). Switch local Dolt to `embedded` mode (per D30) for worktree pain. Build a thin **typed memory API** (decisions / episodes / skills / state / issues / audit / preferences per D22) that routes to existing backends (Beads, `docs/plans/`, `.claude/skills/`, `.forge/state.json`). The `IssueAdapter` interface (D21) stays as future-proofing only — Beads is the only shipped implementation through v3.1. ACTIVE — supersedes any earlier "replace Beads" framing in this folder.
+**Status note (2026-05-29)**: SUPERSEDED-BY-D44 for target architecture. This remains historical evidence for why the team evaluated Beads capabilities before choosing Forge Kernel authority.
+
+**Decision**: Historical plan: Forge actively under-used Beads' shipped surface (~25% utilization), so the prior direction was to lean on Beads harder — adopt `bd remember` / `bd recall` (durable memory keys), `bd audit record` (per D23), `bd preflight --check` (stage gate verification), `bd doctor validate` (config integrity), `bd formula` / `bd pour` (recipe-style stage templates), `bd prime` (cold-start state hydration), and switch local Dolt to `embedded` mode (per D30) for worktree pain. SUPERSEDED-BY-D44 for target architecture: Forge Kernel now owns issue/workflow/run authority, while Beads becomes import/export projection compatibility.
 
 **Rationale**: Per `beads-supabase-and-forge-memory-design.md`: there is no Supabase migration; the recent breaking change is the Dolt cutover Forge has been on for months; Forge Memory was always designed as complement, not replacement. Per Iteration #6 utilization research: Forge uses ~25% of Beads' shipped capability — `bd remember`, `bd preflight`, `bd doctor`, `bd formula`, `bd pour`, `bd prime` are all unused. Replacing a mature tool we under-use is the wrong response to under-utilization.
 
