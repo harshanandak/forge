@@ -256,6 +256,101 @@ Replace:
 - Beads command wrappers as canonical writes,
 - Beads sync as team coordination.
 
+## Beads Feature Parity And Intentional Cuts
+
+Forge Kernel must preserve the user-facing Beads behaviors Forge currently depends on, while intentionally dropping Beads/Dolt internals that are not needed for the new authority model.
+
+### Must Preserve In Forge Kernel
+
+| Beads behavior today | Forge Kernel replacement | Notes |
+| --- | --- | --- |
+| `forge create` / `bd create` | `IssueGraph.create` event | Preserves title, body, type, labels/tags, priority, parent links, source metadata. |
+| `forge show` / `bd show` | `IssueGraph.read` | Must return human and JSON views with source, revision, claim, stage, projection health. |
+| `forge list` / `bd list` | `IssueGraph.list` | Supports filters by status, type, label, priority, owner, stage, stale state, projection state. |
+| `forge ready` / `bd ready` | `IssueGraph.ready` | Dependency-aware ready queue; excludes blocked, claimed-by-other, stale-conflict, and policy-disabled issues. |
+| `forge update --priority` | `IssueGraph.reorder` / `issue.updated` | Priority changes are events; ordering must be deterministic and auditable. |
+| `forge claim` / `bd update --claim` | `ClaimLeaseStore.claim` | Claim is a lease with owner, session, worktree, revision, freshness, stale/reclaim states. |
+| `forge close` / `bd close` | `IssueGraph.close` | Close records resolution, actor, run/stage evidence, projection status. |
+| `bd comments add` | `comments.added` | Comments are typed events with projection ids and optional evidence links. |
+| `bd dep/link/dep-rm` | `IssueGraph.edge.add/remove` | Dependencies, parent/child, supersedes, related links are typed edges. |
+| status/board ready/active/blocked/stale views | Kernel board/read model | Must not read `.beads/issues.jsonl`; every card shows freshness and source revision. |
+| `bd sync` local/team sharing | Local outbox + server authority | Local mode stays local; team mode syncs only through Forge Server. |
+| `bd audit record` concept | Kernel event log + audit subset | Keep tamper-evident critical events; raw logs/evidence are opt-in or archived. |
+| `bd remember/recall` concept | Typed memory/projection records | Memory stays typed and provenance-backed, not a generic issue authority. |
+| `bd preflight/doctor` concept | `forge kernel doctor` / stage preflight | Health checks validate Kernel store, migrations, projections, and protected paths. |
+
+### Intentionally Drop Or Defer
+
+| Beads/Dolt capability | Decision |
+| --- | --- |
+| Dolt branch history | Drop for Kernel MVP. Git branch/worktree context is stored in `worktrees`, `sessions`, and `runs`; issue authority is event/revision based. |
+| Dolt three-way merge metadata | Replace with expected revision, idempotency key, and conflict quarantine. |
+| Dolt federation/cross-machine sync | Replace with Cloudflare team authority. |
+| Beads as direct runtime command dependency | Drop after import path lands. Commands route through Forge Kernel. |
+| Direct `.beads/issues.jsonl` status reads | Drop. Kernel read model becomes the board/status source. |
+| Beads compaction semantics | Defer. Kernel can add event compaction after import, lease, and projection correctness land. |
+
+## Local Versus Server Storage Matrix
+
+The system must be clear about what is stored offline and what is pushed to the server.
+
+| Data | Local mode storage | Team mode server storage | Sync rule |
+| --- | --- | --- | --- |
+| Issue identity/title/body/type | Local SQLite broker | Durable Object event + D1 read model | Team mode writes require server acceptance. |
+| Priority/order | Local SQLite broker | Durable Object event + D1 read model | Deterministic reorder events; stale revisions rejected. |
+| Dependencies/edges | Local SQLite broker | Durable Object event + D1 read model | Required for ready queue; cannot be projection-only. |
+| Comments | Local SQLite broker | Durable Object event + D1 read model | Sensitive comments can be marked local-only only in local mode. |
+| Claims/leases | Local SQLite broker | Durable Object authority | Team claims are never offline-authoritative. |
+| Worktree path | Local SQLite broker | Server stores normalized worktree id, branch, repo id, optional redacted path label | Avoid leaking full local paths by default. |
+| Session id | Local SQLite broker | Server stores session id, actor, current issue/run, freshness | Required for team visibility. |
+| Stage/substage state | Local SQLite broker | Durable Object event + D1 read model | Required for team coordination and dashboard truth. |
+| Run events | Local SQLite broker | Durable Object event + D1 read model | Raw details can be summarized before upload. |
+| Evidence metadata | Local SQLite broker | D1 metadata + optional R2 blob | Store pointers and hashes; upload raw artifacts only when configured. |
+| Raw prompts/tool logs | Local only by default | Optional R2 archive with redaction | Never push by default. |
+| Provider manifests | Project files + local cache | Optional server copy/hash for team mode | Server validates hash/version for required providers. |
+| Workflow config | Project files + local cache | Server copy/hash for team mode | Team mode requires config revision agreement. |
+| Beads import source | Local archive | Not uploaded by default | Upload only migration report summary if needed. |
+| Beads export output | Local `.beads` projection | Not authoritative | Export failure never rolls back Kernel. |
+| GitHub/Linear projections | Local status cache | Server outbox/projection tables | Server workers own external projection. |
+| Dead letters/conflicts | Local broker | Server dead-letter/conflict tables | Must be visible before release readiness. |
+
+## Team Division Rules
+
+Team mode divides responsibility strictly:
+
+- Local broker may cache and display server state.
+- Local broker may prepare commands, but server must accept team writes.
+- Durable Object serializes team issue mutations and claims.
+- D1 is read model only; it does not decide claims.
+- Queues own retryable external projection work.
+- R2 stores large optional evidence, not hot authority fields.
+- GitHub/Linear cannot bypass Forge Server into Kernel state.
+- Beads cannot bypass Forge Kernel into team state.
+
+If a command cannot reach the server in team mode:
+
+- read cached state with stale warning,
+- allow local notes only if marked local-only,
+- block claim/start/close/stage-transition writes,
+- never pretend the work is team-authoritative.
+
+## Minute Execution Rules
+
+These rules remove ambiguity for implementation:
+
+1. `forge ready` reads Kernel ready queue, not Beads JSONL.
+2. `forge show <id>` reads Kernel issue plus run, claim, projection, freshness, and conflict state.
+3. `forge update <id> --priority N` creates a reorder event with expected revision.
+4. `forge claim <id>` creates a claim request; local mode resolves locally, team mode resolves on server.
+5. `forge comment <id>` creates a typed comment event; projection is async.
+6. `forge close <id>` requires no unresolved required stage gates unless policy permits override.
+7. Dependency changes immediately affect ready queue and stage eligibility.
+8. Provider runs write to `RunLedger`, not issue comments as the canonical record.
+9. Evaluator results are gate events linked to runs and issues.
+10. Projection status is always visible and never treated as authority.
+11. Conflict quarantine blocks projection, not local read access.
+12. Migration/import reports must list preserved fields, dropped fields, unresolved mappings, and rollback path.
+
 ## Workflow Assembly Integration
 
 The workflow assembly control-plane decisions are preserved with a new base authority:
