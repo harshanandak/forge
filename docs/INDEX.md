@@ -30,6 +30,8 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Command reference](reference/COMMANDS.md) - verified `forge` CLI commands and package binaries.
 - [Skills and command projections](reference/SKILLS.md) - current stage packaging across skills, commands, prompts, and harness projections.
 - [Release reference](reference/RELEASE.md) - validation, packaging, release handoff, and DeepWiki checklist.
+- [Forge Kernel storage model](reference/FORGE_KERNEL_STORAGE_MODEL.md) - authority/cache/projection/archive storage rules for local and team modes.
+- [Decision drift guards](reference/DECISION_DRIFT_GUARDS.md) - evaluator checklist and required doc updates for Kernel-era architecture changes.
 - [Toolchain](reference/TOOLCHAIN.md) - Bun, Node, Git, GitHub CLI, Beads, shell, and MCP conventions.
 - [Validation](reference/VALIDATION.md) - `bun run check`, failure meanings, and recovery.
 - [Templates](reference/TEMPLATES.md) - adoption profiles and the default workflow template.
@@ -54,6 +56,7 @@ The links below are for maintainers and architecture readers. They are not part 
 - [Runtime building-block refinement](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md) - advanced architecture direction: runtime primitives, evaluator regions, and templates as scaffolds.
 - [Locked decisions](work/2026-04-28-skeleton-pivot/locked-decisions.md) - historical decision ledger.
 - [Release plan](work/2026-04-28-skeleton-pivot/release-plan.md) - internal release phasing. Internal labels are not npm package versions.
+- [Forge Kernel authority control plane](work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) - current authority reset plan: Forge-native issue kernel, local broker, Cloudflare team authority, and Beads as import/export adapter.
 - [Beads/Supabase and Forge memory design](work/2026-04-28-skeleton-pivot/beads-supabase-and-forge-memory-design.md) - Beads coexistence analysis.
 
 ## Historical Or Superseded Material

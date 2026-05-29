@@ -114,7 +114,7 @@ Task 2: Validation logic
 
 > GitHub issue lifecycle may sync to Beads via CI -- see [docs/guides/BEADS_GITHUB_SYNC.md](docs/guides/BEADS_GITHUB_SYNC.md).
 
-**Beads is the durable issue-state authority** (survives compaction). Forge may keep local adapter/cache files such as `.forge-state.json` for stage-entry recovery, but those files must not override current Beads issue state when Beads metadata is available.
+**Current implementation**: Beads is the temporary durable issue-state authority for existing issue workflows. **Target architecture (D44)**: Forge Kernel becomes the issue/workflow/run authority; Beads becomes import/export/projection compatibility. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
 
 ```json
 {
@@ -172,9 +172,10 @@ Task 2: Validation logic
 - [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) - Tool setup and configuration
 - [docs/reference/VALIDATION.md](docs/reference/VALIDATION.md) - Enforcement and validation details
 
-**Forge v3 Plan (active design):**
-- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — canonical v3 master strategy (waves, workstreams, harness targets)
-- [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D20 decisions ledger with rationale + tradeoffs + anti-decisions
+**Forge v3 / Kernel Plan (active design):**
+- [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) — canonical Forge Kernel authority reset plan for issue authority, local broker, team authority, adapters, storage, and gates
+- [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D44 decisions ledger with rationale + tradeoffs + anti-decisions; D44 supersedes Beads-only authority portions of earlier decisions
+- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its Beads/Dolt default-substrate language over D44
 - See [docs/INDEX.md](docs/INDEX.md) for the full reading order across the v3 design folder
 
 **Load these files when you need detailed instructions for a specific stage.**
@@ -245,7 +246,7 @@ forge close <id>      # Complete work
 
 ### Rules
 
-- Use `forge` as the routine command surface for bd-backed issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`, but Beads (`bd`) remains the source of truth for issue state and IDs. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
+- Use `forge` as the routine command surface for current bd-backed issue tracking and sync workflows until Forge Kernel replaces it — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. Beads (`bd`) remains the current operational tracker for existing issues, but not the target architecture. New issue-authority work must route through the Forge Kernel design. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 

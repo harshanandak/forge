@@ -75,6 +75,7 @@ This is the planned public documentation and positioning release. The package re
 
 ### Changed
 
+- **Forge Kernel authority plan reset** (PR #191, forge-2agy.8): reframed the post-0.0.18 release train around Forge Kernel authority, local SQLite broker boundaries, Cloudflare team authority, Beads import/export compatibility, provider capability contracts, and decision drift guards.
 - **Ambiguity policy**: Hardcoded rubric scoring (>= 80% proceed, < 80% ask) as default in `/plan` — removed redundant per-feature Q&A question
 
 ## [0.0.5] - 2026-03-22
