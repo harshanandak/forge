@@ -13,9 +13,10 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toEqual(secondPlan.apply);
 		expect(plan.rollback).toEqual(secondPlan.rollback);
 		expect(plan.apply[0]).toContain('CREATE TABLE IF NOT EXISTS kernel_issues');
+		expect(plan.apply[0]).toContain('id TEXT NOT NULL PRIMARY KEY');
 		expect(plan.apply).toContain('CREATE INDEX IF NOT EXISTS idx_kernel_issues_status_priority ON kernel_issues (status, priority_rank);');
-		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_dependencies (\n  id TEXT PRIMARY KEY,\n  issue_id TEXT NOT NULL REFERENCES kernel_issues(id),\n  blocks_issue_id TEXT NOT NULL REFERENCES kernel_issues(id),\n  dependency_type TEXT NOT NULL DEFAULT \'blocks\',\n  created_at TEXT NOT NULL\n);');
-		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
+		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_dependencies (\n  id TEXT NOT NULL PRIMARY KEY,\n  issue_id TEXT NOT NULL REFERENCES kernel_issues(id),\n  blocks_issue_id TEXT NOT NULL REFERENCES kernel_issues(id),\n  dependency_type TEXT NOT NULL DEFAULT \'blocks\',\n  created_at TEXT NOT NULL\n);');
+		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.rollback[0]).toBe('DROP INDEX IF EXISTS idx_kernel_dead_letters_status;');
 		expect(plan.rollback.at(-1)).toBe('DROP TABLE IF EXISTS kernel_issues;');
 		expect(plan.migrations.map(migration => migration.id)).toEqual(['001_kernel_schema']);
