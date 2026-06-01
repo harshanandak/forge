@@ -1,0 +1,53 @@
+const { describe, expect, test } = require('bun:test');
+
+const {
+	buildKernelMigrationPlan,
+	validateKernelMigrations,
+} = require('../../lib/kernel/migrations');
+
+describe('kernel migration plans', () => {
+	test('generates deterministic apply and rollback SQL for the schema', () => {
+		const plan = buildKernelMigrationPlan();
+		const secondPlan = buildKernelMigrationPlan();
+
+		expect(plan.apply).toEqual(secondPlan.apply);
+		expect(plan.rollback).toEqual(secondPlan.rollback);
+		expect(plan.apply[0]).toContain('CREATE TABLE IF NOT EXISTS kernel_issues');
+		expect(plan.apply).toContain('CREATE INDEX IF NOT EXISTS idx_kernel_issues_status_priority ON kernel_issues (status, priority_rank);');
+		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_dependencies (\n  id TEXT PRIMARY KEY,\n  issue_id TEXT NOT NULL REFERENCES kernel_issues(id),\n  blocks_issue_id TEXT NOT NULL REFERENCES kernel_issues(id),\n  dependency_type TEXT NOT NULL DEFAULT \'blocks\',\n  created_at TEXT NOT NULL\n);');
+		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
+		expect(plan.rollback[0]).toBe('DROP INDEX IF EXISTS idx_kernel_dead_letters_status;');
+		expect(plan.rollback.at(-1)).toBe('DROP TABLE IF EXISTS kernel_issues;');
+		expect(plan.migrations.map(migration => migration.id)).toEqual(['001_kernel_schema']);
+	});
+
+	test('rejects duplicate migration IDs', () => {
+		const migration = {
+			id: '001_kernel_schema',
+			apply: ['SELECT 1;'],
+			rollback: ['SELECT 0;'],
+		};
+
+		expect(() => validateKernelMigrations([migration, migration])).toThrow('Duplicate Kernel migration id');
+	});
+
+	test('orders multiple migrations forward and rolls them back in reverse migration order', () => {
+		const migrations = [
+			{
+				id: '001_kernel_schema',
+				apply: ['APPLY 1A;', 'APPLY 1B;'],
+				rollback: ['ROLLBACK 1B;', 'ROLLBACK 1A;'],
+			},
+			{
+				id: '002_kernel_projection_status',
+				apply: ['APPLY 2;'],
+				rollback: ['ROLLBACK 2;'],
+			},
+		];
+
+		const plan = buildKernelMigrationPlan(migrations);
+
+		expect(plan.apply).toEqual(['APPLY 1A;', 'APPLY 1B;', 'APPLY 2;']);
+		expect(plan.rollback).toEqual(['ROLLBACK 2;', 'ROLLBACK 1B;', 'ROLLBACK 1A;']);
+	});
+});
