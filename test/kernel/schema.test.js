@@ -144,4 +144,17 @@ describe('kernel schema registry', () => {
 		expect(() => validateKernelSchema(invalidAuthoritySchema)).toThrow('Invalid field authority for issues.id');
 		expect(() => validateKernelSchema(invalidTableAuthoritySchema)).toThrow('Invalid table authority for issues');
 	});
+
+	test('returns isolated schema definitions for consumer planning', () => {
+		const schema = getKernelSchema();
+		schema.tables[0].fields[0].name = 'mutated';
+		schema.tables[0].indexes[0].columns.push('mutated_column');
+
+		const freshSchema = getKernelSchema();
+
+		expect(freshSchema.tables[0].fields[0].name).toBe('id');
+		expect(freshSchema.tables[0].indexes[0].columns).not.toContain('mutated_column');
+		expect(KERNEL_TABLES.issues.fields[0].name).toBe('id');
+		expect(KERNEL_TABLES.issues.indexes[0].columns).not.toContain('mutated_column');
+	});
 });
