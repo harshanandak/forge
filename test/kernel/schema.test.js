@@ -157,4 +157,12 @@ describe('kernel schema registry', () => {
 		expect(KERNEL_TABLES.issues.fields[0].name).toBe('id');
 		expect(KERNEL_TABLES.issues.indexes[0].columns).not.toContain('mutated_column');
 	});
+
+	test('deep-freezes the exported schema registry', () => {
+		KERNEL_TABLES.issues.fields[0].name = 'mutated';
+
+		expect(() => KERNEL_TABLES.issues.indexes[0].columns.push('mutated_column')).toThrow();
+		expect(KERNEL_TABLES.issues.fields[0].name).toBe('id');
+		expect(KERNEL_TABLES.issues.indexes[0].columns).not.toContain('mutated_column');
+	});
 });
