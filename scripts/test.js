@@ -101,7 +101,13 @@ function isKnownTargetablePath(file) {
     return true;
   }
 
-  if (file === 'docs/INDEX.md'
+  if (file === 'README.md'
+    || file === 'QUICKSTART.md'
+    || file === 'CHANGELOG.md'
+    || file === 'AGENTS.md'
+    || file === 'docs/INDEX.md'
+    || file.startsWith('docs/forge/')
+    || file.startsWith('docs/guides/')
     || file.startsWith('docs/plans/')
     || file.startsWith('docs/reference/')
     || file.startsWith('docs/work/')) {

@@ -1,101 +1,85 @@
 # Forge Documentation Index
 
-This is the entry point for all Forge documentation. The structure mirrors how docs are used:
+This is the canonical map for Forge documentation. DeepWiki and other generated views should be checked against these files after they re-index the repository.
 
-- **work/** — one folder per work item (design + decisions + tasks + supporting research).
-- **reference/** — stable, cross-cutting docs (roadmap, toolchain, validation, examples, templates).
-- **guides/** — how-tos for setup, onboarding, integrations.
-- **adr/** — architectural decision records (currently empty).
+## Start Here
 
----
+- [README](../README.md) - product positioning, ready-now features, limits, and DeepWiki note.
+- [Quickstart](../QUICKSTART.md) - first install, `forge init`, `forge setup`, status, worktrees, and validation.
+- [Setup guide](guides/SETUP.md) - install and adoption options for supported agents.
+- [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - the default workflow as a core template, customization model, and live rollout rules.
+- [Support guide](guides/SUPPORT.md) - FAQ, troubleshooting, recovery, known limits, branch protection, worktrees, and Beads/Dolt notes.
 
-## Active Work
+## Tutorials
 
-### Featured: Forge Runtime Building-Block Pivot (2026-04-28 onward)
+- [Quickstart](../QUICKSTART.md) - fastest path to a working local Forge install.
+- [Enhanced onboarding](guides/ENHANCED_ONBOARDING.md) - broader setup and onboarding flow.
 
-**Status**: Historical `v3` design folder refined on 2026-05-06. Active direction: configurable workflow/runtime building blocks, templates as adoption scaffolds, evaluator regions anywhere, and `0.0.x` package releases. Epic: `forge-besw`.
+## How-To Guides
 
-**Reading order** for `docs/work/2026-04-28-skeleton-pivot/`:
-
-1. **START HERE**: **[runtime-building-blocks-refinement.md](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md)** — current refinement: building blocks are the product, templates are scaffolds, releases use `0.0.x`.
-2. **Decisions**: [locked-decisions.md](work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D42 with supersedes inline (D11→D15, D17→D23). Rationale + tradeoff + anti-decision per entry.
-3. **Journey**: [LEARNINGS.md](work/2026-04-28-skeleton-pivot/LEARNINGS.md) — 15 takeaways from the 6-iteration journey. Why decisions changed.
-4. **Method**: [iteration-driven-planning-skill.md](work/2026-04-28-skeleton-pivot/iteration-driven-planning-skill.md) — the planning method this folder used, now framed as one configurable `/plan` playbook template (Phase 1–5, classification-aware intensity).
-5. **Strategy reference**: [v3-redesign-strategy.md](work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — original master strategy doc; sections 4a/6 marked SUPERSEDED inline.
-6. **Folder index**: [README.md](work/2026-04-28-skeleton-pivot/README.md) — all docs with one-line descriptions.
-
-**Design references**:
-- [layered-skeleton-config.md](work/2026-04-28-skeleton-pivot/layered-skeleton-config.md) — L1/L2/L3/L4 config schema
-- [extension-system.md](work/2026-04-28-skeleton-pivot/extension-system.md) — manifest spec, resolvers, lockfile, sandbox
-- [skill-distribution.md](work/2026-04-28-skeleton-pivot/skill-distribution.md) — marketplace allowlist + name collisions
-- [skill-generation.md](work/2026-04-28-skeleton-pivot/skill-generation.md) — observed-work mining → skill proposals (D18)
-- [week-3-runtime-capability-packs.md](work/2026-04-28-skeleton-pivot/week-3-runtime-capability-packs.md) — Week 3 capability pack registry, on-demand skills MCP, workflow composer, and plugin discovery plan
-- [agent-memory-architecture.md](work/2026-04-28-skeleton-pivot/agent-memory-architecture.md) — 7 typed memory categories (D22/D24)
-- [marketplace-patchmd-use-case-kits.md](work/2026-04-28-skeleton-pivot/marketplace-patchmd-use-case-kits.md) — use-case validation
-- [n1-moat-technical-deep-dive.md](work/2026-04-28-skeleton-pivot/n1-moat-technical-deep-dive.md) — moat analysis (D8/D9, kill criteria for D38)
-- [beads-supabase-and-forge-memory-design.md](work/2026-04-28-skeleton-pivot/beads-supabase-and-forge-memory-design.md) — Beads coexist analysis (D21/D31)
-
-**Tactical**:
-- [beads-operations-manifest.md](work/2026-04-28-skeleton-pivot/beads-operations-manifest.md) — bd manifest (N1–N18)
-- [release-plan.md](work/2026-04-28-skeleton-pivot/release-plan.md) — active `0.0.x` release phasing
-- [v3-release-staging.md](work/2026-04-28-skeleton-pivot/v3-release-staging.md) — historical release gating notes
-
-**Audits** (drove iteration #5–#6 supersedes):
-- [reality-check-audit.md](work/2026-04-28-skeleton-pivot/reality-check-audit.md) — survival audit (D37/D38)
-- [n1-survival-audit.md](work/2026-04-28-skeleton-pivot/n1-survival-audit.md) — N=1 retention critique (D26/D34)
-- [efficiency-audit.md](work/2026-04-28-skeleton-pivot/efficiency-audit.md) — 10 efficiency wins (D23/D25/D37)
-- [quality-vs-speed-tradeoff.md](work/2026-04-28-skeleton-pivot/quality-vs-speed-tradeoff.md) — quality cuts (D32/D37)
-- [unconventional-alternatives.md](work/2026-04-28-skeleton-pivot/unconventional-alternatives.md) — alternatives considered
-- [template-library-and-merge-flow.md](work/2026-04-28-skeleton-pivot/template-library-and-merge-flow.md) — templates as adoption scaffolds
-
-**Iteration history** (superseded earlier-iteration docs preserved with breadcrumb):
-- [_iteration-history/](work/2026-04-28-skeleton-pivot/_iteration-history/) — `v3-skeleton-plan.md`, `building-block-pivot.md`, `v3-ecosystem-audit.md` + `SUPERSEDED.md` note
-
-### All active work
-
-| Work Item | Summary |
-|-----------|---------|
-| [2026-04-28-skeleton-pivot](work/2026-04-28-skeleton-pivot/README.md) | Forge runtime building-block pivot. D1-D42 remain historical baseline; current refinement is runtime primitives + evaluator regions + templates as scaffolds + `0.0.x` release plan. Start with [runtime-building-blocks-refinement.md](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md). |
-| [2026-04-06-v2-unified-strategy](work/2026-04-06-v2-unified-strategy/README.md) | Historical v2 strategy doc, superseded by v3 skeleton pivot. Preserved for reference on why v2 chose its specific defaults. |
-
-## Recent Completed Work
-
-See [work/](work/) for the full list of date-prefixed work folders. Each folder contains a `README.md` with status and links.
+- [Setup](guides/SETUP.md) - install package, initialize runtime config, install agent instructions.
+- [Migration](guides/MIGRATION.md) - move from older Forge versions and old stage-only framing.
+- [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - understand the default template and how customization should be documented.
+- [Beads/GitHub sync](guides/BEADS_GITHUB_SYNC.md) - configure and recover issue sync.
+- [Manual review guide](guides/MANUAL_REVIEW_GUIDE.md) - process PR feedback without inventing CLI commands.
+- [Greptile setup](guides/GREPTILE_SETUP.md) - optional review integration.
+- [Agent install prompt](guides/AGENT_INSTALL_PROMPT.md) - reusable prompt for agent installation.
 
 ## Reference
 
-- [ROADMAP.md](reference/ROADMAP.md) — Forge roadmap
-- [TOOLCHAIN.md](reference/TOOLCHAIN.md) — Toolchain conventions (Bun, lefthook, beads, MCP, shell model)
-- [VALIDATION.md](reference/VALIDATION.md) — Validation stage requirements
-- [TEMPLATES.md](reference/TEMPLATES.md) — Adoption templates and `forge init` profiles
-- [ADAPTERS.md](reference/ADAPTERS.md) — Review adapter contract, lifecycle, scaffold, and fixture replay expectations
-- [AGENT_SKILL_PARITY.md](reference/AGENT_SKILL_PARITY.md) — Cross-harness skill metadata parity surfaces, evidence command, and proof boundary
-- [EXAMPLES.md](reference/EXAMPLES.md) — Worked examples
-- [upgrade-safety.md](reference/upgrade-safety.md) — Lockfile trust policy, upgrade dry-run, and self-heal limitations
-- [INSIGHTS_RECAP.md](reference/INSIGHTS_RECAP.md) — `forge insights` and `forge recap` evidence sources, output, and limitations
-- [STATUS_BOARD.md](reference/STATUS_BOARD.md) — `forge status` and `forge board` local runtime state surfaces, JSON mode, and limits
-- [protected-state-surfaces.md](reference/protected-state-surfaces.md) — Protected paths, allowed Forge API writes, audit payloads, and repair hints
-- [RESEARCH_TEMPLATE.md](reference/RESEARCH_TEMPLATE.md) — Template for research docs (formerly docs/research/TEMPLATE.md)
+- [Command reference](reference/COMMANDS.md) - verified `forge` CLI commands and package binaries.
+- [Skills and command projections](reference/SKILLS.md) - current stage packaging across skills, commands, prompts, and harness projections.
+- [Release reference](reference/RELEASE.md) - validation, packaging, release handoff, and DeepWiki checklist.
+- [Forge Kernel storage model](reference/FORGE_KERNEL_STORAGE_MODEL.md) - authority/cache/projection/archive storage rules for local and team modes.
+- [Decision drift guards](reference/DECISION_DRIFT_GUARDS.md) - evaluator checklist and required doc updates for Kernel-era architecture changes.
+- [Toolchain](reference/TOOLCHAIN.md) - Bun, Node, Git, GitHub CLI, Beads, shell, and MCP conventions.
+- [Validation](reference/VALIDATION.md) - `bun run check`, failure meanings, and recovery.
+- [Templates](reference/TEMPLATES.md) - adoption profiles and the default workflow template.
+- [Adapters](reference/ADAPTERS.md) - issue and review adapter contracts.
+- [Status and board](reference/STATUS_BOARD.md) - local runtime state surfaces.
+- [Agent skill parity](reference/AGENT_SKILL_PARITY.md) - cross-harness skill metadata parity surfaces, evidence command, and proof boundary.
+- [Protected state surfaces](reference/protected-state-surfaces.md) - protected-path model, enforcement limits, and repair hints.
+- [Protected path manifest](reference/PROTECTED_PATH_MANIFEST.md) - protected path manifest schema, harness enforcement mapping, and evidence command.
+- [Patch format](reference/patch-md-format.md) - `.forge/patch.md` conventions.
+- [Upgrade safety](reference/upgrade-safety.md) - trust policy and rollback limits.
+- [Insights and recap](reference/INSIGHTS_RECAP.md) - `forge insights` and `forge recap` evidence sources, output, and limitations.
+- [Examples](reference/EXAMPLES.md) - worked examples.
+- [Test environment](reference/test-environment.md) - test harness notes.
+- [Agent permissions](reference/agent-permissions.md) - agent permission model.
+- [Dependency chain](reference/dependency-chain.md) - historical dependency-chain notes.
+- [Research template](reference/RESEARCH_TEMPLATE.md) - research artifact template.
 
-## Guides
+## Advanced And Historical Context
 
-- [SETUP.md](guides/SETUP.md) — Project setup
-- [ENHANCED_ONBOARDING.md](guides/ENHANCED_ONBOARDING.md) — Onboarding flow
-- [GREPTILE_SETUP.md](guides/GREPTILE_SETUP.md) — Greptile integration
-- [BEADS_GITHUB_SYNC.md](guides/BEADS_GITHUB_SYNC.md) — Beads ↔ GitHub sync
-- [MANUAL_REVIEW_GUIDE.md](guides/MANUAL_REVIEW_GUIDE.md) — Manual PR review process
-- [AGENT_INSTALL_PROMPT.md](guides/AGENT_INSTALL_PROMPT.md) — Agent install prompt
+The links below are for maintainers and architecture readers. They are not part of the normal getting-started path and may contain historical design labels.
 
-## Architectural Decision Records
+- [Runtime building-block refinement](work/2026-04-28-skeleton-pivot/runtime-building-blocks-refinement.md) - advanced architecture direction: runtime primitives, evaluator regions, and templates as scaffolds.
+- [Locked decisions](work/2026-04-28-skeleton-pivot/locked-decisions.md) - historical decision ledger.
+- [Release plan](work/2026-04-28-skeleton-pivot/release-plan.md) - internal release phasing. Internal labels are not npm package versions.
+- [Forge Kernel authority control plane](work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) - current authority reset plan: Forge-native issue kernel, local broker, Cloudflare team authority, and Beads as import/export adapter.
+- [Beads/Supabase and Forge memory design](work/2026-04-28-skeleton-pivot/beads-supabase-and-forge-memory-design.md) - Beads coexistence analysis.
 
-- [adr/README.md](adr/README.md) — ADR purpose and template (empty for now)
+## Historical Or Superseded Material
 
-## Archive
+The [docs/work archive](work/README.md) contains planning artifacts, decisions, and historical research. These files are useful context, but public user guidance should prefer the start-here, how-to, and reference files above.
 
-- [work/_archive/general-research/](work/_archive/general-research/) — Historical research not tied to a specific work item (formerly docs/research/)
-- [work/_archive/planning-snapshots/](work/_archive/planning-snapshots/) — Historical planning snapshots (formerly docs/planning/)
+Historical references that should not be treated as current release instructions:
 
-## Notes
+- [Roadmap](reference/ROADMAP.md) - historical roadmap snapshot.
+- [Superpowers analysis](reference/superpowers-analysis.md) - historical analysis.
+- [Superpowers integration options](reference/superpowers-integration-options.md) - historical options.
+- `docs/work/2026-04-28-skeleton-pivot/*v3*` files - `v3` is an internal/historical codename, not a public package version.
 
-- `docs/forge/` (TOOLCHAIN.md, VALIDATION.md) is a **consumer-installed** directory created by `forge setup`. Do not move or rename — referenced by `lib/reset.js`, `lib/docs-copy.js`, and `lib/commands/setup.js`.
-- New `/plan` artifacts live under `docs/work/YYYY-MM-DD-<slug>/`. Runtime tools keep a legacy `docs/plans/` read fallback only for older work items.
+## Consumer-Installed Docs
+
+`docs/forge/` contains documentation copied into consumer repositories by `forge setup`. Keep these files aligned with the matching `docs/reference/` files because setup and reset code reference them.
+
+## Work Artifacts
+
+New `/plan` artifacts live under:
+
+```text
+docs/work/YYYY-MM-DD-<slug>/
+```
+
+Each work folder should contain design, tasks, decisions, and supporting evidence when applicable.

@@ -11,7 +11,7 @@ Current Forge implementation does not yet match the full parity model discussed 
 What exists:
 
 - W0 skill metadata parity: one canonical skill fixture rendered to Claude Code, Cursor, and Codex surfaces, documented in [AGENT_SKILL_PARITY.md](../../reference/AGENT_SKILL_PARITY.md).
-- W1 protected-path parity work exists as PR #187 at verification time, not as landed `master` behavior. That PR adds a protected-path manifest and evidence command for seven protected-path categories across Claude, Cursor, and Codex, with Cursor marked as fallback.
+- W1 protected-path parity work exists as PR #187 at verification time, not as landed `master` behavior. That PR adds a protected-path manifest and evidence command for seven protected-path categories across Claude, Cursor, and Codex, with Cursor marked as `backstop_only`.
 - v3 docs already frame templates as adoption scaffolds and runtime building blocks as the product.
 
 What is missing:
@@ -42,7 +42,7 @@ A pack can contribute:
 - stages and substages
 - skills and subskills
 - commands and command shims
-- hooks and fallback checks
+- hooks and backstop checks
 - MCP servers, tools, and resources
 - ACP adapters
 - books, docs, and reference bundles
@@ -141,7 +141,7 @@ Recommendation examples:
 - Superpowers can replace Forge `/plan`.
 - Impeccable can extend frontend design review.
 - A GitHub MCP can strengthen `/review`.
-- Cursor lacks a verified native hook for a gate, so Forge should keep fallback enforcement.
+- Cursor lacks a verified native hook for a gate, so Forge should keep backstop enforcement.
 - A hidden or expensive skill should stay gated because the project prefers low-cost runs.
 
 Recommendations must include evidence, a config diff, rollback path, and affected harness projections.
@@ -154,15 +154,15 @@ The resolved workflow graph generates harness-specific files:
 | --- | --- |
 | Claude Code | plugin manifest, skills, hooks, MCP config, command shims, `CLAUDE.md` if needed |
 | Codex | skills, config, MCP config, lifecycle hooks where supported, `AGENTS.md` sections |
-| Cursor | `.cursor/rules`, Cursor skills where supported, MCP config, `AGENTS.md`, fallback hook checks |
+| Cursor | `.cursor/rules`, Cursor skills where supported, MCP config, `AGENTS.md`, backstop hook checks |
 
-Cursor projection must explicitly separate on-demand Cursor skills from always-on or scoped `.cursor/rules` policy, and it must keep protected-path hook behavior on fallback unless native Cursor hook evidence exists.
+Cursor projection must explicitly separate on-demand Cursor skills from always-on or scoped `.cursor/rules` policy, and it must keep protected-path hook behavior on `backstop_only` unless native Cursor hook evidence exists.
 
 Every projection must report one of:
 
 - `native`
 - `translated`
-- `fallback`
+- `backstop_only`
 - `unsupported_known_issue`
 - `disabled_by_policy`
 
@@ -180,7 +180,7 @@ The evaluator must read the same inputs the runtime uses, not an independent che
 - installed pack lock metadata and marketplace trust records
 - MCP server configs and discovered MCP capability metadata
 - generated Claude, Codex, and Cursor projection files
-- protected-path manifest and generated hook/fallback policy
+- protected-path manifest and generated hook/backstop policy
 - stage ledger entries showing required, loaded, skipped, gated, and hidden capabilities
 - known-issue records for unsupported harness surfaces
 
@@ -209,7 +209,7 @@ Week 3 must include intentionally broken projection fixtures so the evaluator pr
 - a gated skill invoked without approval evidence
 - a hidden skill exposed in an always-on harness rule
 - a disabled pack leaving behind a stale command alias or hook
-- a Cursor projection claiming native hook support when only fallback evidence exists
+- a Cursor projection claiming native hook support when only backstop evidence exists
 
 Each negative fixture must fail before repair, emit a minimal repair recommendation, regenerate or update the projection, and pass on the next evaluator run.
 

@@ -67,7 +67,14 @@ describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {
     expect(parity).toContain('Required Follow-Up: Skills-First Stage Graph');
     expect(parity).toContain('Tracked as `forge-wj36`');
     expect(parity).toContain('Claude commands should become compatibility shims');
-    expect(parity).toContain('Cursor Agent Skills are not proven in this W0 fixture');
+    expect(parity).toContain('Cursor Agent Skills are not proven in the W0 fixture');
+  });
+
+  it('documents the machine-readable capability matrix evidence command', () => {
+    expect(parity).toContain('node scripts/spikes/harness-capability-matrix.js');
+    expect(parity).toContain('lib/harness-capability-matrix.js');
+    expect(parity).toContain('rendererContract.rendererFamilies');
+    expect(parity).toContain('Cursor hooks remain unsupported');
   });
 });
 

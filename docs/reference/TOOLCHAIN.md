@@ -4,30 +4,19 @@ Complete reference for all tools integrated with the Forge workflow.
 
 ## Overview
 
+Forge is a local runtime control plane that coordinates several tool surfaces:
+
+```text
+Forge runtime control plane
+  - workflow templates and stage skills
+  - local project state and protected surfaces
+  - Beads-backed issue wrappers and sync
+  - validation, packaging, and release evidence
+  - review adapters and external service hooks
+  - harness projections for agent-specific commands, prompts, workflows, and skills
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FORGE TOOLCHAIN                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────┐   ┌─────────────────────┐                     │
-│  │   BEADS     │   │  EXTERNAL SERVICES  │                     │
-│  │   (bd)      │   │                     │                     │
-│  │             │   │  Parallel AI        │                     │
-│  │ Git-backed  │   │  Greptile           │                     │
-│  │ Issue       │   │  SonarCloud         │                     │
-│  │ Tracking    │   │  GitHub CLI         │                     │
-│  └─────────────┘   └─────────────────────┘                     │
-│        │                     │                                 │
-│        └─────────────────────┘                                 │
-│                          │                                      │
-│                    ┌─────▼─────┐                                │
-│                    │   FORGE   │                                │
-│                    │  7-Stage  │                                │
-│                    │  Workflow │                                │
-│                    └───────────┘                                │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+The default TDD-first workflow is a core template shipped by Forge. It is not the only runtime primitive. Toolchain docs should describe tools by the surface they support: setup, state, workflow stages, validation, review, release, sync, and recovery.
 
 ---
 
@@ -148,7 +137,7 @@ Typed memory helpers in `lib/memory/typed-api.js` add category and provenance co
 
 | Category | Key prefix | Durable backend |
 | --- | --- | --- |
-| decisions | `decisions:` | Beads memory index for canonical docs/plans decisions |
+| decisions | `decisions:` | Beads memory index for canonical docs/work decisions |
 | episodes | `episodes:` | Beads-backed memory/audit context |
 | skills | `skills:` | Beads memory index for skill references |
 | state | `state:` | Forge-owned state references |
@@ -242,7 +231,7 @@ Context7 provides current documentation that may be more recent than the AI's tr
   "mcpServers": {
     "context7": {
       "command": "bunx",
-      "args": ["--bun", "@upstash/context7-mcp@latest"]
+      "args": ["--bun", "@upstash/context7-mcp@2"]
     }
   }
 }
@@ -289,7 +278,7 @@ Add to `.mcp.json` in your project root:
   "mcpServers": {
     "context7": {
       "command": "bunx",
-      "args": ["--bun", "@upstash/context7-mcp@latest"]
+      "args": ["--bun", "@upstash/context7-mcp@2"]
     },
     "grep-app": {
       "command": "bunx",
@@ -566,7 +555,9 @@ irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 
 ---
 
-## Integration with Forge Stages
+## Default Workflow Template Mapping
+
+This table maps tools to the default workflow template. It is not the complete Forge product model and it is not a requirement that every project use every stage.
 
 | Stage | Tools Used |
 |-------|------------|

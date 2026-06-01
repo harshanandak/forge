@@ -1,17 +1,19 @@
 # Forge v3 Redesign Strategy
 
+> Historical design artifact. Do not use this page for current package release planning, command availability, issue authority, or public positioning. Current public package release guidance lives in `CHANGELOG.md`, `docs/reference/RELEASE.md`, and `docs/guides/WORKFLOW_TEMPLATES.md`. Current issue authority guidance lives in [Forge Kernel authority control plane](./forge-kernel-authority-control-plane.md).
+
 **Date**: 2026-04-28 (originally) → 2026-04-29 (sections marked SUPERSEDED inline by iterations #5–#7)
-**Status**: Reference doc — **canonical "where we ended up" is now [FINAL-THESIS.md](./FINAL-THESIS.md)** + **release roadmap is [release-plan.md](./release-plan.md)** (D39). This doc retains its strategic framing but several sections have been superseded by D21–D39 (memory architecture, audit collapse, stage model, harness narrowing, release versioning, kill criteria). See inline SUPERSEDED notes.
+**Status**: Reference doc — **canonical "where we ended up" is now [FINAL-THESIS.md](./FINAL-THESIS.md)** + **release roadmap is [release-plan.md](./release-plan.md)** (D39) + **issue authority reset is [forge-kernel-authority-control-plane.md](./forge-kernel-authority-control-plane.md)** (D44). This doc retains its strategic framing but several sections have been superseded by D21–D44 (memory architecture, audit collapse, stage model, harness narrowing, release versioning, kill criteria, issue authority). See inline SUPERSEDED notes.
 **Supersedes**: [v2 unified strategy](../2026-04-06-v2-unified-strategy/unified-strategy.md) (preserved for historical reference)
-**Superseded by (in part)**: [FINAL-THESIS.md](./FINAL-THESIS.md), [locked-decisions.md](./locked-decisions.md) (D21–D38)
+**Superseded by (in part)**: [FINAL-THESIS.md](./FINAL-THESIS.md), [locked-decisions.md](./locked-decisions.md) (D21–D44), [forge-kernel-authority-control-plane.md](./forge-kernel-authority-control-plane.md)
 **Source design docs (same folder)**:
-- [v3-skeleton-plan.md](./v3-skeleton-plan.md)
+- [v3-skeleton-plan.md](./_iteration-history/v3-skeleton-plan.md)
 - [layered-skeleton-config.md](./layered-skeleton-config.md)
 - [extension-system.md](./extension-system.md)
 - [skill-generation.md](./skill-generation.md)
 - [skill-distribution.md](./skill-distribution.md)
 - [beads-operations-manifest.md](./beads-operations-manifest.md)
-- [building-block-pivot.md](./building-block-pivot.md)
+- [building-block-pivot.md](./_iteration-history/building-block-pivot.md)
 
 ---
 
@@ -66,7 +68,7 @@ Resolution order: **L1 → L2 → L3 → L4**. Later layers override earlier, ex
 | Shape | Fixed 7-stage TDD workflow shipped as monolith | Layered skeleton: locked rails + swappable defaults + project patches + user profile |
 | Customization | Edit Forge source / fork the repo | `.forge/config.yaml` toggles + `patch.md` overrides + extension marketplace |
 | Stage count | 7, hard-coded in `WORKFLOW_STAGE_MATRIX` | 7 by default, but `stages.<id>.enabled: false` collapses to any subset |
-| Issue tracker | Beads is the spine; everything binds to it | Beads is the **default L2 adapter**; pluggable via the adapter contract |
+| Issue tracker | Fixed Beads-bound model | SUPERSEDED-BY-D44: Forge Kernel API/local SQLite broker is the authority; Beads is import/export projection compatibility |
 | Rubric gate | Built into core | Default L2 gate, tunable in `patch.md`, replaceable by extension |
 | Distribution | Single `bunx forge setup` install | Curated `forge-marketplace.json` (Claude Code-compatible schema) + SHA-pinned add |
 | Safety | Always-on hard checks | L1 rails locked, L2 gates lenient-opt-in, every `--force-skip` audited |
@@ -81,7 +83,7 @@ Resolution order: **L1 → L2 → L3 → L4**. Later layers override earlier, ex
 
 ### What stays (deliberately)
 
-- **Beads + Dolt** as the default issue + history substrate — but as an adapter, not the spine.
+- SUPERSEDED-BY-D44: **Beads + Dolt** are not the target issue + history substrate. Forge Kernel is authority; Beads remains import/export projection compatibility.
 - **HARD-GATE quality enforcement** — enforced through the canonical L1 rails (TDD intent gate, secret scan, branch protection, signed commits, schema + integrity incl. Protected Path Manifest).
 - **Greptile / Sonar / CodeRabbit review automation** — re-shipped as L2 extensions, each installable independently.
 - **Forge CLI as the agent abstraction layer** — agents still only call `forge`, never the underlying tools.
@@ -92,7 +94,7 @@ Resolution order: **L1 → L2 → L3 → L4**. Later layers override earlier, ex
 
 ## 4. Locked Decisions D1–D20
 
-> **FORWARD POINTER**: D21–D38 (added in iterations #5–#6 on 2026-04-29) cover memory architecture (D21–D25), stage model reframing (D26–D29), and Beads under-utilization + ship discipline (D30–D38). They live in [locked-decisions.md](./locked-decisions.md), summarized in [FINAL-THESIS.md §7](./FINAL-THESIS.md#7-the-38-locked-decisions-one-line-summaries). Decisions D11 and D17 are annotated with supersedes (by D15 and D23 respectively).
+> **FORWARD POINTER**: D21–D38 (added in iterations #5–#6 on 2026-04-29) cover memory architecture (D21–D25), stage model reframing (D26–D29), and Beads under-utilization + ship discipline (D30–D38). They live in [locked-decisions.md](./locked-decisions.md), summarized in [FINAL-THESIS.md §7](./FINAL-THESIS.md#7-the-39-locked-decisions-one-line-summaries). Decisions D11 and D17 are annotated with supersedes (by D15 and D23 respectively).
 
 > Full decision rationale, tradeoffs, and anti-decisions for every entry below live in [locked-decisions.md](./locked-decisions.md). This section is the in-strategy summary.
 
@@ -271,7 +273,7 @@ Per the locked W0 NO-GO gate (D10) and harness scope (D11/D13), Wave 0 must veri
 |----|-------|---------|------|--------|-------|------|
 | WS1 | Forge CLI abstraction | Aligned | 1 | M | 5 | Already shipping; add `forge config` to inspect effective tree. |
 | WS2 | Stages as swappable agents | Reframe | 2 | L | 5 | Each stage becomes an L2 agent extension. |
-| WS3 | Beads as adapter, not spine | Reframe | 2 | M | 4 | Issue tracker pluggable; beads stays default L2 adapter. |
+| WS3 | Beads as adapter, not spine | SUPERSEDED-BY-D44 | 2 | M | 4 | Forge Kernel becomes authority; Beads becomes import/export projection compatibility. |
 | WS4 | Handoff schema | Aligned | 1 | S | 5 | Promote schema to L1 contract; freeze v1 wire format. |
 | WS5 | Rubric gate as default | Reframe | 2 | M | 4 | Move rubric out of core into L2 default gate; tunable in patch.md. |
 | WS6 | Parallel agent teams | Defer | — | XL | 3 | Out of scope; revisit after Wave 5. |
@@ -481,14 +483,14 @@ All v3 design docs live in this folder (`docs/work/2026-04-28-skeleton-pivot/`).
 - [README.md](./README.md) — folder index + reading order + status
 - [locked-decisions.md](./locked-decisions.md) — canonical D1–D20 decisions ledger (this doc summarizes; that doc has full rationale + tradeoffs + anti-decisions)
 - [n1-moat-technical-deep-dive.md](./n1-moat-technical-deep-dive.md) — moat analysis underpinning D8/D9
-- [v3-ecosystem-audit.md](./v3-ecosystem-audit.md) — harness landscape underpinning D11/D13
+- [v3-ecosystem-audit.md](./_iteration-history/v3-ecosystem-audit.md) — harness landscape underpinning D11/D13
 - [template-library-and-merge-flow.md](./template-library-and-merge-flow.md) — template scope underpinning D9
-- [v3-skeleton-plan.md](./v3-skeleton-plan.md) — wave plan + workstream table
+- [v3-skeleton-plan.md](./_iteration-history/v3-skeleton-plan.md) — wave plan + workstream table
 - [layered-skeleton-config.md](./layered-skeleton-config.md) — L1/L2/L3/L4 config schema
 - [extension-system.md](./extension-system.md) — manifest spec, resolvers, lockfile, sandbox
 - [skill-generation.md](./skill-generation.md) — observed-work mining → skill proposals
 - [skill-distribution.md](./skill-distribution.md) — marketplace allowlist + name collisions
 - [beads-operations-manifest.md](./beads-operations-manifest.md) — beads create/reframe/close manifest (N1–N18)
-- [building-block-pivot.md](./building-block-pivot.md) — building-block framing of the pivot
+- [building-block-pivot.md](./_iteration-history/building-block-pivot.md) — building-block framing of the pivot
 
 v2 reference: [`../2026-04-06-v2-unified-strategy/unified-strategy.md`](../2026-04-06-v2-unified-strategy/unified-strategy.md).
