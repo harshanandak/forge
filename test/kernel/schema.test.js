@@ -133,8 +133,15 @@ describe('kernel schema registry', () => {
 				fields: [{ ...KERNEL_TABLES.issues.fields[0], authority: 'invalid' }],
 			}],
 		};
+		const invalidTableAuthoritySchema = {
+			tables: [{
+				...KERNEL_TABLES.issues,
+				authority: 'invalid',
+			}],
+		};
 
 		expect(() => validateKernelSchema(invalidStorageSchema)).toThrow('Invalid storage class for issues.id');
 		expect(() => validateKernelSchema(invalidAuthoritySchema)).toThrow('Invalid field authority for issues.id');
+		expect(() => validateKernelSchema(invalidTableAuthoritySchema)).toThrow('Invalid table authority for issues');
 	});
 });

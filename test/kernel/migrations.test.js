@@ -2,8 +2,10 @@ const { describe, expect, test } = require('bun:test');
 
 const {
 	buildKernelMigrationPlan,
+	buildSchemaMigration,
 	validateKernelMigrations,
 } = require('../../lib/kernel/migrations');
+const { getKernelSchema } = require('../../lib/kernel/schema');
 
 describe('kernel migration plans', () => {
 	test('generates deterministic apply and rollback SQL for the schema', () => {
@@ -50,5 +52,34 @@ describe('kernel migration plans', () => {
 
 		expect(plan.apply).toEqual(['APPLY 1A;', 'APPLY 1B;', 'APPLY 2;']);
 		expect(plan.rollback).toEqual(['ROLLBACK 2;', 'ROLLBACK 1B;', 'ROLLBACK 1A;']);
+	});
+
+	test('rejects malformed references and index columns before rendering SQL', () => {
+		const schema = getKernelSchema();
+		const badReferenceTable = {
+			...schema.tables[0],
+			fields: [
+				...schema.tables[0].fields,
+				{
+					name: 'bad_reference_id',
+					type: 'TEXT',
+					notNull: true,
+					authority: 'forge',
+					storageClass: 'authority',
+					references: 'issues.id.extra',
+				},
+			],
+		};
+		const badIndexTable = {
+			...schema.tables[0],
+			indexes: [{
+				name: 'idx_kernel_bad_column',
+				columns: ['status, priority_rank'],
+				unique: false,
+			}],
+		};
+
+		expect(() => buildSchemaMigration({ tables: [badReferenceTable] })).toThrow('Invalid Kernel SQL reference');
+		expect(() => buildSchemaMigration({ tables: [badIndexTable] })).toThrow('Invalid Kernel SQL index column');
 	});
 });
