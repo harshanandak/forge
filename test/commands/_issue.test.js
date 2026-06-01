@@ -42,4 +42,33 @@ describe('forge issue helpers', () => {
       },
     }]);
   });
+
+  test('read aliases route through the shared issue operation runner for Kernel backends', async () => {
+    const calls = [];
+    const list = makeAliasCommand('list');
+
+    const result = await list.handler(['--json'], {}, '/repo', {
+      useKernelBroker: true,
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ operation, args, projectRoot, deps });
+        return { success: true, operation, output: '[]' };
+      },
+    });
+
+    expect(result).toEqual({ success: true, operation: 'list', output: '[]' });
+    expect(calls).toEqual([{
+      operation: 'list',
+      args: ['--json'],
+      projectRoot: '/repo',
+      deps: {
+        useKernelBroker: true,
+        runIssueOperation: expect.any(Function),
+      },
+    }]);
+  });
+
+  test('buildBdArgs maps comment to bd comments add passthrough', () => {
+    expect(buildBdArgs('comment', ['forge-abc', 'handoff note']))
+      .toEqual(['comments', 'add', 'forge-abc', 'handoff note']);
+  });
 });
