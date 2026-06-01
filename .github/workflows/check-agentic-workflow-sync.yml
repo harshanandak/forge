@@ -24,9 +24,9 @@ jobs:
         run: |
           if gh extension list | grep -q 'gh-aw'; then
             gh extension remove gh-aw
-            gh extension install github/gh-aw --pin v0.75.4
+            gh extension install github/gh-aw --pin v0.77.5
           else
-            gh extension install github/gh-aw --pin v0.75.4
+            gh extension install github/gh-aw --pin v0.77.5
           fi
       - name: Compile active workflow
         run: gh aw compile --validate --strict .github/workflows/behavioral-test.md
