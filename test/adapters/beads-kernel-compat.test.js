@@ -184,7 +184,6 @@ describe('Beads Kernel compatibility adapter', () => {
 
 		expect(result.kernel.comments).toEqual(expect.arrayContaining([
 			expect.objectContaining({
-				id: 'beads-note-forge-aa1',
 				issue_id: 'forge-aa1',
 				body: 'Preserve this issue during migration.',
 				actor: 'Harsha Nanda',
@@ -210,10 +209,35 @@ describe('Beads Kernel compatibility adapter', () => {
 
 		expect(result.kernel.dependencies).toHaveLength(2);
 		expect(new Set(result.kernel.dependencies.map(dependency => dependency.id)).size).toBe(2);
+		expect(new Set(result.kernel.priorityEvents.map(event => event.id)).size).toBe(3);
 		expect(result.kernel.dependencies.map(dependency => dependency.issue_id)).toEqual([
 			'forge-2agy.2.3',
 			'forge-2agy-2-3',
 		]);
+	});
+
+	test('imports issue-derived event ids without punctuation collisions', () => {
+		const result = importBeadsSnapshot({
+			issues: [
+				{
+					id: 'forge-2agy.2.3',
+					title: 'Dotted',
+					status: 'closed',
+					closed_at: '2026-06-01T01:00:00.000Z',
+				},
+				{
+					id: 'forge-2agy-2-3',
+					title: 'Dashed',
+					status: 'closed',
+					closed_at: '2026-06-01T02:00:00.000Z',
+				},
+			],
+		}, { importedAt: IMPORTED_AT });
+
+		expect(result.kernel.priorityEvents).toHaveLength(2);
+		expect(result.kernel.events).toHaveLength(2);
+		expect(new Set(result.kernel.priorityEvents.map(event => event.id)).size).toBe(2);
+		expect(new Set(result.kernel.events.map(event => event.id)).size).toBe(2);
 	});
 
 	test('writes Beads exports with an explicit rollback snapshot', () => {
