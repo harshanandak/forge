@@ -149,6 +149,12 @@ describe('Beads Kernel compatibility adapter', () => {
 			expect.objectContaining({ issue_id: 'forge-child', depends_on_id: 'forge-parent', type: 'parent-child' }),
 			expect.objectContaining({ issue_id: 'forge-child', depends_on_id: 'forge-blocker', type: 'blocks' }),
 		]));
+		expect(exportedIssues.find(issue => issue.id === 'forge-blocker')).toMatchObject({
+			dependent_count: 1,
+		});
+		expect(exportedIssues.find(issue => issue.id === 'forge-parent')).toMatchObject({
+			dependent_count: 0,
+		});
 		expect(exportResult.report.summary).toMatchObject({
 			issues: 3,
 			dependencies: 2,
