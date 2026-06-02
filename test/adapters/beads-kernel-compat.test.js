@@ -12,6 +12,7 @@ const {
 } = require('../../lib/adapters/beads-kernel-compat');
 
 const FIXTURE_DIR = path.join(__dirname, '..', 'fixtures', 'beads-kernel-adapter');
+const LEGACY_BACKUP_DIR = path.join(__dirname, '..', 'fixtures', 'beads-migrate', 'legacy-backup');
 const IMPORTED_AT = '2026-06-01T00:00:00.000Z';
 
 function parseJsonl(content) {
@@ -230,6 +231,19 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(exportedIssues.find(issue => issue.id === 'forge-parent')).toMatchObject({
 			dependent_count: 0,
 		});
+	});
+
+	test('reports unsupported legacy Beads event sidecars', () => {
+		const snapshot = loadBeadsSnapshotFromDirectory(LEGACY_BACKUP_DIR);
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+
+		expect(snapshot.events).toHaveLength(3);
+		expect(result.report.gaps).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				field: 'events.jsonl',
+				reason: 'legacy Beads event sidecar is not represented in Kernel schema v1',
+			}),
+		]));
 	});
 
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
