@@ -21,7 +21,10 @@ describe('KernelIssueAdapter', () => {
 	});
 
 	test('delegates representative command API operations to the broker boundary', async () => {
-		const { KernelIssueAdapter } = require('../../lib/adapters/kernel-issue-adapter');
+		const {
+			KERNEL_ISSUE_OPERATIONS,
+			KernelIssueAdapter,
+		} = require('../../lib/adapters/kernel-issue-adapter');
 		const calls = [];
 		const adapter = new KernelIssueAdapter({
 			broker: {
@@ -32,24 +35,23 @@ describe('KernelIssueAdapter', () => {
 			},
 		});
 		const context = { projectRoot: '/repo', deps: { source: 'test' } };
-
-		await expect(adapter.list(['--json'], context)).resolves.toMatchObject({ operation: 'list' });
-		await expect(adapter.ready([], context)).resolves.toMatchObject({ operation: 'ready' });
-		await expect(adapter.read(['forge-1'], context)).resolves.toMatchObject({ operation: 'show' });
-		await expect(adapter.update(['forge-1', '--status', 'in_progress'], context)).resolves.toMatchObject({ operation: 'update' });
-		await expect(adapter.claim(['forge-1'], context)).resolves.toMatchObject({ operation: 'claim' });
-		await expect(adapter.close(['forge-1'], context)).resolves.toMatchObject({ operation: 'close' });
-		await expect(adapter.comment(['forge-1', 'handoff'], context)).resolves.toMatchObject({ operation: 'comment' });
-
-		expect(calls.map(call => [call.operation, call.args])).toEqual([
+		const scenarios = [
 			['list', ['--json']],
 			['ready', []],
-			['show', ['forge-1']],
+			['read', ['forge-1']],
 			['update', ['forge-1', '--status', 'in_progress']],
 			['claim', ['forge-1']],
 			['close', ['forge-1']],
 			['comment', ['forge-1', 'handoff']],
-		]);
+		];
+
+		for (const [methodName, args] of scenarios) {
+			await expect(adapter[methodName](args, context))
+				.resolves.toMatchObject({ operation: KERNEL_ISSUE_OPERATIONS[methodName] });
+		}
+
+		expect(calls.map(call => [call.operation, call.args]))
+			.toEqual(scenarios.map(([methodName, args]) => [KERNEL_ISSUE_OPERATIONS[methodName], args]));
 		expect(calls[0].context).toBe(context);
 	});
 });
