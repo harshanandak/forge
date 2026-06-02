@@ -147,8 +147,25 @@ describe('Beads Kernel compatibility adapter', () => {
 			dependency_count: 1,
 		});
 		expect(child.dependencies).toEqual(expect.arrayContaining([
-			expect.objectContaining({ issue_id: 'forge-child', depends_on_id: 'forge-parent', type: 'parent-child' }),
-			expect.objectContaining({ issue_id: 'forge-child', depends_on_id: 'forge-blocker', type: 'blocks' }),
+			expect.objectContaining({
+				issue_id: 'forge-child',
+				depends_on_id: 'forge-parent',
+				type: 'parent-child',
+				created_by: 'Harsha Nanda',
+			}),
+			expect.objectContaining({
+				issue_id: 'forge-child',
+				depends_on_id: 'forge-blocker',
+				type: 'blocks',
+				created_by: 'Harsha Nanda',
+			}),
+		]));
+		expect(parseJsonl(exportResult.files['dependencies.jsonl'])).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				issue_id: 'forge-child',
+				depends_on_id: 'forge-blocker',
+				created_by: 'Harsha Nanda',
+			}),
 		]));
 		expect(exportedIssues.find(issue => issue.id === 'forge-blocker')).toMatchObject({
 			dependent_count: 1,
