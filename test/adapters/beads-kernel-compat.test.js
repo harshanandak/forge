@@ -202,6 +202,38 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(issue.created_by).toBeUndefined();
 	});
 
+	test('counts only blocking dependency edges on Beads export', () => {
+		const exportResult = exportKernelToBeads({
+			issues: [
+				{ id: 'forge-work', title: 'Work', status: 'open', priority: 'P2', type: 'task' },
+				{ id: 'forge-blocker', title: 'Blocker', status: 'open', priority: 'P2', type: 'task' },
+				{ id: 'forge-related', title: 'Related', status: 'open', priority: 'P2', type: 'task' },
+				{ id: 'forge-parent', title: 'Parent', status: 'open', priority: 'P2', type: 'task' },
+			],
+			dependencies: [
+				{ issue_id: 'forge-work', blocks_issue_id: 'forge-blocker', dependency_type: 'blocks' },
+				{ issue_id: 'forge-work', blocks_issue_id: 'forge-related', dependency_type: 'related' },
+				{ issue_id: 'forge-work', blocks_issue_id: 'forge-parent', dependency_type: 'parent-child' },
+			],
+			comments: [],
+			events: [],
+		}, { dryRun: true });
+
+		const exportedIssues = parseJsonl(exportResult.files['issues.jsonl']);
+		expect(exportedIssues.find(issue => issue.id === 'forge-work')).toMatchObject({
+			dependency_count: 1,
+		});
+		expect(exportedIssues.find(issue => issue.id === 'forge-blocker')).toMatchObject({
+			dependent_count: 1,
+		});
+		expect(exportedIssues.find(issue => issue.id === 'forge-related')).toMatchObject({
+			dependent_count: 0,
+		});
+		expect(exportedIssues.find(issue => issue.id === 'forge-parent')).toMatchObject({
+			dependent_count: 0,
+		});
+	});
+
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
 		const snapshot = {
 			issues: [{
