@@ -116,4 +116,58 @@ describe('Kernel conflict evaluators', () => {
 		});
 		expect(result.projection).toBe(false);
 	});
+
+	test('ignores non-blocking dependency edges when checking cycles', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'dependency',
+				entity_id: 'dep-related',
+				event_type: 'dependency.add',
+				idempotency_key: 'dep:related',
+				expected_revision: 0,
+				payload: {
+					issue_id: 'forge-a',
+					blocks_issue_id: 'forge-c',
+					dependency_type: 'related',
+				},
+			},
+			entity: { entity_revision: 0 },
+			dependencies: [
+				{ issue_id: 'forge-b', blocks_issue_id: 'forge-a', dependency_type: 'blocks' },
+				{ issue_id: 'forge-c', blocks_issue_id: 'forge-b', dependency_type: 'blocks' },
+			],
+		});
+
+		expect(result.decision).toBe('accept');
+		expect(result.projection).toBe(true);
+	});
+
+	test('ignores existing non-blocking edges when checking cycles', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'dependency',
+				entity_id: 'dep-blocks',
+				event_type: 'dependency.add',
+				idempotency_key: 'dep:blocks',
+				expected_revision: 0,
+				payload: {
+					issue_id: 'forge-a',
+					blocks_issue_id: 'forge-c',
+					dependency_type: 'blocks',
+				},
+			},
+			entity: { entity_revision: 0 },
+			dependencies: [
+				{ issue_id: 'forge-b', blocks_issue_id: 'forge-a', dependency_type: 'related' },
+				{ issue_id: 'forge-c', blocks_issue_id: 'forge-b', dependency_type: 'blocks' },
+			],
+		});
+
+		expect(result.decision).toBe('accept');
+		expect(result.projection).toBe(true);
+	});
 });

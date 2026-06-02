@@ -16,6 +16,9 @@ describe('local Kernel broker guard ordering', () => {
 				async listKernelEvents() {
 					return [];
 				},
+				async loadKernelEventByIdempotencyKey() {
+					return null;
+				},
 				async listKernelDependencies() {
 					return [];
 				},
@@ -60,6 +63,9 @@ describe('local Kernel broker guard ordering', () => {
 				async listKernelEvents() {
 					return [];
 				},
+				async loadKernelEventByIdempotencyKey() {
+					return null;
+				},
 				async listKernelDependencies() {
 					return [];
 				},
@@ -92,5 +98,124 @@ describe('local Kernel broker guard ordering', () => {
 			['event', 'issue.update'],
 			['projection', 'beads'],
 		]);
+	});
+
+	test('returns idempotency replays accepted for any entity before inserting', async () => {
+		const { createLocalBroker } = require('../../lib/kernel/broker');
+		const calls = [];
+		const originalEvent = {
+			id: 'event-original',
+			entity_type: 'issue',
+			entity_id: 'forge-other',
+			event_type: 'issue.close',
+			idempotency_key: 'close:shared-key',
+			payload_json: '{"status":"closed"}',
+		};
+		const broker = createLocalBroker({
+			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
+			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
+			driver: {
+				async loadKernelEntity() {
+					return { entity_revision: 2 };
+				},
+				async listKernelEvents() {
+					return [];
+				},
+				async loadKernelEventByIdempotencyKey(idempotencyKey) {
+					calls.push(['idempotency', idempotencyKey]);
+					return originalEvent;
+				},
+				async insertKernelConflict(conflict) {
+					calls.push(['conflict', conflict.reason]);
+					return conflict;
+				},
+				async insertKernelEvent(event) {
+					calls.push(['event', event.event_type]);
+					return event;
+				},
+				async enqueueKernelProjection(outboxEntry) {
+					calls.push(['projection', outboxEntry.target]);
+					return outboxEntry;
+				},
+			},
+		});
+
+		const result = await broker.runGuardedEvent({
+			entity_type: 'issue',
+			entity_id: 'forge-1',
+			event_type: 'issue.close',
+			idempotency_key: 'close:shared-key',
+			expected_revision: 2,
+			payload: { status: 'closed' },
+		});
+
+		expect(result).toMatchObject({
+			decision: 'duplicate',
+			originalEvent,
+			projection: false,
+		});
+		expect(calls).toEqual([['idempotency', 'close:shared-key']]);
+	});
+
+	test('loads dependencies only for dependency-add events with scoped edge metadata', async () => {
+		const { createLocalBroker } = require('../../lib/kernel/broker');
+		const scopes = [];
+		const broker = createLocalBroker({
+			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
+			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
+			driver: {
+				async loadKernelEntity() {
+					return { entity_revision: 0 };
+				},
+				async listKernelEvents() {
+					return [];
+				},
+				async loadKernelEventByIdempotencyKey() {
+					return null;
+				},
+				async listKernelDependencies(scope) {
+					scopes.push(scope);
+					return [];
+				},
+				async insertKernelConflict(conflict) {
+					return conflict;
+				},
+				async insertKernelEvent(event) {
+					return { ...event, id: 'event-1' };
+				},
+				async enqueueKernelProjection(outboxEntry) {
+					return outboxEntry;
+				},
+			},
+		});
+
+		await broker.runGuardedEvent({
+			entity_type: 'issue',
+			entity_id: 'forge-1',
+			event_type: 'issue.update',
+			idempotency_key: 'update:forge-1',
+			expected_revision: 0,
+			payload: { title: 'Renamed' },
+		});
+		await broker.runGuardedEvent({
+			entity_type: 'dependency',
+			entity_id: 'dep-1',
+			event_type: 'dependency.add',
+			idempotency_key: 'dep:forge-a:forge-b',
+			expected_revision: 0,
+			payload: {
+				issue_id: 'forge-a',
+				blocks_issue_id: 'forge-b',
+				dependency_type: 'blocks',
+			},
+		});
+
+		expect(scopes).toEqual([{
+			issue_id: 'forge-a',
+			blocks_issue_id: 'forge-b',
+			dependency_type: 'blocks',
+			entity_type: 'dependency',
+			entity_id: 'dep-1',
+		}]);
 	});
 });
