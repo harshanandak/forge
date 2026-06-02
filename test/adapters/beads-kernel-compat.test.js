@@ -170,6 +170,9 @@ describe('Beads Kernel compatibility adapter', () => {
 				title: 'Legacy issue one',
 				description: 'Migrate the oldest active issue into Dolt without changing its id.',
 				notes: 'Preserve this issue during migration.',
+				design: 'Use the legacy Beads migration design.',
+				acceptance_criteria: ['Imported issue keeps migration context visible.'],
+				assignee: 'harsha@example.com',
 				status: 'open',
 				priority: 1,
 				issue_type: 'feature',
@@ -190,6 +193,9 @@ describe('Beads Kernel compatibility adapter', () => {
 			}),
 		]));
 		expect(result.report.gaps).toEqual(expect.arrayContaining([
+			expect.objectContaining({ field: 'issues.acceptance_criteria' }),
+			expect.objectContaining({ field: 'issues.assignee' }),
+			expect.objectContaining({ field: 'issues.design' }),
 			expect.objectContaining({ field: 'issues.labels' }),
 		]));
 	});
