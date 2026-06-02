@@ -18,7 +18,7 @@ describe('forge comment command', () => {
 		expect(result).toEqual({ success: true, operation: 'comment' });
 		expect(calls).toEqual([{
 			operation: 'comment',
-			args: ['add', 'forge-1', 'handoff note'],
+			args: ['forge-1', 'handoff note'],
 			projectRoot: '/repo',
 		}]);
 	});
