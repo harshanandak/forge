@@ -246,6 +246,20 @@ describe('Beads Kernel compatibility adapter', () => {
 		]));
 	});
 
+	test('reports unsupported legacy Beads interaction sidecars', () => {
+		const result = importBeadsSnapshot({
+			issues: [],
+			interactions: [{ id: 'interaction-1', event_type: 'field_changed' }],
+		}, { importedAt: IMPORTED_AT });
+
+		expect(result.report.gaps).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				field: 'interactions.jsonl',
+				reason: 'legacy Beads interaction sidecar is not represented in Kernel schema v1',
+			}),
+		]));
+	});
+
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
 		const snapshot = {
 			issues: [{
