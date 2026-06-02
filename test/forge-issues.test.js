@@ -212,6 +212,38 @@ describe('forge issue service contract', () => {
     }
   });
 
+  test('top-level operation runner selects the Kernel broker backend when requested', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const calls = [];
+
+    const result = await runIssueOperation('comment', ['forge-1', 'handoff note'], '/repo', {
+      useKernelBroker: true,
+      createKernelBroker: (context) => ({
+        async runIssueOperation(operation, args, operationContext) {
+          calls.push({ context, operation, args, operationContext });
+          return { success: true, operation, output: 'kernel ok' };
+        },
+      }),
+      isBeadsInitialized: () => {
+        throw new Error('Beads should not be consulted for Kernel broker operations');
+      },
+    });
+
+    expect(result).toEqual({ success: true, operation: 'comment', output: 'kernel ok' });
+    expect(calls).toEqual([{
+      context: {
+        projectRoot: '/repo',
+        deps: expect.objectContaining({ useKernelBroker: true }),
+      },
+      operation: 'comment',
+      args: ['forge-1', 'handoff note'],
+      operationContext: {
+        projectRoot: '/repo',
+        deps: expect.objectContaining({ useKernelBroker: true }),
+      },
+    }]);
+  });
+
   test('default beads backend rejects issue operations when beads is not initialized', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
 

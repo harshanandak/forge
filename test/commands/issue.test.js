@@ -5,6 +5,7 @@ const { describe, test, expect } = require('bun:test');
 const issue = require('../../lib/commands/issue');
 const create = require('../../lib/commands/create');
 const claim = require('../../lib/commands/claim');
+const comment = require('../../lib/commands/comment');
 describe('forge issue command surface', () => {
   test('exports the canonical issue command module', () => {
     expect(issue.name).toBe('issue');
@@ -20,6 +21,11 @@ describe('forge issue command surface', () => {
   test('exports top-level claim alias', () => {
     expect(claim.name).toBe('claim');
     expect(typeof claim.handler).toBe('function');
+  });
+
+  test('exports top-level comment alias', () => {
+    expect(comment.name).toBe('comment');
+    expect(typeof comment.handler).toBe('function');
   });
 
   test('issue handler dispatches to create subcommand', async () => {
