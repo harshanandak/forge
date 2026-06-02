@@ -141,6 +141,7 @@ describe('Beads Kernel compatibility adapter', () => {
 			status: 'closed',
 			priority: 1,
 			issue_type: 'task',
+			created_by: 'Harsha Nanda',
 			closed_at: '2026-05-29T11:45:00Z',
 			close_reason: 'Merged and verified on master (PR #195)',
 			dependency_count: 1,
@@ -161,6 +162,27 @@ describe('Beads Kernel compatibility adapter', () => {
 			comments: 2,
 			closeEvents: 1,
 		});
+	});
+
+	test('does not invent Beads issue creators for Kernel-origin exports', () => {
+		const exportResult = exportKernelToBeads({
+			issues: [{
+				id: 'forge-native',
+				title: 'Native Kernel issue',
+				body: 'Created in Kernel, not imported from Beads.',
+				status: 'open',
+				priority: 'P2',
+				type: 'task',
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+			dependencies: [],
+			comments: [],
+			events: [],
+		}, { dryRun: true });
+
+		const [issue] = parseJsonl(exportResult.files['issues.jsonl']);
+		expect(issue.created_by).toBeUndefined();
 	});
 
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
