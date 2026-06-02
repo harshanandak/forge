@@ -32,6 +32,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Release reference](reference/RELEASE.md) - validation, packaging, release handoff, and DeepWiki checklist.
 - [Forge Kernel storage model](reference/FORGE_KERNEL_STORAGE_MODEL.md) - authority/cache/projection/archive storage rules for local and team modes.
 - [Forge Kernel schema and migrations](reference/forge-kernel-schema.md) - 0.0.20 schema registry, migration, and storage-class contracts.
+- [Beads to Kernel migration UX](reference/beads-to-kernel-migration-ux.md) - import/export compatibility, rollback boundaries, and conflict quarantine handoff.
 - [Decision drift guards](reference/DECISION_DRIFT_GUARDS.md) - evaluator checklist and required doc updates for Kernel-era architecture changes.
 - [Kernel conflict evaluators](reference/kernel-conflict-evaluators.md) - conflict quarantine, idempotency, duplicate write dedupe, dependency-cycle, and projection ordering contract.
 - [Toolchain](reference/TOOLCHAIN.md) - Bun, Node, Git, GitHub CLI, Beads, shell, and MCP conventions.
