@@ -195,6 +195,27 @@ describe('Beads Kernel compatibility adapter', () => {
 		]));
 	});
 
+	test('imports dependency rows with non-lossy generated ids', () => {
+		const result = importBeadsSnapshot({
+			issues: [
+				{ id: 'forge-2agy.2.3', title: 'Dotted', status: 'open' },
+				{ id: 'forge-2agy-2-3', title: 'Dashed', status: 'open' },
+				{ id: 'forge-blocker', title: 'Blocker', status: 'open' },
+			],
+			dependencies: [
+				{ issue_id: 'forge-2agy.2.3', depends_on_id: 'forge-blocker', type: 'blocks' },
+				{ issue_id: 'forge-2agy-2-3', depends_on_id: 'forge-blocker', type: 'blocks' },
+			],
+		}, { importedAt: IMPORTED_AT });
+
+		expect(result.kernel.dependencies).toHaveLength(2);
+		expect(new Set(result.kernel.dependencies.map(dependency => dependency.id)).size).toBe(2);
+		expect(result.kernel.dependencies.map(dependency => dependency.issue_id)).toEqual([
+			'forge-2agy.2.3',
+			'forge-2agy-2-3',
+		]);
+	});
+
 	test('writes Beads exports with an explicit rollback snapshot', () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beads-export-'));
 		try {
