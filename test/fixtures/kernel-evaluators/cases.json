@@ -57,6 +57,7 @@
           "entity_id": "forge-priority",
           "event_type": "issue.priority",
           "idempotency_key": "priority:forge-priority:first",
+          "expected_revision": 4,
           "payload_json": "{\"priority\":\"P0\",\"priority_rank\":0}"
         }
       ],

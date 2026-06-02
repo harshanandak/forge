@@ -65,6 +65,7 @@ describe('Kernel conflict evaluators', () => {
 			entity_id: 'forge-1',
 			event_type: 'issue.priority',
 			idempotency_key: 'priority:forge-1:first',
+			expected_revision: 4,
 			payload_json: '{"priority":"P1"}',
 		};
 
@@ -84,6 +85,35 @@ describe('Kernel conflict evaluators', () => {
 		expect(result.decision).toBe('dedupe');
 		expect(result.originalEvent).toBe(originalEvent);
 		expect(result.projection).toBe(false);
+	});
+
+	test('does not dedupe intentional returns to an earlier payload at a later revision', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+		const originalTitleEvent = {
+			id: 'evt-title-a',
+			entity_type: 'issue',
+			entity_id: 'forge-1',
+			event_type: 'issue.update',
+			idempotency_key: 'title:forge-1:a',
+			expected_revision: 1,
+			payload_json: '{"title":"A"}',
+		};
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'issue.update',
+				idempotency_key: 'title:forge-1:back-to-a',
+				expected_revision: 3,
+				payload: { title: 'A' },
+			},
+			entity: { entity_revision: 3 },
+			priorEvents: [originalTitleEvent],
+		});
+
+		expect(result.decision).toBe('accept');
+		expect(result.projection).toBe(true);
 	});
 
 	test('quarantines dependency writes that would create a cycle', () => {
