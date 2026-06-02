@@ -8,6 +8,7 @@ const {
 	importBeadsSnapshot,
 	loadBeadsSnapshotFromDirectory,
 	rollbackBeadsExport,
+	safeIdPart,
 } = require('../../lib/adapters/beads-kernel-compat');
 
 const FIXTURE_DIR = path.join(__dirname, '..', 'fixtures', 'beads-kernel-adapter');
@@ -22,6 +23,11 @@ function parseJsonl(content) {
 }
 
 describe('Beads Kernel compatibility adapter', () => {
+	test('normalizes generated identifier parts without regex backtracking', () => {
+		expect(safeIdPart('  Forge CHILD :: Closed!!! ')).toBe('forge-child-closed');
+		expect(safeIdPart('---')).toBe('unknown');
+	});
+
 	test('imports Beads JSONL into Kernel records with fidelity diagnostics', () => {
 		const snapshot = loadBeadsSnapshotFromDirectory(FIXTURE_DIR);
 		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
