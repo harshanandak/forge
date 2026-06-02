@@ -96,7 +96,7 @@ describe('Beads Kernel compatibility adapter', () => {
 			dependencies: 2,
 			comments: 2,
 			closeEvents: 1,
-			unsupportedFields: 3,
+			unsupportedFields: 5,
 		});
 		expect(result.report.preservedFields).toEqual(expect.arrayContaining([
 			'issues.id',
@@ -107,8 +107,10 @@ describe('Beads Kernel compatibility adapter', () => {
 			'events.close_reason',
 		]));
 		expect(result.report.gaps).toEqual(expect.arrayContaining([
+			expect.objectContaining({ field: 'issues.created_by', reason: 'no Kernel issue creator column in schema v1' }),
 			expect.objectContaining({ field: 'issues.owner', reason: 'no Kernel issue owner column in schema v1' }),
 			expect.objectContaining({ field: 'issues.labels', reason: 'no Kernel labels table in schema v1' }),
+			expect.objectContaining({ field: 'dependencies.created_by', reason: 'no Kernel dependency creator column in schema v1' }),
 			expect.objectContaining({ field: 'dependencies.metadata', reason: 'no Kernel dependency metadata column in schema v1' }),
 		]));
 		expect(result.rollback).toMatchObject({
@@ -141,7 +143,6 @@ describe('Beads Kernel compatibility adapter', () => {
 			status: 'closed',
 			priority: 1,
 			issue_type: 'task',
-			created_by: 'Harsha Nanda',
 			closed_at: '2026-05-29T11:45:00Z',
 			close_reason: 'Merged and verified on master (PR #195)',
 			dependency_count: 1,
@@ -151,20 +152,17 @@ describe('Beads Kernel compatibility adapter', () => {
 				issue_id: 'forge-child',
 				depends_on_id: 'forge-parent',
 				type: 'parent-child',
-				created_by: 'Harsha Nanda',
 			}),
 			expect.objectContaining({
 				issue_id: 'forge-child',
 				depends_on_id: 'forge-blocker',
 				type: 'blocks',
-				created_by: 'Harsha Nanda',
 			}),
 		]));
 		expect(parseJsonl(exportResult.files['dependencies.jsonl'])).toEqual(expect.arrayContaining([
 			expect.objectContaining({
 				issue_id: 'forge-child',
 				depends_on_id: 'forge-blocker',
-				created_by: 'Harsha Nanda',
 			}),
 		]));
 		expect(exportedIssues.find(issue => issue.id === 'forge-blocker')).toMatchObject({
@@ -266,6 +264,7 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(result.report.gaps).toEqual(expect.arrayContaining([
 			expect.objectContaining({ field: 'issues.acceptance_criteria' }),
 			expect.objectContaining({ field: 'issues.assignee' }),
+			expect.objectContaining({ field: 'issues.created_by' }),
 			expect.objectContaining({ field: 'issues.design' }),
 			expect.objectContaining({ field: 'issues.labels' }),
 		]));
