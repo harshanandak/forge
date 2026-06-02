@@ -143,6 +143,7 @@ describe('Beads Kernel compatibility adapter', () => {
 			issue_type: 'task',
 			closed_at: '2026-05-29T11:45:00Z',
 			close_reason: 'Merged and verified on master (PR #195)',
+			dependency_count: 1,
 		});
 		expect(child.dependencies).toEqual(expect.arrayContaining([
 			expect.objectContaining({ issue_id: 'forge-child', depends_on_id: 'forge-parent', type: 'parent-child' }),
@@ -156,29 +157,94 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
+	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
+		const snapshot = {
+			issues: [{
+				id: 'forge-aa1',
+				title: 'Legacy issue one',
+				description: 'Migrate the oldest active issue into Dolt without changing its id.',
+				notes: 'Preserve this issue during migration.',
+				status: 'open',
+				priority: 1,
+				issue_type: 'feature',
+				created_at: '2026-04-01T09:00:00Z',
+				created_by: 'Harsha Nanda',
+				updated_at: '2026-04-01T09:00:00Z',
+			}],
+			labels: [{ issue_id: 'forge-aa1', label: 'migration' }],
+		};
+
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+
+		expect(result.kernel.comments).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: 'beads-note-forge-aa1',
+				issue_id: 'forge-aa1',
+				body: 'Preserve this issue during migration.',
+				actor: 'Harsha Nanda',
+			}),
+		]));
+		expect(result.report.gaps).toEqual(expect.arrayContaining([
+			expect.objectContaining({ field: 'issues.labels' }),
+		]));
+	});
+
 	test('writes Beads exports with an explicit rollback snapshot', () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beads-export-'));
-		fs.writeFileSync(path.join(tempDir, 'issues.jsonl'), '{"id":"old"}\n');
-		fs.writeFileSync(path.join(tempDir, 'comments.jsonl'), '{"id":"old-comment"}\n');
-		fs.writeFileSync(path.join(tempDir, 'dependencies.jsonl'), '{"issue_id":"old"}\n');
+		try {
+			fs.writeFileSync(path.join(tempDir, 'issues.jsonl'), '{"id":"old"}\n');
+			fs.writeFileSync(path.join(tempDir, 'comments.jsonl'), '{"id":"old-comment"}\n');
+			fs.writeFileSync(path.join(tempDir, 'dependencies.jsonl'), '{"issue_id":"old"}\n');
 
-		const importResult = importBeadsSnapshot(loadBeadsSnapshotFromDirectory(FIXTURE_DIR), { importedAt: IMPORTED_AT });
-		const exportResult = exportKernelToBeads(importResult.kernel, {
-			beadsDir: tempDir,
-			dryRun: false,
-		});
+			const importResult = importBeadsSnapshot(loadBeadsSnapshotFromDirectory(FIXTURE_DIR), { importedAt: IMPORTED_AT });
+			const exportResult = exportKernelToBeads(importResult.kernel, {
+				beadsDir: tempDir,
+				dryRun: false,
+			});
 
-		expect(exportResult.dryRun).toBe(false);
-		expect(exportResult.rollback).toMatchObject({
-			available: true,
-			files: ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl'],
-		});
-		expect(fs.readFileSync(path.join(tempDir, 'issues.jsonl'), 'utf8')).toContain('forge-child');
+			expect(exportResult.dryRun).toBe(false);
+			expect(exportResult.rollback).toMatchObject({
+				available: true,
+				files: ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl'],
+			});
+			expect(fs.readFileSync(path.join(tempDir, 'issues.jsonl'), 'utf8')).toContain('forge-child');
 
-		rollbackBeadsExport(exportResult.rollback);
+			rollbackBeadsExport(exportResult.rollback);
 
-		expect(fs.readFileSync(path.join(tempDir, 'issues.jsonl'), 'utf8')).toBe('{"id":"old"}\n');
-		expect(fs.readFileSync(path.join(tempDir, 'comments.jsonl'), 'utf8')).toBe('{"id":"old-comment"}\n');
-		expect(fs.readFileSync(path.join(tempDir, 'dependencies.jsonl'), 'utf8')).toBe('{"issue_id":"old"}\n');
+			expect(fs.readFileSync(path.join(tempDir, 'issues.jsonl'), 'utf8')).toBe('{"id":"old"}\n');
+			expect(fs.readFileSync(path.join(tempDir, 'comments.jsonl'), 'utf8')).toBe('{"id":"old-comment"}\n');
+			expect(fs.readFileSync(path.join(tempDir, 'dependencies.jsonl'), 'utf8')).toBe('{"issue_id":"old"}\n');
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('restores rollback snapshot when an export write fails', () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beads-export-fail-'));
+		const originalWriteFileSync = fs.writeFileSync;
+		try {
+			fs.writeFileSync(path.join(tempDir, 'issues.jsonl'), '{"id":"old"}\n');
+			fs.writeFileSync(path.join(tempDir, 'comments.jsonl'), '{"id":"old-comment"}\n');
+			fs.writeFileSync(path.join(tempDir, 'dependencies.jsonl'), '{"issue_id":"old"}\n');
+			fs.writeFileSync = (filePath, content, ...args) => {
+				if (String(filePath).endsWith('dependencies.jsonl') && String(content).includes('forge-child')) {
+					throw new Error('simulated dependency export failure');
+				}
+				return originalWriteFileSync.call(fs, filePath, content, ...args);
+			};
+
+			const importResult = importBeadsSnapshot(loadBeadsSnapshotFromDirectory(FIXTURE_DIR), { importedAt: IMPORTED_AT });
+
+			expect(() => exportKernelToBeads(importResult.kernel, {
+				beadsDir: tempDir,
+				dryRun: false,
+			})).toThrow('simulated dependency export failure');
+			expect(fs.readFileSync(path.join(tempDir, 'issues.jsonl'), 'utf8')).toBe('{"id":"old"}\n');
+			expect(fs.readFileSync(path.join(tempDir, 'comments.jsonl'), 'utf8')).toBe('{"id":"old-comment"}\n');
+			expect(fs.readFileSync(path.join(tempDir, 'dependencies.jsonl'), 'utf8')).toBe('{"issue_id":"old"}\n');
+		} finally {
+			fs.writeFileSync = originalWriteFileSync;
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 });
