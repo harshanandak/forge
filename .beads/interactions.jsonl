@@ -31,3 +31,4 @@
 {"id":"int-8020cbc9","kind":"field_change","created_at":"2026-05-29T10:07:16.5892989Z","actor":"Harsha Nanda","issue_id":"forge-f3lx","extra":{"field":"priority","new_value":"4","old_value":"2"}}
 {"id":"int-ff72aae4","kind":"field_change","created_at":"2026-05-29T10:56:48.4303923Z","actor":"Harsha Nanda","issue_id":"forge-2agy.8","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-26c5c5d5","kind":"field_change","created_at":"2026-05-29T14:28:32.023443Z","actor":"Harsha Nanda","issue_id":"forge-2agy.8","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Merged and verified on master (PR #191)"}}
+{"id":"int-29a8ea73","kind":"field_change","created_at":"2026-06-02T09:27:56.4026587Z","actor":"Harsha Nanda","issue_id":"forge-2agy.2.3","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Merged and verified on master (PR #197)"}}
