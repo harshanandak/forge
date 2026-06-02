@@ -25,6 +25,7 @@ describe('Forge Kernel schema release docs', () => {
     expect(doc).toContain('Schema registry contract');
     expect(doc).toContain('Migration contract');
     expect(doc).toContain('Storage-class contract');
+    expect(doc).toContain('expected_revision');
   });
 
   it('keeps broker, import, and conflict handling marked as follow-up work', () => {
