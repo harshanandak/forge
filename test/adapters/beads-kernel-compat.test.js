@@ -85,6 +85,7 @@ describe('Beads Kernel compatibility adapter', () => {
 			entity_id: 'forge-child',
 			actor: 'Harsha Nanda',
 			origin: 'beads_import',
+			expected_revision: 0,
 			created_at: '2026-05-29T11:45:00Z',
 		});
 		expect(JSON.parse(closeEvent.payload_json)).toMatchObject({

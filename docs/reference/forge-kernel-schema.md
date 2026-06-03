@@ -44,6 +44,8 @@ Every table and field must declare a storage class and field authority that matc
 
 Migration SQL generation should stay small and explicit. Runtime connection management, broker coordination, and remote execution are outside this slice.
 
+`expected_revision` on `kernel_events` is added by the additive `002_kernel_events_expected_revision` migration so existing local Kernel databases created by the initial schema migration gain the column during upgrade.
+
 ## Storage-class contract
 
 Storage-class metadata must answer the storage model questions before a table or field lands:

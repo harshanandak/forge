@@ -218,4 +218,49 @@ describe('local Kernel broker guard ordering', () => {
 			entity_id: 'dep-1',
 		}]);
 	});
+
+	test('does not build dependency scope when dependency endpoints are incomplete', async () => {
+		const { createLocalBroker } = require('../../lib/kernel/broker');
+		const calls = [];
+		const broker = createLocalBroker({
+			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
+			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
+			driver: {
+				async loadKernelEntity() {
+					return { entity_revision: 0 };
+				},
+				async listKernelEvents() {
+					return [];
+				},
+				async loadKernelEventByIdempotencyKey() {
+					return null;
+				},
+				async listKernelDependencies() {
+					calls.push('dependencies');
+					return [];
+				},
+				async insertKernelConflict(conflict) {
+					return conflict;
+				},
+				async insertKernelEvent(event) {
+					return { ...event, id: 'event-1' };
+				},
+				async enqueueKernelProjection(outboxEntry) {
+					return outboxEntry;
+				},
+			},
+		});
+
+		const result = await broker.runGuardedEvent({
+			entity_type: 'dependency',
+			entity_id: 'dep-incomplete',
+			event_type: 'dependency.add',
+			idempotency_key: 'dep:incomplete',
+			expected_revision: 0,
+			payload: { issue_id: 'forge-a' },
+		});
+
+		expect(result.decision).toBe('accept');
+		expect(calls).toEqual([]);
+	});
 });
