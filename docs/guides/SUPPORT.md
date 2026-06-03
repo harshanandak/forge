@@ -147,7 +147,7 @@ If metadata cannot land directly, create a narrow follow-up branch for the state
 
 Choose the rollback path by surface:
 
-- Docs PR confusion: revert the docs PR or open a corrective docs PR. Do not publish while README, CHANGELOG, Quickstart, and release docs disagree.
+- Release documentation confusion: revert the release PR or open a corrective docs PR. Do not publish while README, CHANGELOG, Quickstart, package metadata, and release docs disagree.
 - Setup-generated files: rerun `forge setup --dry-run` first, then rerun setup with the intended `--merge` mode. Preserve existing instruction files before replacing them.
 - Beads metadata: prefer `forge sync` or a narrow follow-up PR. Avoid direct `.beads` edits unless a documented recovery path requires them.
 - Failed GitHub sync commit: inspect the workflow run, preserve the generated backup or snapshot, then replay through the configured sync workflow or a follow-up branch.

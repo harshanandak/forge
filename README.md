@@ -54,7 +54,7 @@ Forge helps you:
 - Future roadmap labels such as `0.0.19` describe internal planning targets, not the current public package version.
 - DeepWiki is generated from this repository. It is useful for navigation, but the repository docs remain authoritative.
 
-v0.0.11 is a documentation and positioning release: canonical docs, corrected command boundaries, clearer setup paths, and DeepWiki-ready source material. It is separate from the later package version bump and publish step.
+v0.0.11 is a documentation and positioning package release: canonical docs, corrected command boundaries, clearer setup paths, and DeepWiki-ready source material.
 
 ## Terms
 
@@ -135,7 +135,7 @@ Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow 
 
 ## DeepWiki
 
-DeepWiki reads repository files such as `README.md`, `CHANGELOG.md`, `QUICKSTART.md`, `AGENTS.md`, `docs/**/*.md`, CLI files, and tests. Do not treat generated DeepWiki text as source of truth. After the v0.0.11 documentation PR merges to `master`, refresh DeepWiki and compare the generated Overview, Getting Started, and Core Concepts pages against these repository docs.
+DeepWiki reads repository files such as `README.md`, `CHANGELOG.md`, `QUICKSTART.md`, `AGENTS.md`, `docs/**/*.md`, CLI files, and tests. Do not treat generated DeepWiki text as source of truth. After the v0.0.11 release lands on `master`, refresh DeepWiki and compare the generated Overview, Getting Started, and Core Concepts pages against these repository docs.
 
 ## Package
 

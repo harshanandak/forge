@@ -1,15 +1,14 @@
 # Release Reference
 
-This page documents release readiness. It does not publish the package.
+This page documents release readiness. Package publishing still requires the explicit publish step after merge.
 
 ## v0.0.11 Boundary
 
-v0.0.11 is the planned public documentation and positioning release. The package version in the checkout may still be the previous published version until the release bump and publish process run.
+v0.0.11 is the public documentation and positioning package release. The release branch bumps package metadata to `0.0.11`; publish only after the release PR is merged, tagged, and validated.
 
-Keep these separate:
+Keep these release steps explicit:
 
-- Documentation readiness PR
-- Version bump
+- Release PR with documentation and package metadata
 - GitHub Release
 - npm publish
 - DeepWiki refresh
@@ -42,13 +41,13 @@ Release notes should include:
 - adapter compatibility
 - DeepWiki refresh checklist
 
-The v0.0.11 draft lives in [CHANGELOG.md](../../CHANGELOG.md).
+The v0.0.11 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Rollback
 
-For a documentation-readiness PR:
+For a release PR:
 
-1. Revert the PR if the public docs create confusion.
+1. Revert the PR if the combined package metadata and public docs create release confusion.
 2. Do not publish until README, CHANGELOG, quickstart, package metadata, and support docs agree.
 3. If DeepWiki generated output is wrong, fix repository docs first, then refresh DeepWiki.
 
