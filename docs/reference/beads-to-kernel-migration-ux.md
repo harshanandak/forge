@@ -44,7 +44,7 @@ After Kernel command routing is active, a committed Kernel mutation must be reve
 
 ## Conflict Quarantine Boundary
 
-Conflict quarantine is owned by PR D. Until that slice lands, docs should avoid promising exact command names, report schemas, evaluator fixture names, or resolution policies.
+Conflict quarantine is defined by the landed evaluator contract in [Kernel Conflict Evaluators](kernel-conflict-evaluators.md). Migration UX should reference that contract for exact quarantine behavior, evaluator evidence, and release-readiness checks.
 
 The intended UX boundary is stable:
 
@@ -52,12 +52,10 @@ The intended UX boundary is stable:
 - conflicting records are quarantined instead of projected as normal output;
 - the operator gets enough detail to decide whether to repair source input, retry projection, or wait for a resolver path.
 
-After PR D lands, finalize this section with the exact quarantine output, evaluator evidence, and release-readiness checks.
-
 ## Release Readiness Checklist
 
 - Beads import fidelity report reviewed.
 - Export dry-run reviewed before any write.
 - Rollback snapshot path documented for write-enabled export.
 - Projection failure behavior documented as non-authoritative rollback.
-- Conflict quarantine docs updated after PR D lands.
+- Conflict quarantine behavior cross-checked against [Kernel Conflict Evaluators](kernel-conflict-evaluators.md).
