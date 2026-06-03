@@ -21,7 +21,9 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
-		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_events DROP COLUMN expected_revision;');
+		expect(plan.rollback[0]).toBe('CREATE TABLE IF NOT EXISTS kernel_events_002_rollback (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
+		expect(plan.rollback).toContain('INSERT INTO kernel_events_002_rollback (id, entity_type, entity_id, event_type, idempotency_key, actor, origin, payload_json, created_at) SELECT id, entity_type, entity_id, event_type, idempotency_key, actor, origin, payload_json, created_at FROM kernel_events;');
+		expect(plan.rollback).toContain('CREATE UNIQUE INDEX IF NOT EXISTS idx_kernel_events_idempotency ON kernel_events (idempotency_key);');
 		expect(plan.rollback.at(-1)).toBe('DROP TABLE IF EXISTS kernel_issues;');
 		expect(plan.migrations.map(migration => migration.id)).toEqual([
 			'001_kernel_schema',

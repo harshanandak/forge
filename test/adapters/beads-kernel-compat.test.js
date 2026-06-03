@@ -122,6 +122,17 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
+	test('falls back to revision zero for malformed Beads close-event revisions', () => {
+		const snapshot = JSON.parse(JSON.stringify(loadBeadsSnapshotFromDirectory(FIXTURE_DIR)));
+		const closedIssue = snapshot.issues.find(issue => issue.id === 'forge-child');
+		closedIssue.entity_revision = 'abc';
+
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+		const closeEvent = result.kernel.events.find(event => event.event_type === 'beads.issue.closed');
+
+		expect(closeEvent.expected_revision).toBe(0);
+	});
+
 	test('exports Kernel records to Beads JSONL as a dry-run without mutating files', () => {
 		const importResult = importBeadsSnapshot(loadBeadsSnapshotFromDirectory(FIXTURE_DIR), { importedAt: IMPORTED_AT });
 		const exportResult = exportKernelToBeads(importResult.kernel, { dryRun: true });
