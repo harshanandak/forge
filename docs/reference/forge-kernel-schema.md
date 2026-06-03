@@ -28,6 +28,8 @@ The schema registry covers these Kernel surfaces:
 - outbox entries,
 - dead letters.
 
+Kernel events persist `expected_revision` alongside the idempotency key and payload. Conflict evaluators depend on that revision metadata to distinguish a true equivalent retry from a later intentional write that returns an entity to an earlier payload.
+
 Every table and field must declare a storage class and field authority that match [FORGE_KERNEL_STORAGE_MODEL.md](FORGE_KERNEL_STORAGE_MODEL.md). Drift guard failures should name the missing or invalid table or field.
 
 ## Migration contract
@@ -41,6 +43,8 @@ Every table and field must declare a storage class and field authority that matc
 - avoid introducing a database runtime dependency.
 
 Migration SQL generation should stay small and explicit. Runtime connection management, broker coordination, and remote execution are outside this slice.
+
+`expected_revision` on `kernel_events` is added by the additive `002_kernel_events_expected_revision` migration so existing local Kernel databases created by the initial schema migration gain the column during upgrade.
 
 ## Storage-class contract
 

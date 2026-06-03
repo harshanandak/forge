@@ -1,0 +1,164 @@
+[
+  {
+    "name": "import fidelity accepts matching revision",
+    "input": {
+      "event": {
+        "entity_type": "issue",
+        "entity_id": "forge-import",
+        "event_type": "issue.import",
+        "idempotency_key": "import:forge-import",
+        "expected_revision": 0,
+        "payload": {
+          "id": "forge-import",
+          "title": "Imported issue",
+          "status": "open",
+          "priority": "P1",
+          "dependencies": [
+            {
+              "issue_id": "forge-import",
+              "blocks_issue_id": "forge-parent",
+              "dependency_type": "parent-child"
+            }
+          ]
+        }
+      },
+      "entity": {
+        "entity_revision": 0
+      },
+      "priorEvents": [],
+      "dependencies": []
+    },
+    "expected": {
+      "decision": "accept",
+      "projection": true
+    }
+  },
+  {
+    "name": "priority ordering dedupes equivalent rank write",
+    "input": {
+      "event": {
+        "entity_type": "issue",
+        "entity_id": "forge-priority",
+        "event_type": "issue.priority",
+        "idempotency_key": "priority:forge-priority:retry",
+        "expected_revision": 4,
+        "payload": {
+          "priority": "P0",
+          "priority_rank": 0
+        }
+      },
+      "entity": {
+        "entity_revision": 4
+      },
+      "priorEvents": [
+        {
+          "id": "evt-priority",
+          "entity_type": "issue",
+          "entity_id": "forge-priority",
+          "event_type": "issue.priority",
+          "idempotency_key": "priority:forge-priority:first",
+          "expected_revision": 4,
+          "payload_json": "{\"priority\":\"P0\",\"priority_rank\":0}"
+        }
+      ],
+      "dependencies": []
+    },
+    "expected": {
+      "decision": "dedupe",
+      "projection": false
+    }
+  },
+  {
+    "name": "dependency correctness quarantines cycle",
+    "input": {
+      "event": {
+        "entity_type": "dependency",
+        "entity_id": "dep-cycle",
+        "event_type": "dependency.add",
+        "idempotency_key": "dep:cycle",
+        "expected_revision": 0,
+        "payload": {
+          "issue_id": "forge-a",
+          "blocks_issue_id": "forge-c"
+        }
+      },
+      "entity": {
+        "entity_revision": 0
+      },
+      "priorEvents": [],
+      "dependencies": [
+        {
+          "issue_id": "forge-b",
+          "blocks_issue_id": "forge-a"
+        },
+        {
+          "issue_id": "forge-c",
+          "blocks_issue_id": "forge-b"
+        }
+      ]
+    },
+    "expected": {
+      "decision": "quarantine",
+      "reason": "dependency_cycle",
+      "projection": false
+    }
+  },
+  {
+    "name": "idempotency returns original accepted event",
+    "input": {
+      "event": {
+        "entity_type": "issue",
+        "entity_id": "forge-idempotent",
+        "event_type": "issue.close",
+        "idempotency_key": "close:forge-idempotent",
+        "expected_revision": 7,
+        "payload": {
+          "status": "closed"
+        }
+      },
+      "entity": {
+        "entity_revision": 7
+      },
+      "priorEvents": [
+        {
+          "id": "evt-idempotent",
+          "entity_type": "issue",
+          "entity_id": "forge-idempotent",
+          "event_type": "issue.close",
+          "idempotency_key": "close:forge-idempotent",
+          "payload_json": "{\"status\":\"closed\"}"
+        }
+      ],
+      "dependencies": []
+    },
+    "expected": {
+      "decision": "duplicate",
+      "projection": false
+    }
+  },
+  {
+    "name": "drift guard quarantines stale revision",
+    "input": {
+      "event": {
+        "entity_type": "issue",
+        "entity_id": "forge-drift",
+        "event_type": "issue.update",
+        "idempotency_key": "drift:forge-drift",
+        "expected_revision": 3,
+        "payload": {
+          "title": "Stale title"
+        }
+      },
+      "entity": {
+        "entity_revision": 4
+      },
+      "priorEvents": [],
+      "dependencies": []
+    },
+    "expected": {
+      "decision": "quarantine",
+      "reason": "stale_revision",
+      "projection": false
+    }
+  }
+]

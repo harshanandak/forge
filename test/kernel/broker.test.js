@@ -62,6 +62,33 @@ describe('local Kernel broker contract', () => {
 		expect(statements).toContain('CREATE TABLE IF NOT EXISTS kernel_issues (\n  id TEXT NOT NULL PRIMARY KEY,\n  title TEXT NOT NULL,\n  body TEXT,\n  type TEXT NOT NULL DEFAULT \'task\',\n  status TEXT NOT NULL DEFAULT \'open\',\n  priority TEXT NOT NULL DEFAULT \'P2\',\n  priority_rank INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  entity_revision INTEGER NOT NULL DEFAULT 0\n);');
 	});
 
+	test('does not fail when the expected revision column migration is replayed', async () => {
+		const { createLocalBroker } = require('../../lib/kernel/broker');
+		const addColumn = 'ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;';
+		let addColumnAttempts = 0;
+		const broker = createLocalBroker({
+			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
+			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
+			migrationPlan: {
+				migrations: [{ id: '002_kernel_events_expected_revision' }],
+				apply: [addColumn],
+			},
+			driver: {
+				async exec(statement) {
+					if (statement !== addColumn) return;
+					addColumnAttempts += 1;
+					if (addColumnAttempts > 1) {
+						throw new Error('duplicate column name: expected_revision');
+					}
+				},
+			},
+		});
+
+		await expect(broker.initialize()).resolves.toMatchObject({ success: true });
+		await expect(broker.initialize()).resolves.toMatchObject({ success: true });
+		expect(addColumnAttempts).toBe(2);
+	});
+
 	test('exposes a testable issue-operation boundary without requiring a bundled sqlite dependency', async () => {
 		const { createLocalBroker } = require('../../lib/kernel/broker');
 		const calls = [];

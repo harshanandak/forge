@@ -46,6 +46,7 @@ describe('kernel schema registry', () => {
 		expect(KERNEL_TABLES.stage_runs.indexes.map(index => index.name)).toContain('idx_kernel_stage_runs_issue_stage');
 		expect(KERNEL_TABLES.projections.indexes.map(index => index.name)).toContain('idx_kernel_projections_target_status');
 		expect(KERNEL_TABLES.conflicts.indexes.map(index => index.name)).toContain('idx_kernel_conflicts_status');
+		expect(KERNEL_TABLES.events.fields.map(field => field.name)).toContain('expected_revision');
 	});
 
 	test('classifies every table and field with valid storage and authority metadata', () => {
