@@ -16,6 +16,7 @@ This file maps the roadmap PR into Beads backlog items. The hierarchy intentiona
 - `forge-2agy.9.6` — Guard Beads projection fidelity during Kernel migration
 - `forge-2agy.9.7` — Plan Hermes harness as Forge project-state consumer
 - `forge-2agy.9.8` — Gate multi-machine team writes on serialized authority
+- `forge-2agy.9.9` — Define release lanes and gates for next Forge feature releases
 
 ## Deeper backlog tasks
 
@@ -28,6 +29,7 @@ This file maps the roadmap PR into Beads backlog items. The hierarchy intentiona
 - `forge-2agy.9.1.5` — Run Dolt authority and hybrid-backend spike before storage migration lock-in — **closed with decision: SQLite first authority**
 - `forge-2agy.9.1.6` — Spike Dolt server/remotes as optional future Kernel backend — **deferred follow-up**
 - `forge-2agy.9.1.7` — Clean Forge CLI authority surface around SQLite Kernel
+- `forge-2agy.9.1.8` — Retire Dolt from Forge hot path behind TypeScript Kernel API
 
 ### Backlog / sprint / story taxonomy — `forge-2agy.9.2`
 
@@ -95,6 +97,7 @@ After evaluator/review loops, additional issues were added in multiple batches t
 - `forge-2agy.9.5.8` — Add local filesystem and WAL safety doctor
 - `forge-2agy.9.5.9` — Define idempotency collision and replay semantics
 - `forge-2agy.9.5.10` — Enforce claim lease invariants at DB level
+- `forge-2agy.9.5.11` — Add Forge state doctor and bootstrap repair for new worktrees
 
 ### Beads fidelity / projection amendments — `forge-2agy.9.6`
 
@@ -107,6 +110,7 @@ After evaluator/review loops, additional issues were added in multiple batches t
 - `forge-2agy.9.2.7` — Define sprint release milestone entities and rollups
 - `forge-2agy.9.2.8` — Define readiness and blocked-work policy model
 - `forge-2agy.9.2.9` — Lock SQLite backlog sprint issue schema before implementation
+- `forge-2agy.9.2.10` — Recast pre-merge as task-type gate not universal workflow stage
 
 ### Project Knowledge Layer amendments — `forge-2agy.9.3`
 
@@ -174,6 +178,27 @@ Recommended dependency and acceptance notes:
 
 - `forge-2agy.9.7.5` — Define agent work contract for claims stages and evidence
 - `forge-2agy.9.7.6` — Add Hermes no-profile-write integration guard
+- `forge-2agy.9.7.7` — Stop generated Forge docs and harness churn during lifecycle commands
+- `forge-2agy.9.7.8` — Align fresh Forge setup with docs/work plan task decision structure
+
+### Workflow friction / release-readiness amendments — cross-cutting
+
+- `forge-2agy.9.3.36` — Complete design.md to plan.md migration across commands skills and docs
+- `forge-2agy.9.3.37` — Ensure hook and lint installation is reliable in linked worktrees
+- `forge-2agy.9.9` — Define release lanes and gates for next Forge feature releases
+
+Recommended dependency and acceptance notes:
+
+| Issue | Depends on | Acceptance focus |
+| --- | --- | --- |
+| `forge-2agy.9.7.7` | `.9.3.37`, `.9.5.11`, `.9.5.9` | Lifecycle commands are idempotent; generated harness/runtime churn no longer forces agents to stash files during push/review/verify/merge cleanup. Includes generated-state manifest, protected-state-aware writes, and clean-checkout/linked-worktree lifecycle smoke gate. |
+| `forge-2agy.9.7.8` | `.9.3.36`, `.9.2.10`, `.9.7.5` | Fresh setup, existing-project update/repair, generated instructions, skills, and command prompts teach `docs/work/<date>-<slug>/plan.md`, `tasks.md`, `decisions.md`, and the minimum evidence artifact contract. |
+| `forge-2agy.9.3.36` | `.9.3.1` | Default work-item planning references migrate from `design.md` to `plan.md`; KnowledgeStore/orient/recap source classes distinguish work plans, legacy design files, architecture designs, task lists, decisions, evidence, generated harnesses, runtime projections, summaries, and proposals. |
+| `forge-2agy.9.3.37` | `.9.1.7`, `.9.5.5` | General worktree hook/lint doctor detects missing/stale local gates and provides safe `--json`/`--dry-run` repair commands, independent of later architecture-capture policy. |
+| `forge-2agy.9.5.11` | `.9.1.7`, `.9.5.5`, `.9.5.7`, `.9.5.8`, `.9.3.37` | Worktree Forge state doctor verifies `.forge`, projection/Beads state, Kernel bootstrap state, common-dir mapping, and hooks with idempotent protected-state-safe repair. |
+| `forge-2agy.9.2.10` | `.9.2.1`, `.9.2.8`, `.9.2.9` | `premerge` is modeled as an embedded task-type gate/checkpoint, not a universal top-level stage. |
+| `forge-2agy.9.1.8` | `.9.1.1`, `.9.1.2`, `.9.1.7`, `.9.5.6`-`.9.5.11`, `.9.6.1`-`.9.6.6`, `.9.2.5`, `.9.2.8` | Normal Forge commands stop shelling out to `bd`, reading `.beads/issues.jsonl`, or requiring Dolt except inside import/export/projection adapters; Beads/Dolt parity gates remain mandatory. |
+| `forge-2agy.9.9` | parent only | Release lanes are a sequencing/gating issue and intentionally not blocked by the broad lanes it orders; downstream release work should consume its lane/gate decisions. |
 
 ### Team authority amendments — `forge-2agy.9.8`
 
@@ -181,13 +206,24 @@ Recommended dependency and acceptance notes:
 - `forge-2agy.9.8.6` — Define config and workflow revision agreement for team writes
 - `forge-2agy.9.8.7` — Define team roles permissions and handoff UX
 
-See `evaluator-beads-created.tsv`, `decision-registry-beads-created.tsv`, `architecture-capture-beads-created.tsv`, and `architecture-hooks-beads-created.tsv` for generated IDs.
+See `evaluator-beads-created.tsv`, `decision-registry-beads-created.tsv`, `architecture-capture-beads-created.tsv`, `architecture-hooks-beads-created.tsv`, and `workflow-friction-beads-created.tsv` for generated IDs.
+
+## Probable release lanes
+
+| Lane | Primary issue set | Release gate |
+| --- | --- | --- |
+| Self-hosting stability / next patch-feature bridge | `forge-2agy.9.7.7`, `forge-2agy.9.3.37`, `forge-2agy.9.5.11` | Clean push/review/verify/merge lifecycle without surprise generated dirty files; hooks/lint/state doctor passes in linked worktrees. |
+| Fresh project setup correctness | `forge-2agy.9.7.8`, `forge-2agy.9.3.36`, `forge-2agy.9.2.10` | New projects teach the work-folder artifact contract and stage/gate taxonomy consistently. |
+| Kernel / TypeScript state foundation | `forge-2agy.9.1.7`, `forge-2agy.9.1.8`, `forge-2agy.9.5.*`, `forge-2agy.9.6.*` | Normal Forge operations no longer depend on Dolt as hot-path authority; Beads/Dolt projection fidelity remains tested. |
+| Knowledge and architecture capture | `forge-2agy.9.3.*`, `forge-2agy.9.4.*` | Project Knowledge indexes work artifacts verbatim and architecture capture uses Forge policy/agent-native hooks with CI enforcement. |
+| Team authority | `forge-2agy.9.8.*` | Multi-machine/team writes remain blocked until serialized server authority and projection recovery are implemented. |
 
 ## Implementation order
 
 1. Finish 0.0.20 Kernel conflict/quarantine work already in progress.
-2. Complete `forge-2agy.9.1.*` and `forge-2agy.9.2.*` as planning/spec PRs.
-3. Implement `forge-2agy.9.5.*` before claiming local multi-agent safety.
-4. Implement `forge-2agy.9.3.*` and `forge-2agy.9.4.*` for the knowledge/orientation MVP. Within architecture capture, build the Forge policy engine and agent-native adapters before treating Lefthook as sufficient.
-5. Implement `forge-2agy.9.7.*` only after orient/recap contracts exist.
-6. Implement `forge-2agy.9.8.*` before any multi-machine/team write claims.
+2. Prioritize release-blocking self-hosting stability: `forge-2agy.9.7.7`, `forge-2agy.9.3.37`, and `forge-2agy.9.5.11`.
+3. Fix fresh-project adoption correctness: `forge-2agy.9.7.8`, `forge-2agy.9.3.36`, and `forge-2agy.9.2.10`.
+4. Complete `forge-2agy.9.1.*`, `forge-2agy.9.5.*`, and `forge-2agy.9.6.*` enough to move normal Forge operations off Dolt hot-path authority while preserving Beads/Dolt projection fidelity.
+5. Implement `forge-2agy.9.3.*` and `forge-2agy.9.4.*` for the knowledge/orientation MVP. Within architecture capture, build the Forge policy engine and agent-native adapters before treating Lefthook as sufficient.
+6. Implement `forge-2agy.9.7.*` harness integrations after setup/artifact contracts and orient/recap contracts are stable.
+7. Implement `forge-2agy.9.8.*` before any multi-machine/team write claims.

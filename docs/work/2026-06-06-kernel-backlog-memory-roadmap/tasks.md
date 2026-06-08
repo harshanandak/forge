@@ -91,7 +91,52 @@
 3. Keep rollback boundaries documented.
 4. Compare ready-work/dependency behavior before retiring Beads as runtime surface.
 
-## Task 7: Hermes integration after Knowledge MVP
+## Task 7: Fix self-hosting lifecycle friction before expanding UX layers
+
+**Objective:** Make Forge reliable while using Forge: no surprise generated dirty files, no missing worktree hooks, and no unconfigured Forge state in linked worktrees.
+
+**Files:**
+- Reference: `docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md`
+- Issues: `forge-2agy.9.7.7`, `forge-2agy.9.3.37`, `forge-2agy.9.5.11`
+- Later modify: lifecycle commands, setup/update helpers, hook doctor, state doctor, and tests
+
+**Steps:**
+1. Reproduce push/review/verify/merge/post-merge cleanup on a clean checkout and linked worktree.
+2. Identify which commands rewrite generated harness/runtime files.
+3. Make generation idempotent and content-addressed where possible.
+4. Add `forge hooks doctor --json` and worktree state doctor checks before claiming gates are active.
+5. Add regression tests so agents do not need to stash generated files to close ordinary workflows.
+
+## Task 8: Align fresh project setup and artifact naming
+
+**Objective:** Ensure new projects and skills teach the current work-folder structure and the `plan.md` default.
+
+**Files:**
+- Issues: `forge-2agy.9.7.8`, `forge-2agy.9.3.36`, `forge-2agy.9.2.10`
+- Later modify: setup templates, generated agent instructions, skills, command prompts, docs, and tests
+
+**Steps:**
+1. Audit generated instructions and skills for `design.md`, stage, and work-folder wording.
+2. Teach `docs/work/<date>-<slug>/plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files as the default contract.
+3. Keep `design.md` only for durable architecture/product designs or legacy compatibility reads.
+4. Recast pre-merge as a task-type gate/checkpoint rather than a universal top-level stage.
+5. Add fresh-project fixtures and drift tests.
+
+## Task 9: Move normal Forge operations off the Dolt hot path
+
+**Objective:** Prioritize a TypeScript API-friendly Kernel authority path while preserving Beads/Dolt as projection/import-export compatibility.
+
+**Files:**
+- Issues: `forge-2agy.9.1.8`, plus `forge-2agy.9.1.*`, `forge-2agy.9.5.*`, and `forge-2agy.9.6.*`
+- Later modify: Kernel local authority API, Beads projection adapters, migration tests, release gates
+
+**Steps:**
+1. Inventory command paths that still require Dolt for normal Forge workflow operations.
+2. Define the TS API surface required to replace those paths.
+3. Preserve Beads/Dolt projection fidelity and rollback boundaries during migration.
+4. Add release gates that separate Dolt compatibility from Dolt authority.
+
+## Task 10: Hermes integration after Knowledge MVP
 
 **Objective:** Add Hermes as a consumer of Forge project state, not a competing memory layer.
 
