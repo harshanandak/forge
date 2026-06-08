@@ -1,0 +1,34 @@
+forge-2agy.9.1.1	forge-2agy.9.1	Audit current storage surfaces against authority/read-model/projection classes
+forge-2agy.9.1.2	forge-2agy.9.1	Document Dolt capabilities Forge must replace or explicitly drop
+forge-2agy.9.1.3	forge-2agy.9.1	Add storage-mode guardrail UX for unsupported team-local writes
+forge-2agy.9.1.4	forge-2agy.9.1	Define storage backend conformance matrix
+forge-2agy.9.2.1	forge-2agy.9.2	Define Kernel issue types and status lifecycle
+forge-2agy.9.2.2	forge-2agy.9.2	Model sprint, release, milestone, and roadmap buckets separately
+forge-2agy.9.2.4	forge-2agy.9.2	Design frontend backlog board query model
+forge-2agy.9.2.5	forge-2agy.9.2	Map Beads and GitHub issue fields into Kernel taxonomy
+forge-2agy.9.3.1	forge-2agy.9.3	Inventory verbatim knowledge sources and metadata fields
+forge-2agy.9.3.2	forge-2agy.9.3	Design FTS5 read-model schema and rebuild flow
+forge-2agy.9.3.3	forge-2agy.9.3	Define provenance-backed summary and fact proposal model
+forge-2agy.9.3.5	forge-2agy.9.3	Evaluate vector backend options after FTS5 baseline
+forge-2agy.9.3.6	forge-2agy.9.3	Design temporal project fact graph for conflicts and stale facts
+forge-2agy.9.4.1	forge-2agy.9.4	Specify forge orient bounded project briefing contract
+forge-2agy.9.4.2	forge-2agy.9.4	Specify forge recap issue-scoped context contract
+forge-2agy.9.4.3	forge-2agy.9.4	Define forge knowledge search command and JSON schema
+forge-2agy.9.4.4	forge-2agy.9.4	Add context budget and ranking policy for orientation outputs
+forge-2agy.9.5.1	forge-2agy.9.5	Build multi-process local Kernel write fixture
+forge-2agy.9.5.2	forge-2agy.9.5	Test expected_revision and idempotency under concurrent writes
+forge-2agy.9.5.3	forge-2agy.9.5	Test claim lease races across agents and worktrees
+forge-2agy.9.5.4	forge-2agy.9.5	Define SQLite busy timeout retry and transaction policy
+forge-2agy.9.5.5	forge-2agy.9.5	Verify git common-dir worktree routing for Kernel DB
+forge-2agy.9.6.1	forge-2agy.9.6	Preserve unsupported Beads fields as provider extensions
+forge-2agy.9.6.2	forge-2agy.9.6	Compare Beads ready-work semantics against Kernel dependency graph
+forge-2agy.9.6.3	forge-2agy.9.6	Document Beads import/export rollback and dry-run workflow
+forge-2agy.9.6.4	forge-2agy.9.6	Add projection quarantine cases for stale Beads/GitHub writes
+forge-2agy.9.7.1	forge-2agy.9.7	Define Hermes orient/recap consumption contract
+forge-2agy.9.7.2	forge-2agy.9.7	Draft Hermes SKILL.md template for Forge workflows
+forge-2agy.9.7.3	forge-2agy.9.7	Define Hermes evidence and decision writeback path
+forge-2agy.9.7.4	forge-2agy.9.7	Document Forge vs Hermes memory boundary
+forge-2agy.9.8.1	forge-2agy.9.8	Define server sequence and entity revision model for team authority
+forge-2agy.9.8.2	forge-2agy.9.8	Design Durable Object project mutation contract
+forge-2agy.9.8.3	forge-2agy.9.8	Specify offline/team-mode refusal and recovery UX
+forge-2agy.9.8.4	forge-2agy.9.8	Design projection outbox, retries, and dead-letter handling

@@ -1,0 +1,19 @@
+forge-2agy.9.5.6	forge-2agy.9.5	Implement atomic SQLite broker transaction contract
+forge-2agy.9.5.7	forge-2agy.9.5	Select and validate real SQLite runtime driver
+forge-2agy.9.5.8	forge-2agy.9.5	Add local filesystem and WAL safety doctor
+forge-2agy.9.5.9	forge-2agy.9.5	Define idempotency collision and replay semantics
+forge-2agy.9.5.10	forge-2agy.9.5	Enforce claim lease invariants at DB level
+forge-2agy.9.6.5	forge-2agy.9.6	Prevent Beads projection and import echo loops
+forge-2agy.9.6.6	forge-2agy.9.6	Add real Beads Dolt ready-queue parity fixtures
+forge-2agy.9.8.5	forge-2agy.9.8	Define team authority protocol and recovery design
+forge-2agy.9.8.6	forge-2agy.9.8	Define config and workflow revision agreement for team writes
+forge-2agy.9.8.7	forge-2agy.9.8	Define team roles permissions and handoff UX
+forge-2agy.9.2.6	forge-2agy.9.2	Define board rank and mutation event model
+forge-2agy.9.2.7	forge-2agy.9.2	Define sprint release milestone entities and rollups
+forge-2agy.9.2.8	forge-2agy.9.2	Define readiness and blocked-work policy model
+forge-2agy.9.7.5	forge-2agy.9.7	Define agent work contract for claims stages and evidence
+forge-2agy.9.3.7	forge-2agy.9.3	Reconcile existing Forge project memory with Project Knowledge Layer
+forge-2agy.9.3.8	forge-2agy.9.3	Add Knowledge Layer redaction and prompt-injection safety policy
+forge-2agy.9.3.9	forge-2agy.9.3	Add retrieval quality and provenance conformance fixtures
+forge-2agy.9.4.5	forge-2agy.9.4	Resolve forge recap command compatibility
+forge-2agy.9.7.6	forge-2agy.9.7	Add Hermes no-profile-write integration guard

@@ -1,0 +1,6 @@
+forge-2agy.9.3.20	forge-2agy.9.3	Define mandatory architecture record taxonomy and scoped file layout
+forge-2agy.9.3.21	forge-2agy.9.3	Add architecture impact PR and session gate
+forge-2agy.9.3.22	forge-2agy.9.3	Implement docs-first architecture record validator
+forge-2agy.9.3.23	forge-2agy.9.3	Design architecture impact detection from changed paths to records
+forge-2agy.9.3.24	forge-2agy.9.3	Design brownfield architecture discovery workflow
+forge-2agy.9.3.25	forge-2agy.9.3	Add architecture coverage and conflict surfacing to orient recap

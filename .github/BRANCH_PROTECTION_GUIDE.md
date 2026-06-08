@@ -496,14 +496,14 @@ git push
 
 **When to use**: Production outage, critical security patch
 
-**How**:
-1. Navigate to: `https://github.com/harshanandak/forge/settings/branches`
-2. Click "Edit" on branch protection rule
-3. Temporarily uncheck "Do not allow bypassing"
-4. Merge critical fix
-5. **IMMEDIATELY re-enable protection**
+**Policy**: Do not disable branch protection or bypass required checks as a routine escape hatch. Agents must never bypass protection or local hooks unless the user explicitly authorizes a specific audited Forge bypass event.
 
-**Document in PR**: "Emergency merge due to [reason]"
+**Future audited flow**:
+1. Record a Forge bypass event with actor, work item, command/action, skipped checks, reason, expiry, and follow-up validation plan.
+2. Keep CI required checks active whenever possible; emergency bypass records do not make invalid checks pass.
+3. If an administrator must temporarily change branch protection, record the change as audit evidence, re-enable protection immediately, and verify the skipped checks afterward.
+
+**Document in PR and Forge evidence**: emergency reason, bypass event/evidence ID, checks skipped, and follow-up validation result.
 
 ---
 
@@ -580,17 +580,18 @@ try {
 
 If you **must** merge with score < 4.0:
 
-1. Get approval from tech lead/architect
-2. Document reason in PR:
+1. Get approval from tech lead/architect.
+2. Record an audited Forge bypass event/evidence item with actor, work item, skipped check, reason, expiry, and follow-up validation plan.
+3. Document reason in PR:
    ```
    **Emergency Bypass**: Production hotfix for [critical-issue]
+   **Forge Bypass Evidence**: <bypass-event-or-evidence-id>
    **Greptile Score**: 3.2
    **Justification**: [explanation]
    **Follow-up Issue**: #123 (created to address quality issues)
    ```
-3. Temporarily disable branch protection (admin only)
-4. Create follow-up issue to fix quality issues
-5. **Re-enable protection immediately after merge**
+4. Avoid disabling branch protection whenever possible. If an administrator must temporarily change protection, record that as audit evidence and **re-enable protection immediately after merge**.
+5. Create and validate the follow-up issue to fix quality issues.
 
 ### Configuration
 

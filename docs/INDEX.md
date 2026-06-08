@@ -5,6 +5,8 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 ## Start Here
 
 - [README](../README.md) - product positioning, ready-now features, limits, and DeepWiki note.
+- [Project design and decision registry](PROJECT_DESIGN.md) - canonical current Forge design direction, accepted decision registry, and links to ADR/work evidence.
+- [Architecture index](architecture/index.md) - mandatory architecture-note capture, scoped records, brownfield discovery, and subsystem architecture map.
 - [Quickstart](../QUICKSTART.md) - first install, `forge init`, `forge setup`, status, worktrees, and validation.
 - [Setup guide](guides/SETUP.md) - install and adoption options for supported agents.
 - [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - the default workflow as a core template, customization model, and live rollout rules.
@@ -27,6 +29,8 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 
 ## Reference
 
+- [Project design and decision registry](PROJECT_DESIGN.md) - current design/decision authority entry point for humans and agents.
+- [Architecture index](architecture/index.md) - architecture notes, subsystem records, questions, conflicts, and brownfield capture rules.
 - [Command reference](reference/COMMANDS.md) - verified `forge` CLI commands and package binaries.
 - [Skills and command projections](reference/SKILLS.md) - current stage packaging across skills, commands, prompts, and harness projections.
 - [Release reference](reference/RELEASE.md) - validation, packaging, release handoff, and DeepWiki checklist.
