@@ -1,0 +1,10 @@
+forge-2agy.9.3.26	forge-2agy.9.3	Design architecture impact manifest for Forge hook policy engine
+forge-2agy.9.3.27	forge-2agy.9.3	Implement Forge architecture impact policy engine for agent hooks Lefthook and CI
+forge-2agy.9.3.28	forge-2agy.9.3	Wire Lefthook as optional architecture impact adapter and validate worktree setup diagnostics
+forge-2agy.9.3.29	forge-2agy.9.3	Add CI required architecture capture check and branch-protection status documentation
+forge-2agy.9.3.30	forge-2agy.9.3	Add architecture hook adapter tests and brownfield fixtures
+forge-2agy.9.3.31	forge-2agy.9.3	Project architecture impact guidance into agent-native hooks and instructions
+forge-2agy.9.3.32	forge-2agy.9.3	Add forge hooks doctor install sync for agent and worktree adapters
+forge-2agy.9.3.33	forge-2agy.9.3	Add agent no-verify guard and audited bypass flow
+forge-2agy.9.3.34	forge-2agy.9.3	Add architecture impact declaration templates and scaffolding helper
+forge-2agy.9.3.35	forge-2agy.9.3	Add KnowledgeStore-backed architecture impact retrieval follow-up

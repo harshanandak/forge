@@ -49,7 +49,7 @@ Quick steps:
 
 Pre-commit hook enforces TDD:
 - Source files need corresponding test files
-- Use `--no-verify` only in emergencies
+- Do not use `--no-verify`, `LEFTHOOK=0`, `HUSKY=0`, or hook removal to bypass checks. Agents are forbidden from bypassing hooks unless the user explicitly authorizes a specific audited Forge bypass event; CI still runs required checks.
 - See [.forge/hooks/check-tdd.js](../.forge/hooks/check-tdd.js)
 
 ## Pull Request Process

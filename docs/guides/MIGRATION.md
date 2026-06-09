@@ -38,8 +38,8 @@ forge setup --agents claude,cursor
 
 ## Version Labels
 
-- `0.0.10` is the package version in this checkout before the release bump.
-- `v0.0.11` is the planned public docs/readiness release.
+- `0.0.11` is the package version for this public docs/readiness release.
+- `0.0.10` is the previous published package version.
 - Internal labels such as `0.0.19` or `v3` describe roadmap slices or historical codenames. Do not present them as current package versions.
 
 ## Safe Upgrade Path
@@ -52,4 +52,4 @@ forge setup --agents claude,cursor
 
 ## Rollback
 
-If migration creates confusion, revert the docs PR. Do not publish a package version until README, CHANGELOG, quickstart, support docs, and package metadata agree.
+If migration creates confusion, revert the release PR or open a corrective docs PR. Do not publish a package version unless README, CHANGELOG, quickstart, support docs, and package metadata agree.

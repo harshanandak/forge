@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.0.11 release-note draft
+## [0.0.11] - 2026-06-03
 
-This is the planned public documentation and positioning release. The package remains unpublished until the release process runs after merge.
+This is the public documentation and positioning release.
 
 #### User value
 
@@ -43,8 +43,8 @@ This is the planned public documentation and positioning release. The package re
 
 #### Rollback path
 
-- Revert this documentation PR if the public docs create release confusion.
-- Keep package versioning and publishing separate from this docs PR.
+- Revert this release PR if the combined package metadata and public docs create release confusion.
+- Do not publish the package unless the version bump, changelog entry, and public docs describe the same public release.
 - If generated DeepWiki output keeps old TDD-only framing after refresh, file a follow-up issue and correct the repository docs first.
 
 #### Adapter compatibility

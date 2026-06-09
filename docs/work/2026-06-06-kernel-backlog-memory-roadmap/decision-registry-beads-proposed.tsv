@@ -1,0 +1,6 @@
+forge-2agy.9.3.14	forge-2agy.9.3	Design unified project design and decision registry schema/API
+forge-2agy.9.3.15	forge-2agy.9.3	Add Kernel authority events for decisions facts evidence and knowledge conflicts
+forge-2agy.9.3.16	forge-2agy.9.3	Implement design decision proposal acceptance and supersession lifecycle
+forge-2agy.9.3.17	forge-2agy.9.3	Import Beads memory comments as KnowledgeStore sources and proposals not truth
+forge-2agy.9.3.18	forge-2agy.9.3	Add decision conflict sections to orient and recap contracts
+forge-2agy.9.3.19	forge-2agy.9.3	Add decision registry validation for duplicate topics stale evidence ADR backlinks and conflicts
