@@ -278,6 +278,13 @@ This planning PR should not implement the full system. It should make the roadma
 - No runtime authority code is changed in this PR unless separately planned.
 - `bun run check` passes after docs/issue updates or any failure is documented.
 
+### Stage Exit Context
+
+- **Summary:** This planning PR establishes the Kernel authority, Project Knowledge, workflow-friction, and release-lane roadmap without changing runtime authority code.
+- **Decisions:** SQLite WAL is the local Kernel authority; team writes require serialized server authority; Beads/Dolt stay projection/history; Project Knowledge is verbatim-first and rebuildable; per-work planning uses `plan.md`.
+- **Artifacts:** `plan.md`, `tasks.md`, `decisions.md`, `issue-map.md`, `*-beads-proposed.tsv`, evaluator reviews, storage spike notes, and workflow-friction amendments.
+- **Next:** Synchronize proposed backlog items through the authoritative Beads/Kernel state surface, then implement the self-hosting stability lane before downstream Knowledge/team UX layers.
+
 ## Beads Mapping
 
 Created roadmap/backlog issues:

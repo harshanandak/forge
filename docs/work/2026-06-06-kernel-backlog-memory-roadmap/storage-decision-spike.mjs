@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
@@ -37,6 +37,7 @@ if (mode === 'sqlite-worker') {
   process.exit(0);
 }
 
+async function main() {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-storage-spike-'));
 const results = { tmp, versions: {}, sqlite: {}, dolt: {}, verdictInputs: [] };
 results.versions.bun = execFileSync('bun', ['--version'], { encoding: 'utf8' }).trim();
@@ -67,12 +68,21 @@ const createIssue = db.transaction((i) => {
 results.sqlite.singleProcess200Ops = timed(() => { for (let i=0;i<200;i++) createIssue(i); }).ms;
 results.sqlite.idempotencyDuplicateRejected = (() => { try { createIssue(0); return false; } catch (e) { return /UNIQUE/.test(String(e)); } })();
 db.close();
-const workers = [];
-const conc = timed(() => {
-  for (let w=0; w<4; w++) workers.push(spawnSync('bun', [fileURLToPath(import.meta.url), 'sqlite-worker', sqlitePath, String(w), '50'], { encoding: 'utf8' }));
-});
-results.sqlite.concurrent4x50EventsMs = conc.ms;
-results.sqlite.concurrentErrors = workers.filter(w => w.status !== 0).map(w => (w.stderr || w.stdout || '').slice(0, 400));
+const workerProcs = [];
+const concStart = nowMs();
+for (let w=0; w<4; w++) {
+  workerProcs.push(spawn('bun', [fileURLToPath(import.meta.url), 'sqlite-worker', sqlitePath, String(w), '50'], { stdio: ['ignore', 'pipe', 'pipe'] }));
+}
+const workerResults = await Promise.all(workerProcs.map((child) => new Promise((resolve) => {
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.on('error', (err) => resolve({ status: 1, stdout, stderr: String(err) }));
+  child.on('close', (status) => resolve({ status, stdout, stderr }));
+})));
+results.sqlite.concurrent4x50EventsMs = +(nowMs() - concStart).toFixed(1);
+results.sqlite.concurrentErrors = workerResults.filter(w => w.status !== 0).map(w => (w.stderr || w.stdout || '').slice(0, 400));
 const checkDb = new Database(sqlitePath);
 results.sqlite.eventCount = checkDb.query('SELECT count(*) AS c FROM kernel_events').get().c;
 checkDb.close();
@@ -84,7 +94,7 @@ const doltSchema = `CREATE TABLE kernel_issues(id varchar(64) PRIMARY KEY, title
 CREATE TABLE kernel_events(id varchar(64) PRIMARY KEY, entity_type varchar(32) NOT NULL, entity_id varchar(64) NOT NULL, event_type varchar(64) NOT NULL, idempotency_key varchar(128) NOT NULL UNIQUE, expected_revision int NOT NULL, actor varchar(64) NOT NULL, origin varchar(64) NOT NULL, payload_json json NOT NULL, created_at varchar(64) NOT NULL);
 CREATE TABLE kernel_outbox(id varchar(64) PRIMARY KEY, event_id varchar(64) NOT NULL, target varchar(32) NOT NULL, status varchar(32) NOT NULL, created_at varchar(64) NOT NULL);
 CREATE TABLE kernel_claims(id varchar(64) PRIMARY KEY, issue_id varchar(64) NOT NULL, actor varchar(64) NOT NULL, state varchar(32) NOT NULL, claimed_at varchar(64) NOT NULL);`;
-results.dolt.createSchema = run('dolt', ['sql', '-q', doltSchema], { cwd: doltDir }).ms;
+results.dolt.createSchema = must('dolt', ['sql', '-q', doltSchema], { cwd: doltDir }).ms;
 let sql = 'START TRANSACTION;\n';
 for (let i=0;i<200;i++) {
   const t = '2026-06-06T00:00:00Z';
@@ -115,3 +125,9 @@ results.dolt.conflictTables = run('dolt', ['sql', '-r', 'csv', '-q', 'select * f
 results.dolt.claimConflictRows = run('dolt', ['sql', '-r', 'csv', '-q', 'select base_actor,our_actor,their_actor from dolt_conflicts_kernel_claims'], { cwd: doltDir }).stdout;
 
 console.log(JSON.stringify(results, null, 2));
+}
+
+main().catch((error) => {
+  console.error(error.stack || String(error));
+  process.exit(1);
+});

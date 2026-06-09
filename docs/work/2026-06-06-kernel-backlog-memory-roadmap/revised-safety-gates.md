@@ -37,6 +37,8 @@ SQLite local files plus git are not team authority. Team writes require a serial
 - Create additional backlog issues for missing gates.
 - Keep runtime code unchanged unless separately scoped.
 
+**Stage exit:** Summary — planning gaps are captured without runtime changes. Decisions — SQLite local authority and projection boundaries are explicit. Artifacts — evaluator notes, issue proposals, and decision updates. Next — synchronize accepted backlog proposals through authoritative state.
+
 ### Phase B — Local broker proof
 
 - Select/validate SQLite runtime driver.
@@ -46,12 +48,16 @@ SQLite local files plus git are not team authority. Team writes require a serial
 - Implement filesystem/WAL safety doctor.
 - Run real multi-process contention tests.
 
+**Stage exit:** Summary — local broker safety is proven against the real driver. Decisions — local safety claims are limited to one machine/common-dir. Artifacts — broker contract, doctor checks, contention fixtures, and validation logs. Next — gate downstream local-agent claims on these fixtures.
+
 ### Phase C — Beads fidelity and migration safety
 
 - Preserve unsupported Beads fields as provider extensions.
 - Add Beads/Dolt ready-queue parity fixtures.
 - Add import/export echo-loop prevention.
 - Add stale external write quarantine.
+
+**Stage exit:** Summary — Beads/Dolt remains a tested projection and migration surface. Decisions — compatibility is preserved outside Kernel authority. Artifacts — parity fixtures, dry-run reports, and quarantine tests. Next — retire hot-path dependencies only after parity passes.
 
 ### Phase D — Backlog/frontend contracts
 
@@ -60,6 +66,8 @@ SQLite local files plus git are not team authority. Team writes require a serial
 - Define readiness and blocked-work policy.
 - Define card/view/query JSON contracts.
 - Define agent work view contract.
+
+**Stage exit:** Summary — work graph/UI contracts are ready for implementation. Decisions — agile concepts remain views over Kernel entities. Artifacts — entity schema notes, board mutation contracts, and JSON examples. Next — implement behind Kernel revision/idempotency rules.
 
 ### Phase E — Knowledge layer safety
 
@@ -70,6 +78,8 @@ SQLite local files plus git are not team authority. Team writes require a serial
 - Define fact proposal lifecycle.
 - Resolve recap command compatibility.
 
+**Stage exit:** Summary — Knowledge is a rebuildable read model, not authority. Decisions — summaries/facts stay proposals until Kernel acceptance. Artifacts — chunk schema, redaction policy, rebuild fixtures, and retrieval checks. Next — expose bounded orient/recap outputs.
+
 ### Phase F — Hermes/provider integration
 
 - Define orient/recap consumption schema.
@@ -77,9 +87,13 @@ SQLite local files plus git are not team authority. Team writes require a serial
 - Add no-Hermes-profile-write guard.
 - Add harness conformance tests.
 
+**Stage exit:** Summary — Hermes consumes Forge project state without replacing Hermes memory. Decisions — Forge writes project evidence only through Kernel contracts. Artifacts — orient/recap schema, writeback guard, and harness tests. Next — add provider adapters after Knowledge MVP.
+
 ### Phase G — Team authority
 
 - Design protocol, auth, sequence, replay/snapshot, D1 lag, offline refusal, and projection outbox before any team-safe write claim.
+
+**Stage exit:** Summary — team writes are blocked until serialized authority exists. Decisions — raw SQLite/git/Dolt merges are not team authority. Artifacts — protocol design, auth model, recovery plan, and projection outbox contract. Next — build server authority before enabling multi-machine writes.
 
 ## Implementation rule
 

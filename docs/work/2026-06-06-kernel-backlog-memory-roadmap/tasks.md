@@ -149,3 +149,18 @@
 2. Let Hermes use native memory/skills for private reasoning.
 3. Record project decisions/evidence back to Forge Kernel.
 4. Avoid writing into Hermes profile memory from Forge.
+
+## Relevant Design Section Mapping
+
+| Task | Relevant design sections |
+| --- | --- |
+| Task 1 | `plan.md#storage-decision`, `storage-and-concurrency-risks.md#storage-and-concurrency-risk-register`, `decisions.md#d1--sqlite-wal-is-local-authority-only` |
+| Task 2 | `plan.md#issue--backlog-model`, `backlog-frontend-model.md#kernel-backlog-frontend-model`, `issue-map.md#backlog--sprint--story-taxonomy--forge-2agy92` |
+| Task 3 | `plan.md#project-knowledge-layer`, `agent-memory-federation.md#agent-memory-federation-plan`, `decisions.md#d5--project-knowledge-layer-is-verbatim-first-and-rebuildable` |
+| Task 4 | `plan.md#project-knowledge-layer`, `issue-map.md#orientrecap-bounded-context--forge-2agy94`, `agent-memory-federation.md#forge-as-the-shared-project-memory-layer` |
+| Task 5 | `plan.md#storage-decision`, `storage-decision.md#storage-decision`, `revised-safety-gates.md#phase-b--local-broker-proof` |
+| Task 6 | `storage-decision.md#boundaries`, `storage-and-concurrency-risks.md#storage-and-concurrency-risk-register`, `decisions.md#d2--beads-remains-migrationprojection-during-kernel-rollout` |
+| Task 7 | `workflow-friction-amendments.md#workflow-friction-amendments`, `issue-map.md#probable-release-lanes`, `decisions.md#d11--generated-state-churn-is-release-blocking-self-hosting-friction` |
+| Task 8 | `issue-map.md#fresh-project-setup-correctness--forge-2agy78`, `decisions.md#d12--fresh-forge-setup-must-teach-the-work-folder-artifact-contract`, `docs/INDEX.md#work-artifacts` |
+| Task 9 | `decisions.md#d14--dolt-must-leave-the-forge-hot-path-before-the-next-reliable-self-hosting-release`, `storage-decision.md#boundaries`, `issue-map.md#kernel--typescript-state-foundation` |
+| Task 10 | `agent-memory-federation.md#agent-memory-federation-plan`, `plan.md#agent--hermes-federation`, `revised-safety-gates.md#phase-f--hermesprovider-integration` |
