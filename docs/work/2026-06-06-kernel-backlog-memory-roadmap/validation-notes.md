@@ -12,7 +12,7 @@ Round 1 amendments produced:
 
 - `multi-evaluator-review.md`
 - `revised-safety-gates.md`
-- 19 additional Beads issues in `evaluator-beads-created.tsv`
+- 19 additional proposed Beads/Kernel issues in `evaluator-beads-proposed.tsv`
 
 Round 2 used three evaluator agents against the revised plan:
 

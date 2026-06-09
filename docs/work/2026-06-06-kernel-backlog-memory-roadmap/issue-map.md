@@ -26,8 +26,8 @@ This file maps the roadmap PR into Beads backlog items. The hierarchy intentiona
 - `forge-2agy.9.1.2` — Document Dolt capabilities Forge must replace or explicitly drop
 - `forge-2agy.9.1.3` — Add storage-mode guardrail UX for unsupported team-local writes
 - `forge-2agy.9.1.4` — Define storage backend conformance matrix
-- `forge-2agy.9.1.5` — Run Dolt authority and hybrid-backend spike before storage migration lock-in — **closed with decision: SQLite first authority**
-- `forge-2agy.9.1.6` — Spike Dolt server/remotes as optional future Kernel backend — **deferred follow-up**
+- `forge-2agy.9.1.5` — Run Dolt capability spike before storage migration lock-in — **closed with decision: SQLite first authority; Dolt remains projection/history only**
+- `forge-2agy.9.1.6` — Spike Dolt server/remotes for projection/history transport and Beads fidelity — **deferred follow-up outside Kernel authority path**
 - `forge-2agy.9.1.7` — Clean Forge CLI authority surface around SQLite Kernel
 - `forge-2agy.9.1.8` — Retire Dolt from Forge hot path behind TypeScript Kernel API
 
@@ -206,7 +206,7 @@ Recommended dependency and acceptance notes:
 - `forge-2agy.9.8.6` — Define config and workflow revision agreement for team writes
 - `forge-2agy.9.8.7` — Define team roles permissions and handoff UX
 
-See `evaluator-beads-created.tsv`, `decision-registry-beads-created.tsv`, `architecture-capture-beads-created.tsv`, `architecture-hooks-beads-created.tsv`, and `workflow-friction-beads-created.tsv` for generated IDs.
+See `evaluator-beads-proposed.tsv`, `decision-registry-beads-proposed.tsv`, `architecture-capture-beads-proposed.tsv`, `architecture-hooks-beads-proposed.tsv`, and `workflow-friction-beads-proposed.tsv` for proposed IDs. These TSVs are implementation backlog proposals until an authoritative Beads/Kernel state export is committed through the owning sync surface.
 
 ## Probable release lanes
 

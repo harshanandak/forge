@@ -4,7 +4,7 @@
 
 Use **SQLite WAL as the Forge Kernel local authority** now.
 
-Do **not** use Dolt as the primary Kernel authority for the first implementation. Keep Dolt as a first-class **projection, migration-fidelity oracle, branchable backlog/history substrate, and optional future backend**, but route product authority through the Kernel model over SQLite.
+Do **not** use Dolt as a Kernel authority backend for the first implementation. Keep Dolt as a first-class **projection, migration-fidelity oracle, and branchable backlog/history substrate** outside the Kernel authority path, and route product authority through the Kernel model over SQLite.
 
 ## Why
 
@@ -108,4 +108,4 @@ It must not shape the first Kernel data model, transaction contract, write API, 
 2. Keep Beads/Dolt interaction behind compatibility/projection adapters only.
 3. Add a Dolt history indexer later only if Project Knowledge needs it.
 4. Keep Dolt branch/merge as a separate backlog-planning experiment, not the default authority path.
-5. Defer Dolt-as-authority unless there is a later explicit decision to reopen backend strategy.
+5. Keep Dolt authority strategy closed unless there is a later accepted Project Design or ADR that explicitly reopens backend strategy.

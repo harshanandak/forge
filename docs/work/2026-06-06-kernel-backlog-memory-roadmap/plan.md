@@ -82,7 +82,7 @@ If Forge adds a project knowledge graph, it should be temporal and source-backed
 - `issue X assigned_to agent Y` valid during claim lease.
 - `workflow stage validate required` valid under config revision.
 - `plan chose SQLite WAL for local mode` valid from decision event until superseded.
-- `design.md is legacy alias for plan.md` valid for migration window.
+- legacy work-item `design.md` files may be indexed/read during migration; new work-item planning uses `plan.md`; `design.md` is reserved for durable architecture/product design.
 
 Contradiction checks then become possible: new plan conflicts with locked decision, stale sprint date, wrong assignee, or projection trying to override Kernel authority.
 
@@ -96,7 +96,7 @@ Forge should not debate “SQLite vs Dolt vs Cloud” as one choice. It needs a 
 
 - **Authority local:** SQLite WAL broker.
 - **Authority team:** server-side serialized authority, likely Cloudflare Durable Object per project.
-- **Projection / compatibility / optional hybrid candidate:** Beads/Dolt export/import state.
+- **Projection / compatibility / history:** Beads/Dolt export/import state.
 - **Read model:** SQLite FTS5/vector indexes, rebuildable.
 - **Archive:** local files/R2 evidence bundles.
 - **Agent memory:** adapter output only, not authority.
@@ -156,7 +156,7 @@ Beads with Dolt offers stronger git-like database sync, branch-ish behavior, and
 
 Therefore: **do not remove Beads until Kernel import/export and projection conformance are strong.** Beads should remain a migration/projection adapter during the Kernel transition.
 
-After deeper review, Dolt should not be treated as projection only. Add a Dolt Authority Spike before storage lock-in to evaluate Dolt embedded/server/remotes as optional or hybrid backends for branchable backlog state, offline merge workflows, provenance/history, and Beads migration fidelity. Dolt still does not replace Forge domain guards by itself: claim leases, idempotency, workflow gates, permissions, and projection quarantine remain Kernel/server responsibilities.
+After deeper review, Dolt should be treated as a projection/history/branching substrate only unless a future accepted Project Design or ADR explicitly reopens authority strategy. Evaluate Dolt embedded/server/remotes for branchable backlog history, offline projection experiments, provenance/history, and Beads migration fidelity without making it part of the Kernel authority path. Dolt still does not replace Forge domain guards by itself: claim leases, idempotency, workflow gates, permissions, and projection quarantine remain Kernel/server responsibilities.
 
 ### Recommended authority split
 
@@ -164,7 +164,7 @@ After deeper review, Dolt should not be treated as projection only. Add a Dolt A
 |---|---|---|
 | Solo local | SQLite WAL broker in git common-dir | Simple, fast, one-machine concurrency |
 | Team/multi-machine | Cloud/server serialized authority | Prevents divergent writers and lost updates |
-| Beads/Dolt | Import/export projection plus optional hybrid candidate | Preserves existing data and evaluates Dolt history/branch/merge/remotes before retirement |
+| Beads/Dolt | Import/export projection/history substrate | Preserves existing data and evaluates Dolt history/branch/merge/remotes outside the Kernel authority path |
 | GitHub/Linear | Projection | Useful external views, not canonical |
 | Knowledge search | Rebuildable read model | Can be regenerated from artifacts/events |
 
@@ -292,7 +292,7 @@ Created roadmap/backlog issues:
 - `forge-2agy.9.7` — Plan Hermes harness as Forge project-state consumer
 - `forge-2agy.9.8` — Gate multi-machine team writes on serialized authority
 
-The deeper backlog now contains 53 additional child issues: 34 first-pass decomposition issues plus 19 evaluator amendment issues. See `issue-map.md`, `deep-beads-created.tsv`, and `evaluator-beads-created.tsv` for the full hierarchy and generated IDs.
+The deeper backlog now contains 53 proposed child issues: 34 first-pass decomposition issues plus 19 evaluator amendment issues. See `issue-map.md`, `deep-beads-proposed.tsv`, and `evaluator-beads-proposed.tsv` for the full hierarchy and proposed IDs. These are planning proposals until synchronized through an authoritative Beads/Kernel state export.
 
 ## Added Detail Files
 
@@ -304,4 +304,4 @@ The deeper backlog now contains 53 additional child issues: 34 first-pass decomp
 - `revised-safety-gates.md` — stricter go/no-go gates and implementation sequence after evaluator feedback.
 - `validation-notes.md` — round-2 evaluator results and final controller validation output.
 - `agent-memory-federation.md` — design for Forge as a shared project memory federation over old plans plus consented agent exports from Hermes/Codex/Claude/etc.
-- `dolt-re-evaluation.md` — deeper Dolt capability review and hybrid-backend spike rationale.
+- `dolt-re-evaluation.md` — deeper Dolt capability review for projection/history, Beads fidelity, and branch/offline backlog experiments outside the Kernel authority path.

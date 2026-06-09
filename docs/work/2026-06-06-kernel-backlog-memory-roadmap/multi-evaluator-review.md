@@ -109,7 +109,7 @@ Forge should expose bounded JSON via orient/recap/search and accept evidence/dec
 ### GO as planning PR if
 
 - This multi-evaluator review is included.
-- The additional Beads issues are created or folded into existing issues.
+- The additional Beads issue proposals are captured or folded into existing planning items.
 - Plan language clearly states SQLite local safety is gated by tests and runtime contracts.
 - The plan remains docs/backlog only and does not change runtime authority code.
 

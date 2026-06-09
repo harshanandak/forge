@@ -80,9 +80,9 @@ Dolt conflicts are data/schema-level, not Forge-domain-level. Still, Forge can u
 
 Dolt push/pull/remotes may be enough for some trusted/offline workflows, even if not enough for strict team authority with claims, permissions, and live workflow gates.
 
-### 5. Dolt server / Hosted Dolt / DoltLab as possible team backend
+### 5. Dolt server / Hosted Dolt / DoltLab as projection/history infrastructure
 
-A serialized Cloudflare authority may still be best for governed product/team workflows, but Dolt server should be evaluated as an optional authority/hybrid backend before we assume only Durable Objects can serve team mode.
+A serialized Cloudflare authority remains the team-authority direction for governed product/team workflows. Dolt server can still be evaluated for projection/history transport, branch/offline backlog experiments, and Beads fidelity, but not as a Kernel authority backend unless a future accepted Project Design or ADR explicitly reopens that strategy.
 
 ## What Dolt does not solve by itself
 
@@ -109,9 +109,9 @@ The safer plan is:
 | Mode | Candidate |
 | --- | --- |
 | Simple solo local authority | SQLite WAL Kernel broker |
-| Local authority with branchable issue history | Dolt optional/hybrid candidate |
-| Branch/offline backlog experimentation | Dolt strongest candidate |
-| Trusted distributed/offline sync | Dolt remotes should be evaluated |
+| Local authority | SQLite WAL Kernel broker; branchable history remains projection evidence |
+| Branch/offline backlog experimentation | Dolt projection/history candidate |
+| Trusted distributed/offline sync | Dolt remotes should be evaluated as projection transport |
 | Strict team authority with claims/permissions/live gates | Serialized server authority still likely required |
 | Beads migration/fidelity/history | Dolt first-class source and fidelity oracle |
 | Knowledge/provenance | Dolt history/log/diff should be indexed |
@@ -130,9 +130,9 @@ The spike compared SQLite local broker behavior with Dolt embedded behavior for 
 
 Current position is now:
 
-> SQLite WAL is the first Forge Kernel local authority. Dolt is not the initial primary Kernel authority, but remains a first-class projection/history/branching backend, Beads fidelity oracle, and optional future backend candidate.
+> SQLite WAL is the first Forge Kernel local authority. Dolt is not part of the Kernel authority path; it remains a first-class projection/history/branching substrate and Beads fidelity oracle.
 
-Dolt-as-authority should be deferred until a Dolt server/remotes spike proves it can enforce the same Kernel semantics around expected revisions, idempotency, claim leases, stage gates, projection outbox/dead letters, and domain conflict quarantine.
+Dolt authority strategy must stay closed unless a future accepted Project Design or ADR explicitly reopens it with proof that the same Kernel semantics around expected revisions, idempotency, claim leases, stage gates, projection outbox/dead letters, and domain conflict quarantine can be preserved.
 
 ## Risk if we do not do this
 

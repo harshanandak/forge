@@ -50,11 +50,11 @@
 
 ## D7 — SQLite is the first Kernel authority; Dolt remains first-class projection/history
 
-**Decision:** Use SQLite WAL as the first Forge Kernel local authority. Do not use Dolt as the primary Kernel authority for the initial implementation. Keep Dolt as a first-class projection, Beads migration-fidelity oracle, branchable backlog/history substrate, and optional future backend.
+**Decision:** Use SQLite WAL as the first Forge Kernel local authority. Do not use Dolt as a Kernel authority backend for the initial implementation. Keep Dolt as a first-class projection, Beads migration-fidelity oracle, and branchable backlog/history substrate outside the Kernel authority path.
 
 **Rationale:** A storage spike showed SQLite was much faster and simpler for Forge-like issue/event/outbox mutations, while Dolt was excellent for history, branch/merge, and surfacing low-level data conflicts. Dolt's merge conflicts still require Forge domain rules for claims, leases, stages, idempotency, and quarantine.
 
-**Implication:** Continue the SQLite broker path. Keep Beads/Dolt behind compatibility/projection boundaries only. Do not let Dolt shape the initial Kernel data model, transaction contract, write API, or local authority broker. Reopen Dolt-as-authority only after an explicit future decision and server/remotes proof.
+**Implication:** Continue the SQLite broker path. Keep Beads/Dolt behind compatibility/projection/history boundaries only. Do not let Dolt shape the Kernel data model, transaction contract, write API, or local authority broker. Reopen Dolt authority strategy only after an explicit future accepted Project Design or ADR.
 
 ## D8 — Project design registry is the current decision retrieval spine
 

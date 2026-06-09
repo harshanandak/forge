@@ -14,7 +14,7 @@ This PR is a planning and tracker-structure PR, not a runtime storage rewrite. I
 2. A backlog/sprint/story/task taxonomy.
 3. A Project Knowledge Layer MVP plan.
 4. Multi-worktree and multi-agent concurrency risk mapping.
-5. Beads child issues under `forge-2agy.9.*` that are small enough to become real implementation backlog items.
+5. Proposed Beads/Kernel backlog child issues under `forge-2agy.9.*` that are small enough to become real implementation backlog items once synchronized through the authoritative state surface.
 6. A clear gate: SQLite local mode is not team/multi-machine authority.
 
 ## Core Storage Answer

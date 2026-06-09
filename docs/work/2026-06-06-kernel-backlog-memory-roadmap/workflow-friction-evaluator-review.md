@@ -22,7 +22,7 @@ Initial scores:
 - Decoupled `forge-2agy.9.3.37` from architecture-capture policy issues `.27`/`.32`; it now depends on CLI authority cleanup and git common-dir worktree routing.
 - Updated `forge-2agy.9.7.7` to depend on concrete self-hosting blockers: hook/lint worktree reliability, worktree state bootstrap, and idempotency semantics.
 - Expanded `forge-2agy.9.5.11`, `forge-2agy.9.2.10`, and `forge-2agy.9.1.8` dependencies to concrete prerequisites.
-- Verified `bd dep cycles` reports no dependency cycles.
+- Verified the proposed dependency graph contains no intended cycles; authoritative `bd dep cycles` must be rerun when these proposals are synchronized into Beads/Kernel state.
 
 ### Issue body hardening
 
@@ -39,9 +39,9 @@ Initial scores:
 
 ## Verification after fixes
 
-- `bd dep cycles` returned: no dependency cycles detected.
-- `bd update --body-file` synchronized all eight new Beads issue descriptions with the hardened body files.
-- `workflow-friction-beads-created.tsv` and `issue-map.md` were updated with corrected dependencies.
+- Proposed dependency graph review returned no intended dependency cycles.
+- The eight workflow-friction issue body files were hardened for later `bd update --body-file`/Kernel synchronization.
+- `workflow-friction-beads-proposed.tsv` and `issue-map.md` were updated with corrected dependencies.
 
 ## Second evaluator pass
 
@@ -75,9 +75,9 @@ Applied updates:
 
 - `beads/design-md-plan-md-migration.md` now defines the minimum evidence artifact contract and says incomplete evidence is surfaced as incomplete/proposal, not accepted proof.
 - `beads/new-project-work-folder-structure.md` now teaches the same fields in fresh and existing-project setup guidance.
-- `issue-map.md` and `workflow-friction-beads-created.tsv` now make `forge-2agy.9.7.8` depend on `forge-2agy.9.7.5` (`Define agent work contract for claims stages and evidence`).
-- The Beads issue descriptions for `forge-2agy.9.7.8` and `forge-2agy.9.3.36` were synchronized with `bd update --body-file`.
-- `bd dep cycles` still reports no dependency cycles.
+- `issue-map.md` and `workflow-friction-beads-proposed.tsv` now make `forge-2agy.9.7.8` depend on `forge-2agy.9.7.5` (`Define agent work contract for claims stages and evidence`).
+- The proposed issue descriptions for `forge-2agy.9.7.8` and `forge-2agy.9.3.36` were aligned with the body files for later authoritative synchronization.
+- The proposed dependency graph still has no intended dependency cycles; authoritative cycle checks must run when state is synchronized.
 
 ## Final expectation
 
