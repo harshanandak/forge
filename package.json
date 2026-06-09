@@ -113,6 +113,8 @@
     "docs/guides/*.md",
     "docs/reference/*.md",
     "docs/work/**/*.md",
+    "docs/work/**/*.mjs",
+    "docs/work/**/*.tsv",
     "docs/forge/*.md",
     "install.sh",
     "lefthook.yml",
