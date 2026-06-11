@@ -172,14 +172,14 @@ After deeper review, Dolt should be treated as a projection/history/branching su
 
 Forge should model work in a way that is both agent-friendly and UI-friendly.
 
-Minimum issue fields:
+Minimum issue fields (amended 2026-06-11 per D18 — taxonomy collapsed, readiness derived):
 
 - `id`
 - `title`
 - `body`
-- `type`: epic, feature, story, task, bug, chore, decision, spike
-- `status`: backlog, ready, in_progress, blocked, review, done, cancelled
-- `priority`: P0-P4 plus numeric rank
+- `type`: epic, task, bug, decision (`feature`/`story`/`chore`/`spike` are labels)
+- `status`: open, in_progress, review, done, cancelled (`ready`/`blocked` are derived read-model facts, never stored)
+- `priority`: single numeric rank authoritative; P0-P4 as display label only
 - `parent_id`
 - `release_id` or `milestone`
 - `sprint_id` or iteration bucket
@@ -312,3 +312,5 @@ The deeper backlog now contains 53 proposed child issues: 34 first-pass decompos
 - `validation-notes.md` — round-2 evaluator results and final controller validation output.
 - `agent-memory-federation.md` — design for Forge as a shared project memory federation over old plans plus consented agent exports from Hermes/Codex/Claude/etc.
 - `dolt-re-evaluation.md` — deeper Dolt capability review for projection/history, Beads fidelity, and branch/offline backlog experiments outside the Kernel authority path.
+- `plan-evaluation.md` — 2026-06-11 full-folder review: decision confirmations, Beads/Dolt-exit gap analysis, and accepted amendments (D16–D22).
+- `agent-interface-layer.md` — Forge agent interface parity design (the "Beads plugin" equivalent for the Kernel): `forge prime`, kernel CLI/skill set, plugin packaging, retirement-gate acceptance criteria.
