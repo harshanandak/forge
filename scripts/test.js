@@ -100,7 +100,9 @@ function isKnownTargetablePath(file) {
     || file === 'QUICKSTART.md'
     || file === 'CHANGELOG.md'
     || file === 'AGENTS.md'
+    || file === 'DEVELOPMENT.md'
     || file === 'docs/INDEX.md'
+    || file === 'docs/PROJECT_DESIGN.md'
     || file.startsWith('docs/forge/')
     || file.startsWith('docs/guides/')
     || file.startsWith('docs/plans/')

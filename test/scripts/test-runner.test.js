@@ -193,6 +193,22 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test('classifyPushTests keeps top-level design docs in targeted mode', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: [
+        'docs/PROJECT_DESIGN.md',
+        'DEVELOPMENT.md',
+      ].join('\n'),
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/docs-consistency.test.js',
+      ...riskTargets,
+    ]);
+  });
+
   test('buildTestExecutionPlan always includes curated risk tests in targeted mode', () => {
     const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
       changedFiles: 'scripts/behavioral-judge.sh\n',
