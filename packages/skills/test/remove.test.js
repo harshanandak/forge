@@ -74,8 +74,8 @@ describe('Remove Command', () => {
     mkdirSync('.cursor/skills/test-skill', { recursive: true });
     writeFileSync('.cursor/skills/test-skill/SKILL.md', 'Test content');
 
-    mkdirSync('.github/skills/test-skill', { recursive: true });
-    writeFileSync('.github/skills/test-skill/SKILL.md', 'Test content');
+    mkdirSync('.codex/skills/test-skill', { recursive: true });
+    writeFileSync('.codex/skills/test-skill/SKILL.md', 'Test content');
   });
 
   afterEach(() => {
@@ -113,7 +113,7 @@ describe('Remove Command', () => {
     await removeCommand('test-skill', { force: true });
 
     expect(existsSync('.cursor/skills/test-skill')).toBe(false);
-    expect(existsSync('.github/skills/test-skill')).toBe(false);
+    expect(existsSync('.codex/skills/test-skill')).toBe(false);
   });
 
   test('removeCommand handles skill not found', async () => {
@@ -145,13 +145,13 @@ describe('Remove Command', () => {
     });
 
     expect(output).toContain('cursor');
-    expect(output).toContain('github');
+    expect(output).toContain('codex');
   });
 
   test('removeCommand handles agent directory not existing', async () => {
     // Remove agent directories
     rmSync('.cursor', { recursive: true, force: true });
-    rmSync('.github', { recursive: true, force: true });
+    rmSync('.codex', { recursive: true, force: true });
 
     // Should not throw error
     await removeCommand('test-skill', { force: true });
