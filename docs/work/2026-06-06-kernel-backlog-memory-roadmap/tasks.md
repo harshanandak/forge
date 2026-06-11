@@ -24,11 +24,12 @@
 - Modify: `lib/kernel/schema.js` only in a later implementation PR
 - Test: future schema tests
 
-**Steps:**
-1. Define issue types: epic, feature, story, task, bug, chore, decision, spike.
-2. Define statuses: backlog, ready, in_progress, blocked, review, done, cancelled.
-3. Define release/milestone and sprint/iteration as planning buckets.
-4. Keep claim lease separate from assignee/owner.
+**Steps (amended 2026-06-11 per accepted D18):**
+1. Define issue types: epic, task, bug, decision. Represent `feature`/`story`/`chore`/`spike` as labels, not types.
+2. Define stored statuses: open, in_progress, review, done, cancelled. `ready`/`blocked` are derived read-model facts computed from dependencies, blockers, claims, gates, and quarantine — never stored.
+3. Define a single numeric rank as authoritative ordering; P0-P4 is a display-label projection.
+4. Define release/milestone and sprint/iteration as planning buckets.
+5. Keep claim lease separate from assignee/owner.
 
 ## Task 3: Design Project Knowledge Layer MVP
 

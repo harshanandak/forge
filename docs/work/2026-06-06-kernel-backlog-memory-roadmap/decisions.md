@@ -152,6 +152,8 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 
 **Implication:** This is a prerequisite gate for D14 retirement claims. Acceptance: fresh machine, `git clone`, no Beads/Dolt installed → `forge status` shows the full backlog. The projection is the Kernel's own surface, not a "Beads compatibility" feature.
 
+**Impact score:** user_value=5, risk_reduction=5, implementation_confidence=4, reversibility=4, dependency_unlock=5, agent_friendliness=4, team_scale=5.
+
 ## D17 — SQLite driver: builtin, no native compile
 
 **Decision:** Use builtin `node:sqlite` (Node ≥ 22) and/or `bun:sqlite`, runtime-detected. No native-compile dependency (`better-sqlite3`/node-gyp) in the default install.
@@ -160,13 +162,17 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 
 **Implication:** Driver conformance tests (WAL, busy timeout, atomic event+CAS+outbox transaction, backup/checkpoint, FTS5) run against the chosen builtin drivers on Windows/macOS/Linux.
 
+**Impact score:** user_value=4, risk_reduction=4, implementation_confidence=4, reversibility=4, dependency_unlock=5, agent_friendliness=3, team_scale=3.
+
 ## D18 — Taxonomy collapse: 4 types, 5 statuses, single rank
 
 **Decision:** Issue types are `epic`, `task`, `bug`, `decision`; `feature`/`story`/`chore`/`spike` become labels. Stored statuses are `open`, `in_progress`, `review`, `done`, `cancelled`; `ready`/`blocked` are derived. Single numeric rank is authoritative for ordering; P0–P4 is a display projection.
 
 **Rationale:** Feature/story/task boundaries are ambiguous even for humans and cause agent misfiling; Beads already rejected `story`/`spike`. Stored blocked status double-books the readiness read model. Two priority systems make boards and agent pick-next disagree. A type must change Kernel behavior to earn existence.
 
-**Implication:** Must land before the 0.0.20 Kernel schema freezes the wide version. `backlog-taxonomy.md`, `backlog-frontend-model.md`, and `plan.md` amended accordingly.
+**Implication:** Must land before the 0.0.20 Kernel schema freezes the wide version. `backlog-taxonomy.md`, `backlog-frontend-model.md`, `plan.md`, and `tasks.md` Task 2 amended accordingly.
+
+**Impact score:** user_value=4, risk_reduction=4, implementation_confidence=5, reversibility=3, dependency_unlock=4, agent_friendliness=5, team_scale=4.
 
 ## D19 — Filesystem doctor is a default-on gate
 
@@ -176,6 +182,8 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 
 **Implication:** Doctor check ships with the broker driver work, not after it. `forge doctor` reports filesystem class; kernel default-on is gated on the check existing.
 
+**Impact score:** user_value=4, risk_reduction=5, implementation_confidence=4, reversibility=5, dependency_unlock=3, agent_friendliness=3, team_scale=3.
+
 ## D20 — Tracked `bd` call-site kill list
 
 **Decision:** Maintain the inventory of `bd` call sites (~125 across 40+ files) as a checked-off migration artifact with a defined hot-path order: `lib/commands/sync.js` (dolt pull/push) → `lib/commands/worktree.js` (dolt server lifecycle) → `lib/commands/setup.js` → preflight/smart-status scripts → forge-team scripts → instruction surfaces (CLAUDE.md/AGENTS.md/skills/hooks).
@@ -184,6 +192,8 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 
 **Implication:** `.9.1.1` (audit storage surfaces) produces this list as its artifact; D14 retirement gates reference it.
 
+**Impact score:** user_value=3, risk_reduction=5, implementation_confidence=5, reversibility=5, dependency_unlock=5, agent_friendliness=4, team_scale=4.
+
 ## D21 — `forge orient`/`recap` v1 is bounded file assembly; FTS5 is v2
 
 **Decision:** Ship `forge orient` and `forge recap <issue>` first as deterministic file assembly — `docs/PROJECT_DESIGN.md` + current work-folder `plan.md`/`tasks.md`/`decisions.md` + ready queue + claim state — under an explicit token budget with deterministic truncation order (decisions never truncate first). The FTS5 verbatim knowledge index upgrades the same command contract later.
@@ -191,6 +201,10 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 **Rationale:** The MVP of orientation is reading the right files, not retrieval. This delivers most of the agent value in the self-hosting/Kernel lane with zero new infrastructure, and de-risks the knowledge layer by validating the output contract before building the index. (`knowledge-index.md` sequenced index-first but never evaluated this option.)
 
 **Implication:** The orient/recap JSON contract (including `--budget` and `next_commands[]`) is designed once and kept stable across v1 (assembly) and v2 (indexed retrieval).
+
+**Relationship to the existing `forge recap` command:** `forge recap` already exists (`lib/commands/recap.js` → `buildRecap()` in `lib/insights.js`) as a **project-wide activity recap** over `.beads/issues.jsonl` + `.beads/interactions.jsonl` with `--limit/--min-count/--since/--json`. D21 does not silently replace it: the no-argument form keeps its current activity-recap contract; the new **issue-scoped** form `forge recap <issue>` is additive. `forge orient` is a new command. Because the existing recap reads Beads JSONL directly, it is itself a D20 kill-list item — its data source moves to the Kernel/D16 projection during migration while preserving the output contract.
+
+**Impact score:** user_value=5, risk_reduction=3, implementation_confidence=5, reversibility=5, dependency_unlock=4, agent_friendliness=5, team_scale=3.
 
 ## D22 — Forge agent interface parity layer (the "Beads plugin" equivalent)
 

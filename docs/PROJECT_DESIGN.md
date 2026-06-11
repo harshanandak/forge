@@ -26,6 +26,10 @@ Forge is moving toward a native Kernel/control-plane architecture:
 - **Observer:** Background observers record evidence/proposals/session events first; they do not silently mutate project truth.
 - **Architecture notes:** Architecture-significant observations, domain rules, subsystem behaviors, constraints, and open questions must be captured as scoped architecture records. `PROJECT_DESIGN.md` remains the top-level map; detailed records live under `docs/architecture/**` and work/ADR evidence.
 - **Hook policy:** Agent-native hooks are the preferred architecture-capture UX; Forge CLI checks own the policy; Lefthook is a Git adapter/fallback; CI is the non-bypassable gate. Agents must not use `--no-verify` or equivalent hook-disabling bypasses without explicit audited authorization.
+- **Portability:** The Kernel owns a git-tracked JSONL projection of issues/dependencies/comments so project state travels with `git clone`; this is a prerequisite for Beads/Dolt retirement claims.
+- **Work-item taxonomy:** 4 issue types (`epic`, `task`, `bug`, `decision`), 5 stored statuses; `ready`/`blocked` are derived read-model facts; a single numeric rank is authoritative for ordering.
+- **Agent interface:** Forge ships its own agent surface (`forge prime`, kernel-facing JSON-first CLI, skills as thin CLI wrappers); agent-interface parity gates Beads retirement.
+- **Supported harnesses:** Claude Code, Codex, and Cursor are the supported harness set; Hermes is the planned addition. Other previously-supported harness surfaces are removed.
 
 ## Decision registry
 
@@ -281,6 +285,166 @@ conflicts_with: []
 **Boundary:** Hooks make missing architecture capture hard to miss, but they are not the source of truth. Lefthook depends on install/worktree state and can be bypassed; CI and future Kernel authority are the durable enforcement boundaries.
 
 **Rule:** Architecture-sensitive changes require an explicit architecture-impact declaration. If architecture changed or was discovered, the work must add/update an architecture record, open a question/conflict, or update/supersede accepted design direction. Agents must not use `git commit --no-verify`, `git push --no-verify`, `HUSKY=0`, `LEFTHOOK=0`, `git -c core.hooksPath=...`, script-mediated hook bypasses, or hook removal to bypass Forge checks unless explicitly authorized through an audited Forge bypass event.
+
+### PD-20260611-kernel-jsonl-portability
+
+```yaml
+id: PD-20260611-kernel-jsonl-portability
+topic: portability.projection
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d16--kernel-jsonl-portability-projection
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** The Kernel owns a git-tracked, deterministic-order JSONL export of issues, dependencies, and comments — auto-exported on mutation (or at push), imported on clone/bootstrap. It is the Kernel's own portability/backup/sync surface, not a Beads-compatibility feature, and a prerequisite gate for Beads/Dolt retirement claims.
+
+**Implications:**
+
+- Acceptance: fresh machine, `git clone`, no Beads/Dolt installed → `forge status` shows the full backlog.
+- Retirement claims under PD-20260606-beads-dolt-projection cannot pass without this projection.
+
+### PD-20260611-sqlite-builtin-driver
+
+```yaml
+id: PD-20260611-sqlite-builtin-driver
+topic: authority.local.driver
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d17--sqlite-driver-builtin-no-native-compile
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Use builtin `node:sqlite` (Node ≥ 22) and/or `bun:sqlite`, runtime-detected, for the Kernel broker. No native-compile dependency in the default install.
+
+**Implications:**
+
+- Driver conformance tests (WAL, busy timeout, atomic event+CAS+outbox, backup/checkpoint, FTS5) run against the chosen builtin drivers on all supported platforms.
+- This selection blocks all local-broker safety work and must land first.
+
+### PD-20260611-work-item-taxonomy
+
+```yaml
+id: PD-20260611-work-item-taxonomy
+topic: workgraph.taxonomy
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d18--taxonomy-collapse-4-types-5-statuses-single-rank
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/backlog-taxonomy.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Issue types are `epic`, `task`, `bug`, `decision` (`feature`/`story`/`chore`/`spike` are labels). Stored statuses are `open`, `in_progress`, `review`, `done`, `cancelled`; `ready`/`blocked` are derived read-model facts. A single numeric rank is authoritative for ordering; P0–P4 is a display projection.
+
+**Implications:**
+
+- Refines PD-20260606-work-graph-planning-buckets: the Work Graph ontology uses this narrow enum set.
+- Must land before the 0.0.20 Kernel schema freezes a wider version.
+
+### PD-20260611-local-filesystem-doctor-gate
+
+```yaml
+id: PD-20260611-local-filesystem-doctor-gate
+topic: authority.local.filesystem
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d19--filesystem-doctor-is-a-default-on-gate
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Before placing `kernel.sqlite`, Forge detects network shares, cloud-sync folders (OneDrive/Dropbox/Google Drive), and WSL-crossing paths, and refuses or warns with remediation guidance. The doctor check is a prerequisite for kernel default-on, shipped with the broker driver work.
+
+### PD-20260611-bd-retirement-kill-list
+
+```yaml
+id: PD-20260611-bd-retirement-kill-list
+topic: migration.beads-retirement
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d20--tracked-bd-call-site-kill-list
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Maintain the inventory of `bd` call sites (~125 across 40+ files) as a checked-off migration artifact with a defined hot-path order (sync → worktree dolt lifecycle → setup → status/preflight → team scripts → instruction surfaces). Beads retirement claims must reference the completed list.
+
+### PD-20260611-orient-recap-file-assembly
+
+```yaml
+id: PD-20260611-orient-recap-file-assembly
+topic: knowledge.orient-recap
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d21--forge-orientrecap-v1-is-bounded-file-assembly-fts5-is-v2
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** `forge orient` (new) and issue-scoped `forge recap <issue>` (additive mode on the existing activity-recap command) ship first as deterministic bounded file assembly with explicit token budgets; the FTS5 verbatim knowledge index upgrades the same command contract later. The existing no-arg `forge recap` keeps its contract; its Beads JSONL data source migrates to the Kernel projection per the kill list.
+
+### PD-20260611-agent-interface-parity
+
+```yaml
+id: PD-20260611-agent-interface-parity
+topic: agent-interface.parity
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md#d22--forge-agent-interface-parity-layer-the-beads-plugin-equivalent
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-interface-layer.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Forge ships a first-class agent interface layer for its own Kernel — session-priming hook (`forge prime`), kernel-facing JSON-first command set, skills as thin CLI wrappers, harness plugin packaging. Agent-interface parity is a named gate in Beads retirement criteria.
+
+### PD-20260611-supported-harness-set
+
+```yaml
+id: PD-20260611-supported-harness-set
+topic: agent-interface.harnesses
+status: accepted
+decision_date: 2026-06-11
+last_reviewed: 2026-06-11
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-interface-layer.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** The supported harness set is Claude Code, Codex, and Cursor; Hermes is the planned addition. Support for other harnesses (Cline, Copilot/GitHub prompts, Kilocode, OpenCode, Roo) is removed — generated command directories, plugin catalogs, detection, and config generation are pruned, and the supported list becomes explicit configuration rather than a hardcoded directory walk.
+
+**Implications:**
+
+- Onboarding a new harness must require only an adapter (hook wiring + instruction block), zero Kernel changes.
+- Earlier multi-harness support (including the prior partial removal of Antigravity/Windsurf/Aider/Continue) is fully unwound rather than left half-wired.
 
 ## Registry update rules
 
