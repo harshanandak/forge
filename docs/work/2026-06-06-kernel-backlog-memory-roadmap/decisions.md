@@ -156,11 +156,13 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 
 ## D17 — SQLite driver: builtin, no native compile
 
-**Decision:** Use builtin `node:sqlite` (Node ≥ 22) and/or `bun:sqlite`, runtime-detected. No native-compile dependency (`better-sqlite3`/node-gyp) in the default install.
+**Decision:** Use builtin `node:sqlite` and/or `bun:sqlite`, selected by runtime feature detection. No native-compile dependency (`better-sqlite3`/node-gyp) in the default install.
 
-**Rationale:** Removing Dolt to cut install friction and then adding a node-gyp build step would defeat the purpose, especially on Windows. The broker (`lib/kernel/broker.js`) currently has an injected-driver contract with no real driver wired; this choice blocks all Phase B safety work.
+**Node version / stability caveat:** `node:sqlite` is **unflagged from Node.js ≥ 22.13.0** (before that it required `--experimental-sqlite`) but remains **Release Candidate / experimental** as of mid-2026, with an API that can still change. So the broker does not assume availability by major version: it probes at runtime (`try { require('node:sqlite') } catch`) and falls back to `bun:sqlite`, with a clear error if neither is present. The effective requirement for the node path is Node ≥ 22.13.0; `bun:sqlite` covers the Bun runtime.
 
-**Implication:** Driver conformance tests (WAL, busy timeout, atomic event+CAS+outbox transaction, backup/checkpoint, FTS5) run against the chosen builtin drivers on Windows/macOS/Linux.
+**Rationale:** Removing Dolt to cut install friction and then adding a node-gyp build step would defeat the purpose, especially on Windows. The broker (`lib/kernel/broker.js`) currently has an injected-driver contract with no real driver wired; this choice blocks all Phase B safety work. Runtime feature detection (rather than a hardcoded version gate) absorbs both the bun/node split and `node:sqlite`'s experimental status.
+
+**Implication:** Driver conformance tests (WAL, busy timeout, atomic event+CAS+outbox transaction, backup/checkpoint, FTS5) run against the chosen builtin drivers on Windows/macOS/Linux, and the detection path is itself tested (node:sqlite present, absent→bun fallback, neither→error).
 
 **Impact score:** user_value=4, risk_reduction=4, implementation_confidence=4, reversibility=4, dependency_unlock=5, agent_friendliness=3, team_scale=3.
 

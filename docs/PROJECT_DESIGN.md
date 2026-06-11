@@ -324,11 +324,12 @@ supersedes: []
 conflicts_with: []
 ```
 
-**Current decision:** Use builtin `node:sqlite` (Node ≥ 22) and/or `bun:sqlite`, runtime-detected, for the Kernel broker. No native-compile dependency in the default install.
+**Current decision:** Use builtin `node:sqlite` and/or `bun:sqlite`, selected by runtime feature detection, for the Kernel broker. No native-compile dependency in the default install.
 
 **Implications:**
 
-- Driver conformance tests (WAL, busy timeout, atomic event+CAS+outbox, backup/checkpoint, FTS5) run against the chosen builtin drivers on all supported platforms.
+- `node:sqlite` is unflagged from Node.js ≥ 22.13.0 but is still Release Candidate / experimental; the broker probes for it at runtime and falls back to `bun:sqlite` rather than gating on Node major version alone.
+- Driver conformance tests (WAL, busy timeout, atomic event+CAS+outbox, backup/checkpoint, FTS5) and the detection/fallback path run against the chosen builtin drivers on all supported platforms.
 - This selection blocks all local-broker safety work and must land first.
 
 ### PD-20260611-work-item-taxonomy

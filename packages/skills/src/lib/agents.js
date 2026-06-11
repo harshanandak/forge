@@ -31,6 +31,7 @@ const AGENT_DEFINITIONS = [
  * const agents = detectAgents();
  * // [
  * //   { name: 'claude', path: '.claude/skills', enabled: true, description: 'Claude Code (Anthropic)' },
+ * //   { name: 'codex', path: '.codex/skills', enabled: true, description: 'Codex CLI (OpenAI)' },
  * //   { name: 'cursor', path: '.cursor/skills', enabled: true, description: 'Cursor AI Code Editor' }
  * // ]
  */
