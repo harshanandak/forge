@@ -12,13 +12,9 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const ACTIVE_SOURCE_PATHS = [
   '.claude',
-  '.cline',
   '.codex',
   '.cursor',
   '.github',
-  '.kilocode',
-  '.opencode',
-  '.roo',
   'bin',
   'lib',
   'scripts',

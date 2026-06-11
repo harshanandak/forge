@@ -11,19 +11,15 @@ import { join } from 'node:path';
  * Agent definitions
  *
  * All agents are enabled: true — directory existence already gates syncing.
- * If a developer has .roo/, etc. they use that agent and want skills.
  *
- * Dropped agents (removed in agent-command-parity-v2):
- * aider, antigravity, continue, windsurf
+ * Forge currently supports Claude Code, Codex, and Cursor.
+ * Dropped agents: aider, antigravity, cline, continue, github-copilot,
+ * kilocode, opencode, roo, windsurf
  */
 const AGENT_DEFINITIONS = [
   { name: 'claude',      directory: '.claude',   description: 'Claude Code (Anthropic)',   enabled: true },
-  { name: 'cline',       directory: '.cline',    description: 'Cline VSCode Extension',    enabled: true },
+  { name: 'codex',       directory: '.codex',    description: 'Codex CLI (OpenAI)',        enabled: true },
   { name: 'cursor',      directory: '.cursor',   description: 'Cursor AI Code Editor',     enabled: true },
-  { name: 'github',      directory: '.github',   description: 'GitHub Copilot Workspace',  enabled: true },
-  { name: 'kilocode',    directory: '.kilocode', description: 'Kilo Code (VS Code)',       enabled: true },
-  { name: 'opencode',    directory: '.opencode', description: 'OpenCode',                  enabled: true },
-  { name: 'roo',         directory: '.roo',      description: 'Roo Code (Cline fork)',     enabled: true },
 ];
 
 /**
@@ -34,8 +30,8 @@ const AGENT_DEFINITIONS = [
  * @example
  * const agents = detectAgents();
  * // [
- * //   { name: 'cursor', path: '.cursor/skills', enabled: true, description: 'Cursor AI Code Editor' },
- * //   { name: 'github', path: '.github/skills', enabled: true, description: 'GitHub Copilot Workspace' }
+ * //   { name: 'claude', path: '.claude/skills', enabled: true, description: 'Claude Code (Anthropic)' },
+ * //   { name: 'cursor', path: '.cursor/skills', enabled: true, description: 'Cursor AI Code Editor' }
  * // ]
  */
 export function detectAgents() {

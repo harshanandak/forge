@@ -111,6 +111,9 @@ function hasTestFile(sourceFile, stagedFiles) {
     sourceFile.replace(/^bin\//, 'test/cli/').replace(ext, `.spec${ext}`),
     sourceFile.replace(/^bin\//, 'test/bin/').replace(ext, `.test${ext}`),
     sourceFile.replace(/^bin\//, 'test/bin/').replace(ext, `.spec${ext}`),
+    // Workspace packages (packages/<pkg>/src/**/foo.js → packages/<pkg>/test/foo.test.js)
+    sourceFile.replace(/^(packages\/[^/]+)\/src\/(?:.*\/)?([^/]+)$/, `$1/test/$2`).replace(ext, `.test${ext}`),
+    sourceFile.replace(/^(packages\/[^/]+)\/src\/(?:.*\/)?([^/]+)$/, `$1/test/$2`).replace(ext, `.spec${ext}`),
   ];
 
   // Check if test file exists in staged files or filesystem

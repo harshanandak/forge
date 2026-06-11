@@ -25,13 +25,8 @@ const PACKAGE_LEVEL_PATHS = new Set([
 const KNOWN_TARGETABLE_PREFIXES = [
   '.claude/commands/',
   '.cursor/',
-  '.cline/',
-  '.roo/',
-  '.kilocode/',
-  '.opencode/',
   '.codex/skills/',
   '.forge/',
-  '.github/prompts/',
   '.github/agentic-workflows/',
   '.github/workflows/',
   'test/',

@@ -42,28 +42,10 @@ describe('detect-agent', () => {
         expect(result.name).toBe('my-custom-agent');
       });
 
-      test('AI_AGENT=github-copilot normalizes to copilot', () => {
-        const result = detectActiveAgent({ AI_AGENT: 'github-copilot' });
+      test('AI_AGENT=claude-code normalizes to claude', () => {
+        const result = detectActiveAgent({ AI_AGENT: 'claude-code' });
         expect(result).toEqual({
-          name: 'copilot',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
-      test('AI_AGENT=roo-code normalizes to roo', () => {
-        const result = detectActiveAgent({ AI_AGENT: 'roo-code' });
-        expect(result).toEqual({
-          name: 'roo',
-          source: 'env',
-          confidence: 'high',
-        });
-      });
-
-      test('AI_AGENT=kilo normalizes to kilocode', () => {
-        const result = detectActiveAgent({ AI_AGENT: 'kilo' });
-        expect(result).toEqual({
-          name: 'kilocode',
+          name: 'claude',
           source: 'env',
           confidence: 'high',
         });
@@ -146,22 +128,14 @@ describe('detect-agent', () => {
         });
       });
 
-      test('OPENCODE_CLIENT detects opencode', () => {
+      test('OPENCODE_CLIENT is not detected (unsupported agent)', () => {
         const result = detectActiveAgent({ OPENCODE_CLIENT: '1' });
-        expect(result).toEqual({
-          name: 'opencode',
-          source: 'env',
-          confidence: 'high',
-        });
+        expect(result).toBeNull();
       });
 
-      test('COPILOT_MODEL detects copilot', () => {
+      test('COPILOT_MODEL is not detected (unsupported agent)', () => {
         const result = detectActiveAgent({ COPILOT_MODEL: 'gpt-5' });
-        expect(result).toEqual({
-          name: 'copilot',
-          source: 'env',
-          confidence: 'high',
-        });
+        expect(result).toBeNull();
       });
     });
 
@@ -248,46 +222,12 @@ describe('detect-agent', () => {
       expect(agents).toContain('claude');
     });
 
-    test('.clinerules detects cline', async () => {
+    test('unsupported agent config files are not detected', async () => {
       await fs.promises.writeFile(path.join(tempDir, '.clinerules'), '');
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('cline');
-    });
-
-    test('.cline directory detects cline', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.cline'), { recursive: true });
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('cline');
-    });
-
-    test('.roo/rules detects roo', async () => {
       await fs.promises.mkdir(path.join(tempDir, '.roo', 'rules'), { recursive: true });
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('roo');
-    });
-
-    test('.roo directory detects roo', async () => {
-      await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('roo');
-    });
-
-    test('.roorules detects roo', async () => {
-      await fs.promises.writeFile(path.join(tempDir, '.roorules'), '');
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('roo');
-    });
-
-    test('.kilo.md detects kilocode', async () => {
       await fs.promises.writeFile(path.join(tempDir, '.kilo.md'), '');
       const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('kilocode');
-    });
-
-    test('.kilocode detects kilocode', async () => {
-      await fs.promises.writeFile(path.join(tempDir, '.kilocode'), '');
-      const agents = detectConfiguredAgents(tempDir);
-      expect(agents).toContain('kilocode');
+      expect(agents).toEqual([]);
     });
 
     test('codex.md detects codex', async () => {
@@ -311,17 +251,13 @@ describe('detect-agent', () => {
       await fs.promises.mkdir(path.join(tempDir, '.claude'), { recursive: true });
       await fs.promises.writeFile(path.join(tempDir, '.claude', 'settings.json'), '{}');
       await fs.promises.writeFile(path.join(tempDir, '.cursorrules'), '');
-      await fs.promises.writeFile(path.join(tempDir, '.clinerules'), '');
-      await fs.promises.mkdir(path.join(tempDir, '.roo'), { recursive: true });
       await fs.promises.mkdir(path.join(tempDir, '.codex'), { recursive: true });
 
       const agents = detectConfiguredAgents(tempDir);
       expect(agents).toContain('claude');
       expect(agents).toContain('cursor');
-      expect(agents).toContain('cline');
-      expect(agents).toContain('roo');
       expect(agents).toContain('codex');
-      expect(agents.length).toBe(5);
+      expect(agents.length).toBe(3);
     });
 
     test('does not return duplicate agent names', async () => {
@@ -386,9 +322,7 @@ describe('detect-agent', () => {
 
   describe('normalizeAgentId', () => {
     test('maps legacy aliases to canonical ids', () => {
-      expect(normalizeAgentId('github-copilot')).toBe('copilot');
-      expect(normalizeAgentId('roo-code')).toBe('roo');
-      expect(normalizeAgentId('kilo')).toBe('kilocode');
+      expect(normalizeAgentId('claude-code')).toBe('claude');
     });
 
     test('preserves canonical ids', () => {

@@ -8,6 +8,8 @@ For Week 3 planning, see [Week 3 Runtime Capability Packs](../work/2026-04-28-sk
 
 ## Supported Surfaces
 
+Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
+
 | Harness | Forge fixture path | Activation metadata | Proof status |
 | --- | --- | --- | --- |
 | Claude Code | `.claude/skills/<name>/SKILL.md` | `description` in `SKILL.md` frontmatter | Proven by metadata fixture |

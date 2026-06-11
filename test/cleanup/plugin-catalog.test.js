@@ -13,11 +13,6 @@ function loadPlugin(agent) {
 const SUPPORTED_AGENTS = [
   'claude',
   'cursor',
-  'cline',
-  'opencode',
-  'copilot',
-  'kilocode',
-  'roo',
   'codex',
 ];
 
@@ -70,9 +65,12 @@ describe('agent plugin catalog — capability flags', () => {
   });
 
   describe('no dropped agent plugin files', () => {
-    test('continue.plugin.json does not exist', () => {
-      const filePath = join(AGENTS_DIR, 'continue.plugin.json');
-      expect(existsSync(filePath)).toBe(false);
-    });
+    const droppedAgents = ['continue', 'cline', 'copilot', 'kilocode', 'opencode', 'roo'];
+    for (const dropped of droppedAgents) {
+      test(`${dropped}.plugin.json does not exist`, () => {
+        const filePath = join(AGENTS_DIR, `${dropped}.plugin.json`);
+        expect(existsSync(filePath)).toBe(false);
+      });
+    }
   });
 });

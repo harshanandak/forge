@@ -95,15 +95,13 @@ describe('getForgeFiles', () => {
   test('detects multiple agent directories', () => {
     scaffold(tmpDir, [
       '.cursor/rules/forge-workflow.mdc',
-      '.cline/rules/forge-workflow.md',
-      '.roo/rules/forge-workflow.md',
+      '.codex/skills/plan/SKILL.md',
     ]);
 
     const result = getForgeFiles(tmpDir);
     const normalized = result.agentDirs.map(p => p.replace(/\\/g, '/'));
 
     expect(normalized).toContain('.cursor');
-    expect(normalized).toContain('.cline');
-    expect(normalized).toContain('.roo');
+    expect(normalized).toContain('.codex');
   });
 });

@@ -93,7 +93,7 @@ describe('Sync Command', () => {
   test('syncCommand copies skills to detected agent directories', async () => {
     // Create agent directories
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
 
     await syncCommand({});
 
@@ -102,10 +102,10 @@ describe('Sync Command', () => {
     expect(existsSync('.cursor/skills/test-skill/.skill-meta.json')).toBe(true);
     expect(existsSync('.cursor/skills/another-skill/SKILL.md')).toBe(true);
 
-    // Verify skills were copied to GitHub
-    expect(existsSync('.github/skills/test-skill/SKILL.md')).toBe(true);
-    expect(existsSync('.github/skills/test-skill/.skill-meta.json')).toBe(true);
-    expect(existsSync('.github/skills/another-skill/SKILL.md')).toBe(true);
+    // Verify skills were copied to Claude
+    expect(existsSync('.claude/skills/test-skill/SKILL.md')).toBe(true);
+    expect(existsSync('.claude/skills/test-skill/.skill-meta.json')).toBe(true);
+    expect(existsSync('.claude/skills/another-skill/SKILL.md')).toBe(true);
   });
 
   test('syncCommand creates agent skills directories if missing', async () => {
@@ -119,17 +119,15 @@ describe('Sync Command', () => {
   test('syncCommand syncs to ALL detected agent directories', async () => {
     // All agents are now enabled: true — directory existence is the gate
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
-    mkdirSync('.cline', { recursive: true });
-    mkdirSync('.roo', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
+    mkdirSync('.codex', { recursive: true });
 
     await syncCommand({});
 
     // All detected agents should have skills
     expect(existsSync('.cursor/skills/test-skill/SKILL.md')).toBe(true);
-    expect(existsSync('.github/skills/test-skill/SKILL.md')).toBe(true);
-    expect(existsSync('.cline/skills/test-skill/SKILL.md')).toBe(true);
-    expect(existsSync('.roo/skills/test-skill/SKILL.md')).toBe(true);
+    expect(existsSync('.claude/skills/test-skill/SKILL.md')).toBe(true);
+    expect(existsSync('.codex/skills/test-skill/SKILL.md')).toBe(true);
   });
 
   test('syncCommand handles no agents gracefully', async () => {
@@ -178,7 +176,7 @@ describe('Sync Command', () => {
 
   test('syncCommand displays sync summary', async () => {
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
 
     const output = await captureOutput(async () => {
       await syncCommand({});
@@ -187,7 +185,7 @@ describe('Sync Command', () => {
     expect(output).toContain('test-skill');
     expect(output).toContain('another-skill');
     expect(output).toContain('cursor');
-    expect(output).toContain('github');
+    expect(output).toContain('claude');
     expect(output).toMatch(/2 skills?/i);
     expect(output).toMatch(/2 agents?/i);
   });
@@ -230,7 +228,7 @@ describe('Sync Command', () => {
 
   test('syncCommand shows progress for each agent', async () => {
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
 
     const output = await captureOutput(async () => {
       await syncCommand({});
@@ -238,7 +236,7 @@ describe('Sync Command', () => {
 
     // Should show sync messages for each agent
     expect(output).toContain('cursor');
-    expect(output).toContain('github');
+    expect(output).toContain('claude');
   });
 
   test('syncCommand syncs skills to Claude agent directory', async () => {
@@ -247,10 +245,10 @@ describe('Sync Command', () => {
     expect(existsSync('.claude/skills/test-skill/SKILL.md')).toBe(true);
   });
 
-  test('syncCommand syncs skills to Kilo Code directory', async () => {
-    mkdirSync('.kilocode', { recursive: true });
+  test('syncCommand syncs skills to Codex directory', async () => {
+    mkdirSync('.codex', { recursive: true });
     await syncCommand({});
-    expect(existsSync('.kilocode/skills/test-skill/SKILL.md')).toBe(true);
+    expect(existsSync('.codex/skills/test-skill/SKILL.md')).toBe(true);
   });
 
   test('syncCommand reads skills from root skills/ directory', async () => {

@@ -19,7 +19,7 @@ Use `bunx forge ...` for first-run examples. Bare `forge ...` works when the pac
 ## Setup And Adoption
 
 ```bash
-forge init [--profile minimal|standard|full] [--classification critical|standard|refactor] [--harness claude,cursor,codex,opencode,copilot] [--yes] [--force] [--dry-run]
+forge init [--profile minimal|standard|full] [--classification critical|standard|refactor] [--harness claude,cursor,codex] [--yes] [--force] [--dry-run]
 forge setup --agents codex --yes
 forge setup --agents claude,cursor
 forge setup --agents claude cursor

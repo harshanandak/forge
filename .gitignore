@@ -61,10 +61,6 @@ skills-lock.json
 .augment/
 .claude/skills/
 .cursor/skills/
-.cline/skills/
-.roo/skills/
-.kilocode/skills/
-.opencode/skills/
 .github/skills/
 
 # MCP local configuration (use .mcp.json.example as template)

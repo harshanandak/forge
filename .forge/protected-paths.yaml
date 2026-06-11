@@ -77,7 +77,6 @@ categories:
       - AGENTS.md
       - CLAUDE.md
       - .cursorrules
-      - opencode.json
       - .mcp.json
       - .forge/config.yaml
       - .forge/config.yml
@@ -93,11 +92,6 @@ categories:
       - .cursor/rules/**
       - .cursor/skills/**
       - .codex/skills/**
-      - .cline/**
-      - .roo/**
-      - .kilocode/**
-      - .opencode/**
-      - .github/prompts/**
       - .github/workflows/**
       - .forge/hooks/**
       - lefthook.yml

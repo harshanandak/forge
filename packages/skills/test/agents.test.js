@@ -47,32 +47,32 @@ describe('Agent Detection', () => {
     expect(agents[0].enabled).toBe(true);
   });
 
-  test('detectAgents finds GitHub agent', () => {
-    mkdirSync('.github', { recursive: true });
+  test('detectAgents finds Claude agent', () => {
+    mkdirSync('.claude', { recursive: true });
 
     const agents = detectAgents();
 
     expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('github');
-    expect(agents[0].path).toBe('.github/skills');
+    expect(agents[0].name).toBe('claude');
+    expect(agents[0].path).toBe('.claude/skills');
     expect(agents[0].enabled).toBe(true);
   });
 
-  test('detectAgents finds Cline agent', () => {
-    mkdirSync('.cline', { recursive: true });
+  test('detectAgents finds Codex agent', () => {
+    mkdirSync('.codex', { recursive: true });
 
     const agents = detectAgents();
 
     expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('cline');
-    expect(agents[0].path).toBe('.cline/skills');
+    expect(agents[0].name).toBe('codex');
+    expect(agents[0].path).toBe('.codex/skills');
     expect(agents[0].enabled).toBe(true);
   });
 
   test('detectAgents finds multiple agents', () => {
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
-    mkdirSync('.cline', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
+    mkdirSync('.codex', { recursive: true });
 
     const agents = detectAgents();
 
@@ -80,59 +80,46 @@ describe('Agent Detection', () => {
 
     const agentNames = agents.map(a => a.name);
     expect(agentNames).toContain('cursor');
-    expect(agentNames).toContain('github');
-    expect(agentNames).toContain('cline');
+    expect(agentNames).toContain('claude');
+    expect(agentNames).toContain('codex');
   });
 
   test('detectAgents returns agents in consistent order', () => {
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
-    mkdirSync('.cline', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
+    mkdirSync('.codex', { recursive: true });
 
     const agents = detectAgents();
 
     // Should be in alphabetical order for consistency
-    expect(agents[0].name).toBe('cline');
-    expect(agents[1].name).toBe('cursor');
-    expect(agents[2].name).toBe('github');
+    expect(agents[0].name).toBe('claude');
+    expect(agents[1].name).toBe('codex');
+    expect(agents[2].name).toBe('cursor');
   });
 
-  test('detectAgents marks primary agents as enabled', () => {
+  test('detectAgents marks all agents as enabled', () => {
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
 
     const agents = detectAgents();
 
     const cursor = agents.find(a => a.name === 'cursor');
-    const github = agents.find(a => a.name === 'github');
+    const claude = agents.find(a => a.name === 'claude');
 
     expect(cursor.enabled).toBe(true);
-    expect(github.enabled).toBe(true);
-  });
-
-  test('detectAgents marks all agents as enabled', () => {
-    mkdirSync('.cline', { recursive: true });
-    mkdirSync('.roo', { recursive: true });
-
-    const agents = detectAgents();
-
-    const cline = agents.find(a => a.name === 'cline');
-    const roo = agents.find(a => a.name === 'roo');
-
-    expect(cline.enabled).toBe(true);
-    expect(roo.enabled).toBe(true);
+    expect(claude.enabled).toBe(true);
   });
 
   test('detectAgents includes correct skills path for each agent', () => {
     mkdirSync('.cursor', { recursive: true });
-    mkdirSync('.github', { recursive: true });
-    mkdirSync('.cline', { recursive: true });
+    mkdirSync('.claude', { recursive: true });
+    mkdirSync('.codex', { recursive: true });
 
     const agents = detectAgents();
 
     expect(agents.find(a => a.name === 'cursor').path).toBe('.cursor/skills');
-    expect(agents.find(a => a.name === 'github').path).toBe('.github/skills');
-    expect(agents.find(a => a.name === 'cline').path).toBe('.cline/skills');
+    expect(agents.find(a => a.name === 'claude').path).toBe('.claude/skills');
+    expect(agents.find(a => a.name === 'codex').path).toBe('.codex/skills');
   });
 
   test('detectAgents includes description for each agent', () => {
@@ -159,41 +146,16 @@ describe('Agent Detection', () => {
     expect(() => detectAgents()).not.toThrow();
   });
 
-  // New agents: Tier 1
-  test('detectAgents finds Claude agent', () => {
-    mkdirSync('.claude', { recursive: true });
-    const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('claude');
-    expect(agents[0].path).toBe('.claude/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
-
-  test('detectAgents finds Kilo Code agent', () => {
-    mkdirSync('.kilocode', { recursive: true });
-    const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('kilocode');
-    expect(agents[0].path).toBe('.kilocode/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
-
-  test('detectAgents finds Roo Code agent', () => {
+  test('detectAgents does not detect removed agents', () => {
+    mkdirSync('.cline', { recursive: true });
     mkdirSync('.roo', { recursive: true });
-    const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('roo');
-    expect(agents[0].path).toBe('.roo/skills');
-    expect(agents[0].enabled).toBe(true);
-  });
-
-  test('detectAgents finds OpenCode agent', () => {
+    mkdirSync('.kilocode', { recursive: true });
     mkdirSync('.opencode', { recursive: true });
+    mkdirSync('.github', { recursive: true });
+
     const agents = detectAgents();
-    expect(agents.length).toBe(1);
-    expect(agents[0].name).toBe('opencode');
-    expect(agents[0].path).toBe('.opencode/skills');
-    expect(agents[0].enabled).toBe(true);
+
+    expect(agents.length).toBe(0);
   });
 
 });

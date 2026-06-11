@@ -26,13 +26,8 @@ const { validatePluginSchema } = require('../lib/plugin-manager');
 
 const SYNC_ADAPTER_BY_PLUGIN_ID = Object.freeze({
   claude: 'claude-code',
-  cline: 'cline',
   codex: 'codex',
-  copilot: 'github-copilot',
   cursor: 'cursor',
-  kilocode: 'kilo-code',
-  opencode: 'opencode',
-  roo: 'roo-code',
 });
 
 function normalizeRelativeDir(dir) {

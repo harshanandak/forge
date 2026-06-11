@@ -9,10 +9,7 @@ const { detectInstalledAgents } = require('../../lib/project-discovery');
 const {
   detectProjectMetadata,
   generateAgentsMd,
-  generateCopilotConfig,
   generateCursorConfig,
-  generateKiloConfig,
-  generateOpenCodeConfig,
   generateArchitectureDoc,
   generateConfigurationDoc,
   generateMcpSetupDoc
@@ -159,7 +156,6 @@ describe('E2E: Full setup workflow', () => {
     test('should detect multiple agents and generate all configs', async () => {
       // Step 1: Create agent markers
       await fs.promises.mkdir(path.join(tempDir, '.claude'), { recursive: true });
-      await fs.promises.mkdir(path.join(tempDir, '.github'), { recursive: true });
       await fs.promises.mkdir(path.join(tempDir, '.cursor'), { recursive: true });
 
       await fs.promises.writeFile(
@@ -167,40 +163,22 @@ describe('E2E: Full setup workflow', () => {
         '# Claude Code'
       );
 
-      await fs.promises.writeFile(
-        path.join(tempDir, '.github', 'copilot-instructions.md'),
-        '# Copilot Instructions'
-      );
-
       // Step 2: Detect agents
       const agents = await detectInstalledAgents(tempDir);
 
       expect(agents.includes('claude')).toBeTruthy();
-      expect(agents.includes('copilot')).toBeTruthy();
       expect(agents.includes('cursor')).toBeTruthy();
 
       // Step 3: Generate configs for detected agents
       await generateAgentsMd(tempDir); // Universal
 
-      if (agents.includes('copilot')) {
-        await generateCopilotConfig(tempDir);
-      }
-
       if (agents.includes('cursor')) {
         await generateCursorConfig(tempDir);
       }
 
-      await generateKiloConfig(tempDir);
-      await generateOpenCodeConfig(tempDir);
-
       // Step 4: Verify all configs created
       expect(fs.existsSync(path.join(tempDir, 'AGENTS.md'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, '.github', 'copilot-instructions.md'))).toBeTruthy();
       expect(fs.existsSync(path.join(tempDir, '.cursor', 'rules', 'forge-workflow.mdc'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, '.kilocode', 'workflows', 'forge-workflow.md'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, '.kilocode', 'rules', 'workflow.md'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md'))).toBeTruthy();
-      expect(fs.existsSync(path.join(tempDir, 'opencode.json'))).toBeTruthy();
     });
   });
 
@@ -294,10 +272,7 @@ describe('E2E: Full setup workflow', () => {
           'detect_project',
           'detect_agents',
           'create_agents_md',
-          'create_copilot_config',
           'create_cursor_config',
-          'create_kilo_config',
-          'create_opencode_config',
           'create_documentation'
         ]
       };
@@ -320,22 +295,9 @@ describe('E2E: Full setup workflow', () => {
       steps.push('create_agents_md');
 
       // Step 5: Create agent configs
-      await generateCopilotConfig(tempDir);
-      await markStepComplete(tempDir, 'create_copilot_config');
-      steps.push('create_copilot_config');
-
       await generateCursorConfig(tempDir);
       await markStepComplete(tempDir, 'create_cursor_config');
       steps.push('create_cursor_config');
-
-      await generateKiloConfig(tempDir);
-      await markStepComplete(tempDir, 'create_kilo_config');
-      steps.push('create_kilo_config');
-
-
-      await generateOpenCodeConfig(tempDir);
-      await markStepComplete(tempDir, 'create_opencode_config');
-      steps.push('create_opencode_config');
 
       // Step 6: Create documentation
       await generateArchitectureDoc(tempDir);
@@ -345,7 +307,7 @@ describe('E2E: Full setup workflow', () => {
       steps.push('create_documentation');
 
       // Step 7: Verify all steps executed
-      expect(steps.length).toBe(9);
+      expect(steps.length).toBe(6);
 
       // Step 8: Verify setup complete
       const complete = await isSetupComplete(tempDir);
@@ -354,19 +316,10 @@ describe('E2E: Full setup workflow', () => {
       // Step 9: Verify all files created
       const expectedFiles = [
         'AGENTS.md',
-        '.github/copilot-instructions.md',
-        '.github/instructions/typescript.instructions.md',
-        '.github/instructions/testing.instructions.md',
-        '.github/prompts/red.prompt.md',
-        '.github/prompts/green.prompt.md',
         '.cursor/rules/forge-workflow.mdc',
         '.cursor/rules/tdd-enforcement.mdc',
         '.cursor/rules/security-scanning.mdc',
         '.cursor/rules/documentation.mdc',
-        '.kilocode/workflows/forge-workflow.md',
-        '.kilocode/rules/workflow.md',
-        '.kilocode/skills/forge-workflow/SKILL.md',
-        'opencode.json',
         'docs/ARCHITECTURE.md',
         'docs/CONFIGURATION.md',
         'docs/MCP_SETUP.md',

@@ -1673,7 +1673,6 @@ function displayMcpStatus(selectedAgents) {
   // Show manual setup instructions for GUI-based agents
   const manualMcpMap = {
     cursor: 'Cursor: Configure via Cursor Settings > MCP',
-    cline: 'Cline: Install via MCP Marketplace',
   };
   const needsManualMcp = Object.entries(manualMcpMap)
     .filter(([key]) => selectedAgents.includes(key))

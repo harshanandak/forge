@@ -172,11 +172,7 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
     const agentPrefixes = [
       '.claude/',
       '.cursor/',
-      '.cline/',
-      '.roo/',
       '.codex/',
-      '.kilocode/',
-      '.opencode/',
     ];
 
     for (const prefix of agentPrefixes) {
@@ -217,17 +213,6 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
         f.startsWith('.forge/hooks/'),
       );
       expect(forgeHookFiles.length).toBeGreaterThan(0);
-    });
-  });
-
-  // -- GitHub prompts -------------------------------------------------
-
-  describe('.github/prompts/', () => {
-    it('includes .github/prompts/ files', () => {
-      const promptFiles = packFiles.filter((f) =>
-        f.startsWith('.github/prompts/'),
-      );
-      expect(promptFiles.length).toBeGreaterThan(0);
     });
   });
 
@@ -287,17 +272,6 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
         f.startsWith('docs/') && f.endsWith('.md'),
       );
       expect(docFiles.length).toBeGreaterThan(0);
-    });
-  });
-
-  // -- .kilocode agent (specific check) -------------------------------
-
-  describe('.kilocode/ agent directory', () => {
-    it('includes .kilocode/ command files', () => {
-      const kiloFiles = packFiles.filter((f) =>
-        f.startsWith('.kilocode/'),
-      );
-      expect(kiloFiles.length).toBeGreaterThan(0);
     });
   });
 

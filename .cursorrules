@@ -108,9 +108,8 @@ Post-merge health check:
 
 ```
 your-project/
-├── AGENTS.md                    # Universal (Windsurf, Cursor, Kilo, OpenCode, Cline, Roo, Aider)
+├── AGENTS.md                    # Universal (Claude Code, Codex, Cursor)
 ├── CLAUDE.md                    # Claude Code
-├── GEMINI.md                    # Google Antigravity
 ├── .cursorrules                 # Cursor
 │
 ├── .claude/commands/            # Claude Code commands
@@ -123,22 +122,13 @@ your-project/
 
 ## Supported Agents
 
-This workflow works with ALL major AI coding agents:
+Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
 
 | Agent | Instructions | Commands |
 |-------|-------------|----------|
 | Claude Code | CLAUDE.md | .claude/commands/ |
-| Google Antigravity | GEMINI.md | .agent/workflows/ |
+| Codex CLI | AGENTS.md | .codex/skills/ |
 | Cursor | .cursorrules | .cursor/rules/ |
-| Windsurf | AGENTS.md | .windsurf/workflows/ |
-| Kilo Code | AGENTS.md | .kilocode/workflows/ |
-| OpenCode | AGENTS.md | .opencode/commands/ |
-| Cline | AGENTS.md | - |
-| Roo Code | AGENTS.md | .roo/commands/ |
-| Continue | AGENTS.md | .continue/prompts/ |
-| GitHub Copilot | .github/copilot-instructions.md | .github/prompts/ |
-| Aider | AGENTS.md (via .aider.conf.yml) | In-chat |
-| Codex CLI | AGENTS.md | In-chat |
 
 ## License
 

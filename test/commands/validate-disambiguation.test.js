@@ -29,12 +29,12 @@ describe("/validate disambiguation note", () => {
     expect(cursorContent).toContain("forge-preflight");
   });
 
-  it("is synced to .roo agent directory", () => {
-    const rooPath = join(ROOT, ".roo", "commands", "validate.md");
-    if (!existsSync(rooPath)) {
-      throw new Error(".roo/commands/validate.md does not exist — run sync-commands.js");
+  it("is synced to .codex agent directory", () => {
+    const codexPath = join(ROOT, ".codex", "skills", "validate", "SKILL.md");
+    if (!existsSync(codexPath)) {
+      throw new Error(".codex/skills/validate/SKILL.md does not exist — run sync-commands.js");
     }
-    const rooContent = readFileSync(rooPath, "utf-8");
-    expect(rooContent).toContain("forge-preflight");
+    const codexContent = readFileSync(codexPath, "utf-8");
+    expect(codexContent).toContain("forge-preflight");
   });
 });

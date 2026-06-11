@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
+const { describe, test, beforeEach, afterEach, expect } = require('bun:test');
 const os = require('node:os');
 
 // Module under test
@@ -192,7 +192,7 @@ describe('Documentation file generation', () => {
 
       // Should mention Tier 1 agents
       expect(content.includes('Claude') || content.includes('claude')).toBeTruthy();
-      expect(content.includes('Copilot') || content.includes('copilot')).toBeTruthy();
+      expect(content.includes('Codex') || content.includes('codex')).toBeTruthy();
       expect(content.includes('Cursor') || content.includes('cursor')).toBeTruthy();
     });
 

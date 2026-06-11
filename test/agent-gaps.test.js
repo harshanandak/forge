@@ -11,8 +11,6 @@ const { describe, test, expect } = require('bun:test');
 const { AGENT_ADAPTERS, syncCommands } = require('../scripts/sync-commands');
 
 const repoRoot = path.resolve(__dirname, '..');
-const clinePlugin = require('../lib/agents/cline.plugin.json');
-const rooPlugin = require('../lib/agents/roo.plugin.json');
 
 describe('agent parity gaps', () => {
   test('claude-code remains the canonical adapter and is intentionally skipped', () => {
@@ -48,14 +46,12 @@ describe('agent parity gaps', () => {
     expect(result.planned.length).toBeGreaterThan(0);
   });
 
-  test('all 8 agents have adapters', () => {
-    const expected = [
-      'claude-code', 'cursor', 'cline', 'opencode',
-      'github-copilot', 'kilo-code', 'roo-code', 'codex',
-    ];
+  test('all supported agents have adapters', () => {
+    const expected = ['claude-code', 'cursor', 'codex'];
     for (const agent of expected) {
       expect(AGENT_ADAPTERS[agent]).toBeDefined();
     }
+    expect(Object.keys(AGENT_ADAPTERS).sort()).toEqual(expected.slice().sort());
   });
 
   test('contentHash is exported from sync-commands', () => {
@@ -66,13 +62,10 @@ describe('agent parity gaps', () => {
     expect(hash.length).toBe(64);
   });
 
-  test('Roo and Cline are explicitly downgraded until native parity is proven', () => {
-    for (const plugin of [clinePlugin, rooPlugin]) {
-      expect(plugin.support?.status).toBe('deprecated');
-      expect(plugin.support?.surface).toBe('editor-native');
-      expect(plugin.capabilities.skills).toBe(false);
-      expect(plugin.directories.skills).toBeUndefined();
-      expect(plugin.setup?.createSkill).toBeUndefined();
+  test('removed agents have no plugin definitions', () => {
+    const agentsDir = path.join(repoRoot, 'lib', 'agents');
+    for (const removed of ['cline', 'copilot', 'kilocode', 'opencode', 'roo']) {
+      expect(fs.existsSync(path.join(agentsDir, `${removed}.plugin.json`))).toBe(false);
     }
   });
 });

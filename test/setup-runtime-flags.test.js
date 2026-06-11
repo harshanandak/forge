@@ -148,7 +148,7 @@ describe('setup runtime flags', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Auto-detected agents (--detect): cursor');
     expect(result.stdout).toContain('.cursor/commands/');
-    expect(result.stdout).not.toContain('.roo/commands/');
+    expect(result.stdout).not.toContain('.codex/skills/');
     expect(result.stdout).not.toContain('.claude/commands/plan.md');
   });
 
@@ -267,18 +267,6 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'tdd-enforcement.mdc'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'security-scanning.mdc'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, '.cursor', 'rules', 'documentation.mdc'))).toBe(true);
-  });
-
-  serialTest('setup scaffolds Kilo native surfaces through the real setup path', async () => {
-    const tmpDir = makeTempDir();
-
-    const result = await runSetup(['--agents', 'kilocode', '--skip-external'], tmpDir);
-
-    expect(result.status).toBe(0);
-    expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'workflows', 'forge-workflow.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'rules', 'workflow.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.kilocode', 'skills', 'forge-workflow', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.kilo.md'))).toBe(false);
   });
 
   serialTest('checkPrerequisites allows missing gh during local scaffold-only setup', () => {

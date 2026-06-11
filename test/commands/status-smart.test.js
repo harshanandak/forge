@@ -26,10 +26,12 @@ describe("/status command - smart-status integration", () => {
     expect(content).toContain("git log");
   });
 
-  it("agent copies (.cursor, .roo) also reference smart-status.sh", () => {
-    const agentDirs = [".cursor", ".roo"];
-    for (const dir of agentDirs) {
-      const agentPath = join(ROOT, dir, "commands/status.md");
+  it("agent copies (.cursor, .codex) also reference smart-status.sh", () => {
+    const agentPaths = [
+      join(ROOT, ".cursor", "commands/status.md"),
+      join(ROOT, ".codex", "skills/status/SKILL.md"),
+    ];
+    for (const agentPath of agentPaths) {
       expect(existsSync(agentPath)).toBe(true);
       const agentContent = readFileSync(agentPath, "utf-8");
       expect(agentContent).toContain("bash scripts/smart-status.sh");
