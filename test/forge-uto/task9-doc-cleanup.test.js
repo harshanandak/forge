@@ -13,24 +13,8 @@ function readIfExists(filePath) {
 }
 
 describe('Task 9: Doc cleanup — dropped agents removed', () => {
-  test('.clinerules has no Antigravity references', () => {
-    const src = readIfExists('.clinerules');
-    expect(src).not.toContain('Antigravity');
-    expect(src).not.toContain('GEMINI.md');
-    expect(src).not.toContain('.agent/');
-  });
-
-  test('.clinerules has no Windsurf references', () => {
-    const src = readIfExists('.clinerules');
-    expect(src).not.toContain('Windsurf');
-    expect(src).not.toContain('.windsurf/');
-    expect(src).not.toContain('.windsurfrules');
-  });
-
-  test('.clinerules has no Aider references', () => {
-    const src = readIfExists('.clinerules');
-    expect(src).not.toContain('Aider');
-    expect(src).not.toContain('aider');
+  test('.clinerules does not exist', () => {
+    expect(fs.existsSync(path.join(root, '.clinerules'))).toBe(false);
   });
 
   test('.windsurfrules does not exist', () => {

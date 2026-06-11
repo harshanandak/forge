@@ -158,41 +158,6 @@ function keepDescription(fm, _commandName) {
 }
 
 /**
- * Keep `description`, add `mode: code`.
- *
- * @param {Record<string, unknown>} fm
- * @param {string} _commandName
- * @returns {Record<string, unknown>}
- */
-function keepDescriptionAddMode(fm, _commandName) {
-  /** @type {Record<string, unknown>} */
-  const result = {};
-  if (fm.description !== undefined) {
-    result.description = fm.description;
-  }
-  result.mode = 'code';
-  return result;
-}
-
-/**
- * GitHub Copilot transform: add `name`, keep `description`, add `tools`.
- *
- * @param {Record<string, unknown>} fm
- * @param {string} commandName
- * @returns {Record<string, unknown>}
- */
-function copilotTransform(fm, commandName) {
-  /** @type {Record<string, unknown>} */
-  const result = {};
-  result.name = commandName;
-  if (fm.description !== undefined) {
-    result.description = fm.description;
-  }
-  result.tools = Array.isArray(fm.tools) ? fm.tools : [];
-  return result;
-}
-
-/**
  * Agent adapter configuration for command sync.
  *
  * Each entry maps an agent slug to its target directory, file extension,
@@ -213,36 +178,6 @@ const AGENT_ADAPTERS = {
     baseDir: '.cursor/commands/',
     extension: '.md',
     transformFrontmatter: stripAllFrontmatter,
-  },
-  cline: {
-    dir: () => '.cline/workflows/',
-    baseDir: '.cline/workflows/',
-    extension: '.md',
-    transformFrontmatter: stripAllFrontmatter,
-  },
-  opencode: {
-    dir: () => '.opencode/commands/',
-    baseDir: '.opencode/commands/',
-    extension: '.md',
-    transformFrontmatter: keepDescription,
-  },
-  'github-copilot': {
-    dir: () => '.github/prompts/',
-    baseDir: '.github/prompts/',
-    extension: '.prompt.md',
-    transformFrontmatter: copilotTransform,
-  },
-  'kilo-code': {
-    dir: () => '.kilocode/workflows/',
-    baseDir: '.kilocode/workflows/',
-    extension: '.md',
-    transformFrontmatter: keepDescriptionAddMode,
-  },
-  'roo-code': {
-    dir: () => '.roo/commands/',
-    baseDir: '.roo/commands/',
-    extension: '.md',
-    transformFrontmatter: keepDescriptionAddMode,
   },
   codex: {
     dir: (commandName) => `.codex/skills/${commandName}/`,
@@ -474,9 +409,6 @@ function syncCommands({ dryRun, check, repoRoot, canonicalDir = null }) {
   }
 
   // ---- write mode (default) ----
-
-  // Note: .clinerules flat-file migration was removed — Cline workflows
-  // now go to .cline/workflows/, so .clinerules stays as Cline's root config file.
 
   /** @type {SyncEntry[]} */
   const written = [];

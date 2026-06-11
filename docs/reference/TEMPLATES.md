@@ -22,7 +22,7 @@ When run interactively, `forge init` asks for:
 
 - default classification: `critical`, `standard`, or `refactor`.
 - Layer 1 rail confirmation.
-- harness targets: `claude`, `cursor`, `codex`, `opencode`, and/or `copilot`.
+- harness targets: `claude`, `cursor`, and/or `codex`.
 
 Harness defaults are detected from filesystem markers where supported:
 

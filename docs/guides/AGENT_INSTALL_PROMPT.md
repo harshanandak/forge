@@ -20,13 +20,13 @@ First, determine which AI agent you are by checking for these directories:
 
 ```bash
 # Check for agent-specific directories
-ls -la | grep -E "\.claude|\.cursor|\.cline"
+ls -la | grep -E "\.claude|\.codex|\.cursor"
 ```
 
 **Agent Detection:**
 - `.claude/` exists → You are **Claude Code**
+- `.codex/` exists → You are **Codex**
 - `.cursor/` exists → You are **Cursor**
-- `.cline/` exists → You are **Cline**
 - None exist → Generic agent
 
 Store this for later: `DETECTED_AGENT=<name>`
@@ -328,8 +328,8 @@ EOF
 
 **This prompt is designed to work with:**
 - Claude Code (via CLI)
+- Codex (via CLI)
 - Cursor (via chat)
-- Cline (via VSCode extension)
 - Any AI coding assistant with file system access
 
 ---

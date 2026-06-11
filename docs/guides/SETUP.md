@@ -32,7 +32,7 @@ Supported options:
 ```text
 --profile minimal|standard|full
 --classification critical|standard|refactor
---harness claude,cursor,codex,opencode,copilot
+--harness claude,cursor,codex
 --yes
 --force
 --dry-run
@@ -62,11 +62,11 @@ Use `--agents`, not `--agent`.
 
 ## Agent Notes
 
+Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
+
 - Claude Code: installs `.claude/commands`, rules, and skills when selected.
 - Cursor: installs Cursor rules and links back to `AGENTS.md`.
 - Codex: uses `AGENTS.md` and may use Codex skills when installed.
-- GitHub Copilot: uses `.github/copilot-instructions.md` and prompts.
-- OpenCode, Cline, Roo Code, and Kilo Code are supported through generated harness files where configured.
 
 Exact generated files depend on selected agents and existing repository files. Use `--dry-run` before applying setup to a mature repo.
 

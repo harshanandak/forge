@@ -98,8 +98,8 @@ describe('checkAgents — sync check', () => {
       // Write synced files
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Modify one file to create drift
-      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
-      fs.writeFileSync(clineFile, 'Manually modified content');
+      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+      fs.writeFileSync(cursorFile, 'Manually modified content');
 
       const result = checkAgents(tmpDir);
       expect(result.errors.length).toBeGreaterThan(0);
@@ -236,17 +236,17 @@ describe('checkAgents — plugin catalog', () => {
       plan: '---\ndescription: Plan\n---\n\nPlan body.',
     }, [
       {
-        id: 'opencode',
-        name: 'OpenCode',
+        id: 'cursor',
+        name: 'Cursor',
         version: '1.0.0',
         capabilities: { commands: true, skills: true },
-        directories: { commands: '.opencode/commands' },
+        directories: { commands: '.cursor/commands' },
       },
     ]);
     try {
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('skills') && e.includes('opencode'))).toBe(true);
+      expect(result.errors.some((e) => e.includes('skills') && e.includes('cursor'))).toBe(true);
     } finally {
       cleanupTempRepo(tmpDir);
     }
@@ -257,14 +257,14 @@ describe('checkAgents — plugin catalog', () => {
       plan: '---\ndescription: Plan\n---\n\nPlan body.',
     }, [
       {
-        id: 'cline',
-        name: 'Cline',
+        id: 'cursor',
+        name: 'Cursor',
         version: '1.0.0',
         capabilities: { commands: true, skills: true },
         support: { status: 'deprecated', surface: 'editor-native' },
         directories: {
-          workflows: '.cline/workflows',
-          skills: '.cline/skills/forge-workflow',
+          commands: '.cursor/commands',
+          skills: '.cursor/skills/forge-workflow',
         },
         setup: {
           createSkill: true,
@@ -273,7 +273,7 @@ describe('checkAgents — plugin catalog', () => {
     ]);
     try {
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      fs.mkdirSync(path.join(tmpDir, '.cline', 'skills', 'forge-workflow'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, '.cursor', 'skills', 'forge-workflow'), { recursive: true });
 
       const result = checkAgents(tmpDir);
       expect(result.errors.some((e) => e.includes('deprecated') && e.includes('skills'))).toBe(true);
@@ -287,8 +287,8 @@ describe('checkAgents — plugin catalog', () => {
       plan: '---\ndescription: Plan\n---\n\nPlan body.',
     }, [
       {
-        id: 'roo',
-        name: 'Roo Code',
+        id: 'cursor',
+        name: 'Cursor',
         version: '1.0.0',
         capabilities: { commands: true, skills: false },
         support: {
@@ -297,10 +297,10 @@ describe('checkAgents — plugin catalog', () => {
           install: { required: false, repairRequired: false },
         },
         directories: {
-          commands: '.roo/commands',
+          commands: '.cursor/commands',
         },
         files: {
-          rootConfig: '.roorules',
+          rootConfig: '.cursorrules',
         },
         setup: {
           copyCommands: true,

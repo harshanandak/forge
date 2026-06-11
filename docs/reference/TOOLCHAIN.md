@@ -237,11 +237,6 @@ Context7 provides current documentation that may be more recent than the AI's tr
 }
 ```
 
-**Cline (VSCode)**:
-1. Open VSCode Settings
-2. Search for "Cline MCP"
-3. Add Context7 server configuration
-
 **Cursor**: Check Cursor Settings → MCP Servers for configuration options
 
 **Other agents**: If your agent supports MCP, configure using the JSON format above

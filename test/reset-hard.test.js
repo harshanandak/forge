@@ -98,14 +98,12 @@ describe('resetHard', () => {
   test('removes multiple agent directories', () => {
     scaffold(tmpDir, [
       '.cursor/rules/forge-workflow.mdc',
-      '.cline/rules/forge-workflow.md',
-      '.roo/rules/forge-workflow.md',
+      '.codex/skills/plan/SKILL.md',
     ]);
 
     resetHard(tmpDir, { force: true });
 
     expect(fs.existsSync(path.join(tmpDir, '.cursor'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.cline'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.roo'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.codex'))).toBe(false);
   });
 });

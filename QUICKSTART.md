@@ -21,7 +21,7 @@ You can also run one-off commands with `bunx forge ...`.
 Terms used below:
 
 - Runtime config means local `.forge/` files that describe adoption choices.
-- Harness means an agent-specific install target such as Codex, Claude, Cursor, or OpenCode.
+- Harness means an agent-specific install target. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
 - Beads means the optional `bd` issue backend used by `forge ready`, `forge show`, and related wrappers.
 
 ## 2. Initialize Runtime Config

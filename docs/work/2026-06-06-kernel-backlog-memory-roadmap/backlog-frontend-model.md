@@ -1,16 +1,17 @@
 # Backlog, Sprint, and Frontend Planning Model
 
+> Amended 2026-06-11 per accepted decisions D18 (taxonomy collapse, derived readiness, single rank). The original 8-type/7-status model is superseded.
+
 ## Terms
 
-- **Epic:** large outcome with many features/stories.
-- **Feature:** user-visible capability or system capability.
-- **Story:** user/agent-oriented slice; Beads may store this as `feature` plus label until Kernel supports native story type.
-- **Task:** implementation unit.
+- **Epic:** large outcome grouping many child work items.
+- **Task:** implementation unit (the default type). `feature`, `story`, `chore`, `spike` are labels on epics/tasks, not types.
+- **Bug:** defect work.
 - **Decision:** architecture/product decision that can block tasks.
-- **Bug/chore:** maintenance work.
 - **Sprint/iteration:** time-boxed planning bucket, not hierarchy.
 - **Release/milestone:** delivery bucket, not hierarchy.
 - **Stage state:** workflow execution progress inside a work item, not issue status.
+- **Ready/blocked:** derived read-model facts, never stored statuses.
 
 ## Canonical fields to plan for
 
@@ -37,13 +38,11 @@ issue.entity_revision
 ## Status lifecycle
 
 ```text
-backlog -> ready -> in_progress -> review -> done
-backlog -> cancelled
-ready/in_progress/review -> blocked
-blocked -> ready/in_progress/review
+open -> in_progress -> review -> done
+open/in_progress/review -> cancelled
 ```
 
-The exact previous status should be preserved when blocking so unblocking can return to the right lane.
+`ready` and `blocked` are computed by the readiness read model (dependencies, explicit blockers, claims, gates, quarantine) — they are query results, not stored statuses. This removes the preserve-previous-status hack: when a blocker clears, the issue is simply ready again in whatever stored status it held. "Backlog" is `open` with readiness conditions unmet.
 
 ## Frontend board views
 

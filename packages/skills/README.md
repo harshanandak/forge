@@ -2,7 +2,7 @@
 
 Universal CLI tool for managing SKILL.md files across all AI agents.
 
-**Make skills discoverable, shareable, and manageable across Claude Code, Cursor, GitHub Copilot, and 20+ other agents through a single CLI interface.**
+**Make skills discoverable, shareable, and manageable across Claude Code, Codex, and Cursor through a single CLI interface.**
 
 ---
 
@@ -23,7 +23,7 @@ Universal CLI tool for managing SKILL.md files across all AI agents.
 
 ### The Problem
 
-AI agents (Claude Code, Cursor, Cline, Continue) each have their own skill management:
+AI agents (Claude Code, Codex, Cursor) each have their own skill management:
 - **No central source of truth** - Skills scattered across `.cursor/`, `.github/`, `.claude/`
 - **Manual duplication** - Copy SKILL.md files between agent directories
 - **No discoverability** - Hard to find and reuse skills
@@ -128,10 +128,9 @@ skills sync
 ```
 
 This copies skills from `.skills/` to:
-- `.cursor/skills/` (Cursor)
-- `.github/skills/` (GitHub Copilot)
 - `.claude/skills/` (Claude Code)
-- And more...
+- `.codex/skills/` (Codex)
+- `.cursor/skills/` (Cursor)
 
 ### 5. Validate
 
@@ -270,7 +269,7 @@ skills remove <name>
 ├── .cursor/skills/           # Synced to Cursor (copy)
 │   ├── my-skill/
 │   └── another-skill/
-├── .github/skills/           # Synced to GitHub (copy)
+├── .claude/skills/           # Synced to Claude Code (copy)
 │   ├── my-skill/
 │   └── another-skill/
 └── AGENTS.md                 # Auto-generated skill index
@@ -278,7 +277,7 @@ skills remove <name>
 
 **Workflow:**
 1. **Create**: `skills create my-skill` → creates in `.skills/my-skill/`
-2. **Sync**: `skills sync` → copies to `.cursor/skills/`, `.github/skills/`, etc.
+2. **Sync**: `skills sync` → copies to `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`
 3. **Update**: Edit `.skills/my-skill/SKILL.md` → `skills sync` to propagate
 
 ---
@@ -397,14 +396,12 @@ See [SECURITY.md](SECURITY.md) for full audit.
 
 ## Agent Support
 
-**Fully Supported:**
-- ✅ Cursor (`.cursor/skills/`)
-- ✅ GitHub Copilot (`.github/skills/`)
-- ✅ Claude Code (`.claude/skills/`)
+Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
 
-**Detected (can be enabled in config):**
-- Cline (`.cline/skills/`)
-- Continue (`.continue/skills/`)
+**Fully Supported:**
+- ✅ Claude Code (`.claude/skills/`)
+- ✅ Codex (`.codex/skills/`)
+- ✅ Cursor (`.cursor/skills/`)
 
 ---
 

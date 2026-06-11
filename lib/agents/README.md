@@ -94,17 +94,13 @@ Legacy `capabilities.hooks: true/false` values are still accepted and normalized
 
 ## Supported Agents
 
-Currently supported AI coding agents:
+Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
 
 | Agent | ID | Description |
 |-------|----|-----------|
 | Claude Code | `claude` | Anthropic's CLI agent |
+| Codex | `codex` | OpenAI's CLI agent |
 | Cursor | `cursor` | AI-first code editor |
-| Kilo Code | `kilocode` | VS Code extension |
-| GitHub Copilot | `copilot` | GitHub's AI assistant |
-| OpenCode | `opencode` | Open-source agent |
-| Cline | `cline` | VS Code agent extension |
-| Roo Code | `roo` | Cline fork with modes |
 
 ## Adding a New Agent
 

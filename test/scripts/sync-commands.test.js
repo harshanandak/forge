@@ -169,20 +169,16 @@ describe('buildFile', () => {
 // ---- AGENT_ADAPTERS -------------------------------------------------------------
 
 describe('AGENT_ADAPTERS', () => {
-  test('contains all 8 agents', () => {
+  test('contains exactly the supported agents', () => {
     const expected = [
       'claude-code',
       'cursor',
-      'cline',
-      'opencode',
-      'github-copilot',
-      'kilo-code',
-      'roo-code',
       'codex',
     ];
     for (const agent of expected) {
       expect(AGENT_ADAPTERS[agent]).toBeDefined();
     }
+    expect(Object.keys(AGENT_ADAPTERS).sort()).toEqual(expected.slice().sort());
   });
 
   test('each adapter has required properties', () => {
@@ -228,98 +224,6 @@ describe('adaptForAgent — Tier 1', () => {
     expect(result.content).toContain('Plan a feature from scratch.');
   });
 
-  // -- Cline --
-  test('cline strips all frontmatter', () => {
-    const result = adaptForAgent('cline', fm, body, 'dev');
-    const parsed = parseFrontmatter(result.content);
-    expect(Object.keys(parsed.frontmatter)).toHaveLength(0);
-  });
-
-  test('cline outputs to .cline/workflows/', () => {
-    const result = adaptForAgent('cline', fm, body, 'dev');
-    expect(result.dir).toBe('.cline/workflows/');
-    expect(result.filename).toBe('dev.md');
-  });
-
-  // -- OpenCode --
-  test('opencode keeps only description', () => {
-    const result = adaptForAgent('opencode', fm, body, 'plan');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.description).toBe('Design intent');
-    expect(parsed.frontmatter.allowed_agents).toBeUndefined();
-  });
-
-  test('opencode outputs to .opencode/commands/', () => {
-    const result = adaptForAgent('opencode', fm, body, 'plan');
-    expect(result.dir).toBe('.opencode/commands/');
-    expect(result.filename).toBe('plan.md');
-  });
-
-  // -- GitHub Copilot --
-  test('copilot adds name, keeps description, adds tools field', () => {
-    const result = adaptForAgent('github-copilot', fm, body, 'plan');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.name).toBe('plan');
-    expect(parsed.frontmatter.description).toBe('Design intent');
-    expect(parsed.frontmatter.tools).toBeDefined();
-    expect(parsed.frontmatter.allowed_agents).toBeUndefined();
-  });
-
-  test('copilot uses .prompt.md extension', () => {
-    const result = adaptForAgent('github-copilot', fm, body, 'plan');
-    expect(result.filename).toBe('plan.prompt.md');
-    expect(result.dir).toBe('.github/prompts/');
-  });
-
-  test('copilot preserves canonical tools field when present', () => {
-    const fmWithTools = { description: 'Plan', tools: ['githubRepo', 'codebase'] };
-    const result = adaptForAgent('github-copilot', fmWithTools, body, 'plan');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.tools).toEqual(['githubRepo', 'codebase']);
-  });
-
-  test('copilot defaults tools to empty array when not in canonical', () => {
-    const fmNoTools = { description: 'Plan' };
-    const result = adaptForAgent('github-copilot', fmNoTools, body, 'plan');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.tools).toEqual([]);
-  });
-});
-
-// ---- adaptForAgent — Tier 2 agents -----------------------------------------------
-
-describe('adaptForAgent — Tier 2', () => {
-  const fm = { description: 'Run tests and lint' };
-  const body = '\nValidate the code.';
-
-  // -- Kilo Code --
-  test('kilo-code keeps description and adds mode: code', () => {
-    const result = adaptForAgent('kilo-code', fm, body, 'validate');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.description).toBe('Run tests and lint');
-    expect(parsed.frontmatter.mode).toBe('code');
-  });
-
-  test('kilo-code outputs to .kilocode/workflows/', () => {
-    const result = adaptForAgent('kilo-code', fm, body, 'validate');
-    expect(result.dir).toBe('.kilocode/workflows/');
-    expect(result.filename).toBe('validate.md');
-  });
-
-  // -- Roo Code --
-  test('roo-code keeps description and adds mode: code', () => {
-    const result = adaptForAgent('roo-code', fm, body, 'validate');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.description).toBe('Run tests and lint');
-    expect(parsed.frontmatter.mode).toBe('code');
-  });
-
-  test('roo-code outputs to .roo/commands/', () => {
-    const result = adaptForAgent('roo-code', fm, body, 'validate');
-    expect(result.dir).toBe('.roo/commands/');
-    expect(result.filename).toBe('validate.md');
-  });
-
   // -- Codex --
   test('codex outputs to .codex/skills/<name>/ with SKILL.md', () => {
     const result = adaptForAgent('codex', fm, body, 'validate');
@@ -330,7 +234,8 @@ describe('adaptForAgent — Tier 2', () => {
   test('codex keeps description in frontmatter', () => {
     const result = adaptForAgent('codex', fm, body, 'validate');
     const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.description).toBe('Run tests and lint');
+    expect(parsed.frontmatter.description).toBe('Design intent');
+    expect(parsed.frontmatter.allowed_agents).toBeUndefined();
   });
 });
 
@@ -346,22 +251,15 @@ describe('adaptForAgent — edge cases', () => {
     expect(result.content).toBe('body');
   });
 
-  test('handles frontmatter with no description for copilot', () => {
-    const result = adaptForAgent('github-copilot', {}, 'body', 'status');
-    const parsed = parseFrontmatter(result.content);
-    expect(parsed.frontmatter.name).toBe('status');
-    expect(parsed.frontmatter.tools).toBeDefined();
-  });
-
-  test('opencode with no description produces empty frontmatter', () => {
-    const result = adaptForAgent('opencode', { allowed_agents: 'claude' }, 'body', 'dev');
+  test('codex with no description produces empty frontmatter', () => {
+    const result = adaptForAgent('codex', { allowed_agents: 'claude' }, 'body', 'dev');
     const parsed = parseFrontmatter(result.content);
     expect(parsed.frontmatter.description).toBeUndefined();
     expect(parsed.frontmatter.allowed_agents).toBeUndefined();
   });
 
   test('preserves body across all non-skip agents', () => {
-    const agents = ['cursor', 'cline', 'opencode', 'github-copilot', 'kilo-code', 'roo-code', 'codex'];
+    const agents = ['cursor', 'codex'];
     const testBody = '\nSome important body content.';
     for (const agent of agents) {
       const result = adaptForAgent(agent, { description: 'X' }, testBody, 'plan');
@@ -460,9 +358,9 @@ describe('syncCommands — default write mode', () => {
       const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       expect(result.written.length).toBeGreaterThan(0);
       // Check that at least one agent file was actually written
-      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
-      expect(fs.existsSync(clineFile)).toBe(true);
-      const content = fs.readFileSync(clineFile, 'utf8');
+      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+      expect(fs.existsSync(cursorFile)).toBe(true);
+      const content = fs.readFileSync(cursorFile, 'utf8');
       expect(content).toContain('Plan body.');
     } finally {
       cleanupTempRepo(tmpDir);
@@ -526,14 +424,14 @@ describe('syncCommands — check mode', () => {
       // Write files
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Manually modify one file
-      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
-      fs.writeFileSync(clineFile, 'Manually modified content');
+      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+      fs.writeFileSync(cursorFile, 'Manually modified content');
       // Check — should detect out of sync
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
       expect(result.inSync).toBe(false);
       expect(result.outOfSync.length).toBeGreaterThan(0);
       const outPaths = result.outOfSync.map((e) => e.filePath);
-      expect(outPaths.some((p) => p.includes('cline'))).toBe(true);
+      expect(outPaths.some((p) => p.includes('cursor'))).toBe(true);
     } finally {
       cleanupTempRepo(tmpDir);
     }
@@ -560,15 +458,15 @@ describe('syncCommands — check mode', () => {
     try {
       // Write all files
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Modify only the opencode file
-      const opencodeFile = path.join(tmpDir, '.opencode', 'commands', 'plan.md');
-      fs.writeFileSync(opencodeFile, 'Modified opencode content');
+      // Modify only the codex file
+      const codexFile = path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md');
+      fs.writeFileSync(codexFile, 'Modified codex content');
       // Check
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
       expect(result.inSync).toBe(false);
       // Only the modified file should be out of sync
       const outPaths = result.outOfSync.map((e) => e.filePath);
-      expect(outPaths.some((p) => p.includes('opencode'))).toBe(true);
+      expect(outPaths.some((p) => p.includes('codex'))).toBe(true);
       // Other agents should still be in sync (verify count is small)
       expect(result.outOfSync.length).toBe(1);
     } finally {
@@ -605,9 +503,9 @@ describe('syncCommands — stale file detection', () => {
     });
     try {
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Add a custom file with the SAME managed extension (.prompt.md) in an agent dir
+      // Add a custom file with the SAME managed extension (.md) in an agent dir
       // This is the key test: manifest-based detection should NOT flag it
-      const customFile = path.join(tmpDir, '.github', 'prompts', 'my-custom-guidelines.prompt.md');
+      const customFile = path.join(tmpDir, '.cursor', 'commands', 'my-custom-guidelines.md');
       fs.writeFileSync(customFile, 'Custom prompt guidelines');
       const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
       const stalePaths = result.staleFiles || [];
@@ -627,12 +525,12 @@ describe('syncCommands — overwrite warning', () => {
       // Write files initially
       syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       // Manually modify a file
-      const clineFile = path.join(tmpDir, '.cline', 'workflows', 'plan.md');
-      fs.writeFileSync(clineFile, 'Manually modified content');
+      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+      fs.writeFileSync(cursorFile, 'Manually modified content');
       // Write again — should report overwrite warnings
       const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
       expect(result.overwritten.length).toBeGreaterThan(0);
-      expect(result.overwritten.some((e) => e.filePath.includes('cline'))).toBe(true);
+      expect(result.overwritten.some((e) => e.filePath.includes('cursor'))).toBe(true);
     } finally {
       cleanupTempRepo(tmpDir);
     }
@@ -653,9 +551,6 @@ describe('syncCommands — overwrite warning', () => {
     }
   });
 });
-
-// Note: .clinerules flat-file migration tests removed — Cline workflows
-// now go to .cline/workflows/, so migration is no longer needed.
 
 describe('syncCommands — edge cases', () => {
   test('handles empty commands directory', () => {

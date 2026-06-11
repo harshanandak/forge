@@ -60,7 +60,7 @@ v0.0.11 is a documentation and positioning package release: canonical docs, corr
 
 - Runtime control plane: local commands, files, and checks that give agents a shared operating surface.
 - Workflow template: the default stage path Forge installs for agents, such as `/plan -> /dev -> /validate -> /ship -> /review -> /premerge`.
-- Harness: an agent-specific instruction surface such as Codex, Claude, Cursor, or OpenCode.
+- Harness: an agent-specific instruction surface. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
 - Beads: the optional local issue-state backend used by Forge issue wrappers.
 - Adapter: an integration boundary for review or issue tools.
 - Protected state: files that should be changed through their owning command or API, not by casual edits.

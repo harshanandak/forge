@@ -127,11 +127,8 @@ describe('agent-validator', () => {
       expect(hasCursorRules).toBeTruthy();
     });
 
-    test('should return expected files for all 8 agents', () => {
-      const agents = [
-        'claude', 'cursor', 'cline', 'opencode', 'copilot',
-        'kilo-code', 'roo-code', 'codex'
-      ];
+    test('should return expected files for all supported agents', () => {
+      const agents = ['claude', 'cursor', 'codex'];
 
       for (const agent of agents) {
         const files = getExpectedFiles(agent);

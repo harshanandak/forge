@@ -21,7 +21,7 @@ Bash(mkdir *), Bash(touch *), Bash(cp *), Bash(mv *)
 
 ## Confirm Before Running (prompt each time)
 
-<!-- git reset --hard moved from Deny to Confirm to match opencode.json "ask" policy.
+<!-- git reset --hard moved from Deny to Confirm ("ask" policy).
      Rationale: agents may need it for worktree cleanup during /verify stage,
      but it should always require user confirmation since it discards uncommitted changes. -->
 ```

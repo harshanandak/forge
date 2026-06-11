@@ -53,14 +53,14 @@ describe('forge init command', () => {
     expect(parseInitFlags(['--classification', 'minor']).error)
       .toContain('Choose one of: critical, standard, refactor');
     expect(parseInitFlags(['--harness', 'vscode']).error)
-      .toContain('Choose from: claude, cursor, codex, opencode, copilot');
+      .toContain('Choose from: claude, cursor, codex');
   });
 
   test('accepts full-profile harness targets in explicit input', () => {
-    const parsed = parseInitFlags(['--harness', 'opencode,copilot']);
+    const parsed = parseInitFlags(['--harness', 'cursor,codex']);
 
     expect(parsed.error).toBeNull();
-    expect(parsed.harnessTargets).toEqual(['opencode', 'copilot']);
+    expect(parsed.harnessTargets).toEqual(['cursor', 'codex']);
   });
 
   test('detects active harness targets from filesystem markers', () => {
@@ -83,21 +83,16 @@ describe('forge init command', () => {
   test('renders protected path and patch scaffolds', () => {
     const root = makeProject();
     fs.mkdirSync(path.join(root, '.cursor'));
-    fs.mkdirSync(path.join(root, '.github'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'opencode.json'), '{}\n');
-    fs.writeFileSync(path.join(root, '.github', 'copilot-instructions.md'), '# Copilot\n');
     const protectedYaml = readYamlFromString(renderProtectedPathsYaml({
       classification: 'standard',
-      harnessTargets: ['cursor', 'opencode', 'copilot'],
+      harnessTargets: ['cursor'],
       projectRoot: root,
     }));
 
     expect(protectedYaml.kind).toBe('forge.protectedPaths');
-    expect(protectedYaml.harness.targets).toEqual(['cursor', 'opencode', 'copilot']);
+    expect(protectedYaml.harness.targets).toEqual(['cursor']);
     expect(protectedYaml.paths.map(entry => entry.path)).toContain('.forge/config.yaml');
     expect(protectedYaml.paths.map(entry => entry.path)).toContain('.cursor/**');
-    expect(protectedYaml.paths.map(entry => entry.path)).toContain('opencode.json');
-    expect(protectedYaml.paths.map(entry => entry.path)).toContain('.github/copilot-instructions.md');
     expect(protectedYaml.paths.map(entry => entry.path)).not.toContain('.codex/**');
     expect(renderPatchMd()).toContain('# Forge Patch Intent');
   });
@@ -127,7 +122,7 @@ describe('forge init command', () => {
     expect(result.success).toBe(true);
     const config = readYaml(path.join(root, '.forge', 'config.yaml'));
     expect(config.template.profile).toBe('full');
-    expect(config.adapters.harness.targets).toEqual(['codex', 'claude', 'cursor', 'opencode', 'copilot']);
+    expect(config.adapters.harness.targets).toEqual(['codex', 'claude', 'cursor']);
   });
 
   test('uses detected harness markers before explicit profile defaults', async () => {

@@ -353,6 +353,45 @@ describe('Forge Push Command', () => {
 
 			expect(tokenWritten).toBe(true);
 		});
+
+		test('should write token to the git worktree top-level, not the inherited projectRoot', async () => {
+			let tokenRoot = null;
+			const deps = makeDeps({
+				writeForgeToken: (root) => {
+					tokenRoot = root;
+				},
+				execFileSync: (cmd, args, _opts) => {
+					if (cmd === 'git' && args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+						return '/real/worktree\n';
+					}
+					return '';
+				},
+			});
+
+			// projectRoot here is a wrong INIT_CWD (e.g. main repo root from a worktree)
+			await pushModule.handler([], {}, '/wrong/init-cwd', deps);
+
+			expect(tokenRoot).toBe('/real/worktree');
+		});
+
+		test('should fall back to projectRoot when git top-level cannot be resolved', async () => {
+			let tokenRoot = null;
+			const deps = makeDeps({
+				writeForgeToken: (root) => {
+					tokenRoot = root;
+				},
+				execFileSync: (cmd, args, _opts) => {
+					if (cmd === 'git' && args[0] === 'rev-parse') {
+						throw new Error('not a git worktree');
+					}
+					return '';
+				},
+			});
+
+			await pushModule.handler([], {}, '/fallback/root', deps);
+
+			expect(tokenRoot).toBe('/fallback/root');
+		});
 	});
 
 	describe('Return shape', () => {

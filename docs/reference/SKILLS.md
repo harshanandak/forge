@@ -5,7 +5,7 @@ Forge uses both skills and command files today. They are related, but they are n
 ## Current v0.0.11 Reality
 
 - Codex stage workflows are packaged as `.codex/skills/<stage>/SKILL.md`.
-- Claude, Cursor, Cline, Roo, OpenCode, KiloCode, GitHub prompts, and related harnesses still receive command or workflow projections.
+- Claude Code and Cursor receive command projections. Forge currently supports Claude Code, Codex, and Cursor; Hermes support is planned.
 - `scripts/check-agents.js` currently treats Codex as the exception where command capability is satisfied through `.codex/skills/`.
 - `test/agent-gaps.test.js` still asserts `.claude/commands/` as the current canonical sync source for command projection checks.
 

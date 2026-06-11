@@ -25,13 +25,8 @@ const PACKAGE_LEVEL_PATHS = new Set([
 const KNOWN_TARGETABLE_PREFIXES = [
   '.claude/commands/',
   '.cursor/',
-  '.cline/',
-  '.roo/',
-  '.kilocode/',
-  '.opencode/',
-  '.codex/skills/',
+  '.codex/',
   '.forge/',
-  '.github/prompts/',
   '.github/agentic-workflows/',
   '.github/workflows/',
   'test/',
@@ -105,7 +100,9 @@ function isKnownTargetablePath(file) {
     || file === 'QUICKSTART.md'
     || file === 'CHANGELOG.md'
     || file === 'AGENTS.md'
+    || file === 'DEVELOPMENT.md'
     || file === 'docs/INDEX.md'
+    || file === 'docs/PROJECT_DESIGN.md'
     || file.startsWith('docs/forge/')
     || file.startsWith('docs/guides/')
     || file.startsWith('docs/plans/')
