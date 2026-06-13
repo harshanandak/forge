@@ -285,6 +285,11 @@ describe('Beads Kernel compatibility adapter', () => {
 				target: 'beads',
 				entity_type: 'issue',
 				entity_id: 'forge-native',
+				entity_revision: null,
+				payload_hash: JSON.stringify({
+					closed_at: IMPORTED_AT,
+					close_reason: 'Done',
+				}),
 			},
 		});
 
