@@ -213,6 +213,64 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(issue.created_by).toBeUndefined();
 	});
 
+	test('round-trips Forge projection provenance through Beads export and import', () => {
+		const exportResult = exportKernelToBeads({
+			issues: [{
+				id: 'forge-native',
+				title: 'Native Kernel issue',
+				body: 'Projected to Beads and imported back.',
+				status: 'closed',
+				priority: 'P1',
+				type: 'task',
+				entity_revision: 4,
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+			dependencies: [],
+			comments: [],
+			events: [{
+				entity_type: 'issue',
+				entity_id: 'forge-native',
+				event_type: 'beads.issue.closed',
+				payload_json: JSON.stringify({
+					closed_at: IMPORTED_AT,
+					close_reason: 'Done',
+				}),
+				created_at: IMPORTED_AT,
+			}],
+		}, { dryRun: true });
+
+		const [exportedIssue] = parseJsonl(exportResult.files['issues.jsonl']);
+		expect(JSON.parse(exportedIssue.metadata).forge_projection).toMatchObject({
+			source: 'forge-kernel',
+			target: 'beads',
+			entity_type: 'issue',
+			entity_id: 'forge-native',
+			entity_revision: 4,
+		});
+
+		const importResult = importBeadsSnapshot({
+			issues: [exportedIssue],
+			comments: [],
+			dependencies: [],
+		}, { importedAt: IMPORTED_AT });
+		const [closeEvent] = importResult.kernel.events;
+
+		expect(closeEvent).toMatchObject({
+			entity_type: 'issue',
+			entity_id: 'forge-native',
+			origin: 'beads_import',
+			expected_revision: 4,
+		});
+		expect(JSON.parse(closeEvent.payload_json).projection_origin).toMatchObject({
+			source: 'forge-kernel',
+			target: 'beads',
+			entity_type: 'issue',
+			entity_id: 'forge-native',
+			entity_revision: 4,
+		});
+	});
+
 	test('counts only blocking dependency edges on Beads export', () => {
 		const exportResult = exportKernelToBeads({
 			issues: [

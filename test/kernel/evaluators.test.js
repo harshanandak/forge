@@ -116,6 +116,38 @@ describe('Kernel conflict evaluators', () => {
 		expect(result.projection).toBe(true);
 	});
 
+	test('suppresses Beads imports that echo a Forge projection', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'issue.update',
+				idempotency_key: 'beads-import:forge-1:projected-rev-4',
+				expected_revision: 4,
+				origin: 'beads_import',
+				payload: {
+					title: 'Projected title',
+					projection_origin: {
+						source: 'forge-kernel',
+						target: 'beads',
+						entity_type: 'issue',
+						entity_id: 'forge-1',
+						entity_revision: 4,
+					},
+				},
+			},
+			entity: { entity_revision: 4 },
+		});
+
+		expect(result).toMatchObject({
+			decision: 'projection_echo',
+			reason: 'forge_projection_echo',
+			projection: false,
+		});
+	});
+
 	test('quarantines dependency writes that would create a cycle', () => {
 		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
 
