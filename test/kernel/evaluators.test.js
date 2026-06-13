@@ -116,6 +116,103 @@ describe('Kernel conflict evaluators', () => {
 		expect(result.projection).toBe(true);
 	});
 
+	test('suppresses Beads imports that echo a Forge projection', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'issue.update',
+				idempotency_key: 'beads-import:forge-1:projected-rev-4',
+				expected_revision: 4,
+				origin: 'beads_import',
+				payload: {
+					title: 'Projected title',
+					projection_origin: {
+						source: 'forge-kernel',
+						target: 'beads',
+						entity_type: 'issue',
+						entity_id: 'forge-1',
+						entity_revision: 4,
+						payload_hash: '{"title":"Projected title"}',
+						imported_payload_hash: '{"title":"Projected title"}',
+					},
+				},
+			},
+			entity: { entity_revision: 4 },
+		});
+
+		expect(result).toMatchObject({
+			decision: 'projection_echo',
+			reason: 'forge_projection_echo',
+			projection: false,
+		});
+	});
+
+	test('does not suppress Beads imports when projected payload differs', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'issue.update',
+				idempotency_key: 'beads-import:forge-1:changed-payload',
+				expected_revision: 4,
+				origin: 'beads_import',
+				payload: {
+					title: 'Changed in Beads',
+					projection_origin: {
+						source: 'forge-kernel',
+						target: 'beads',
+						entity_type: 'issue',
+						entity_id: 'forge-1',
+						entity_revision: 4,
+						payload_hash: '{"title":"Projected title"}',
+						imported_payload_hash: '{"title":"Changed in Beads"}',
+					},
+				},
+			},
+			entity: { entity_revision: 4 },
+		});
+
+		expect(result.decision).not.toBe('projection_echo');
+		expect(result.decision).toBe('accept');
+		expect(result.projection).toBe(true);
+	});
+
+	test('does not suppress Beads imports when the authority entity is missing', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'issue.update',
+				idempotency_key: 'beads-import:forge-1:missing-entity',
+				expected_revision: 0,
+				origin: 'beads_import',
+				payload: {
+					title: 'Projected title',
+					projection_origin: {
+						source: 'forge-kernel',
+						target: 'beads',
+						entity_type: 'issue',
+						entity_id: 'forge-1',
+						entity_revision: 0,
+						payload_hash: '{"title":"Projected title"}',
+						imported_payload_hash: '{"title":"Projected title"}',
+					},
+				},
+			},
+			entity: null,
+		});
+
+		expect(result.decision).toBe('accept');
+		expect(result.projection).toBe(true);
+	});
+
 	test('quarantines dependency writes that would create a cycle', () => {
 		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
 
