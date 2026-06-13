@@ -79,6 +79,14 @@ describe('Beads repository hygiene', () => {
     expect(projection).toContain('prior Beads/GitHub sync work remains design input');
     expect(projection).toContain('mapping, comments, sanitization, idempotency, retry, and GitHub API handling');
   });
+
+  it('documents deprecated GitHub sync cleanup behind --sync only', () => {
+    const syncGuide = readDoc('docs/guides/BEADS_GITHUB_SYNC.md');
+
+    expect(syncGuide).toContain('forge setup --sync');
+    expect(syncGuide).toContain('Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.');
+    expect(syncGuide).toContain('The `forge setup --sync` compatibility cleanup removes the old generated files:');
+  });
 });
 
 describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {

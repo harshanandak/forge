@@ -5,13 +5,13 @@ Beads/GitHub workflow sync is deprecated. Forge no longer ships active `github-t
 ## Current Behavior
 
 - `.beads/` is local runtime/export state and is not committed.
-- `forge setup` removes old generated Beads/GitHub sync files from existing installs when they are present.
-- `forge setup --sync` is retained only as a compatibility cleanup path.
+- `forge setup --sync` is retained only as a compatibility cleanup path and removes old generated Beads/GitHub sync files from existing installs when they are present.
+- Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.
 - `forge sync` may still run local Beads/Dolt sync operations while Beads compatibility remains, but it is not GitHub issue lifecycle sync.
 
 ## Removed Generated Files
 
-Setup cleanup removes the old generated files:
+The `forge setup --sync` compatibility cleanup removes the old generated files:
 
 ```text
 .github/workflows/github-to-beads.yml
