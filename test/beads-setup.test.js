@@ -7,6 +7,7 @@ const {
   sanitizePrefix,
   writeBeadsConfig,
   writeBeadsGitignore,
+  ensureBeadsGitExclude,
   isBeadsInitialized,
   preSeedJsonl,
   readBeadsDatabaseName
@@ -136,6 +137,9 @@ describe('writeBeadsGitignore', () => {
     expect(fs.existsSync(gitignorePath)).toBe(true);
 
     const content = fs.readFileSync(gitignorePath, 'utf8');
+    expect(content).toContain('# Beads runtime, export, and backup state is local');
+    expect(content).toContain('*');
+    expect(content).toContain('!.gitignore');
     expect(content).toContain('dolt/');
     expect(content).toContain('*.db');
     expect(content).toContain('*.lock');
@@ -145,6 +149,45 @@ describe('writeBeadsGitignore', () => {
     writeBeadsGitignore(tmpDir);
 
     expect(fs.existsSync(path.join(tmpDir, '.beads', '.gitignore'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureBeadsGitExclude
+// ---------------------------------------------------------------------------
+describe('ensureBeadsGitExclude', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fs.mkdirSync(path.join(tmpDir, '.git', 'info'), { recursive: true });
+  });
+  afterEach(() => {
+    rmrf(tmpDir);
+  });
+
+  test('adds local exclude rules for Beads state without touching tracked ignore files', () => {
+    ensureBeadsGitExclude(tmpDir);
+
+    const excludePath = path.join(tmpDir, '.git', 'info', 'exclude');
+    const content = fs.readFileSync(excludePath, 'utf8');
+
+    expect(content).toContain('# Forge local Beads state');
+    expect(content).toContain('.beads/');
+    expect(content).toContain('.dolt/');
+    expect(content).toContain('.beads-credential-key');
+    expect(fs.existsSync(path.join(tmpDir, '.gitignore'))).toBe(false);
+  });
+
+  test('is idempotent when local exclude rules already exist', () => {
+    ensureBeadsGitExclude(tmpDir);
+    ensureBeadsGitExclude(tmpDir);
+
+    const excludePath = path.join(tmpDir, '.git', 'info', 'exclude');
+    const content = fs.readFileSync(excludePath, 'utf8');
+
+    expect(content.match(/# Forge local Beads state/g)).toHaveLength(1);
+    expect(content.match(/\.beads\//g)).toHaveLength(1);
   });
 });
 

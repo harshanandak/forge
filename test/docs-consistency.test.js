@@ -1,4 +1,5 @@
 const { describe, it, expect } = require('bun:test');
+const { execFileSync } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
@@ -39,8 +40,9 @@ describe('README.md consistency', () => {
     expect(readme).toContain('--symlink');
   });
 
-  it('documents --sync flag', () => {
+  it('documents --sync deprecation', () => {
     expect(readme).toContain('--sync');
+    expect(readme).toContain('Deprecated');
   });
 
   it('documents --agents flag', () => {
@@ -57,6 +59,17 @@ describe('docs/INDEX.md reference links', () => {
 
   it('links to agent skill parity proof boundary docs', () => {
     expect(index).toContain('reference/AGENT_SKILL_PARITY.md');
+  });
+});
+
+describe('Beads repository hygiene', () => {
+  it('does not commit live .beads runtime state', () => {
+    const trackedBeadsFiles = execFileSync('git', ['ls-files', '.beads'], {
+      cwd: ROOT,
+      encoding: 'utf8'
+    }).trim();
+
+    expect(trackedBeadsFiles).toBe('');
   });
 });
 
@@ -125,14 +138,13 @@ describe('docs/guides/SETUP.md consistency', () => {
     expect(setup).toContain('bootstrapper');
   });
 
-  it('documents PAT requirements for Beads sync', () => {
-    // Should mention either PAT or BEADS_SYNC_TOKEN
-    const mentionsPat = setup.includes('PAT') || setup.includes('BEADS_SYNC_TOKEN');
-    expect(mentionsPat).toBe(true);
+  it('does not document PAT requirements for deprecated Beads sync', () => {
+    expect(setup).not.toContain('BEADS_SYNC_TOKEN');
   });
 
-  it('documents Beads sync setup with --sync flag', () => {
+  it('documents Beads sync setup deprecation with --sync flag', () => {
     expect(setup).toContain('--sync');
+    expect(setup).toContain('deprecated');
   });
 
   it('uses bun add -D for install command (dev dependency)', () => {

@@ -20,7 +20,7 @@ The default TDD-first workflow is a core template shipped by Forge. It is not th
 
 ---
 
-## Beads - Git-Backed Issue Tracking
+## Beads - Local Issue Tracking And Sync Projection
 
 **Package**: `@beads/bd`
 **Repository**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
@@ -29,7 +29,7 @@ The default TDD-first workflow is a core template shipped by Forge. It is not th
 ### Why Beads?
 
 - **Persists across sessions** - Issues survive context clearing, compaction, new chats
-- **Git-backed** - Version controlled, mergeable, team-shareable
+- **Local-first** - Runtime state stays under local `.beads/` and does not dirty normal Git work
 - **Dependency tracking** - Know what blocks what
 - **Ready detection** - `forge ready` finds unblocked work automatically
 - **AI-optimized** - JSON output, semantic compaction, audit trails
@@ -82,19 +82,19 @@ bunx @beads/bd init
 
 ### File Structure
 
-After `bd init`, creates `.beads/` directory:
+After `bd init`, creates a local `.beads/` directory. Forge keeps this directory out of Git; `forge setup` writes local Git exclude rules under `.git/info/exclude` so downstream repositories do not need metadata-only commits.
 
 ```
 .beads/
-├── issues.jsonl      # Issue data (git-tracked, one JSON per line)
-├── beads.db          # SQLite cache (git-ignored, fast queries)
-├── metadata.json     # Database metadata
-├── config.yaml       # User configuration
-├── interactions.jsonl # Agent audit log
-└── .gitignore        # Ignores beads.db
+├── issues.jsonl       # Local/exported issue data
+├── beads.db           # SQLite cache, when present
+├── metadata.json      # Local database metadata
+├── config.yaml        # Local Beads configuration
+├── interactions.jsonl # Local agent audit log
+└── .gitignore         # Local ignore guard for runtime files
 ```
 
-**Dual-database architecture**: JSONL for git versioning, SQLite for fast local queries. Background daemon keeps them in sync.
+Do not commit live `.beads/` runtime files. Shared team state must use the configured sync/server authority or an explicit projection/import path.
 
 For day-to-day issue workflows, prefer the Forge wrapper commands (`forge ready`,
 `forge create`, `forge update`, `forge close`, `forge sync`). Use `bd` directly

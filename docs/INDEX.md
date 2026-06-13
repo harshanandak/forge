@@ -22,7 +22,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Setup](guides/SETUP.md) - install package, initialize runtime config, install agent instructions.
 - [Migration](guides/MIGRATION.md) - move from older Forge versions and old stage-only framing.
 - [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - understand the default template and how customization should be documented.
-- [Beads/GitHub sync](guides/BEADS_GITHUB_SYNC.md) - configure and recover issue sync.
+- [Beads/GitHub sync deprecation](guides/BEADS_GITHUB_SYNC.md) - cleanup notes and Kernel/server replacement direction.
 - [Manual review guide](guides/MANUAL_REVIEW_GUIDE.md) - process PR feedback without inventing CLI commands.
 - [Greptile setup](guides/GREPTILE_SETUP.md) - optional review integration.
 - [Agent install prompt](guides/AGENT_INSTALL_PROMPT.md) - reusable prompt for agent installation.

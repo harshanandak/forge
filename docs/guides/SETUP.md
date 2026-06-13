@@ -89,12 +89,10 @@ If a feature worktree reports `database "forge" not found on Dolt server`, diagn
 To scaffold GitHub/Beads sync files:
 
 ```bash
-bunx forge setup --sync --agents claude,cursor
+bunx forge setup --agents claude,cursor
 ```
 
-`forge setup --sync` creates sync scaffolding. `forge sync` runs Beads/Dolt sync. See [Beads/GitHub sync](BEADS_GITHUB_SYNC.md).
-
-GitHub sync requires a token with permission to update the repository and issues. In GitHub Actions, configure a PAT such as `BEADS_SYNC_TOKEN` when the default `GITHUB_TOKEN` cannot push the required sync commit or update issue state under branch protection.
+`forge setup --sync` is deprecated. It now removes old generated Beads/GitHub sync files instead of creating new sync workflows. Future GitHub issue sync belongs to Forge Kernel/server authority, not Beads runtime files or metadata commits.
 
 ## Validate Setup
 

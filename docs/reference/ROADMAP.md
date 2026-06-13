@@ -313,7 +313,7 @@ Each PR follows the Forge workflow:
 
 - **Master Plan**: `docs/plans/*.md` (global, tracked by Claude Code)
 - **Roadmap**: `docs/ROADMAP.md` (repository, git-tracked)
-- **Beads Tracking**: `.beads/issues.jsonl` (git-tracked)
+- **Beads Tracking**: `.beads/` local runtime state; shared tracking must use sync/server authority or explicit projection/import artifacts.
 
 ---
 

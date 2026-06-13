@@ -80,19 +80,22 @@ bd doctor
 
 ### Supported Repo Layout
 
-Forge treats `.beads/` as the repo-local Beads home directory. The layout in this repository currently includes:
+Forge treats `.beads/` as the repo-local Beads home directory. `.beads/` is local runtime/export state and is not committed to the repository. `forge setup` writes local Git exclude rules under `.git/info/exclude` so Beads state does not dirty downstream projects.
+
+A local initialized checkout may contain:
 
 ```text
 .beads/
-├── config.yaml
-├── issues.jsonl
-├── metadata.json
-├── team-map.jsonl
-├── hooks/
-└── .gitignore
+├── config.yaml          # local Beads config
+├── issues.jsonl         # local/exported issue data
+├── metadata.json        # local Beads metadata
+├── team-map.jsonl       # local/team projection data
+├── backup/              # local backup/export state
+├── hooks/               # local hook shims created by Beads
+└── .gitignore           # local ignore guard for runtime files
 ```
 
-Legacy local database cache files are no longer part of the supported Forge setup instructions. When you need JSONL snapshots for migration verification or CI diffing, generate them explicitly with `bd backup --force`.
+No `.beads/` files are expected to appear in `git ls-files .beads`. Legacy local database cache files are no longer part of the supported Forge setup instructions. When you need JSONL snapshots for migration verification or CI diffing, generate them explicitly with `bd backup --force` and publish them through the intended sync/projection path, not by committing live `.beads/` runtime files.
 
 ### Migrate Legacy SQLite Data
 

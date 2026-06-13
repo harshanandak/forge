@@ -230,36 +230,3 @@ describe('handleBeadsClosed', () => {
     expect(result.errors[0].error).toBe('API failure');
   });
 });
-
-// --- Loop guard (validated against actual workflow YAML) ---
-
-describe('loop guard', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const workflowPath = path.resolve(__dirname, '../../../.github/workflows/beads-to-github.yml');
-  const workflowContent = fs.readFileSync(workflowPath, 'utf-8');
-
-  test('workflow YAML contains chore(beads): loop guard pattern', () => {
-    expect(workflowContent).toContain('chore\\(beads\\):');
-  });
-
-  test('workflow skips execution when SKIP is true', () => {
-    expect(workflowContent).toContain("if: env.SKIP != 'true'");
-  });
-
-  test('workflow uses github.event.before for pre-push comparison', () => {
-    expect(workflowContent).toContain('github.event.before');
-  });
-
-  test('workflow regenerates before/after snapshots from beads state before reverse sync', () => {
-    expect(workflowContent).toContain('git archive "$BEFORE_SHA" .beads');
-    expect(workflowContent).toContain('BEADS_DIR="$repo_root/.beads" bd backup --force');
-    expect(workflowContent).toContain('node scripts/github-beads-sync/reverse-sync-cli.mjs "$OLD_SNAPSHOT_PATH" "$NEW_SNAPSHOT_PATH"');
-    expect(workflowContent).not.toContain('NEW_CONTENT=$(cat .beads/issues.jsonl');
-  });
-
-  test('workflow falls back to an empty snapshot when a historical .beads tree cannot export a backup', () => {
-    expect(workflowContent).toContain('if BEADS_DIR="$repo_root/.beads" bd backup --force 2>/dev/null; then');
-    expect(workflowContent).toContain(': > "$output_path"');
-  });
-});
