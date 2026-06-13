@@ -99,6 +99,20 @@ describe('Kernel SQLite runtime driver selection', () => {
 		expect(fs.existsSync(result.backupPath)).toBe(true);
 	});
 
+	test('creates parent directories for fresh file-backed broker databases', async () => {
+		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+		const databasePath = path.join(makeTempDir(), 'git-common-dir', 'forge', 'kernel.sqlite');
+		const driver = createBuiltinSQLiteDriver({ databasePath });
+
+		try {
+			await driver.exec('CREATE TABLE broker_directory_probe (id INTEGER PRIMARY KEY);');
+		} finally {
+			driver.close();
+		}
+
+		expect(fs.existsSync(databasePath)).toBe(true);
+	});
+
 	test('can rerun real validation against the same database without leaving probe tables', async () => {
 		const { Database } = require('bun:sqlite');
 		const { validateBuiltinSQLiteRuntimeDriver } = require('../../lib/kernel/sqlite-driver');
