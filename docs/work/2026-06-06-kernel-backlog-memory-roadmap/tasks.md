@@ -12,8 +12,10 @@
 **Steps:**
 1. Add a short table: local SQLite authority, team server authority, projections, read models, archives.
 2. State that team writes require serialized authority before they are supported.
-3. State that Beads is import/export/projection, not target authority.
-4. Run `bun run check`.
+3. State that local-only close/verify state is durable in SQLite and does not require committing tracker metadata to Git.
+4. State that team or cross-machine close/verify state requires server acceptance.
+5. State that Beads is import/export/projection, not target authority.
+6. Run `bun run check`.
 
 ## Task 2: Add issue/backlog taxonomy to Kernel schema plan
 
@@ -107,6 +109,7 @@
 3. Make generation idempotent and content-addressed where possible.
 4. Add `forge hooks doctor --json` and worktree state doctor checks before claiming gates are active.
 5. Add regression tests so agents do not need to stash generated files to close ordinary workflows.
+6. Verify that successful `/verify` does not leave tracked `.beads` or Kernel projection metadata dirty as the expected final state.
 
 ## Task 8: Align fresh project setup and artifact naming
 
@@ -134,10 +137,28 @@
 **Steps:**
 1. Inventory command paths that still require Dolt for normal Forge workflow operations.
 2. Define the TS API surface required to replace those paths.
-3. Preserve Beads/Dolt projection fidelity and rollback boundaries during migration.
-4. Add release gates that separate Dolt compatibility from Dolt authority.
+3. Move `forge close` and `/verify` close-state persistence to local Kernel SQLite first, then to server authority for team mode.
+4. Preserve Beads/Dolt projection fidelity and rollback boundaries during migration.
+5. Add release gates that separate Dolt compatibility from Dolt authority.
+6. Add a gate proving close/verify does not require a metadata-only PR or protected-branch push.
 
-## Task 10: Hermes integration after Knowledge MVP
+## Task 10: Define local-only and team authority close semantics
+
+**Objective:** Make close/verify persistence explicit before more Kernel state issues land.
+
+**Files:**
+- Modify: `docs/reference/FORGE_KERNEL_STORAGE_MODEL.md`
+- Later modify: local Kernel close API, server authority API, Beads/GitHub projection adapters, `/verify` command docs
+
+**Steps:**
+1. Define local-only close: accepted by the local SQLite Kernel authority, visible to local worktrees, not committed to Git by default.
+2. Define team close: accepted only by serialized server authority, visible cross-machine after server acknowledgement.
+3. Define projection behavior: GitHub/Linear/Beads exports happen after accepted authority writes and may fail independently.
+4. Define offline behavior: team-mode close/start/stage-transition writes fail closed when the server cannot accept them.
+5. Define reporting: `/verify` must say whether issue closure was local-only, server-accepted, or projection-pending.
+6. Add tests preventing a return to "commit tracker metadata to protected master" as the ordinary durability path.
+
+## Task 11: Hermes integration after Knowledge MVP
 
 **Objective:** Add Hermes as a consumer of Forge project state, not a competing memory layer.
 
@@ -164,4 +185,5 @@
 | Task 7 | `workflow-friction-amendments.md#workflow-friction-amendments`, `issue-map.md#probable-release-lanes`, `decisions.md#d11--generated-state-churn-is-release-blocking-self-hosting-friction` |
 | Task 8 | `issue-map.md#fresh-project-setup-correctness--forge-2agy78`, `decisions.md#d12--fresh-forge-setup-must-teach-the-work-folder-artifact-contract`, `docs/INDEX.md#work-artifacts` |
 | Task 9 | `decisions.md#d14--dolt-must-leave-the-forge-hot-path-before-the-next-reliable-self-hosting-release`, `storage-decision.md#boundaries`, `issue-map.md#kernel--typescript-state-foundation` |
-| Task 10 | `agent-memory-federation.md#agent-memory-federation-plan`, `plan.md#agent--hermes-federation`, `revised-safety-gates.md#phase-f--hermesprovider-integration` |
+| Task 10 | `docs/PROJECT_DESIGN.md#pd-20260613-authority-state-not-repo-metadata`, `docs/reference/FORGE_KERNEL_STORAGE_MODEL.md#authority-rules`, `workflow-friction-amendments.md#8-closeverify-state-cannot-live-in-protected-branch-tracker-commits` |
+| Task 11 | `agent-memory-federation.md#agent-memory-federation-plan`, `plan.md#agent--hermes-federation`, `revised-safety-gates.md#phase-f--hermesprovider-integration` |

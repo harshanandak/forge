@@ -75,11 +75,30 @@ describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {
     expect(parity).toContain('lib/harness-capability-matrix.js');
     expect(parity).toContain('rendererContract.rendererFamilies');
     expect(parity).toContain('Cursor hooks remain unsupported');
-  });
+	});
+});
+
+describe('docs/PROJECT_DESIGN.md authority boundary', () => {
+	const projectDesign = readDoc('docs/PROJECT_DESIGN.md');
+
+	it('states routine Kernel authority state is not persisted through repository metadata commits', () => {
+		expect(projectDesign).toContain('Routine issue, workflow, claim, run, and knowledge writes must not depend on committing repository metadata to the protected default branch');
+		expect(projectDesign).toContain('Local-only state uses the local Kernel SQLite authority');
+		expect(projectDesign).toContain('cross-machine or team state uses serialized server authority');
+	});
+});
+
+describe('docs/reference/FORGE_KERNEL_STORAGE_MODEL.md authority boundary', () => {
+	const storageModel = readDoc('docs/reference/FORGE_KERNEL_STORAGE_MODEL.md');
+
+	it('separates local/server authority from repository projections', () => {
+		expect(storageModel).toContain('Routine close/verify state is never made durable by committing tracker metadata to the protected default branch');
+		expect(storageModel).toContain('Repository exports are explicit projection artifacts, not the write-ahead log for normal work');
+	});
 });
 
 describe('docs/guides/SETUP.md consistency', () => {
-  const setup = readDoc('docs/guides/SETUP.md');
+	const setup = readDoc('docs/guides/SETUP.md');
 
   it('mentions install.sh is a bootstrapper', () => {
     expect(setup).toContain('bootstrapper');

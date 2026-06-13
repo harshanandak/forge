@@ -86,7 +86,19 @@ Required direction:
 - Preserve Beads import/export/projection fidelity during migration.
 - Add release gates that prevent claiming Dolt is retired before parity and rollback paths exist.
 
-### 8. Release sequencing is not explicit enough
+### 8. Close/verify state cannot live in protected-branch tracker commits
+
+Recent post-merge verification exposed a harder boundary than ordinary generated-file churn: closing Beads issues after PR #205 and PR #206 produced valid local tracker metadata, but protected `master` could not accept direct metadata-only pushes. Creating a follow-up PR just to update tracker files would make every successful merge depend on another merge, so repository metadata cannot be the authority path for routine close/verify state.
+
+Required direction:
+
+- Local single-machine state must be durable in the local Kernel SQLite authority and remain uncommitted by default.
+- Cross-machine and team state must use serialized server authority before Forge reports it as shared truth.
+- GitHub, Linear, Beads, and Kernel JSONL files are projections/import-export surfaces, not the live close/verify database.
+- `/verify` must report whether close state was recorded as local-only or server-accepted; it must not leave protected-branch metadata drift as the expected final state.
+- Release gates must reject any "Beads/Dolt retired" or "Kernel authority ready" claim while ordinary close/verify still requires committing tracker metadata to the protected default branch.
+
+### 9. Release sequencing is not explicit enough
 
 The current backlog has many issues but not enough release-level staging. We need a probable sequence for near-term releases: what fixes must land before the next feature release, what can follow after Kernel MVP, and what depends on KnowledgeStore/hook doctor work.
 
@@ -109,6 +121,7 @@ The amendments created from this addendum should be linked into existing roadmap
 | Worktree Forge state bootstrap | `forge-2agy.9.5` | Local multi-worktree state safety |
 | Pre-merge as embedded gate | `forge-2agy.9.2` | Workflow taxonomy and stage model |
 | Dolt hot-path removal | `forge-2agy.9.1` / `.9.6` | Storage authority and projection boundaries |
+| Close/verify state outside Git metadata | `forge-2agy.9.5` / `.9.6` | Kernel authority and team server boundary |
 | Release version lanes | `forge-2agy.9` | Roadmap sequencing |
 
 ## Validation expectation
