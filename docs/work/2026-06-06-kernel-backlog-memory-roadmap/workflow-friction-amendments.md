@@ -95,7 +95,7 @@ Required direction:
 - Local single-machine state must be durable in the local Kernel SQLite authority and remain uncommitted by default.
 - Cross-machine and team state must use serialized server authority before Forge reports it as shared truth.
 - GitHub, Linear, Beads, and Kernel JSONL files are projections/import-export surfaces, not the live close/verify database.
-- `/verify` must report whether close state was recorded as local-only or server-accepted; it must not leave protected-branch metadata drift as the expected final state.
+- `/verify` must report whether close state was recorded as local-only, server-required, server-accepted, or projection-pending; it must not leave protected-branch metadata drift as the expected final state.
 - Release gates must reject any "Beads/Dolt retired" or "Kernel authority ready" claim while ordinary close/verify still requires committing tracker metadata to the protected default branch.
 
 ### 9. Release sequencing is not explicit enough

@@ -84,7 +84,28 @@ describe('docs/PROJECT_DESIGN.md authority boundary', () => {
 	it('states routine Kernel authority state is not persisted through repository metadata commits', () => {
 		expect(projectDesign).toContain('Routine issue, workflow, claim, run, and knowledge writes must not depend on committing repository metadata to the protected default branch');
 		expect(projectDesign).toContain('Local-only state uses the local Kernel SQLite authority');
-		expect(projectDesign).toContain('cross-machine or team state uses serialized server authority');
+		expect(projectDesign).toContain('Cross-machine or team state uses serialized server authority');
+	});
+});
+
+describe('Kernel roadmap close/verify authority boundary', () => {
+	const workflowFriction = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md');
+	const issueMap = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/issue-map.md');
+	const closeAuthority = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/close-verify-authority.md');
+	const decisions = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md');
+	const planEvaluation = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md');
+
+	it('distinguishes local, server, and projection-pending close states', () => {
+		expect(workflowFriction).toContain('local-only, server-required, server-accepted, or projection-pending');
+		expect(closeAuthority).toContain('local-only, server-required, server-accepted, and projection-pending');
+		expect(issueMap).toContain('server acceptance implementation waits for `.9.8.1`');
+	});
+
+	it('keeps JSONL portability as an explicit projection instead of routine durability', () => {
+		expect(decisions).toContain('not auto-exported on routine mutation or push');
+		expect(decisions).toContain('routine close/verify durability stays in local SQLite or server authority');
+		expect(planEvaluation).toContain('intentionally published for clone/bootstrap or review snapshots');
+		expect(planEvaluation).not.toContain('auto-exported on mutation');
 	});
 });
 

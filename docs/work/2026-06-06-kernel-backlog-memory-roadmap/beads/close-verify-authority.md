@@ -12,7 +12,7 @@ This proves that routine close/verify state must not be stored by committing tra
 - Define team/cross-machine close/verify persistence through serialized server authority.
 - Define projection behavior for GitHub, Linear, Beads, and explicit Kernel export artifacts after authority acceptance.
 - Define offline/team-mode refusal behavior when the server cannot accept a shared write.
-- Update `/verify` reporting so it distinguishes local-only, server-accepted, and projection-pending close state.
+- Update `/verify` reporting so it distinguishes local-only, server-required, server-accepted, and projection-pending close state.
 
 ## Acceptance Criteria
 
