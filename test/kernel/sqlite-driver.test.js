@@ -130,6 +130,31 @@ describe('Kernel SQLite runtime driver selection', () => {
 		expect(leaked).toEqual([]);
 	});
 
+	test('removes internally-created validation temp directories when database open fails', async () => {
+		const { validateBuiltinSQLiteRuntimeDriver } = require('../../lib/kernel/sqlite-driver');
+		const before = new Set(
+			fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('forge-kernel-sqlite-')),
+		);
+		const runtime = {
+			id: 'bun:sqlite',
+			module: {
+				Database: function Database() {
+					throw new Error('open failed');
+				},
+			},
+			databaseClassName: 'Database',
+			nativeCompileDependency: false,
+			experimental: false,
+		};
+
+		await expect(validateBuiltinSQLiteRuntimeDriver({ runtime })).rejects.toThrow(/open failed/);
+
+		const leaked = fs.readdirSync(os.tmpdir())
+			.filter((name) => name.startsWith('forge-kernel-sqlite-'))
+			.filter((name) => !before.has(name));
+		expect(leaked).toEqual([]);
+	});
+
 	test('creates parent directories for fresh file-backed broker databases', async () => {
 		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 		const databasePath = path.join(makeTempDir(), 'git-common-dir', 'forge', 'kernel.sqlite');
