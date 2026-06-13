@@ -98,4 +98,25 @@ describe('Kernel SQLite runtime driver selection', () => {
 		expect(result.databasePath).toBe(databasePath);
 		expect(fs.existsSync(result.backupPath)).toBe(true);
 	});
+
+	test('can rerun real validation against the same database without leaving probe tables', async () => {
+		const { Database } = require('bun:sqlite');
+		const { validateBuiltinSQLiteRuntimeDriver } = require('../../lib/kernel/sqlite-driver');
+		const databasePath = path.join(makeTempDir(), 'kernel.sqlite');
+
+		await validateBuiltinSQLiteRuntimeDriver({ databasePath });
+		await validateBuiltinSQLiteRuntimeDriver({ databasePath });
+
+		const db = new Database(databasePath);
+		try {
+			const probeTables = db.query([
+				"SELECT name FROM sqlite_master WHERE type = 'table'",
+				"AND name LIKE 'forge_%_probe_%'",
+				'ORDER BY name;',
+			].join(' ')).all();
+			expect(probeTables).toEqual([]);
+		} finally {
+			db.close();
+		}
+	});
 });
