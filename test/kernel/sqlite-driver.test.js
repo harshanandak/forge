@@ -99,6 +99,20 @@ describe('Kernel SQLite runtime driver selection', () => {
 		expect(fs.existsSync(result.backupPath)).toBe(true);
 	});
 
+	test('removes internally-created validation temp directories', async () => {
+		const { validateBuiltinSQLiteRuntimeDriver } = require('../../lib/kernel/sqlite-driver');
+		const before = new Set(
+			fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('forge-kernel-sqlite-')),
+		);
+
+		await validateBuiltinSQLiteRuntimeDriver();
+
+		const leaked = fs.readdirSync(os.tmpdir())
+			.filter((name) => name.startsWith('forge-kernel-sqlite-'))
+			.filter((name) => !before.has(name));
+		expect(leaked).toEqual([]);
+	});
+
 	test('creates parent directories for fresh file-backed broker databases', async () => {
 		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 		const databasePath = path.join(makeTempDir(), 'git-common-dir', 'forge', 'kernel.sqlite');
