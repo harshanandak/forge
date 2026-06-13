@@ -82,10 +82,13 @@ describe('Beads repository hygiene', () => {
 
   it('documents deprecated GitHub sync cleanup behind --sync only', () => {
     const syncGuide = readDoc('docs/guides/BEADS_GITHUB_SYNC.md');
+    const setupGuide = readDoc('docs/guides/SETUP.md');
 
     expect(syncGuide).toContain('forge setup --sync');
     expect(syncGuide).toContain('Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.');
     expect(syncGuide).toContain('The `forge setup --sync` compatibility cleanup removes the old generated files:');
+    expect(setupGuide).toContain('bunx forge setup --sync');
+    expect(setupGuide).not.toContain('To scaffold GitHub/Beads sync files:');
   });
 });
 

@@ -2,6 +2,7 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 const {
   sanitizePrefix,
@@ -189,6 +190,22 @@ describe('ensureBeadsGitExclude', () => {
 
     expect(content.match(/# Forge local Beads state/g)).toHaveLength(1);
     expect(content.match(/\.beads\//g)).toHaveLength(1);
+  });
+
+  test('untracks previously committed Beads state without deleting local files', () => {
+    execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
+    const beadsFile = path.join(tmpDir, '.beads', 'issues.jsonl');
+    fs.mkdirSync(path.dirname(beadsFile), { recursive: true });
+    fs.writeFileSync(beadsFile, '{"id":"forge-test"}\n', 'utf8');
+    execFileSync('git', ['add', '.beads/issues.jsonl'], { cwd: tmpDir, stdio: 'pipe' });
+
+    expect(execFileSync('git', ['ls-files', '.beads'], { cwd: tmpDir, encoding: 'utf8' }).trim()).toBe('.beads/issues.jsonl');
+
+    ensureBeadsGitExclude(tmpDir);
+
+    expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"forge-test"}\n');
+    expect(execFileSync('git', ['ls-files', '.beads'], { cwd: tmpDir, encoding: 'utf8' }).trim()).toBe('');
+    expect(execFileSync('git', ['status', '--short', '--', '.beads'], { cwd: tmpDir, encoding: 'utf8' }).trim()).toBe('');
   });
 });
 
