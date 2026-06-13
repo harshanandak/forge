@@ -159,6 +159,18 @@ describe('writeBeadsGitignore', () => {
 // ---------------------------------------------------------------------------
 describe('ensureBeadsGitExclude', () => {
   let tmpDir;
+  function gitInTmp(args, options = {}) {
+    return execFileSync('git', [
+      '-c',
+      'core.autocrlf=false',
+      '-c',
+      'core.safecrlf=false',
+      ...args
+    ], {
+      cwd: tmpDir,
+      ...options
+    });
+  }
 
   beforeEach(() => {
     tmpDir = makeTmpDir();
@@ -193,19 +205,34 @@ describe('ensureBeadsGitExclude', () => {
   });
 
   test('untracks previously committed Beads state without deleting local files', () => {
-    execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
+    gitInTmp(['init'], { stdio: 'pipe' });
     const beadsFile = path.join(tmpDir, '.beads', 'issues.jsonl');
     fs.mkdirSync(path.dirname(beadsFile), { recursive: true });
     fs.writeFileSync(beadsFile, '{"id":"forge-test"}\n', 'utf8');
-    execFileSync('git', ['add', '.beads/issues.jsonl'], { cwd: tmpDir, stdio: 'pipe' });
+    gitInTmp(['add', '.beads/issues.jsonl'], { stdio: 'pipe' });
 
-    expect(execFileSync('git', ['ls-files', '.beads'], { cwd: tmpDir, encoding: 'utf8' }).trim()).toBe('.beads/issues.jsonl');
+    expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('.beads/issues.jsonl');
 
     ensureBeadsGitExclude(tmpDir);
 
     expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"forge-test"}\n');
-    expect(execFileSync('git', ['ls-files', '.beads'], { cwd: tmpDir, encoding: 'utf8' }).trim()).toBe('');
-    expect(execFileSync('git', ['status', '--short', '--', '.beads'], { cwd: tmpDir, encoding: 'utf8' }).trim()).toBe('');
+    expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+    expect(gitInTmp(['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+  });
+
+  test('untracks staged Beads state even when the working file diverged', () => {
+    gitInTmp(['init'], { stdio: 'pipe' });
+    const beadsFile = path.join(tmpDir, '.beads', 'issues.jsonl');
+    fs.mkdirSync(path.dirname(beadsFile), { recursive: true });
+    fs.writeFileSync(beadsFile, '{"id":"staged"}\n', 'utf8');
+    gitInTmp(['add', '.beads/issues.jsonl'], { stdio: 'pipe' });
+    fs.writeFileSync(beadsFile, '{"id":"working"}\n', 'utf8');
+
+    ensureBeadsGitExclude(tmpDir);
+
+    expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"working"}\n');
+    expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+    expect(gitInTmp(['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
   });
 });
 
