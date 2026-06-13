@@ -17,6 +17,8 @@ Setup cleanup removes the old generated files:
 .github/workflows/github-to-beads.yml
 .github/workflows/beads-to-github.yml
 .github/beads-mapping.json
+.github/beads-sync-config.json
+.github/scripts/beads-sync/*.mjs
 scripts/github-beads-sync.config.json
 scripts/github-beads-sync/*.mjs
 ```

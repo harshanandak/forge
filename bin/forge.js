@@ -68,7 +68,7 @@ const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery
 const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
 const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
 const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
-const { DEFAULT_BEADS_VERSION, detectDefaultBranch, templateWorkflows, scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
+const { scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
 
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');
@@ -4029,26 +4029,10 @@ async function handleSyncScaffold() {
   console.log('Beads GitHub sync scaffolding is deprecated (--sync).');
   try {
     const result = scaffoldBeadsSync(projectRoot, packageDir);
-    if (result.deprecated) {
-      console.log(`  ${result.message}`);
-      for (const f of result.filesRemoved || []) {
-        console.log(`  Removed deprecated sync file: ${f}`);
-      }
-      return;
+    console.log(`  ${result.message}`);
+    for (const f of result.filesRemoved || []) {
+      console.log(`  Removed deprecated sync file: ${f}`);
     }
-    for (const f of (result.filesCreated || [])) {
-      console.log(`  Created: ${f}`);
-    }
-    for (const f of (result.filesSkipped || [])) {
-      console.log(`  Skipped: ${f} (already exists)`);
-    }
-
-    // Detect default branch and pin forge-managed workflows to the repo baseline Beads version.
-    const branch = detectDefaultBranch(projectRoot);
-    const beadsVersion = DEFAULT_BEADS_VERSION;
-    const workflowDir = path.join(projectRoot, '.github', 'workflows');
-    templateWorkflows(workflowDir, branch, beadsVersion, result.filesCreated || []);
-    console.log(`  Branch: ${branch}, Beads version: ${beadsVersion}`);
   } catch (err) {
     console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
   }
