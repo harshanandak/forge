@@ -56,4 +56,38 @@ describe('cleanupDeprecatedSyncFiles', () => {
       fs.rmSync(packageDir, { recursive: true, force: true });
     }
   });
+
+  test('removes exact legacy script copies without package sources', () => {
+    const legacyContent = fs.readFileSync(
+      path.join(__dirname, '..', 'scripts', 'github-beads-sync', 'index.mjs'),
+      'utf8',
+    );
+    const oldFiles = [
+      'scripts/github-beads-sync/index.mjs',
+      '.github/scripts/beads-sync/index.mjs',
+    ];
+    for (const file of oldFiles) {
+      const fullPath = path.join(projectRoot, file);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, legacyContent, 'utf8');
+    }
+
+    const result = cleanupDeprecatedSyncFiles(projectRoot);
+
+    for (const file of oldFiles) {
+      expect(result.removed).toContain(file);
+      expect(fs.existsSync(path.join(projectRoot, file))).toBe(false);
+    }
+  });
+
+  test('removes the generated mapping stub without a trailing newline', () => {
+    const file = path.join(projectRoot, '.github', 'beads-mapping.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{}', 'utf8');
+
+    const result = cleanupDeprecatedSyncFiles(projectRoot);
+
+    expect(result.removed).toContain('.github/beads-mapping.json');
+    expect(fs.existsSync(file)).toBe(false);
+  });
 });
