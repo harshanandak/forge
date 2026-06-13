@@ -2960,6 +2960,18 @@ function isBeadsInitialized() {
   return beadsSetupLib.isBeadsInitialized(projectRoot);
 }
 
+function migrateExistingBeadsLocalState() {
+  if (!fs.existsSync(path.join(projectRoot, '.beads'))) {
+    return;
+  }
+
+  try {
+    beadsSetupLib.ensureBeadsGitExclude(projectRoot);
+  } catch (err) {
+    console.warn(`  Warning: failed to migrate Beads local state: ${err.message}`);
+  }
+}
+
 // Initialize Beads in the project using the defensive safeBeadsInit wrapper
 // Handles config/gitignore writes, hook snapshot/restore, and JSONL pre-seeding
 function initializeBeads(installType) {
@@ -3104,6 +3116,7 @@ async function promptBeadsSetup(question) {
   const beadsStatus = checkForBeads();
 
   if (beadsInitialized) {
+    migrateExistingBeadsLocalState();
     console.log('✓ Beads is already initialized in this project');
     console.log('');
     return;
@@ -3336,6 +3349,10 @@ async function setupProjectTools(rl, question) {
 function autoSetupBeadsInQuickMode() {
   const beadsStatus = checkForBeads();
   const beadsInitialized = isBeadsInitialized();
+
+  if (beadsInitialized) {
+    migrateExistingBeadsLocalState();
+  }
 
   if (!beadsInitialized && beadsStatus) {
     console.log('📦 Initializing Beads...');
@@ -3977,6 +3994,8 @@ async function executeSetup(config) {
   // Check prerequisites
   checkPrerequisites();
   console.log('');
+
+  migrateExistingBeadsLocalState();
 
   // Copy AGENTS.md (only if not exists — preserve user customizations; actionLog tracks it)
   const agentsDest = path.join(projectRoot, 'AGENTS.md');
