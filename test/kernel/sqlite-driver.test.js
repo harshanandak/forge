@@ -113,6 +113,31 @@ describe('Kernel SQLite runtime driver selection', () => {
 		expect(fs.existsSync(databasePath)).toBe(true);
 	});
 
+	test('derives the database path from broker config instead of opening memory', async () => {
+		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+		const databasePath = path.join(makeTempDir(), 'git-common-dir', 'forge', 'kernel.sqlite');
+		const driver = createBuiltinSQLiteDriver();
+
+		try {
+			await driver.exec('CREATE TABLE broker_config_probe (id INTEGER PRIMARY KEY);', { databasePath });
+		} finally {
+			driver.close();
+		}
+
+		expect(fs.existsSync(databasePath)).toBe(true);
+	});
+
+	test('fails clearly when the driver has no database path or broker config', async () => {
+		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+		const driver = createBuiltinSQLiteDriver();
+
+		try {
+			await expect(driver.exec('SELECT 1;')).rejects.toThrow(/requires a databasePath/);
+		} finally {
+			driver.close();
+		}
+	});
+
 	test('can rerun real validation against the same database without leaving probe tables', async () => {
 		const { Database } = require('bun:sqlite');
 		const { validateBuiltinSQLiteRuntimeDriver } = require('../../lib/kernel/sqlite-driver');
