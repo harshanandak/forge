@@ -146,11 +146,11 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 
 ## D16 — Kernel JSONL portability projection
 
-**Decision:** The Kernel owns a git-tracked, deterministic-order JSONL export of issues, dependencies, and comments — auto-exported on mutation (or at push time), imported on clone/bootstrap.
+**Decision:** The Kernel owns deterministic-order JSONL export/import artifacts for intentionally published clone/bootstrap and reviewable portability snapshots. These exports are explicit projections, not auto-exported on routine mutation or push, and not the durability mechanism for close/verify state.
 
-**Rationale:** Today `.beads/issues.jsonl` in git is what makes the backlog clone with the repo, diff in PRs, sync across machines via ordinary git, and survive disk loss. `kernel.sqlite` is a local binary that does none of that. Without a kernel-owned replacement, retiring Beads silently deletes the portability/backup/sync story.
+**Rationale:** Today `.beads/issues.jsonl` in git is what makes the backlog clone with the repo, diff in PRs, sync across machines via ordinary git, and survive disk loss. `kernel.sqlite` is a local binary that does none of that. Without a kernel-owned explicit export/import replacement, retiring Beads silently deletes the portability/bootstrap story.
 
-**Implication:** This is a prerequisite gate for D14 retirement claims. Acceptance: fresh machine, `git clone`, no Beads/Dolt installed → `forge status` shows the full backlog. The projection is the Kernel's own surface, not a "Beads compatibility" feature.
+**Implication:** This is a prerequisite gate for D14 retirement claims. Acceptance: fresh machine, `git clone`, no Beads/Dolt installed, plus an intentionally published Kernel projection -> `forge status` shows the full backlog after import/bootstrap. The projection is the Kernel's own surface, not a "Beads compatibility" feature, and routine close/verify durability stays in local SQLite or server authority.
 
 **Impact score:** user_value=5, risk_reduction=5, implementation_confidence=4, reversibility=4, dependency_unlock=5, agent_friendliness=4, team_scale=5.
 

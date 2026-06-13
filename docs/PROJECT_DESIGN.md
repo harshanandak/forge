@@ -16,7 +16,7 @@
 
 Forge is moving toward a native Kernel/control-plane architecture:
 
-- **Authority:** SQLite WAL is the local single-machine Kernel authority; team/multi-machine authority requires a serialized server authority later.
+- **Authority:** SQLite WAL is the local single-machine Kernel authority; team/multi-machine authority requires a serialized server authority later. Routine issue, workflow, claim, run, and knowledge writes must not depend on committing repository metadata to the protected default branch.
 - **Beads/Dolt:** Beads and Dolt remain compatibility/projection/history/migration surfaces, not the core Kernel write path.
 - **Project Knowledge:** Project Knowledge is verbatim-first and rebuildable. Summaries, extracted facts, Context Mode output, Graphify output, and agent memories are derived/proposal material unless accepted by Kernel event.
 - **Knowledge storage:** Knowledge starts in the same local SQLite Kernel DB by default, but only behind a clean `KnowledgeStore` boundary so it can later move to `knowledge.sqlite`, server-side search, or another backend.
@@ -26,7 +26,7 @@ Forge is moving toward a native Kernel/control-plane architecture:
 - **Observer:** Background observers record evidence/proposals/session events first; they do not silently mutate project truth.
 - **Architecture notes:** Architecture-significant observations, domain rules, subsystem behaviors, constraints, and open questions must be captured as scoped architecture records. `PROJECT_DESIGN.md` remains the top-level map; detailed records live under `docs/architecture/**` and work/ADR evidence.
 - **Hook policy:** Agent-native hooks are the preferred architecture-capture UX; Forge CLI checks own the policy; Lefthook is a Git adapter/fallback; CI is the non-bypassable gate. Agents must not use `--no-verify` or equivalent hook-disabling bypasses without explicit audited authorization.
-- **Portability:** The Kernel owns a git-tracked JSONL projection of issues/dependencies/comments so project state travels with `git clone`; this is a prerequisite for Beads/Dolt retirement claims.
+- **Portability:** Explicit Kernel exports may provide reviewable clone/bootstrap snapshots, but repository projection files are not the routine authority channel for close/verify state. Local-only state uses the local Kernel SQLite authority; cross-machine or team state uses serialized server authority.
 - **Work-item taxonomy:** 4 issue types (`epic`, `task`, `bug`, `decision`), 5 stored statuses; `ready`/`blocked` are derived read-model facts; a single numeric rank is authoritative for ordering.
 - **Agent interface:** Forge ships its own agent surface (`forge prime`, kernel-facing JSON-first CLI, skills as thin CLI wrappers); agent-interface parity gates Beads retirement.
 - **Supported harnesses:** Claude Code, Codex, and Cursor are the supported harness set; Hermes is the planned addition. Other previously-supported harness surfaces are removed.
@@ -302,12 +302,39 @@ supersedes: []
 conflicts_with: []
 ```
 
-**Current decision:** The Kernel owns a git-tracked, deterministic-order JSONL export of issues, dependencies, and comments — auto-exported on mutation (or at push), imported on clone/bootstrap. It is the Kernel's own portability/backup/sync surface, not a Beads-compatibility feature, and a prerequisite gate for Beads/Dolt retirement claims.
+**Current decision:** The Kernel may own deterministic JSONL export/import artifacts for clone/bootstrap and reviewable portability snapshots. These exports are explicit projections, not the normal write path and not the durability mechanism for routine close/verify state.
 
 **Implications:**
 
-- Acceptance: fresh machine, `git clone`, no Beads/Dolt installed → `forge status` shows the full backlog.
-- Retirement claims under PD-20260606-beads-dolt-projection cannot pass without this projection.
+- Acceptance: fresh machine, `git clone`, no Beads/Dolt installed can import an explicit Kernel projection when one is intentionally published.
+- Local-only work remains durable in local SQLite without requiring default-branch commits.
+- Team or cross-machine work requires server authority before writes are accepted as shared truth.
+- Retirement claims under PD-20260606-beads-dolt-projection cannot pass until portability works without putting every local state mutation on the Git hot path.
+
+### PD-20260613-authority-state-not-repo-metadata
+
+```yaml
+id: PD-20260613-authority-state-not-repo-metadata
+topic: authority.persistence.boundary
+status: accepted
+decision_date: 2026-06-13
+last_reviewed: 2026-06-13
+adr: pending
+evidence:
+  - docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md
+  - docs/reference/FORGE_KERNEL_STORAGE_MODEL.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Routine issue, workflow, claim, run, and knowledge writes must not depend on committing repository metadata to the protected default branch. Local-only state uses the local Kernel SQLite authority. Cross-machine or team state uses serialized server authority. Repository files are project code/docs/config plus explicit projection artifacts, not the live database for normal close/verify work.
+
+**Implications:**
+
+- `/verify` closing an issue must not require a follow-up PR or direct push to persist tracker metadata.
+- When no server is configured, close/verify state is local-only and should be reported that way.
+- When team mode is configured, close/verify writes go to server authority, and server-side projection workers update GitHub/Linear/Beads compatibility state.
+- Beads/Dolt and Kernel JSONL exports remain explicit import/export/projection surfaces, not the hot-path authority.
 
 ### PD-20260611-sqlite-builtin-driver
 

@@ -23,6 +23,10 @@ Projection state
   GitHub/Linear projection delivery status
   dead letters and repair state
 
+Repository exports
+  Explicit Kernel projection snapshots for clone/bootstrap/review only
+  Not the durability channel for routine local or team writes
+
 Archive
   Local evidence archive
   R2 for server-side large evidence/log/artifact bundles
@@ -43,6 +47,8 @@ Configuration
 5. D1 is a read model, not the claim authority.
 6. Queues retry projection work, not core issue mutations.
 7. R2 stores large evidence and archives, not hot authority fields.
+8. Routine close/verify state is never made durable by committing tracker metadata to the protected default branch.
+9. Repository exports are explicit projection artifacts, not the write-ahead log for normal work.
 
 ## Local Mode
 
@@ -65,6 +71,8 @@ Local SQLite WAL broker stores:
 
 Local mode may work without a server. It must still prevent two local worktrees from double-claiming the same issue.
 
+Local mode is intentionally local-only. Closing an issue, recording a run, updating a claim, or saving project knowledge in local mode must not require a Git commit or push. If the user wants another machine or teammate to see that state, Forge must use team mode server authority or an explicit export/import operation.
+
 ## Team Mode
 
 Team mode requires server authority.
@@ -78,6 +86,8 @@ Cloudflare components:
 - R2 stores optional large evidence, validation artifacts, and archived session bundles.
 
 Team mode must block claim/start/close/stage-transition writes when the server cannot accept them.
+
+Team mode is the only shared write authority. Cross-machine and multi-user close/verify state must be accepted by the server before Forge reports it as shared truth. Projection workers may update GitHub, Linear, Beads, or explicit export artifacts after acceptance, but projection failure never rolls back the accepted server event.
 
 ## Local Versus Server Matrix
 
@@ -98,6 +108,7 @@ Team mode must block claim/start/close/stage-transition writes when the server c
 | Workflow config | Project files + local cache | Server copy/hash in team mode | Team writes require config revision agreement. |
 | Beads import source | Local archive | Not uploaded by default | Upload only migration summary if needed. |
 | Beads export output | Local projection | Projection status only | Export failure never rolls back Kernel state. |
+| Kernel repository export | Explicit local export | Explicit server export/projection | Repository files are reviewable snapshots, not hot authority. |
 | GitHub/Linear projection | Local status cache | Server outbox/projection table | Server workers own external projection. |
 | Dead letters/conflicts | SQLite | Durable Object/D1 dead-letter state | Must be visible before release readiness. |
 
