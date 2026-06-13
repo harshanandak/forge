@@ -183,6 +183,22 @@ describe('Kernel SQLite runtime driver selection', () => {
 		expect(fs.existsSync(databasePath)).toBe(true);
 	});
 
+	test('rejects mismatched configured and broker database paths', async () => {
+		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+		const driverDatabasePath = path.join(makeTempDir(), 'driver', 'kernel.sqlite');
+		const brokerDatabasePath = path.join(makeTempDir(), 'broker', 'kernel.sqlite');
+		const driver = createBuiltinSQLiteDriver({ databasePath: driverDatabasePath });
+
+		try {
+			await expect(driver.exec(
+				'CREATE TABLE broker_mismatch_probe (id INTEGER PRIMARY KEY);',
+				{ databasePath: brokerDatabasePath },
+			)).rejects.toThrow(/databasePath mismatch/);
+		} finally {
+			driver.close();
+		}
+	});
+
 	test('fails clearly when the driver has no database path or broker config', async () => {
 		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 		const driver = createBuiltinSQLiteDriver();
