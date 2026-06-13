@@ -306,6 +306,22 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(JSON.parse(closeEvent.payload_json).projection_origin).toBeUndefined();
 	});
 
+	test('does not apply projection origin when close actor drifts after export', () => {
+		const exportResult = exportClosedKernelIssue();
+		const [exportedIssue] = parseJsonl(exportResult.files['issues.jsonl']);
+		exportedIssue.closed_by = 'External Beads User';
+
+		const importResult = importBeadsSnapshot({
+			issues: [exportedIssue],
+			comments: [],
+			dependencies: [],
+		}, { importedAt: IMPORTED_AT });
+		const [closeEvent] = importResult.kernel.events;
+
+		expect(closeEvent.actor).toBe('External Beads User');
+		expect(JSON.parse(closeEvent.payload_json).projection_origin).toBeUndefined();
+	});
+
 	test('counts only blocking dependency edges on Beads export', () => {
 		const exportResult = exportKernelToBeads({
 			issues: [
