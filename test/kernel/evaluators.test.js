@@ -182,6 +182,37 @@ describe('Kernel conflict evaluators', () => {
 		expect(result.projection).toBe(true);
 	});
 
+	test('does not suppress Beads imports when the authority entity is missing', () => {
+		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
+
+		const result = evaluateKernelEvent({
+			event: {
+				entity_type: 'issue',
+				entity_id: 'forge-1',
+				event_type: 'issue.update',
+				idempotency_key: 'beads-import:forge-1:missing-entity',
+				expected_revision: 0,
+				origin: 'beads_import',
+				payload: {
+					title: 'Projected title',
+					projection_origin: {
+						source: 'forge-kernel',
+						target: 'beads',
+						entity_type: 'issue',
+						entity_id: 'forge-1',
+						entity_revision: 0,
+						payload_hash: '{"title":"Projected title"}',
+						imported_payload_hash: '{"title":"Projected title"}',
+					},
+				},
+			},
+			entity: null,
+		});
+
+		expect(result.decision).toBe('accept');
+		expect(result.projection).toBe(true);
+	});
+
 	test('quarantines dependency writes that would create a cycle', () => {
 		const { evaluateKernelEvent } = require('../../lib/kernel/evaluators');
 
