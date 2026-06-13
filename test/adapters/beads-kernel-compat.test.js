@@ -271,6 +271,56 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
+	test('reports malformed Forge projection metadata as unsupported', () => {
+		const exportResult = exportKernelToBeads({
+			issues: [{
+				id: 'forge-native',
+				title: 'Native Kernel issue',
+				body: 'Projected to Beads and imported back.',
+				status: 'closed',
+				priority: 'P1',
+				type: 'task',
+				entity_revision: 4,
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+			dependencies: [],
+			comments: [],
+			events: [{
+				entity_type: 'issue',
+				entity_id: 'forge-native',
+				event_type: 'beads.issue.closed',
+				payload_json: JSON.stringify({
+					closed_at: IMPORTED_AT,
+					close_reason: 'Done',
+				}),
+				created_at: IMPORTED_AT,
+			}],
+		}, { dryRun: true });
+
+		const [exportedIssue] = parseJsonl(exportResult.files['issues.jsonl']);
+		exportedIssue.metadata = JSON.stringify({
+			forge_projection: {
+				source: 'forge-kernel',
+				target: 'beads',
+				entity_type: 'issue',
+				entity_id: 'forge-native',
+			},
+		});
+
+		const importResult = importBeadsSnapshot({
+			issues: [exportedIssue],
+			comments: [],
+			dependencies: [],
+		}, { importedAt: IMPORTED_AT });
+		const [closeEvent] = importResult.kernel.events;
+
+		expect(importResult.report.gaps).toEqual(expect.arrayContaining([
+			expect.objectContaining({ field: 'issues.metadata' }),
+		]));
+		expect(JSON.parse(closeEvent.payload_json).projection_origin).toBeUndefined();
+	});
+
 	test('counts only blocking dependency edges on Beads export', () => {
 		const exportResult = exportKernelToBeads({
 			issues: [
