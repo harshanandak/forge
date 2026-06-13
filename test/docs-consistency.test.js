@@ -71,6 +71,14 @@ describe('Beads repository hygiene', () => {
 
     expect(trackedBeadsFiles).toBe('');
   });
+
+  it('preserves prior GitHub sync lessons for the future Kernel projection', () => {
+    const projection = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/kernel-github-issues-projection.md');
+
+    expect(projection).toContain('Do not start from scratch');
+    expect(projection).toContain('prior Beads/GitHub sync work remains design input');
+    expect(projection).toContain('mapping, comments, sanitization, idempotency, retry, and GitHub API handling');
+  });
 });
 
 describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {

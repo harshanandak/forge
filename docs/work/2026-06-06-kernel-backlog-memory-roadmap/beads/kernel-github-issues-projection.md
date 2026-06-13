@@ -4,11 +4,14 @@
 
 The removed Beads/GitHub workflow sync path should not be rebuilt on top of Beads runtime files. Once Forge has its own local SQLite Kernel authority and serialized server authority for team/cross-machine work, GitHub Issues can become an external projection from that authority.
 
+The prior Beads/GitHub sync work remains design input. Do not start from scratch when this issue is implemented; reuse the lessons from its mapping, comments, sanitization, idempotency, retry, and GitHub API handling while replacing the authority source with Kernel/server events.
+
 ## Scope
 
 - Design the Kernel/server-owned GitHub Issues projection contract.
 - Map Kernel work items, status, labels, assignees, comments, and closure events to GitHub Issues.
 - Define idempotency keys, retry behavior, dead-letter handling, and conflict reporting.
+- Review the prior GitHub sync scripts/tests as reference material for mapping, comments, sanitization, idempotency, retry, and GitHub API handling.
 - Keep `.beads/` out of the write path and out of committed repository metadata.
 - Preserve branch protection: no metadata-only commits or direct protected-branch pushes for issue sync.
 
