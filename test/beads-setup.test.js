@@ -10,7 +10,8 @@ const {
   ensureBeadsGitExclude,
   isBeadsInitialized,
   preSeedJsonl,
-  readBeadsDatabaseName
+  readBeadsDatabaseName,
+  safeBeadsInit
 } = require('../lib/beads-setup');
 
 /**
@@ -275,6 +276,45 @@ describe('isBeadsInitialized', () => {
     fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
     fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads repo marker\n');
     expect(isBeadsInitialized(tmpDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// safeBeadsInit
+// ---------------------------------------------------------------------------
+describe('safeBeadsInit', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fs.mkdirSync(path.join(tmpDir, '.git', 'info'), { recursive: true });
+  });
+  afterEach(() => {
+    rmrf(tmpDir);
+  });
+
+  test('adds local Beads excludes even when initialization is skipped', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(path.join(beadsDir, 'hooks'), { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n',
+    );
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+
+    let initCalls = 0;
+    const result = safeBeadsInit(tmpDir, {
+      execBdInit: () => {
+        initCalls += 1;
+      },
+    });
+
+    const exclude = fs.readFileSync(path.join(tmpDir, '.git', 'info', 'exclude'), 'utf8');
+    expect(result).toMatchObject({ success: true, skipped: true, reason: 'already initialized' });
+    expect(initCalls).toBe(0);
+    expect(exclude).toContain('.beads/');
+    expect(exclude).toContain('.dolt/');
+    expect(exclude).toContain('.beads-credential-key');
   });
 });
 

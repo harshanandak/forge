@@ -42,7 +42,7 @@ describe('README.md consistency', () => {
 
   it('documents --sync deprecation', () => {
     expect(readme).toContain('--sync');
-    expect(readme).toContain('Deprecated');
+    expect(readme).toMatch(/deprecated/i);
   });
 
   it('documents --agents flag', () => {

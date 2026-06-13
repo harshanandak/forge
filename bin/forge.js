@@ -47,7 +47,6 @@ const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
-const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const {
   listTopics,
@@ -1754,12 +1753,6 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   const { added, preserved } = writeEnvTokens(tokens, true);
   displayEnvTokenResults(added, preserved);
 
-  console.log('');
-  console.log('GitHub-Beads issue sync setup is deprecated; future GitHub issue sync belongs to Forge Kernel/server authority.');
-  const cleanup = await scaffoldGithubBeadsSync(projectRoot, packageDir);
-  for (const f of cleanup.removed || []) {
-    console.log(`  Removed deprecated sync file: ${f}`);
-  }
 }
 
 // Display the Forge banner
