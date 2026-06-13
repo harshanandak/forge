@@ -67,6 +67,23 @@ describe('Kernel SQLite runtime driver selection', () => {
 		});
 	});
 
+	test('rejects node:sqlite runtimes without backup support', () => {
+		const { selectBuiltinSQLiteRuntime } = require('../../lib/kernel/sqlite-driver');
+
+		expect(() => selectBuiltinSQLiteRuntime({
+			requireModule(name) {
+				if (name === 'node:sqlite') {
+					return {
+						DatabaseSync: function DatabaseSync() {},
+					};
+				}
+				const error = new Error(`Cannot find module ${name}`);
+				error.code = 'MODULE_NOT_FOUND';
+				throw error;
+			},
+		})).toThrow(/node:sqlite is present but does not expose backup/);
+	});
+
 	test('fails with a clear remediation when no builtin SQLite runtime exists', () => {
 		const { selectBuiltinSQLiteRuntime } = require('../../lib/kernel/sqlite-driver');
 

@@ -75,7 +75,7 @@ Local mode is intentionally local-only. Closing an issue, recording a run, updat
 
 ### SQLite Runtime Driver
 
-Forge Kernel local mode uses a builtin SQLite runtime driver. Driver selection must feature-detect `bun:sqlite` first and `node:sqlite` second, and must not add a native-compile SQLite package as the default install path.
+Forge Kernel local mode uses a builtin SQLite runtime driver. Driver selection must feature-detect `bun:sqlite` first and backup-capable `node:sqlite` second, and must not add a native-compile SQLite package as the default install path.
 
 The selected driver must pass conformance checks for WAL mode, `busy_timeout`, transactions, WAL checkpointing, backup creation, and FTS5 before Forge claims real local SQLite authority behavior.
 
