@@ -73,6 +73,12 @@ Local mode may work without a server. It must still prevent two local worktrees 
 
 Local mode is intentionally local-only. Closing an issue, recording a run, updating a claim, or saving project knowledge in local mode must not require a Git commit or push. If the user wants another machine or teammate to see that state, Forge must use team mode server authority or an explicit export/import operation.
 
+### SQLite Runtime Driver
+
+Forge Kernel local mode uses a builtin SQLite runtime driver. Driver selection must feature-detect `bun:sqlite` first and `node:sqlite` second, and must not add a native-compile SQLite package as the default install path.
+
+The selected driver must pass conformance checks for WAL mode, `busy_timeout`, transactions, WAL checkpointing, backup creation, and FTS5 before Forge claims real local SQLite authority behavior.
+
 ## Team Mode
 
 Team mode requires server authority.
