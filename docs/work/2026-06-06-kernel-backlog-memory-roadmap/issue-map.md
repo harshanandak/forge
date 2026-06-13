@@ -208,22 +208,36 @@ Recommended dependency and acceptance notes:
 
 See `evaluator-beads-proposed.tsv`, `decision-registry-beads-proposed.tsv`, `architecture-capture-beads-proposed.tsv`, `architecture-hooks-beads-proposed.tsv`, and `workflow-friction-beads-proposed.tsv` for proposed IDs. These TSVs are implementation backlog proposals until an authoritative Beads/Kernel state export is committed through the owning sync surface.
 
-## Probable release lanes
+## Release lanes for the next feature releases
 
-| Lane | Primary issue set | Release gate |
-| --- | --- | --- |
-| Self-hosting stability / next patch-feature bridge | `forge-2agy.9.7.7`, `forge-2agy.9.3.37`, `forge-2agy.9.5.11` | Clean push/review/verify/merge lifecycle without surprise generated dirty files; hooks/lint/state doctor passes in linked worktrees. |
-| Fresh project setup correctness | `forge-2agy.9.7.8`, `forge-2agy.9.3.36`, `forge-2agy.9.2.10` | New projects teach the work-folder artifact contract and stage/gate taxonomy consistently. |
-| Kernel / TypeScript state foundation | `forge-2agy.9.1.7`, `forge-2agy.9.1.8`, `forge-2agy.9.5.*`, `forge-2agy.9.6.*` | Normal Forge operations no longer depend on Dolt as hot-path authority; Beads/Dolt projection fidelity remains tested. |
-| Knowledge and architecture capture | `forge-2agy.9.3.*`, `forge-2agy.9.4.*` | Project Knowledge indexes work artifacts verbatim and architecture capture uses Forge policy/agent-native hooks with CI enforcement. |
-| Team authority | `forge-2agy.9.8.*` | Multi-machine/team writes remain blocked until serialized server authority and projection recovery are implemented. |
+`forge-2agy.9.9` is the release coordinator issue for this lane map. It is documentation/planning only, should merge before implementation PRs that consume this sequencing, and should not close or implement the lane issues below.
 
-## Implementation order
+| Lane | Issues in lane | Dependency / merge order | Parallelism rule | Release gate |
+| --- | --- | --- | --- | --- |
+| Release coordinator | `forge-2agy.9.9` | Merge this lane map first so downstream PRs can cite one ordering source. | Standalone docs PR. | `issue-map.md` contains lane membership, dependency notes, PR concurrency limits, and next-release gates. |
+| Self-hosting stability | `forge-2agy.9.3.37`, `forge-2agy.9.5.11`, `forge-2agy.9.7.7` | Stack `forge-2agy.9.3.37` before `forge-2agy.9.5.11`; stack `forge-2agy.9.7.7` after `forge-2agy.9.5.11` and `forge-2agy.9.5.9`. | Mostly sequential/stacked because generated lifecycle cleanup depends on hook/lint doctor, state bootstrap, and idempotency semantics. | Clean checkout plus linked worktree can complete push, review, verify, merge, and post-merge cleanup without surprise generated dirt, stashes, or manual repair. |
+| Fresh setup correctness | `forge-2agy.9.3.36`, `forge-2agy.9.2.10`, `forge-2agy.9.7.8` | `forge-2agy.9.3.36` and `forge-2agy.9.2.10` may proceed independently once their own prerequisites are satisfied; `forge-2agy.9.7.8` stacks after both and `forge-2agy.9.7.5`. | The two foundation PRs can run in parallel with self-hosting work, but the setup-alignment PR is sequential after them. | Fresh setup and existing-project repair teach `plan.md`, `tasks.md`, `decisions.md`, and evidence artifacts consistently without reviving `design.md` as the default work-item plan. |
+| Kernel state foundation | `forge-2agy.9.5.7`, `forge-2agy.9.5.6`, `forge-2agy.9.5.9`, `forge-2agy.9.5.10` | Start with `forge-2agy.9.5.7` driver validation. Then implement the transaction contract (`.9.5.6`), idempotency semantics (`.9.5.9`), and claim lease invariants (`.9.5.10`) as stacked or tightly coordinated PRs. | Driver validation can run in parallel with hook/lint work; transaction/idempotency/lease changes should be stacked or merged in dependency order. | Real SQLite driver proof covers WAL, busy timeout, FTS5, backup, checkpoint, Windows behavior, atomic broker writes, idempotency replay/collision handling, and DB-enforced claim leases. |
+| Beads projection safety | `forge-2agy.9.6.5`, `forge-2agy.9.6.6` | These can start after Kernel event/projection boundaries are stable enough to test. Keep them before any PR that claims Beads/Dolt is removed from the hot path. | Can run in parallel with later Kernel foundation PRs if fixtures use the same authority/projection contract. | Projection writes cannot echo back over Kernel authority, stale external writes are quarantined, and ready-queue parity differences are either passing or intentionally documented. |
 
-1. Finish 0.0.20 Kernel conflict/quarantine work already in progress.
-2. Prioritize release-blocking self-hosting stability: `forge-2agy.9.7.7`, `forge-2agy.9.3.37`, and `forge-2agy.9.5.11`.
-3. Fix fresh-project adoption correctness: `forge-2agy.9.7.8`, `forge-2agy.9.3.36`, and `forge-2agy.9.2.10`.
-4. Complete `forge-2agy.9.1.*`, `forge-2agy.9.5.*`, and `forge-2agy.9.6.*` enough to move normal Forge operations off Dolt hot-path authority while preserving Beads/Dolt projection fidelity.
-5. Implement `forge-2agy.9.3.*` and `forge-2agy.9.4.*` for the knowledge/orientation MVP. Within architecture capture, build the Forge policy engine and agent-native adapters before treating Lefthook as sufficient.
-6. Implement `forge-2agy.9.7.*` harness integrations after setup/artifact contracts and orient/recap contracts are stable.
-7. Implement `forge-2agy.9.8.*` before any multi-machine/team write claims.
+## Release stability gates
+
+The next reliable feature release must pass these gates before downstream Knowledge, hook UX, or team-authority feature claims expand:
+
+1. Self-hosting lifecycle smoke gate: clean checkout plus linked worktree plus generated harness plus hooks plus Forge state plus projection state completes push/review/verify/merge/post-merge cleanup without stash/manual repair.
+2. Worktree gate: hook/lint doctor and Forge state doctor both report machine-readable status and safe repair behavior for main and linked worktrees.
+3. Fresh setup gate: fresh setup and existing-project update/repair generate the current work-folder contract and keep legacy `design.md` compatibility without teaching it as the default.
+4. Kernel authority gate: normal Forge issue/state writes go through the SQLite broker contract with expected revision, idempotency, projection outbox, and claim lease invariants.
+5. Beads projection gate: Dolt/Beads remains compatibility/projection/import-export state only; projection parity, echo-loop prevention, quarantine, and rollback/dry-run paths are proven before retirement claims.
+
+## Implementation order and PR concurrency
+
+Keep active implementation PRs capped at **2-3 at a time**. A fourth implementation PR should wait unless one active PR is merged, closed, or explicitly paused.
+
+1. Merge the release coordinator PR (`forge-2agy.9.9`) first.
+2. Open the first parallel pair: `forge-2agy.9.3.37` for linked-worktree hook/lint reliability and `forge-2agy.9.5.7` for real SQLite driver validation.
+3. After `forge-2agy.9.3.37` and the Kernel driver/common-dir prerequisites are stable, stack `forge-2agy.9.5.11` for Forge state doctor/bootstrap repair.
+4. After `forge-2agy.9.5.11` and `forge-2agy.9.5.9`, stack `forge-2agy.9.7.7` for generated docs/harness churn and lifecycle idempotency.
+5. In the second slot, run fresh-setup foundation work: `forge-2agy.9.3.36` and `forge-2agy.9.2.10`; stack `forge-2agy.9.7.8` after both and `forge-2agy.9.7.5`.
+6. Continue Kernel state foundation in merge order: `forge-2agy.9.5.6`, `forge-2agy.9.5.9`, then `forge-2agy.9.5.10`, keeping any overlapping PRs small and explicitly stacked.
+7. Run Beads projection safety (`forge-2agy.9.6.5`, `forge-2agy.9.6.6`) before `forge-2agy.9.1.8` or any release note claiming Dolt/Beads left the hot path.
