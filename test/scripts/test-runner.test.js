@@ -153,6 +153,22 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test('classifyPushTests maps CLI entrypoint setup changes without forcing a full suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'bin/forge.js\n',
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/cli-flags.test.js',
+      'test/forge-cli-registry.test.js',
+      'test/setup-github-sync.test.js',
+      'test/setup-runtime-flags.test.js',
+      ...riskTargets,
+    ]);
+  });
+
   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: [
