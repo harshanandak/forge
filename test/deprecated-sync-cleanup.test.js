@@ -38,6 +38,96 @@ describe('cleanupDeprecatedSyncFiles', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('name: team-owned sync workflow\n');
   });
 
+  test('removes older generated forward sync workflow by historical hash', () => {
+    const file = path.join(projectRoot, '.github', 'workflows', 'github-to-beads.yml');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, [
+      'name: GitHub Issue \u2192 Beads Sync',
+      '',
+      'on:',
+      '  issues:',
+      '    types: [opened, closed]',
+      '',
+      '# CRITICAL: Serialize all beads writes to prevent mapping file corruption',
+      'concurrency:',
+      '  group: beads-sync',
+      '  cancel-in-progress: false',
+      '',
+      'permissions:',
+      '  contents: write   # push .beads/ and mapping file',
+      '  issues: write     # post/edit bot comments',
+      '',
+      'jobs:',
+      '  sync:',
+      '    runs-on: ubuntu-latest',
+      '    # Skip if triggered by the bot itself (loop prevention)',
+      "    if: github.actor != 'github-actions[bot]'",
+      '    steps:',
+      '      - name: Checkout code',
+      '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4',
+      '        with:',
+      '          # Need full history for push',
+      '          fetch-depth: 0',
+      '          # Use default GITHUB_TOKEN',
+      '          token: ${{ secrets.GITHUB_TOKEN }}',
+      '',
+      '      - name: Setup Bun',
+      '        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2',
+      '',
+      '      - name: Install Beads CLI',
+      '        run: bun add -g @beads/bd@^0.49',
+      '',
+      '      - name: Run sync',
+      '        env:',
+      '          GITHUB_EVENT_PATH: ${{ github.event_path }}',
+      '          GITHUB_REPOSITORY: ${{ github.repository }}',
+      '          SYNC_ACTION: ${{ github.event.action }}',
+      '          BEADS_SYNC_CONFIG: scripts/github-beads-sync.config.json',
+      '        run: |',
+      '          node scripts/github-beads-sync/index.mjs "$SYNC_ACTION"',
+      '',
+      '      - name: Commit and push changes',
+      '        env:',
+      '          ISSUE_NUM: ${{ github.event.issue.number }}',
+      '        run: |',
+      '          git config user.name "github-actions[bot]"',
+      '          git config user.email "github-actions[bot]@users.noreply.github.com"',
+      '',
+      '          # Stage beads and mapping changes',
+      '          git add .beads/ .github/beads-mapping.json || true',
+      '',
+      '          # Only commit if there are changes',
+      '          if git diff --cached --quiet; then',
+      '            echo "No changes to commit"',
+      '          else',
+      '            git commit -m "chore(beads): sync from GitHub issue #${ISSUE_NUM}"',
+      '',
+      '            # Push with retry (handles concurrent runs)',
+      '            push_success=false',
+      '            for i in 1 2 3; do',
+      '              if git push; then',
+      '                echo "Push succeeded on attempt $i"',
+      '                push_success=true',
+      '                break',
+      '              fi',
+      '              echo "Push failed, attempt $i/3 \u2014 pulling with rebase..."',
+      '              git rebase --abort 2>/dev/null || true',
+      '              git pull --rebase',
+      '            done',
+      '            if [ "$push_success" = false ]; then',
+      '              echo "::error::All 3 push attempts failed"',
+      '              exit 1',
+      '            fi',
+      '          fi',
+      ''
+    ].join('\n'), 'utf8');
+
+    const result = cleanupDeprecatedSyncFiles(projectRoot);
+
+    expect(result.removed).toContain('.github/workflows/github-to-beads.yml');
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
   test('preserves generated helper modules when a customized sync workflow remains', () => {
     const customWorkflow = path.join(projectRoot, '.github', 'workflows', 'github-to-beads.yml');
     const generatedHelper = path.join(projectRoot, 'scripts', 'github-beads-sync', 'index.mjs');
