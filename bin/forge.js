@@ -4257,6 +4257,7 @@ async function main() {
     }
 
     if (flags.sync && selectedAgents.length === 0) {
+      migrateExistingBeadsLocalState();
       await handleSyncScaffold();
       return;
     }

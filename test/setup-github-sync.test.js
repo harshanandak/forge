@@ -137,6 +137,16 @@ describe('deprecated GitHub-Beads sync setup cleanup', () => {
 
       expect(setupSection).not.toContain('scaffoldGithubBeadsSync');
     });
+
+    test('bare deprecated --sync setup migrates local Beads state before cleanup', () => {
+      const syncStart = content.indexOf('if (flags.sync && selectedAgents.length === 0)');
+      const syncEnd = content.indexOf('return;', syncStart);
+      const syncSection = content.substring(syncStart, syncEnd > syncStart ? syncEnd : syncStart + 500);
+
+      expect(syncSection).toContain('migrateExistingBeadsLocalState();');
+      expect(syncSection.indexOf('migrateExistingBeadsLocalState();'))
+        .toBeLessThan(syncSection.indexOf('await handleSyncScaffold();'));
+    });
   });
 
   describe('setup command integration', () => {
