@@ -38,6 +38,26 @@ describe('cleanupDeprecatedSyncFiles', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('name: team-owned sync workflow\n');
   });
 
+  test('preserves generated helper modules when a customized sync workflow remains', () => {
+    const customWorkflow = path.join(projectRoot, '.github', 'workflows', 'github-to-beads.yml');
+    const generatedHelper = path.join(projectRoot, 'scripts', 'github-beads-sync', 'index.mjs');
+    const legacyContent = fs.readFileSync(
+      path.join(__dirname, '..', 'scripts', 'github-beads-sync', 'index.mjs'),
+      'utf8',
+    );
+    fs.mkdirSync(path.dirname(customWorkflow), { recursive: true });
+    fs.mkdirSync(path.dirname(generatedHelper), { recursive: true });
+    fs.writeFileSync(customWorkflow, 'name: team-owned sync workflow\n', 'utf8');
+    fs.writeFileSync(generatedHelper, legacyContent, 'utf8');
+
+    const result = cleanupDeprecatedSyncFiles(projectRoot);
+
+    expect(result.removed).not.toContain('.github/workflows/github-to-beads.yml');
+    expect(result.removed).not.toContain('scripts/github-beads-sync/index.mjs');
+    expect(fs.readFileSync(customWorkflow, 'utf8')).toBe('name: team-owned sync workflow\n');
+    expect(fs.readFileSync(generatedHelper, 'utf8')).toBe(legacyContent);
+  });
+
   test('treats packaged legacy templates as generated files', () => {
     const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deprecated-sync-package-'));
     const packageFile = path.join(packageDir, 'scripts', 'github-beads-sync', 'index.mjs');
