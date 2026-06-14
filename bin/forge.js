@@ -4256,6 +4256,11 @@ async function main() {
       return;
     }
 
+    if (flags.sync && selectedAgents.length === 0) {
+      await handleSyncScaffold();
+      return;
+    }
+
     // Agents specified via flag or --yes default (non-quick mode)
     if (selectedAgents.length > 0) {
       await handleSetupCommand(selectedAgents, flags);

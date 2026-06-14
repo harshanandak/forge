@@ -152,6 +152,13 @@ describe('deprecated GitHub-Beads sync setup cleanup', () => {
       expect(helperSection).not.toContain('options.syncEnabled');
     });
 
+    test('bare deprecated --sync setup runs cleanup instead of interactive setup', () => {
+      expect(commandSetup).toContain('if (flags.sync && selectedAgents.length === 0)');
+      expect(commandSetup).toContain('await handleSyncScaffold();');
+      expect(commandSetup.indexOf('if (flags.sync && selectedAgents.length === 0)'))
+        .toBeLessThan(commandSetup.indexOf('await interactiveSetupWithFlags(flags);'));
+    });
+
     test('external-service setup does not clean deprecated sync files', () => {
       const setupStart = commandSetup.indexOf('async function configureExternalServices');
       const setupEnd = commandSetup.indexOf('\nfunction showBanner', setupStart + 1);
