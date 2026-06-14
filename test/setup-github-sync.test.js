@@ -147,6 +147,13 @@ describe('deprecated GitHub-Beads sync setup cleanup', () => {
       expect(syncSection.indexOf('migrateExistingBeadsLocalState();'))
         .toBeLessThan(syncSection.indexOf('await handleSyncScaffold();'));
     });
+
+    test('plain interactive setup migrates local Beads state before prompting', () => {
+      expect(content).toContain('async function runInteractiveSetupFallback');
+      expect(content).toContain('await runInteractiveSetupFallback(flags);');
+      expect(content.indexOf('migrateExistingBeadsLocalState();'))
+        .toBeLessThan(content.indexOf('return interactiveSetup(flags);'));
+    });
   });
 
   describe('setup command integration', () => {

@@ -4074,6 +4074,11 @@ async function handleSetupCommand(selectedAgents, flags) {
   }
 }
 
+async function runInteractiveSetupFallback(flags, interactiveSetup = interactiveSetupWithFlags) {
+  migrateExistingBeadsLocalState();
+  return interactiveSetup(flags);
+}
+
 // Helper: Handle external services configuration
 async function handleExternalServices(skipExternal, selectedAgents) {
   if (skipExternal) {
@@ -4269,7 +4274,7 @@ async function main() {
     }
 
     // Interactive setup (skip-external still applies)
-    await interactiveSetupWithFlags(flags);
+    await runInteractiveSetupFallback(flags);
   } else if (command === 'recommend') {
     const { handleRecommend, formatRecommendations } = require('../lib/commands/recommend');
     const result = handleRecommend(flags, projectRoot);
