@@ -9,14 +9,14 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 115 | 11 |
 | runtime | 331 | 46 |
-| docs | 426 | 63 |
+| docs | 433 | 65 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
 
 ## command
 
 - [ ] bin/forge.js (25)
-  - lines: 2371 (bd), 2373 (bd), 2527 (bd), 2929 (bd), 2938 (bd), 2951 (bd), 2964 (.beads), 2984 (bd), 2986 (bd), 2988 (bd), 3023 (bd), 3047 (bd), 3133 (bd), 3177 (bd), 3201 (bd), 3207 (bd), 3211 (bd), 3216 (bd), 3222 (bd), 3232 (bd), 3364 (bd), 3369 (bd), 3380 (bd), 3447 (bd), 4648 (bd)
+  - lines: 2371 (bd), 2373 (bd), 2527 (bd), 2929 (bd), 2938 (bd), 2951 (bd), 2964 (.beads), 2984 (bd), 2986 (bd), 2988 (bd), 3023 (bd), 3047 (bd), 3133 (bd), 3177 (bd), 3201 (bd), 3207 (bd), 3211 (bd), 3216 (bd), 3222 (bd), 3232 (bd), 3364 (bd), 3369 (bd), 3380 (bd), 3447 (bd), 4655 (bd)
 - [ ] lib/commands/_issue.js (10)
   - lines: 9 (bd), 15 (bd), 21 (bd), 26 (bd), 39 (bd), 45 (bd), 51 (bd), 57 (bd), 99 (bd), 147 (bd)
 - [ ] lib/commands/clean.js (2)
@@ -151,6 +151,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 263 (bd), 264 (bd)
 - [ ] .claude/commands/verify.md (4)
   - lines: 145 (bd), 166 (bd), 173 (bd), 176 (bd)
+- [ ] .claude/rules/workflow.md (6)
+  - lines: 47 (bd), 48 (bd), 49 (bd), 50 (bd), 51 (bd), 61 (bd, dolt)
 - [ ] .cursor/commands/dev.md (1)
   - lines: 82 (bd)
 - [ ] .cursor/commands/plan.md (8)
@@ -167,6 +169,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 260 (bd), 261 (bd)
 - [ ] .cursor/commands/verify.md (4)
   - lines: 142 (bd), 163 (bd), 170 (bd), 173 (bd)
+- [ ] .cursor/rules/permissions-guidance.mdc (1)
+  - lines: 16 (bd)
 - [ ] AGENTS.md (6)
   - lines: 121 (bd), 178 (dolt), 236 (bd), 249 (bd, dolt), 250 (bd), 251 (bd)
 - [ ] CLAUDE.md (2)

@@ -1,6 +1,7 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -38,6 +39,27 @@ describe('forge release check command', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Unsupported release readiness target');
+  });
+
+  test('writes JSON reports to stdout while failing the CLI gate', () => {
+    const result = spawnSync(process.execPath, [
+      'bin/forge.js',
+      'release',
+      'check',
+      '--target',
+      '0.1.0',
+      '--json',
+    ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    const report = JSON.parse(result.stdout);
+    expect(report.success).toBe(false);
+    expect(report.target).toBe('0.1.0');
+    expect(report.blockers.map(blocker => blocker.id)).toContain('bd-hot-path-issue-commands');
+    expect(result.stderr).toContain('Forge release readiness check failed for 0.1.0');
   });
 });
 

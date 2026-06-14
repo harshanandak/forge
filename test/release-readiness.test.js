@@ -13,6 +13,7 @@ const {
 } = require('../lib/release-readiness');
 
 const tempRoots = [];
+const tempFiles = [];
 
 function makeRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-release-readiness-'));
@@ -26,7 +27,16 @@ function writeFile(root, relativePath, content) {
   fs.writeFileSync(fullPath, content, 'utf8');
 }
 
+function writeAbsoluteFile(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, 'utf8');
+  tempFiles.push(filePath);
+}
+
 afterEach(() => {
+  for (const filePath of tempFiles.splice(0)) {
+    fs.rmSync(filePath, { force: true });
+  }
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -66,6 +76,51 @@ describe('release readiness bd call-site audit', () => {
 
     const audit = auditBdCallSites(root, { scanRoots: [] });
 
+    expect(audit.totalCount).toBe(1);
+    expect(audit.totalFiles).toBe(1);
+    expect(audit.groups.docs.files).toEqual([
+      expect.objectContaining({
+        path: '.cursor/commands/dev.md',
+        count: 1,
+      }),
+    ]);
+  });
+
+  test('includes active rules instruction directories in the default scan', () => {
+    const root = makeRepo();
+    writeFile(root, '.claude/rules/workflow.md', 'Run `bd create` from the old tracker.\n');
+    writeFile(root, '.cursor/rules/permissions-guidance.mdc', 'Allow Bash(bd *) during setup.\n');
+
+    const audit = auditBdCallSites(root);
+    const report = buildReadinessReport(root, { target: '0.1.0' });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+
+    expect(audit.groups.docs.files).toEqual([
+      expect.objectContaining({
+        path: '.claude/rules/workflow.md',
+        count: 1,
+      }),
+      expect.objectContaining({
+        path: '.cursor/rules/permissions-guidance.mdc',
+        count: 1,
+      }),
+    ]);
+    expect(hotPathBlocker).toBeDefined();
+    expect(hotPathBlocker.evidence.some(item => item.path === '.claude/rules/workflow.md')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path === '.cursor/rules/permissions-guidance.mdc')).toBe(true);
+  });
+
+  test('ignores sync manifest files outside the project root', () => {
+    const root = makeRepo();
+    const outsidePath = path.join(path.dirname(root), `${path.basename(root)}-outside.md`);
+    writeFile(root, '.forge/sync-manifest.json', JSON.stringify({
+      files: ['.cursor/commands/dev.md', `../${path.basename(outsidePath)}`],
+    }));
+    writeFile(root, '.cursor/commands/dev.md', 'Use `bd ready` before selecting work.\n');
+    writeAbsoluteFile(outsidePath, 'Escaped `bd` instruction.\n');
+
+    const audit = auditBdCallSites(root, { scanRoots: [] });
+
     expect(audit.groups.docs.files).toEqual([
       expect.objectContaining({
         path: '.cursor/commands/dev.md',
@@ -91,6 +146,20 @@ describe('release readiness bd call-site audit', () => {
     });
     const blocker = stale.blockers.find(item => item.id === 'd20-audit-artifact-current');
     expect(blocker.detail).toContain('stale');
+  });
+
+  test('accepts a current kill-list artifact with CRLF line endings', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', 'const SUBCOMMANDS = {};\n');
+    const audit = auditBdCallSites(root, { scanRoots: ['lib'] });
+    writeFile(root, AUDIT_ARTIFACT, renderBdCallSiteAuditMarkdown(audit).replace(/\n/g, '\r\n'));
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+
+    expect(report.blockers.map(blocker => blocker.id)).not.toContain('d20-audit-artifact-current');
   });
 
   test('extracts issue subcommands from formatted SUBCOMMANDS objects', () => {
