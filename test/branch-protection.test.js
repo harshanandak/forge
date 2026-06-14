@@ -154,7 +154,7 @@ describe('scripts/branch-protection.js', () => {
     });
   });
 
-  describe('Beads-only bypass logic', () => {
+  describe('Protected branch metadata push handling', () => {
     test('should use execFileSync (not execSync) to prevent command injection', () => {
       const content = fs.readFileSync(scriptPath, 'utf-8');
       expect(content.includes('execFileSync')).toBeTruthy();
@@ -205,14 +205,14 @@ describe('scripts/branch-protection.js', () => {
       }
     });
 
-    test('should allow push to master with beads-only files', () => {
+    test('should block push to master with beads-only files', () => {
       const mockDir = path.join(__dirname, '..', 'test-env', 'mock-git-beads');
       try {
         createMockGit(mockDir, { diffOutput: '.beads/issues.jsonl' });
         const result = runWithMockGit(scriptPath, mockDir, 'master');
-        expect(result.status).toBe(0);
+        expect(result.status).toBe(1);
         const stderr = result.stderr.toString();
-        expect(stderr.includes('Beads-only push')).toBeTruthy();
+        expect(stderr.includes('Beads metadata is local runtime state')).toBeTruthy();
       } finally {
         fs.rmSync(mockDir, { recursive: true, force: true });
       }

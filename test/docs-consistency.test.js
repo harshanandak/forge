@@ -1,4 +1,5 @@
 const { describe, it, expect } = require('bun:test');
+const { execFileSync } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
@@ -39,8 +40,9 @@ describe('README.md consistency', () => {
     expect(readme).toContain('--symlink');
   });
 
-  it('documents --sync flag', () => {
+  it('documents --sync deprecation', () => {
     expect(readme).toContain('--sync');
+    expect(readme).toMatch(/deprecated/i);
   });
 
   it('documents --agents flag', () => {
@@ -57,6 +59,39 @@ describe('docs/INDEX.md reference links', () => {
 
   it('links to agent skill parity proof boundary docs', () => {
     expect(index).toContain('reference/AGENT_SKILL_PARITY.md');
+  });
+});
+
+describe('Beads repository hygiene', () => {
+  it('does not commit live .beads runtime state', () => {
+    const trackedBeadsFiles = execFileSync('git', ['ls-files', '.beads'], {
+      cwd: ROOT,
+      encoding: 'utf8'
+    }).trim();
+
+    expect(trackedBeadsFiles).toBe('');
+  });
+
+  it('preserves prior GitHub sync lessons for the future Kernel projection', () => {
+    const projection = readDoc('docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/kernel-github-issues-projection.md');
+
+    expect(projection).toContain('Do not start from scratch');
+    expect(projection).toContain('prior Beads/GitHub sync work remains design input');
+    expect(projection).toContain('mapping, comments, sanitization, idempotency, retry, and GitHub API handling');
+  });
+
+  it('documents deprecated GitHub sync cleanup behind --sync only', () => {
+    const syncGuide = readDoc('docs/guides/BEADS_GITHUB_SYNC.md');
+    const setupGuide = readDoc('docs/guides/SETUP.md');
+    const migrationGuide = readDoc('docs/guides/MIGRATION.md');
+
+    expect(syncGuide).toContain('forge setup --sync');
+    expect(syncGuide).toContain('Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.');
+    expect(syncGuide).toContain('The `forge setup --sync` compatibility cleanup removes the old generated files:');
+    expect(setupGuide).toContain('bunx forge setup --sync');
+    expect(setupGuide).not.toContain('To scaffold GitHub/Beads sync files:');
+    expect(migrationGuide).toContain('forge setup --sync');
+    expect(migrationGuide).not.toContain('It removes deprecated Beads/GitHub sync scaffolding');
   });
 });
 
@@ -125,14 +160,13 @@ describe('docs/guides/SETUP.md consistency', () => {
     expect(setup).toContain('bootstrapper');
   });
 
-  it('documents PAT requirements for Beads sync', () => {
-    // Should mention either PAT or BEADS_SYNC_TOKEN
-    const mentionsPat = setup.includes('PAT') || setup.includes('BEADS_SYNC_TOKEN');
-    expect(mentionsPat).toBe(true);
+  it('does not document PAT requirements for deprecated Beads sync', () => {
+    expect(setup).not.toContain('BEADS_SYNC_TOKEN');
   });
 
-  it('documents Beads sync setup with --sync flag', () => {
+  it('documents Beads sync setup deprecation with --sync flag', () => {
     expect(setup).toContain('--sync');
+    expect(setup).toContain('deprecated');
   });
 
   it('uses bun add -D for install command (dev dependency)', () => {

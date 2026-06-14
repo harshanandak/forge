@@ -47,7 +47,6 @@ const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
-const { scaffoldGithubBeadsSync } = require('../lib/setup');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const {
   listTopics,
@@ -69,8 +68,7 @@ const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery
 const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
 const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
 const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
-const { setupPAT } = require(path.join(packageDir, 'lib', 'pat-setup'));
-const { DEFAULT_BEADS_VERSION, detectDefaultBranch, templateWorkflows, scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
+const { scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
 
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');
@@ -1755,39 +1753,6 @@ async function configureExternalServices(rl, question, selectedAgents = [], proj
   const { added, preserved } = writeEnvTokens(tokens, true);
   displayEnvTokenResults(added, preserved);
 
-  // GitHub-Beads issue sync setup
-  console.log('');
-  const enableSync = await askYesNo(question, 'Enable GitHub ↔ Beads issue sync?', true);
-  if (enableSync) {
-    try {
-      const result = await scaffoldGithubBeadsSync(projectRoot, packageDir);
-      for (const f of result.created) {
-        console.log(`  Created: ${f}`);
-      }
-      for (const f of result.skipped) {
-        console.log(`  Skipped: ${f} (already exists)`);
-      }
-
-      // PAT setup guidance for Beads sync (non-fatal)
-      // Skip if --sync flag is set — handleSyncScaffold will handle PAT setup
-      if (!SYNC_ENABLED) {
-        try {
-          const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
-          if (patResult.success) {
-            console.log('  ✓ Beads sync PAT configured');
-          } else if (patResult.reminder) {
-            console.log(`  ℹ ${patResult.reminder}`);
-          } else if (patResult.instructions) {
-            console.log(`  ℹ ${patResult.instructions.split('\n')[0]}`);
-          }
-        } catch (_patErr) {
-          // PAT setup is best-effort — don't block sync scaffold
-        }
-      }
-    } catch (err) {
-      console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
-    }
-  }
 }
 
 // Display the Forge banner
@@ -2995,6 +2960,18 @@ function isBeadsInitialized() {
   return beadsSetupLib.isBeadsInitialized(projectRoot);
 }
 
+function migrateExistingBeadsLocalState() {
+  if (!fs.existsSync(path.join(projectRoot, '.beads'))) {
+    return;
+  }
+
+  try {
+    beadsSetupLib.ensureBeadsGitExclude(projectRoot);
+  } catch (err) {
+    console.warn(`  Warning: failed to migrate Beads local state: ${err.message}`);
+  }
+}
+
 // Initialize Beads in the project using the defensive safeBeadsInit wrapper
 // Handles config/gitignore writes, hook snapshot/restore, and JSONL pre-seeding
 function initializeBeads(installType) {
@@ -3139,6 +3116,7 @@ async function promptBeadsSetup(question) {
   const beadsStatus = checkForBeads();
 
   if (beadsInitialized) {
+    migrateExistingBeadsLocalState();
     console.log('✓ Beads is already initialized in this project');
     console.log('');
     return;
@@ -3371,6 +3349,10 @@ async function setupProjectTools(rl, question) {
 function autoSetupBeadsInQuickMode() {
   const beadsStatus = checkForBeads();
   const beadsInitialized = isBeadsInitialized();
+
+  if (beadsInitialized) {
+    migrateExistingBeadsLocalState();
+  }
 
   if (!beadsInitialized && beadsStatus) {
     console.log('📦 Initializing Beads...');
@@ -4013,6 +3995,8 @@ async function executeSetup(config) {
   checkPrerequisites();
   console.log('');
 
+  migrateExistingBeadsLocalState();
+
   // Copy AGENTS.md (only if not exists — preserve user customizations; actionLog tracks it)
   const agentsDest = path.join(projectRoot, 'AGENTS.md');
   if (fs.existsSync(agentsDest)) {
@@ -4061,36 +4045,12 @@ async function executeSetup(config) {
 // Helper: Scaffold Beads GitHub sync when --sync flag is provided
 async function handleSyncScaffold() {
   console.log('');
-  console.log('Scaffolding Beads GitHub sync workflows (--sync)...');
+  console.log('Beads GitHub sync scaffolding is deprecated (--sync).');
   try {
-    // Scaffold sync files using the new lib module
     const result = scaffoldBeadsSync(projectRoot, packageDir);
-    for (const f of (result.filesCreated || [])) {
-      console.log(`  Created: ${f}`);
-    }
-    for (const f of (result.filesSkipped || [])) {
-      console.log(`  Skipped: ${f} (already exists)`);
-    }
-
-    // Detect default branch and pin forge-managed workflows to the repo baseline Beads version.
-    const branch = detectDefaultBranch(projectRoot);
-    const beadsVersion = DEFAULT_BEADS_VERSION;
-    const workflowDir = path.join(projectRoot, '.github', 'workflows');
-    templateWorkflows(workflowDir, branch, beadsVersion, result.filesCreated || []);
-    console.log(`  Branch: ${branch}, Beads version: ${beadsVersion}`);
-
-    // PAT setup: interactive when possible, reminder otherwise
-    try {
-      const patResult = setupPAT(projectRoot, { interactive: !NON_INTERACTIVE });
-      if (patResult.success) {
-        console.log('  PAT configured for Beads sync');
-      } else if (patResult.reminder) {
-        console.log(`  ${patResult.reminder}`);
-      } else if (patResult.instructions) {
-        console.log(`  ${patResult.instructions.split('\n')[0]}`);
-      }
-    } catch (_patErr) {
-      // PAT setup is best-effort — don't block sync scaffold
+    console.log(`  ${result.message}`);
+    for (const f of result.filesRemoved || []) {
+      console.log(`  Removed deprecated sync file: ${f}`);
     }
   } catch (err) {
     console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
@@ -4112,6 +4072,11 @@ async function handleSetupCommand(selectedAgents, flags) {
   } finally {
     projectRoot = savedRoot;
   }
+}
+
+async function runInteractiveSetupFallback(flags, interactiveSetup = interactiveSetupWithFlags) {
+  migrateExistingBeadsLocalState();
+  return interactiveSetup(flags);
 }
 
 // Helper: Handle external services configuration
@@ -4296,6 +4261,12 @@ async function main() {
       return;
     }
 
+    if (flags.sync && selectedAgents.length === 0) {
+      migrateExistingBeadsLocalState();
+      await handleSyncScaffold();
+      return;
+    }
+
     // Agents specified via flag or --yes default (non-quick mode)
     if (selectedAgents.length > 0) {
       await handleSetupCommand(selectedAgents, flags);
@@ -4303,7 +4274,7 @@ async function main() {
     }
 
     // Interactive setup (skip-external still applies)
-    await interactiveSetupWithFlags(flags);
+    await runInteractiveSetupFallback(flags);
   } else if (command === 'recommend') {
     const { handleRecommend, formatRecommendations } = require('../lib/commands/recommend');
     const result = handleRecommend(flags, projectRoot);

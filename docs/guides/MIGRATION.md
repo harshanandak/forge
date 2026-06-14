@@ -25,7 +25,8 @@ These are agent workflow stages. Not every stage is a standalone forge CLI comma
 Use both entry points correctly:
 
 - `forge init` creates the `.forge/` adoption skeleton.
-- `forge setup` installs agent instructions, skills, harness files, Beads/GitHub sync scaffolding, and optional setup material.
+- `forge setup` installs agent instructions, skills, harness files, local Beads compatibility, and optional setup material.
+- `forge setup --sync` is deprecated and retained only to remove old generated Beads/GitHub sync scaffolding when present.
 
 ## From Singular Agent Flags
 

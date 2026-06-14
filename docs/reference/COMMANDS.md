@@ -25,7 +25,7 @@ forge setup --agents claude,cursor
 forge setup --agents claude cursor
 forge setup --all --quick
 forge setup --path ./repo --dry-run
-forge setup --sync --agents claude,cursor
+forge setup --agents claude,cursor
 ```
 
 Use `--agents`, not `--agent`.
@@ -62,7 +62,7 @@ forge issues ...
 forge sync
 ```
 
-`forge sync` runs Beads/Dolt pull and push behavior. It is not the same as `forge setup --sync`, which scaffolds GitHub sync files.
+`forge sync` runs Beads/Dolt pull and push behavior when configured. `forge setup --sync` is deprecated and removes old generated GitHub-Beads sync files; future GitHub issue sync belongs to Forge Kernel/server authority.
 
 ## Worktrees
 

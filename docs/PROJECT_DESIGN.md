@@ -26,7 +26,7 @@ Forge is moving toward a native Kernel/control-plane architecture:
 - **Observer:** Background observers record evidence/proposals/session events first; they do not silently mutate project truth.
 - **Architecture notes:** Architecture-significant observations, domain rules, subsystem behaviors, constraints, and open questions must be captured as scoped architecture records. `PROJECT_DESIGN.md` remains the top-level map; detailed records live under `docs/architecture/**` and work/ADR evidence.
 - **Hook policy:** Agent-native hooks are the preferred architecture-capture UX; Forge CLI checks own the policy; Lefthook is a Git adapter/fallback; CI is the non-bypassable gate. Agents must not use `--no-verify` or equivalent hook-disabling bypasses without explicit audited authorization.
-- **Portability:** Explicit Kernel exports may provide reviewable clone/bootstrap snapshots, but repository projection files are not the routine authority channel for close/verify state. Local-only state uses the local Kernel SQLite authority; cross-machine or team state uses serialized server authority.
+- **Portability:** Routine Beads runtime/export state under `.beads/` is local and non-versioned. Explicit Kernel exports may provide reviewable clone/bootstrap snapshots, but repository projection files are not the routine authority channel for close/verify state. Local-only state uses the local Kernel SQLite authority; cross-machine or team state uses serialized server authority.
 - **Work-item taxonomy:** 4 issue types (`epic`, `task`, `bug`, `decision`), 5 stored statuses; `ready`/`blocked` are derived read-model facts; a single numeric rank is authoritative for ordering.
 - **Agent interface:** Forge ships its own agent surface (`forge prime`, kernel-facing JSON-first CLI, skills as thin CLI wrappers); agent-interface parity gates Beads retirement.
 - **Supported harnesses:** Claude Code, Codex, and Cursor are the supported harness set; Hermes is the planned addition. Other previously-supported harness surfaces are removed.
@@ -335,6 +335,8 @@ conflicts_with: []
 - When no server is configured, close/verify state is local-only and should be reported that way.
 - When team mode is configured, close/verify writes go to server authority, and server-side projection workers update GitHub/Linear/Beads compatibility state.
 - Beads/Dolt and Kernel JSONL exports remain explicit import/export/projection surfaces, not the hot-path authority.
+- Acceptance: fresh machine, `git clone`, no committed `.beads/` runtime state → `forge setup` initializes local Beads state without dirtying the repo; team/cross-machine status comes from server authority or an explicit projection import.
+- Retirement claims under PD-20260606-beads-dolt-projection cannot pass without a Beads-local setup path and explicit projection/import-export replacement.
 
 ### PD-20260611-sqlite-builtin-driver
 

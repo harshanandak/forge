@@ -85,6 +85,7 @@ Note: `forge-2agy.9.3.4` was skipped because Beads rejected `spike` as a custom 
 - `forge-2agy.9.8.2` — Design Durable Object project mutation contract
 - `forge-2agy.9.8.3` — Specify offline/team-mode refusal and recovery UX
 - `forge-2agy.9.8.4` — Design projection outbox, retries, and dead-letter handling
+- `forge-2agy.9.8.5` — Build Kernel-authority GitHub Issues projection
 
 ## Evaluator amendment issues
 

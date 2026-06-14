@@ -131,7 +131,7 @@ function main() {
   const currentBranch = getCurrentBranch();
 
   if (isProtectedBranch(currentBranch)) {
-    // Allow beads-only commits (issue tracking metadata) to push directly
+    // Beads runtime metadata is local state. Do not bypass protected branches for it.
     try {
       let upstream;
       try {
@@ -150,8 +150,7 @@ function main() {
       if (changedFiles.length === 0) {
         console.error(`${YELLOW}Note: no changed files detected — nothing to bypass${RESET}`);
       } else if (changedFiles.every(f => f.startsWith('.beads/'))) {
-        console.error(`${YELLOW}Beads-only push to '${currentBranch}' — allowed${RESET}`);
-        process.exit(0);
+        console.error(`${YELLOW}Beads metadata is local runtime state; protected branches do not accept .beads-only pushes.${RESET}`);
       }
     } catch (_e) {
       console.error(`${YELLOW}Note: could not detect beads-only push (upstream ref missing?) — blocking by default${RESET}`);

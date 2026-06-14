@@ -2,14 +2,17 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 const {
   sanitizePrefix,
   writeBeadsConfig,
   writeBeadsGitignore,
+  ensureBeadsGitExclude,
   isBeadsInitialized,
   preSeedJsonl,
-  readBeadsDatabaseName
+  readBeadsDatabaseName,
+  safeBeadsInit
 } = require('../lib/beads-setup');
 
 /**
@@ -136,6 +139,9 @@ describe('writeBeadsGitignore', () => {
     expect(fs.existsSync(gitignorePath)).toBe(true);
 
     const content = fs.readFileSync(gitignorePath, 'utf8');
+    expect(content).toContain('# Beads runtime, export, and backup state is local');
+    expect(content).toContain('*');
+    expect(content).toContain('!.gitignore');
     expect(content).toContain('dolt/');
     expect(content).toContain('*.db');
     expect(content).toContain('*.lock');
@@ -145,6 +151,88 @@ describe('writeBeadsGitignore', () => {
     writeBeadsGitignore(tmpDir);
 
     expect(fs.existsSync(path.join(tmpDir, '.beads', '.gitignore'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureBeadsGitExclude
+// ---------------------------------------------------------------------------
+describe('ensureBeadsGitExclude', () => {
+  let tmpDir;
+  function gitInTmp(args, options = {}) {
+    return execFileSync('git', [
+      '-c',
+      'core.autocrlf=false',
+      '-c',
+      'core.safecrlf=false',
+      ...args
+    ], {
+      cwd: tmpDir,
+      ...options
+    });
+  }
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fs.mkdirSync(path.join(tmpDir, '.git', 'info'), { recursive: true });
+  });
+  afterEach(() => {
+    rmrf(tmpDir);
+  });
+
+  test('adds local exclude rules for Beads state without touching tracked ignore files', () => {
+    ensureBeadsGitExclude(tmpDir);
+
+    const excludePath = path.join(tmpDir, '.git', 'info', 'exclude');
+    const content = fs.readFileSync(excludePath, 'utf8');
+
+    expect(content).toContain('# Forge local Beads state');
+    expect(content).toContain('.beads/');
+    expect(content).toContain('.dolt/');
+    expect(content).toContain('.beads-credential-key');
+    expect(fs.existsSync(path.join(tmpDir, '.gitignore'))).toBe(false);
+  });
+
+  test('is idempotent when local exclude rules already exist', () => {
+    ensureBeadsGitExclude(tmpDir);
+    ensureBeadsGitExclude(tmpDir);
+
+    const excludePath = path.join(tmpDir, '.git', 'info', 'exclude');
+    const content = fs.readFileSync(excludePath, 'utf8');
+
+    expect(content.match(/# Forge local Beads state/g)).toHaveLength(1);
+    expect(content.match(/\.beads\//g)).toHaveLength(1);
+  });
+
+  test('untracks previously committed Beads state without deleting local files', () => {
+    gitInTmp(['init'], { stdio: 'pipe' });
+    const beadsFile = path.join(tmpDir, '.beads', 'issues.jsonl');
+    fs.mkdirSync(path.dirname(beadsFile), { recursive: true });
+    fs.writeFileSync(beadsFile, '{"id":"forge-test"}\n', 'utf8');
+    gitInTmp(['add', '.beads/issues.jsonl'], { stdio: 'pipe' });
+
+    expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('.beads/issues.jsonl');
+
+    ensureBeadsGitExclude(tmpDir);
+
+    expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"forge-test"}\n');
+    expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+    expect(gitInTmp(['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+  });
+
+  test('untracks staged Beads state even when the working file diverged', () => {
+    gitInTmp(['init'], { stdio: 'pipe' });
+    const beadsFile = path.join(tmpDir, '.beads', 'issues.jsonl');
+    fs.mkdirSync(path.dirname(beadsFile), { recursive: true });
+    fs.writeFileSync(beadsFile, '{"id":"staged"}\n', 'utf8');
+    gitInTmp(['add', '.beads/issues.jsonl'], { stdio: 'pipe' });
+    fs.writeFileSync(beadsFile, '{"id":"working"}\n', 'utf8');
+
+    ensureBeadsGitExclude(tmpDir);
+
+    expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"working"}\n');
+    expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+    expect(gitInTmp(['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
   });
 });
 
@@ -232,6 +320,45 @@ describe('isBeadsInitialized', () => {
     fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
     fs.writeFileSync(path.join(beadsDir, 'README.md'), 'beads repo marker\n');
     expect(isBeadsInitialized(tmpDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// safeBeadsInit
+// ---------------------------------------------------------------------------
+describe('safeBeadsInit', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fs.mkdirSync(path.join(tmpDir, '.git', 'info'), { recursive: true });
+  });
+  afterEach(() => {
+    rmrf(tmpDir);
+  });
+
+  test('adds local Beads excludes even when initialization is skipped', () => {
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(path.join(beadsDir, 'hooks'), { recursive: true });
+    fs.writeFileSync(
+      path.join(beadsDir, 'config.yaml'),
+      'issue-prefix: my-proj\ndatabase:\n  backend: dolt\n',
+    );
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n');
+
+    let initCalls = 0;
+    const result = safeBeadsInit(tmpDir, {
+      execBdInit: () => {
+        initCalls += 1;
+      },
+    });
+
+    const exclude = fs.readFileSync(path.join(tmpDir, '.git', 'info', 'exclude'), 'utf8');
+    expect(result).toMatchObject({ success: true, skipped: true, reason: 'already initialized' });
+    expect(initCalls).toBe(0);
+    expect(exclude).toContain('.beads/');
+    expect(exclude).toContain('.dolt/');
+    expect(exclude).toContain('.beads-credential-key');
   });
 });
 
