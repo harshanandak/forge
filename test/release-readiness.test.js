@@ -162,7 +162,7 @@ describe('release readiness bd call-site audit', () => {
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('d20-audit-artifact-current');
   });
 
-  test('extracts issue subcommands from formatted SUBCOMMANDS objects', () => {
+  test('does not block readiness when Kernel issue and claim commands define the required surface', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
 'use strict';
@@ -183,6 +183,22 @@ const SUBCOMMANDS = {
   dep: { description: 'kernel dep' },
 };
 `);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim'),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release'),
+};
+`);
 
     const report = buildReadinessReport(root, {
       target: '0.1.0',
@@ -190,5 +206,34 @@ const SUBCOMMANDS = {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('kernel-backed-forge-issue');
+  });
+
+  test('blocks readiness when claim/release are missing despite complete issue subcommands', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {},
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Missing claim/release today: claim, release');
   });
 });

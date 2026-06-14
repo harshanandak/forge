@@ -32,6 +32,12 @@ describe('forge release check command', () => {
       'forge-remember-recall',
       'fresh-clone-no-beads-acceptance',
     ]);
+
+    const issueBlocker = result.report.blockers.find(blocker => blocker.id === 'kernel-backed-forge-issue');
+    expect(issueBlocker).toBeDefined();
+    expect(issueBlocker.detail).toContain('Required claim/release commands: claim, release');
+    expect(issueBlocker.evidence.some(item => item.path === 'lib/commands/claim.js')).toBe(true);
+    expect(issueBlocker.evidence.some(item => item.path === 'lib/commands/release.js')).toBe(true);
   });
 
   test('rejects unsupported targets explicitly', async () => {
