@@ -684,6 +684,75 @@ describe('cleanupDeprecatedSyncFiles', () => {
     expect(fs.existsSync(file)).toBe(false);
   });
 
+  test('preserves generated-looking reverse-sync workflow with single custom branch', () => {
+    const file = path.join(projectRoot, '.github', 'workflows', 'beads-to-github.yml');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, [
+      'name: Beads \u2192 GitHub Issue Sync',
+      '',
+      'on:',
+      '  push:',
+      '    branches: [release]',
+      '    paths:',
+      "      - '.beads/**'",
+      '',
+      '# Serialize with forward-sync to prevent race conditions',
+      'concurrency:',
+      '  group: beads-sync',
+      '  cancel-in-progress: false',
+      '',
+      'permissions:',
+      '  contents: read',
+      '  issues: write',
+      '',
+      'jobs:',
+      '  reverse-sync:',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - name: Guard \u2014 skip loop commits',
+      '        env:',
+      '          COMMIT_MSG: ${{ github.event.head_commit.message }}',
+      '        run: |',
+      '          if [[ "$COMMIT_MSG" == chore\\(beads\\):* ]]; then',
+      '            echo "Loop guard: skipping chore(beads): commit"',
+      '            echo "SKIP=true" >> "$GITHUB_ENV"',
+      '          fi',
+      '',
+      '      - name: Checkout current',
+      "        if: env.SKIP != 'true'",
+      '        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4',
+      '        with:',
+      '          fetch-depth: 0',
+      '',
+      '      - name: Detect and close',
+      "        if: env.SKIP != 'true'",
+      '        env:',
+      '          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
+      '          BEFORE_SHA: ${{ github.event.before }}',
+      '        run: |',
+      '          # Get old and new versions of .beads/issues.jsonl',
+      '          # Use github.event.before (pre-push SHA) to catch multi-commit pushes',
+      '          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then',
+      '            OLD_CONTENT=""',
+      '          else',
+      '            OLD_CONTENT=$(git show "$BEFORE_SHA":.beads/issues.jsonl 2>/dev/null || echo "")',
+      '          fi',
+      '          NEW_CONTENT=$(cat .beads/issues.jsonl 2>/dev/null || echo "")',
+      '',
+      '          # Export via temp files to avoid shell injection',
+      "          printf '%s' \"$OLD_CONTENT\" > /tmp/old-issues.jsonl",
+      "          printf '%s' \"$NEW_CONTENT\" > /tmp/new-issues.jsonl",
+      '',
+      '          node scripts/github-beads-sync/reverse-sync-cli.mjs /tmp/old-issues.jsonl /tmp/new-issues.jsonl',
+      ''
+    ].join('\n'), 'utf8');
+
+    const result = cleanupDeprecatedSyncFiles(projectRoot);
+
+    expect(result.removed).not.toContain('.github/workflows/beads-to-github.yml');
+    expect(fs.existsSync(file)).toBe(true);
+  });
+
   test('preserves generated-looking reverse-sync workflow with customized branch list', () => {
     const file = path.join(projectRoot, '.github', 'workflows', 'beads-to-github.yml');
     fs.mkdirSync(path.dirname(file), { recursive: true });
