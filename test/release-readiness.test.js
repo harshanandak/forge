@@ -92,4 +92,34 @@ describe('release readiness bd call-site audit', () => {
     const blocker = stale.blockers.find(item => item.id === 'd20-audit-artifact-current');
     expect(blocker.detail).toContain('stale');
   });
+
+  test('extracts issue subcommands from formatted SUBCOMMANDS objects', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: { description: 'kernel ready' },
+  'list':
+    { description: 'kernel list' },
+  show: {
+    description: 'kernel show',
+  },
+  search: { description: 'kernel search' },
+  stats: { description: 'kernel stats' },
+  create: { description: 'kernel create' },
+  update: { description: 'kernel update' },
+  close: { description: 'kernel close' },
+  comment: { description: 'kernel comment' },
+  dep: { description: 'kernel dep' },
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+
+    expect(report.blockers.map(blocker => blocker.id)).not.toContain('kernel-backed-forge-issue');
+  });
 });

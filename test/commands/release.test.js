@@ -53,6 +53,7 @@ describe('0.1.0 readiness report', () => {
     expect(report.audit.groups.hooks).toBeDefined();
 
     const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+    expect(hotPathBlocker).toBeDefined();
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/_issue.js')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/sync.js')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/worktree.js')).toBe(true);
