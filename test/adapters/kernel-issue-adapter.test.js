@@ -38,11 +38,16 @@ describe('KernelIssueAdapter', () => {
 		const scenarios = [
 			['list', ['--json']],
 			['ready', []],
+			['search', ['kernel contract']],
+			['stats', ['--json']],
 			['read', ['forge-1']],
 			['update', ['forge-1', '--status', 'in_progress']],
 			['claim', ['forge-1']],
+			['release', ['forge-1']],
 			['close', ['forge-1']],
 			['comment', ['forge-1', 'handoff']],
+			['depAdd', ['forge-1', 'forge-2']],
+			['depRemove', ['forge-1', 'forge-2']],
 		];
 
 		for (const [methodName, args] of scenarios) {

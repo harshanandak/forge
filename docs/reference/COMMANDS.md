@@ -47,20 +47,30 @@ forge options stages
 
 ## Issue Wrappers
 
-These commands delegate to Beads when Beads is configured:
+These commands delegate to Beads when Beads is configured, except for Kernel-only surfaces explicitly called out below. The stable Kernel-era JSON contract is defined in [Forge Kernel issue command contract](forge-kernel-issue-command-contract.md).
 
 ```bash
 forge ready
 forge list
 forge show <id>
+forge issue ready --json
+forge issue list --json
+forge issue show <id> --json
+forge issue search <query> --json
+forge issue stats --json
 forge create --title "Title"
 forge update <id>
 forge claim <id>
+forge release <id>
 forge close <id>
+forge issue dep add <issue-id> <blocks-issue-id>
+forge issue dep remove <issue-id> <blocks-issue-id>
 forge issue ...
 forge issues ...
 forge sync
 ```
+
+`forge release <id>` is a Kernel command contract and does not have a verified Beads passthrough in this slice.
 
 `forge sync` runs Beads/Dolt pull and push behavior when configured. `forge setup --sync` is deprecated and removes old generated GitHub-Beads sync files; future GitHub issue sync belongs to Forge Kernel/server authority.
 
@@ -132,5 +142,4 @@ Do not document these as current CLI commands unless the matching `lib/commands/
 forge review
 forge premerge
 forge verify
-forge release
 ```
