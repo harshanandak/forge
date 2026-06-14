@@ -55,7 +55,12 @@ describe('0.1.0 readiness report', () => {
     const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/_issue.js')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/sync.js')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/worktree.js')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/setup.js')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/workflow/state-manager.js')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/preflight.sh')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/smart-status.sh')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path.startsWith('scripts/forge-team/'))).toBe(true);
   });
 
   test('renders human-readable blocker output and the checked-in D20 audit artifact', () => {
@@ -71,7 +76,7 @@ describe('0.1.0 readiness report', () => {
     );
 
     expect(output).toContain('Result: FAIL');
-    expect(output).toContain('bd in hot-path issue commands');
+    expect(output).toContain('bd in D20 hot-path surfaces');
     expect(auditMarkdown).toContain('# D20 bd Call-Site Kill List');
     expect(auditMarkdown).toContain('## command');
     expect(auditMarkdown).toContain('## runtime');

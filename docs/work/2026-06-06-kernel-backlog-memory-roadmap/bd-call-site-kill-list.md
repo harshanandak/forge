@@ -9,7 +9,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 115 | 11 |
 | runtime | 331 | 46 |
-| docs | 405 | 55 |
+| docs | 426 | 63 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
 
@@ -151,6 +151,22 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 263 (bd), 264 (bd)
 - [ ] .claude/commands/verify.md (4)
   - lines: 145 (bd), 166 (bd), 173 (bd), 176 (bd)
+- [ ] .cursor/commands/dev.md (1)
+  - lines: 82 (bd)
+- [ ] .cursor/commands/plan.md (8)
+  - lines: 81 (bd), 110 (bd), 135 (bd), 139 (bd), 166 (bd), 369 (bd), 389 (bd), 495 (bd)
+- [ ] .cursor/commands/review.md (1)
+  - lines: 247 (bd)
+- [ ] .cursor/commands/rollback.md (2)
+  - lines: 343 (bd), 636 (bd)
+- [ ] .cursor/commands/ship.md (1)
+  - lines: 65 (bd)
+- [ ] .cursor/commands/status.md (2)
+  - lines: 30 (bd), 47 (bd)
+- [ ] .cursor/commands/validate.md (2)
+  - lines: 260 (bd), 261 (bd)
+- [ ] .cursor/commands/verify.md (4)
+  - lines: 142 (bd), 163 (bd), 170 (bd), 173 (bd)
 - [ ] AGENTS.md (6)
   - lines: 121 (bd), 178 (dolt), 236 (bd), 249 (bd, dolt), 250 (bd), 251 (bd)
 - [ ] CLAUDE.md (2)
