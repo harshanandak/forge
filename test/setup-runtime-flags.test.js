@@ -289,6 +289,39 @@ describe('setup runtime flags', () => {
     expect(gitInDir(tmpDir, ['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
   });
 
+  serialTest('plain interactive setup migrates tracked Beads state before prompting', async () => {
+    const tmpDir = makeTempDir();
+    gitInDir(tmpDir, ['init'], { stdio: 'pipe' });
+    const beadsDir = path.join(tmpDir, '.beads');
+    fs.mkdirSync(path.join(beadsDir, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'issue-prefix: forge-test\ndatabase:\n  backend: dolt\n', 'utf8');
+    fs.writeFileSync(path.join(beadsDir, 'metadata.json'), '{"version":1}\n', 'utf8');
+    fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '{"id":"forge-test"}\n', 'utf8');
+    gitInDir(tmpDir, ['add', '.beads'], { stdio: 'pipe' });
+
+    setupCommand._setState({
+      projectRoot: tmpDir,
+      FORCE_MODE: false,
+      VERBOSE_MODE: false,
+      NON_INTERACTIVE: false,
+      SYMLINK_ONLY: false,
+      SYNC_ENABLED: false,
+      PKG_MANAGER: 'npm',
+    });
+
+    let prompted = false;
+    const result = await setupCommand._runInteractiveSetupFallback({}, async () => {
+      prompted = true;
+      return { success: true };
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(prompted).toBe(true);
+    expect(fs.readFileSync(path.join(beadsDir, 'issues.jsonl'), 'utf8')).toBe('{"id":"forge-test"}\n');
+    expect(gitInDir(tmpDir, ['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+    expect(gitInDir(tmpDir, ['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
+  });
+
   serialTest('setup installs Codex stage skills into CODEX_HOME/skills/<stage>/SKILL.md', async () => {
     const tmpDir = makeTempDir();
     const codexHome = path.join(tmpDir, '.codex-home');

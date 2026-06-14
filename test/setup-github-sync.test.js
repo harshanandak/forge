@@ -166,7 +166,7 @@ describe('deprecated GitHub-Beads sync setup cleanup', () => {
       expect(commandSetup).toContain('if (flags.sync && selectedAgents.length === 0)');
       expect(commandSetup).toContain('await handleSyncScaffold();');
       expect(commandSetup.indexOf('if (flags.sync && selectedAgents.length === 0)'))
-        .toBeLessThan(commandSetup.indexOf('await interactiveSetupWithFlags(flags);'));
+        .toBeLessThan(commandSetup.indexOf('await runInteractiveSetupFallback(flags);'));
     });
 
     test('external-service setup does not clean deprecated sync files', () => {
