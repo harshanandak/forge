@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 115 | 11 |
-| runtime | 331 | 46 |
+| runtime | 341 | 46 |
 | docs | 433 | 65 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
@@ -84,8 +84,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 31 (.beads)
 - [ ] lib/workflow/state-manager.js (2)
   - lines: 108 (bd), 155 (bd)
-- [ ] scripts/beads-context.sh (21)
-  - lines: 47 (bd), 48 (bd), 105 (bd), 106 (bd), 110 (bd), 111 (bd), 116 (bd), 117 (bd), 118 (bd), 119 (bd), 142 (bd), 152 (bd), 158 (bd), 159 (bd), 172 (bd), 183 (bd), 300 (bd), 301 (bd), 306 (bd), 314 (bd), 453 (bd)
+- [ ] scripts/beads-context.sh (24)
+  - lines: 47 (bd), 48 (bd), 105 (bd), 106 (bd), 110 (bd), 111 (bd), 116 (bd), 117 (bd), 118 (bd), 119 (bd), 142 (bd), 148 (bd), 151 (bd), 152 (bd), 155 (bd), 158 (bd), 159 (bd), 172 (bd), 183 (bd), 300 (bd), 301 (bd), 306 (bd), 314 (bd), 453 (bd)
 - [ ] scripts/beads-migrate-to-dolt.sh (1)
   - lines: 7 (dolt)
 - [ ] scripts/beads-upgrade-smoke.sh (1)
@@ -128,8 +128,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 53 (bd), 59 (bd), 61 (bd), 78 (bd), 94 (bd), 113 (bd), 130 (bd), 152 (bd), 268 (bd), 275 (bd), 312 (bd), 375 (bd), 488 (bd), 493 (bd)
 - [ ] scripts/preflight.sh (16)
   - lines: 51 (.beads), 56 (dolt), 58 (.beads), 62 (.beads), 64 (dolt), 65 (dolt), 69 (.beads), 78 (bd), 115 (bd), 145 (bd), 150 (bd), 153 (bd), 161 (bd), 170 (bd), 172 (bd), 175 (bd)
-- [ ] scripts/smart-status.sh (9)
-  - lines: 4 (bd), 14 (bd), 113 (bd), 151 (dolt), 153 (bd), 157 (bd), 164 (.beads), 176 (.beads), 182 (bd)
+- [ ] scripts/smart-status.sh (16)
+  - lines: 4 (bd), 14 (bd), 113 (bd), 151 (dolt), 153 (bd), 156 (bd), 157 (bd), 161 (bd), 164 (.beads), 175 (bd), 176 (.beads), 177 (bd), 182 (bd), 186 (bd), 209 (bd), 242 (bd)
 - [ ] scripts/sync-utils.sh (23)
   - lines: 88 (.beads), 94 (.beads), 106 (.beads), 113 (.beads), 158 (.beads), 219 (.beads), 260 (bd), 262 (.beads), 273 (bd, dolt), 281 (bd), 288 (dolt), 307 (.beads), 311 (.beads), 312 (.beads), 319 (bd, dolt), 321 (bd, dolt), 371 (.beads), 372 (.beads), 408 (bd), 420 (.beads), 421 (.beads), 450 (.beads), 458 (.beads)
 

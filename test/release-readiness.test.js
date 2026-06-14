@@ -110,6 +110,33 @@ describe('release readiness bd call-site audit', () => {
     expect(hotPathBlocker.evidence.some(item => item.path === '.cursor/rules/permissions-guidance.mdc')).toBe(true);
   });
 
+  test('counts uppercase bd shell aliases as hot-path call sites', () => {
+    const root = makeRepo();
+    writeFile(root, 'scripts/smart-status.sh', 'BD="${BD:-bd}"\n"$BD" list\n');
+
+    const audit = auditBdCallSites(root, { scanRoots: ['scripts'] });
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['scripts'],
+    });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+
+    expect(audit.groups.runtime.files).toEqual([
+      expect.objectContaining({
+        path: 'scripts/smart-status.sh',
+        lines: [
+          expect.objectContaining({ line: 1, terms: ['bd'] }),
+          expect.objectContaining({ line: 2, terms: ['bd'] }),
+        ],
+      }),
+    ]);
+    expect(hotPathBlocker).toBeDefined();
+    expect(hotPathBlocker.evidence.some(item => (
+      item.path === 'scripts/smart-status.sh' &&
+      item.lines.includes(2)
+    ))).toBe(true);
+  });
+
   test('ignores sync manifest files outside the project root', () => {
     const root = makeRepo();
     const outsidePath = path.join(path.dirname(root), `${path.basename(root)}-outside.md`);
@@ -206,6 +233,51 @@ module.exports = {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('kernel-backed-forge-issue');
+  });
+
+  test('blocks readiness when claim/release stubs omit issue operations', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {},
+};
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  description: 'claim a lease',
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  description: 'release a claim',
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Missing claim/release today: claim, release');
   });
 
   test('blocks readiness when claim/release are missing despite complete issue subcommands', () => {
