@@ -199,7 +199,7 @@ describe('cleanupDeprecatedSyncFiles', () => {
       '      - name: Setup Bun',
       '        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2',
       '',
-      '      - name: Install Beads CLI (pinned to v0.49.1)',
+      '      - name: Install Beads CLI',
       '        run: |',
       '          BD_VERSION="0.52.0"',
       '          BD_URL="https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"',
