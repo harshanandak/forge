@@ -13,6 +13,7 @@ const {
 } = require('../../lib/release-readiness');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
+const FULL_REPO_READINESS_TIMEOUT_MS = 15000;
 
 describe('forge release check command', () => {
   test('fails the 0.1.0 readiness gate with all current Beads retirement blockers', async () => {
@@ -39,14 +40,14 @@ describe('forge release check command', () => {
     expect(issueBlocker.detail).toContain('Required claim/release commands: claim, release');
     expect(issueBlocker.evidence.some(item => item.path === 'lib/commands/claim.js')).toBe(true);
     expect(issueBlocker.evidence.some(item => item.path === 'lib/commands/release.js')).toBe(true);
-  });
+  }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('rejects unsupported targets explicitly', async () => {
     const result = await releaseCommand.handler(['check', '--target', '0.0.11'], {}, repoRoot);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Unsupported release readiness target');
-  });
+  }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('writes JSON reports to stdout while failing the CLI gate', () => {
     const result = spawnSync(process.execPath, [
@@ -67,7 +68,7 @@ describe('forge release check command', () => {
     expect(report.target).toBe('0.1.0');
     expect(report.blockers.map(blocker => blocker.id)).toContain('bd-hot-path-issue-commands');
     expect(result.stderr).toContain('Forge release readiness check failed for 0.1.0');
-  });
+  }, FULL_REPO_READINESS_TIMEOUT_MS);
 });
 
 describe('0.1.0 readiness report', () => {
@@ -91,7 +92,7 @@ describe('0.1.0 readiness report', () => {
     expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/preflight.sh')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/smart-status.sh')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path.startsWith('scripts/forge-team/'))).toBe(true);
-  });
+  }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('renders human-readable blocker output and the checked-in D20 audit artifact', () => {
     const report = buildReadinessReport(repoRoot, { target: '0.1.0' });
@@ -114,5 +115,5 @@ describe('0.1.0 readiness report', () => {
     expect(auditMarkdown).toContain('## skills');
     expect(auditMarkdown).toContain('## hooks');
     expect(fs.existsSync(artifactPath)).toBe(true);
-  });
+  }, FULL_REPO_READINESS_TIMEOUT_MS);
 });

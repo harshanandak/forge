@@ -819,6 +819,68 @@ function createIssueService({ backend } = {}) {
     expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
   });
 
+  test('blocks readiness when the default backend fallback chain reaches Beads before Kernel', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim'),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release'),
+};
+`);
+    writeFile(root, 'lib/forge-issues.js', `
+'use strict';
+
+function createIssueService({ backend } = {}) {
+  const resolvedBackend = backend || createBeadsIssueBackend() || createKernelIssueBackend();
+  return resolvedBackend;
+}
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
   test('blocks readiness when the default Kernel backend appears only in comments', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -1055,6 +1117,45 @@ module.exports = {
   async handler(args, projectRoot) {
     await runIssueOperation('release', args, projectRoot, { issueBackend: 'kernel' });
     return spawn(command, ['release', args.id]);
+  },
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Beads-backed claim/release: claim, release');
+  });
+
+  test('blocks readiness when claim/release keep shell-form bd exec fallbacks', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+const { exec } = require('node:child_process');
+
+module.exports = {
+  usage: 'forge claim <id>',
+  async handler(args, projectRoot) {
+    await runIssueOperation('claim', args, projectRoot, { issueBackend: 'kernel' });
+    return exec('bd claim ' + args.id);
+  },
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+const childProcess = require('node:child_process');
+
+module.exports = {
+  usage: 'forge release <id>',
+  async handler(args, projectRoot) {
+    await runIssueOperation('release', args, projectRoot, { issueBackend: 'kernel' });
+    return childProcess.exec(\`bd release \${args.id}\`);
   },
 };
 `);
@@ -1581,6 +1682,33 @@ test('fresh clone can complete the no-Beads workflow', async () => {
 
     expect(blocker).toBeDefined();
     expect(blocker.detail).toContain('forge issue ready --json');
+  });
+
+  test('blocks readiness when the fresh-clone acceptance test asserts bd was invoked', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+test('fresh clone can complete the no-Beads workflow', async () => {
+  await git(['clone', sourceRepo, freshClone]);
+  await withoutTools(['bd', 'dolt'], async () => {
+    await forge(['prime']);
+    await forge(['issue', 'ready', '--json']);
+    await forge(['claim', issueId]);
+    await forge(['comment', issueId, '--message', 'validated']);
+    await forge(['close', issueId]);
+    await forge(['recap', issueId]);
+  });
+  expect(bdInvocations.length).toBeGreaterThan(0);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('zero bd invocations');
   });
 
   test('accepts a fresh-clone acceptance test only when it covers the no-Beads workflow', () => {
