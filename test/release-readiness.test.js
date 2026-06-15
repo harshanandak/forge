@@ -743,8 +743,17 @@ const SUBCOMMANDS = {
   update: {},
   close: {},
   comment: {},
-  dep: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
 };
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
 `);
 
     const report = buildReadinessReport(root, {
@@ -754,6 +763,9 @@ const SUBCOMMANDS = {
     const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
 
     expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Missing today: none');
+    expect(blocker.detail).toContain('missing issue dep actions: none');
+    expect(blocker.detail).toContain('Kernel evidence missing for issue surface: no');
     expect(blocker.detail).toContain('Missing claim/release today: claim, release');
   });
 
