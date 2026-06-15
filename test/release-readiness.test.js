@@ -110,6 +110,24 @@ describe('release readiness bd call-site audit', () => {
     expect(hotPathBlocker.evidence.some(item => item.path === '.cursor/rules/permissions-guidance.mdc')).toBe(true);
   });
 
+  test('includes Cursor root config in the default hot-path scan', () => {
+    const root = makeRepo();
+    writeFile(root, '.cursorrules', 'Run `bd init` before using Cursor commands.\n');
+
+    const audit = auditBdCallSites(root);
+    const report = buildReadinessReport(root, { target: '0.1.0' });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+
+    expect(audit.groups.docs.files).toEqual([
+      expect.objectContaining({
+        path: '.cursorrules',
+        count: 1,
+      }),
+    ]);
+    expect(hotPathBlocker).toBeDefined();
+    expect(hotPathBlocker.evidence.some(item => item.path === '.cursorrules')).toBe(true);
+  });
+
   test('counts uppercase bd shell aliases as hot-path call sites', () => {
     const root = makeRepo();
     writeFile(root, 'scripts/smart-status.sh', 'BD="${BD:-bd}"\n"$BD" list\n');

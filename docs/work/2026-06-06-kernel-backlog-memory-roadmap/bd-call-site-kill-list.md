@@ -9,7 +9,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 115 | 11 |
 | runtime | 341 | 46 |
-| docs | 433 | 65 |
+| docs | 434 | 66 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
 
@@ -171,6 +171,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 142 (bd), 163 (bd), 170 (bd), 173 (bd)
 - [ ] .cursor/rules/permissions-guidance.mdc (1)
   - lines: 16 (bd)
+- [ ] .cursorrules (1)
+  - lines: 34 (bd)
 - [ ] AGENTS.md (6)
   - lines: 121 (bd), 178 (dolt), 236 (bd), 249 (bd, dolt), 250 (bd), 251 (bd)
 - [ ] CLAUDE.md (2)
