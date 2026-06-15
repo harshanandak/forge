@@ -610,6 +610,45 @@ module.exports = {
     expect(blocker.detail).toContain('missing issue dep actions: dep add, dep remove');
   });
 
+  test('blocks readiness when issue dep add/remove only appear in examples', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    examples: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('missing issue dep actions: dep add, dep remove');
+  });
+
   test('blocks readiness when issue commands omit Kernel backend evidence', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -1454,6 +1493,38 @@ describe('fresh clone no-Beads acceptance', () => {
 
     expect(blocker).toBeDefined();
     expect(blocker.detail).toContain('enabled acceptance test');
+  });
+
+  test('blocks readiness when workflow coverage is only in a skipped test beside an enabled test', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+test('unrelated enabled test', () => {
+  expect(true).toBe(true);
+});
+
+test.skip('fresh clone can complete the no-Beads workflow', async () => {
+  await git(['clone', sourceRepo, freshClone]);
+  await withoutTools(['bd', 'dolt'], async () => {
+    await forge(['prime']);
+    await forge(['issue', 'ready', '--json']);
+    await forge(['claim', issueId]);
+    await forge(['comment', issueId, '--message', 'validated']);
+    await forge(['close', issueId]);
+    await forge(['recap', issueId]);
+  });
+  expect(bdInvocations).toEqual([]);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('fresh clone setup');
+    expect(blocker.detail).toContain('forge issue ready --json');
   });
 
   test('blocks readiness when the fresh-clone acceptance workflow is under describe.skip', () => {
