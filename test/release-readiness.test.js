@@ -14,6 +14,7 @@ const {
 
 const tempRoots = [];
 const tempFiles = [];
+const repoRoot = path.resolve(__dirname, '..');
 
 function makeRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-release-readiness-'));
@@ -31,6 +32,28 @@ function writeAbsoluteFile(filePath, content) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, 'utf8');
   tempFiles.push(filePath);
+}
+
+function readAgentInstructionSurfaces() {
+  const agentsDir = path.join(repoRoot, 'lib', 'agents');
+  return fs.readdirSync(agentsDir)
+    .filter(file => file.endsWith('.plugin.json'))
+    .flatMap(file => {
+      const plugin = JSON.parse(fs.readFileSync(path.join(agentsDir, file), 'utf8'));
+      const surfaces = [];
+      if (plugin.files?.rootConfig) {
+        surfaces.push({ path: plugin.files.rootConfig, kind: 'rootConfig' });
+      }
+      for (const key of ['commands', 'rules', 'skills']) {
+        const directory = plugin.directories?.[key];
+        if (typeof directory === 'string' && directory.length > 0) {
+          surfaces.push({ path: `${directory}/readiness-surface.md`, kind: key });
+        }
+      }
+      return surfaces;
+    })
+    .filter(surface => !path.isAbsolute(surface.path))
+    .sort((left, right) => left.path.localeCompare(right.path));
 }
 
 afterEach(() => {
@@ -126,6 +149,23 @@ describe('release readiness bd call-site audit', () => {
     ]);
     expect(hotPathBlocker).toBeDefined();
     expect(hotPathBlocker.evidence.some(item => item.path === '.cursorrules')).toBe(true);
+  });
+
+  test('default hot-path scan covers every agent plugin instruction surface', () => {
+    const root = makeRepo();
+    const surfaces = readAgentInstructionSurfaces();
+    for (const surface of surfaces) {
+      writeFile(root, surface.path, `Use \`bd ready\` from ${surface.kind}.\n`);
+    }
+
+    const report = buildReadinessReport(root, { target: '0.1.0' });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+    const evidencePaths = new Set(hotPathBlocker?.evidence.map(item => item.path) || []);
+
+    expect(hotPathBlocker).toBeDefined();
+    for (const surface of surfaces) {
+      expect(evidencePaths.has(surface.path)).toBe(true);
+    }
   });
 
   test('counts uppercase bd shell aliases as hot-path call sites', () => {
