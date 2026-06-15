@@ -233,6 +233,10 @@ const SUBCOMMANDS = {
     },
   },
 };
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
 `);
     writeFile(root, 'lib/commands/claim.js', `
 'use strict';
@@ -276,6 +280,10 @@ const SUBCOMMANDS = {
   comment: {},
   dep: {},
 };
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
 `);
     writeFile(root, 'lib/commands/claim.js', `
 'use strict';
@@ -304,6 +312,114 @@ module.exports = {
     expect(blocker.detail).toContain('missing issue dep actions: dep add, dep remove');
   });
 
+  test('blocks readiness when issue commands omit Kernel backend evidence', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot);
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for issue surface: yes');
+  });
+
+  test('blocks readiness when issue Kernel evidence covers only an unrelated operation', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function unrelated(projectRoot) {
+  return runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for issue surface: yes');
+  });
+
   test('blocks readiness when claim/release rely on the default Beads backend', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -326,6 +442,10 @@ const SUBCOMMANDS = {
     },
   },
 };
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
 `);
     writeFile(root, 'lib/commands/claim.js', `
 'use strict';
@@ -362,6 +482,120 @@ function createIssueService({ backend } = {}) {
     expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
   });
 
+  test('blocks readiness when claim/release pass Kernel options outside the deps argument', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', { issueBackend: 'kernel' }, projectRoot),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', { issueBackend: 'kernel' }, projectRoot),
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
+  test('blocks readiness when claim/release only mention Kernel options in comments', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => {
+    // TODO: pass kernelBroker
+    return runIssueOperation('claim', [], projectRoot);
+  },
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => {
+    // TODO: useKernelBroker: true
+    return runIssueOperation('release', [], projectRoot);
+  },
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
   test('blocks readiness when claim/release stubs omit issue operations', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -384,6 +618,10 @@ const SUBCOMMANDS = {
     },
   },
 };
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
 `);
     writeFile(root, 'lib/commands/claim.js', `
 'use strict';
@@ -439,5 +677,43 @@ const SUBCOMMANDS = {
 
     expect(blocker).toBeDefined();
     expect(blocker.detail).toContain('Missing claim/release today: claim, release');
+  });
+
+  test('blocks readiness when the skills pack manifest has no CLI wrapper skills', () => {
+    const root = makeRepo();
+    writeFile(root, 'packages/skills/forge-plugin/manifest.json', '{}\n');
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+
+    expect(report.blockers.map(blocker => blocker.id)).toContain('forge-skills-pack');
+  });
+
+  test('accepts a Forge skills pack only when required CLI wrapper skills exist', () => {
+    const root = makeRepo();
+    const skillCommands = {
+      ready: 'forge ready',
+      show: 'forge show <id>',
+      claim: 'forge claim <id>',
+      comment: 'forge comment <id>',
+      close: 'forge close <id>',
+      recap: 'forge recap <id>',
+    };
+    writeFile(root, 'packages/skills/forge-plugin/manifest.json', JSON.stringify({
+      name: 'forge-plugin',
+      skills: Object.keys(skillCommands),
+    }));
+    for (const [skill, command] of Object.entries(skillCommands)) {
+      writeFile(root, `packages/skills/forge-plugin/skills/${skill}/SKILL.md`, `Run \`${command}\`.\n`);
+    }
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+
+    expect(report.blockers.map(blocker => blocker.id)).not.toContain('forge-skills-pack');
   });
 });
