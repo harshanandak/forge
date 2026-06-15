@@ -247,6 +247,36 @@ describe('release readiness bd call-site audit', () => {
     )).toBe(true);
   });
 
+  test('audits remember and recall command files as hot-path surfaces', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/remember.js', `
+'use strict';
+
+function handler() {
+  return execFile('bd', ['remember', 'note']);
+}
+`);
+    writeFile(root, 'lib/commands/recall.js', `
+'use strict';
+
+function handler() {
+  return execFile('bd', ['recall', 'note']);
+}
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+    const memoryBlocker = report.blockers.find(blocker => blocker.id === 'forge-remember-recall');
+
+    expect(memoryBlocker).toBeUndefined();
+    expect(hotPathBlocker).toBeDefined();
+    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/remember.js')).toBe(true);
+    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/recall.js')).toBe(true);
+  });
+
   test('counts uppercase bd shell aliases as hot-path call sites', () => {
     const root = makeRepo();
     writeFile(root, 'scripts/smart-status.sh', 'BD="${BD:-bd}"\n"$BD" list\n');
