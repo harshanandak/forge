@@ -255,6 +255,12 @@ describe('release readiness bd call-site audit', () => {
 function handler() {
   return execFile('bd', ['remember', 'note']);
 }
+
+module.exports = {
+  name: 'remember',
+  description: 'Remember project context',
+  handler,
+};
 `);
     writeFile(root, 'lib/commands/recall.js', `
 'use strict';
@@ -262,6 +268,12 @@ function handler() {
 function handler() {
   return execFile('bd', ['recall', 'note']);
 }
+
+module.exports = {
+  name: 'recall',
+  description: 'Recall project context',
+  handler,
+};
 `);
 
     const report = buildReadinessReport(root, {
@@ -724,6 +736,71 @@ function createIssueService({ backend } = {}) {
     expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
   });
 
+  test('blocks readiness when the default Kernel backend appears only in comments', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim'),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release'),
+};
+`);
+    writeFile(root, 'lib/forge-issues.js', `
+'use strict';
+
+function createIssueService({ backend } = {}) {
+  // const resolvedBackend = backend || createKernelIssueBackend(
+  const migrationNote = 'const resolvedBackend = backend || createKernelIssueBackend(';
+  const resolvedBackend = backend || createBeadsIssueBackend();
+  return resolvedBackend ?? migrationNote;
+}
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
   test('blocks readiness when claim/release pass Kernel options outside the deps argument', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -1060,6 +1137,110 @@ function dispatch(subcommand, args, projectRoot) {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('forge-skills-pack');
+  });
+
+  test('blocks readiness when release-gated command files lack the registry contract', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/prime.js', `
+'use strict';
+
+module.exports = {
+  name: 'not-prime',
+  description: 'Placeholder',
+  handler() {},
+};
+`);
+    writeFile(root, 'lib/commands/orient.js', `
+'use strict';
+
+module.exports = {
+  name: 'orient',
+  description: 'Placeholder',
+  handler: null,
+};
+`);
+    writeFile(root, 'lib/commands/recap.js', `
+'use strict';
+
+module.exports = {
+  name: 'recap',
+  description: 'Issue scoped recap',
+  handler() {},
+};
+
+// issue-scoped forge recap <issue>
+`);
+    writeFile(root, 'lib/commands/remember.js', `
+'use strict';
+
+module.exports = {
+  name: 'remember',
+  description: 'Placeholder',
+};
+`);
+    writeFile(root, 'lib/commands/recall.js', `
+'use strict';
+
+module.exports = {
+  name: 'not-recall',
+  description: 'Placeholder',
+  handler() {},
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blockers = report.blockers.map(blocker => blocker.id);
+
+    expect(blockers).toContain('forge-prime');
+    expect(blockers).toContain('forge-orient-issue-recap');
+    expect(blockers).toContain('forge-remember-recall');
+  });
+
+  test('accepts release-gated command files with the registry contract', () => {
+    const root = makeRepo();
+    for (const command of ['prime', 'orient', 'remember', 'recall']) {
+      writeFile(root, `lib/commands/${command}.js`, `
+'use strict';
+
+function handler() {
+  return { success: true };
+}
+
+module.exports = {
+  name: '${command}',
+  description: 'Registered ${command} command',
+  handler,
+};
+`);
+    }
+    writeFile(root, 'lib/commands/recap.js', `
+'use strict';
+
+function handler() {
+  return { success: true };
+}
+
+module.exports = {
+  name: 'recap',
+  description: 'Issue scoped recap',
+  handler,
+};
+
+// issue-scoped forge recap <issue>
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blockers = report.blockers.map(blocker => blocker.id);
+
+    expect(blockers).not.toContain('forge-prime');
+    expect(blockers).not.toContain('forge-orient-issue-recap');
+    expect(blockers).not.toContain('forge-remember-recall');
   });
 
   test('blocks readiness when the fresh-clone acceptance test is only a placeholder', () => {
