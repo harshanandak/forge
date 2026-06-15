@@ -151,6 +151,44 @@ describe('release readiness bd call-site audit', () => {
     expect(hotPathBlocker.evidence.some(item => item.path === '.cursorrules')).toBe(true);
   });
 
+  test('derives default hot-path scan roots from agent plugin manifests', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/agents/example.plugin.json', JSON.stringify({
+      id: 'example',
+      directories: {
+        commands: '.example/commands',
+        rules: '.example/rules',
+        skills: '.example/skills/forge-workflow',
+      },
+      files: {
+        rootConfig: '.examplerules',
+      },
+    }));
+    writeFile(root, '.examplerules', 'Run `bd init` from the declared root config.\n');
+    writeFile(root, '.example/commands/ready.md', 'Run `bd ready` from the declared command dir.\n');
+    writeFile(root, '.example/rules/workflow.md', 'Run `bd show` from the declared rules dir.\n');
+    writeFile(root, '.example/skills/forge-workflow/SKILL.md', 'Run `bd close` from the declared skill dir.\n');
+
+    const audit = auditBdCallSites(root);
+    const report = buildReadinessReport(root, { target: '0.1.0' });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+    const auditedPaths = Object.values(audit.groups)
+      .flatMap(group => group.files.map(file => file.path));
+    const evidencePaths = new Set(hotPathBlocker?.evidence.map(item => item.path) || []);
+
+    expect(auditedPaths).toEqual(expect.arrayContaining([
+      '.examplerules',
+      '.example/commands/ready.md',
+      '.example/rules/workflow.md',
+      '.example/skills/forge-workflow/SKILL.md',
+    ]));
+    expect(hotPathBlocker).toBeDefined();
+    expect(evidencePaths.has('.examplerules')).toBe(true);
+    expect(evidencePaths.has('.example/commands/ready.md')).toBe(true);
+    expect(evidencePaths.has('.example/rules/workflow.md')).toBe(true);
+    expect(evidencePaths.has('.example/skills/forge-workflow/SKILL.md')).toBe(true);
+  });
+
   test('default hot-path scan covers every agent plugin instruction surface', () => {
     const root = makeRepo();
     const surfaces = readAgentInstructionSurfaces();
