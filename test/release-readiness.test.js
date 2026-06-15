@@ -757,6 +757,65 @@ module.exports = {
     expect(blocker.detail).toContain('Kernel evidence missing for issue surface: yes');
   });
 
+  test('blocks readiness when the real issue dispatch omits Kernel deps beside an unused Kernel helper', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function unusedKernelHelper(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot);
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for issue surface: yes');
+  });
+
   test('blocks readiness when claim/release rely on the default Beads backend', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -933,6 +992,69 @@ function createIssueService({ backend } = {}) {
   const resolvedBackend = backend || createBeadsIssueBackend();
   return resolvedBackend ?? migrationNote;
 }
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
+  test('blocks readiness when claim/release handlers omit Kernel deps beside unused Kernel helpers', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+function unusedKernelClaim(projectRoot) {
+  return runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' });
+}
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim'),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+function unusedKernelRelease(projectRoot) {
+  return runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' });
+}
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release'),
+};
 `);
     writeCompleteKernelIssueAdapter(root);
 
@@ -1156,6 +1278,45 @@ module.exports = {
   async handler(args, projectRoot) {
     await runIssueOperation('release', args, projectRoot, { issueBackend: 'kernel' });
     return childProcess.exec(\`bd release \${args.id}\`);
+  },
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Beads-backed claim/release: claim, release');
+  });
+
+  test('blocks readiness when claim/release keep shell-form bd execSync fallbacks', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+const { execSync } = require('node:child_process');
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler(args, projectRoot) {
+    runIssueOperation('claim', args, projectRoot, { issueBackend: 'kernel' });
+    return execSync('bd claim ' + args.id);
+  },
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+const childProcess = require('node:child_process');
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler(args, projectRoot) {
+    runIssueOperation('release', args, projectRoot, { issueBackend: 'kernel' });
+    return childProcess.execSync(\`bd release \${args.id}\`);
   },
 };
 `);
