@@ -34,6 +34,27 @@ function writeAbsoluteFile(filePath, content) {
   tempFiles.push(filePath);
 }
 
+function writeCompleteKernelIssueAdapter(root) {
+  writeFile(root, 'lib/adapters/kernel-issue-adapter.js', `
+'use strict';
+
+const KERNEL_ISSUE_OPERATIONS = Object.freeze({
+  ready: 'ready',
+  list: 'list',
+  show: 'show',
+  search: 'search',
+  stats: 'stats',
+  create: 'create',
+  update: 'update',
+  close: 'close',
+  comment: 'comment',
+  dep: 'dep',
+  claim: 'claim',
+  release: 'release',
+});
+`);
+}
+
 function readAgentInstructionSurfaces() {
   const agentsDir = path.join(repoRoot, 'lib', 'agents');
   return fs.readdirSync(agentsDir)
@@ -206,6 +227,26 @@ describe('release readiness bd call-site audit', () => {
     }
   });
 
+  test('audits packaged Forge skill files as hot-path surfaces', () => {
+    const root = makeRepo();
+    writeFile(root, 'packages/skills/forge-plugin/skills/ready/SKILL.md', 'Run `forge ready`; fallback to `bd ready`.\n');
+
+    const audit = auditBdCallSites(root);
+    const report = buildReadinessReport(root, { target: '0.1.0' });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+
+    expect(audit.groups.skills.files).toEqual([
+      expect.objectContaining({
+        path: 'packages/skills/forge-plugin/skills/ready/SKILL.md',
+        count: 1,
+      }),
+    ]);
+    expect(hotPathBlocker).toBeDefined();
+    expect(hotPathBlocker.evidence.some(item =>
+      item.path === 'packages/skills/forge-plugin/skills/ready/SKILL.md'
+    )).toBe(true);
+  });
+
   test('counts uppercase bd shell aliases as hot-path call sites', () => {
     const root = makeRepo();
     writeFile(root, 'scripts/smart-status.sh', 'BD="${BD:-bd}"\n"$BD" list\n');
@@ -332,6 +373,7 @@ module.exports = {
   handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
 };
 `);
+    writeCompleteKernelIssueAdapter(root);
 
     const report = buildReadinessReport(root, {
       target: '0.1.0',
@@ -339,6 +381,74 @@ module.exports = {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('kernel-backed-forge-issue');
+  });
+
+  test('blocks readiness when the Kernel adapter omits required issue operations', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeFile(root, 'lib/adapters/kernel-issue-adapter.js', `
+'use strict';
+
+const KERNEL_ISSUE_OPERATIONS = Object.freeze({
+  ready: 'ready',
+  list: 'list',
+  show: 'show',
+  create: 'create',
+  update: 'update',
+  close: 'close',
+  comment: 'comment',
+  claim: 'claim',
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('missing Kernel adapter operations: search, stats, dep, release');
   });
 
   test('blocks readiness when issue dep add/remove actions are missing', () => {
@@ -614,6 +724,61 @@ module.exports = {
     expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
   });
 
+  test('blocks readiness when claim/release pass nullish kernelBroker options', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', [], projectRoot, { kernelBroker: null }),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', [], projectRoot, { kernelBroker: undefined }),
+};
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
   test('blocks readiness when claim/release only mention Kernel options in comments', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -755,6 +920,7 @@ function dispatch(subcommand, args, projectRoot) {
   return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
 }
 `);
+    writeCompleteKernelIssueAdapter(root);
 
     const report = buildReadinessReport(root, {
       target: '0.1.0',
