@@ -833,6 +833,41 @@ module.exports = {
     expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
   });
 
+  test('blocks readiness when claim/release keep direct bd fallbacks', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  async handler(args, projectRoot) {
+    await runIssueOperation('claim', args, projectRoot, { issueBackend: 'kernel' });
+    return execFile('bd', ['claim', args.id]);
+  },
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  async handler(args, projectRoot) {
+    await runIssueOperation('release', args, projectRoot, { issueBackend: 'kernel' });
+    return execFile('bd', ['release', args.id]);
+  },
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Beads-backed claim/release: claim, release');
+  });
+
   test('blocks readiness when claim/release only mention Kernel options in comments', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -1055,6 +1090,35 @@ test.skip('fresh clone can complete the no-Beads workflow', async () => {
     await forge(['recap', issueId]);
   });
   expect(bdInvocations).toEqual([]);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('enabled acceptance test');
+  });
+
+  test('blocks readiness when the fresh-clone acceptance workflow is skipped inside describe', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+describe('fresh clone no-Beads acceptance', () => {
+  test.skip('fresh clone can complete the no-Beads workflow', async () => {
+    await git(['clone', sourceRepo, freshClone]);
+    await withoutTools(['bd', 'dolt'], async () => {
+      await forge(['prime']);
+      await forge(['ready']);
+      await forge(['claim', issueId]);
+      await forge(['comment', issueId, '--message', 'validated']);
+      await forge(['close', issueId]);
+      await forge(['recap', issueId]);
+    });
+    expect(bdInvocations).toEqual([]);
+  });
 });
 `);
 
