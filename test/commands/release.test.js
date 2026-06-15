@@ -30,6 +30,7 @@ describe('forge release check command', () => {
       'forge-orient-issue-recap',
       'forge-skills-pack',
       'forge-remember-recall',
+      'premerge-embedded-gate',
       'fresh-clone-no-beads-acceptance',
     ]);
 

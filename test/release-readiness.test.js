@@ -55,18 +55,32 @@ const KERNEL_ISSUE_OPERATIONS = Object.freeze({
 `);
 }
 
-function readAgentInstructionSurfaces() {
+function readAgentPluginManifests() {
   const agentsDir = path.join(repoRoot, 'lib', 'agents');
   return fs.readdirSync(agentsDir)
     .filter(file => file.endsWith('.plugin.json'))
-    .flatMap(file => {
-      const plugin = JSON.parse(fs.readFileSync(path.join(agentsDir, file), 'utf8'));
+    .map(file => ({
+      file,
+      manifest: JSON.parse(fs.readFileSync(path.join(agentsDir, file), 'utf8')),
+    }));
+}
+
+function writeRepoAgentPluginManifests(root) {
+  for (const plugin of readAgentPluginManifests()) {
+    writeFile(root, `lib/agents/${plugin.file}`, JSON.stringify(plugin.manifest));
+  }
+}
+
+function readAgentInstructionSurfaces() {
+  return readAgentPluginManifests()
+    .flatMap(plugin => {
+      const manifest = plugin.manifest;
       const surfaces = [];
-      if (plugin.files?.rootConfig) {
-        surfaces.push({ path: plugin.files.rootConfig, kind: 'rootConfig' });
+      if (manifest.files?.rootConfig) {
+        surfaces.push({ path: manifest.files.rootConfig, kind: 'rootConfig' });
       }
       for (const key of ['commands', 'rules', 'skills']) {
-        const directory = plugin.directories?.[key];
+        const directory = manifest.directories?.[key];
         if (typeof directory === 'string' && directory.length > 0) {
           surfaces.push({ path: `${directory}/readiness-surface.md`, kind: key });
         }
@@ -89,6 +103,7 @@ afterEach(() => {
 describe('release readiness bd call-site audit', () => {
   test('groups concrete bd, .beads, and dolt surfaces without counting generic Beads prose', () => {
     const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
     writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n// Beads prose only\n");
     writeFile(root, 'lib/workflow/state-manager.js', "const path = '.beads/issues.jsonl';\n");
     writeFile(root, 'AGENTS.md', 'Run `bd prime` for context.\n');
@@ -113,6 +128,7 @@ describe('release readiness bd call-site audit', () => {
 
   test('includes active harness instruction files from the sync manifest', () => {
     const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
     writeFile(root, '.forge/sync-manifest.json', JSON.stringify({
       files: ['.cursor/commands/dev.md'],
     }));
@@ -132,6 +148,7 @@ describe('release readiness bd call-site audit', () => {
 
   test('includes active rules instruction directories in the default scan', () => {
     const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
     writeFile(root, '.claude/rules/workflow.md', 'Run `bd create` from the old tracker.\n');
     writeFile(root, '.cursor/rules/permissions-guidance.mdc', 'Allow Bash(bd *) during setup.\n');
 
@@ -156,6 +173,7 @@ describe('release readiness bd call-site audit', () => {
 
   test('includes Cursor root config in the default hot-path scan', () => {
     const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
     writeFile(root, '.cursorrules', 'Run `bd init` before using Cursor commands.\n');
 
     const audit = auditBdCallSites(root);
@@ -212,6 +230,7 @@ describe('release readiness bd call-site audit', () => {
 
   test('default hot-path scan covers every agent plugin instruction surface', () => {
     const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
     const surfaces = readAgentInstructionSurfaces();
     for (const surface of surfaces) {
       writeFile(root, surface.path, `Use \`bd ready\` from ${surface.kind}.\n`);
@@ -224,6 +243,30 @@ describe('release readiness bd call-site audit', () => {
     expect(hotPathBlocker).toBeDefined();
     for (const surface of surfaces) {
       expect(evidencePaths.has(surface.path)).toBe(true);
+    }
+  });
+
+  test('ignores unsupported agent instruction roots unless a plugin declares them', () => {
+    const root = makeRepo();
+    const unsupportedRoots = [
+      '.github/prompts',
+      '.opencode',
+      '.roo',
+      '.cline',
+      '.kilo',
+      '.kilocode',
+    ];
+
+    for (const rootPath of unsupportedRoots) {
+      writeFile(root, `${rootPath}/readiness-surface.md`, 'Use `bd ready` from an unsupported agent.\n');
+    }
+
+    const audit = auditBdCallSites(root);
+    const auditedPaths = Object.values(audit.groups)
+      .flatMap(group => group.files.map(file => file.path));
+
+    for (const rootPath of unsupportedRoots) {
+      expect(auditedPaths.some(file => file.startsWith(`${rootPath}/`))).toBe(false);
     }
   });
 
@@ -342,6 +385,7 @@ module.exports = {
 
   test('ignores sync manifest files outside the project root', () => {
     const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
     const outsidePath = path.join(path.dirname(root), `${path.basename(root)}-outside.md`);
     writeFile(root, '.forge/sync-manifest.json', JSON.stringify({
       files: ['.cursor/commands/dev.md', `../${path.basename(outsidePath)}`],
@@ -945,6 +989,47 @@ module.exports = {
     expect(blocker.detail).toContain('Beads-backed claim/release: claim, release');
   });
 
+  test('blocks readiness when claim/release keep aliased bd fallbacks', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+const childProcess = require('node:child_process');
+const BD = 'bd';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  async handler(args, projectRoot) {
+    await runIssueOperation('claim', args, projectRoot, { issueBackend: 'kernel' });
+    return childProcess.execFile(BD, ['claim', args.id]);
+  },
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+const { spawn } = require('node:child_process');
+const command = 'bd';
+
+module.exports = {
+  usage: 'forge release <id>',
+  async handler(args, projectRoot) {
+    await runIssueOperation('release', args, projectRoot, { issueBackend: 'kernel' });
+    return spawn(command, ['release', args.id]);
+  },
+};
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Beads-backed claim/release: claim, release');
+  });
+
   test('blocks readiness when claim/release only mention Kernel options in comments', () => {
     const root = makeRepo();
     writeFile(root, 'lib/commands/_issue.js', `
@@ -1199,6 +1284,43 @@ module.exports = {
     expect(blockers).toContain('forge-remember-recall');
   });
 
+  test('blocks readiness when issue recap text exists without a recap registry command', () => {
+    const root = makeRepo();
+    for (const command of ['prime', 'orient', 'remember', 'recall']) {
+      writeFile(root, `lib/commands/${command}.js`, `
+'use strict';
+
+function handler() {
+  return { success: true };
+}
+
+module.exports = {
+  name: '${command}',
+  description: 'Registered ${command} command',
+  handler,
+};
+`);
+    }
+    writeFile(root, 'lib/commands/recap.js', `
+'use strict';
+
+module.exports = {
+  name: 'not-recap',
+  description: 'Issue scoped recap',
+  handler() {},
+};
+
+// issue-scoped forge recap <issue>
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+
+    expect(report.blockers.map(blocker => blocker.id)).toContain('forge-orient-issue-recap');
+  });
+
   test('accepts release-gated command files with the registry contract', () => {
     const root = makeRepo();
     for (const command of ['prime', 'orient', 'remember', 'recall']) {
@@ -1243,6 +1365,27 @@ module.exports = {
     expect(blockers).not.toContain('forge-remember-recall');
   });
 
+  test('blocks readiness while premerge is still modeled as a universal stage', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/workflow/stages.js', "module.exports = ['plan', 'dev', 'validate', 'ship', 'review', 'premerge'];\n");
+    writeFile(root, 'lib/workflow-profiles.js', "module.exports = { standard: ['/plan', '/dev', '/premerge'] };\n");
+    writeFile(root, 'AGENTS.md', 'Run the /premerge stage before merge.\n');
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'premerge-embedded-gate');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('gate/checkpoint');
+    expect(blocker.evidence).toEqual([
+      { path: 'lib/workflow/stages.js' },
+      { path: 'lib/workflow-profiles.js' },
+      { path: 'AGENTS.md' },
+    ]);
+  });
+
   test('blocks readiness when the fresh-clone acceptance test is only a placeholder', () => {
     const root = makeRepo();
     writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', "test.skip('todo');\n");
@@ -1264,7 +1407,7 @@ test.skip('fresh clone can complete the no-Beads workflow', async () => {
   await git(['clone', sourceRepo, freshClone]);
   await withoutTools(['bd', 'dolt'], async () => {
     await forge(['prime']);
-    await forge(['ready']);
+    await forge(['issue', 'ready', '--json']);
     await forge(['claim', issueId]);
     await forge(['comment', issueId, '--message', 'validated']);
     await forge(['close', issueId]);
@@ -1292,7 +1435,7 @@ describe('fresh clone no-Beads acceptance', () => {
     await git(['clone', sourceRepo, freshClone]);
     await withoutTools(['bd', 'dolt'], async () => {
       await forge(['prime']);
-      await forge(['ready']);
+      await forge(['issue', 'ready', '--json']);
       await forge(['claim', issueId]);
       await forge(['comment', issueId, '--message', 'validated']);
       await forge(['close', issueId]);
@@ -1313,7 +1456,36 @@ describe('fresh clone no-Beads acceptance', () => {
     expect(blocker.detail).toContain('enabled acceptance test');
   });
 
-  test('accepts a fresh-clone acceptance test only when it covers the no-Beads workflow', () => {
+  test('blocks readiness when the fresh-clone acceptance workflow is under describe.skip', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+describe.skip('fresh clone no-Beads acceptance', () => {
+  test('fresh clone can complete the no-Beads workflow', async () => {
+    await git(['clone', sourceRepo, freshClone]);
+    await withoutTools(['bd', 'dolt'], async () => {
+      await forge(['prime']);
+      await forge(['issue', 'ready', '--json']);
+      await forge(['claim', issueId]);
+      await forge(['comment', issueId, '--message', 'validated']);
+      await forge(['close', issueId]);
+      await forge(['recap', issueId]);
+    });
+    expect(bdInvocations).toEqual([]);
+  });
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('enabled acceptance test');
+  });
+
+  test('blocks readiness when the fresh-clone acceptance test uses plain forge ready', () => {
     const root = makeRepo();
     writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
 test('fresh clone can complete the no-Beads workflow', async () => {
@@ -1321,6 +1493,33 @@ test('fresh clone can complete the no-Beads workflow', async () => {
   await withoutTools(['bd', 'dolt'], async () => {
     await forge(['prime']);
     await forge(['ready']);
+    await forge(['claim', issueId]);
+    await forge(['comment', issueId, '--message', 'validated']);
+    await forge(['close', issueId]);
+    await forge(['recap', issueId]);
+  });
+  expect(bdInvocations).toEqual([]);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('forge issue ready --json');
+  });
+
+  test('accepts a fresh-clone acceptance test only when it covers the no-Beads workflow', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+test('fresh clone can complete the no-Beads workflow', async () => {
+  await git(['clone', sourceRepo, freshClone]);
+  await withoutTools(['bd', 'dolt'], async () => {
+    await forge(['prime']);
+    await forge(['issue', 'ready', '--json']);
     await forge(['claim', issueId]);
     await forge(['comment', issueId, '--message', 'validated']);
     await forge(['close', issueId]);
