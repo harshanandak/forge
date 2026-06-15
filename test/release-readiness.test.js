@@ -277,6 +277,30 @@ function handler() {
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/recall.js')).toBe(true);
   });
 
+  test('audits D22 command and memory backing files as hot-path surfaces', () => {
+    const root = makeRepo();
+    const files = [
+      'lib/commands/prime.js',
+      'lib/commands/orient.js',
+      'lib/commands/recap.js',
+      'lib/project-memory.js',
+    ];
+    for (const file of files) {
+      writeFile(root, file, "execFile('bd', ['ready']);\n");
+    }
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+
+    expect(hotPathBlocker).toBeDefined();
+    for (const file of files) {
+      expect(hotPathBlocker.evidence.some(item => item.path === file)).toBe(true);
+    }
+  });
+
   test('counts uppercase bd shell aliases as hot-path call sites', () => {
     const root = makeRepo();
     writeFile(root, 'scripts/smart-status.sh', 'BD="${BD:-bd}"\n"$BD" list\n');
@@ -1001,5 +1025,71 @@ function dispatch(subcommand, args, projectRoot) {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('forge-skills-pack');
+  });
+
+  test('blocks readiness when the fresh-clone acceptance test is only a placeholder', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', "test.skip('todo');\n");
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('missing acceptance coverage');
+  });
+
+  test('blocks readiness when the fresh-clone acceptance workflow is skipped', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+test.skip('fresh clone can complete the no-Beads workflow', async () => {
+  await git(['clone', sourceRepo, freshClone]);
+  await withoutTools(['bd', 'dolt'], async () => {
+    await forge(['prime']);
+    await forge(['ready']);
+    await forge(['claim', issueId]);
+    await forge(['comment', issueId, '--message', 'validated']);
+    await forge(['close', issueId]);
+    await forge(['recap', issueId]);
+  });
+  expect(bdInvocations).toEqual([]);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('enabled acceptance test');
+  });
+
+  test('accepts a fresh-clone acceptance test only when it covers the no-Beads workflow', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+test('fresh clone can complete the no-Beads workflow', async () => {
+  await git(['clone', sourceRepo, freshClone]);
+  await withoutTools(['bd', 'dolt'], async () => {
+    await forge(['prime']);
+    await forge(['ready']);
+    await forge(['claim', issueId]);
+    await forge(['comment', issueId, '--message', 'validated']);
+    await forge(['close', issueId]);
+    await forge(['recap', issueId]);
+  });
+  expect(bdInvocations).toEqual([]);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+
+    expect(report.blockers.map(blocker => blocker.id)).not.toContain('fresh-clone-no-beads-acceptance');
   });
 });
