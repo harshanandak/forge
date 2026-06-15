@@ -55,6 +55,19 @@ const KERNEL_ISSUE_OPERATIONS = Object.freeze({
 `);
 }
 
+function writeRegistryCommand(root, name, body = '') {
+  writeFile(root, `lib/commands/${name}.js`, `
+'use strict';
+
+module.exports = {
+  name: '${name}',
+  description: 'Kernel-backed ${name} command',
+  usage: 'forge ${name}${name === 'claim' || name === 'release' ? ' <id>' : ''}',
+  handler: () => ${body || `runIssueOperation('${name}', [], projectRoot, { issueBackend: 'kernel' })`},
+};
+`);
+}
+
 function readAgentPluginManifests() {
   const agentsDir = path.join(repoRoot, 'lib', 'agents');
   return fs.readdirSync(agentsDir)
@@ -467,22 +480,9 @@ function dispatch(subcommand, args, projectRoot) {
   return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
 }
 `);
-    writeFile(root, 'lib/commands/claim.js', `
-'use strict';
-
-module.exports = {
-  usage: 'forge claim <id>',
-  handler: () => runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' }),
-};
-`);
-    writeFile(root, 'lib/commands/release.js', `
-'use strict';
-
-module.exports = {
-  usage: 'forge release <id>',
-  handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
-};
-`);
+    writeRegistryCommand(root, 'issue', 'undefined');
+    writeRegistryCommand(root, 'claim');
+    writeRegistryCommand(root, 'release');
     writeCompleteKernelIssueAdapter(root);
 
     const report = buildReadinessReport(root, {
@@ -491,6 +491,56 @@ module.exports = {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('kernel-backed-forge-issue');
+  });
+
+  test('blocks readiness when the public issue command is not registry-valid', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeFile(root, 'lib/commands/issue.js', `
+'use strict';
+
+module.exports = {
+  name: 'not-issue',
+  description: 'wrong registry name',
+  handler: () => undefined,
+};
+`);
+    writeRegistryCommand(root, 'claim');
+    writeRegistryCommand(root, 'release');
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('issue command registry-valid: no');
   });
 
   test('blocks readiness when the Kernel adapter omits required issue operations', () => {
@@ -876,6 +926,62 @@ function createIssueService({ backend } = {}) {
 
     expect(blocker).toBeDefined();
     expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
+  test('blocks readiness when claim/release modules are not registry-valid', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeRegistryCommand(root, 'issue', 'undefined');
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge claim <id>',
+  handler: () => runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+module.exports = {
+  usage: 'forge release <id>',
+  handler: () => runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' }),
+};
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Missing claim/release today: claim, release');
   });
 
   test('blocks readiness when the default backend fallback chain reaches Beads before Kernel', () => {
