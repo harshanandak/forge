@@ -68,6 +68,20 @@ module.exports = {
 `);
 }
 
+function writeDelegatingIssueCommand(root) {
+  writeFile(root, 'lib/commands/issue.js', `
+'use strict';
+
+const { dispatch } = require('./_issue');
+
+module.exports = {
+  name: 'issue',
+  description: 'Kernel-backed issue command',
+  handler: (args, projectRoot) => dispatch(args[0], args.slice(1), projectRoot),
+};
+`);
+}
+
 function readAgentPluginManifests() {
   const agentsDir = path.join(repoRoot, 'lib', 'agents');
   return fs.readdirSync(agentsDir)
@@ -480,7 +494,7 @@ function dispatch(subcommand, args, projectRoot) {
   return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
 }
 `);
-    writeRegistryCommand(root, 'issue', 'undefined');
+    writeDelegatingIssueCommand(root);
     writeRegistryCommand(root, 'claim');
     writeRegistryCommand(root, 'release');
     writeCompleteKernelIssueAdapter(root);
@@ -491,6 +505,58 @@ function dispatch(subcommand, args, projectRoot) {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('kernel-backed-forge-issue');
+  });
+
+  test('blocks readiness when the public issue command does not delegate to the issue surface', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    // Registry-valid but a no-op handler that never reaches lib/commands/_issue.js.
+    writeFile(root, 'lib/commands/issue.js', `
+'use strict';
+
+module.exports = {
+  name: 'issue',
+  description: 'no-op issue command',
+  handler: () => undefined,
+};
+`);
+    writeRegistryCommand(root, 'claim');
+    writeRegistryCommand(root, 'release');
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('issue command registry-valid: yes');
+    expect(blocker.detail).toContain('issue command delegates to issue surface: no');
   });
 
   test('blocks readiness when the public issue command is not registry-valid', () => {
@@ -1160,6 +1226,75 @@ function unusedKernelRelease(projectRoot) {
 module.exports = {
   usage: 'forge release <id>',
   handler: () => runIssueOperation('release'),
+};
+`);
+    writeCompleteKernelIssueAdapter(root);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: ['lib'],
+    });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for claim/release: claim, release');
+  });
+
+  test('blocks readiness when claim/release export no-op handlers beside unused Kernel helpers', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', `
+'use strict';
+
+const SUBCOMMANDS = {
+  ready: {},
+  list: {},
+  show: {},
+  search: {},
+  stats: {},
+  create: {},
+  update: {},
+  close: {},
+  comment: {},
+  dep: {
+    actions: {
+      add: {},
+      remove: {},
+    },
+  },
+};
+
+function dispatch(subcommand, args, projectRoot) {
+  return runIssueOperation(subcommand, args, projectRoot, { issueBackend: 'kernel' });
+}
+`);
+    writeDelegatingIssueCommand(root);
+    // Exported handler is a no-op; the Kernel call lives only in an unreachable helper.
+    writeFile(root, 'lib/commands/claim.js', `
+'use strict';
+
+function unusedKernelClaim(projectRoot) {
+  return runIssueOperation('claim', [], projectRoot, { issueBackend: 'kernel' });
+}
+
+module.exports = {
+  name: 'claim',
+  description: 'Kernel-backed claim command',
+  usage: 'forge claim <id>',
+  handler: () => undefined,
+};
+`);
+    writeFile(root, 'lib/commands/release.js', `
+'use strict';
+
+function unusedKernelRelease(projectRoot) {
+  return runIssueOperation('release', [], projectRoot, { issueBackend: 'kernel' });
+}
+
+module.exports = {
+  name: 'release',
+  description: 'Kernel-backed release command',
+  usage: 'forge release <id>',
+  handler: () => undefined,
 };
 `);
     writeCompleteKernelIssueAdapter(root);
@@ -2001,5 +2136,33 @@ test('fresh clone can complete the no-Beads workflow', async () => {
     });
 
     expect(report.blockers.map(blocker => blocker.id)).not.toContain('fresh-clone-no-beads-acceptance');
+  });
+
+  test('blocks readiness when the fresh-clone acceptance workflow is only present in comments', () => {
+    const root = makeRepo();
+    writeFile(root, 'test/e2e/fresh-clone-no-beads.test.js', `
+test('fresh clone placeholder', async () => {
+  // await git(['clone', sourceRepo, freshClone]);
+  // await withoutTools(['bd', 'dolt'], async () => {
+  //   await forge(['prime']);
+  //   await forge(['issue', 'ready', '--json']);
+  //   await forge(['claim', issueId]);
+  //   await forge(['comment', issueId, '--message', 'validated']);
+  //   await forge(['close', issueId]);
+  //   await forge(['recap', issueId]);
+  // });
+  // expect(bdInvocations).toEqual([]);
+  expect(true).toBe(true);
+});
+`);
+
+    const report = buildReadinessReport(root, {
+      target: '0.1.0',
+      scanRoots: [],
+    });
+    const blocker = report.blockers.find(item => item.id === 'fresh-clone-no-beads-acceptance');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('missing acceptance coverage');
   });
 });
