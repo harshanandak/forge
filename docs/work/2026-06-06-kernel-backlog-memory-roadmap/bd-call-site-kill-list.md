@@ -69,7 +69,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/migrate-dry-run.js (8)
   - lines: 171 (.beads), 174 (.beads), 178 (.beads), 204 (.beads), 212 (.beads), 213 (.beads, dolt), 226 (.beads), 227 (dolt)
 - [ ] lib/orientation.js (2)
-  - lines: 483 (.beads), 513 (.beads)
+  - lines: 485 (.beads), 515 (.beads)
 - [ ] lib/patch-intent.js (1)
   - lines: 26 (.beads)
 - [ ] lib/plugin-catalog.js (1)
