@@ -4200,6 +4200,13 @@ async function main() {
         }
       );
       if (result && !result.success) {
+        if (
+          typeof result.output === 'string' &&
+          result.output.length > 0 &&
+          result.output !== result.error
+        ) {
+          process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);
+        }
         console.error(result.error || result.message || 'Command failed');
         process.exit(1);
       }

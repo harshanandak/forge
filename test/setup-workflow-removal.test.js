@@ -27,7 +27,11 @@ const ACTIVE_SOURCE_PATHS = [
 function collectWorkflowReferences(rootDir) {
   const matches = [];
   const allowedExtensions = new Set(['.js', '.sh', '.md', '.json']);
-  const excludedDirs = new Set(['node_modules', '.worktrees', '.git']);
+  // Exclude both worktree container conventions: '.worktrees' (forge worktree
+  // create, at repo root) and 'worktrees' (Claude Code session worktrees under
+  // .claude/worktrees/). Stray worktrees hold full nested repo checkouts whose
+  // CHANGELOG/docs legitimately reference removed files and must not be scanned.
+  const excludedDirs = new Set(['node_modules', '.worktrees', 'worktrees', '.git']);
   const stack = ACTIVE_SOURCE_PATHS
     .map((relativePath) => path.join(rootDir, relativePath))
     .filter((absolutePath) => fs.existsSync(absolutePath));
