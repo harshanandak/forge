@@ -12,7 +12,9 @@ const isWindows = process.platform === 'win32';
 
 const commitMsgFile = process.argv[2];
 if (!commitMsgFile) {
-  console.error('❌ No commit message file provided');
+  // Write synchronously so the message is flushed before exit: on Windows the
+  // stderr pipe is async and process.exit() can otherwise truncate it.
+  require('node:fs').writeSync(2, '❌ No commit message file provided\n');
   process.exit(1);
 }
 

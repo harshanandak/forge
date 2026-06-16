@@ -57,7 +57,9 @@ function runWithNoArgs() {
     {
       cwd: PROJECT_ROOT,
       encoding: 'utf-8',
-      timeout: 10000,
+      // Generous timeout so a loaded CI runner can't kill the child early and
+      // surface a null exit status (matches runWithMessage's 30s).
+      timeout: 30000,
     }
   );
 }
