@@ -67,6 +67,61 @@ describe('forge issue service contract', () => {
     });
   });
 
+  test('routes Kernel issue command contract operations through backend aliases', async () => {
+    const { createIssueService } = require('../lib/forge-issues');
+    const calls = [];
+    const backend = {
+      async search(args, context) {
+        calls.push({ method: 'search', args, context });
+        return { success: true, operation: 'search' };
+      },
+      async stats(args, context) {
+        calls.push({ method: 'stats', args, context });
+        return { success: true, operation: 'stats' };
+      },
+      async claim(args, context) {
+        calls.push({ method: 'claim', args, context });
+        return { success: true, operation: 'claim' };
+      },
+      async release(args, context) {
+        calls.push({ method: 'release', args, context });
+        return { success: true, operation: 'release' };
+      },
+      async depAdd(args, context) {
+        calls.push({ method: 'depAdd', args, context });
+        return { success: true, operation: 'dep.add' };
+      },
+      async depRemove(args, context) {
+        calls.push({ method: 'depRemove', args, context });
+        return { success: true, operation: 'dep.remove' };
+      },
+    };
+    const context = { projectRoot: '/repo' };
+    const service = createIssueService({ backend });
+
+    await expect(service.run('search', ['kernel'], context))
+      .resolves.toEqual({ success: true, operation: 'search' });
+    await expect(service.run('stats', ['--json'], context))
+      .resolves.toEqual({ success: true, operation: 'stats' });
+    await expect(service.run('claim', ['forge-1'], context))
+      .resolves.toEqual({ success: true, operation: 'claim' });
+    await expect(service.run('release', ['forge-1'], context))
+      .resolves.toEqual({ success: true, operation: 'release' });
+    await expect(service.run('dep.add', ['forge-1', 'forge-2'], context))
+      .resolves.toEqual({ success: true, operation: 'dep.add' });
+    await expect(service.run('dep.remove', ['forge-1', 'forge-2'], context))
+      .resolves.toEqual({ success: true, operation: 'dep.remove' });
+
+    expect(calls.map(call => call.method)).toEqual([
+      'search',
+      'stats',
+      'claim',
+      'release',
+      'depAdd',
+      'depRemove',
+    ]);
+  });
+
   test('rejects unsupported operations with a forge-level error', async () => {
     const { createIssueService } = require('../lib/forge-issues');
 

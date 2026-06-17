@@ -7,9 +7,9 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 115 | 11 |
+| command | 117 | 11 |
 | runtime | 343 | 47 |
-| docs | 434 | 66 |
+| docs | 435 | 67 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
 
@@ -17,8 +17,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 - [ ] bin/forge.js (25)
   - lines: 2371 (bd), 2373 (bd), 2527 (bd), 2929 (bd), 2938 (bd), 2951 (bd), 2964 (.beads), 2984 (bd), 2986 (bd), 2988 (bd), 3023 (bd), 3047 (bd), 3133 (bd), 3177 (bd), 3201 (bd), 3207 (bd), 3211 (bd), 3216 (bd), 3222 (bd), 3232 (bd), 3364 (bd), 3369 (bd), 3380 (bd), 3447 (bd), 4655 (bd)
-- [ ] lib/commands/_issue.js (10)
-  - lines: 9 (bd), 15 (bd), 21 (bd), 26 (bd), 39 (bd), 45 (bd), 51 (bd), 57 (bd), 99 (bd), 147 (bd)
+- [ ] lib/commands/_issue.js (12)
+  - lines: 9 (bd), 15 (bd), 21 (bd), 26 (bd), 51 (bd), 57 (bd), 63 (bd), 69 (bd), 75 (bd), 81 (bd), 145 (bd), 225 (bd)
 - [ ] lib/commands/clean.js (2)
   - lines: 10 (dolt), 175 (dolt)
 - [ ] lib/commands/dev.js (1)
@@ -61,7 +61,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/deprecated-sync-cleanup.js (4)
   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
 - [ ] lib/forge-issues.js (4)
-  - lines: 66 (bd), 67 (bd), 70 (bd), 104 (bd)
+  - lines: 74 (bd), 75 (bd), 78 (bd), 112 (bd)
 - [ ] lib/harness-capability-matrix.js (1)
   - lines: 121 (bd)
 - [ ] lib/insights.js (7)
@@ -194,13 +194,15 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] docs/reference/beads-to-kernel-migration-ux.md (1)
   - lines: 15 (.beads)
 - [ ] docs/reference/COMMANDS.md (1)
-  - lines: 65 (dolt)
+  - lines: 75 (dolt)
 - [ ] docs/reference/DECISION_DRIFT_GUARDS.md (3)
   - lines: 9 (dolt), 71 (.beads), 72 (bd)
 - [ ] docs/reference/dependency-chain.md (19)
   - lines: 37 (bd), 51 (bd), 59 (bd), 62 (bd), 70 (bd, .beads), 72 (bd), 135 (bd), 206 (bd), 210 (bd), 237 (bd), 239 (bd), 240 (bd), 250 (bd), 251 (bd), 276 (bd), 278 (bd), 299 (bd), 310 (bd), 319 (bd)
 - [ ] docs/reference/EXAMPLES.md (8)
   - lines: 341 (bd), 361 (bd), 368 (bd), 413 (bd), 414 (bd), 425 (bd), 428 (bd), 436 (bd)
+- [ ] docs/reference/forge-kernel-issue-command-contract.md (1)
+  - lines: 159 (bd)
 - [ ] docs/reference/INSIGHTS_RECAP.md (2)
   - lines: 22 (.beads), 23 (.beads)
 - [ ] docs/reference/PROTECTED_PATH_MANIFEST.md (1)

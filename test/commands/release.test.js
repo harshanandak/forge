@@ -15,6 +15,14 @@ const {
 const repoRoot = path.resolve(__dirname, '..', '..');
 const FULL_REPO_READINESS_TIMEOUT_MS = 15000;
 
+describe('forge release command', () => {
+  test('exports the release command surface', () => {
+    expect(releaseCommand.name).toBe('release');
+    expect(typeof releaseCommand.description).toBe('string');
+    expect(typeof releaseCommand.handler).toBe('function');
+  });
+});
+
 describe('forge release check command', () => {
   test('fails the 0.1.0 readiness gate with all current Beads retirement blockers', async () => {
     const result = await releaseCommand.handler(['check', '--target', '0.1.0'], {}, repoRoot);
