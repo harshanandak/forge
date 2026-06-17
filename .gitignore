@@ -85,15 +85,10 @@ test-env/fixtures/*
 # Lefthook generated hook shims (auto-generated, not versioned)
 .lefthook/
 
-# Beads / Dolt files (added by bd init)
+# Beads / Dolt files (local runtime/export state, not versioned)
+.beads/
 .dolt/
-.beads/*.db
 *.db
-.beads/backup/*.jsonl
-.beads/dolt-server.*
-.beads/dolt/.bd-dolt-ok
-.beads/embeddeddolt/
-.beads/redirect
 .beads-credential-key
 
 # Forge freshness token (ephemeral validate/ship state)

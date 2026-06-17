@@ -38,7 +38,7 @@ Forge helps you:
 ## Ready Now
 
 - `forge init` for day-one `.forge/` adoption config in a fresh repository.
-- `forge setup` for installing agent instructions, skills, Beads/GitHub sync scaffolding, and optional workflow files.
+- `forge setup` for installing agent instructions, skills, local Beads compatibility, and optional workflow files.
 - Beads-backed issue wrappers such as `forge ready`, `forge show`, `forge claim`, `forge create`, `forge update`, and `forge close`.
 - Local state views with `forge status --json` and `forge board --json`.
 - Worktree helpers with `forge worktree create <slug>` and `forge worktree remove <slug>`.
@@ -85,7 +85,7 @@ bunx forge setup --agents codex --yes
 bunx forge status --json
 ```
 
-Use `forge init` when you want the `.forge/` runtime skeleton first. Use `forge setup` when you want Forge to install agent instructions, skills, Beads/GitHub sync scaffolding, or agent-specific files.
+Use `forge init` when you want the `.forge/` runtime skeleton first. Use `forge setup` when you want Forge to install agent instructions, skills, local Beads compatibility, or agent-specific files.
 
 Use `bunx forge ...` in first-run examples. Bare `forge ...` works once the package bin is available on PATH, for example through your package manager or local script environment.
 
@@ -98,7 +98,7 @@ Setup flags used in existing repositories:
 | `--quick` | Use defaults with minimal prompts. |
 | `--yes` / `--non-interactive` | Run without prompts; `CI=true` also enables non-interactive behavior. |
 | `--dry-run` | Preview planned writes. |
-| `--sync` | Scaffold Beads/GitHub sync support. |
+| `--sync` | Deprecated. Removes old generated Beads/GitHub sync files; future GitHub issue sync belongs to Forge Kernel/server authority. |
 | `--symlink` | Create supported instruction links instead of copies where available. |
 | `--merge smart\|preserve\|replace` | Choose how setup handles existing instruction files. |
 
@@ -126,7 +126,7 @@ Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow 
 - [Migration guide](docs/guides/MIGRATION.md) - moving from older Forge versions and old workflow framing.
 - [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) - the default workflow, customization model, and live feature rollout path.
 - [Skills and command projections](docs/reference/SKILLS.md) - current stage packaging across commands and skills.
-- [Beads/GitHub sync](docs/guides/BEADS_GITHUB_SYNC.md) - issue lifecycle sync and recovery notes.
+- [Beads/GitHub sync deprecation](docs/guides/BEADS_GITHUB_SYNC.md) - cleanup notes and the Kernel/server replacement direction.
 - [Adapters](docs/reference/ADAPTERS.md) - review adapter contract.
 - [Templates](docs/reference/TEMPLATES.md) - adoption profiles and workflow templates.
 - [Status and board](docs/reference/STATUS_BOARD.md) - local state surfaces.

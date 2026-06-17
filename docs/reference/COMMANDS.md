@@ -25,7 +25,7 @@ forge setup --agents claude,cursor
 forge setup --agents claude cursor
 forge setup --all --quick
 forge setup --path ./repo --dry-run
-forge setup --sync --agents claude,cursor
+forge setup --agents claude,cursor
 ```
 
 Use `--agents`, not `--agent`.
@@ -47,22 +47,32 @@ forge options stages
 
 ## Issue Wrappers
 
-These commands delegate to Beads when Beads is configured:
+These commands delegate to Beads when Beads is configured, except for Kernel-only surfaces explicitly called out below. The stable Kernel-era JSON contract is defined in [Forge Kernel issue command contract](forge-kernel-issue-command-contract.md).
 
 ```bash
 forge ready
 forge list
 forge show <id>
+forge issue ready --json
+forge issue list --json
+forge issue show <id> --json
+forge issue search <query> --json
+forge issue stats --json
 forge create --title "Title"
 forge update <id>
 forge claim <id>
+forge release <id>
 forge close <id>
+forge issue dep add <issue-id> <blocks-issue-id>
+forge issue dep remove <issue-id> <blocks-issue-id>
 forge issue ...
 forge issues ...
 forge sync
 ```
 
-`forge sync` runs Beads/Dolt pull and push behavior. It is not the same as `forge setup --sync`, which scaffolds GitHub sync files.
+`forge release <id>` is a Kernel command contract and does not have a verified Beads passthrough in this slice.
+
+`forge sync` runs Beads/Dolt pull and push behavior when configured. `forge setup --sync` is deprecated and removes old generated GitHub-Beads sync files; future GitHub issue sync belongs to Forge Kernel/server authority.
 
 ## Worktrees
 
@@ -132,5 +142,4 @@ Do not document these as current CLI commands unless the matching `lib/commands/
 forge review
 forge premerge
 forge verify
-forge release
 ```

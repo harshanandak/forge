@@ -22,7 +22,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Setup](guides/SETUP.md) - install package, initialize runtime config, install agent instructions.
 - [Migration](guides/MIGRATION.md) - move from older Forge versions and old stage-only framing.
 - [Workflow templates](guides/WORKFLOW_TEMPLATES.md) - understand the default template and how customization should be documented.
-- [Beads/GitHub sync](guides/BEADS_GITHUB_SYNC.md) - configure and recover issue sync.
+- [Beads/GitHub sync deprecation](guides/BEADS_GITHUB_SYNC.md) - cleanup notes and Kernel/server replacement direction.
 - [Manual review guide](guides/MANUAL_REVIEW_GUIDE.md) - process PR feedback without inventing CLI commands.
 - [Greptile setup](guides/GREPTILE_SETUP.md) - optional review integration.
 - [Agent install prompt](guides/AGENT_INSTALL_PROMPT.md) - reusable prompt for agent installation.
@@ -36,6 +36,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Release reference](reference/RELEASE.md) - validation, packaging, release handoff, and DeepWiki checklist.
 - [Forge Kernel storage model](reference/FORGE_KERNEL_STORAGE_MODEL.md) - authority/cache/projection/archive storage rules for local and team modes.
 - [Forge Kernel schema and migrations](reference/forge-kernel-schema.md) - 0.0.20 schema registry, migration, and storage-class contracts.
+- [Forge Kernel issue command contract](reference/forge-kernel-issue-command-contract.md) - stable JSON schemas, next-command hints, errors, and exit behavior for Kernel issue commands.
 - [Beads to Kernel migration UX](reference/beads-to-kernel-migration-ux.md) - import/export compatibility, rollback boundaries, and conflict quarantine handoff.
 - [Decision drift guards](reference/DECISION_DRIFT_GUARDS.md) - evaluator checklist and required doc updates for Kernel-era architecture changes.
 - [Kernel conflict evaluators](reference/kernel-conflict-evaluators.md) - conflict quarantine, idempotency, duplicate write dedupe, dependency-cycle, and projection ordering contract.

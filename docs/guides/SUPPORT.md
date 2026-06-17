@@ -76,15 +76,15 @@ Recovery guidance:
 - Preserve current state first: copy `.beads/backup` or export a Beads backup if the command is available.
 - Prefer `forge sync` when Beads is configured and healthy.
 - Use `bd close`, `bd comments`, or `bd dep` directly only for operations Forge does not wrap or when wrappers fail.
-- If default branch protection blocks Beads metadata changes, route the metadata through a small follow-up PR.
+- Do not create follow-up PRs just to commit Beads runtime metadata. `.beads/` is local non-versioned state; shared state must flow through the configured sync/server authority or an explicit projection/import path.
 - Do not hand-edit `.beads` live state unless a recovery procedure explicitly requires it.
 - Success proof is concrete: `bd doctor` exits cleanly, `bd dolt status` is understandable, and `forge ready` or `forge show <id>` can read current issue state.
 
 ## GitHub Sync
 
-`forge setup --sync` scaffolds GitHub/Beads sync support. `forge sync` runs Beads/Dolt sync operations. These are different surfaces.
+`forge setup --sync` is deprecated and removes old generated GitHub/Beads sync scaffolding. `forge sync` still runs local Beads/Dolt sync operations when configured. Future GitHub issue sync belongs to Forge Kernel/server authority.
 
-Modern sync should use snapshot or backup files, not stale examples that edit live `.beads/issues.jsonl` directly.
+Modern sync should use snapshot, backup, server authority, or explicit projection files, not stale examples that edit or commit live `.beads/issues.jsonl` directly.
 
 When sync fails:
 
@@ -128,7 +128,7 @@ Never delete a worktree before verifying that its branch is pushed or intentiona
 
 Branch protection can reject direct pushes to `master` or `main` with `GH006`. That is expected for code changes.
 
-Known exception: Beads-only metadata may need a protected sync path or follow-up PR, depending on repository rules.
+Beads runtime metadata is not a branch-protection exception. If shared state is required, use the configured sync/server authority or an explicit projection/import path; do not open metadata-only PRs for live `.beads/` files.
 
 Recovery:
 
@@ -141,7 +141,7 @@ gh pr checks <pr-number>
 git fetch origin $defaultBranch
 ```
 
-If metadata cannot land directly, create a narrow follow-up branch for the state update.
+If shared metadata cannot sync, diagnose the sync/server authority path instead of pushing live `.beads/` state to the protected branch.
 
 ## Rollback And Recovery Paths
 
@@ -149,7 +149,7 @@ Choose the rollback path by surface:
 
 - Release documentation confusion: revert the release PR or open a corrective docs PR. Do not publish while README, CHANGELOG, Quickstart, package metadata, and release docs disagree.
 - Setup-generated files: rerun `forge setup --dry-run` first, then rerun setup with the intended `--merge` mode. Preserve existing instruction files before replacing them.
-- Beads metadata: prefer `forge sync` or a narrow follow-up PR. Avoid direct `.beads` edits unless a documented recovery path requires them.
+- Beads metadata: prefer `forge sync`, server authority, or explicit projection/import paths. Avoid direct `.beads` edits unless a documented recovery path requires them.
 - Failed GitHub sync commit: inspect the workflow run, preserve the generated backup or snapshot, then replay through the configured sync workflow or a follow-up branch.
 - Worktree cleanup: prove the branch is pushed or disposable before removal, then remove through `forge worktree remove <slug>` or Git's worktree command if Forge is unavailable.
 
@@ -162,7 +162,7 @@ If a protected-state check blocks a file:
 1. Read the repair hint.
 2. Use the owning command or API surface.
 3. For Forge-owned writes, set `FORGE_PROTECTED_STATE_ALLOWED_SURFACES` only for the surfaces that command owns.
-4. For Beads metadata after merge, prefer a follow-up PR when branch protection blocks direct updates.
+4. For Beads metadata after merge, keep `.beads/` local and diagnose the sync/server authority path when shared state is required.
 
 ## Validation Failures
 

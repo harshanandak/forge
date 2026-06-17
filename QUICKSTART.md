@@ -60,7 +60,7 @@ bunx forge setup --agents claude,cursor
 bunx forge setup --agents claude cursor
 bunx forge setup --all --quick
 bunx forge setup --path ./my-project --agents codex --dry-run
-bunx forge setup --sync --agents claude,cursor
+bunx forge setup --agents claude,cursor
 ```
 
 Use `--agents`, not `--agent`.

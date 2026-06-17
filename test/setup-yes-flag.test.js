@@ -48,14 +48,15 @@ describe('--yes / -y flag for non-interactive setup', () => {
     expect(yesAgentCheck).toBeGreaterThan(determineCall);
   });
 
-  test('--yes skips interactive setup (does not call interactiveSetupWithFlags)', () => {
-    // When --yes is active, the code should NOT fall through to interactiveSetupWithFlags
+  test('--yes skips interactive setup fallback', () => {
+    // When --yes is active, the code should NOT fall through to the interactive fallback.
     // It should route to handleSetupCommand instead
     const mainSection = content.substring(content.indexOf('async function main()'));
-    // There should be a flags.yes check before the interactiveSetupWithFlags call
-    const interactiveCall = mainSection.indexOf('interactiveSetupWithFlags');
+    // There should be a flags.yes check before the interactive fallback call.
+    const interactiveFallback = mainSection.indexOf('runInteractiveSetupFallback');
     const yesCheck = mainSection.indexOf('flags.yes');
     expect(yesCheck).toBeGreaterThan(-1);
-    expect(yesCheck).toBeLessThan(interactiveCall);
+    expect(interactiveFallback).toBeGreaterThan(-1);
+    expect(yesCheck).toBeLessThan(interactiveFallback);
   });
 });

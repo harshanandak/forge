@@ -57,28 +57,29 @@ describe('package distribution (npm pack --dry-run)', () => {
     }
   });
 
-  describe('scripts/github-beads-sync/ — sync modules', () => {
-    const requiredSyncFiles = [
+  describe('deprecated GitHub-Beads sync modules', () => {
+    const deprecatedSyncFiles = [
       'scripts/github-beads-sync/index.mjs',
       'scripts/github-beads-sync/config.mjs',
+      'scripts/github-beads-sync.config.json',
     ];
 
-    for (const syncFile of requiredSyncFiles) {
-      it(`includes ${syncFile}`, () => {
-        expect(packFiles).toContain(syncFile);
+    for (const syncFile of deprecatedSyncFiles) {
+      it(`does NOT include ${syncFile}`, () => {
+        expect(packFiles).not.toContain(syncFile);
       });
     }
   });
 
-  describe('.github/workflows/ — Beads sync workflow templates', () => {
-    const requiredWorkflows = [
+  describe('deprecated Beads sync workflow templates', () => {
+    const deprecatedWorkflows = [
       '.github/workflows/github-to-beads.yml',
       '.github/workflows/beads-to-github.yml',
     ];
 
-    for (const workflow of requiredWorkflows) {
-      it(`includes ${workflow}`, () => {
-        expect(packFiles).toContain(workflow);
+    for (const workflow of deprecatedWorkflows) {
+      it(`does NOT include ${workflow}`, () => {
+        expect(packFiles).not.toContain(workflow);
       });
     }
   });

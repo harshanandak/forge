@@ -1,93 +1,32 @@
-# Beads And GitHub Sync
+# Beads/GitHub Sync Deprecation
 
-Forge uses Beads as the local/reference issue adapter and GitHub Issues as the shared remote issue surface when sync is configured.
+Beads/GitHub workflow sync is deprecated. Forge no longer ships active `github-to-beads.yml` or `beads-to-github.yml` workflow templates, and `forge setup --sync` must not create new Beads/GitHub sync scaffolding.
 
-## Authority Model
+## Current Behavior
 
-GitHub owns shared team-visible fields:
+- `.beads/` is local runtime/export state and is not committed.
+- `forge setup --sync` is retained only as a compatibility cleanup path and removes old generated Beads/GitHub sync files from existing installs when they are present.
+- Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.
+- `forge sync` may still run local Beads/Dolt sync operations while Beads compatibility remains, but it is not GitHub issue lifecycle sync.
 
-- issue number, node id, URL
-- title and body
-- open/closed state
-- assignees, labels, milestone
-- remote update timestamps
+## Removed Generated Files
 
-Forge/Beads owns local workflow context:
+The `forge setup --sync` compatibility cleanup removes the old generated files:
 
-- Forge/Beads issue id
-- dependencies and parent/child links
-- workflow stages
-- acceptance criteria
-- progress notes and decisions
-- stage transitions
-- recovery and drift metadata
-
-Do not hand-edit Beads state to force GitHub fields unless a recovery runbook explicitly says to.
-
-## Setup
-
-```bash
-bunx forge setup --sync --agents claude,cursor
+```text
+.github/workflows/github-to-beads.yml
+.github/workflows/beads-to-github.yml
+.github/beads-mapping.json
+.github/beads-sync-config.json
+.github/scripts/beads-sync/*.mjs
+scripts/github-beads-sync.config.json
+scripts/github-beads-sync/*.mjs
 ```
 
-This scaffolds GitHub sync files and workflow support. It does not mean every repository already has branch protection, tokens, and required checks configured.
+Unrelated GitHub workflows are preserved.
 
-Generated sync material includes `.github/workflows/github-to-beads.yml`, `.github/workflows/beads-to-github.yml`, `.github/beads-mapping.json`, and `scripts/github-beads-sync.config.json` when the setup path is selected. GitHub Actions needs a `BEADS_SYNC_TOKEN` repository secret with permissions appropriate for the repository.
+## Replacement Direction
 
-## Routine Sync
+Future GitHub issue sync must use Forge Kernel/server authority. Local-only work is durable in local Kernel SQLite. Team or cross-machine issue state is serialized through server authority, then GitHub issues can be updated as a projection from that authority.
 
-```bash
-forge sync
-```
-
-`forge sync` runs Beads/Dolt sync behavior. It is distinct from `forge setup --sync`.
-
-## Snapshot-Based Flow
-
-Current sync should rely on exported backup/snapshot data and GitHub workflow artifacts, not stale examples that modify live `.beads/issues.jsonl` directly in CI.
-
-Expected high-level flow:
-
-1. GitHub issue event triggers workflow.
-2. Workflow validates actor, labels, mapping, and loop-prevention guards.
-3. Workflow uses `bd`/Forge-supported sync logic.
-4. Beads backup or snapshot files are exported for repository-visible state.
-5. A commit records the sync result when allowed by branch protection.
-
-## Loop Prevention
-
-Use guards such as:
-
-- skip bot-authored sync events
-- skip sync commits with known sync prefixes
-- honor opt-out labels such as `skip-beads-sync`
-- keep a mapping between GitHub issue numbers and Beads ids
-
-## Recovery
-
-When GitHub sync fails:
-
-```bash
-gh auth status
-bd doctor
-bd dolt status
-forge sync
-```
-
-On PowerShell, resolve the default branch before checking workflow runs:
-
-```powershell
-$defaultBranch = git remote show origin | Select-String 'HEAD branch' | ForEach-Object { $_.ToString().Split(':')[-1].Trim() }
-gh run list --branch $defaultBranch --limit 10
-```
-
-If the failure is branch protection (`GH006`), route the Beads metadata change through a follow-up PR or the configured sync workflow.
-
-If the failure is Dolt runtime state, repair Beads/Dolt before closing or mutating issues. See [Support](SUPPORT.md).
-
-## Known Limits
-
-- Fork sync is not guaranteed.
-- GitHub Projects automation is not Forge issue sync.
-- Full comment/discussion import is outside the current adapter contract.
-- Credentials and PAT configuration are repository-specific.
+Do not commit live `.beads/` files, create metadata-only PRs, or bypass protected branches to update issue tracker state.
