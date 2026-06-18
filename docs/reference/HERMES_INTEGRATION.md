@@ -72,9 +72,13 @@ Kernel **only** through Forge CLI commands:
 (`forge audit` is verify-only — `forge audit verify` — and is not an
 evidence-append path; record evidence as an issue comment.)
 
-Because the write path and the read path share the same authority, anything
-Hermes writes through the CLI is exactly what a later `forge orient` /
-`forge recap` reads back, with full provenance intact.
+These writes land in the Forge Kernel issue store and become part of the issue's
+durable history. Note the read/write asymmetry: the bounded `forge orient` /
+`forge recap` envelope is assembled from project docs, `docs/work` artifacts, and
+the issue summary — it surfaces issue/design/decision state but does **not** echo
+individual issue comments back. Evidence added via `forge comment` lives in the
+issue history (reachable from the issue record), not necessarily in the next
+orient/recap payload.
 
 ## The no-profile-write guard
 

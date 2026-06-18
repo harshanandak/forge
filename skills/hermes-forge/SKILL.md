@@ -28,8 +28,10 @@ Hermes is a *consumer* of Forge project state, not an owner of it. This skill
 defines how a Hermes session reads, cites, and writes back to a Forge project
 without ever becoming a second source of truth.
 
-The boundary between what Forge owns and what Hermes owns is specified in
-[docs/reference/HERMES_INTEGRATION.md](../../docs/reference/HERMES_INTEGRATION.md).
+The boundary between what Forge owns and what Hermes owns is specified in the
+Forge repo at `docs/reference/HERMES_INTEGRATION.md` (repo-relative path — this
+skill is synced to `.hermes/skills/hermes-forge/`, so relative links would not
+resolve from the installed location).
 
 ## When to use
 
@@ -121,9 +123,9 @@ section as exhaustive; if completeness matters, re-request with a higher
 ## Writeback path: Hermes → Forge Kernel
 
 Evidence and decisions discovered during a Hermes session flow back into the
-Forge Kernel **only** through Forge CLI commands — the same authority that
-orient/recap read from. Use the issue command surface documented in
-[docs/reference/forge-kernel-issue-command-contract.md](../../docs/reference/forge-kernel-issue-command-contract.md):
+Forge Kernel **only** through Forge CLI commands. Use the issue command surface
+documented in the Forge repo at
+`docs/reference/forge-kernel-issue-command-contract.md`:
 
 ```bash
 forge comment <id> <body...>   # attach evidence, a decision, or a note to an issue
@@ -134,9 +136,14 @@ forge create [title] [flags]   # open a new issue for follow-up work
 > Note: `forge audit` is verify-only (`forge audit verify`) and does **not**
 > append evidence — record evidence as an issue comment via `forge comment`.
 
-This keeps the read model and the write model consistent: what Hermes writes
-through the CLI is exactly what a later `forge orient` / `forge recap` will read
-back, with full provenance.
+These writes land in the Forge Kernel issue store, where they become part of the
+issue's durable history (view them via the issue itself, e.g. `forge show <id>`).
+Note the read/write asymmetry: the bounded `forge orient` / `forge recap`
+envelope is assembled from project docs, `docs/work` artifacts, and the issue
+summary — it surfaces issue/design/decision state but does **not** echo
+individual issue comments back. Do not assume evidence added via `forge comment`
+reappears verbatim in the next orient/recap payload; it lives in the issue
+history, reachable from the issue record.
 
 ## No-profile-write guard (hard boundary)
 
