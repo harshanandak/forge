@@ -1,0 +1,55 @@
+{
+  "issues": [
+    {
+      "id": "forge-2",
+      "title": "Second issue",
+      "body": null,
+      "type": "bug",
+      "status": "closed",
+      "priority": "P1",
+      "priority_rank": 10,
+      "created_at": "2026-01-02T00:00:00.000Z",
+      "updated_at": "2026-01-02T08:30:00.000Z",
+      "entity_revision": 3
+    },
+    {
+      "id": "forge-1",
+      "title": "First issue",
+      "body": "Body text",
+      "type": "task",
+      "status": "open",
+      "priority": "P2",
+      "priority_rank": 0,
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "updated_at": "2026-01-01T00:00:00.000Z",
+      "entity_revision": 1
+    }
+  ],
+  "comments": [
+    {
+      "id": "c-2",
+      "issue_id": "forge-1",
+      "body": "Second comment",
+      "actor": "reviewer",
+      "visibility": "public",
+      "created_at": "2026-01-01T02:00:00.000Z"
+    },
+    {
+      "id": "c-1",
+      "issue_id": "forge-1",
+      "body": "First comment",
+      "actor": "author",
+      "visibility": "public",
+      "created_at": "2026-01-01T01:00:00.000Z"
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "dep-1",
+      "issue_id": "forge-2",
+      "blocks_issue_id": "forge-1",
+      "dependency_type": "blocks",
+      "created_at": "2026-01-02T00:00:00.000Z"
+    }
+  ]
+}
