@@ -345,6 +345,57 @@ describe('committed fixtures (byte-match + round-trip)', () => {
 	});
 });
 
+describe('projection integrity hardening', () => {
+	test('serializeProjection canonicalizes raw (un-normalized) rows defensively', () => {
+		// Raw rows as a DB driver would return them: extra columns, no `kind`,
+		// shuffled order. serializeProjection must still produce canonical,
+		// deterministic bytes identical to pre-normalized input.
+		const rawModel = { issues: [ISSUE_RAW_2, ISSUE_RAW], comments: [COMMENT_RAW], dependencies: [DEP_RAW] };
+		const fromRaw = serializeProjection(rawModel);
+		const fromNormalized = serializeProjection(normalizeProjectionModel(rawModel));
+
+		expect(fromRaw.files).toEqual(fromNormalized.files);
+
+		const firstIssue = JSON.parse(fromRaw.files['issues.jsonl'].split('\n')[0]);
+		expect(firstIssue.kind).toBe('issue');
+		expect(firstIssue.extra_field).toBeUndefined();
+	});
+
+	test('importProjection rejects a record whose kind does not match its file', () => {
+		// Move a comment line into issues.jsonl. Concatenation is byte-identical,
+		// so the sha256 still matches — only the per-file kind check catches this.
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [COMMENT_RAW], dependencies: [] });
+		const { files } = serializeProjection(model);
+		const tampered = {
+			...files,
+			'issues.jsonl': files['issues.jsonl'] + files['comments.jsonl'],
+			'comments.jsonl': '',
+		};
+
+		expect(() => importProjection(tampered)).toThrow(/kind|issues\.jsonl/i);
+	});
+
+	test('importProjection rejects per-file counts that disagree with the manifest', () => {
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW, ISSUE_RAW_2], comments: [], dependencies: [] });
+		const { files } = serializeProjection(model);
+		// drop one issue line but keep the manifest counts/hash inconsistent by
+		// recomputing the hash so we isolate the count check, not the hash check.
+		const oneIssue = files['issues.jsonl'].split('\n').filter(Boolean)[0] + '\n';
+		const manifest = JSON.parse(files['manifest.json']);
+		const crypto = require('node:crypto');
+		manifest.content_sha256 = crypto.createHash('sha256')
+			.update(oneIssue).update('').update('').digest('hex');
+		const tampered = {
+			'issues.jsonl': oneIssue,
+			'comments.jsonl': '',
+			'dependencies.jsonl': '',
+			'manifest.json': JSON.stringify(manifest),
+		};
+
+		expect(() => importProjection(tampered)).toThrow(/count/i);
+	});
+});
+
 describe('readProjection', () => {
 	function tmpDir() {
 		return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-proj-'));
