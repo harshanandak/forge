@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -44,6 +44,7 @@ describe('skills/ directory structure', () => {
   });
 
   const requiredSkills = [
+    'hermes-forge',
     'parallel-deep-research',
     'sonarcloud-analysis',
   ];
@@ -110,7 +111,7 @@ describe('skills/ directory structure', () => {
     test('skills/ contains exactly the expected skill directories', () => {
       const dirs = fs.readdirSync(path.join(ROOT, 'skills'))
         .filter(d => fs.statSync(path.join(ROOT, 'skills', d)).isDirectory());
-      expect(dirs.sort()).toEqual(['parallel-deep-research', 'sonarcloud-analysis'].sort());
+      expect(dirs.sort()).toEqual(['hermes-forge', 'parallel-deep-research', 'sonarcloud-analysis'].sort());
     });
   });
 });

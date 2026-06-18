@@ -12,11 +12,12 @@ describe("plugin-manager supported agent catalog", () => {
     .filter((file) => file.endsWith(".plugin.json"))
     .sort();
 
-  it("contains exactly the supported harness catalogs (claude, codex, cursor)", () => {
+  it("contains exactly the supported harness catalogs (claude, codex, cursor, hermes)", () => {
     expect(catalogFiles).toEqual([
       "claude.plugin.json",
       "codex.plugin.json",
       "cursor.plugin.json",
+      "hermes.plugin.json",
     ]);
   });
 

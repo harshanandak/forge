@@ -1,0 +1,22 @@
+{
+  "id": "hermes",
+  "name": "Hermes",
+  "version": "1.0.0",
+  "description": "Hermes harness adapter — consumes Forge project state through the forge orient / forge recap CLI surface and treats the Forge Kernel as the single source of truth.",
+  "capabilities": {
+    "skills": true
+  },
+  "directories": {
+    "skills": ".hermes/skills"
+  },
+  "files": {
+    "skillDefinition": ".hermes/skills/hermes-forge/SKILL.md"
+  },
+  "support": {
+    "status": "supported",
+    "surface": "hybrid",
+    "install": {
+      "required": false
+    }
+  }
+}

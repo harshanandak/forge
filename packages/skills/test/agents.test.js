@@ -69,19 +69,32 @@ describe('Agent Detection', () => {
     expect(agents[0].enabled).toBe(true);
   });
 
+  test('detectAgents finds Hermes agent', () => {
+    mkdirSync('.hermes', { recursive: true });
+
+    const agents = detectAgents();
+
+    expect(agents.length).toBe(1);
+    expect(agents[0].name).toBe('hermes');
+    expect(agents[0].path).toBe('.hermes/skills');
+    expect(agents[0].enabled).toBe(true);
+  });
+
   test('detectAgents finds multiple agents', () => {
     mkdirSync('.cursor', { recursive: true });
     mkdirSync('.claude', { recursive: true });
     mkdirSync('.codex', { recursive: true });
+    mkdirSync('.hermes', { recursive: true });
 
     const agents = detectAgents();
 
-    expect(agents.length).toBe(3);
+    expect(agents.length).toBe(4);
 
     const agentNames = agents.map(a => a.name);
     expect(agentNames).toContain('cursor');
     expect(agentNames).toContain('claude');
     expect(agentNames).toContain('codex');
+    expect(agentNames).toContain('hermes');
   });
 
   test('detectAgents returns agents in consistent order', () => {
