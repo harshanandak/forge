@@ -35,7 +35,7 @@ from.
 | **Scope** | The project — shared across all harnesses | One Hermes session / profile |
 | **Authority** | Source of truth | Convenience cache, never authoritative |
 | **Read path** | `forge orient` / `forge recap` (bounded, cited JSON) | Hermes' own store |
-| **Write path** | Forge CLI only (`forge audit`, `forge issue …`) | Hermes' own store |
+| **Write path** | Forge CLI only (`forge comment`, `forge update`) | Hermes' own store |
 | **Contains** | Issues, decisions, evidence, design snapshots, claims, queues | Prompts, session scratch, user preferences, Hermes profile data |
 | **Provenance** | Every fact carries `{ path, source_kind, authority, role }` | Not part of the Forge provenance graph |
 
@@ -65,9 +65,12 @@ silently choosing.
 Evidence and decisions discovered in a Hermes session flow back into the Forge
 Kernel **only** through Forge CLI commands:
 
-- `forge audit …` — append evidence to the kernel audit log.
-- `forge issue comment <id> …` — attach a decision or note to an issue.
-- `forge issue update <id> …` — update issue state.
+- `forge comment <id> <body...>` — attach evidence, a decision, or a note to an issue.
+- `forge update <id...> [flags]` — update issue state/fields.
+- `forge create [title] [flags]` — open a follow-up issue.
+
+(`forge audit` is verify-only — `forge audit verify` — and is not an
+evidence-append path; record evidence as an issue comment.)
 
 Because the write path and the read path share the same authority, anything
 Hermes writes through the CLI is exactly what a later `forge orient` /

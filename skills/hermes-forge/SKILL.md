@@ -109,14 +109,16 @@ section as exhaustive; if completeness matters, re-request with a higher
 Evidence and decisions discovered during a Hermes session flow back into the
 Forge Kernel **only** through Forge CLI commands — the same authority that
 orient/recap read from. Use the issue command surface documented in
-[docs/reference/forge-kernel-issue-command-contract.md](../../docs/reference/forge-kernel-issue-command-contract.md)
-and the evidence/audit command:
+[docs/reference/forge-kernel-issue-command-contract.md](../../docs/reference/forge-kernel-issue-command-contract.md):
 
 ```bash
-forge audit ...                # append evidence to the kernel audit log
-forge issue comment <id> ...   # attach a decision/comment to an issue
-forge issue update <id> ...    # update issue state
+forge comment <id> <body...>   # attach evidence, a decision, or a note to an issue
+forge update <id...> [flags]   # update issue state/fields
+forge create [title] [flags]   # open a new issue for follow-up work
 ```
+
+> Note: `forge audit` is verify-only (`forge audit verify`) and does **not**
+> append evidence — record evidence as an issue comment via `forge comment`.
 
 This keeps the read model and the write model consistent: what Hermes writes
 through the CLI is exactly what a later `forge orient` / `forge recap` will read
@@ -130,7 +132,7 @@ into design/decision files, not into the issue backend. Hermes-native memory
 stays in Hermes' own store.
 
 - ✅ Read state via `forge orient` / `forge recap`.
-- ✅ Write evidence/decisions via `forge audit` / `forge issue …`.
+- ✅ Write evidence/decisions via `forge comment` / `forge update`.
 - ❌ Never persist Hermes profile/session memory into Forge Kernel state.
 - ❌ Never edit Forge state files directly to record Hermes-side context.
 

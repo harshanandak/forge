@@ -43,7 +43,9 @@ describe('hermes.plugin.json — manifest contract', () => {
 
   test('does NOT declare commands capability (no Forge sync adapter exists)', () => {
     const plugin = loadHermesPlugin();
-    expect(plugin.capabilities.commands).toBeFalsy();
+    // Assert true omission, not just a falsy value — the contract is that
+    // `commands` is absent, since Hermes has no Forge command-sync adapter.
+    expect(Object.prototype.hasOwnProperty.call(plugin.capabilities, 'commands')).toBe(false);
   });
 
   test('wires a skills directory for the consumption skill', () => {
@@ -53,10 +55,11 @@ describe('hermes.plugin.json — manifest contract', () => {
     expect(plugin.directories.skills.length).toBeGreaterThan(0);
   });
 
-  test('declares a valid support status and surface', () => {
+  test('declares the exact Hermes support status and surface', () => {
     const plugin = loadHermesPlugin();
-    expect(['first-class', 'supported', 'compatibility']).toContain(plugin.support.status);
-    expect(typeof plugin.support.surface).toBe('string');
+    // Pin the declared contract values rather than accepting any valid enum.
+    expect(plugin.support.status).toBe('supported');
+    expect(plugin.support.surface).toBe('hybrid');
   });
 
   test('passes validatePluginSchema with no errors', () => {
