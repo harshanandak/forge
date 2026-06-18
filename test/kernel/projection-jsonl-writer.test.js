@@ -11,6 +11,7 @@ const {
 	serializeProjection,
 	importProjection,
 	writeProjection,
+	readProjection,
 	runJsonlProjectionConsumer,
 } = require('../../lib/kernel/projection-jsonl-writer');
 
@@ -311,6 +312,46 @@ describe('writeProjection', () => {
 
 		expect(() => writeProjection({ model, projectionDir: outside, projectRoot: root }))
 			.toThrow(/project root/i);
+	});
+});
+
+describe('readProjection', () => {
+	function tmpDir() {
+		return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-proj-'));
+	}
+
+	test('returns null when no manifest is present', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		expect(readProjection({ projectionDir: dir })).toBeNull();
+	});
+
+	test('reads a written snapshot back to the same model', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		const model = normalizeProjectionModel({
+			issues: [ISSUE_RAW, ISSUE_RAW_2],
+			comments: [COMMENT_RAW],
+			dependencies: [DEP_RAW],
+		});
+		const snap = buildProjectionSnapshot(model);
+
+		writeProjection({ model, projectionDir: dir });
+		const result = readProjection({ projectionDir: dir });
+
+		expect(result.dir).toBe(path.resolve(dir));
+		expect(result.model).toEqual(snap);
+	});
+
+	test('throws when the on-disk manifest hash is tampered', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
+		writeProjection({ model, projectionDir: dir });
+
+		const manifestPath = path.join(dir, 'manifest.json');
+		const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+		manifest.content_sha256 = 'b'.repeat(64);
+		fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+
+		expect(() => readProjection({ projectionDir: dir })).toThrow(/sha256/i);
 	});
 });
 
