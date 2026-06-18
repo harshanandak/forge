@@ -343,6 +343,22 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('insertKernelClaim');
   });
 
+  test('quarantines a claim.create whose issue_id is a truthy non-string (e.g. {})', async () => {
+    const ops = [];
+    const broker = claimBrokerWith({}, ops);
+
+    const result = await broker.runGuardedEvent(
+      claimEvent({ payload: { issue_id: {}, expires_at: null } }),
+      { now: CLAIM_NOW },
+    );
+
+    expect(result.decision).toBe('quarantine');
+    expect(result.reason).toBe('invalid_claim_scope');
+    expect(ops).toContain('insertKernelConflict');
+    expect(ops).not.toContain('loadActiveKernelClaim');
+    expect(ops).not.toContain('insertKernelClaim');
+  });
+
   test('scopes the lease from payload_json (the persisted payload) when payload disagrees', async () => {
     const ops = [];
     let loadedIssueId = null;
