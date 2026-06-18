@@ -296,6 +296,20 @@ describe('deriveReadiness — additional branches', () => {
 		expect(decisionReason.decision).toBe(true);
 	});
 
+	test('an open epic/decision is not ready work (unclaimable types are excluded)', () => {
+		const epic = deriveReadiness({ id: 'e', status: 'open', type: 'epic' }, { now: NOW });
+		expect(epic.ready).toBe(false);
+		expect(epic.blocked).toBe(false);
+		expect(epic.state).toBe('backlog');
+
+		const decision = deriveReadiness({ id: 'd', status: 'open', type: 'decision' }, { now: NOW });
+		expect(decision.ready).toBe(false);
+
+		// a claimable task with the same conditions is ready
+		const task = deriveReadiness({ id: 't', status: 'open', type: 'task' }, { now: NOW });
+		expect(task.ready).toBe(true);
+	});
+
 	test('a cancelled dependency is terminal and no longer blocks', () => {
 		const result = deriveReadiness(
 			{ id: 'a', status: 'open' },
