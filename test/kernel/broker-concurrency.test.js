@@ -343,6 +343,40 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('insertKernelClaim');
   });
 
+  test('replays a malformed claim.create retry as a duplicate when its idempotency key already won', async () => {
+    // A retry of an already-accepted claim (same idempotency_key) must replay as
+    // a duplicate even if THIS retry's payload is malformed — not quarantine.
+    const ops = [];
+    const existingEvent = { id: 'event-existing', idempotency_key: 'claim:issue-1:A' };
+    const broker = claimBrokerWith({
+      async loadKernelEventByIdempotencyKey() { return existingEvent; },
+    }, ops);
+
+    const result = await broker.runGuardedEvent(
+      claimEvent({ payload: { expires_at: null } }), // no issue_id → no scope
+      { now: CLAIM_NOW },
+    );
+
+    expect(result.decision).toBe('duplicate');
+    expect(result.originalEvent).toEqual(existingEvent);
+    expect(ops).not.toContain('insertKernelConflict');
+  });
+
+  test('quarantines a claim.create carried on a non-claim entity (entity_type !== claim)', async () => {
+    const ops = [];
+    const broker = claimBrokerWith({}, ops);
+
+    const result = await broker.runGuardedEvent(
+      claimEvent({ entity_type: 'issue', payload: { issue_id: 'issue-1', expires_at: null } }),
+      { now: CLAIM_NOW },
+    );
+
+    expect(result.decision).toBe('quarantine');
+    expect(result.reason).toBe('invalid_claim_scope');
+    expect(ops).toContain('insertKernelConflict');
+    expect(ops).not.toContain('insertKernelClaim');
+  });
+
   test('quarantines a claim.create whose issue_id is a truthy non-string (e.g. {})', async () => {
     const ops = [];
     const broker = claimBrokerWith({}, ops);
