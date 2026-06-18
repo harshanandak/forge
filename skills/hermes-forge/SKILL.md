@@ -1,0 +1,139 @@
+---
+name: hermes-forge
+description: >
+  Consumption contract for the Hermes harness on a Forge project. Treat
+  `forge orient` and `forge recap` as the authoritative, token-bounded source
+  of project state, cite every surfaced fact by its provenance, honor the
+  deterministic truncation policy, and write evidence or decisions back ONLY
+  through Forge CLI commands. Hermes-native profile memory never leaks into
+  Forge Kernel state.
+compatibility: Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Read-only orientation works anywhere; writeback requires a Forge Kernel issue backend. CLI-only — no direct file or profile writes into Forge state.
+metadata:
+  author: forge
+  version: "1.0.0"
+  roadmap: forge-2agy.9.7.x
+---
+
+# Hermes ⇄ Forge consumption contract
+
+Hermes is a *consumer* of Forge project state, not an owner of it. This skill
+defines how a Hermes session reads, cites, and writes back to a Forge project
+without ever becoming a second source of truth.
+
+The boundary between what Forge owns and what Hermes owns is specified in
+[docs/reference/HERMES_INTEGRATION.md](../../docs/reference/HERMES_INTEGRATION.md).
+
+## When to use
+
+- At the start of any Hermes session on a Forge repo (orientation).
+- Before acting on a specific issue (issue recap).
+- Whenever you need current project state — never reconstruct it from raw files.
+
+## Authority: orient / recap are the only state source
+
+The Forge Kernel is the single source of truth. Hermes obtains project state
+**exclusively** through two thin CLI wrappers and must not infer state by
+reading `.beads`-style stores, design files, or kernel internals directly:
+
+```bash
+forge orient --json            # bounded project orientation
+forge orient --budget 4000 --json
+forge recap --json             # recent work / evidence / review outcomes
+forge recap <issue-id> --json  # per-issue recap
+```
+
+Both emit a deterministic JSON envelope (assembly
+`deterministic-file-assembly-v1`). Parse the JSON; do not screen-scrape the
+human text form.
+
+### Envelope shape
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | Contract version (currently `1`). Reject unknown majors. |
+| `kind` | `orientation`, `issue_recap`, or `prime`. |
+| `generated_at` | Assembly timestamp. |
+| `assembly` | `deterministic-file-assembly-v1` — same inputs ⇒ same output. |
+| `token_budget` | Budget accounting (see below). |
+| `sections[]` | Ordered content blocks, each independently cited. |
+| `sources[]` | Deduplicated provenance across all sections. |
+| `next_commands[]` | Suggested follow-up `forge` commands. Prefer these for navigation. |
+
+Each `sections[]` entry: `{ id, title, content, sources, truncated, estimated_tokens }`.
+
+## Token budget
+
+`forge orient` / `forge recap` are bounded so they fit a context window
+deterministically.
+
+- Default budget: **2000** estimated tokens. Minimum honored: **40**.
+- Estimation is approximate: `token_budget.approximate === true`,
+  `token_budget.chars_per_token === 4`.
+- `token_budget.requested` is what you asked for; `token_budget.used` is the
+  estimate actually emitted.
+- Raise the ceiling with `--budget N` when you need more depth; do not retry
+  blindly — request a specific larger budget.
+
+## Citation & provenance model
+
+Every fact Hermes surfaces to a user MUST be attributable. Each section carries
+`sources: [{ path, source_kind, authority, role }]`:
+
+- `path` — the file the content came from.
+- `source_kind` — the kind of artifact (e.g. design, decision, claim, queue).
+- `authority` — how authoritative the source is. Prefer higher-authority
+  sources when two sources conflict; surface the conflict rather than silently
+  picking one.
+- `role` — the role the source plays in the section.
+
+When Hermes states a project fact, cite at least the `path` and `authority` of
+the backing source. The top-level `sources[]` is the deduplicated set for the
+whole payload.
+
+## Truncation policy
+
+Truncation is deterministic, never random:
+
+- Preserved sections are kept whole. Non-preserved sections are trimmed first,
+  in the published `token_budget.truncation_order`.
+- A trimmed section ends with the literal marker
+  `[truncated deterministically by token budget]` and has `truncated: true`.
+- `token_budget.truncated === true` means the payload as a whole was trimmed.
+
+Treat any `truncated` section as **incomplete**. Do not present a truncated
+section as exhaustive; if completeness matters, re-request with a higher
+`--budget` or recap the specific issue.
+
+## Writeback path: Hermes → Forge Kernel
+
+Evidence and decisions discovered during a Hermes session flow back into the
+Forge Kernel **only** through Forge CLI commands — the same authority that
+orient/recap read from. Use the issue command surface documented in
+[docs/reference/forge-kernel-issue-command-contract.md](../../docs/reference/forge-kernel-issue-command-contract.md)
+and the evidence/audit command:
+
+```bash
+forge audit ...                # append evidence to the kernel audit log
+forge issue comment <id> ...   # attach a decision/comment to an issue
+forge issue update <id> ...    # update issue state
+```
+
+This keeps the read model and the write model consistent: what Hermes writes
+through the CLI is exactly what a later `forge orient` / `forge recap` will read
+back, with full provenance.
+
+## No-profile-write guard (hard boundary)
+
+Hermes **MUST NOT write Hermes profile** state, conversation memory, or any
+Hermes-native artifact into Forge Kernel state — not into kernel storage, not
+into design/decision files, not into the issue backend. Hermes-native memory
+stays in Hermes' own store.
+
+- ✅ Read state via `forge orient` / `forge recap`.
+- ✅ Write evidence/decisions via `forge audit` / `forge issue …`.
+- ❌ Never persist Hermes profile/session memory into Forge Kernel state.
+- ❌ Never edit Forge state files directly to record Hermes-side context.
+
+If a piece of context only matters to Hermes, it belongs in Hermes-native
+memory. If it is a project fact, decision, or evidence item, write it through
+the Forge CLI so it becomes part of the shared, cited source of truth.
