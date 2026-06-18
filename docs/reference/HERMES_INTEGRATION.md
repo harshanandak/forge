@@ -42,9 +42,16 @@ from.
 ### What lives in Forge Kernel state
 
 Anything that is a **project fact**: issue records, decisions, evidence,
-design-snapshot content, ready queues, and active claims. These are emitted —
-bounded and cited — by `forge orient` and `forge recap`, and are written back
+design-snapshot content, ready queues, and active claims — all written back
 exclusively through Forge CLI commands.
+
+Not all of that state is surfaced by the bounded `forge orient` / `forge recap`
+envelope. Today the envelope emits the project design snapshot, active-work
+artifacts (`docs/work`), and — for `forge recap <issue-id>` — an issue summary;
+ready queue and active claims currently appear as forward-looking kernel
+placeholders. Issue **evidence/comments are not in the envelope** — read them
+from the issue record itself (e.g. `forge show <id>`). Treat orient/recap as the
+bounded entry point, not the exhaustive store.
 
 ### What lives in Hermes-native memory
 
