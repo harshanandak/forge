@@ -7,13 +7,10 @@
     "skills": true
   },
   "directories": {
-    "skills": ".hermes/skills/forge-workflow"
+    "skills": ".hermes/skills"
   },
   "files": {
-    "skillDefinition": ".hermes/skills/forge-workflow/SKILL.md"
-  },
-  "setup": {
-    "createSkill": true
+    "skillDefinition": ".hermes/skills/hermes-forge/SKILL.md"
   },
   "support": {
     "status": "supported",

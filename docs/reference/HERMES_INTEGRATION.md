@@ -97,10 +97,11 @@ Forge CLI so it becomes part of the shared, cited source of truth.
 
 ## Token-budget & truncation expectations
 
-`forge orient` / `forge recap` are deterministically bounded (default ~2000
-estimated tokens, `chars_per_token: 4`). Truncation follows the published
-`token_budget.truncation_order`, marks trimmed sections with
-`[truncated deterministically by token budget]`, and sets `truncated: true`.
+`forge orient` and `forge recap <issue-id>` emit the deterministically bounded
+envelope (default ~2000 estimated tokens, `chars_per_token: 4`). Truncation
+follows the published `token_budget.truncation_order`, marks trimmed sections
+with `[truncated deterministically by token budget]`, and sets `truncated: true`.
 Hermes treats truncated sections as incomplete and re-requests with a higher
-`--budget` when completeness matters. See the skill for the full envelope and
-provenance model.
+`--budget` when completeness matters. (Bare `forge recap` — no issue id —
+returns the legacy activity summary, which is not the bounded envelope.) See the
+skill for the full envelope and provenance model.

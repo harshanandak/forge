@@ -36,15 +36,21 @@ The Forge Kernel is the single source of truth. Hermes obtains project state
 reading `.beads`-style stores, design files, or kernel internals directly:
 
 ```bash
-forge orient --json            # bounded project orientation
+forge orient --json                # bounded project orientation (envelope)
 forge orient --budget 4000 --json
-forge recap --json             # recent work / evidence / review outcomes
-forge recap <issue-id> --json  # per-issue recap
+forge recap <issue-id> --json      # bounded per-issue recap (envelope)
+forge recap --json                 # legacy activity summary (NOT the envelope)
 ```
 
-Both emit a deterministic JSON envelope (assembly
-`deterministic-file-assembly-v1`). Parse the JSON; do not screen-scrape the
-human text form.
+`forge orient` and `forge recap <issue-id>` emit the deterministic JSON envelope
+described below (assembly `deterministic-file-assembly-v1`). Parse the JSON; do
+not screen-scrape the human text form.
+
+> Note: bare `forge recap --json` (no issue id) returns the legacy activity
+> summary (`generatedAt`, `issueSummary`, `reviewOutcomes`, `recentIssues`,
+> `insights`) — it does **not** carry `schema_version`, `sections`,
+> `token_budget`, or `assembly`. For the envelope contract, use `forge orient`
+> or `forge recap <issue-id>`.
 
 ### Envelope shape
 
@@ -63,8 +69,8 @@ Each `sections[]` entry: `{ id, title, content, sources, truncated, estimated_to
 
 ## Token budget
 
-`forge orient` / `forge recap` are bounded so they fit a context window
-deterministically.
+`forge orient` / `forge recap <issue-id>` are bounded so they fit a context
+window deterministically.
 
 - Default budget: **2000** estimated tokens. Minimum honored: **40**.
 - Estimation is approximate: `token_budget.approximate === true`,
