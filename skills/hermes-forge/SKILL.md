@@ -7,7 +7,7 @@ description: >
   deterministic truncation policy, and write evidence or decisions back ONLY
   through Forge CLI commands. Hermes-native profile memory never leaks into
   Forge Kernel state.
-compatibility: Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Read-only orientation works anywhere; writeback requires a Forge Kernel issue backend. CLI-only — no direct file or profile writes into Forge state.
+compatibility: Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install path — like every Forge skill pack (e.g. parallel-deep-research, sonarcloud-analysis) this is delivered by the unified Skills CLI: run `skills sync` to install it into `.hermes/skills/hermes-forge/`. (`forge setup` initializes the skills registry via `skills init` but does not sync packs to agents.) Read-only orientation works anywhere; writeback requires a Forge Kernel issue backend. CLI-only — no direct file or profile writes into Forge state.
 metadata:
   author: forge
   version: "1.0.0"
