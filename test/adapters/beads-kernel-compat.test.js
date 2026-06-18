@@ -632,4 +632,58 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(issues.find(issue => issue.id === 'k-cancelled').status).toBe('closed');
 		expect(issues.find(issue => issue.id === 'k-open').status).toBe('open');
 	});
+
+	test('round-trips structured acceptance_criteria as an array, not a JSON string', () => {
+		const criteria = ['Given a legacy issue', 'When imported', 'Then criteria survive'];
+		const snapshot = {
+			issues: [{
+				id: 'forge-ac',
+				title: 'Structured AC',
+				status: 'open',
+				priority: 2,
+				issue_type: 'task',
+				acceptance_criteria: criteria,
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+		};
+
+		const importResult = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+		const [imported] = importResult.kernel.issues;
+		// Stored as a JSON array string in the Kernel TEXT column.
+		expect(imported.acceptance_criteria).toBe(JSON.stringify(criteria));
+
+		const exportResult = exportKernelToBeads(importResult.kernel, { dryRun: true });
+		const [exported] = parseJsonl(exportResult.files['issues.jsonl']);
+		// Export restores the original array shape rather than the verbatim JSON string.
+		expect(exported.acceptance_criteria).toEqual(criteria);
+	});
+
+	test('preserves a cancelled Kernel status across a Beads round trip', () => {
+		const exportResult = exportKernelToBeads({
+			issues: [{
+				id: 'k-cancelled-native',
+				title: 'Abandoned work',
+				status: 'cancelled',
+				priority: 'P2',
+				type: 'task',
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+			dependencies: [],
+			comments: [],
+			events: [],
+		}, { dryRun: true });
+
+		const [exported] = parseJsonl(exportResult.files['issues.jsonl']);
+		expect(exported.status).toBe('closed');
+		// Cancellation is recorded so it survives re-import rather than defaulting to done.
+		expect(exported.close_reason).toMatch(/cancel/i);
+
+		const importResult = importBeadsSnapshot(
+			{ issues: [exported], comments: [], dependencies: [] },
+			{ importedAt: IMPORTED_AT },
+		);
+		expect(importResult.kernel.issues[0].status).toBe('cancelled');
+	});
 });
