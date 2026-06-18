@@ -110,8 +110,14 @@ whole payload.
 
 Truncation is deterministic, never random:
 
-- Preserved sections are kept whole. Non-preserved sections are trimmed first,
-  in the published `token_budget.truncation_order`.
+- Non-preserved sections are allocated budget in ascending numeric `priority`
+  order (lower `priority` first); when the budget is exhausted, the
+  later/higher-`priority` sections are the ones trimmed. Preserved sections are
+  kept whole and trimmed only as a last resort if the payload is still over
+  budget. The authoritative per-section signal is each section's `truncated`
+  flag plus its `priority`/`estimated_tokens` — not the nominal
+  `token_budget.truncation_order` list, which is a static hint and may not match
+  the priority-driven trim order.
 - A trimmed section ends with the literal marker
   `[truncated deterministically by token budget]` and has `truncated: true`.
 - `token_budget.truncated === true` means the payload as a whole was trimmed.
