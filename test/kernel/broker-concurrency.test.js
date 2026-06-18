@@ -76,4 +76,31 @@ describe('local Kernel broker atomicity (9.5.6)', () => {
     expect(ops).not.toContain('exec:COMMIT;');
     expect(ops.indexOf('insertKernelEvent')).toBeLessThan(ops.indexOf('exec:ROLLBACK;'));
   });
+
+  test('recovers a concurrent idempotency collision as a duplicate replay (9.5.9)', async () => {
+    const ops = [];
+    const existingEvent = { id: 'event-existing', idempotency_key: 'issue-update:issue-1:rev-0' };
+    let idempotencyLookupCalls = 0;
+    const broker = brokerWith({
+      async loadKernelEventByIdempotencyKey() {
+        idempotencyLookupCalls += 1;
+        // Pre-read sees nothing; recovery read (inside catch) finds the winner's event.
+        return idempotencyLookupCalls > 1 ? existingEvent : null;
+      },
+      async insertKernelEvent() {
+        ops.push('insertKernelEvent');
+        throw new Error('UNIQUE constraint failed: kernel_events.idempotency_key');
+      },
+    }, ops);
+
+    const result = await broker.runGuardedEvent(acceptEvent(), {});
+
+    expect(result.decision).toBe('duplicate');
+    expect(result.originalEvent).toEqual(existingEvent);
+    expect(result.projection).toBe(false);
+    // Transaction attempted but rolled back — never committed.
+    expect(ops).toContain('exec:BEGIN IMMEDIATE;');
+    expect(ops).toContain('exec:ROLLBACK;');
+    expect(ops).not.toContain('exec:COMMIT;');
+  });
 });
