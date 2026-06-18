@@ -48,8 +48,9 @@ transition leaves them.
 
 `ready` and `blocked` are **derived read-model facts, never stored statuses** (D18). A
 blocker that clears makes the issue ready again in whatever stored status it held — there
-is no "preserve previous status" hack. "Backlog" is simply `open` with readiness
-conditions unmet.
+is no "preserve previous status" hack. `backlog` is the fallback summary state when an
+issue is neither terminal nor ready/blocked/gated/deferred/claimed/disabled — for example
+`open` with readiness conditions unmet, or a non-workable status such as `review`.
 
 `deriveReadiness(issue, context)` returns:
 

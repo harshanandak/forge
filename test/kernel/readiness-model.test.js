@@ -131,6 +131,15 @@ describe('deriveReadiness — derived facts, never stored', () => {
 		expect(result.reasons.map(reason => reason.code)).toContain('deferred');
 	});
 
+	test('a deferred issue stays deferred (fail closed) when now is unavailable', () => {
+		const result = deriveReadiness(
+			{ id: 'a', status: 'open', defer_until: '2026-12-01T00:00:00.000Z' },
+			{},
+		);
+		expect(result.ready).toBe(false);
+		expect(result.state).toBe('deferred');
+	});
+
 	test('a past defer window is no longer deferring', () => {
 		const result = deriveReadiness(
 			{ id: 'a', status: 'open', defer_until: '2026-01-01T00:00:00.000Z' },

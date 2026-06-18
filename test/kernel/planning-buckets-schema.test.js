@@ -55,6 +55,12 @@ describe('planning bucket entities (forge-2agy.9.2.7)', () => {
 		expect(validatePlanningBucketsSchema()).toBe(true);
 	});
 
+	test('rejects a schema missing a required planning bucket table', () => {
+		const schema = getPlanningBucketsSchema();
+		schema.tables = schema.tables.filter(table => table.name !== 'milestone');
+		expect(() => validatePlanningBucketsSchema(schema)).toThrow(/milestone/);
+	});
+
 	test('returns isolated, migration-renderable schema definitions', () => {
 		const schema = getPlanningBucketsSchema();
 		schema.tables[0].fields[0].name = 'mutated';
