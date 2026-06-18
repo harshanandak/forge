@@ -268,6 +268,31 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('insertKernelConflict');
   });
 
+  test('replays a same-key retry as duplicate when the pre-write conflict path split-reads the winner', async () => {
+    // The parallel guard reads are not a consistent snapshot: the idempotency
+    // lookup can run pre-commit (null) while the active-claim lookup runs
+    // post-commit (sees the winner's live lease), driving planClaimAcquisition
+    // to 'conflict'. The pre-write path must re-check idempotency before quarantining.
+    const ops = [];
+    const existingEvent = { id: 'event-existing', idempotency_key: 'claim:issue-1:A' };
+    let idemLookups = 0;
+    const broker = claimBrokerWith({
+      async loadActiveKernelClaim() { ops.push('loadActiveKernelClaim'); return activeClaimRow(); },
+      async loadKernelEventByIdempotencyKey() {
+        idemLookups += 1;
+        return idemLookups > 1 ? existingEvent : null;
+      },
+    }, ops);
+
+    const result = await broker.runGuardedEvent(claimEvent(), { now: CLAIM_NOW });
+
+    expect(result.decision).toBe('duplicate');
+    expect(result.originalEvent).toEqual(existingEvent);
+    expect(result.projection).toBe(false);
+    expect(ops).not.toContain('exec:BEGIN IMMEDIATE;');
+    expect(ops).not.toContain('insertKernelConflict');
+  });
+
   test('rethrows a non-lease UNIQUE violation (e.g. duplicate claim id) instead of quarantining', async () => {
     const ops = [];
     const broker = claimBrokerWith({
