@@ -56,15 +56,22 @@ describe('lease-enforcer isValidExpiresAt', () => {
 		expect(isValidExpiresAt(undefined)).toBe(true);
 	});
 
-	test('accepts a UTC ISO-8601 timestamp with a trailing Z', () => {
+	test('accepts only the exact canonical Date#toISOString form', () => {
 		expect(isValidExpiresAt('2026-06-18T01:00:00.000Z')).toBe(true);
-		expect(isValidExpiresAt('2026-06-18T01:00:00Z')).toBe(true);
 	});
 
-	test('rejects junk, non-Z, impossible-date, and non-string values', () => {
-		expect(isValidExpiresAt('zzz')).toBe(false);
+	test('rejects non-canonical spellings so lexicographic ordering stays correct', () => {
+		// Same instant, different spelling: 'Z' sorts after '.', so this would
+		// mis-order against a '.000Z' clock — must be rejected.
+		expect(isValidExpiresAt('2026-06-18T01:00:00Z')).toBe(false);
 		expect(isValidExpiresAt('2026-06-18T01:00:00')).toBe(false);
+		expect(isValidExpiresAt('2026-06-18T01:00:00.00Z')).toBe(false);
+	});
+
+	test('rejects rollover dates, junk, and non-string values', () => {
+		expect(isValidExpiresAt('2026-02-31T00:00:00.000Z')).toBe(false);
 		expect(isValidExpiresAt('2026-99-99T00:00:00.000Z')).toBe(false);
+		expect(isValidExpiresAt('zzz')).toBe(false);
 		expect(isValidExpiresAt(1750000000000)).toBe(false);
 	});
 });

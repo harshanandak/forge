@@ -51,9 +51,12 @@ are UTC ISO-8601 with trailing `Z` so lexicographic compare = chronological).
   **not** allowed to fall through as a non-claim event (the generic evaluator would
   otherwise accept and persist the event + outbox without ever creating a lease,
   leaving the issue claimable by a later caller). A claim is malformed when it has
-  no `issue_id`, or an `expires_at` that is not a valid UTC ISO-8601 `Z` timestamp
-  (a junk `expires_at` would make the lexicographic expiry comparison meaningless —
-  locking the issue forever or making a live lease look instantly reclaimable).
+  a non-string `issue_id`, or an `expires_at` that is not the exact canonical UTC
+  form (`YYYY-MM-DDTHH:MM:SS.mmmZ`, validated by round-tripping through
+  `Date#toISOString`). The lexicographic expiry comparison demands one canonical
+  spelling — a junk or non-canonical `expires_at` would otherwise lock the issue
+  forever or make a live lease look instantly reclaimable, and round-tripping also
+  rejects rollover dates that `Date.parse` silently normalises.
 
 **Payload consistency:** the claim scope, the inserted `kernel_claims` row, and the
 conflict record all read from the **same** `normalizePayload` (`payload_json`-first)
