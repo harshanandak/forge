@@ -31,7 +31,7 @@ export async function syncCommand(options) {
     const enabledAgents = detectAgents();
     if (enabledAgents.length === 0) {
       console.log(chalk.yellow('No agents detected'));
-      console.log(chalk.gray('Supported: claude (.claude), codex (.codex), cursor (.cursor)'));
+      console.log(chalk.gray('Supported: claude (.claude), codex (.codex), cursor (.cursor), hermes (.hermes)'));
       return;
     }
 

@@ -160,7 +160,7 @@ describe('writeBeadsGitignore', () => {
 describe('ensureBeadsGitExclude', () => {
   let tmpDir;
   let gitHome;
-  let savedGitEnv = {};
+  let savedGitEnv;
 
   // These tests exercise the real `git` plumbing in `ensureBeadsGitExclude`, so
   // each one spawns several git subprocesses (init/add here, plus the rev-parse,
@@ -216,13 +216,6 @@ describe('ensureBeadsGitExclude', () => {
   }
 
   beforeEach(() => {
-    // Capture the real git-related env BEFORE any setup that can throw, so afterEach always
-    // restores the original values (and never deletes them) even if setup fails partway.
-    savedGitEnv = {};
-    for (const key of GIT_ENV_KEYS) {
-      savedGitEnv[key] = process.env[key];
-    }
-
     tmpDir = makeTmpDir();
     fs.mkdirSync(path.join(tmpDir, '.git', 'info'), { recursive: true });
 
@@ -239,6 +232,11 @@ describe('ensureBeadsGitExclude', () => {
         + '\tdefaultBranch = main\n',
       'utf8'
     );
+
+    savedGitEnv = {};
+    for (const key of GIT_ENV_KEYS) {
+      savedGitEnv[key] = process.env[key];
+    }
 
     process.env.HOME = gitHome;
     process.env.USERPROFILE = gitHome;

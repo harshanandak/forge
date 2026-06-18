@@ -12,7 +12,7 @@ import { join } from 'node:path';
  *
  * All agents are enabled: true — directory existence already gates syncing.
  *
- * Forge currently supports Claude Code, Codex, and Cursor.
+ * Forge currently supports Claude Code, Codex, Cursor, and Hermes.
  * Dropped agents: aider, antigravity, cline, continue, github-copilot,
  * kilocode, opencode, roo, windsurf
  */
@@ -20,6 +20,7 @@ const AGENT_DEFINITIONS = [
   { name: 'claude',      directory: '.claude',   description: 'Claude Code (Anthropic)',   enabled: true },
   { name: 'codex',       directory: '.codex',    description: 'Codex CLI (OpenAI)',        enabled: true },
   { name: 'cursor',      directory: '.cursor',   description: 'Cursor AI Code Editor',     enabled: true },
+  { name: 'hermes',      directory: '.hermes',   description: 'Hermes harness',            enabled: true },
 ];
 
 /**
