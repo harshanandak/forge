@@ -43,7 +43,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] .forge/protected-paths.yaml (10)
   - lines: 21 (.beads), 25 (.beads), 26 (.beads), 27 (bd), 127 (.beads), 128 (.beads), 145 (bd), 147 (.beads), 148 (bd), 149 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (1)
-  - lines: 660 (.beads)
+  - lines: 662 (.beads)
 - [ ] lib/agents-config.js (2)
   - lines: 232 (bd), 233 (bd, dolt)
 - [ ] lib/audit-evidence.js (3)
