@@ -283,6 +283,25 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('insertKernelConflict');
   });
 
+  test('quarantines a malformed claim.create with no issue_id instead of persisting an unscoped event', async () => {
+    const ops = [];
+    const broker = claimBrokerWith({}, ops);
+
+    const result = await broker.runGuardedEvent(
+      claimEvent({ payload: { expires_at: '2026-06-18T01:00:00.000Z' } }),
+      { now: CLAIM_NOW },
+    );
+
+    expect(result.decision).toBe('quarantine');
+    expect(result.reason).toBe('invalid_claim_scope');
+    expect(result.projection).toBe(false);
+    expect(ops).toContain('insertKernelConflict');
+    // Nothing is persisted: no transaction, no event/outbox, no claim row.
+    expect(ops).not.toContain('exec:BEGIN IMMEDIATE;');
+    expect(ops).not.toContain('insertKernelEvent');
+    expect(ops).not.toContain('insertKernelClaim');
+  });
+
   test('passes broker config to the transaction exec calls', async () => {
     // A driver constructed without its own databasePath resolves the database
     // from the broker config on every exec, so BEGIN/COMMIT must receive it.

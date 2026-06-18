@@ -47,6 +47,11 @@ are UTC ISO-8601 with trailing `Z` so lexicographic compare = chronological).
   then insert the new active claim, atomically.
 - **Active claim, live** → **conflict** (quarantine, `reason='claim_conflict'`),
   regardless of who is asking.
+- **Malformed `claim.create`** (missing/invalid `payload.issue_id`, so no claim
+  scope) → quarantine, `reason='invalid_claim_scope'`. It is **not** allowed to
+  fall through as a non-claim event: the generic evaluator would otherwise accept
+  and persist the event + outbox without ever creating a lease, leaving the issue
+  claimable by a later caller.
 
 ### Ownership decision: conservative, no silent renewal
 

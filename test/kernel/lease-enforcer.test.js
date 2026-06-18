@@ -102,8 +102,19 @@ describe('lease-enforcer buildClaimConflict', () => {
 		const event = claimEvent({ payload: undefined, payload_json: '{bad-json' });
 		expect(() => buildClaimConflict(event, activeClaim())).not.toThrow();
 		const parsed = JSON.parse(buildClaimConflict(event, activeClaim()).payload_json);
-		expect(parsed.issue_id).toBeUndefined();
+		expect(parsed.issue_id).toBeNull();
 		expect(parsed.reason).toBe('claim_conflict');
+	});
+
+	test('uses a custom reason and null owner fields for a scopeless/malformed claim', () => {
+		const event = claimEvent({ payload: {} });
+		const conflict = buildClaimConflict(event, null, 'invalid_claim_scope');
+		expect(conflict.reason).toBe('invalid_claim_scope');
+		const parsed = JSON.parse(conflict.payload_json);
+		expect(parsed.reason).toBe('invalid_claim_scope');
+		expect(parsed.issue_id).toBeNull();
+		expect(parsed.current_owner).toBeNull();
+		expect(parsed.current_claim_id).toBeNull();
 	});
 
 	test('builds a quarantined conflict row carrying the current owner and attempting actor', () => {
