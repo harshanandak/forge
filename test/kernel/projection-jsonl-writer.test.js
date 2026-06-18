@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const {
 	normalizeProjectionModel,
@@ -13,6 +14,9 @@ const {
 	writeProjection,
 	readProjection,
 	runJsonlProjectionConsumer,
+	computeBackoff,
+	SCHEMA_VERSION,
+	DEFAULT_BASE_BACKOFF_MS,
 } = require('../../lib/kernel/projection-jsonl-writer');
 
 // Minimal fixtures
@@ -410,7 +414,6 @@ describe('projection integrity hardening', () => {
 		// recomputing the hash so we isolate the count check, not the hash check.
 		const oneIssue = files['issues.jsonl'].split('\n').filter(Boolean)[0] + '\n';
 		const manifest = JSON.parse(files['manifest.json']);
-		const crypto = require('node:crypto');
 		manifest.content_sha256 = crypto.createHash('sha256')
 			.update(oneIssue).update('').update('').digest('hex');
 		const tampered = {
@@ -575,5 +578,89 @@ describe('runJsonlProjectionConsumer', () => {
 		expect(dead.error).toMatch(/still failing/);
 		expect(calls.recordProjectionFailure).toEqual([]);
 		expect(result).toMatchObject({ written: false, dead: ['ob-1'], retried: [] });
+	});
+});
+
+describe('PR #218 review hardening', () => {
+	function tmpDir() {
+		return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-proj-'));
+	}
+
+	test('exposes SCHEMA_VERSION and DEFAULT_BASE_BACKOFF_MS', () => {
+		expect(SCHEMA_VERSION).toBe(1);
+		expect(DEFAULT_BASE_BACKOFF_MS).toBe(5000);
+	});
+
+	test('computeBackoff throws a clear, attributable error for an invalid now', () => {
+		// must name `now` (not a bare RangeError "Invalid time value" that masks the
+		// real write error inside the consumer's catch block)
+		expect(() => computeBackoff('not-a-timestamp', 1, 5000)).toThrow(/now/i);
+	});
+
+	test('importProjection rejects a manifest with no counts field', () => {
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
+		const { files } = serializeProjection(model);
+		const manifest = JSON.parse(files['manifest.json']);
+		delete manifest.counts; // hash is over the JSONL bytes, so it still matches
+		const tampered = { ...files, 'manifest.json': JSON.stringify(manifest) };
+
+		expect(() => importProjection(tampered)).toThrow(/count/i);
+	});
+
+	test('writeProjection canonicalizes raw rows before persistence', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		const rawModel = { issues: [ISSUE_RAW], comments: [COMMENT_RAW], dependencies: [DEP_RAW] };
+
+		writeProjection({ model: rawModel, projectionDir: dir });
+		const result = readProjection({ projectionDir: dir });
+
+		expect(result.model.issues[0].kind).toBe('issue');
+		expect(result.model.issues[0].extra_field).toBeUndefined();
+		expect(Object.keys(result.model.issues[0])).toEqual([
+			'kind', 'id', 'title', 'body', 'type', 'status',
+			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision',
+		]);
+	});
+
+	test('rolls back cleanly when the first rename fails (nothing committed yet)', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, 'issues.jsonl'), 'OLD-ISSUES\n');
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
+		const failingFs = {
+			...fs,
+			renameSync(src, dest) {
+				if (String(dest).endsWith(`${path.sep}issues.jsonl`)) throw new Error('first rename failed');
+				return fs.renameSync(src, dest);
+			},
+		};
+
+		expect(() => writeProjection({ model, projectionDir: dir, fsImpl: failingFs })).toThrow(/first rename/);
+		// first rename failed → nothing committed → old content intact
+		expect(fs.readFileSync(path.join(dir, 'issues.jsonl'), 'utf8')).toBe('OLD-ISSUES\n');
+		expect(fs.readdirSync(dir).filter(name => name.includes('.tmp-'))).toEqual([]);
+		expect(fs.existsSync(path.join(dir, '.export.lock'))).toBe(false);
+	});
+
+	test('refuses to publish when another export holds the directory lock', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, '.export.lock'), 'held-by-other-pid');
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
+
+		expect(() => writeProjection({ model, projectionDir: dir })).toThrow(/export.*(progress|lock)|lock/i);
+		// a pre-existing (foreign) lock must NOT be deleted by the loser
+		expect(fs.existsSync(path.join(dir, '.export.lock'))).toBe(true);
+		// and the loser must not leave its temp files behind
+		expect(fs.readdirSync(dir).filter(name => name.includes('.tmp-'))).toEqual([]);
+	});
+
+	test('releases the directory lock after a successful publish', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
+
+		writeProjection({ model, projectionDir: dir });
+
+		expect(fs.existsSync(path.join(dir, '.export.lock'))).toBe(false);
 	});
 });
