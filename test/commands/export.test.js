@@ -104,6 +104,47 @@ describe('forge export — export path (DI broker)', () => {
 	});
 });
 
+describe('forge export — robustness hardening', () => {
+	test('skips cleanly when the broker lacks failure-path methods', async () => {
+		const root = tmpRoot();
+		// only the happy-path trio; missing recordProjectionFailure + deadLetterProjection
+		const partial = {
+			async listProjectionOutbox() { return []; },
+			async loadProjectionModel() { return { issues: [], comments: [], dependencies: [] }; },
+			async markProjectionDelivered() {},
+		};
+
+		const result = await exportCommand.handler([], {}, root, { _broker: partial, _now: NOW });
+
+		expect(result.skipped).toBe(true);
+		expect(result.exported).toBe(false);
+	});
+
+	test('--dir without a value does not consume the next flag token', async () => {
+		const root = tmpRoot();
+		const broker = makeBroker({ pending: [] });
+
+		const result = await exportCommand.handler(['--dir', '--json'], {}, root, { _broker: broker, _now: NOW });
+
+		// --json must still be honored, and dir must not become "--json"
+		expect(result.json).toBe(true);
+		expect(result.dir).toBe(path.resolve(root, '.forge', 'kernel'));
+	});
+
+	test('reports failure (success:false) when the projection write fails', async () => {
+		const root = tmpRoot();
+		const pending = [{ id: 'ob-1', event_id: 'ev-1', target: 'jsonl', status: 'pending', attempts: 0 }];
+		const broker = makeBroker({ pending });
+		const failingWriter = () => { throw new Error('disk full'); };
+
+		const result = await exportCommand.handler([], {}, root, { _broker: broker, _now: NOW, _writer: failingWriter });
+
+		expect(result.success).toBe(false);
+		expect(result.exported).toBe(false);
+		expect(result.error).toMatch(/disk full/);
+	});
+});
+
 describe('forge export — import / bootstrap path', () => {
 	test('--import reads a committed snapshot from disk', async () => {
 		const root = tmpRoot();

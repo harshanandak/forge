@@ -305,6 +305,34 @@ describe('writeProjection', () => {
 		expect(stray).toEqual([]);
 	});
 
+	test('uses per-write unique temp filenames to avoid concurrent collisions', () => {
+		const dir = path.join(tmpDir(), '.forge', 'kernel');
+		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
+
+		function capturingFs() {
+			const temps = [];
+			const io = {
+				...fs,
+				writeFileSync(target, data) {
+					if (String(target).includes('.tmp-')) temps.push(path.basename(target));
+					return fs.writeFileSync(target, data);
+				},
+			};
+			return { io, temps };
+		}
+
+		const first = capturingFs();
+		const second = capturingFs();
+		writeProjection({ model, projectionDir: dir, fsImpl: first.io });
+		writeProjection({ model, projectionDir: dir, fsImpl: second.io });
+
+		// no predictable static name that two concurrent writers would share
+		expect(first.temps).not.toContain('.tmp-issues.jsonl');
+		// the two writes must not reuse the same temp basenames
+		const shared = first.temps.filter(name => second.temps.includes(name));
+		expect(shared).toEqual([]);
+	});
+
 	test('rejects a projectionDir outside projectRoot', () => {
 		const root = tmpDir();
 		const outside = path.join(os.tmpdir(), `evil-${path.basename(root)}`);
