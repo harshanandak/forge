@@ -278,6 +278,15 @@ describe('deriveReadiness — additional branches', () => {
 		expect(result.ready).toBe(true);
 	});
 
+	test('a non-issue conflict sharing the id string does not block the issue', () => {
+		const result = deriveReadiness(
+			{ id: 'a', status: 'open' },
+			{ now: NOW, conflicts: [{ entity_type: 'dependency', entity_id: 'a', status: 'quarantined' }] },
+		);
+		expect(result.blocked).toBe(false);
+		expect(result.ready).toBe(true);
+	});
+
 	test('a non-active claim by another actor does not make the issue claimed', () => {
 		const result = deriveReadiness(
 			{ id: 'a', status: 'open' },
