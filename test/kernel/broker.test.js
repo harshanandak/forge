@@ -59,7 +59,7 @@ describe('local Kernel broker contract', () => {
 			'PRAGMA foreign_keys=ON;',
 			'PRAGMA busy_timeout=5000;',
 		]);
-		expect(statements).toContain('CREATE TABLE IF NOT EXISTS kernel_issues (\n  id TEXT NOT NULL PRIMARY KEY,\n  title TEXT NOT NULL,\n  body TEXT,\n  type TEXT NOT NULL DEFAULT \'task\',\n  status TEXT NOT NULL DEFAULT \'open\',\n  priority TEXT NOT NULL DEFAULT \'P2\',\n  priority_rank INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  entity_revision INTEGER NOT NULL DEFAULT 0\n);');
+		expect(statements).toContain('CREATE TABLE IF NOT EXISTS kernel_issues (\n  id TEXT NOT NULL PRIMARY KEY,\n  title TEXT NOT NULL,\n  body TEXT,\n  type TEXT NOT NULL DEFAULT \'task\',\n  status TEXT NOT NULL DEFAULT \'open\',\n  priority TEXT NOT NULL DEFAULT \'P2\',\n  priority_rank INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  entity_revision INTEGER NOT NULL DEFAULT 0,\n  parent_id TEXT REFERENCES kernel_issues(id),\n  sprint_id TEXT,\n  release_id TEXT,\n  stage_state TEXT,\n  labels TEXT,\n  acceptance_criteria TEXT,\n  estimate TEXT\n);');
 	});
 
 	test('does not fail when the expected revision column migration is replayed', async () => {
