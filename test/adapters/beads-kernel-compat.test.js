@@ -659,7 +659,7 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(exported.acceptance_criteria).toEqual(criteria);
 	});
 
-	test('preserves a cancelled Kernel status across a Beads round trip', () => {
+	test('preserves a cancelled Kernel status and revision provenance across a Beads round trip', () => {
 		const exportResult = exportKernelToBeads({
 			issues: [{
 				id: 'k-cancelled-native',
@@ -667,6 +667,7 @@ describe('Beads Kernel compatibility adapter', () => {
 				status: 'cancelled',
 				priority: 'P2',
 				type: 'task',
+				entity_revision: 7,
 				created_at: IMPORTED_AT,
 				updated_at: IMPORTED_AT,
 			}],
@@ -685,5 +686,10 @@ describe('Beads Kernel compatibility adapter', () => {
 			{ importedAt: IMPORTED_AT },
 		);
 		expect(importResult.kernel.issues[0].status).toBe('cancelled');
+		// Projection metadata is built over the final close_reason, so revision provenance survives:
+		// the close event keeps the original entity_revision rather than falling back to 0.
+		const [closeEvent] = importResult.kernel.events;
+		expect(closeEvent.expected_revision).toBe(7);
+		expect(JSON.parse(closeEvent.payload_json).projection_origin).toMatchObject({ entity_revision: 7 });
 	});
 });
