@@ -328,15 +328,16 @@ describe('committed fixtures (byte-match + round-trip)', () => {
 		const { files } = serializeProjection(model);
 
 		for (const name of ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl', 'manifest.json']) {
-			// fixtures are stored with LF (enforced via .gitattributes eol=lf)
-			expect(files[name]).toBe(readFixture(name).replace(/\r\n/g, '\n'));
+			// fixtures are stored with LF (enforced via .gitattributes eol=lf); compare
+			// raw bytes so a CRLF regression on checkout is actually caught here.
+			expect(files[name]).toBe(readFixture(name));
 		}
 	});
 
 	test('importing the committed fixtures reconstructs the sorted snapshot', () => {
 		const files = {};
 		for (const name of ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl', 'manifest.json']) {
-			files[name] = readFixture(name).replace(/\r\n/g, '\n');
+			files[name] = readFixture(name);
 		}
 		const imported = importProjection(files);
 		const expected = buildProjectionSnapshot(normalizeProjectionModel(JSON.parse(readFixture('model.json'))));
