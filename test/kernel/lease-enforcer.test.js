@@ -50,6 +50,17 @@ describe('lease-enforcer isLeaseExpired', () => {
 });
 
 describe('lease-enforcer planClaimAcquisition', () => {
+	test('reads issue_id/expires_at from payload_json when no payload object is present', () => {
+		const event = claimEvent({
+			payload: undefined,
+			payload_json: JSON.stringify({ issue_id: 'issue-1', expires_at: '2026-06-18T01:00:00.000Z' }),
+		});
+		const plan = planClaimAcquisition({ event, activeClaim: null, now: NOW });
+		expect(plan.action).toBe('insert');
+		expect(plan.claim.issue_id).toBe('issue-1');
+		expect(plan.claim.expires_at).toBe('2026-06-18T01:00:00.000Z');
+	});
+
 	test('plans a plain insert when no active claim exists', () => {
 		const plan = planClaimAcquisition({ event: claimEvent(), activeClaim: null, now: NOW });
 		expect(plan.action).toBe('insert');
@@ -87,6 +98,14 @@ describe('lease-enforcer planClaimAcquisition', () => {
 });
 
 describe('lease-enforcer buildClaimConflict', () => {
+	test('falls back to an empty payload when payload_json is malformed (no throw)', () => {
+		const event = claimEvent({ payload: undefined, payload_json: '{bad-json' });
+		expect(() => buildClaimConflict(event, activeClaim())).not.toThrow();
+		const parsed = JSON.parse(buildClaimConflict(event, activeClaim()).payload_json);
+		expect(parsed.issue_id).toBeUndefined();
+		expect(parsed.reason).toBe('claim_conflict');
+	});
+
 	test('builds a quarantined conflict row carrying the current owner and attempting actor', () => {
 		const conflict = buildClaimConflict(claimEvent(), activeClaim());
 		expect(conflict).toMatchObject({

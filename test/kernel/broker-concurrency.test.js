@@ -178,6 +178,7 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
       'enqueueKernelProjection',
       'exec:COMMIT;',
     ]);
+    expect(ops).not.toContain('exec:ROLLBACK;');
   });
 
   test('quarantines a claim against a live lease held by another actor without opening a transaction', async () => {
@@ -210,6 +211,7 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(result.decision).toBe('accept');
     const txn = ops.filter(op => TXN_OPS.includes(op));
     expect(txn).toEqual(TXN_OPS);
+    expect(ops).not.toContain('exec:ROLLBACK;');
   });
 
   test('recovers a concurrent active-lease index collision as a claim conflict (9.5.1-9.5.3 proof)', async () => {
@@ -237,5 +239,65 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).toContain('exec:ROLLBACK;');
     expect(ops).not.toContain('exec:COMMIT;');
     expect(ops).toContain('insertKernelConflict');
+  });
+
+  test('replays a same-idempotency-key claim race as a duplicate, not a conflict', async () => {
+    // A retry of the SAME claim races the winner: its claim insert trips the
+    // active-lease index BEFORE the events idempotency index, so the broker must
+    // re-read the idempotency winner and replay as a duplicate.
+    const ops = [];
+    const existingEvent = { id: 'event-existing', idempotency_key: 'claim:issue-1:A' };
+    const broker = claimBrokerWith({
+      async loadKernelEventByIdempotencyKey() {
+        // Pre-read sees nothing; recovery read (inside catch) finds the winner.
+        return ops.includes('insertKernelClaim') ? existingEvent : null;
+      },
+      async insertKernelClaim(_claim) {
+        ops.push('insertKernelClaim');
+        throw new Error('UNIQUE constraint failed: kernel_claims.issue_id');
+      },
+    }, ops);
+
+    const result = await broker.runGuardedEvent(claimEvent(), { now: CLAIM_NOW });
+
+    expect(result.decision).toBe('duplicate');
+    expect(result.originalEvent).toEqual(existingEvent);
+    expect(result.projection).toBe(false);
+    expect(ops).toContain('exec:ROLLBACK;');
+    expect(ops).not.toContain('exec:COMMIT;');
+    expect(ops).not.toContain('insertKernelConflict');
+  });
+
+  test('rethrows a non-lease UNIQUE violation (e.g. duplicate claim id) instead of quarantining', async () => {
+    const ops = [];
+    const broker = claimBrokerWith({
+      async insertKernelClaim(_claim) {
+        ops.push('insertKernelClaim');
+        throw new Error('UNIQUE constraint failed: kernel_claims.id');
+      },
+    }, ops);
+
+    await expect(broker.runGuardedEvent(claimEvent(), { now: CLAIM_NOW }))
+      .rejects.toThrow('UNIQUE constraint failed: kernel_claims.id');
+    expect(ops).toContain('exec:ROLLBACK;');
+    expect(ops).not.toContain('insertKernelConflict');
+  });
+
+  test('passes broker config to the transaction exec calls', async () => {
+    // A driver constructed without its own databasePath resolves the database
+    // from the broker config on every exec, so BEGIN/COMMIT must receive it.
+    const ops = [];
+    const execConfigs = [];
+    const broker = claimBrokerWith({
+      async exec(statement, config) { ops.push(`exec:${statement}`); execConfigs.push([statement, config]); },
+    }, ops);
+
+    await broker.runGuardedEvent(claimEvent(), { now: CLAIM_NOW });
+
+    for (const statement of ['BEGIN IMMEDIATE;', 'COMMIT;']) {
+      const call = execConfigs.find(([s]) => s === statement);
+      expect(call).toBeDefined();
+      expect(call[1]).toMatchObject({ mode: 'local' });
+    }
   });
 });

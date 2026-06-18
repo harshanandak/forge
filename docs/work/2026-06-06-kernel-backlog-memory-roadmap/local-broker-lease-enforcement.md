@@ -83,6 +83,13 @@ make `issueOperation('claim'|'release')` emit guarded `claim.create` /
 `claim.release` events through `runGuardedEvent`, so the enforcement proven here
 becomes reachable end-to-end from the command surface.
 
+## Stage Exit Summary
+
+- **Summary:** The local broker enforces the claim-lease invariant atomically — a DB-level partial UNIQUE index plus transactional broker logic — proven under real multi-process SQLite (WAL) contention.
+- **Decisions:** (1) conservative ownership — a live lease blocks all new claims, no silent renewal while `actor` is not distinct per agent; (2) wiring deferral — the broker primitive is proven, the `forge claim` surface is a follow-up; (3) two-layer model — load-bearing DB index + optimization/recovery layer.
+- **Artifacts:** `lib/kernel/migrations.js` (partial UNIQUE index), `lib/kernel/lease-enforcer.js` (pure planners), `lib/kernel/broker.js` (transactional write path + quarantine/recovery), `test/kernel/broker-multiprocess.test.js` + `test/kernel/fixtures/claim-race-worker.js` (multi-process proof).
+- **Next:** implement a real higher-level Kernel driver; wire `issueOperation('claim'|'release')` to emit guarded events through `runGuardedEvent`; settle the owner-identity model for Slice 2 (release semantics + broad non-owner write guard).
+
 ## Slice 2 (deferred)
 
 - `claim.release`: owner releases → `state='released'` (accept); non-owner

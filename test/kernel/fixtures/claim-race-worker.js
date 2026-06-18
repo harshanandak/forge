@@ -39,8 +39,11 @@ async function main() {
 		} catch {
 			// The failed statement may already have aborted the transaction.
 		}
-		const message = String(err && err.message ? err.message : err);
-		if (/UNIQUE constraint failed/i.test(message)) {
+		const message = String(err?.message ?? err);
+		// Only the active-lease index (kernel_claims.issue_id) counts as a lease
+		// conflict — aligns with the broker's isClaimLeaseConflict classifier and
+		// avoids masking unrelated UNIQUE/schema regressions as false passes.
+		if (/UNIQUE constraint failed/i.test(message) && /kernel_claims\.issue_id/i.test(message)) {
 			process.stdout.write('conflict');
 		} else {
 			process.stderr.write(message);
