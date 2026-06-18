@@ -327,6 +327,45 @@ describe('local Kernel broker claim leases (9.5.10 / 9.5.3)', () => {
     expect(ops).not.toContain('insertKernelClaim');
   });
 
+  test('quarantines a claim.create with a malformed expires_at instead of storing junk', async () => {
+    const ops = [];
+    const broker = claimBrokerWith({}, ops);
+
+    const result = await broker.runGuardedEvent(
+      claimEvent({ payload: { issue_id: 'issue-1', expires_at: 'not-a-date' } }),
+      { now: CLAIM_NOW },
+    );
+
+    expect(result.decision).toBe('quarantine');
+    expect(result.reason).toBe('invalid_claim_scope');
+    expect(ops).toContain('insertKernelConflict');
+    expect(ops).not.toContain('exec:BEGIN IMMEDIATE;');
+    expect(ops).not.toContain('insertKernelClaim');
+  });
+
+  test('scopes the lease from payload_json (the persisted payload) when payload disagrees', async () => {
+    const ops = [];
+    let loadedIssueId = null;
+    let insertedClaim = null;
+    const broker = claimBrokerWith({
+      async loadActiveKernelClaim(issueId) { loadedIssueId = issueId; ops.push('loadActiveKernelClaim'); return null; },
+      async insertKernelClaim(claim) { insertedClaim = claim; ops.push('insertKernelClaim'); return { ...claim, id: claim.id || 'claim-1' }; },
+    }, ops);
+
+    const result = await broker.runGuardedEvent(
+      claimEvent({
+        payload: { issue_id: 'issue-A', expires_at: null },
+        payload_json: JSON.stringify({ issue_id: 'issue-B', expires_at: null }),
+      }),
+      { now: CLAIM_NOW },
+    );
+
+    expect(result.decision).toBe('accept');
+    // The lease must match what the evaluator persists (payload_json), not payload.
+    expect(loadedIssueId).toBe('issue-B');
+    expect(insertedClaim.issue_id).toBe('issue-B');
+  });
+
   test('passes broker config to the transaction exec calls', async () => {
     // A driver constructed without its own databasePath resolves the database
     // from the broker config on every exec, so BEGIN/COMMIT must receive it.

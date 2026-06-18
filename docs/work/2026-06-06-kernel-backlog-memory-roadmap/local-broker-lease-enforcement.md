@@ -47,11 +47,19 @@ are UTC ISO-8601 with trailing `Z` so lexicographic compare = chronological).
   then insert the new active claim, atomically.
 - **Active claim, live** → **conflict** (quarantine, `reason='claim_conflict'`),
   regardless of who is asking.
-- **Malformed `claim.create`** (missing/invalid `payload.issue_id`, so no claim
-  scope) → quarantine, `reason='invalid_claim_scope'`. It is **not** allowed to
-  fall through as a non-claim event: the generic evaluator would otherwise accept
-  and persist the event + outbox without ever creating a lease, leaving the issue
-  claimable by a later caller.
+- **Malformed `claim.create`** → quarantine, `reason='invalid_claim_scope'`. It is
+  **not** allowed to fall through as a non-claim event (the generic evaluator would
+  otherwise accept and persist the event + outbox without ever creating a lease,
+  leaving the issue claimable by a later caller). A claim is malformed when it has
+  no `issue_id`, or an `expires_at` that is not a valid UTC ISO-8601 `Z` timestamp
+  (a junk `expires_at` would make the lexicographic expiry comparison meaningless —
+  locking the issue forever or making a live lease look instantly reclaimable).
+
+**Payload consistency:** the claim scope, the inserted `kernel_claims` row, and the
+conflict record all read from the **same** `normalizePayload` (`payload_json`-first)
+that the evaluator uses to persist the event — so the lease can never describe a
+different issue than the accepted event/outbox when both `payload` and
+`payload_json` are present and disagree.
 
 ### Ownership decision: conservative, no silent renewal
 

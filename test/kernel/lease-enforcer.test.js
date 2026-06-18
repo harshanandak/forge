@@ -2,6 +2,7 @@ const { describe, expect, test } = require('bun:test');
 
 const {
 	isLeaseExpired,
+	isValidExpiresAt,
 	planClaimAcquisition,
 	buildClaimConflict,
 } = require('../../lib/kernel/lease-enforcer');
@@ -49,7 +50,36 @@ describe('lease-enforcer isLeaseExpired', () => {
 	});
 });
 
+describe('lease-enforcer isValidExpiresAt', () => {
+	test('accepts a null/absent expires_at (non-expiring lease)', () => {
+		expect(isValidExpiresAt(null)).toBe(true);
+		expect(isValidExpiresAt(undefined)).toBe(true);
+	});
+
+	test('accepts a UTC ISO-8601 timestamp with a trailing Z', () => {
+		expect(isValidExpiresAt('2026-06-18T01:00:00.000Z')).toBe(true);
+		expect(isValidExpiresAt('2026-06-18T01:00:00Z')).toBe(true);
+	});
+
+	test('rejects junk, non-Z, impossible-date, and non-string values', () => {
+		expect(isValidExpiresAt('zzz')).toBe(false);
+		expect(isValidExpiresAt('2026-06-18T01:00:00')).toBe(false);
+		expect(isValidExpiresAt('2026-99-99T00:00:00.000Z')).toBe(false);
+		expect(isValidExpiresAt(1750000000000)).toBe(false);
+	});
+});
+
 describe('lease-enforcer planClaimAcquisition', () => {
+	test('derives the claim from payload_json (the persisted payload) when both are present', () => {
+		const event = claimEvent({
+			payload: { issue_id: 'issue-A', expires_at: null },
+			payload_json: JSON.stringify({ issue_id: 'issue-B', expires_at: '2026-06-18T01:00:00.000Z' }),
+		});
+		const plan = planClaimAcquisition({ event, activeClaim: null, now: NOW });
+		expect(plan.claim.issue_id).toBe('issue-B');
+		expect(plan.claim.expires_at).toBe('2026-06-18T01:00:00.000Z');
+	});
+
 	test('reads issue_id/expires_at from payload_json when no payload object is present', () => {
 		const event = claimEvent({
 			payload: undefined,
