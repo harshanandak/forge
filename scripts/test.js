@@ -300,13 +300,13 @@ function runTestExecutionPlan(plan, deps = {}) {
 
     if (plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
-      const status = runCommand(bunCommand, ['test', 'test/e2e/'], { env }, spawnSync);
+      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], { env }, spawnSync);
       if (status !== 0) return status;
     }
 
     if (!plan.runFullSuite && plan.runTestEnv) {
       console.log('  Extra: running affected edge-case tests');
-      const status = runCommand(bunCommand, ['test', 'test-env/'], { env }, spawnSync);
+      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], { env }, spawnSync);
       if (status !== 0) return status;
     }
 

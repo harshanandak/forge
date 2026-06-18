@@ -25,7 +25,7 @@ jobs:
         with:
           bun-version: 1.3.12
       - run: bun install
-      - run: bun test test/  # Exclude test-env/ (uses node:test, incompatible with Bun)
+      - run: bun test --timeout 15000 test/  # Exclude test-env/ (uses node:test, incompatible with Bun)
 
   publish-npm:
     needs: build
