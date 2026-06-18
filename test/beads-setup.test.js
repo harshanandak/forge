@@ -159,6 +159,49 @@ describe('writeBeadsGitignore', () => {
 // ---------------------------------------------------------------------------
 describe('ensureBeadsGitExclude', () => {
   let tmpDir;
+  let gitHome;
+  let savedGitEnv;
+
+  // These tests exercise the real `git` plumbing in `ensureBeadsGitExclude`, so
+  // each one spawns several git subprocesses (init/add here, plus the rev-parse,
+  // ls-files and rm --cached the function shells out to — each prefixed by a
+  // `where`/`which` lookup inside secureExecFileSync). On Windows under
+  // full-suite load that runs 5-8s per test, which intermittently blew bun's
+  // per-test timeout and produced nondeterministic timeout failures across the
+  // whole block (not just the two `git init` tests). The default per-test
+  // timeout is 5000ms: bunfig.toml's `timeout` is NOT honored, so any run that
+  // does not pass `--timeout` on the CLI (e.g. a plain `bun test`) uses 5000ms.
+  //
+  // Primary fix: an explicit, generous per-test timeout (GIT_TEST_TIMEOUT_MS,
+  // applied as the 3rd arg to each test) that overrides the suite default no
+  // matter how `bun test` is invoked.
+  const GIT_TEST_TIMEOUT_MS = 30000;
+
+  // Secondary measure: run every git invocation hermetically. The tests (and
+  // `ensureBeadsGitExclude`, which inherits process.env) otherwise read the
+  // developer's shared global/system git config and any inherited GIT_* repo
+  // pointers. Pointing HOME/global config at a per-test temp dir, skipping
+  // system config, and scrubbing GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE removes
+  // that shared-state dependency so timing and behavior stay consistent.
+  //
+  // Mutating process.env here is safe: this suite runs sequentially (no
+  // concurrentTestGlob match), and afterEach restores the prior values exactly.
+  const GIT_ENV_KEYS = [
+    'HOME',
+    'USERPROFILE',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_SYSTEM',
+    'GIT_CONFIG_NOSYSTEM',
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_TERMINAL_PROMPT',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL'
+  ];
+
   function gitInTmp(args, options = {}) {
     return execFileSync('git', [
       '-c',
@@ -175,9 +218,52 @@ describe('ensureBeadsGitExclude', () => {
   beforeEach(() => {
     tmpDir = makeTmpDir();
     fs.mkdirSync(path.join(tmpDir, '.git', 'info'), { recursive: true });
+
+    // Per-test isolated HOME with a minimal, deterministic global git config so
+    // no git subprocess reads or contends on the shared developer/system config.
+    gitHome = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-setup-home-'));
+    const globalConfig = path.join(gitHome, '.gitconfig');
+    fs.writeFileSync(
+      globalConfig,
+      '[user]\n'
+        + '\tname = Forge Test\n'
+        + '\temail = forge-test@example.invalid\n'
+        + '[init]\n'
+        + '\tdefaultBranch = main\n',
+      'utf8'
+    );
+
+    savedGitEnv = {};
+    for (const key of GIT_ENV_KEYS) {
+      savedGitEnv[key] = process.env[key];
+    }
+
+    process.env.HOME = gitHome;
+    process.env.USERPROFILE = gitHome;
+    process.env.GIT_CONFIG_GLOBAL = globalConfig;
+    process.env.GIT_CONFIG_NOSYSTEM = '1';
+    delete process.env.GIT_CONFIG_SYSTEM;
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
+    delete process.env.GIT_INDEX_FILE;
+    process.env.GIT_TERMINAL_PROMPT = '0';
+    process.env.GIT_AUTHOR_NAME = 'Forge Test';
+    process.env.GIT_AUTHOR_EMAIL = 'forge-test@example.invalid';
+    process.env.GIT_COMMITTER_NAME = 'Forge Test';
+    process.env.GIT_COMMITTER_EMAIL = 'forge-test@example.invalid';
   });
   afterEach(() => {
+    for (const key of GIT_ENV_KEYS) {
+      if (savedGitEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedGitEnv[key];
+      }
+    }
     rmrf(tmpDir);
+    if (gitHome) {
+      rmrf(gitHome);
+    }
   });
 
   test('adds local exclude rules for Beads state without touching tracked ignore files', () => {
@@ -191,7 +277,7 @@ describe('ensureBeadsGitExclude', () => {
     expect(content).toContain('.dolt/');
     expect(content).toContain('.beads-credential-key');
     expect(fs.existsSync(path.join(tmpDir, '.gitignore'))).toBe(false);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test('is idempotent when local exclude rules already exist', () => {
     ensureBeadsGitExclude(tmpDir);
@@ -202,7 +288,7 @@ describe('ensureBeadsGitExclude', () => {
 
     expect(content.match(/# Forge local Beads state/g)).toHaveLength(1);
     expect(content.match(/\.beads\//g)).toHaveLength(1);
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test('untracks previously committed Beads state without deleting local files', () => {
     gitInTmp(['init'], { stdio: 'pipe' });
@@ -218,7 +304,7 @@ describe('ensureBeadsGitExclude', () => {
     expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"forge-test"}\n');
     expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
     expect(gitInTmp(['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   test('untracks staged Beads state even when the working file diverged', () => {
     gitInTmp(['init'], { stdio: 'pipe' });
@@ -233,7 +319,7 @@ describe('ensureBeadsGitExclude', () => {
     expect(fs.readFileSync(beadsFile, 'utf8')).toBe('{"id":"working"}\n');
     expect(gitInTmp(['ls-files', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
     expect(gitInTmp(['status', '--short', '--', '.beads'], { encoding: 'utf8' }).trim()).toBe('');
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------
