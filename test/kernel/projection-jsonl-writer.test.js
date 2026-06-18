@@ -315,6 +315,35 @@ describe('writeProjection', () => {
 	});
 });
 
+describe('committed fixtures (byte-match + round-trip)', () => {
+	const FIXTURE_DIR = path.join(__dirname, '..', 'fixtures', 'kernel-projection');
+
+	function readFixture(name) {
+		return fs.readFileSync(path.join(FIXTURE_DIR, name), 'utf8');
+	}
+
+	test('serializing the fixture model reproduces the committed JSONL byte-for-byte', () => {
+		const raw = JSON.parse(readFixture('model.json'));
+		const model = normalizeProjectionModel(raw);
+		const { files } = serializeProjection(model);
+
+		for (const name of ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl', 'manifest.json']) {
+			// fixtures are stored with LF (enforced via .gitattributes eol=lf)
+			expect(files[name]).toBe(readFixture(name).replace(/\r\n/g, '\n'));
+		}
+	});
+
+	test('importing the committed fixtures reconstructs the sorted snapshot', () => {
+		const files = {};
+		for (const name of ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl', 'manifest.json']) {
+			files[name] = readFixture(name).replace(/\r\n/g, '\n');
+		}
+		const imported = importProjection(files);
+		const expected = buildProjectionSnapshot(normalizeProjectionModel(JSON.parse(readFixture('model.json'))));
+		expect(imported).toEqual(expected);
+	});
+});
+
 describe('readProjection', () => {
 	function tmpDir() {
 		return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-proj-'));
