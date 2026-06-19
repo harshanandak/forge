@@ -476,6 +476,87 @@ conflicts_with: []
 - Onboarding a new harness must require only an adapter (hook wiring + instruction block), zero Kernel changes.
 - Earlier multi-harness support (including the prior partial removal of Antigravity/Windsurf/Aider/Continue) is fully unwound rather than left half-wired.
 
+### PD-20260619-skills-canonical-surface
+
+```yaml
+id: PD-20260619-skills-canonical-surface
+topic: agent-interface.canonical-source
+status: accepted
+decision_date: 2026-06-19
+adr: pending
+evidence:
+  - docs/work/2026-06-19-kernel-completion-plan/kernel-skill-surface-design.md
+supersedes: []
+refines: [PD-20260611-agent-interface-parity]
+conflicts_with: []
+```
+
+**Current decision:** The agent surface's canonical source is the neutral `.skills/` registry, synced by the `@forge/skills` CLI to `.claude/.codex/.cursor/.hermes`. No harness is "main." Refines `PD-20260611-agent-interface-parity`, which originally implied a `.claude/`-canonical command surface.
+
+### PD-20260619-no-command-surface
+
+```yaml
+id: PD-20260619-no-command-surface
+topic: agent-interface.no-commands
+status: accepted
+decision_date: 2026-06-19
+adr: pending
+evidence:
+  - docs/work/2026-06-19-kernel-completion-plan/kernel-skill-surface-design.md
+supersedes: []
+conflicts_with: [forge-ny6j, forge-besw.9]
+```
+
+**Current decision:** Forge uses skills + agents only — **no command files**. The 7 stage commands migrate to skills; `.claude/commands/`, generated command outputs, and `scripts/sync-commands.js` are deleted. Open issues `forge-ny6j` (neutral command source) and `forge-besw.9` (sync-commands v2) contradict this and must be closed/rewritten.
+
+### PD-20260619-agent-sync-all-harnesses
+
+```yaml
+id: PD-20260619-agent-sync-all-harnesses
+topic: agent-interface.agent-sync
+status: accepted
+decision_date: 2026-06-19
+adr: pending
+evidence:
+  - docs/work/2026-06-19-kernel-completion-plan/kernel-skill-surface-design.md
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Extend the `@forge/skills` CLI to sync agent files (not just skills) from a neutral source to every present harness dir (`.claude/.codex/.cursor/.hermes`); Codex/Cursor with no agents concept are a logged no-op, not Claude-only by default.
+
+### PD-20260619-harness-neutral-hooks
+
+```yaml
+id: PD-20260619-harness-neutral-hooks
+topic: hooks.surface
+status: accepted
+decision_date: 2026-06-19
+adr: pending
+evidence:
+  - docs/work/2026-06-19-kernel-completion-plan/kernel-skill-surface-design.md#9
+refines: [PD-20260608-hook-backed-architecture-capture]
+conflicts_with: []
+```
+
+**Current decision:** Kernel hooks (SessionStart→`forge prime`, PreCompact→`forge recap`, Stop→`forge export`+sync reminder, PreToolUse guards) have a neutral source (`.skills/hooks.json`) synced per-harness by `skills sync-hooks` (format-aware writers). Git-lifecycle hooks install worktree-proof via `core.hooksPath` at the git-common-dir level (the Hermes/Codex/Cursor enforcement path). Hooks record evidence/proposals only — never silently mutate authority (observer rule).
+
+### PD-20260619-unique-feature-surface
+
+```yaml
+id: PD-20260619-unique-feature-surface
+topic: agent-interface.unique-features
+status: accepted
+decision_date: 2026-06-19
+adr: pending
+evidence:
+  - docs/work/2026-06-19-kernel-completion-plan/kernel-skill-surface-design.md#10
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Forge-unique capabilities (claim leases, JSONL portability, readiness, planning buckets, etc.) are surfaced via a 3-way split: **surface-now** (live CLI → thin skills), **must-build** (`remember`/`recall`/`buckets`), and **internal — do NOT surface** (quarantine/evaluators/taxonomy-validation/broker/command-contract). Avoids exposing plumbing that would invite agents to hand-generate revisions/idempotency keys.
+
 ## Registry update rules
 
 ### When to update this file
