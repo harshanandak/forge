@@ -65,3 +65,19 @@ Implement the 16 missing methods on the existing `lib/kernel/sqlite-driver.js` (
 **OWASP:** A03 Injection — parameterized SQL only (primary risk). A01/A08 — local-file DB, filesystem doctor (separate); low remote surface.
 
 **TDD scenarios (min):** (1) read on empty DB returns empty shapes; (2) create→show round-trips contract-shaped data + revision; (3) double-claim → conflict (lease enforced) on the real driver; (4) idempotent create replay = single row; (5) dep.add then `ready` reflects the blocked dependent.
+
+## Artifacts
+
+**This design phase:** `docs/work/2026-06-19-kernel-driver-issue-layer/design.md`, `tasks.md`.
+
+**Produced during `/dev` (now complete):**
+- Implementation: `lib/kernel/sqlite-driver.js` (16 driver methods), `lib/kernel/broker.js` (mutation routing + revision-conflict recovery), `lib/kernel/evaluators.js` (`buildConflict` export).
+- Tests: `test/kernel/sqlite-driver-issue.test.js`, `sqlite-driver-events.test.js`, `sqlite-driver-mutations.test.js`, `sqlite-driver-deps-claims.test.js`, `driver-smoke.test.js` (13-op acceptance).
+
+## Next
+
+**Stage gate outcome:** the Task 10 ambiguity gate (broker mutation routing) resolved as **surgical** — `runGuardedEvent` body extracted to `runGuardedEventImpl` + an additive mutation branch in `runIssueOperation`; `runGuardedEvent`'s behavior/return shape unchanged, all existing broker tests green (commit `962b54c`). No escalation was needed.
+
+**Status:** implemented, validated (`bun run check` green; smoke 13/13; kernel suite green), shipped as PR #224. The kernel runs **alongside** Beads — no default change.
+
+**Follow-ups (post-merge):** K0 (bd/Dolt repair → file these issues into the kernel), K8 (Beads→kernel migration of legacy issues), K11 (default-flip to the kernel backend). Multi-process issue-CAS is now DB-backed (revision compare-and-swap at the row write).

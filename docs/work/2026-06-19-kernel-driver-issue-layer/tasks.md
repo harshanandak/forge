@@ -76,3 +76,21 @@ OWNS: `lib/kernel/broker.js`, `test/kernel/broker.test.js`
 - No Beads removal; selection stays per-call (`deps.issueBackend='kernel'`).
 - Run `bun test test/kernel/` after each task; full `bun run check` before ship.
 - Beads epic/issue filing deferred to K0 (bd unreachable); record this PR's issues there once bd is repaired.
+
+## Artifacts (delivered)
+
+| Wave / Task | Test file | Implementation |
+|---|---|---|
+| 1 (reads) | `sqlite-driver-issue.test.js` | `sqlite-driver.js` — `issueOperation` read branch |
+| 2 (events) | `sqlite-driver-events.test.js` | `sqlite-driver.js` — event-store primitives |
+| 3 (mutations) | `sqlite-driver-mutations.test.js` | `sqlite-driver.js` + `broker.js` (guarded-event routing) |
+| 4 (deps/claims) | `sqlite-driver-deps-claims.test.js` | `sqlite-driver.js` — dependency + claim primitives (DB-enforced lease) |
+| 5 (projection/smoke) | `driver-smoke.test.js` (acceptance) | `sqlite-driver.js` — projection-outbox primitives |
+| CAS hardening | (in mutations test) | `sqlite-driver.js` row-write CAS + `broker.js`/`evaluators.js` recovery |
+
+## Next (post-implementation)
+
+- **Task 5 / Task 10 gate — RESOLVED.** The broker mutation routing was implemented in Wave 3 (Task 5) and the Task 10 change was **surgical** (extract `runGuardedEventImpl` + additive `runIssueOperation` mutation branch; `runGuardedEvent` unchanged, all broker tests green — commit `962b54c`). No deferral/escalation; the conditional Task 10 was satisfied in-place.
+- **Validation:** `bun run check` green; `driver-smoke.test.js` 13/13; full kernel suite green; lint clean. SQL all parameterized; no Beads coupling; DB-enforced single-active-claim lease; row-write revision CAS; projection-outbox atomic within the guarded commit.
+- **Ship:** PR #224 (kernel alongside Beads; no default change).
+- **Post-merge epics:** K0 (bd/Dolt repair), K8 (Beads→kernel migration), K11 (default-flip).
