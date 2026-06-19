@@ -69,6 +69,9 @@ skills-lock.json
 # Local planning notes
 docs/planning/
 
+# Local-only exploratory eval (Turso evaluation — kept on disk, never pushed)
+docs/work/2026-06-20-turso-sqlite-evaluation/
+
 # Git worktrees (created by /plan Phase 3 for isolated /dev sessions)
 .worktrees/
 
