@@ -275,4 +275,168 @@ describe('Kernel SQLite driver — issue mutations via guarded path (Wave 3)', (
 		// remains unimplemented (Wave 1 contract preserved).
 		await expect(driver.issueOperation('create', ['x'], {}, config)).rejects.toThrow(/not implemented yet/);
 	});
+
+	test('row-level CAS rejects a concurrent lost update: two accepted writes both at expected_revision=0', async () => {
+		// THE RACE PROOF. The evaluator pre-reads the entity OUTSIDE the transaction
+		// (broker Promise.all), so under TRUE concurrency two writers can both pre-read
+		// rev=N, both pass the evaluator, and the second would silently apply on top of
+		// N+1 — a lost update returned as decision:accept. A sequential test can't
+		// reproduce that (writer 2's pre-read would see N+1 and the evaluator would
+		// quarantine first), so we drive the driver's applyAcceptedIssueMutation hook
+		// DIRECTLY with two accepted events that BOTH carry expected_revision=0,
+		// simulating the post-evaluator commit of two writers that both saw rev 0.
+		await broker.runIssueOperation(
+			'create', ['--id', 'race-1', '--title', 'Race', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		const updateEvent = key => ({
+			entity_type: 'issue',
+			entity_id: 'race-1',
+			event_type: 'issue.update',
+			idempotency_key: key,
+			expected_revision: 0, // both writers observed rev 0 before either committed
+			actor: 'tester',
+			origin: 'cli',
+			payload: { status: 'in_progress' },
+			created_at: '2026-06-19T00:10:00.000Z',
+		});
+
+		// First accepted write applies cleanly: rev 0 → 1.
+		const firstApply = await driver.applyAcceptedIssueMutation(updateEvent('race:a'), {}, config);
+		expect(firstApply.revision).toBe(1);
+
+		// Second accepted write ALSO carries expected_revision=0 but the row is now at
+		// rev 1. Old code computed nextRevision = 1 + 1 and silently bumped to 2 (lost
+		// update). The CAS gates the UPDATE on entity_revision=0, matches 0 rows, and
+		// throws the tagged conflict the broker maps to stale_revision.
+		let caught;
+		try {
+			await driver.applyAcceptedIssueMutation(updateEvent('race:b'), {}, config);
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toBeDefined();
+		expect(caught.kernelRevisionConflict).toBe(true);
+		expect(caught.entityId).toBe('race-1');
+
+		// The lost update was prevented: the row is still at rev 1, NOT 2.
+		const shown = await driver.issueOperation('show', ['race-1'], {}, config);
+		expect(shown.data.revision).toBe(1);
+		expect(shown.data.status).toBe('in_progress');
+	});
+
+	test('broker maps a driver revision-conflict into a stale_revision quarantine (recovery path)', async () => {
+		// The driver CAS throws INSIDE commitGuardedAccept; recoverGuardedFailure must
+		// catch the tagged error, ROLLBACK, and quarantine as stale_revision (not
+		// rethrow). Wrap the real driver so applyAcceptedIssueMutation throws the tag,
+		// proving the broker recovery branch end-to-end against the real event store.
+		await broker.runIssueOperation(
+			'create', ['--id', 'race-2', '--title', 'Race2', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		const guarded = {
+			...driver,
+			async applyAcceptedIssueMutation() {
+				const error = new Error('kernel issue revision conflict');
+				error.kernelRevisionConflict = true;
+				error.entityId = 'race-2';
+				error.expectedRevision = 0;
+				error.actualRevision = 3;
+				throw error;
+			},
+		};
+		const guardedBroker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: path.join(tmpDir, 'kernel.sqlite'),
+			driver: guarded,
+		});
+
+		const result = await guardedBroker.runGuardedEvent({
+			entity_type: 'issue',
+			entity_id: 'race-2',
+			event_type: 'issue.update',
+			idempotency_key: 'issue-update:race-2:cas',
+			expected_revision: 0,
+			actor: 'tester',
+			origin: 'cli',
+			payload: { status: 'review' },
+		}, { now: '2026-06-19T00:11:00.000Z' });
+
+		expect(result.decision).toBe('quarantine');
+		expect(result.reason).toBe('stale_revision');
+		expect(result.projection).toBe(false);
+
+		// A stale_revision conflict row was persisted (byte-identical evaluator shape).
+		const conflicts = await driver.queryAll('SELECT * FROM kernel_conflicts WHERE entity_id = \'race-2\'', config);
+		expect(conflicts).toHaveLength(1);
+
+		// The event was rolled back — no event/outbox row leaked from the failed accept.
+		const events = await driver.queryAll('SELECT * FROM kernel_events WHERE idempotency_key = \'issue-update:race-2:cas\'', config);
+		expect(events).toHaveLength(0);
+	});
+
+	test('runIssueOperation surfaces a driver revision-conflict as a retryable conflict error', async () => {
+		// The user-facing mapping: a driver-detected CAS conflict (not just the
+		// evaluator's pre-read quarantine) must reach mapMutationResult as a RETRYABLE
+		// stale_revision error so the adapter can re-read and retry.
+		await broker.runIssueOperation(
+			'create', ['--id', 'race-3', '--title', 'Race3', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		const guarded = {
+			...driver,
+			async applyAcceptedIssueMutation() {
+				const error = new Error('kernel issue revision conflict');
+				error.kernelRevisionConflict = true;
+				error.entityId = 'race-3';
+				error.actualRevision = 2;
+				throw error;
+			},
+		};
+		const guardedBroker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: path.join(tmpDir, 'kernel.sqlite'),
+			driver: guarded,
+		});
+
+		const res = await guardedBroker.runIssueOperation('update', ['race-3', '--status', 'review'], { now: '2026-06-19T00:12:00.000Z', actor: 'tester' });
+
+		expect(res.ok).toBe(false);
+		expect(res.command).toBe('issue.update');
+		expect(res.error.retryable).toBe(true);
+		expect(res.error.code).toContain('STALE_REVISION');
+	});
+
+	test('claimed_by is derived from the active lease and cleared on release', async () => {
+		// rowToIssueSummary has no claimed_by column to read; the active kernel_claims
+		// lease is the authority. Claiming an issue must surface claimed_by=<actor> in
+		// show AND list; releasing must clear it back to null.
+		await broker.runIssueOperation(
+			'create', ['--id', 'claimable-1', '--title', 'Claim me', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		// Before any claim, claimed_by is null.
+		const beforeShow = await driver.issueOperation('show', ['claimable-1'], {}, config);
+		expect(beforeShow.data.claimed_by).toBeNull();
+
+		await broker.runIssueOperation(
+			'claim', ['--issue', 'claimable-1'], { now: '2026-06-19T00:20:00.000Z', actor: 'alice' },
+		);
+
+		const claimedShow = await driver.issueOperation('show', ['claimable-1'], {}, config);
+		expect(claimedShow.data.claimed_by).toBe('alice');
+
+		const listed = await driver.issueOperation('list', [], {}, config);
+		const listedIssue = listed.data.issues.find(issue => issue.id === 'claimable-1');
+		expect(listedIssue.claimed_by).toBe('alice');
+
+		await broker.runIssueOperation(
+			'release', ['--issue', 'claimable-1'], { now: '2026-06-19T00:21:00.000Z', actor: 'alice' },
+		);
+
+		const releasedShow = await driver.issueOperation('show', ['claimable-1'], {}, config);
+		expect(releasedShow.data.claimed_by).toBeNull();
+	});
 });
