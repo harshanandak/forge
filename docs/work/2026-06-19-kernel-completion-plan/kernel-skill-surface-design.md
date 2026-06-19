@@ -16,6 +16,7 @@ The **kernel surface** is an independent category of agent-facing skills + agent
 `EXISTS` = `forge` command implemented today (skill ships immediately). `MUST BUILD` = CLI must be implemented first.
 
 ### A — Issue Lifecycle (the core agent loop)
+
 | Skill | Wraps | CLI |
 |---|---|---|
 | ready / show / list / create | `forge ready` / `show <id>` / `list` / `create` | EXISTS |
@@ -26,6 +27,7 @@ The **kernel surface** is an independent category of agent-facing skills + agent
 | epic | `forge epic` | **MUST BUILD** — `epic` is a type today, no roll-up command |
 
 ### B — Memory / Knowledge (mirrors `bd remember`/`bd memories`)
+
 | Skill | Wraps | CLI |
 |---|---|---|
 | remember | `forge remember "<insight>"` | **MUST BUILD** — see §5 (signature + provenance + roadmap caveat) |
@@ -33,6 +35,7 @@ The **kernel surface** is an independent category of agent-facing skills + agent
 | knowledge-search | `forge knowledge search <q>` | **MUST BUILD (LAST)** — gated on FTS5 knowledge-index MVP (does not exist) |
 
 ### C — Board / Planning / Admin
+
 | Skill | Wraps | CLI |
 |---|---|---|
 | board / export / release-check | `forge board` / `forge export [--import]` / `forge release check --target` | EXISTS |
@@ -41,6 +44,7 @@ The **kernel surface** is an independent category of agent-facing skills + agent
 > One `export` skill documents both export and `--import` (no separate `forge import` command exists).
 
 ### D — Orientation / Session (mirrors `bd prime`)
+
 | Skill | Wraps | CLI |
 |---|---|---|
 | prime / orient / recap | `forge prime` / `forge orient` / `forge recap [issue]` | EXISTS |
@@ -58,7 +62,7 @@ Forge agent frontmatter convention (`.claude/agents/command-grader.md`) = `name`
 
 ## 4. Umbrella skill (critique fix #2 — the biggest miss)
 
-Add a **real, auto-surfacing** umbrella skill `.skills/kernel/SKILL.md` (neutral registry) mirroring `skills/beads/SKILL.md`: full frontmatter (`name: kernel`, `description`, `allowed-tools: Read, Bash(forge:*)`), body = decision table + session protocol + the 4-family command index. `skills sync` then propagates it to `.claude/skills/`, `.codex/skills/`, `.cursor/`, `.hermes/`. This is the skill that makes the surface discoverable — the per-skill files below are also `.skills/<name>/SKILL.md`, not bare slash-commands.
+Add a **real, auto-surfacing** umbrella skill `.skills/kernel/SKILL.md` (neutral registry) following the structure of an existing skill such as `skills/hermes-forge/SKILL.md` (Beads is a plugin/adapter, not a `skills/` entry): full frontmatter (`name: kernel`, `description`, `allowed-tools: Read, Bash(forge:*)`), body = decision table + session protocol + the 4-family command index. `skills sync` then propagates it to `.claude/skills/`, `.codex/skills/`, `.cursor/`, `.hermes/`. This is the skill that makes the surface discoverable — the per-skill files below are also `.skills/<name>/SKILL.md`, not bare slash-commands.
 
 ## 5. Memory: close the loop (critique fixes #3)
 
@@ -105,6 +109,7 @@ Forge has no `plugin.json`; adapt into existing `.claude/settings.json` (current
 Designed via grounded workflow (existing hooks + per-harness mechanisms) with an adversarial critique pass; blocking fixes folded in. Hooks honor the **observer/evidence rule** (record evidence/proposals, never silently mutate authority — `PD-20260606-observer-evidence-proposals`) and the **no-bypass rule** (no `LEFTHOOK=0`/`--no-verify`).
 
 ### 9.1 Kernel hook set
+
 | Hook | Event | Runs | Observer status |
 |---|---|---|---|
 | H1 prime-on-start | SessionStart | `forge prime --json`, inject as context | READ-only |
@@ -149,7 +154,7 @@ Alternatives considered: (2) keep default install + re-run `lefthook install` pe
 
 ## §10 — Forge-unique feature surface (beyond Beads parity)
 
-> **Honesty caveat (load-bearing):** the Kernel is **dormant by default** — `lib/forge-issues.js` `createIssueService` (~line 303; line 299 is `shouldUseKernelBroker`) routes issue ops to **Beads** unless `issueBackend=kernel`; the only live Kernel consumer is `forge export`. So `kernel-ready`/`kernel-claim` wrap CLI that delegates to Beads today; lease/readiness *enforcement* exists but is internal+dormant. We surface the **verbs** (the durable agent seam), not a claim that kernel enforcement is live.
+> **Honesty caveat (load-bearing):** the Kernel is **dormant by default** — `lib/forge-issues.js` `createIssueService` (line 302; line 298 is `shouldUseKernelBroker`) routes issue ops to **Beads** unless `issueBackend=kernel`; the only live Kernel consumer is `forge export`. So `kernel-ready`/`kernel-claim` wrap CLI that delegates to Beads today; lease/readiness *enforcement* exists but is internal+dormant. We surface the **verbs** (the durable agent seam), not a claim that kernel enforcement is live.
 
 Capabilities split **three ways** (avoids over-surfacing):
 
@@ -166,6 +171,7 @@ Conflict quarantine + evaluators (`evaluators.js`/`broker.js`), taxonomy validat
 **Critique fix #4 (audit):** confirm `forge export --import` is pure read-model reconstruction; if it writes authority, split `--import` behind the write-guard rather than presenting it as a thin "projection" skill.
 
 ## Combined build sequence
+
 | PR | Work |
 |---|---|
 | **L0 (self-hosting, parallel with A0)** | Worktree-proof git hooks (§9.4): `core.hooksPath` → `.forge/hooks/` delegating to Lefthook; `forge hooks doctor/install/sync`; `forge push`/`validate` gate on hook-active state. Independent of the skill surface; fixes the worktree Lefthook bug and gives Hermes its enforcement+export path. |
