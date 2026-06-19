@@ -10,6 +10,7 @@ describe('local Kernel broker guard ordering', () => {
 			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
 			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
 			driver: {
+				async exec() {},
 				async loadKernelEntity() {
 					return { entity_revision: 3 };
 				},
@@ -57,6 +58,7 @@ describe('local Kernel broker guard ordering', () => {
 			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
 			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
 			driver: {
+				async exec() {},
 				async loadKernelEntity() {
 					return { entity_revision: 2 };
 				},
@@ -115,6 +117,7 @@ describe('local Kernel broker guard ordering', () => {
 			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
 			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
 			driver: {
+				async exec() {},
 				async loadKernelEntity() {
 					return { entity_revision: 2 };
 				},
@@ -164,6 +167,7 @@ describe('local Kernel broker guard ordering', () => {
 			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
 			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
 			driver: {
+				async exec() {},
 				async loadKernelEntity() {
 					return { entity_revision: 0 };
 				},
@@ -226,6 +230,7 @@ describe('local Kernel broker guard ordering', () => {
 			projectRoot: path.join(os.tmpdir(), 'forge-worktree'),
 			gitCommonDir: path.join(os.tmpdir(), 'forge-common-dir'),
 			driver: {
+				async exec() {},
 				async loadKernelEntity() {
 					return { entity_revision: 0 };
 				},
