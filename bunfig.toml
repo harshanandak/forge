@@ -1,5 +1,9 @@
 [test]
-# Increase default test timeout from 5s to 15s
-# Some tests invoke bd CLI which requires Dolt server startup
+# NOTE: bun (as of 1.3.x) does NOT honor this `timeout` key — a plain `bun test`
+# falls back to bun's built-in 5000ms per-test default. The 15s budget is enforced
+# via an explicit `--timeout 15000` CLI flag on every `bun test` invocation
+# (package.json scripts, .github/workflows, scripts/*.js). This key is kept for
+# intent/forward-compat in case a future bun release starts honoring it.
+# (Some tests invoke the bd CLI, which requires Dolt server startup.)
 timeout = 15000
 concurrentTestGlob = "test/scripts/concurrent-*.test.js"

@@ -354,7 +354,7 @@ describe('scripts/test pre-push runner', () => {
       ...riskTargets,
     ]);
     expect(spawnSync.calls[1].command).toBe('bun');
-    expect(spawnSync.calls[1].args).toEqual(['test', 'test-env/']);
+    expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
   });
 
   test('runPrePushTests skips broad unit tests when only canonical command docs changed', () => {
@@ -412,7 +412,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].command).toBe('node');
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
     expect(spawnSync.calls[1].command).toBe('bun');
-    expect(spawnSync.calls[1].args).toEqual(['test', 'test/e2e/']);
+    expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test/e2e/']);
   });
 
   test('runLocalValidationTests reuses the same targeted runner path', () => {
