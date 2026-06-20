@@ -58,6 +58,13 @@ describe('Kernel issue command contract', () => {
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.required).toContain('next_commands');
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.required)
 			.toContain('revision');
+
+		// KAP-7: blocked/orphans reuse the issueList shape; stale adds threshold_days.
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.required).toContain('next_commands');
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.properties.data.properties.threshold_days)
+			.toEqual({ type: 'integer' });
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.properties.data.properties.issues.items)
+			.toBe(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items);
 	});
 
 	test('defines a stable error envelope and meaningful exit codes', () => {

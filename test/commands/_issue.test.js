@@ -67,6 +67,33 @@ describe('forge issue helpers', () => {
     }]);
   });
 
+  test('KAP-7 derived read aliases (blocked/stale/orphans) route to their kernel operations', async () => {
+    const calls = [];
+    const opts = {
+      useKernelBroker: true,
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ operation, args, projectRoot, deps });
+        return { ok: true, command: operation, data: { issues: [] } };
+      },
+    };
+
+    await makeAliasCommand('blocked').handler(['--json'], {}, '/repo', opts);
+    await makeAliasCommand('stale').handler(['--days', '7'], {}, '/repo', opts);
+    await makeAliasCommand('orphans').handler([], {}, '/repo', opts);
+
+    expect(calls.map(call => ({ operation: call.operation, args: call.args }))).toEqual([
+      { operation: 'blocked', args: ['--json'] },
+      { operation: 'stale', args: ['--days', '7'] },
+      { operation: 'orphans', args: [] },
+    ]);
+  });
+
+  test('KAP-7 read aliases map to Beads-compatible passthroughs', () => {
+    expect(buildBdArgs('blocked', ['--json'])).toEqual(['blocked', '--json']);
+    expect(buildBdArgs('stale', ['--days', '7'])).toEqual(['stale', '--days', '7']);
+    expect(buildBdArgs('orphans', [])).toEqual(['orphans']);
+  });
+
   test('buildBdArgs maps comment to bd comments add passthrough', () => {
     expect(buildBdArgs('comment', ['forge-abc', 'handoff note']))
       .toEqual(['comments', 'add', 'forge-abc', 'handoff note']);

@@ -262,3 +262,198 @@ describe('Kernel SQLite driver — list filters (KAP-6)', () => {
 		expect(res.data.count).toBe(0);
 	});
 });
+
+// KAP-7: derived read query `blocked` — issues whose readiness is blocked
+// (index.readinessById[id].blocked === true). Summaries are sorted like `list`
+// (rank asc, then id). ready/show/search/stats/list are untouched.
+describe('Kernel SQLite driver — blocked query (KAP-7)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap7-blocked-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		// b1 (rank 1) depends on b2 (open) → b1 is blocked. b2 and b3 are unblocked.
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,created_at,updated_at,entity_revision) VALUES
+				('b1','Blocked one','task','open',1,'${now}','${now}',0),
+				('b2','Open blocker','task','open',2,'${now}','${now}',0),
+				('b3','Free task','task','open',3,'${now}','${now}',0);`,
+			config,
+		);
+		await driver.exec(
+			`INSERT INTO kernel_dependencies (id,issue_id,blocks_issue_id,dependency_type,created_at) VALUES
+				('bd1','b1','b2','blocks','${now}');`,
+			config,
+		);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('blocked returns only issues whose readiness is blocked', async () => {
+		const res = await driver.issueOperation('blocked', [], {}, config);
+		expect(res.ok).toBe(true);
+		expect(res.schema_version).toBe('forge.issue.v1');
+		expect(res.command).toBe('issue.blocked');
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['b1']);
+		expect(res.data.count).toBe(1);
+		expect(res.data.issues[0].blocked).toBe(true);
+		expect(Array.isArray(res.next_commands)).toBe(true);
+	});
+});
+
+// KAP-7: derived read query `stale` — open/in_progress issues whose updated_at is
+// strictly older than (now - threshold_days). Default 14 days; --days <n> /
+// --days=<n> overrides (NaN/<=0 falls back to 14). now = context.now when present,
+// else new Date().toISOString(). Response carries threshold_days.
+describe('Kernel SQLite driver — stale query (KAP-7)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+	// 20 days before now → older than the 14-day default; clearly stale.
+	const old = '2026-05-31T00:00:00.000Z';
+	// 2 days before now → fresh under the default threshold.
+	const fresh = '2026-06-18T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap7-stale-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		// s1: old + open → stale. s2: old + in_progress → stale. s3: fresh + open →
+		// not stale. s4: old + done → excluded (terminal status). s5: old + review →
+		// excluded (review is not open/in_progress).
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,created_at,updated_at,entity_revision) VALUES
+				('s1','Old open','task','open',1,'${old}','${old}',0),
+				('s2','Old wip','task','in_progress',2,'${old}','${old}',0),
+				('s3','Fresh open','task','open',3,'${fresh}','${fresh}',0),
+				('s4','Old done','task','done',4,'${old}','${old}',0),
+				('s5','Old review','task','review',5,'${old}','${old}',0);`,
+			config,
+		);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('stale returns open/in_progress issues older than the 14-day default', async () => {
+		const res = await driver.issueOperation('stale', [], { now }, config);
+		expect(res.ok).toBe(true);
+		expect(res.schema_version).toBe('forge.issue.v1');
+		expect(res.command).toBe('issue.stale');
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['s1', 's2']);
+		expect(res.data.count).toBe(2);
+		expect(res.data.threshold_days).toBe(14);
+	});
+
+	test('--days <n> overrides the threshold', async () => {
+		// 30-day window → nothing 30+ days old, so the result is empty.
+		const res = await driver.issueOperation('stale', ['--days', '30'], { now }, config);
+		expect(res.data.issues).toEqual([]);
+		expect(res.data.threshold_days).toBe(30);
+	});
+
+	test('--days=<n> form is parsed the same as --days <n>', async () => {
+		// 1-day window → both old (20d) issues remain stale; the fresh (2d) one too.
+		const res = await driver.issueOperation('stale', ['--days=1'], { now }, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['s1', 's2', 's3']);
+		expect(res.data.threshold_days).toBe(1);
+	});
+
+	test('a non-positive/NaN --days value falls back to the 14-day default', async () => {
+		const res = await driver.issueOperation('stale', ['--days', 'notanumber'], { now }, config);
+		expect(res.data.threshold_days).toBe(14);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['s1', 's2']);
+	});
+});
+
+// KAP-7: derived read query `orphans` — issues touched by a DANGLING dependency
+// edge (a kernel_dependencies row whose issue_id OR blocks_issue_id references an
+// id absent from kernel_issues). Returns the affected EXISTING issues, deduped.
+// FK is enforced (PRAGMA foreign_keys=ON), so the fixture toggles it OFF to seed
+// the malformed edges the op is built to detect, then restores it.
+describe('Kernel SQLite driver — orphans query (KAP-7)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap7-orphans-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,created_at,updated_at,entity_revision) VALUES
+				('o1','Depends on missing','task','open',1,'${now}','${now}',0),
+				('o2','Blocked by ghost','task','open',2,'${now}','${now}',0),
+				('o3','Clean issue','task','open',3,'${now}','${now}',0),
+				('o4','Clean blocker','task','open',4,'${now}','${now}',0);`,
+			config,
+		);
+		// Toggle FK off to seed dangling edges, then restore ON for the assertions:
+		//   dd1: o1 (exists) → MISSING (absent)  → o1 is an orphan via issue_id
+		//   dd2: GHOST (absent) → o2 (exists)    → o2 is an orphan via blocks_issue_id
+		//   dd3: o3 (exists) → o4 (exists)       → clean edge, neither is an orphan
+		await driver.exec('PRAGMA foreign_keys=OFF;', config);
+		await driver.exec(
+			`INSERT INTO kernel_dependencies (id,issue_id,blocks_issue_id,dependency_type,created_at) VALUES
+				('dd1','o1','MISSING','blocks','${now}'),
+				('dd2','GHOST','o2','blocks','${now}'),
+				('dd3','o3','o4','blocks','${now}');`,
+			config,
+		);
+		await driver.exec('PRAGMA foreign_keys=ON;', config);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('orphans returns the existing issues attached to a dangling edge, deduped', async () => {
+		const res = await driver.issueOperation('orphans', [], {}, config);
+		expect(res.ok).toBe(true);
+		expect(res.schema_version).toBe('forge.issue.v1');
+		expect(res.command).toBe('issue.orphans');
+		// o1 (dangling via issue_id) and o2 (dangling via blocks_issue_id); o3/o4
+		// share a clean edge and are excluded. Sorted like list (rank asc).
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['o1', 'o2']);
+		expect(res.data.count).toBe(2);
+	});
+});
