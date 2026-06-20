@@ -67,6 +67,33 @@ describe('forge issue helpers', () => {
     }]);
   });
 
+  test('KAP-7 derived read aliases (blocked/stale/orphans) route to their kernel operations', async () => {
+    const calls = [];
+    const opts = {
+      useKernelBroker: true,
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ operation, args, projectRoot, deps });
+        return { ok: true, command: operation, data: { issues: [] } };
+      },
+    };
+
+    await makeAliasCommand('blocked').handler(['--json'], {}, '/repo', opts);
+    await makeAliasCommand('stale').handler(['--days', '7'], {}, '/repo', opts);
+    await makeAliasCommand('orphans').handler([], {}, '/repo', opts);
+
+    expect(calls.map(call => ({ operation: call.operation, args: call.args }))).toEqual([
+      { operation: 'blocked', args: ['--json'] },
+      { operation: 'stale', args: ['--days', '7'] },
+      { operation: 'orphans', args: [] },
+    ]);
+  });
+
+  test('KAP-7 read aliases map to Beads-compatible passthroughs', () => {
+    expect(buildBdArgs('blocked', ['--json'])).toEqual(['blocked', '--json']);
+    expect(buildBdArgs('stale', ['--days', '7'])).toEqual(['stale', '--days', '7']);
+    expect(buildBdArgs('orphans', [])).toEqual(['orphans']);
+  });
+
   test('buildBdArgs maps comment to bd comments add passthrough', () => {
     expect(buildBdArgs('comment', ['forge-abc', 'handoff note']))
       .toEqual(['comments', 'add', 'forge-abc', 'handoff note']);
@@ -158,10 +185,15 @@ describe('issue backend resolution from env/config', () => {
     });
 
     // The kernel contract {ok,data,...} is normalized into the {success,output}
-    // shape the CLI result printer understands.
+    // shape the CLI result printer understands. output preserves the FULL contract
+    // envelope (schema_version/command/data/next_commands) — see KAP-1.
     expect(result.success).toBe(true);
     expect(result.operation).toBe('create');
-    expect(JSON.parse(result.output)).toEqual({ id: 'k1' });
+    expect(JSON.parse(result.output)).toEqual({
+      command: 'create',
+      data: { id: 'k1' },
+      next_commands: [],
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0].operation).toBe('create');
     expect(calls[0].deps.issueBackend).toBe('kernel');
@@ -235,6 +267,30 @@ describe('issue backend resolution from env/config', () => {
     });
 
     expect(result).toEqual({ success: false, error: 'Issue nope not found' });
+  });
+
+  test('a kernel ok contract preserves the FULL envelope in output (KAP-1)', async () => {
+    const create = makeAliasCommand('create');
+
+    const result = await create.handler(['--title', 'X'], {}, '/repo', {
+      issueBackend: 'kernel',
+      env: {},
+      runIssueOperation: async () => ({
+        ok: true,
+        schema_version: 'forge.issue.v1',
+        command: 'issue.create',
+        data: { id: 'k1' },
+        next_commands: ['forge issue show k1 --json'],
+      }),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.operation).toBe('create');
+    const envelope = JSON.parse(result.output);
+    expect(envelope.schema_version).toBe('forge.issue.v1');
+    expect(envelope.command).toBe('issue.create');
+    expect(envelope.data).toEqual({ id: 'k1' });
+    expect(envelope.next_commands).toEqual(['forge issue show k1 --json']);
   });
 
   test('a Beads-shaped {success,output} result passes through unchanged', async () => {
@@ -313,5 +369,116 @@ describe('kernel create positional-title parity', () => {
 
     expect(calls[0].deps).not.toHaveProperty('issueBackend');
     expect(calls[0].operationArgs).toEqual(['my title']);
+  });
+});
+
+describe('kernel batch close (KAP-9)', () => {
+  // The kernel close op closes a single id (first positional). For parity with the
+  // Beads `bd close id1 id2 ...` passthrough, the CLI fans out one runner call per
+  // id on the KERNEL PATH ONLY and aggregates a single {success,output} result.
+  test('closes each id and aggregates success on the kernel path', async () => {
+    const calls = [];
+    const close = makeAliasCommand('close');
+
+    const result = await close.handler(['k1', 'k2'], {}, '/repo', {
+      issueBackend: 'kernel',
+      runIssueOperation: async (operation, args) => {
+        calls.push({ operation, args });
+        return { ok: true, command: operation, data: { id: args[0], revision: 1 } };
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ operation: 'close', args: ['k1'] });
+    expect(calls[1]).toEqual({ operation: 'close', args: ['k2'] });
+    expect(result.success).toBe(true);
+    expect(result.operation).toBe('close');
+    const summary = JSON.parse(result.output);
+    expect(summary).toHaveLength(2);
+    expect(summary[0].id).toBe('k1');
+    expect(summary[0].success).toBe(true);
+    expect(summary[1].id).toBe('k2');
+    expect(summary[1].success).toBe(true);
+  });
+
+  test('preserves trailing flags on each per-id kernel close call', async () => {
+    const calls = [];
+    const close = makeAliasCommand('close');
+
+    await close.handler(['k1', 'k2', '--reason', 'done'], {}, '/repo', {
+      issueBackend: 'kernel',
+      runIssueOperation: async (operation, args) => {
+        calls.push({ operation, args });
+        return { ok: true, command: operation, data: { id: args[0] } };
+      },
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ operation: 'close', args: ['k1', '--reason', 'done'] });
+    expect(calls[1]).toEqual({ operation: 'close', args: ['k2', '--reason', 'done'] });
+  });
+
+  test('aggregates a failure: success=false and lists the failing id', async () => {
+    const close = makeAliasCommand('close');
+
+    const result = await close.handler(['k1', 'k2'], {}, '/repo', {
+      issueBackend: 'kernel',
+      runIssueOperation: async (operation, args) => {
+        if (args[0] === 'k2') {
+          return { ok: false, command: operation, error: { message: 'Issue k2 not found' } };
+        }
+        return { ok: true, command: operation, data: { id: args[0] } };
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.operation).toBe('close');
+    const summary = JSON.parse(result.output);
+    expect(summary[0]).toEqual({ id: 'k1', success: true });
+    expect(summary[1]).toEqual({ id: 'k2', success: false, error: 'Issue k2 not found' });
+  });
+
+  test('a single kernel close id keeps the byte-identical envelope output', async () => {
+    const calls = [];
+    const close = makeAliasCommand('close');
+
+    const result = await close.handler(['k1'], {}, '/repo', {
+      issueBackend: 'kernel',
+      runIssueOperation: async (operation, args) => {
+        calls.push({ operation, args });
+        return {
+          ok: true,
+          schema_version: 'forge.issue.v1',
+          command: 'issue.close',
+          data: { id: 'k1', revision: 2 },
+          next_commands: [],
+        };
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ operation: 'close', args: ['k1'] });
+    expect(result.success).toBe(true);
+    expect(result.operation).toBe('close');
+    const envelope = JSON.parse(result.output);
+    expect(envelope.schema_version).toBe('forge.issue.v1');
+    expect(envelope.data).toEqual({ id: 'k1', revision: 2 });
+  });
+
+  test('the Beads path with multiple ids stays a single runner call', async () => {
+    const calls = [];
+    const close = makeAliasCommand('close');
+
+    const result = await close.handler(['k1', 'k2'], {}, '/repo', {
+      env: {},
+      runIssueOperation: async (operation, args) => {
+        calls.push({ operation, args });
+        return { success: true, operation, output: 'closed' };
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ operation: 'close', args: ['k1', 'k2'] });
+    expect(result).toEqual({ success: true, operation: 'close', output: 'closed' });
   });
 });
