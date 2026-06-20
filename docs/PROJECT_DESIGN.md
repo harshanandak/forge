@@ -557,6 +557,77 @@ conflicts_with: []
 
 **Current decision:** Forge-unique capabilities (claim leases, JSONL portability, readiness, planning buckets, etc.) are surfaced via a 3-way split: **surface-now** (live CLI → thin skills), **must-build** (`remember`/`recall`/`buckets`), and **internal — do NOT surface** (quarantine/evaluators/taxonomy-validation/broker/command-contract). Avoids exposing plumbing that would invite agents to hand-generate revisions/idempotency keys.
 
+### PD-20260620-kernel-storage-model-a
+
+```yaml
+id: PD-20260620-kernel-storage-model-a
+topic: authority.local.storage.home
+status: accepted
+decision_date: 2026-06-20
+adr: pending
+evidence:
+  - docs/work/2026-06-20-kernel-agent-parity/design.md#1-storage--model-a-per-user-home--track-c-later
+extends:
+  - PD-20260606-sqlite-local-authority
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** The live kernel DB lives in a per-user home `~/.forge/projects/<uuid>/kernel.sqlite` with a central `~/.forge/registry.json`, a committed `<repo>/.forge/project.json` UUID marker for stable identity, and an opt-in committable JSONL projection (`issues.jsonl`) as the share-or-not knob. Chosen over in-repo `.forge/` (B) and today's `.git/forge/` (C) because only a central home makes a multi-project frontend natural. This is **track C** (own design + implementation later).
+
+**Implications:**
+
+- Live binary DB is never pushed; sharing is via the JSONL projection only.
+- Config splits: shared/team config committed in-repo; personal config + live data central.
+- Fresh clone registers on first `forge` run from the committed UUID marker, optionally seeding from `issues.jsonl`.
+- Enables a `forge serve` daemon + localhost web/desktop frontend over the same broker.
+
+### PD-20260620-cli-agent-first-rendering
+
+```yaml
+id: PD-20260620-cli-agent-first-rendering
+topic: cli.rendering
+status: accepted
+decision_date: 2026-06-20
+adr: pending
+evidence:
+  - docs/work/2026-06-20-kernel-agent-parity/design.md#2-cli-rendering--agent-first
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** The issue CLI is rendered **agent-first**, not human-first. Skip pretty human tables (agents read JSON + summarize; the future frontend covers direct visual use). Invest instead in making the CLI more agent-friendly — preserve the full contract envelope (`schema_version` + `next_commands`) through the CLI boundary, always-on.
+
+**Implications:**
+
+- No effort spent on CLI table/color formatting.
+- `normalizeIssueResult` must stop flattening the kernel envelope (KAP-1).
+- The frontend (track C) is the human-render layer.
+
+### PD-20260620-kernel-agent-parity-backlog
+
+```yaml
+id: PD-20260620-kernel-agent-parity-backlog
+topic: parity.kernel-beads
+status: accepted
+decision_date: 2026-06-20
+adr: pending
+evidence:
+  - docs/work/2026-06-20-kernel-agent-parity/design.md#3-dont-clone-beads-wholesale--kernel-agent-parity-kap-backlog
+extends:
+  - PD-20260611-agent-interface-parity
+supersedes: []
+conflicts_with: []
+```
+
+**Current decision:** Close agent-facing gaps vs Beads selectively (epic KAP-0, 12 tasks, 3 waves) rather than cloning Beads wholesale. Wave 1 = KAP-1,2,6,7,9 (envelope, projection enrichment, list filters, derived queries, batch close). Deferred: defer/supersede/human/doctor/remember/formula. Backlog is filed into the kernel itself (dogfood).
+
+**Implications:**
+
+- Output projection (`rowToIssueSummary`) and `ISSUE_SUMMARY_SCHEMA` gain parent_id/dependencies/labels/priority/created_at — projection additions, not new storage.
+- Wave 1 tasks share files (`sqlite-driver.js`, `issue-command-contract.js`, `_issue.js`) → implement sequentially, KAP-2 first.
+- Beads `dolt push/pull/sync` is not a parity gap — it is the JSONL-projection model (PD-20260620-kernel-storage-model-a).
+
 ## Registry update rules
 
 ### When to update this file
