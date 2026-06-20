@@ -299,6 +299,28 @@ describe('forge issue service contract', () => {
     }]);
   });
 
+  test('create args (incl. a mapped --title) reach the Kernel broker verbatim', async () => {
+    // The positional→--title mapping lives in the command layer (_issue.js); this
+    // layer is a faithful passthrough. Assert the already-resolved create args —
+    // including the injected --title — reach the broker untouched, so the mapped
+    // title is honored end-to-end.
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const calls = [];
+
+    const result = await runIssueOperation('create', ['--title', 'my title', '--type', 'task'], '/repo', {
+      useKernelBroker: true,
+      createKernelBroker: () => ({
+        async runIssueOperation(operation, args) {
+          calls.push({ operation, args });
+          return { ok: true, data: { id: 'k1', title: 'my title' } };
+        },
+      }),
+    });
+
+    expect(result).toEqual({ ok: true, data: { id: 'k1', title: 'my title' } });
+    expect(calls).toEqual([{ operation: 'create', args: ['--title', 'my title', '--type', 'task'] }]);
+  });
+
   test('default beads backend rejects issue operations when beads is not initialized', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
 
@@ -788,5 +810,94 @@ describe('forge issue service contract', () => {
       stderr: '',
     });
     expect(calls).toEqual(['C:\\tools\\bd.cmd', 'bd.exe']);
+  });
+});
+
+describe('runIssueOperation kernel auto-init', () => {
+  function makeKernelDeps() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-kernel-db-'));
+    const gitCommonDir = path.join(dir, '.git');
+    fs.mkdirSync(gitCommonDir, { recursive: true });
+    return {
+      dir,
+      deps: {
+        issueBackend: 'kernel',
+        gitCommonDir,
+        kernelDatabasePath: path.join(gitCommonDir, 'forge', 'kernel.sqlite'),
+      },
+    };
+  }
+
+  test('auto-initializes a fresh kernel DB and round-trips create -> ready', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const { dir, deps } = makeKernelDeps();
+
+    try {
+      const created = await runIssueOperation(
+        'create',
+        ['--title', 'Kernel dogfood smoke', '--type', 'task'],
+        dir,
+        deps,
+      );
+      expect(created.ok).toBe(true);
+      expect(typeof created.data.id).toBe('string');
+
+      const ready = await runIssueOperation('ready', [], dir, deps);
+      expect(ready.ok).toBe(true);
+      const ids = ready.data.issues.map((issue) => issue.id);
+      expect(ids).toContain(created.data.id);
+    } finally {
+      // Best-effort temp cleanup. The builtin SQLite driver holds the DB file open
+      // for the process lifetime, so on Windows rmSync can hit EBUSY/EPERM during
+      // teardown. The DB round-trip above is the assertion under test; a locked-file
+      // cleanup failure must not mask it, and never re-throws from finally.
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // ignore: temp dir is reclaimed by the OS; cleanup is not the assertion.
+      }
+    }
+  }, 20000);
+
+  test('lazily initializes the broker only once across multiple operations', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    let initializeCalls = 0;
+    const ops = [];
+    const sharedBroker = {
+      async initialize() {
+        initializeCalls += 1;
+        return { success: true };
+      },
+      async runIssueOperation(operation, args, context) {
+        ops.push({ operation, args, context });
+        return { ok: true, command: operation, data: {} };
+      },
+    };
+
+    const deps = {
+      issueBackend: 'kernel',
+      kernelBroker: sharedBroker,
+    };
+
+    await runIssueOperation('create', ['--title', 'x'], '/repo', deps);
+    await runIssueOperation('ready', [], '/repo', deps);
+
+    expect(initializeCalls).toBe(1);
+    expect(ops.map((op) => op.operation)).toEqual(['create', 'ready']);
+  });
+
+  test('does not require initialize() on injected brokers that lack it', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+
+    const result = await runIssueOperation('ready', [], '/repo', {
+      useKernelBroker: true,
+      createKernelBroker: () => ({
+        async runIssueOperation(operation) {
+          return { ok: true, command: operation, data: { issues: [] } };
+        },
+      }),
+    });
+
+    expect(result).toEqual({ ok: true, command: 'ready', data: { issues: [] } });
   });
 });
