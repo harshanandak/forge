@@ -143,3 +143,91 @@ describe('forge issue helpers', () => {
     });
   });
 });
+
+describe('issue backend resolution from env/config', () => {
+  test('FORGE_ISSUE_BACKEND=kernel injects issueBackend into the runner deps', async () => {
+    const calls = [];
+    const create = makeAliasCommand('create');
+
+    const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
+      env: { FORGE_ISSUE_BACKEND: 'kernel' },
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ operation, args, projectRoot, deps });
+        return { ok: true, command: operation, data: { id: 'k1' } };
+      },
+    });
+
+    // The kernel contract {ok,data,...} is normalized into the {success,output}
+    // shape the CLI result printer understands.
+    expect(result.success).toBe(true);
+    expect(result.operation).toBe('create');
+    expect(JSON.parse(result.output)).toEqual({ id: 'k1' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].operation).toBe('create');
+    expect(calls[0].deps.issueBackend).toBe('kernel');
+  });
+
+  test('no backend signal leaves opts untouched and routes through beads', async () => {
+    const calls = [];
+    const create = makeAliasCommand('create');
+
+    const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
+      env: {},
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ operation, args, projectRoot, deps });
+        return { success: true, operation };
+      },
+    });
+
+    expect(result).toEqual({ success: true, operation: 'create' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].deps).not.toHaveProperty('issueBackend');
+  });
+
+  test('an explicit opts.issueBackend is preserved (not overwritten by the resolver)', async () => {
+    const calls = [];
+    const ready = makeAliasCommand('ready');
+
+    await ready.handler([], {}, '/repo', {
+      issueBackend: 'kernel',
+      env: { FORGE_ISSUE_BACKEND: 'beads' },
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ deps });
+        return { ok: true, command: operation, data: { issues: [] } };
+      },
+    });
+
+    expect(calls[0].deps.issueBackend).toBe('kernel');
+  });
+
+  test('a kernel error contract is normalized into a {success:false,error} result', async () => {
+    const show = makeAliasCommand('show');
+
+    const result = await show.handler(['nope'], {}, '/repo', {
+      issueBackend: 'kernel',
+      env: {},
+      runIssueOperation: async (operation) => ({
+        ok: false,
+        command: operation,
+        error: { code: 'FORGE_ISSUE_NOT_FOUND', message: 'Issue nope not found', exit_code: 4, retryable: false },
+        next_commands: [],
+      }),
+    });
+
+    expect(result).toEqual({ success: false, error: 'Issue nope not found' });
+  });
+
+  test('a Beads-shaped {success,output} result passes through unchanged', async () => {
+    // `create` is a write subcommand, so it always routes through the shared
+    // runner — letting us assert the normalizer leaves a {success,output} result
+    // byte-identical (only the contract {ok,...} shape is transformed).
+    const create = makeAliasCommand('create');
+
+    const result = await create.handler(['--title', 'X'], {}, '/repo', {
+      env: {},
+      runIssueOperation: async (operation) => ({ success: true, operation, output: 'created', stderr: '' }),
+    });
+
+    expect(result).toEqual({ success: true, operation: 'create', output: 'created', stderr: '' });
+  });
+});
