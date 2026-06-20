@@ -190,6 +190,69 @@ describe('Kernel SQLite driver — enriched issue projection (KAP-2)', () => {
 	});
 });
 
+// KAP-3: `show` surfaces the issue's comments (the list/ready/search/stats reads do
+// NOT). Comments are loaded from kernel_comments ordered created_at ASC, id ASC and
+// mapped to { id, body, actor, created_at }. The contract field is optional, so list
+// summaries (which never carry comments) still validate.
+describe('Kernel SQLite driver — comments in show (KAP-3)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap3-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		// Insert the issue first (kernel_comments.issue_id references it), then two
+		// comments with distinct created_at so the ASC sort is actually exercised.
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,created_at,updated_at,entity_revision) VALUES
+				('k1','Has comments','task','open',0,'${now}','${now}',0);`,
+			config,
+		);
+		await driver.exec(
+			`INSERT INTO kernel_comments (id,issue_id,body,actor,visibility,created_at) VALUES
+				('cm2','k1','second note','bob','public','2026-06-20T00:00:02.000Z'),
+				('cm1','k1','first note','alice','public','2026-06-20T00:00:01.000Z');`,
+			config,
+		);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('show returns the issue comments in created_at order with body and actor', async () => {
+		const res = await driver.issueOperation('show', ['k1'], {}, config);
+		expect(res.ok).toBe(true);
+		expect(Array.isArray(res.data.comments)).toBe(true);
+		expect(res.data.comments).toHaveLength(2);
+		// Inserted out of order; created_at ASC must put the earlier note first.
+		expect(res.data.comments[0]).toMatchObject({ id: 'cm1', body: 'first note', actor: 'alice' });
+		expect(res.data.comments[1]).toMatchObject({ id: 'cm2', body: 'second note', actor: 'bob' });
+		expect(res.data.comments[0].created_at).toBe('2026-06-20T00:00:01.000Z');
+		expect(res.data.comments[1].created_at).toBe('2026-06-20T00:00:02.000Z');
+	});
+
+	test('list summaries do NOT carry a comments key', async () => {
+		const res = await driver.issueOperation('list', [], {}, config);
+		const k1 = res.data.issues.find(issue => issue.id === 'k1');
+		expect(k1).toBeDefined();
+		expect(k1.comments).toBeUndefined();
+	});
+});
+
 // KAP-6: server-side `list` filters. The list op accepts --status / --type / --label
 // (both `--flag value` and `--flag=value` forms). status/type are exact-match; --label
 // keeps issues whose labels[] INCLUDES the value. Multiple filters AND together; an
