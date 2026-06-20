@@ -179,3 +179,86 @@ describe('Kernel SQLite driver — enriched issue projection (KAP-2)', () => {
 		expect(c1.created_at).toBe(now);
 	});
 });
+
+// KAP-6: server-side `list` filters. The list op accepts --status / --type / --label
+// (both `--flag value` and `--flag=value` forms). status/type are exact-match; --label
+// keeps issues whose labels[] INCLUDES the value. Multiple filters AND together; an
+// absent filter does not constrain that dimension; an unknown value matches nothing.
+// Only `list` is filtered — ready/show/search/stats are untouched.
+describe('Kernel SQLite driver — list filters (KAP-6)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap6-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		// Discriminating fixture so each filter excludes at least one row:
+		//   f1 open  task  [backend,api]  → kept by --status open, --type task, --label backend
+		//   f2 open  bug   [frontend]     → dropped by --type task and --label backend
+		//   f3 done  task  [backend]      → dropped by --status open; has backend label
+		//   f4 open  task  []             → dropped by --label backend
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,labels,created_at,updated_at,entity_revision) VALUES
+				('f1','Alpha','task','open',1,'["backend","api"]','${now}','${now}',0),
+				('f2','Beta','bug','open',2,'["frontend"]','${now}','${now}',0),
+				('f3','Gamma','task','done',3,'["backend"]','${now}','${now}',0),
+				('f4','Delta','task','open',4,NULL,'${now}','${now}',0);`,
+			config,
+		);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('no filters returns every issue', async () => {
+		const res = await driver.issueOperation('list', [], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f2', 'f3', 'f4']);
+		expect(res.data.count).toBe(4);
+	});
+
+	test('--status open keeps only open issues', async () => {
+		const res = await driver.issueOperation('list', ['--status', 'open'], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f2', 'f4']);
+		expect(res.data.count).toBe(3);
+	});
+
+	test('--type bug keeps only bugs', async () => {
+		const res = await driver.issueOperation('list', ['--type', 'bug'], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f2']);
+	});
+
+	test('--label backend keeps only issues whose labels include backend', async () => {
+		const res = await driver.issueOperation('list', ['--label', 'backend'], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f3']);
+	});
+
+	test('the --flag=value form is parsed the same as --flag value', async () => {
+		const res = await driver.issueOperation('list', ['--status=open'], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f2', 'f4']);
+	});
+
+	test('--status open --type task ANDs both filters', async () => {
+		const res = await driver.issueOperation('list', ['--status', 'open', '--type', 'task'], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f4']);
+	});
+
+	test('an unknown filter value matches nothing', async () => {
+		const res = await driver.issueOperation('list', ['--status', 'nonexistent'], {}, config);
+		expect(res.data.issues).toEqual([]);
+		expect(res.data.count).toBe(0);
+	});
+});
