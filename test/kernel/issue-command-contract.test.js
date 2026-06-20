@@ -62,6 +62,13 @@ describe('Kernel issue command contract', () => {
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.required)
 			.toContain('revision');
 
+		// KAP-8: close adds an OPTIONAL newly_unblocked string[]; it must be declared in
+		// properties but NOT required, so non-close mutation responses still validate.
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.properties.newly_unblocked)
+			.toEqual({ type: 'array', items: { type: 'string' } });
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.required)
+			.not.toContain('newly_unblocked');
+
 		// KAP-7: blocked/orphans reuse the issueList shape; stale adds threshold_days.
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.required).toContain('next_commands');
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.properties.data.properties.threshold_days)
