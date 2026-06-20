@@ -200,6 +200,26 @@ describe('issue backend resolution from env/config', () => {
     expect(calls[0].deps.issueBackend).toBe('kernel');
   });
 
+  test('an explicit opts.issueBackend is run through the resolver (case-normalized)', async () => {
+    const calls = [];
+    const ready = makeAliasCommand('ready');
+
+    await ready.handler([], {}, '/repo', {
+      issueBackend: 'KERNEL',
+      env: {},
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ deps });
+        return { ok: true, command: operation, data: { issues: [] } };
+      },
+    });
+
+    // 'KERNEL' is normalized to 'kernel' and routed to the broker. An early bypass
+    // of the resolver would leave it raw, and shouldUseKernelBroker's exact
+    // `=== 'kernel'` check would misroute the op to Beads.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].deps.issueBackend).toBe('kernel');
+  });
+
   test('a kernel error contract is normalized into a {success:false,error} result', async () => {
     const show = makeAliasCommand('show');
 
