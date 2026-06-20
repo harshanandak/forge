@@ -261,6 +261,12 @@ describe('Kernel SQLite driver — list filters (KAP-6)', () => {
 		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f2', 'f4']);
 	});
 
+	test('an empty --flag= value is treated as missing (no constraint)', async () => {
+		const res = await driver.issueOperation('list', ['--status='], {}, config);
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f2', 'f3', 'f4']);
+		expect(res.data.count).toBe(4);
+	});
+
 	test('--status open --type task ANDs both filters', async () => {
 		const res = await driver.issueOperation('list', ['--status', 'open', '--type', 'task'], {}, config);
 		expect(res.data.issues.map(issue => issue.id)).toEqual(['f1', 'f4']);
