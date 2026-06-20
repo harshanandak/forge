@@ -82,6 +82,31 @@ describe('Kernel SQLite driver — dependencies + claims via guarded path (Wave 
 		expect(shown.data.blocked).toBe(true);
 	});
 
+	test('dep.add resolves endpoints from positional args (the documented CLI form)', async () => {
+		await createIssue('pos-a', 'Dependent');
+		await createIssue('pos-b', 'Blocker');
+
+		// Positional form: `forge issue dep add <issue-id> <blocks-issue-id>` with no
+		// --issue/--blocks flags. Previously this left issue_id undefined and the
+		// dependency INSERT failed with "cannot be bound to SQLite parameter 2".
+		const added = await broker.runIssueOperation(
+			'dep.add',
+			['pos-a', 'pos-b'],
+			{ now, actor: 'tester' },
+		);
+
+		expect(added.ok).toBe(true);
+		expect(added.command).toBe('issue.dep.add');
+
+		const rows = await driver.queryAll('SELECT * FROM kernel_dependencies', config);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].issue_id).toBe('pos-a');
+		expect(rows[0].blocks_issue_id).toBe('pos-b');
+
+		const ready = await driver.issueOperation('ready', [], { now }, config);
+		expect(ready.data.issues.map(issue => issue.id)).not.toContain('pos-a');
+	});
+
 	test('dep.remove deletes the dependency row and restores the dependent to ready', async () => {
 		await createIssue('rem-a', 'Dependent');
 		await createIssue('rem-b', 'Blocker');
