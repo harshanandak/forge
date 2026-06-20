@@ -101,3 +101,81 @@ describe('Kernel SQLite driver — issueOperation reads (Wave 1)', () => {
 		await expect(driver.issueOperation('create', ['x'], {}, config)).rejects.toThrow(/not implemented yet/);
 	});
 });
+
+// KAP-2: enrich the issue output projection. parent_id, priority (label),
+// created_at, labels[] and dependencies[] are all stored already — surface them
+// through rowToIssueSummary so agents see the full shape, not just rank/blocked.
+describe('Kernel SQLite driver — enriched issue projection (KAP-2)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap2-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority,priority_rank,parent_id,labels,created_at,updated_at,entity_revision) VALUES
+				('p1','Parent epic','epic','open','P1',0,NULL,NULL,'${now}','${now}',0),
+				('c1','Child task','task','open','P2',1,'p1','["backend","api"]','${now}','${now}',0),
+				('b1','Blocker','task','open','P3',2,NULL,NULL,'${now}','${now}',0);`,
+			config,
+		);
+		// c1 depends on b1 (b1 blocks c1) — so c1 lists b1 as a dependency and is blocked.
+		await driver.exec(
+			`INSERT INTO kernel_dependencies (id,issue_id,blocks_issue_id,dependency_type,created_at) VALUES
+				('e1','c1','b1','blocks','${now}');`,
+			config,
+		);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('show surfaces parent_id, priority, created_at, labels and dependencies', async () => {
+		const res = await driver.issueOperation('show', ['c1'], {}, config);
+		expect(res.ok).toBe(true);
+		expect(res.data).toMatchObject({
+			id: 'c1',
+			parent_id: 'p1',
+			priority: 'P2',
+			created_at: now,
+			labels: ['backend', 'api'],
+			dependencies: ['b1'],
+			blocked: true,
+		});
+	});
+
+	test('a parentless, label-less, dependency-free issue yields null parent_id and empty arrays', async () => {
+		const res = await driver.issueOperation('show', ['p1'], {}, config);
+		expect(res.data).toMatchObject({
+			id: 'p1',
+			parent_id: null,
+			priority: 'P1',
+			labels: [],
+			dependencies: [],
+		});
+	});
+
+	test('list carries the enriched fields for every issue', async () => {
+		const res = await driver.issueOperation('list', [], {}, config);
+		const c1 = res.data.issues.find(issue => issue.id === 'c1');
+		expect(c1.parent_id).toBe('p1');
+		expect(c1.priority).toBe('P2');
+		expect(c1.labels).toEqual(['backend', 'api']);
+		expect(c1.dependencies).toEqual(['b1']);
+		expect(c1.created_at).toBe(now);
+	});
+});
