@@ -299,6 +299,28 @@ describe('forge issue service contract', () => {
     }]);
   });
 
+  test('create args (incl. a mapped --title) reach the Kernel broker verbatim', async () => {
+    // The positional→--title mapping lives in the command layer (_issue.js); this
+    // layer is a faithful passthrough. Assert the already-resolved create args —
+    // including the injected --title — reach the broker untouched, so the mapped
+    // title is honored end-to-end.
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const calls = [];
+
+    const result = await runIssueOperation('create', ['--title', 'my title', '--type', 'task'], '/repo', {
+      useKernelBroker: true,
+      createKernelBroker: () => ({
+        async runIssueOperation(operation, args) {
+          calls.push({ operation, args });
+          return { ok: true, data: { id: 'k1', title: 'my title' } };
+        },
+      }),
+    });
+
+    expect(result).toEqual({ ok: true, data: { id: 'k1', title: 'my title' } });
+    expect(calls).toEqual([{ operation: 'create', args: ['--title', 'my title', '--type', 'task'] }]);
+  });
+
   test('default beads backend rejects issue operations when beads is not initialized', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
 

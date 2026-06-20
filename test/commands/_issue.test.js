@@ -231,3 +231,67 @@ describe('issue backend resolution from env/config', () => {
     expect(result).toEqual({ success: true, operation: 'create', output: 'created', stderr: '' });
   });
 });
+
+describe('kernel create positional-title parity', () => {
+  // Beads accepts `forge create "title"` (positional); the Kernel create payload
+  // reads only --title. On the KERNEL PATH ONLY, a single leading bare positional
+  // is translated to `--title <value>` so the title isn't dropped.
+  function captureKernelCreate(args, extraOpts = {}) {
+    const calls = [];
+    const create = makeAliasCommand('create');
+    return create
+      .handler(args, {}, '/repo', {
+        issueBackend: 'kernel',
+        runIssueOperation: async (operation, operationArgs, projectRoot, deps) => {
+          calls.push({ operation, operationArgs, projectRoot, deps });
+          return { ok: true, data: { id: 'k1', revision: 0 } };
+        },
+        ...extraOpts,
+      })
+      .then(() => calls);
+  }
+
+  test('a leading positional title is mapped to --title for the kernel', async () => {
+    const calls = await captureKernelCreate(['my title', '--type', 'task']);
+
+    expect(calls[0].operation).toBe('create');
+    expect(calls[0].operationArgs).toEqual(['--title', 'my title', '--type', 'task']);
+  });
+
+  test('an explicit --title is never double-injected', async () => {
+    const calls = await captureKernelCreate(['--title', 'X', '--type', 'task']);
+
+    expect(calls[0].operationArgs).toEqual(['--title', 'X', '--type', 'task']);
+  });
+
+  test('an explicit --title= form is also left untouched', async () => {
+    const calls = await captureKernelCreate(['--title=X', '--type', 'task']);
+
+    expect(calls[0].operationArgs).toEqual(['--title=X', '--type', 'task']);
+  });
+
+  test('a flag-first invocation never mistakes a flag value for the title', async () => {
+    const calls = await captureKernelCreate(['--type', 'task']);
+
+    // No leading positional → no --title injected; `task` stays the --type value.
+    expect(calls[0].operationArgs).toEqual(['--type', 'task']);
+  });
+
+  test('the Beads path keeps its native positional handling (no injection)', async () => {
+    // `create` is a write subcommand, so it routes through the shared runner even
+    // for Beads — letting us assert the positional is passed through verbatim with
+    // NO --title injection (the mapping is kernel-path-only).
+    const calls = [];
+    const create = makeAliasCommand('create');
+    await create.handler(['my title'], {}, '/repo', {
+      env: {},
+      runIssueOperation: async (operation, operationArgs, projectRoot, deps) => {
+        calls.push({ operation, operationArgs, deps });
+        return { success: true, operation, output: 'created', stderr: '' };
+      },
+    });
+
+    expect(calls[0].deps).not.toHaveProperty('issueBackend');
+    expect(calls[0].operationArgs).toEqual(['my title']);
+  });
+});
