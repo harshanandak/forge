@@ -178,6 +178,16 @@ describe('Kernel SQLite driver — enriched issue projection (KAP-2)', () => {
 		expect(c1.dependencies).toEqual(['b1']);
 		expect(c1.created_at).toBe(now);
 	});
+
+	test('read responses carry catalog next_commands, with the id substituted for single-issue ops', async () => {
+		// show resolves a single issue, so <id> binds to the concrete id (runnable hints).
+		const shown = await driver.issueOperation('show', ['c1'], {}, config);
+		expect(shown.next_commands).toEqual(['forge claim c1', 'forge issue comment c1 "<note>"']);
+
+		// Multi-issue responses keep the <id> template (no single id to bind).
+		const list = await driver.issueOperation('list', [], {}, config);
+		expect(list.next_commands).toEqual(['forge issue show <id> --json', 'forge issue search <query> --json']);
+	});
 });
 
 // KAP-6: server-side `list` filters. The list op accepts --status / --type / --label
