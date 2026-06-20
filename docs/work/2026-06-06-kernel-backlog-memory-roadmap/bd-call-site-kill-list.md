@@ -9,7 +9,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 120 | 11 |
 | runtime | 343 | 47 |
-| docs | 435 | 67 |
+| docs | 436 | 67 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
 
@@ -185,8 +185,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 10 (bd), 80 (bd), 81 (bd, dolt), 85 (dolt), 109 (dolt)
 - [ ] docs/guides/SUPPORT.md (26)
   - lines: 18 (bd), 19 (bd, dolt), 23 (bd), 53 (dolt), 58 (dolt), 60 (.beads), 66 (bd), 67 (bd, dolt), 68 (bd, dolt), 69 (bd, dolt), 72 (.beads, dolt), 76 (.beads), 78 (bd), 79 (.beads), 80 (.beads), 81 (bd, dolt), 85 (dolt), 87 (.beads), 93 (bd), 94 (bd, dolt), 119 (dolt), 131 (.beads), 144 (.beads), 152 (.beads), 158 (.beads), 165 (.beads)
-- [ ] docs/PROJECT_DESIGN.md (19)
-  - lines: 20 (dolt), 29 (.beads), 47 (dolt), 59 (dolt), 61 (dolt), 64 (dolt), 65 (.beads, dolt), 72 (dolt), 78 (dolt), 309 (dolt), 312 (dolt), 337 (dolt), 338 (.beads), 339 (dolt), 404 (bd), 407 (bd), 408 (.beads), 414 (bd), 420 (bd, dolt)
+- [ ] docs/PROJECT_DESIGN.md (20)
+  - lines: 20 (dolt), 29 (.beads), 47 (dolt), 59 (dolt), 61 (dolt), 64 (dolt), 65 (.beads, dolt), 72 (dolt), 78 (dolt), 309 (dolt), 312 (dolt), 337 (dolt), 338 (.beads), 339 (dolt), 404 (bd), 407 (bd), 408 (.beads), 414 (bd), 420 (bd, dolt), 629 (dolt)
 - [ ] docs/reference/ADAPTERS.md (2)
   - lines: 16 (bd), 20 (bd)
 - [ ] docs/reference/agent-permissions.md (3)
