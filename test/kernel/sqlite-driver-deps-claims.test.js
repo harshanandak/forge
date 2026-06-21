@@ -133,6 +133,50 @@ describe('Kernel SQLite driver — dependencies + claims via guarded path (Wave 
 		expect(readyIds).toContain('rem-a');
 	});
 
+	// KAP-8: closing a blocker surfaces the dependents that become ready.
+	test('close surfaces newly_unblocked dependents whose only blocker is now done', async () => {
+		// B depends on A (issue_id=B, blocks_issue_id=A) → B is blocked while A is open.
+		await createIssue('unb-a', 'Blocker');
+		await createIssue('unb-b', 'Dependent');
+		await broker.runIssueOperation(
+			'dep.add', ['--issue', 'unb-b', '--blocks', 'unb-a'], { now, actor: 'tester' },
+		);
+
+		// B is blocked before the close.
+		const before = await driver.issueOperation('ready', [], { now }, config);
+		expect(before.data.issues.map(i => i.id)).not.toContain('unb-b');
+
+		const closed = await broker.runIssueOperation(
+			'close', ['unb-a'], { now: '2026-06-20T00:02:00.000Z', actor: 'tester' },
+		);
+
+		expect(closed.ok).toBe(true);
+		expect(closed.command).toBe('issue.close');
+		// A is done → B's only blocker is terminal → B flips to ready.
+		expect(closed.data.newly_unblocked).toEqual(['unb-b']);
+	});
+
+	test('close newly_unblocked omits dependents that still have another open blocker', async () => {
+		// C depends on BOTH A and another open issue D — closing A alone must NOT unblock C.
+		await createIssue('two-a', 'BlockerA');
+		await createIssue('two-d', 'BlockerD');
+		await createIssue('two-c', 'Dependent');
+		await broker.runIssueOperation(
+			'dep.add', ['--issue', 'two-c', '--blocks', 'two-a'], { now, actor: 'tester' },
+		);
+		await broker.runIssueOperation(
+			'dep.add', ['--issue', 'two-c', '--blocks', 'two-d'], { now: '2026-06-20T00:01:00.000Z', actor: 'tester' },
+		);
+
+		const closed = await broker.runIssueOperation(
+			'close', ['two-a'], { now: '2026-06-20T00:02:00.000Z', actor: 'tester' },
+		);
+
+		expect(closed.ok).toBe(true);
+		// D is still open, so C stays blocked → not newly unblocked.
+		expect(closed.data.newly_unblocked).toEqual([]);
+	});
+
 	test('dep.add closing a cycle quarantines as dependency_cycle and writes no edge', async () => {
 		await createIssue('cyc-a');
 		await createIssue('cyc-b');

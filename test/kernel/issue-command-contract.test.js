@@ -62,12 +62,40 @@ describe('Kernel issue command contract', () => {
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.required)
 			.toContain('revision');
 
+		// KAP-8: close adds an OPTIONAL newly_unblocked string[]; it must be declared in
+		// properties but NOT required, so non-close mutation responses still validate.
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.properties.newly_unblocked)
+			.toEqual({ type: 'array', items: { type: 'string' } });
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.mutation.properties.data.required)
+			.not.toContain('newly_unblocked');
+
 		// KAP-7: blocked/orphans reuse the issueList shape; stale adds threshold_days.
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.required).toContain('next_commands');
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.properties.data.properties.threshold_days)
 			.toEqual({ type: 'integer' });
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.properties.data.properties.issues.items)
 			.toBe(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items);
+	});
+
+	test('KAP-3: issue summary schema declares an optional comments array', () => {
+		const { ISSUE_COMMAND_RESPONSE_SCHEMAS } = require('../../lib/kernel/issue-command-contract');
+		// The show response's data is the issue summary schema; comments live there.
+		const summarySchema = ISSUE_COMMAND_RESPONSE_SCHEMAS.issue.properties.data;
+		const comments = summarySchema.properties.comments;
+
+		// Existence first (clean RED — never a TypeError on undefined.type).
+		expect(comments).toBeDefined();
+		expect(comments.type).toBe('array');
+		// Each item exposes id/body/actor/created_at; body may be null.
+		expect(comments.items.type).toBe('object');
+		expect(comments.items.properties.id).toBeDefined();
+		expect(comments.items.properties.body).toBeDefined();
+		expect(comments.items.properties.actor).toBeDefined();
+		expect(comments.items.properties.created_at).toBeDefined();
+
+		// Optional: comments must NOT be in required, so list/ready summaries (no
+		// comments) still validate against the same summary schema.
+		expect(summarySchema.required).not.toContain('comments');
 	});
 
 	test('defines a stable error envelope and meaningful exit codes', () => {

@@ -151,6 +151,84 @@ describe('Kernel SQLite driver — issue mutations via guarded path (Wave 3)', (
 		expect(rows.map(row => row.body)).toEqual(['First note', 'Second note']);
 	});
 
+	// KAP-4: --label is a single comma-separated flag (last-value-wins under
+	// parseFlagPairs), parsed into a string[] and persisted as JSON-array TEXT.
+	test('create --label persists a comma-separated label set as labels[]', async () => {
+		await broker.runIssueOperation(
+			'create',
+			['--id', 'lbl-1', '--title', 'Labeled', '--type', 'task', '--label', 'backend, api ,'],
+			{ now, actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['lbl-1'], {}, config);
+		// Whitespace trimmed, empty segments dropped, order preserved.
+		expect(shown.data.labels).toEqual(['backend', 'api']);
+
+		// Persisted as JSON-array TEXT in the column (the canonical KAP-4 form).
+		const rows = await driver.queryAll('SELECT labels FROM kernel_issues WHERE id = \'lbl-1\'', config);
+		expect(rows[0].labels).toBe('["backend","api"]');
+	});
+
+	test('update --label replaces the full label set', async () => {
+		await broker.runIssueOperation(
+			'create',
+			['--id', 'lbl-2', '--title', 'Relabel', '--type', 'task', '--label', 'a,b'],
+			{ now, actor: 'tester' },
+		);
+		expect((await driver.issueOperation('show', ['lbl-2'], {}, config)).data.labels).toEqual(['a', 'b']);
+
+		await broker.runIssueOperation(
+			'update',
+			['lbl-2', '--label', 'c'],
+			{ now: '2026-06-19T00:08:00.000Z', actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['lbl-2'], {}, config);
+		expect(shown.data.labels).toEqual(['c']);
+	});
+
+	// KAP-5: --parent reparents an existing issue on update (create already maps it).
+	test('update --parent reparents the issue (parent_id persisted)', async () => {
+		// parent_id carries an FK to kernel_issues(id), so the parent must exist.
+		await broker.runIssueOperation(
+			'create', ['--id', 'epic-x', '--title', 'Epic', '--type', 'epic'], { now, actor: 'tester' },
+		);
+		await broker.runIssueOperation(
+			'create', ['--id', 'par-1', '--title', 'Child', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		await broker.runIssueOperation(
+			'update', ['par-1', '--parent', 'epic-x'],
+			{ now: '2026-06-19T00:09:00.000Z', actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['par-1'], {}, config);
+		expect(shown.data.parent_id).toBe('epic-x');
+	});
+
+	// KAP-5: close --reason is captured in the close EVENT payload (no column/migration).
+	test('close --reason succeeds and records the reason in the close event payload', async () => {
+		await broker.runIssueOperation(
+			'create', ['--id', 'rsn-1', '--title', 'Closeme', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		const closed = await broker.runIssueOperation(
+			'close', ['rsn-1', '--reason', 'done deal'],
+			{ now: '2026-06-19T00:10:00.000Z', actor: 'tester' },
+		);
+		expect(closed.ok).toBe(true);
+		expect(closed.command).toBe('issue.close');
+
+		// The reason lives in the persisted close event payload (kernel_events), NOT a
+		// new kernel_issues column.
+		const events = await driver.queryAll(
+			'SELECT payload_json FROM kernel_events WHERE entity_id = \'rsn-1\' AND event_type = \'issue.close\'',
+			config,
+		);
+		expect(events).toHaveLength(1);
+		expect(JSON.parse(events[0].payload_json).reason).toBe('done deal');
+	});
+
 	test('create twice through runIssueOperation replays as a single row (duplicate mapping)', async () => {
 		const createArgs = ['--id', 'forge-dup', '--title', 'Dup', '--type', 'task'];
 
