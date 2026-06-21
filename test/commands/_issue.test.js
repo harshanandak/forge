@@ -88,10 +88,28 @@ describe('forge issue helpers', () => {
     ]);
   });
 
+  test('KAP-12 lint alias routes to the kernel lint operation', async () => {
+    const calls = [];
+    const opts = {
+      useKernelBroker: true,
+      runIssueOperation: async (operation, args, projectRoot, deps) => {
+        calls.push({ operation, args, projectRoot, deps });
+        return { ok: true, command: operation, data: { issues: [] } };
+      },
+    };
+
+    await makeAliasCommand('lint').handler(['--json'], {}, '/repo', opts);
+
+    expect(calls.map(call => ({ operation: call.operation, args: call.args }))).toEqual([
+      { operation: 'lint', args: ['--json'] },
+    ]);
+  });
+
   test('KAP-7 read aliases map to Beads-compatible passthroughs', () => {
     expect(buildBdArgs('blocked', ['--json'])).toEqual(['blocked', '--json']);
     expect(buildBdArgs('stale', ['--days', '7'])).toEqual(['stale', '--days', '7']);
     expect(buildBdArgs('orphans', [])).toEqual(['orphans']);
+    expect(buildBdArgs('lint', ['--json'])).toEqual(['lint', '--json']);
   });
 
   test('buildBdArgs maps comment to bd comments add passthrough', () => {
