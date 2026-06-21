@@ -206,6 +206,67 @@ describe('Kernel SQLite driver — issue mutations via guarded path (Wave 3)', (
 		expect(shown.data.parent_id).toBe('epic-x');
 	});
 
+	// KAP-10 (acceptance/design/notes) + KAP-11 (assignee): the four content fields
+	// persist on create via the issue-upsert write allow-list, and surface on show.
+	test('create persists acceptance_criteria/design/notes/assignee', async () => {
+		await broker.runIssueOperation(
+			'create',
+			[
+				'--id', 'cf-1', '--title', 'Content fields', '--type', 'task',
+				'--acceptance', 'AC text', '--design', 'Design text',
+				'--notes', 'Notes text', '--assignee', 'alice',
+			],
+			{ now, actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['cf-1'], {}, config);
+		expect(shown.data.acceptance_criteria).toBe('AC text');
+		expect(shown.data.design).toBe('Design text');
+		expect(shown.data.notes).toBe('Notes text');
+		expect(shown.data.assignee).toBe('alice');
+
+		// Persisted directly to their columns (not just the event payload).
+		const rows = await driver.queryAll(
+			'SELECT acceptance_criteria, design, notes, assignee FROM kernel_issues WHERE id = \'cf-1\'',
+			config,
+		);
+		expect(rows[0]).toEqual({
+			acceptance_criteria: 'AC text',
+			design: 'Design text',
+			notes: 'Notes text',
+			assignee: 'alice',
+		});
+	});
+
+	// KAP-11: assignee is a persistent reassignment on update (distinct from the
+	// transient claim lease). The other three content fields update the same way.
+	test('update reassigns assignee and overwrites design/notes/acceptance', async () => {
+		await broker.runIssueOperation(
+			'create',
+			[
+				'--id', 'cf-2', '--title', 'Reassign', '--type', 'task',
+				'--acceptance', 'old AC', '--design', 'old D',
+				'--notes', 'old N', '--assignee', 'alice',
+			],
+			{ now, actor: 'tester' },
+		);
+
+		await broker.runIssueOperation(
+			'update',
+			[
+				'cf-2', '--acceptance', 'new AC', '--design', 'new D',
+				'--notes', 'new N', '--assignee', 'bob',
+			],
+			{ now: '2026-06-19T00:10:00.000Z', actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['cf-2'], {}, config);
+		expect(shown.data.acceptance_criteria).toBe('new AC');
+		expect(shown.data.design).toBe('new D');
+		expect(shown.data.notes).toBe('new N');
+		expect(shown.data.assignee).toBe('bob');
+	});
+
 	// KAP-5: close --reason is captured in the close EVENT payload (no column/migration).
 	test('close --reason succeeds and records the reason in the close event payload', async () => {
 		await broker.runIssueOperation(

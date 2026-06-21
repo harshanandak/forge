@@ -169,6 +169,32 @@ describe('Kernel SQLite driver — enriched issue projection (KAP-2)', () => {
 		});
 	});
 
+	// KAP-10 (acceptance_criteria/design/notes) + KAP-11 (assignee): rowToIssueSummary
+	// surfaces the four content fields, each defaulting to null when the column is empty.
+	test('show surfaces acceptance_criteria/design/notes/assignee, null when unset', async () => {
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority,priority_rank,acceptance_criteria,design,notes,assignee,created_at,updated_at,entity_revision) VALUES
+				('cf-show','Has content','task','open','P2',9,'AC body','Design body','Notes body','alice','${now}','${now}',0);`,
+			config,
+		);
+
+		const res = await driver.issueOperation('show', ['cf-show'], {}, config);
+		expect(res.data).toMatchObject({
+			id: 'cf-show',
+			acceptance_criteria: 'AC body',
+			design: 'Design body',
+			notes: 'Notes body',
+			assignee: 'alice',
+		});
+
+		// p1 was seeded without the content columns → each surfaces as null.
+		const bare = await driver.issueOperation('show', ['p1'], {}, config);
+		expect(bare.data.acceptance_criteria).toBeNull();
+		expect(bare.data.design).toBeNull();
+		expect(bare.data.notes).toBeNull();
+		expect(bare.data.assignee).toBeNull();
+	});
+
 	test('list carries the enriched fields for every issue', async () => {
 		const res = await driver.issueOperation('list', [], {}, config);
 		const c1 = res.data.issues.find(issue => issue.id === 'c1');

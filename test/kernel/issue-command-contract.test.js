@@ -98,6 +98,17 @@ describe('Kernel issue command contract', () => {
 		expect(summarySchema.required).not.toContain('comments');
 	});
 
+	test('KAP-10/11: issue summary schema declares acceptance_criteria/design/notes/assignee', () => {
+		const { ISSUE_COMMAND_RESPONSE_SCHEMAS } = require('../../lib/kernel/issue-command-contract');
+		const summarySchema = ISSUE_COMMAND_RESPONSE_SCHEMAS.issue.properties.data;
+
+		// Each content field is a nullable string and OPTIONAL (issues without it still validate).
+		for (const fieldName of ['acceptance_criteria', 'design', 'notes', 'assignee']) {
+			expect(summarySchema.properties[fieldName]).toEqual({ type: ['string', 'null'] });
+			expect(summarySchema.required).not.toContain(fieldName);
+		}
+	});
+
 	test('defines a stable error envelope and meaningful exit codes', () => {
 		const {
 			ISSUE_COMMAND_ERROR_SCHEMA,
