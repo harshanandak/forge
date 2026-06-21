@@ -562,3 +562,63 @@ describe('Kernel SQLite driver — orphans query (KAP-7)', () => {
 		expect(res.data.count).toBe(2);
 	});
 });
+
+// KAP-12: read-only `lint` — flags issues missing required content. An issue FAILS
+// content lint iff its type is task|bug AND acceptance_criteria is null or
+// empty/whitespace-only. epic/decision are exempt. Each failing issue carries a
+// `validation: { rules_failed: ['missing_acceptance_criteria'] }`. Results sort like
+// list (rank asc). The rule references ONLY base-existing columns.
+describe('Kernel SQLite driver — lint query (KAP-12)', () => {
+	let tmpDir;
+	let driver;
+	let config;
+	const now = '2026-06-20T00:00:00.000Z';
+
+	beforeAll(async () => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-kap12-lint-'));
+		const dbPath = path.join(tmpDir, 'kernel.sqlite');
+		config = { databasePath: dbPath };
+		driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({
+			projectRoot: tmpDir,
+			execFileSync: () => path.join(tmpDir, '.git'),
+			databasePath: dbPath,
+			driver,
+		});
+		await broker.initialize();
+
+		// l1: task, no acceptance_criteria (NULL)        → FAILS.
+		// l2: task, has acceptance_criteria               → passes.
+		// l3: bug, whitespace-only acceptance_criteria    → FAILS.
+		// l4: epic, no acceptance_criteria                → EXEMPT (passes).
+		// l5: task, empty-string acceptance_criteria      → FAILS.
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,acceptance_criteria,created_at,updated_at,entity_revision) VALUES
+				('l1','Task missing AC','task','open',1,NULL,'${now}','${now}',0),
+				('l2','Task with AC','task','open',2,'Given X, then Y','${now}','${now}',0),
+				('l3','Bug whitespace AC','bug','open',3,'   ','${now}','${now}',0),
+				('l4','Epic missing AC','epic','open',4,NULL,'${now}','${now}',0),
+				('l5','Task empty AC','task','open',5,'','${now}','${now}',0);`,
+			config,
+		);
+	});
+
+	afterAll(() => {
+		if (driver) driver.close();
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	test('lint returns exactly the task/bug issues missing acceptance_criteria, each with rules_failed', async () => {
+		const res = await driver.issueOperation('lint', [], {}, config);
+		expect(res.ok).toBe(true);
+		expect(res.schema_version).toBe('forge.issue.v1');
+		expect(res.command).toBe('issue.lint');
+		// l1 (NULL), l3 (whitespace), l5 (empty) fail. l2 has AC; l4 is an epic (exempt).
+		// Sorted like list (rank asc).
+		expect(res.data.issues.map(issue => issue.id)).toEqual(['l1', 'l3', 'l5']);
+		expect(res.data.count).toBe(3);
+		for (const issue of res.data.issues) {
+			expect(issue.validation).toEqual({ rules_failed: ['missing_acceptance_criteria'] });
+		}
+	});
+});
