@@ -89,7 +89,8 @@ describe('Kernel issue command contract', () => {
 		});
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items
 			.properties.validation).toBeDefined();
-		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.required).not.toContain('validation');
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items
+			.required).not.toContain('validation');
 	});
 
 	test('KAP-3: issue summary schema declares an optional comments array', () => {
