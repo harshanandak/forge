@@ -198,6 +198,7 @@ Wave 3 (optional, after both): D19-T4 docs/AGENTS surface note — non-code, syn
 ```
 
 ### File ownership (no collisions)
+
 | Task | OWNS (writes) | READS only |
 |------|---------------|------------|
 | D19-T1 | `lib/kernel/fs-class.js`, `test/kernel/fs-class.test.js` | — |
