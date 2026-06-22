@@ -6,7 +6,7 @@ const {
   resolveCommandOpts,
   ISSUE_COMMANDS,
   stripSelectorTokens,
-} = require('../../lib/commands/resolve-command-opts');
+} = require('../../lib/commands/_resolve-command-opts');
 
 const TIMEOUT = 5000;
 
@@ -38,8 +38,8 @@ describe('stripSelectorTokens — consume + remove --kernel / --issue-backend', 
 describe('resolveCommandOpts — issue commands', () => {
   test(
     'default (no flag/env) → beads, no kernel deps, args unchanged',
-    () => {
-      const { commandOpts, args } = resolveCommandOpts('close', ['kap-10', '--reason=x'], {
+    async () => {
+      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--reason=x'], {
         env: {},
         projectRoot: '/repo',
       });
@@ -53,9 +53,9 @@ describe('resolveCommandOpts — issue commands', () => {
 
   test(
     '--kernel flag → kernel deps assembled, selector token stripped from args',
-    () => {
+    async () => {
       const built = [];
-      const { commandOpts, args } = resolveCommandOpts('close', ['kap-10', '--kernel', '--reason=x'], {
+      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--kernel', '--reason=x'], {
         env: {},
         projectRoot: '/repo',
         // Inject the factory so the test does not touch a real SQLite runtime.
@@ -77,8 +77,8 @@ describe('resolveCommandOpts — issue commands', () => {
 
   test(
     'FORGE_ISSUE_BACKEND=kernel env → kernel deps (no flag needed)',
-    () => {
-      const { commandOpts } = resolveCommandOpts('close', ['kap-10'], {
+    async () => {
+      const { commandOpts } = await resolveCommandOpts('close', ['kap-10'], {
         env: { FORGE_ISSUE_BACKEND: 'kernel' },
         projectRoot: '/repo',
         buildKernelIssueDeps: () => ({ useKernelBroker: true, kernelDriver: { exec() {} } }),
@@ -91,8 +91,8 @@ describe('resolveCommandOpts — issue commands', () => {
 
   test(
     'non-issue commands get an empty opts object and untouched args',
-    () => {
-      const { commandOpts, args } = resolveCommandOpts('validate', ['--kernel'], {
+    async () => {
+      const { commandOpts, args } = await resolveCommandOpts('validate', ['--kernel'], {
         env: {},
         projectRoot: '/repo',
       });
@@ -113,15 +113,15 @@ describe('resolveCommandOpts — issue commands', () => {
   );
 
   test(
-    'conflicting --kernel + --issue-backend beads throws (surfaced to the user)',
-    () => {
-      expect(() =>
+    'conflicting --kernel + --issue-backend beads rejects (surfaced to the user)',
+    async () => {
+      await expect(
         resolveCommandOpts('close', ['kap-10', '--kernel', '--issue-backend', 'beads'], {
           env: {},
           projectRoot: '/repo',
           buildKernelIssueDeps: () => ({ useKernelBroker: true }),
         }),
-      ).toThrow(/conflict|mutually.exclusive/i);
+      ).rejects.toThrow(/conflict|mutually.exclusive/i);
     },
     TIMEOUT,
   );
