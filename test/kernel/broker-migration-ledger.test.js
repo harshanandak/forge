@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createLocalBroker } = require('../../lib/kernel/broker');
+const { createLocalBroker, execMigrationStatement } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 const { buildKernelMigrationPlan } = require('../../lib/kernel/migrations');
 
@@ -100,5 +100,98 @@ describe('Kernel broker — migration ledger', () => {
 
 		const reapplied = await makeBroker(extendedPlan).initialize();
 		expect(reapplied.migrationsNewlyApplied).toEqual([]);
+	});
+
+	test('two brokers initializing the same DB concurrently both succeed with one ledger row per migration', async () => {
+		// Integration realism for the concurrent-init path. NOTE: this is SCHEDULING-
+		// DEPENDENT — whether the second init lands in the pre-check or the TOCTOU catch
+		// is microtask-ordering luck, so it can pass even on unfixed code when scheduling
+		// happens to serialize. It asserts only the end state; the DETERMINISTIC guard
+		// for the catch path lives in the execMigrationStatement suite below.
+		const driver2 = createBuiltinSQLiteDriver({});
+		try {
+			const a = makeBroker();
+			const b = createLocalBroker({
+				projectRoot: tmpDir,
+				execFileSync: () => path.join(tmpDir, '.git'),
+				databasePath: config.databasePath,
+				driver: driver2,
+			});
+
+			const [resultA, resultB] = await Promise.all([a.initialize(), b.initialize()]);
+
+			expect(resultA.success).toBe(true);
+			expect(resultB.success).toBe(true);
+			const planIds = buildKernelMigrationPlan().migrations.map(migration => migration.id);
+			expect(await ledgerIds()).toEqual([...planIds].sort());
+		} finally {
+			driver2.close();
+		}
+	});
+});
+
+// Deterministic guards for the ADD COLUMN TOCTOU catch path. These drive
+// execMigrationStatement with a fake driver so the exact "another writer added the
+// column between our pre-check and our exec" interleaving is forced every run (no
+// reliance on scheduling). The first FAILS on the pre-fix code (which had no catch).
+describe('Kernel broker — execMigrationStatement ADD COLUMN race (TOCTOU)', () => {
+	const ADD_COLUMN = 'ALTER TABLE kernel_issues ADD COLUMN design TEXT;';
+
+	test('skips (does not throw) when a concurrent writer adds the column between pre-check and exec', async () => {
+		// Pre-check sees the column MISSING; exec then loses the race and throws
+		// duplicate-column; the catch re-verifies and now sees it PRESENT → skip.
+		let pragmaCalls = 0;
+		const driver = {
+			async queryAll(statement) {
+				if (/PRAGMA table_info/i.test(statement)) {
+					pragmaCalls += 1;
+					return pragmaCalls === 1 ? [] : [{ name: 'design' }];
+				}
+				return [];
+			},
+			async exec() {
+				throw new Error('SQLITE_ERROR: duplicate column name: design');
+			},
+		};
+
+		const result = await execMigrationStatement(driver, ADD_COLUMN, {});
+
+		expect(result).toEqual({ skipped: true, reason: 'column-added-concurrently' });
+		expect(pragmaCalls).toBe(2); // pre-check + post-failure re-verify
+	});
+
+	test('rethrows when exec fails and the column is still absent (no blanket swallow)', async () => {
+		// A non-duplicate failure with the column never appearing must propagate.
+		const driver = {
+			async queryAll() {
+				return []; // column never present
+			},
+			async exec() {
+				throw new Error('SQLITE_ERROR: disk I/O error');
+			},
+		};
+
+		await expect(execMigrationStatement(driver, ADD_COLUMN, {}))
+			.rejects.toThrow(/disk I\/O error/);
+	});
+
+	test('surfaces the original exec error when the post-failure re-check itself throws', async () => {
+		let pragmaCalls = 0;
+		const driver = {
+			async queryAll(statement) {
+				if (/PRAGMA table_info/i.test(statement)) {
+					pragmaCalls += 1;
+					if (pragmaCalls === 1) return []; // pre-check: missing
+					throw new Error('re-check boom'); // post-failure re-verify blows up
+				}
+				return [];
+			},
+			async exec() {
+				throw new Error('original exec failure');
+			},
+		};
+
+		await expect(execMigrationStatement(driver, ADD_COLUMN, {}))
+			.rejects.toThrow(/original exec failure/);
 	});
 });
