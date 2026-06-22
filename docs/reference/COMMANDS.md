@@ -116,6 +116,7 @@ These commands exist as current CLI surfaces, but many are specialized and shoul
 forge audit
 forge explain
 forge docs
+forge doctor
 forge test
 forge push
 forge upgrade
@@ -125,6 +126,25 @@ forge add
 ```
 
 `forge migrate` is dry-run oriented in the current public docs. Do not present it as a migration executor.
+
+## Kernel Filesystem Safety
+
+The Forge Kernel stores its SQLite database under `.git/forge/kernel.sqlite`. SQLite WAL mode corrupts when a cloud-sync client (OneDrive, Dropbox, Google Drive, iCloud) or a network filesystem (UNC / SMB / NFS / mapped drive) rewrites the database mid-write. A default-on gate in `broker.initialize()` therefore **refuses** to initialize the kernel on those filesystems — the throw happens *before* any database file is created, so nothing is written to the unsafe location.
+
+```bash
+forge doctor          # human summary, exits non-zero on a refuse-class path
+forge doctor --json   # machine-readable report (schemaVersion 1)
+```
+
+`forge doctor` resolves the exact kernel database path the gate guards and reports its filesystem class **without creating any file**:
+
+| Class | Risk tier | Behavior |
+|-------|-----------|----------|
+| `local-ok` | safe | proceed silently |
+| `wsl-cross`, `unknown` | warn | proceed with a warning (fail-open) |
+| `onedrive`, `dropbox`, `gdrive`, `icloud`, `network-unc`, `mapped-network-drive` | refuse | block kernel init |
+
+**Escape hatch:** set `FORGE_KERNEL_ALLOW_UNSAFE_FS=1` to downgrade every `refuse` to a warning and proceed at your own risk (intended for reliable network homes, CI sandboxes, and incident recovery). It does not affect `safe`/`warn` classes. On Windows, mapped-drive detection **fails safe**: any probe failure is treated as `unknown` (warn), never silently allowed.
 
 ## Agent Workflow Stages
 

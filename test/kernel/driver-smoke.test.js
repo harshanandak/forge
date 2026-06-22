@@ -10,6 +10,13 @@ const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 const { runJsonlProjectionConsumer } = require('../../lib/kernel/projection-jsonl-writer');
 
+// Deterministic local-ok classifier: keeps these DB-acceptance tests independent
+// of the host filesystem class and avoids the real Windows drive probe the D19
+// gate runs in the broker getConfig() chokepoint.
+const LOCAL_OK_CLASSIFIER = () => ({
+	class: 'local-ok', riskTier: 'safe', signal: 'test-stub', remediationKey: 'local-ok',
+});
+
 // Windows releases the SQLite WAL/SHM mmap sidecars asynchronously after close, so
 // a teardown rmSync can race the unmap and throw EBUSY/EPERM (worse for the heavy
 // 13-op test). Retry with a REAL timer yield (a sync spin would block the very
@@ -60,6 +67,12 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 		// adopts config.databasePath and caches the open connection for the run.
 		driver = createBuiltinSQLiteDriver({});
 		const execFileSync = () => path.join(tmpDir, '.git');
+		// Deterministic FS classifier: this is an acceptance test for the 13 DB ops,
+		// NOT for the D19 filesystem gate. Injecting a local-ok stub keeps it
+		// independent of the host's actual filesystem class (a tmpdir on a network
+		// mount would otherwise REFUSE) and avoids the real per-broker Windows drive
+		// probe (net use + PowerShell) that the gate now runs in getConfig().
+		const classifyFilesystem = LOCAL_OK_CLASSIFIER;
 
 		// Migrate once: the public entry point never initializes the broker.
 		const setup = createLocalBroker({
@@ -67,17 +80,20 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 			execFileSync,
 			databasePath: dbPath,
 			driver,
+			classifyFilesystem,
 		});
 		await setup.initialize();
 
 		// The deps the task names — issueBackend + kernelDatabasePath select the kernel
 		// backend; kernelDriver/execFileSync are the mechanically-required plumbing
 		// (no default driver; resolveGitCommonDir runs against projectRoot otherwise).
+		// classifyFilesystem is forwarded into each per-op broker (forge-issues).
 		deps = {
 			issueBackend: 'kernel',
 			kernelDatabasePath: dbPath,
 			kernelDriver: driver,
 			execFileSync,
+			classifyFilesystem,
 		};
 	});
 
@@ -195,6 +211,7 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 			execFileSync: () => path.join(tmpDir, '.git'),
 			databasePath: dbPath,
 			driver,
+			classifyFilesystem: LOCAL_OK_CLASSIFIER,
 		});
 
 		const projectionDir = path.join(tmpDir, 'projection');
@@ -237,6 +254,7 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 			execFileSync: () => path.join(tmpDir, '.git'),
 			databasePath: dbPath,
 			driver,
+			classifyFilesystem: LOCAL_OK_CLASSIFIER,
 		});
 
 		const pending = await consumerBroker.listProjectionOutbox({ target: 'beads', status: 'pending', now: '2026-06-20T00:10:00.000Z' });
