@@ -47,6 +47,13 @@ describe('kernel schema registry', () => {
 		expect(KERNEL_TABLES.projections.indexes.map(index => index.name)).toContain('idx_kernel_projections_target_status');
 		expect(KERNEL_TABLES.conflicts.indexes.map(index => index.name)).toContain('idx_kernel_conflicts_status');
 		expect(KERNEL_TABLES.events.fields.map(field => field.name)).toContain('expected_revision');
+
+		// KAP-10/11: fresh DBs get the content/assignee columns directly from the schema
+		// (migration 004 backfills existing DBs). estimate/acceptance_criteria predate this.
+		const issueFieldNames = KERNEL_TABLES.issues.fields.map(field => field.name);
+		expect(issueFieldNames).toContain('design');
+		expect(issueFieldNames).toContain('notes');
+		expect(issueFieldNames).toContain('assignee');
 	});
 
 	test('classifies every table and field with valid storage and authority metadata', () => {

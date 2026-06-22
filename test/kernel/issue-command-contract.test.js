@@ -20,6 +20,7 @@ describe('Kernel issue command contract', () => {
 			'issue.blocked',
 			'issue.stale',
 			'issue.orphans',
+			'issue.lint',
 			'issue.create',
 			'issue.update',
 			'issue.close',
@@ -75,6 +76,21 @@ describe('Kernel issue command contract', () => {
 			.toEqual({ type: 'integer' });
 		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.staleList.properties.data.properties.issues.items)
 			.toBe(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items);
+
+		// KAP-12: `lint` reuses the issueList shape (array of ISSUE_SUMMARY_SCHEMA +
+		// count). The summary schema declares an OPTIONAL `validation` object so lint
+		// items can carry rules_failed without breaking comment-less/validation-less
+		// summaries, and it stays OUT of `required`.
+		expect(getIssueCommandContract('issue.lint')).toMatchObject({
+			id: 'issue.lint',
+			operation: 'lint',
+			mode: 'read',
+			outputSchema: ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList,
+		});
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items
+			.properties.validation).toBeDefined();
+		expect(ISSUE_COMMAND_RESPONSE_SCHEMAS.issueList.properties.data.properties.issues.items
+			.required).not.toContain('validation');
 	});
 
 	test('KAP-3: issue summary schema declares an optional comments array', () => {
@@ -96,6 +112,17 @@ describe('Kernel issue command contract', () => {
 		// Optional: comments must NOT be in required, so list/ready summaries (no
 		// comments) still validate against the same summary schema.
 		expect(summarySchema.required).not.toContain('comments');
+	});
+
+	test('KAP-10/11: issue summary schema declares acceptance_criteria/design/notes/assignee', () => {
+		const { ISSUE_COMMAND_RESPONSE_SCHEMAS } = require('../../lib/kernel/issue-command-contract');
+		const summarySchema = ISSUE_COMMAND_RESPONSE_SCHEMAS.issue.properties.data;
+
+		// Each content field is a nullable string and OPTIONAL (issues without it still validate).
+		for (const fieldName of ['acceptance_criteria', 'design', 'notes', 'assignee']) {
+			expect(summarySchema.properties[fieldName]).toEqual({ type: ['string', 'null'] });
+			expect(summarySchema.required).not.toContain(fieldName);
+		}
 	});
 
 	test('defines a stable error envelope and meaningful exit codes', () => {
