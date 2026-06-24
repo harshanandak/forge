@@ -155,6 +155,20 @@ afterEach(() => {
   }
 });
 
+describe('default issue backend is the Kernel (D20)', () => {
+  test('the real repo createIssueService defaults to the Kernel backend (gate detects it)', () => {
+    // Locks the D20 default flip: createIssueService's resolvedBackend must default
+    // to createKernelIssueBackend. The readiness gate reads lib/forge-issues.js and
+    // clears the issue surface's "Kernel evidence missing" signal once it does.
+    // Reverting the default to createBeadsIssueBackend regresses this assertion.
+    const report = buildReadinessReport(repoRoot, { target: '0.1.0' });
+    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+
+    expect(blocker).toBeDefined();
+    expect(blocker.detail).toContain('Kernel evidence missing for issue surface: no');
+  });
+});
+
 describe('release readiness bd call-site audit', () => {
   test('groups concrete bd, .beads, and dolt surfaces without counting generic Beads prose', () => {
     const root = makeRepo();
