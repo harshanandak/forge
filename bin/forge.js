@@ -57,6 +57,7 @@ const {
 } = require('../lib/docs-command');
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
+const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 
@@ -4184,13 +4185,23 @@ async function main() {
   // Registry command dispatch — auto-discovered commands take priority
   if (registry.commands.has(command)) {
     try {
+      // Resolve the issue backend (flag > env > config > default) and, for issue
+      // commands, strip the selector tokens (--kernel / --issue-backend) from the
+      // args so they never reach the handler or bd. For the kernel backend this
+      // also assembles the driver + migrated broker (B1/B2).
+      const { commandOpts, args: dispatchArgs } = await resolveCommandOpts(
+        command,
+        args.slice(1),
+        { env: process.env, projectRoot },
+      );
       const result = await executeCommand(
         registry.commands,
         command,
-        args.slice(1),
+        dispatchArgs,
         flags,
         projectRoot,
         {
+          commandOpts,
           enforceStage: (context) => enforceStageEntry({
             commandName: context.commandName,
             args: context.args,
