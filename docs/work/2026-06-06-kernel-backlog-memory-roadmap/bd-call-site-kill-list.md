@@ -7,18 +7,20 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 120 | 11 |
+| command | 123 | 12 |
 | runtime | 343 | 47 |
-| docs | 436 | 67 |
+| docs | 452 | 68 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
 
 ## command
 
-- [ ] bin/forge.js (25)
-  - lines: 2371 (bd), 2373 (bd), 2527 (bd), 2929 (bd), 2938 (bd), 2951 (bd), 2964 (.beads), 2984 (bd), 2986 (bd), 2988 (bd), 3023 (bd), 3047 (bd), 3133 (bd), 3177 (bd), 3201 (bd), 3207 (bd), 3211 (bd), 3216 (bd), 3222 (bd), 3232 (bd), 3364 (bd), 3369 (bd), 3380 (bd), 3447 (bd), 4655 (bd)
+- [ ] bin/forge.js (26)
+  - lines: 2372 (bd), 2374 (bd), 2528 (bd), 2930 (bd), 2939 (bd), 2952 (bd), 2965 (.beads), 2985 (bd), 2987 (bd), 2989 (bd), 3024 (bd), 3048 (bd), 3134 (bd), 3178 (bd), 3202 (bd), 3208 (bd), 3212 (bd), 3217 (bd), 3223 (bd), 3233 (bd), 3365 (bd), 3370 (bd), 3381 (bd), 3448 (bd), 4190 (bd), 4666 (bd)
 - [ ] lib/commands/_issue.js (15)
   - lines: 10 (bd), 16 (bd), 22 (bd), 27 (bd), 52 (bd), 58 (bd), 64 (bd), 70 (bd), 76 (bd), 82 (bd), 88 (bd), 92 (bd), 177 (bd), 333 (bd), 390 (bd)
+- [ ] lib/commands/_resolve-command-opts.js (2)
+  - lines: 8 (bd), 10 (bd)
 - [ ] lib/commands/clean.js (2)
   - lines: 10 (dolt), 175 (dolt)
 - [ ] lib/commands/dev.js (1)
@@ -237,6 +239,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 7 (.beads), 8 (.beads), 12 (dolt)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/clarity-gap-review.md (3)
   - lines: 5 (dolt), 24 (bd), 167 (dolt)
+- [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/d20-step0-kernel-selector-design.md (16)
+  - lines: 1 (bd), 16 (bd), 104 (bd), 121 (bd), 123 (bd, .beads), 125 (dolt), 127 (bd), 128 (bd), 132 (dolt), 191 (bd), 216 (dolt), 220 (dolt), 221 (dolt), 222 (bd), 223 (.beads), 224 (bd)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-options.md (2)
   - lines: 11 (dolt), 125 (bd)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-registry-mechanism.md (2)
