@@ -15,6 +15,7 @@ const HANDLERS = {
 	dev: require('../lib/commands/dev'),
 	validate: require('../lib/commands/validate'),
 	ship: require('../lib/commands/ship'),
+	shepherd: require('../lib/commands/shepherd'),
 };
 
 const VALID_COMMANDS = [
@@ -25,6 +26,7 @@ const VALID_COMMANDS = [
 	'check', // backward-compat alias for validate
 	'ship',
 	'review',
+	'shepherd',
 	'merge',
 	'verify',
 ];
@@ -76,6 +78,7 @@ const COMMAND_DESCRIPTIONS = {
 	check: 'Alias for validate (deprecated — use validate)',
 	ship: 'Auto-generate PR body and create PR',
 	review: 'Aggregate all review feedback',
+	shepherd: 'Run one bounded monitor pass over a PR (never merges)',
 	merge: 'Update docs, merge PR, cleanup',
 	verify: 'Final documentation verification',
 };
@@ -84,6 +87,7 @@ const REQUIRED_ARGS = {
 	plan: ['feature-slug'],
 	ship: ['feature-slug', 'title'],
 	review: [],
+	shepherd: ['pr'],
 	merge: [],
 	// Other commands don't require arguments
 	status: [],
@@ -316,6 +320,18 @@ async function main() { // NOSONAR S3776
 				if (result.prUrl) console.log(`  PR: ${result.prUrl}`);
 			} else {
 				console.error(`✗ Ship failed: ${result.error}`);
+				process.exit(1);
+			}
+
+		} else if (command === 'shepherd') {
+			result = await HANDLERS.shepherd.handler(args, {}, process.cwd());
+			if (result.success) {
+				console.log(`✓ shepherd: ${result.state}`);
+				if (result.reason) console.log(`  ${result.reason}`);
+			} else {
+				console.error(`✗ shepherd: ${result.state || 'failed'}`);
+				if (result.error) console.error(`  ${result.error}`);
+				if (result.reason) console.error(`  ${result.reason}`);
 				process.exit(1);
 			}
 
