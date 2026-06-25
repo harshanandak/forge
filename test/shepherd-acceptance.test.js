@@ -58,6 +58,7 @@ function scriptedAdapter(steps) {
         }
         actions.push({ type: 'rebase', ...a });
       },
+      async readComments() { return cur().comments || []; },
     },
   };
 }
@@ -252,5 +253,42 @@ describe('shepherd acceptance §5', () => {
     const s = scriptedAdapter([{ state: 'CLOSED' }]);
     const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
     expect(res.state).toBe('CLOSED');
+  });
+
+  // Comments — new actionable feedback → NEEDS_REVIEW; bots/self ignored;
+  // flood-capped so "too many comments" can't blow up a single pass. The
+  // shepherd detects + hands off to /review and NEVER resolves threads.
+  test('comments: unresolved human comment → NEEDS_REVIEW (never resolves)', async () => {
+    const s = scriptedAdapter([{
+      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      comments: [{ author: 'alice', body: 'please fix X', isResolved: false }],
+    }]);
+    const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
+    expect(res.state).toBe('NEEDS_REVIEW');
+    expect(res.commentCount).toBe(1);
+    expect(noResolve(res.actions)).toBe(true);
+  });
+
+  test('comments: bot- and self-authored / resolved → not actionable (MERGE_READY)', async () => {
+    const s = scriptedAdapter([{
+      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      comments: [
+        { author: 'coderabbitai', body: 'nit', isResolved: false },
+        { author: 'me-bot', body: 'self', isResolved: false },
+        { author: 'bob', body: 'done', isResolved: true },
+      ],
+    }]);
+    const res = await runShepherdPass({ ...BASE_CTX, self: 'me-bot', adapter: s.adapter });
+    expect(res.state).toBe('MERGE_READY');
+  });
+
+  test('comments: too many → NEEDS_REVIEW, capped sample', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ author: `u${i}`, body: `c${i}`, isResolved: false }));
+    const s = scriptedAdapter([{ required: [], comments: many }]);
+    const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
+    expect(res.state).toBe('NEEDS_REVIEW');
+    expect(res.commentCount).toBe(25);
+    expect(res.capped).toBe(true);
+    expect(res.sample.length).toBe(20);
   });
 });
