@@ -8,7 +8,7 @@
  * the real filesystem or spawn real processes in unit tests.
  */
 
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 
 let testCommand;
 try {
@@ -173,6 +173,25 @@ describe('forge test command', () => {
 	});
 
 	describe('Beads connectivity', () => {
+		// Isolate from ambient BEADS_SKIP_TESTS. The full suite is run via the
+		// outer `forge test`, which sets BEADS_SKIP_TESTS=1 in the child env when
+		// Beads/Dolt connectivity is unavailable. That ambient value leaks into
+		// this process and is inherited by the handler's `{ ...process.env }`
+		// spread, breaking the `toBeUndefined()` assertion below. Saving and
+		// restoring keeps both tests deterministic regardless of the ambient value.
+		let savedBeadsSkip;
+		beforeEach(() => {
+			savedBeadsSkip = process.env.BEADS_SKIP_TESTS;
+			delete process.env.BEADS_SKIP_TESTS;
+		});
+		afterEach(() => {
+			if (savedBeadsSkip === undefined) {
+				delete process.env.BEADS_SKIP_TESTS;
+			} else {
+				process.env.BEADS_SKIP_TESTS = savedBeadsSkip;
+			}
+		});
+
 		test('sets BEADS_SKIP_TESTS=1 when bd is unavailable', async () => {
 			const spawnSpy = makeSpawnSync();
 			const result = await testCommand.handler([], {}, '/fake/root', {
