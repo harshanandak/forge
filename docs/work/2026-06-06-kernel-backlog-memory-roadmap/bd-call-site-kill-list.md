@@ -63,7 +63,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/deprecated-sync-cleanup.js (4)
   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
 - [ ] lib/forge-issues.js (11)
-  - lines: 24 (bd), 25 (bd), 34 (bd), 88 (bd), 89 (bd), 92 (bd), 126 (bd), 150 (bd), 152 (bd), 156 (bd), 268 (bd)
+  - lines: 24 (bd), 25 (bd), 34 (bd), 88 (bd), 89 (bd), 92 (bd), 126 (bd), 150 (bd), 152 (bd), 156 (bd), 269 (bd)
 - [ ] lib/harness-capability-matrix.js (1)
   - lines: 121 (bd)
 - [ ] lib/insights.js (7)
