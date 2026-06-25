@@ -51,6 +51,15 @@ describe('forge recap command', () => {
     expect(parsed.scope.issue_id).toBe('forge-recap.1');
   });
 
+  test('forge recap --budget N <issue> does not mistake the budget value for the issue', async () => {
+    const root = makeProject();
+    const result = await recap.handler(['--budget', '220', 'forge-recap.1', '--json'], {}, root);
+    const parsed = JSON.parse(result.output);
+
+    expect(result.success).toBe(true);
+    expect(parsed.scope.issue_id).toBe('forge-recap.1');
+  });
+
   test('forge recap <issue> renders human-readable issue-scoped text', async () => {
     const root = makeProject();
     const result = await recap.handler(['forge-recap.1'], {}, root);
