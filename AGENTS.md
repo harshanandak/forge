@@ -16,7 +16,7 @@ This project ships a **default TDD-first workflow template** with 7 named stage 
 
 **Utility**: `/status` — Context check before starting work (not a numbered stage)
 
-**Utility**: `/shepherd <pr>` — Monitor-driven PR shepherd: one bounded pass that reads CI/check state, re-runs a flaky required check (Tier-A), or escalates, then hands off. It is a utility command, **not** a workflow stage, and does not sit between `/review` and the handoff. It **never merges** (the human merges in the GitHub UI) and **never resolves review threads** (that stays with `/review`). `--auto-rebase` is opt-in and default OFF. See [docs/reference/shepherd.md](docs/reference/shepherd.md).
+**Utility**: `/shepherd <pr>` — Monitor-driven PR shepherd: one bounded pass that reads CI and check state, re-runs a flaky required check (Tier-A), or escalates, then hands off. It is a utility command, **not** a workflow stage, and does not sit between `/review` and the handoff. It **never merges** (the human merges in the GitHub UI) and **never resolves review threads** (that stays with `/review`). `--auto-rebase` is opt-in and default OFF. See [docs/reference/shepherd.md](docs/reference/shepherd.md).
 
 ## Automatic Change Classification
 

@@ -2,7 +2,7 @@
 description: Monitor-driven PR shepherd — one bounded pass per invocation; never merges, never resolves review threads
 ---
 
-Run one bounded monitor pass over a pull request: read CI/check state, take at most one idempotent action, then hand off. Never merges and never resolves review threads.
+Run one bounded monitor pass over a pull request: read CI and check state, take at most one idempotent action, then hand off. Never merges and never resolves review threads.
 
 # Shepherd
 
