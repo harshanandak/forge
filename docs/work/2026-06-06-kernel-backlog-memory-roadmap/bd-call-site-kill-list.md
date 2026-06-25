@@ -240,7 +240,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/clarity-gap-review.md (3)
   - lines: 5 (dolt), 24 (bd), 167 (dolt)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/d20-step0-kernel-selector-design.md (16)
-  - lines: 1 (bd), 16 (bd), 104 (bd), 121 (bd), 123 (bd, .beads), 125 (dolt), 127 (bd), 128 (bd), 132 (dolt), 191 (bd), 216 (dolt), 220 (dolt), 221 (dolt), 222 (bd), 223 (.beads), 224 (bd)
+  - lines: 1 (bd), 16 (bd), 109 (bd), 126 (bd), 128 (bd, .beads), 130 (dolt), 132 (bd), 133 (bd), 137 (dolt), 196 (bd), 221 (dolt), 225 (dolt), 226 (dolt), 227 (bd), 228 (.beads), 229 (bd)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-options.md (2)
   - lines: 11 (dolt), 125 (bd)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-registry-mechanism.md (2)
