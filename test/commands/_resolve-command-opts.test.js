@@ -33,6 +33,23 @@ describe('stripSelectorTokens — consume + remove --kernel / --issue-backend', 
     const { args } = stripSelectorTokens(['a', 'b', '--reason=Merged on master']);
     expect(args).toEqual(['a', 'b', '--reason=Merged on master']);
   });
+
+  test('throws when --issue-backend (space form) is followed by a flag, not a value', () => {
+    // Without the guard this would swallow `--reason=x` as the backend value and
+    // silently fall back to the default backend.
+    expect(() => stripSelectorTokens(['kap-10', '--issue-backend', '--reason=x']))
+      .toThrow(/--issue-backend requires a value/);
+  });
+
+  test('throws when --issue-backend (space form) has no following value', () => {
+    expect(() => stripSelectorTokens(['kap-10', '--issue-backend']))
+      .toThrow(/--issue-backend requires a value/);
+  });
+
+  test('throws when --issue-backend= (= form) value is empty', () => {
+    expect(() => stripSelectorTokens(['kap-10', '--issue-backend=']))
+      .toThrow(/--issue-backend requires a value/);
+  });
 });
 
 describe('resolveCommandOpts — issue commands', () => {

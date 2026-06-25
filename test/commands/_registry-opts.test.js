@@ -38,7 +38,7 @@ describe('executeCommand — opts/commandOpts threading (T2)', () => {
     'passes an empty object as the 4th arg when no commandOpts supplied (backward-compat)',
     async () => {
       let received;
-      const commands = registryWith(async (args, flags, projectRoot, opts) => {
+      const commands = registryWith(async (_args, _flags, _projectRoot, opts) => {
         received = opts;
         return { success: true };
       });
@@ -53,7 +53,7 @@ describe('executeCommand — opts/commandOpts threading (T2)', () => {
   test(
     'existing 3-arg handlers are unaffected (ignore the 4th arg)',
     async () => {
-      const commands = registryWith(async (args, flags, projectRoot) => ({
+      const commands = registryWith(async (args, _flags, projectRoot) => ({
         success: true,
         echo: `${args.join(',')}|${projectRoot}`,
       }));

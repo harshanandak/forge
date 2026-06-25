@@ -46,7 +46,12 @@ The issue handlers (`_issue.js:246`, `:257`) declare a **4th `opts` parameter** 
 
 ### 2.1 Selector module (new owned file)
 
-`lib/issue-backend-selector.js` — pure resolver, no I/O beyond reading a passed-in env/flags/config snapshot. Keeps the `bin/forge.js` edit minimal (the D19 coordination point).
+As landed, the selector splits across two files: the pure backend resolver
+`lib/issue-backend.js` (`resolveIssueBackend`) and the CLI dispatch glue
+`lib/commands/_resolve-command-opts.js` (strips the selector tokens, calls the
+resolver, and assembles the kernel deps). Neither does I/O beyond reading a
+passed-in env/flags/config snapshot, keeping the `bin/forge.js` edit minimal (the
+D19 coordination point).
 
 ```
 resolveIssueBackend({ flags, env, config }) -> {

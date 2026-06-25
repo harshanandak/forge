@@ -147,10 +147,14 @@ describe('kernel issue CLI — multi-id close E2E', () => {
   test(
     'exit code is 0 for the multi-id kernel close',
     () => {
-      runForge(repo, ['create', '--id', 'solo-1', '--title', 'Solo', '--kernel']);
+      runForge(repo, ['create', '--id', 'solo-1', '--title', 'Solo 1', '--kernel']);
+      runForge(repo, ['create', '--id', 'solo-2', '--title', 'Solo 2', '--kernel']);
       // execFileSync throws on non-zero exit; reaching the assertion means exit 0.
-      const output = runForge(repo, ['close', 'solo-1', '--reason=done', '--kernel']);
+      // Two leading ids exercises the batched (fan-out) close branch, not the
+      // single-id path.
+      const output = runForge(repo, ['close', 'solo-1', 'solo-2', '--reason=done', '--kernel']);
       expect(output).toContain('solo-1');
+      expect(output).toContain('solo-2');
     },
     TIMEOUT,
   );
