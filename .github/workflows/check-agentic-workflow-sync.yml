@@ -17,7 +17,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check active workflow files are synced
         run: node scripts/sync-agentic-workflow.js --check
       - name: Install gh-aw CLI
