@@ -35,7 +35,6 @@ describe('forge release check command', () => {
     expect(blockerIds).toEqual([
       'bd-hot-path-issue-commands',
       'kernel-backed-forge-issue',
-      'forge-orient-issue-recap',
       'premerge-embedded-gate',
       'fresh-clone-no-beads-acceptance',
     ]);
