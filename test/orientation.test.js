@@ -168,16 +168,12 @@ describe('issue-scoped recap command', () => {
     expect(parsed.next_commands).toContain('forge show forge-orient.1 --json');
   });
 
-  test('forge recap --json keeps the existing no-arg activity recap contract', async () => {
+  test('forge recap without an issue prints usage and fails', async () => {
     const root = makeProject();
-    const result = await recap.handler(['--json'], {}, root);
-    const parsed = JSON.parse(result.output);
+    const result = await recap.handler([], {}, root);
 
-    expect(parsed.issueSummary).toEqual({ total: 1, open: 1, closed: 0 });
-    expect(parsed.recentIssues).toEqual([
-      { id: 'forge-orient.1', title: 'Add bounded orientation', status: 'open' },
-    ]);
-    expect(parsed.kind).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('forge recap <issue>');
   });
 });
 
