@@ -37,7 +37,6 @@ describe('forge release check command', () => {
       'kernel-backed-forge-issue',
       'forge-orient-issue-recap',
       'forge-skills-pack',
-      'forge-remember-recall',
       'premerge-embedded-gate',
       'fresh-clone-no-beads-acceptance',
     ]);
