@@ -97,6 +97,14 @@ const REQUIRED_ARGS = {
 	verify: [],
 };
 
+// Allowed flags per command. Commands listed here have their flags strictly
+// validated — an unknown flag is rejected rather than silently forwarded
+// (e.g. a typo like `--auto-reabse` must not run shepherd with default
+// behaviour). Commands NOT listed here keep their permissive flag handling.
+const ALLOWED_FLAGS = {
+	shepherd: ['--auto-rebase'],
+};
+
 /**
  * Parse command line arguments
  * @param {string[]} argv - Process arguments
@@ -184,6 +192,19 @@ function validateArgs(command, args) {
 		const slugValidation = validateSlug(positionalArgs[0]);
 		if (!slugValidation.valid) {
 			return slugValidation;
+		}
+	}
+
+	// Reject unknown flags for commands with a strict flag allow-list, so typos
+	// fail loudly instead of running with default behaviour.
+	const allowedFlags = ALLOWED_FLAGS[command];
+	if (allowedFlags) {
+		const unknownFlag = args.find(a => a.startsWith('--') && !allowedFlags.includes(a));
+		if (unknownFlag) {
+			return {
+				valid: false,
+				error: `Error: Unknown flag '${unknownFlag}' for 'forge ${command}'\n\nAllowed flags: ${allowedFlags.join(', ') || '(none)'}`,
+			};
 		}
 	}
 
@@ -367,4 +388,5 @@ module.exports = {
 	getHelpText,
 	findWorkPlanDoc,
 	findPlanDocForBranch,
+	ALLOWED_FLAGS,
 };

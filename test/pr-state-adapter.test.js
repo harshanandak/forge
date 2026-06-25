@@ -75,6 +75,28 @@ describe('PrStateAdapter', () => {
     expect(apiCall.args.join(' ')).toContain('repos/o/r/branches/master/protection/required_status_checks');
   });
 
+  test('readRequiredChecks returns null for an unexpected payload shape (not [])', async () => {
+    // A malformed/changed protection payload must NOT look like "no required
+    // checks" — that would let the shepherd compute merge readiness from bad data.
+    const { run } = makeRunner([
+      ['protection/required_status_checks', JSON.stringify({ unexpected: true })],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
+
+    expect(result).toBeNull();
+  });
+
+  test('readRequiredChecks returns [] for a valid empty contexts payload', async () => {
+    const { run } = makeRunner([
+      ['protection/required_status_checks', JSON.stringify({ contexts: [] })],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
+
+    expect(result).toEqual([]);
+  });
+
   test('readRequiredChecks surfaces unreadable protection (403) instead of guessing', async () => {
     const err = new Error('403');
     err.stderr = 'HTTP 403: Resource not accessible by integration';
@@ -98,6 +120,32 @@ describe('PrStateAdapter', () => {
     const call = calls.find((c) => c.args.join(' ').includes('rev-list'));
     expect(call.args.join(' ')).toContain('--left-right');
     expect(call.args.join(' ')).toContain('--count');
+  });
+
+  test('readDivergence threads cwd through to the git runner', async () => {
+    const calls = [];
+    const run = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return '0\t0\n';
+    };
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    await adapter.readDivergence({ baseRef: 'origin/master', cwd: '/work/tree' });
+
+    const call = calls.find((c) => c.args.join(' ').includes('rev-list'));
+    expect(call.opts && call.opts.cwd).toBe('/work/tree');
+  });
+
+  test('readDivergence omits cwd when none is supplied (runs in process dir)', async () => {
+    const calls = [];
+    const run = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return '0\t0\n';
+    };
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    await adapter.readDivergence({ baseRef: 'origin/master' });
+
+    const call = calls.find((c) => c.args.join(' ').includes('rev-list'));
+    expect(call.opts === undefined || call.opts.cwd === undefined).toBe(true);
   });
 
   test('rerunFailedChecks shells out to gh run rerun --failed', async () => {

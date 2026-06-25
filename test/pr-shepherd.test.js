@@ -21,6 +21,7 @@ function makeAdapter(spec = {}) {
       kind: 'pr-state',
       async readState() {
         readCount += 1;
+        if (spec.stateAuthError) throw spec.stateAuthError;
         const headSha = typeof spec.headSha === 'function' ? spec.headSha(readCount) : (spec.headSha || 'sha-1');
         return {
           headSha,
@@ -33,7 +34,9 @@ function makeAdapter(spec = {}) {
         if (spec.requiredAuthError) throw spec.requiredAuthError;
         return spec.required === undefined ? [] : spec.required;
       },
-      async readDivergence() {
+      async readDivergence(divArgs) {
+        actions.push({ type: 'readDivergence', ...divArgs });
+        if (spec.divergenceAuthError) throw spec.divergenceAuthError;
         return { behind: spec.behind || 0, ahead: spec.ahead || 0 };
       },
       async rerunFailedChecks(args) {
@@ -169,6 +172,93 @@ describe('runShepherdPass — bounded pass state machine', () => {
     const expiredResult = await runShepherdPass({ ...BASE_CTX, adapter: expired.adapter });
     expect(expiredResult.authClass).toBe('expired');
     expect(expiredResult.state).toBe('PENDING'); // pause + surface, transient
+  });
+
+  // 7b — known-empty required set must not be gated by optional checks.
+  test('required:[] with no checks → MERGE_READY (not stuck PENDING)', async () => {
+    const { adapter } = makeAdapter({
+      required: [],
+      checks: [],
+      behind: 0,
+      mergeStateStatus: 'CLEAN',
+    });
+    const result = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(result.state).toBe('MERGE_READY');
+  });
+
+  test('required:[] with a RED optional check → still MERGE_READY (optional checks do not gate)', async () => {
+    const { adapter } = makeAdapter({
+      required: [],
+      checks: [{ name: 'optional-bench', conclusion: 'FAILURE' }],
+      behind: 0,
+      mergeStateStatus: 'CLEAN',
+    });
+    const result = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(result.state).toBe('MERGE_READY');
+  });
+
+  // 7c — auth taxonomy is applied to readState and readDivergence too, not
+  // just readRequiredChecks. Otherwise the CLI throws a generic failure.
+  test('readState 403 insufficient-scope → HARD_STOP (auth taxonomy applied)', async () => {
+    const scopeErr = new Error('forbidden');
+    scopeErr.httpStatus = 403;
+    scopeErr.stderr = 'HTTP 403: Resource not accessible by integration';
+    const { adapter } = makeAdapter({ required: ['unit'], stateAuthError: scopeErr });
+    const result = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(result.state).toBe('HARD_STOP');
+    expect(result.authClass).toBe('insufficient-scope');
+  });
+
+  test('readState 401 expired → PENDING (auth taxonomy applied)', async () => {
+    const expiredErr = new Error('unauthorized');
+    expiredErr.httpStatus = 401;
+    const { adapter } = makeAdapter({ required: ['unit'], stateAuthError: expiredErr });
+    const result = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(result.state).toBe('PENDING');
+    expect(result.authClass).toBe('expired');
+  });
+
+  test('readDivergence 403 rate-limit → PENDING with retryAfter (auth taxonomy applied)', async () => {
+    const rateErr = new Error('rate limited');
+    rateErr.httpStatus = 403;
+    rateErr.retryAfter = 42;
+    const { adapter } = makeAdapter({
+      required: ['unit'],
+      checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      divergenceAuthError: rateErr,
+    });
+    const result = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(result.state).toBe('PENDING');
+    expect(result.authClass).toBe('rate-limit');
+    expect(result.retryAfter).toBe(42);
+  });
+
+  test('readDivergence non-auth error propagates (still throws)', async () => {
+    const boom = new Error('git exploded');
+    const { adapter } = makeAdapter({
+      required: ['unit'],
+      checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      divergenceAuthError: boom,
+    });
+    let threw = false;
+    try {
+      await runShepherdPass({ ...BASE_CTX, adapter });
+    } catch (err) {
+      threw = err === boom;
+    }
+    expect(threw).toBe(true);
+  });
+
+  // 7d — cwd from the context is threaded into the divergence read.
+  test('ctx.cwd is passed through to readDivergence', async () => {
+    const { adapter, actions } = makeAdapter({
+      required: ['unit'],
+      checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      behind: 0,
+    });
+    await runShepherdPass({ ...BASE_CTX, adapter, cwd: '/work/tree' });
+    const div = actions.find((a) => a.type === 'readDivergence');
+    expect(div.cwd).toBe('/work/tree');
   });
 
   // 8

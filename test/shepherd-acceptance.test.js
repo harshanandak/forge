@@ -193,12 +193,19 @@ describe('shepherd acceptance §5', () => {
     expect(typeof out).toBe('string');
   });
 
-  // §5.9 — NOT coupled to forge release check (documented, asserted by omission).
-  test('§5.9 acceptance does not assert the release gate is green', () => {
-    // Intentionally empty of any release-gate assertion. The release gate is RED
-    // for unrelated D22 reasons (freshClone + premergeEmbeddedGate). Shepherd
-    // acceptance is decoupled per plan D-7.
-    expect(true).toBe(true);
+  // §5.9 — Shepherd is decoupled from the release gate. Observable assertion:
+  // the shepherd source references no release-gate machinery, so a RED release
+  // gate (unrelated D22 reasons) can never block or alter a shepherd pass.
+  test('§5.9 shepherd source is decoupled from the release gate', () => {
+    const sources = [
+      fs.readFileSync(path.join(ROOT, 'lib', 'pr-shepherd.js'), 'utf8'),
+      fs.readFileSync(path.join(ROOT, 'lib', 'commands', 'shepherd.js'), 'utf8'),
+    ];
+    for (const src of sources) {
+      expect(/release\s+check/i.test(src)).toBe(false);
+      expect(/premergeEmbeddedGate/.test(src)).toBe(false);
+      expect(/freshClone/.test(src)).toBe(false);
+    }
   });
 
   // §5.10 — HEAD-changed abort.

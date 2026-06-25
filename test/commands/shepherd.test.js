@@ -53,6 +53,45 @@ describe('shepherd command handler', () => {
     expect(out.error).toMatch(/pr/i);
   });
 
+  test('defaultBuildContext derives base from the PR target, not the current checkout', async () => {
+    const ghCalls = [];
+    const gh = (cmd, args) => {
+      ghCalls.push(args.join(' '));
+      if (args.includes('pr') && args.includes('view')) {
+        return JSON.stringify({ baseRefName: 'release/2.0' });
+      }
+      if (args.includes('repo') && args.includes('view')) {
+        return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+      }
+      return '{}';
+    };
+    const git = () => 'origin\n';
+
+    const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
+
+    expect(ctx.base).toBe('release/2.0');
+    expect(ctx.baseRef).toBe('origin/release/2.0');
+    expect(ctx.owner).toBe('acme');
+    expect(ctx.repo).toBe('widget');
+    // It MUST consult the PR, not just `gh repo view` defaultBranchRef.
+    expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
+  });
+
+  test('defaultBuildContext threads the worktree root through as ctx.cwd', async () => {
+    const gh = (cmd, args) => {
+      if (args.includes('pr') && args.includes('view')) {
+        return JSON.stringify({ baseRefName: 'master' });
+      }
+      return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
+    };
+    const git = () => 'origin\n';
+
+    const ctx = await shepherdCmd.defaultBuildContext({
+      pr: '9', gh, git, projectRoot: '/work/tree',
+    });
+    expect(ctx.cwd).toBe('/work/tree');
+  });
+
   test('MERGE_READY result never carries a merge side-effect', async () => {
     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
       runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready' }),
