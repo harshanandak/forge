@@ -54,16 +54,52 @@ describe('stripSelectorTokens — consume + remove --kernel / --issue-backend', 
 
 describe('resolveCommandOpts — issue commands', () => {
   test(
-    'default (no flag/env) → beads, no kernel deps, args unchanged',
+    'default (no flag/env) → kernel deps assembled, args unchanged',
     async () => {
+      const built = [];
       const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--reason=x'], {
+        env: {},
+        projectRoot: '/repo',
+        // Inject the factory so the test does not touch a real SQLite runtime.
+        buildKernelIssueDeps: (opts) => {
+          built.push(opts);
+          return { useKernelBroker: true, kernelDriver: { exec() {} }, kernelDatabasePath: ':memory:' };
+        },
+      });
+      expect(commandOpts.issueBackend).toBe('kernel');
+      expect(commandOpts.useKernelBroker).toBe(true);
+      expect(commandOpts.kernelDriver).toBeDefined();
+      expect(args).toEqual(['kap-10', '--reason=x']);
+      expect(built).toHaveLength(1);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'beads opt-out (--issue-backend beads) → no kernel deps, selector token stripped',
+    async () => {
+      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--issue-backend', 'beads', '--reason=x'], {
         env: {},
         projectRoot: '/repo',
       });
       expect(commandOpts.issueBackend).toBe('beads');
       expect(commandOpts.useKernelBroker).toBeFalsy();
       expect(commandOpts.kernelDriver).toBeUndefined();
+      // selector token removed; the real close args remain
       expect(args).toEqual(['kap-10', '--reason=x']);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'beads opt-out (FORGE_ISSUE_BACKEND=beads env) → no kernel deps',
+    async () => {
+      const { commandOpts } = await resolveCommandOpts('close', ['kap-10'], {
+        env: { FORGE_ISSUE_BACKEND: 'beads' },
+        projectRoot: '/repo',
+      });
+      expect(commandOpts.issueBackend).toBe('beads');
+      expect(commandOpts.useKernelBroker).toBeFalsy();
     },
     TIMEOUT,
   );
@@ -122,7 +158,7 @@ describe('resolveCommandOpts — issue commands', () => {
   test(
     'ISSUE_COMMANDS includes the alias verbs and the issue grouping command',
     () => {
-      for (const verb of ['close', 'create', 'update', 'claim', 'release', 'comment', 'show', 'list', 'ready', 'issue']) {
+      for (const verb of ['close', 'create', 'update', 'claim', 'release', 'comment', 'show', 'list', 'ready', 'blocked', 'stale', 'orphans', 'lint', 'issue']) {
         expect(ISSUE_COMMANDS.has(verb)).toBe(true);
       }
     },
