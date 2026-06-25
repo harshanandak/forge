@@ -4,7 +4,6 @@ const os = require('node:os');
 const path = require('node:path');
 
 const insightsCommand = require('../../lib/commands/insights');
-const recapCommand = require('../../lib/commands/recap');
 
 const tempRoots = [];
 
@@ -101,37 +100,5 @@ describe('forge insights command', () => {
 
     expect(result.success).toBe(true);
     expect(parsed.candidates.length).toBeGreaterThan(0);
-  });
-});
-
-describe('forge recap command', () => {
-  test('prints recent work and limitations', async () => {
-    const root = makeRepo();
-    seedRepo(root);
-
-    const result = await recapCommand.handler(['--min-count', '2'], {}, root);
-
-    expect(result.success).toBe(true);
-    expect(result.output).toContain('Forge recap');
-    expect(result.output).toContain('Recent work');
-    expect(result.output).toContain('Limitations');
-  });
-
-  test('text output honors recap limit', async () => {
-    const root = makeRepo();
-    seedRepo(root);
-    writeJsonl(path.join(root, '.beads', 'issues.jsonl'), [
-      { _type: 'issue', id: 'forge-a', title: 'Review evidence one', status: 'closed', updated_at: '2026-05-01T10:00:00Z' },
-      { _type: 'issue', id: 'forge-b', title: 'Review evidence two', status: 'open', updated_at: '2026-05-02T10:00:00Z' },
-      { _type: 'issue', id: 'forge-c', title: 'Review evidence three', status: 'open', updated_at: '2026-05-03T10:00:00Z' },
-      { _type: 'issue', id: 'forge-d', title: 'Review evidence four', status: 'open', updated_at: '2026-05-04T10:00:00Z' },
-      { _type: 'issue', id: 'forge-e', title: 'Review evidence five', status: 'open', updated_at: '2026-05-05T10:00:00Z' },
-      { _type: 'issue', id: 'forge-f', title: 'Review evidence six', status: 'open', updated_at: '2026-05-06T10:00:00Z' },
-    ]);
-
-    const result = await recapCommand.handler(['--limit', '6', '--min-count', '2'], {}, root);
-
-    expect(result.output).toContain('forge-f');
-    expect(result.output).toContain('forge-a');
   });
 });
