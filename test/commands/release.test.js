@@ -36,7 +36,6 @@ describe('forge release check command', () => {
       'bd-hot-path-issue-commands',
       'kernel-backed-forge-issue',
       'forge-orient-issue-recap',
-      'forge-skills-pack',
       'premerge-embedded-gate',
       'fresh-clone-no-beads-acceptance',
     ]);

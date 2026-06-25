@@ -1,0 +1,45 @@
+{
+  "name": "forge-plugin",
+  "version": "0.1.0",
+  "description": "Forge CLI-wrapper skills pack. Each skill teaches an AI agent to drive one Forge issue-workflow command (forge ready, show, claim, comment, close, recap) instead of touching the underlying issue store directly.",
+  "author": "forge",
+  "compatibility": "Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo.",
+  "skills": [
+    {
+      "name": "ready",
+      "path": "skills/ready/SKILL.md",
+      "command": "forge ready",
+      "description": "List ready-to-claim issues whose dependencies are all satisfied."
+    },
+    {
+      "name": "show",
+      "path": "skills/show/SKILL.md",
+      "command": "forge show",
+      "description": "Show the full detail of a single issue by id."
+    },
+    {
+      "name": "claim",
+      "path": "skills/claim/SKILL.md",
+      "command": "forge claim",
+      "description": "Claim a ready issue and move it into in-progress for the current agent."
+    },
+    {
+      "name": "comment",
+      "path": "skills/comment/SKILL.md",
+      "command": "forge comment",
+      "description": "Append a progress note or decision to an issue's discussion thread."
+    },
+    {
+      "name": "close",
+      "path": "skills/close/SKILL.md",
+      "command": "forge close",
+      "description": "Close one or more completed issues."
+    },
+    {
+      "name": "recap",
+      "path": "skills/recap/SKILL.md",
+      "command": "forge recap",
+      "description": "Produce a bounded recap of an issue's history and current state."
+    }
+  ]
+}
