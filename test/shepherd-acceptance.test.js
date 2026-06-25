@@ -291,4 +291,21 @@ describe('shepherd acceptance §5', () => {
     expect(res.capped).toBe(true);
     expect(res.sample.length).toBe(20);
   });
+
+  // Regression (CodeRabbit): a bot-OPENED thread with a later HUMAN reply must
+  // still be actionable — readComments returns ALL thread comments and
+  // actionableComments detects any non-bot/non-self participant (not just the
+  // first comment's author).
+  test('comments: bot-opened thread with a later human reply → NEEDS_REVIEW', async () => {
+    const s = scriptedAdapter([{
+      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      comments: [{ isResolved: false, comments: [
+        { author: 'coderabbitai', body: 'nit: rename' },
+        { author: 'carol', body: 'good catch — also fix Y' },
+      ] }],
+    }]);
+    const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
+    expect(res.state).toBe('NEEDS_REVIEW');
+    expect(res.commentCount).toBe(1);
+  });
 });
