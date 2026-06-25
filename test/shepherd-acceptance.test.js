@@ -35,6 +35,7 @@ function scriptedAdapter(steps) {
         const s = cur();
         return {
           headSha: typeof s.headSha === 'function' ? s.headSha() : (s.headSha || 'sha-1'),
+          state: s.state || 'OPEN',
           mergeStateStatus: s.mergeStateStatus || 'CLEAN',
           checks: s.checks || [],
           threads: s.threads || [],
@@ -236,5 +237,20 @@ describe('shepherd acceptance §5', () => {
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
+  });
+
+  // Lifecycle — a merged/closed PR is terminal so the external scheduler stops
+  // re-invoking it (previously the pass would keep returning MERGE_READY).
+  test('lifecycle: merged PR → MERGED terminal, no merge action', async () => {
+    const s = scriptedAdapter([{ state: 'MERGED', required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }] }]);
+    const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
+    expect(res.state).toBe('MERGED');
+    expect(noMerge(res.actions)).toBe(true);
+  });
+
+  test('lifecycle: closed PR → CLOSED terminal', async () => {
+    const s = scriptedAdapter([{ state: 'CLOSED' }]);
+    const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
+    expect(res.state).toBe('CLOSED');
   });
 });
