@@ -76,7 +76,7 @@ _issue_detail_lines() {
           | map(select(. != ""))
           | join(","))
       ]
-    | join("|")'
+    | join("|")' | tr -d '\r'
 }
 
 # ── Dashboard Command ────────────────────────────────────────────────────

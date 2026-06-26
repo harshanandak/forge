@@ -146,7 +146,7 @@ cmd_verify() {
   while IFS= read -r oid; do
     [[ -z "$oid" ]] && continue
     issue_orphans+=("$oid")
-  done <<< "$(printf '%s' "$issues_json" | jq -r '.[] | select(((.labels // []) | any(test("^github_issue:"))) | not) | .id' 2>/dev/null)"
+  done <<< "$(printf '%s' "$issues_json" | jq -r '.[] | select(((.labels // []) | any(test("^github_issue:"))) | not) | .id' 2>/dev/null | tr -d '\r')"
 
   if [[ ${#issue_orphans[@]} -eq 0 ]]; then
     echo "✓ Forge→GitHub: ${issue_synced}/${issue_total} issues synced"
