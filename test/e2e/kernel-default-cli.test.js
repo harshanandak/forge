@@ -188,23 +188,21 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
   );
 
   test(
-    'KNOWN GAP (separate task): claim + release still fail on the kernel default path',
+    'claim + release succeed on the kernel default path (post-spine #241)',
     () => {
       const id = extractId(runForgeDefault(repo, ['create', '--title', 'gap issue', '--type', 'task']).stdout);
       expect(id).toBeTruthy();
 
-      // claim — pre-existing kernel handler gap (invalid_claim_scope). Reproducible
-      // identically via `claim --kernel` on master, so the flip did not cause it.
+      // claim — the de-beading spine (#241) implemented the real kernel claim
+      // handler (fixed the invalid_claim_scope gap). No --kernel flag, so this
+      // proves the DEFAULT path now claims successfully.
       const claim = runForgeDefault(repo, ['claim', id]);
-      expect(claim.status).not.toBe(0);
-      expect(claim.stdout).not.toContain('"schema_version": "forge.issue.v1"');
+      expect(claim.status).toBe(0);
 
-      // release — pre-existing kernel handler gap (SQLite param binding). When the
-      // separate de-beading task lands the real claim/release path, this assertion
-      // should be flipped to expect success.
+      // release — #241 also fixed the kernel release handler (SQLite param
+      // binding). The previously-locked gap is now closed end-to-end.
       const release = runForgeDefault(repo, ['release', id]);
-      expect(release.status).not.toBe(0);
-      expect(release.stdout).not.toContain('"schema_version": "forge.issue.v1"');
+      expect(release.status).toBe(0);
     },
     TIMEOUT,
   );

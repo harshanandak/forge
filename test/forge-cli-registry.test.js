@@ -129,7 +129,12 @@ describe('CLI Registry Integration', () => {
 
       const { stdout, stderr, status } = runForge(
         ['issues', 'create', '--help'],
-        { PATH: `${tempDir}${path.delimiter}${process.env.PATH}` }
+        // Pin beads: this test exercises the beads-passthrough help path (fake bd
+        // prints "BD CREATE HELP"). After the kernel default-flip, a no-flag
+        // invocation routes to the kernel (which never shells out to bd), so the
+        // backend is pinned to assert that `issues create --help` reaches the
+        // subcommand handler instead of being swallowed by global help parsing.
+        { PATH: `${tempDir}${path.delimiter}${process.env.PATH}`, FORGE_ISSUE_BACKEND: 'beads' }
       );
 
       const combined = stdout + stderr;
