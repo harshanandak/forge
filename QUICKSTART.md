@@ -8,7 +8,7 @@ This guide gets Forge installed and visible to an AI coding agent without assumi
 - Node.js and Bun
 - A GitHub repository if you want PR, sync, and branch-protection workflows
 - GitHub CLI for PR-oriented flows: `gh auth login`
-- Optional: Beads (`bd`) for durable local issue state
+- Optional: Beads (`bd`) as an opt-out issue backend (issue commands use the built-in kernel backend by default)
 
 ## 1. Install The Package
 
@@ -22,7 +22,7 @@ Terms used below:
 
 - Runtime config means local `.forge/` files that describe adoption choices.
 - Harness means an agent-specific install target. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
-- Beads means the optional `bd` issue backend used by `forge ready`, `forge show`, and related wrappers.
+- Beads means the opt-out `bd` issue backend. By default `forge ready`, `forge show`, and related wrappers use the built-in kernel backend; select Beads as described in section 5.
 
 ## 2. Initialize Runtime Config
 
@@ -72,19 +72,19 @@ bunx forge status --json
 bunx forge board --json
 ```
 
-These are local runtime state views. They can read Beads-backed issue metadata when Beads is configured, but they are not a hosted project-management service.
+These are local runtime state views. They read the kernel issue store by default (and Beads-backed metadata when Beads is selected), but they are not a hosted project-management service.
 
 ## 5. Work With Issues And Worktrees
 
-Skip the issue commands until `bd --version` works and Beads is initialized for the repository. If `forge ready` reports that Beads is not initialized, run the Beads setup path in [Setup guide](docs/guides/SETUP.md) or use [Support and troubleshooting](docs/guides/SUPPORT.md) before changing issue state.
-
-When Beads is available:
+Issue commands use the built-in kernel backend by default — no Beads install or initialization is required:
 
 ```bash
 bunx forge ready
 bunx forge show <issue-id>
 bunx forge claim <issue-id>
 ```
+
+Beads is available as an opt-out backend. Select it (precedence: highest first) with the CLI flag `--issue-backend beads`, the environment variable `FORGE_ISSUE_BACKEND=beads`, or the `.forge/config.yaml` key `issueBackend: beads`. For Beads setup, see [Setup guide](docs/guides/SETUP.md).
 
 For isolated feature work:
 
@@ -93,7 +93,7 @@ bunx forge worktree create docs-overhaul --branch codex/docs-overhaul
 bunx forge worktree remove docs-overhaul
 ```
 
-If Beads reports a Dolt database or server error, use [Support and troubleshooting](docs/guides/SUPPORT.md) before changing issue state.
+If Beads (when selected) reports a Dolt database or server error, use [Support and troubleshooting](docs/guides/SUPPORT.md) before changing issue state.
 
 ## 6. Run Validation
 
