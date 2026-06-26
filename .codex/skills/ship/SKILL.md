@@ -65,7 +65,7 @@ If merge simulation finds conflicts:
 - Display conflicted files
 - Ask: "Merge conflicts detected with base branch. These PRs should merge first: [list]. Proceed with PR creation anyway? (y/n)"
 - If `n`: exit cleanly
-- If `y`: log override via `bd comments add <id> "Ship override: creating PR despite merge conflicts"`, then continue
+- If `y`: log override via `forge comment <id> "Ship override: creating PR despite merge conflicts"`, then continue
 
 After PR creation completes:
 ```bash

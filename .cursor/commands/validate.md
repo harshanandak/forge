@@ -257,8 +257,8 @@ Ready for /ship
   - validation.test.ts: Assertion failed
   - auth.test.ts: Timeout exceeded
 
-✓ Beads issue created: bd-k8m3 "Fix validation test"
-✓ Current issue marked: Blocked by bd-k8m3
+✓ Issue created: forge-k8m3 "Fix validation test"
+✓ Current issue marked: Blocked by forge-k8m3
 
 Fix issues then re-run /validate
 ```

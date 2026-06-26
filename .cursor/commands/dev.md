@@ -79,7 +79,7 @@ If exit code 1 (conflicts found):
 - Display the conflict output to the developer
 - Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"
 - If `n`: exit cleanly, no side effects
-- If `y`: log override via `bd comments add <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
+- If `y`: log override via `forge comment <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
 - Audit: record conflict override per OWASP A09
 
 If exit code 0: proceed silently to Per-Task Loop.

@@ -338,9 +338,9 @@ bunx forge rollback
 /validate → /ship
 ```
 
-## Beads Integration
+## Issue Tracking Integration
 
-If Beads is installed (`bun install -g @beads/bd`), rollback automatically updates issue tracking.
+Forge issue tracking is built in, so rollback automatically updates issue status.
 
 ### PR Rollback → Issue Status
 
@@ -630,10 +630,10 @@ bunx forge rollback
 # ✓ Extracting USER sections...
 # ✓ Executing: git revert -m 1 merge789 --no-edit
 # ✓ Restoring USER sections...
-# ✓ Beads: Issue #123 → status: reverted
+# ✓ Tracker: Issue #123 → status: reverted
 # ✓ Rollback complete!
 
-bd show 123
+forge show 123
 # ID: 123
 # Title: Add real-time updates
 # Status: reverted

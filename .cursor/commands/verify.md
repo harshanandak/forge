@@ -139,7 +139,7 @@ Branch: <branch-name> deleted ✓
 **Never commit inline.** If something is wrong, create a tracking issue:
 
 ```bash
-bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
+forge issue create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
 ### Step 8: Close Beads Issues (if healthy)
@@ -160,17 +160,17 @@ BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z
 # Validate each ID exists in beads
 VALID_IDS=""
 for id in $BEADS_IDS; do
-  if bd show "$id" >/dev/null 2>&1; then
+  if forge show "$id" >/dev/null 2>&1; then
     VALID_IDS="$VALID_IDS $id"
   fi
 done
 BEADS_IDS="$VALID_IDS"
 
 # Also check branch name for beads ID — extract segment after last /
-# then validate with bd show to avoid false matches like "pr-templa"
+# then validate with forge show to avoid false matches like "pr-templa"
 BRANCH_SLUG=$(echo "$PR_BRANCH" | sed 's|.*/||')
 BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
-if [ -n "$BRANCH_ID" ] && ! bd show "$BRANCH_ID" >/dev/null 2>&1; then
+if [ -n "$BRANCH_ID" ] && ! forge show "$BRANCH_ID" >/dev/null 2>&1; then
   BRANCH_ID=""  # Not a valid beads ID — discard
 fi
 ```

@@ -9,8 +9,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 108 | 11 |
 | runtime | 351 | 48 |
-| docs | 452 | 68 |
-| skills | 22 | 9 |
+| docs | 394 | 47 |
+| skills | 1 | 1 |
 | hooks | 0 | 0 |
 
 ## command
@@ -139,48 +139,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## docs
 
-- [ ] .claude/commands/dev.md (1)
-  - lines: 85 (bd)
-- [ ] .claude/commands/plan.md (8)
-  - lines: 84 (bd), 113 (bd), 138 (bd), 142 (bd), 169 (bd), 372 (bd), 392 (bd), 498 (bd)
-- [ ] .claude/commands/review.md (1)
-  - lines: 250 (bd)
-- [ ] .claude/commands/rollback.md (2)
-  - lines: 346 (bd), 639 (bd)
-- [ ] .claude/commands/ship.md (1)
-  - lines: 68 (bd)
-- [ ] .claude/commands/status.md (2)
-  - lines: 33 (bd), 50 (bd)
-- [ ] .claude/commands/validate.md (2)
-  - lines: 263 (bd), 264 (bd)
-- [ ] .claude/commands/verify.md (4)
-  - lines: 145 (bd), 166 (bd), 173 (bd), 176 (bd)
-- [ ] .claude/rules/workflow.md (6)
-  - lines: 47 (bd), 48 (bd), 49 (bd), 50 (bd), 51 (bd), 61 (bd, dolt)
-- [ ] .cursor/commands/dev.md (1)
-  - lines: 82 (bd)
-- [ ] .cursor/commands/plan.md (8)
-  - lines: 81 (bd), 110 (bd), 135 (bd), 139 (bd), 166 (bd), 369 (bd), 389 (bd), 495 (bd)
-- [ ] .cursor/commands/review.md (1)
-  - lines: 247 (bd)
-- [ ] .cursor/commands/rollback.md (2)
-  - lines: 343 (bd), 636 (bd)
-- [ ] .cursor/commands/ship.md (1)
-  - lines: 65 (bd)
-- [ ] .cursor/commands/status.md (2)
-  - lines: 30 (bd), 47 (bd)
-- [ ] .cursor/commands/validate.md (2)
-  - lines: 260 (bd), 261 (bd)
-- [ ] .cursor/commands/verify.md (4)
-  - lines: 142 (bd), 163 (bd), 170 (bd), 173 (bd)
-- [ ] .cursor/rules/permissions-guidance.mdc (1)
-  - lines: 16 (bd)
-- [ ] .cursorrules (1)
-  - lines: 34 (bd)
-- [ ] AGENTS.md (6)
-  - lines: 123 (bd), 181 (dolt), 239 (bd), 252 (bd, dolt), 253 (bd), 254 (bd)
-- [ ] CLAUDE.md (2)
-  - lines: 99 (dolt), 100 (dolt)
 - [ ] docs/guides/BEADS_GITHUB_SYNC.md (3)
   - lines: 7 (.beads), 10 (dolt), 32 (.beads)
 - [ ] docs/guides/SETUP.md (5)
@@ -278,22 +236,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## skills
 
-- [ ] .codex/skills/dev/SKILL.md (1)
-  - lines: 85 (bd)
-- [ ] .codex/skills/plan/SKILL.md (8)
-  - lines: 84 (bd), 113 (bd), 138 (bd), 142 (bd), 169 (bd), 372 (bd), 392 (bd), 498 (bd)
-- [ ] .codex/skills/review/SKILL.md (1)
-  - lines: 250 (bd)
-- [ ] .codex/skills/rollback/SKILL.md (2)
-  - lines: 346 (bd), 639 (bd)
-- [ ] .codex/skills/ship/SKILL.md (1)
-  - lines: 68 (bd)
-- [ ] .codex/skills/status/SKILL.md (2)
-  - lines: 33 (bd), 50 (bd)
-- [ ] .codex/skills/validate/SKILL.md (2)
-  - lines: 263 (bd), 264 (bd)
-- [ ] .codex/skills/verify/SKILL.md (4)
-  - lines: 145 (bd), 166 (bd), 173 (bd), 176 (bd)
 - [ ] packages/skills/README.md (1)
   - lines: 356 (bd)
 

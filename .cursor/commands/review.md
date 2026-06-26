@@ -244,7 +244,7 @@ gh pr comment <pr-number> --body "## Greptile Summary Response
 Addressed all key recommendations:
 - [Recommendation 1]: ✓ Fixed in commit <sha>
 - [Recommendation 2]: ✓ Explained (see inline response)
-- [Recommendation 3]: ⏭️ Out of scope for this PR (created issue bd-xxx)
+- [Recommendation 3]: ⏭️ Out of scope for this PR (created issue forge-xxx)
 
 All critical and high-priority items resolved."
 ```
