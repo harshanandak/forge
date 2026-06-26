@@ -7,6 +7,7 @@ const {
   ISSUE_COMMANDS,
   stripSelectorTokens,
 } = require('../../lib/commands/_resolve-command-opts');
+const { SUBCOMMANDS } = require('../../lib/commands/_issue');
 
 const TIMEOUT = 5000;
 
@@ -159,6 +160,20 @@ describe('resolveCommandOpts — issue commands', () => {
     'ISSUE_COMMANDS includes the alias verbs and the issue grouping command',
     () => {
       for (const verb of ['close', 'create', 'update', 'claim', 'release', 'comment', 'show', 'list', 'ready', 'blocked', 'stale', 'orphans', 'lint', 'issue']) {
+        expect(ISSUE_COMMANDS.has(verb)).toBe(true);
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'every SUBCOMMANDS verb is in ISSUE_COMMANDS (structural drift guard)',
+    () => {
+      // ISSUE_COMMANDS is hand-maintained and decoupled from the SUBCOMMANDS spec in
+      // _issue.js. A verb present in SUBCOMMANDS but missing here would — post the
+      // kernel default-flip — silently route to the retired Beads backend with no
+      // failing test (the cosmetic-flip class this work fixes). Fail CI on that drift.
+      for (const verb of Object.keys(SUBCOMMANDS)) {
         expect(ISSUE_COMMANDS.has(verb)).toBe(true);
       }
     },

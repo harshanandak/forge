@@ -10,14 +10,12 @@
 // initialized" / "no beads database"; kernel-contract output therefore proves the
 // op routed to the kernel, not merely that it exited 0.
 //
-// Two ops are deliberately asserted to STILL FAIL on the kernel default path:
-// `claim` and `release` are pre-existing kernel-handler gaps (invalid_claim_scope
-// / SQLite param binding) carved out to a separate task (the _issue.js de-beading
-// work). They fail identically when invoked with an explicit `--kernel` flag on
-// master, so the default flip did not cause them. Locking their current failure
-// here documents the known gap and will RED if a future change silently "fixes"
-// them without updating this test. (dep add/remove, by contrast, DO route to the
-// kernel by default — covered above via the `forge issue dep` grouping.)
+// `claim` and `release` now route to and SUCCEED on the kernel default path: the
+// de-beading spine (#241) implemented the real kernel handlers, closing the
+// invalid_claim_scope and SQLite param-binding gaps. Their test below asserts the
+// kernel contract on success and will RED if a regression breaks them. (dep
+// add/remove likewise route to the kernel by default — covered above via the
+// `forge issue dep` grouping.)
 
 const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const { execFileSync } = require('node:child_process');
@@ -198,11 +196,54 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
       // proves the DEFAULT path now claims successfully.
       const claim = runForgeDefault(repo, ['claim', id]);
       expect(claim.status).toBe(0);
+      // Assert the kernel contract on stdout, not just a zero exit: claim/release
+      // emit a bare `"command": "claim"`/`"release"` (no `issue.` prefix), so assert
+      // the strings directly rather than via expectKernelContract. This proves real
+      // kernel routing — release in particular exits 0 even for a nonexistent id.
+      expect(claim.stdout).toContain('"schema_version": "forge.issue.v1"');
+      expect(claim.stdout).toContain('"command": "claim"');
 
       // release — #241 also fixed the kernel release handler (SQLite param
       // binding). The previously-locked gap is now closed end-to-end.
       const release = runForgeDefault(repo, ['release', id]);
       expect(release.status).toBe(0);
+      expect(release.stdout).toContain('"schema_version": "forge.issue.v1"');
+      expect(release.stdout).toContain('"command": "release"');
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'search + stats route to the kernel by default',
+    () => {
+      // Both are reads in ISSUE_COMMANDS; with no --kernel flag they must hit the
+      // kernel contract so the file-level "every CLI issue op" claim holds.
+      expectKernelContract(runForgeDefault(repo, ['issue', 'search', 'seed']).stdout, 'search');
+      expectKernelContract(runForgeDefault(repo, ['issue', 'stats']).stdout, 'stats');
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'subcommand --help prints usage and mints nothing on the kernel default',
+    () => {
+      // Regression guard: pre-fix, `--help` was forwarded to the kernel as an op arg,
+      // so `forge issues create --help` errored "Command failed" and the singular
+      // `forge create --help` SILENTLY minted a junk issue. Help must short-circuit
+      // before any backend dispatch (lib/commands/_issue.js + lib/commands/issues.js).
+      for (const args of [['create', '--help'], ['issue', 'create', '--help'], ['issues', 'create', '--help']]) {
+        const res = runForgeDefault(repo, args);
+        expect(res.status).toBe(0);
+        expect(res.stdout).toContain('forge create');
+        // A help request never dispatches to a backend: no create envelope returned.
+        expect(res.stdout).not.toContain('"schema_version": "forge.issue.v1"');
+      }
+      // Help mints NOTHING: the issue store stays empty (pre-fix the singular path
+      // silently minted a junk issue here). The broker may lazily create an empty
+      // kernel.sqlite during opts resolution, so assert an empty store — not file
+      // absence.
+      const list = runForgeDefault(repo, ['issue', 'list']);
+      expect(list.stdout).toContain('"count": 0');
     },
     TIMEOUT,
   );
