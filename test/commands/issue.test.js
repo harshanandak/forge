@@ -56,7 +56,10 @@ describe('forge issue command surface', () => {
     }]);
   });
 
-  test('claim alias dispatches to bd update --claim', async () => {
+  test('claim alias dispatches the claim operation through the shared runner', async () => {
+    // De-bead: the claim->`update --claim` translation moved into the beads backend
+    // (test/forge-issues.test.js). At the command surface, claim routes the `claim`
+    // operation with the raw args; the active backend performs any translation.
     const calls = [];
     const result = await claim.handler(['forge-abc'], {}, '/fake/root', {
       runIssueOperation: async (operation, args, projectRoot) => {
@@ -67,8 +70,8 @@ describe('forge issue command surface', () => {
 
     expect(result).toEqual({ success: true, subcommand: 'claim' });
     expect(calls).toEqual([{
-      operation: 'update',
-      args: ['forge-abc', '--claim'],
+      operation: 'claim',
+      args: ['forge-abc'],
       projectRoot: '/fake/root',
     }]);
   });
@@ -91,13 +94,15 @@ describe('forge issue command surface', () => {
     expect(result.error).toContain('forge issue <subcommand>');
   });
 
-  test('issue handler surfaces missing bd binary clearly', async () => {
+  test('issue handler surfaces a backend error (e.g. missing bd binary) clearly', async () => {
+    // The bd-binary handling now lives in the beads backend (forge-issues runBdCommand
+    // / extractErrorMessage); the command surface simply propagates the backend's
+    // {success:false,error}. Inject the runner to assert the error reaches the caller.
     const result = await issue.handler(['list'], {}, '/fake/root', {
-      _exec: () => {
-        const error = new Error('spawn bd ENOENT');
-        error.code = 'ENOENT';
-        throw error;
-      },
+      runIssueOperation: async () => ({
+        success: false,
+        error: 'Beads (bd) command not found. Install or initialize Beads before using forge issues.',
+      }),
     });
 
     expect(result.success).toBe(false);

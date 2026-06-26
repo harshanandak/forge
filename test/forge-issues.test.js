@@ -381,6 +381,73 @@ describe('forge issue service contract', () => {
     ]);
   });
 
+  test('beads backend translates claim to bd update <id> --claim', async () => {
+    // De-bead parity: the claim->`update --claim` translation moved out of
+    // _issue.js into the beads layer. BeadsIssueAdapter.claim must emit the bd
+    // update argv so beads stays functional as the opt-out backend.
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const calls = [];
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      runBdCommand: async (args, projectRoot) => {
+        calls.push({ args, projectRoot });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    await expect(backend.claim(['forge-1'], { projectRoot: '/repo' }))
+      .resolves.toMatchObject({ success: true, operation: 'update' });
+
+    expect(calls).toEqual([{ args: ['update', 'forge-1', '--claim'], projectRoot: '/repo' }]);
+  });
+
+  test('beads backend release reports the kernel-only error without invoking bd', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    let invoked = false;
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      runBdCommand: async () => {
+        invoked = true;
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    await expect(backend.release(['forge-1'], { projectRoot: '/repo' })).resolves.toEqual({
+      success: false,
+      error: 'forge release <id> is defined for the Kernel issue backend; Beads passthrough has no verified release operation.',
+    });
+    expect(invoked).toBe(false);
+  });
+
+  test('beads backend passes derived reads (blocked/stale/orphans/lint/stats) through to bd', async () => {
+    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+    const calls = [];
+
+    const backend = createBeadsIssueBackend({
+      isBeadsInitialized: () => true,
+      runBdCommand: async (args, projectRoot) => {
+        calls.push({ args, projectRoot });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    await backend.blocked([], { projectRoot: '/repo' });
+    await backend.stale(['--days', '7'], { projectRoot: '/repo' });
+    await backend.orphans([], { projectRoot: '/repo' });
+    await backend.lint(['--json'], { projectRoot: '/repo' });
+    await backend.stats(['--json'], { projectRoot: '/repo' });
+
+    expect(calls.map(call => call.args)).toEqual([
+      ['blocked'],
+      ['stale', '--days', '7'],
+      ['orphans'],
+      ['lint', '--json'],
+      ['status', '--json'],
+    ]);
+  });
+
   test('default beads backend lets per-call deps override construction deps', async () => {
     const { createBeadsIssueBackend } = require('../lib/forge-issues');
     const calls = [];
