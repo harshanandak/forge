@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# Override TEAM_MAP_ROOT so tests don't touch real .beads/
+# Override TEAM_MAP_ROOT so tests don't touch real .forge/
 export TEAM_MAP_ROOT="$TEST_TMP"
 
 # ── Create mock gh ───────────────────────────────────────────────────────
@@ -52,26 +52,31 @@ exit 1
 MOCK
 chmod +x "$mock_dir/gh-fail"
 
-# ── Create mock bd ───────────────────────────────────────────────────────
-cat > "$mock_dir/bd" << 'MOCK'
+# ── Create mock forge ─────────────────────────────────────────────────────
+# `issue show --json` carries the github_issue:<n> association as a label.
+cat > "$mock_dir/forge" << 'MOCK'
 #!/usr/bin/env bash
-case "$1" in
-  show)
-    case "$2" in
-      forge-assigned) echo "forge-assigned  Assigned Issue [github_issue:42]" ;;
-      forge-unassigned) echo "forge-unassigned  Unassigned Issue [github_issue:43]" ;;
-      forge-mine) echo "forge-mine  My Issue [github_issue:44]" ;;
-      forge-nogithub) echo "forge-nogithub  No GitHub Issue" ;;
-      *) echo "unknown issue" ;;
-    esac ;;
-  update) echo "Updated" ;;
-  comments) echo "Comment added" ;;
+sub="$1 $2"
+id="$3"
+case "$sub" in
+  "issue show")
+    case "$id" in
+      forge-assigned)   labels='["github_issue:42"]' ;;
+      forge-unassigned) labels='["github_issue:43"]' ;;
+      forge-mine)       labels='["github_issue:44"]' ;;
+      forge-nogithub)   labels='[]' ;;
+      *)                labels='[]' ;;
+    esac
+    printf '{"data":{"issue":{"id":"%s","labels":%s}}}\n' "$id" "$labels"
+    ;;
+  "issue claim")   printf '{"data":{"id":"%s"}}\n' "$id" ;;
+  "issue comment") printf '{"data":{"id":"%s"}}\n' "$id" ;;
 esac
 MOCK
-chmod +x "$mock_dir/bd"
+chmod +x "$mock_dir/forge"
 
 export GH_CMD="$mock_dir/gh"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 # Source the library under test
 source "$SCRIPT_DIR/lib/claim.sh"
@@ -109,7 +114,7 @@ assert_exit() {
 # ── Test 1: Pre-claim on unassigned issue → returns 0 ───────────────────
 echo "── Test 1: Pre-claim on unassigned issue ──"
 unset _GITHUB_USER_CACHE
-mkdir -p "$TEST_TMP/.beads"
+mkdir -p "$TEST_TMP/.forge"
 rc=0
 pre_claim_check "forge-unassigned" 2>/dev/null || rc=$?
 assert_exit "unassigned issue returns 0" 0 "$rc"
@@ -136,7 +141,7 @@ assert_exit "assigned to self returns 0" 0 "$rc"
 echo ""
 echo "── Test 4: --force overrides pre-claim check ──"
 unset _GITHUB_USER_CACHE
-mkdir -p "$TEST_TMP/.beads"
+mkdir -p "$TEST_TMP/.forge"
 rc=0
 output="$(forge_team_claim "forge-assigned" "--force" 2>&1)" || rc=$?
 assert_exit "force claim succeeds" 0 "$rc"
@@ -146,7 +151,7 @@ assert_contains "confirmation output" "claimed" "$output"
 echo ""
 echo "── Test 5: Claim with lock succeeds ──"
 unset _GITHUB_USER_CACHE
-mkdir -p "$TEST_TMP/.beads"
+mkdir -p "$TEST_TMP/.forge"
 # Use the unassigned issue so pre-claim passes
 rc=0
 output="$(forge_team_claim "forge-unassigned" 2>&1)" || rc=$?

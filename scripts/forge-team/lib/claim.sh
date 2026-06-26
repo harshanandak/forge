@@ -10,8 +10,8 @@
 #   forge_team_claim  — Top-level dispatcher entry point
 #
 # Env overrides (for testing):
-#   GH_CMD   — Path to gh binary
-#   BD_CMD   — Path to bd binary
+#   GH_CMD    — Path to gh binary
+#   FORGE_CMD — Path to forge binary
 #
 # This file does NOT set errexit/pipefail — callers manage their own shell options.
 
@@ -61,16 +61,22 @@ _claim_prompt() {
   fi
 }
 
-# _get_github_issue_number <beads-id>
-# Extracts github_issue:N from bd show output. Returns number or empty.
+# _get_github_issue_number <issue-id>
+# Extracts the GitHub issue number from the issue's github_issue:<n> label.
+# Returns the number or empty.
 _get_github_issue_number() {
-  local beads_id="$1"
-  local bd_cmd="${BD_CMD:-bd}"
-  local bd_output
-  bd_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || return 1
+  local issue_id="$1"
+  local forge_cmd="${FORGE_CMD:-forge}"
+  local show_output
+  show_output="$("$forge_cmd" issue show "$issue_id" --json 2>/dev/null)" || return 1
 
   local issue_num
-  issue_num="$(printf '%s' "$bd_output" | grep -oP 'github_issue:\K[0-9]+' || true)"
+  issue_num="$(printf '%s' "$show_output" | jq -r '
+    (.data.issue // .data // {})
+    | (.labels // [])
+    | map(select(startswith("github_issue:")))
+    | (.[0] // "")
+    | ltrimstr("github_issue:")' 2>/dev/null)"
   if [[ -z "$issue_num" ]]; then
     return 1
   fi
@@ -90,7 +96,7 @@ _get_github_assignee() {
 # _claim_lock_dir — Returns the path to the claim lock directory
 _claim_lock_dir() {
   local root="${TEAM_MAP_ROOT:-.}"
-  printf '%s' "$root/.beads"
+  printf '%s' "$root/.forge"
 }
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -149,7 +155,7 @@ claim_with_lock() {
   fi
 
   local gh_cmd="${GH_CMD:-gh}"
-  local bd_cmd="${BD_CMD:-bd}"
+  local forge_cmd="${FORGE_CMD:-forge}"
   local lock_dir
   lock_dir="$(_claim_lock_dir)"
   mkdir -p "$lock_dir"
@@ -186,8 +192,8 @@ claim_with_lock() {
           exit 1
         fi
       fi
-      # Claim on both Beads and GitHub
-      "$bd_cmd" update "$beads_id" --claim >/dev/null 2>&1 || true
+      # Claim on both the Forge issue backend and GitHub
+      "$forge_cmd" issue claim "$beads_id" >/dev/null 2>&1 || true
       "$gh_cmd" issue edit "$issue_num" --add-assignee "$current_user" >/dev/null 2>&1 || true
     ) 200>"$lock_file"
     local subshell_rc=$?
@@ -215,8 +221,8 @@ claim_with_lock() {
         return 1
       fi
     fi
-    # Claim on both Beads and GitHub
-    "$bd_cmd" update "$beads_id" --claim >/dev/null 2>&1 || true
+    # Claim on both the Forge issue backend and GitHub
+    "$forge_cmd" issue claim "$beads_id" >/dev/null 2>&1 || true
     "$gh_cmd" issue edit "$issue_num" --add-assignee "$current_user" >/dev/null 2>&1 || true
   fi
 
@@ -234,13 +240,13 @@ forge_team_claim() {
     return 1
   fi
 
-  local bd_cmd="${BD_CMD:-bd}"
+  local forge_cmd="${FORGE_CMD:-forge}"
 
   if [[ "$force_flag" == "--force" ]]; then
     # Skip pre-claim check, claim directly (pass --force to skip lock re-check too)
     claim_with_lock "$beads_id" "--force" || return 1
-    # Log override via bd comments
-    "$bd_cmd" comments add "$beads_id" "Force-claimed by $(get_github_user 2>/dev/null || echo 'unknown')" >/dev/null 2>&1 || true
+    # Log the override as an issue comment
+    "$forge_cmd" issue comment "$beads_id" "Force-claimed by $(get_github_user 2>/dev/null || echo 'unknown')" >/dev/null 2>&1 || true
     _claim_info "$beads_id force-claimed successfully"
     return 0
   fi
