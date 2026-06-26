@@ -13,6 +13,14 @@ import { ensureRegistryExists, readRegistry, getSkillPaths } from '../lib/common
  * Sync skills to agent directories
  */
 export async function syncCommand(options) {
+  // Drift gate. Registry-independent (canonical is root skills/, read without
+  // the gitignored .skills/.registry.json) and AGENTS.md-safe (never writes).
+  // Only validates agent skill dirs that already exist — gitignored,
+  // setup-populated dirs are absent on a clean checkout and are not drift.
+  if (options && options.check) {
+    return runSyncCheck();
+  }
+
   try {
     // Ensure registry exists and load it (with graceful error handling)
     ensureRegistryExists();
@@ -138,6 +146,94 @@ function syncSkillsToAgents(skills, enabledAgents) {
 
     console.log(chalk.green('✓'), `Synced to ${chalk.cyan(agent.name)}`);
   }
+}
+
+/**
+ * `skills sync --check` — report drift between canonical skills and the
+ * generated agent mirrors, without writing anything. Sets a non-zero exit code
+ * when drift is found so it can gate CI / pre-push.
+ */
+function runSyncCheck() {
+  const { skillsDir } = getSkillPaths('');
+  const skills = getValidSkills(skillsDir);
+  const enabledAgents = detectAgents();
+  const drift = [];
+
+  for (const agent of enabledAgents) {
+    const agentSkillsPath = join(process.cwd(), agent.path);
+    if (!existsSync(agentSkillsPath)) continue; // populated at setup; absence ≠ drift
+
+    const canonicalNames = new Set(skills.map((s) => s.name));
+    const targetNames = readdirSync(agentSkillsPath, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+
+    for (const skill of skills) {
+      const targetPath = join(agentSkillsPath, skill.name);
+      if (!existsSync(targetPath)) {
+        drift.push({ agent: agent.name, skill: skill.name, file: 'SKILL.md', status: 'missing' });
+        continue;
+      }
+      for (const entry of diffSkillDirContents(skill.sourcePath, targetPath)) {
+        drift.push({ agent: agent.name, skill: skill.name, ...entry });
+      }
+    }
+
+    for (const name of targetNames) {
+      if (!canonicalNames.has(name)) {
+        drift.push({ agent: agent.name, skill: name, file: '*', status: 'stale' });
+      }
+    }
+  }
+
+  if (drift.length === 0) {
+    console.log(chalk.green('✓'), 'Skills in sync — no drift');
+    return;
+  }
+
+  console.error(chalk.red(`✗ Skills drift detected (${drift.length})`));
+  for (const d of drift) {
+    console.error(chalk.yellow(`  [${d.agent}] ${d.skill}/${d.file} — ${d.status}`));
+  }
+  console.error(chalk.gray('Run "skills sync" (or "forge setup") to regenerate agent skill dirs.'));
+  process.exitCode = 1;
+}
+
+/** List files under a dir as forward-slash relative paths (recursive). */
+function listFilesRecursiveForCheck(dir) {
+  const out = [];
+  const walk = (current, prefix) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(join(current, entry.name), rel);
+      } else if (entry.isFile()) {
+        out.push(rel);
+      }
+    }
+  };
+  if (existsSync(dir)) walk(dir, '');
+  return out.sort();
+}
+
+/** Compare two skill dirs; line-ending-normalized so Windows CRLF is not drift. */
+function diffSkillDirContents(sourcePath, targetPath) {
+  const drift = [];
+  const sourceFiles = new Set(listFilesRecursiveForCheck(sourcePath));
+  const targetFiles = new Set(listFilesRecursiveForCheck(targetPath));
+  const norm = (p) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+
+  for (const rel of sourceFiles) {
+    if (!targetFiles.has(rel)) {
+      drift.push({ file: rel, status: 'missing' });
+    } else if (norm(join(sourcePath, rel)) !== norm(join(targetPath, rel))) {
+      drift.push({ file: rel, status: 'changed' });
+    }
+  }
+  for (const rel of targetFiles) {
+    if (!sourceFiles.has(rel)) drift.push({ file: rel, status: 'extra' });
+  }
+  return drift;
 }
 
 /**
