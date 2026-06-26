@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { PrStateAdapter } = require('../lib/adapters/pr-state-adapter');
+const { PrStateAdapter, PR_VIEW_FIELDS } = require('../lib/adapters/pr-state-adapter');
 const { validatePrStateAdapter } = require('../lib/pr-state-validator');
 
 /**
@@ -47,6 +47,13 @@ describe('PrStateAdapter', () => {
     const adapter = new PrStateAdapter({ gh: run, git: run });
     expect(adapter.kind).toBe('pr-state');
     expect(validatePrStateAdapter(adapter)).toEqual({ valid: true, errors: [] });
+  });
+
+  test('PR_VIEW_FIELDS excludes reviewThreads (not a valid gh pr view --json field)', () => {
+    // Regression guard: requesting `reviewThreads` via `gh pr view --json` makes gh
+    // exit non-zero ("Unknown JSON field"), which crashed readState on every real PR.
+    // Review threads must be read via GraphQL (readComments), never gh pr view.
+    expect(PR_VIEW_FIELDS.split(',')).not.toContain('reviewThreads');
   });
 
   test('readState normalizes the rollup, head SHA and merge state', async () => {
