@@ -104,3 +104,26 @@ describe('docs/reference/HERMES_INTEGRATION.md — memory boundary', () => {
     expect(body).toContain('Hermes');
   });
 });
+
+describe('hermes-forge SKILL.md — shepherd consumption', () => {
+  test('documents that an external scheduler invokes `forge shepherd <pr>`', () => {
+    const body = fs.readFileSync(skillPath, 'utf8');
+    expect(body).toContain('forge shepherd');
+    expect(/external scheduler/i.test(body)).toBe(true);
+  });
+
+  test('keeps shepherd progress on the PR, not in orient', () => {
+    const body = fs.readFileSync(skillPath, 'utf8');
+    expect(/never merges/i.test(body)).toBe(true);
+    expect(/never resolves/i.test(body)).toBe(true);
+    // Shepherd is not surfaced via the deterministic orient envelope.
+    expect(/not[\s\S]{0,40}orient|orient[\s\S]{0,80}no live PR/i.test(body)).toBe(true);
+  });
+
+  test('Hermes remains absent from sync-commands AGENT_ADAPTERS', () => {
+    const { AGENT_ADAPTERS } = require('../../scripts/sync-commands');
+    const keys = Object.keys(AGENT_ADAPTERS).sort();
+    expect(keys).toEqual(['claude-code', 'codex', 'cursor']);
+    expect(keys).not.toContain('hermes');
+  });
+});

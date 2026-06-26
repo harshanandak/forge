@@ -166,3 +166,17 @@ stays in Hermes' own store.
 If a piece of context only matters to Hermes, it belongs in Hermes-native
 memory. If it is a project fact, decision, or evidence item, write it through
 the Forge CLI so it becomes part of the shared, cited source of truth.
+
+## PR shepherd (external scheduler, not orientation)
+
+The PR shepherd runs **outside** Hermes. An external scheduler invokes
+`forge shepherd <pr>` as discrete bounded passes — each pass reads CI/check
+state, takes at most one idempotent action (re-run a flaky required check), or
+escalates, then exits. It **never merges** (the human merges in the GitHub UI)
+and **never resolves review threads**.
+
+Hermes does not run the shepherd and does not learn shepherd progress through
+`forge orient` (which is deterministic-source orientation with no live PR
+awareness). Shepherd progress is durable on the **PR itself** — its comments and
+labels. When a Hermes session needs PR/CI status, read the PR directly; do not
+expect `orient` to carry it.
