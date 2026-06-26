@@ -42,11 +42,11 @@ describe('plan.md integration', () => {
     expect(content).toContain('Recommendation');
   });
 
-  test('plan.md documents the Beads-aware Phase 3 approval flow', () => {
+  test('plan.md documents the issue-aware Phase 3 approval flow', () => {
     const content = fs.readFileSync(planMdPath, 'utf-8');
-    expect(content).toContain('bd worktree create');
+    expect(content).toContain('forge worktree create');
     expect(content).toContain('logic-level analysis');
     expect(content).toContain('user approval');
-    expect(content).toContain('bd dep cycles');
+    expect(content).toContain('forge issue dep cycles');
   });
 });
