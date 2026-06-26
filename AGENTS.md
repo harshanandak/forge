@@ -120,7 +120,7 @@ Task 2: Validation logic
 
 ```json
 {
-  "id": "bd-x7y2",
+  "id": "forge-x7y2",
   "type": "critical",
   "currentStage": "dev",
   "completedStages": ["plan"],
@@ -178,7 +178,7 @@ Task 2: Validation logic
 **Forge v3 / Kernel Plan (active design):**
 - [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) — canonical Forge Kernel authority reset plan for issue authority, local broker, team authority, adapters, storage, and gates
 - [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D44 decisions ledger with rationale + tradeoffs + anti-decisions; D44 supersedes Beads-only authority portions of earlier decisions
-- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its Beads/Dolt default-substrate language over D44
+- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its legacy default-substrate language over D44
 - See [docs/INDEX.md](docs/INDEX.md) for the full reading order across the v3 design folder
 
 **Load these files when you need detailed instructions for a specific stage.**
@@ -236,7 +236,7 @@ This convention is **advisory only**. The `validate` subcommand prints warnings 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+This project uses **forge** for issue tracking. Run `forge prime` to see full workflow context and commands.
 
 ### Quick Reference
 
@@ -249,9 +249,9 @@ forge close <id>      # Complete work
 
 ### Rules
 
-- Use `forge` as the routine command surface for current bd-backed issue tracking and sync workflows until Forge Kernel replaces it — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. Beads (`bd`) remains the current operational tracker for existing issues, but not the target architecture. New issue-authority work must route through the Forge Kernel design. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Use `forge` as the routine command surface for issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. New issue-authority work routes through the Forge Kernel. Use `forge issue` subcommands (`forge issue create`, `forge comment`, `forge issue dep`) for issue operations, and `forge sync` for state sync. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle into the kernel tracker (see `docs/guides/BEADS_GITHUB_SYNC.md`).
+- Run `forge prime` for detailed command reference and session close protocol
+- Use `forge remember` for persistent knowledge — do NOT use MEMORY.md files
 
 ## Session Completion
 

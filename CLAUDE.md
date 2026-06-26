@@ -94,10 +94,10 @@ git commit --no-verify           # Skip pre-commit hooks
 ```bash
 forge push              # Runs branch protection + lint + tests, then pushes
 forge push --quick      # Review-cycle: lint-only push (CI runs full suite)
-forge worktree create <slug>  # Creates worktree with Beads integration
-forge test              # Runs tests with correct timeouts + Beads skip
-forge sync              # Syncs Beads data (dolt pull + push)
-forge clean             # Removes merged worktrees (stops Dolt servers)
+forge worktree create <slug>  # Creates worktree with issue-tracker integration
+forge test              # Runs tests with correct timeouts + issue-tracker skip
+forge sync              # Syncs issue/state data with git
+forge clean             # Removes merged worktrees
 ```
 
 See [.github/pull_request_template.md](.github/pull_request_template.md) for PR guidelines.
