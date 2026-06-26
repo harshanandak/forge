@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 108 | 11 |
-| runtime | 351 | 48 |
+| runtime | 316 | 41 |
 | docs | 452 | 68 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
@@ -104,22 +104,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 328 (bd), 332 (bd), 333 (bd), 335 (bd), 414 (bd), 415 (bd), 454 (bd), 460 (bd), 466 (bd), 473 (bd), 520 (bd)
 - [ ] scripts/file-index.sh (2)
   - lines: 4 (.beads), 38 (.beads)
-- [ ] scripts/forge-team/lib/claim.sh (7)
-  - lines: 14 (bd), 65 (bd), 68 (bd), 93 (.beads), 152 (bd), 237 (bd), 242 (bd)
-- [ ] scripts/forge-team/lib/dashboard.sh (3)
-  - lines: 9 (bd), 10 (bd), 48 (bd)
 - [ ] scripts/forge-team/lib/epic.sh (4)
   - lines: 10 (bd), 22 (bd), 24 (bd), 27 (bd)
-- [ ] scripts/forge-team/lib/hooks.sh (5)
-  - lines: 11 (bd), 12 (.beads), 59 (.beads), 63 (.beads), 111 (bd)
-- [ ] scripts/forge-team/lib/identity.sh (4)
-  - lines: 5 (.beads), 17 (.beads), 72 (.beads), 127 (.beads)
-- [ ] scripts/forge-team/lib/sync-github.sh (9)
-  - lines: 10 (bd), 14 (bd), 199 (bd), 208 (bd), 249 (bd), 253 (bd), 272 (bd), 282 (bd), 284 (bd)
-- [ ] scripts/forge-team/lib/verify.sh (4)
-  - lines: 16 (bd), 17 (.beads), 70 (bd), 87 (bd)
-- [ ] scripts/forge-team/lib/workload.sh (3)
-  - lines: 10 (bd), 93 (bd), 124 (bd)
 - [ ] scripts/github-beads-sync/index.mjs (9)
   - lines: 14 (bd), 75 (bd), 86 (bd), 91 (bd), 199 (bd), 230 (bd), 237 (bd), 240 (bd), 241 (bd)
 - [ ] scripts/github-beads-sync/run-bd.mjs (21)
