@@ -247,4 +247,23 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
     },
     TIMEOUT,
   );
+
+  test(
+    'update/close/comment on a nonexistent id error without minting a phantom issue',
+    () => {
+      // Regression (data-corruption blocker): a typo'd id on a mutation used to
+      // SILENTLY succeed (exit 0) AND materialize a phantom issue — the row-level CAS
+      // treated a missing row as expected_revision 0 and inserted it. It must now fail
+      // with no write, matching Beads' not-found behavior.
+      for (const args of [['update', 'missing-1', '--priority', '1'], ['close', 'missing-2'], ['comment', 'missing-3', 'note']]) {
+        const res = runForgeDefault(repo, args);
+        expect(res.status).not.toBe(0);
+        expect(res.stdout).toMatch(/not found/i);
+      }
+      // None of the three failed mutations minted a phantom row.
+      const after = runForgeDefault(repo, ['issue', 'list']);
+      expect(after.stdout).toContain('"count": 0');
+    },
+    TIMEOUT,
+  );
 });
