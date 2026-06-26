@@ -15,6 +15,7 @@ const HANDLERS = {
 	dev: require('../lib/commands/dev'),
 	validate: require('../lib/commands/validate'),
 	ship: require('../lib/commands/ship'),
+	shepherd: require('../lib/commands/shepherd'),
 };
 
 const VALID_COMMANDS = [
@@ -25,6 +26,7 @@ const VALID_COMMANDS = [
 	'check', // backward-compat alias for validate
 	'ship',
 	'review',
+	'shepherd',
 	'merge',
 	'verify',
 ];
@@ -76,6 +78,7 @@ const COMMAND_DESCRIPTIONS = {
 	check: 'Alias for validate (deprecated — use validate)',
 	ship: 'Auto-generate PR body and create PR',
 	review: 'Aggregate all review feedback',
+	shepherd: 'Run one bounded monitor pass over a PR (never merges)',
 	merge: 'Update docs, merge PR, cleanup',
 	verify: 'Final documentation verification',
 };
@@ -84,6 +87,7 @@ const REQUIRED_ARGS = {
 	plan: ['feature-slug'],
 	ship: ['feature-slug', 'title'],
 	review: [],
+	shepherd: ['pr'],
 	merge: [],
 	// Other commands don't require arguments
 	status: [],
@@ -91,6 +95,14 @@ const REQUIRED_ARGS = {
 	validate: [],
 	check: [], // backward-compat alias
 	verify: [],
+};
+
+// Allowed flags per command. Commands listed here have their flags strictly
+// validated — an unknown flag is rejected rather than silently forwarded
+// (e.g. a typo like `--auto-reabse` must not run shepherd with default
+// behaviour). Commands NOT listed here keep their permissive flag handling.
+const ALLOWED_FLAGS = {
+	shepherd: ['--auto-rebase'],
 };
 
 /**
@@ -180,6 +192,19 @@ function validateArgs(command, args) {
 		const slugValidation = validateSlug(positionalArgs[0]);
 		if (!slugValidation.valid) {
 			return slugValidation;
+		}
+	}
+
+	// Reject unknown flags for commands with a strict flag allow-list, so typos
+	// fail loudly instead of running with default behaviour.
+	const allowedFlags = ALLOWED_FLAGS[command];
+	if (allowedFlags) {
+		const unknownFlag = args.find(a => a.startsWith('--') && !allowedFlags.includes(a));
+		if (unknownFlag) {
+			return {
+				valid: false,
+				error: `Error: Unknown flag '${unknownFlag}' for 'forge ${command}'\n\nAllowed flags: ${allowedFlags.join(', ') || '(none)'}`,
+			};
 		}
 	}
 
@@ -319,6 +344,18 @@ async function main() { // NOSONAR S3776
 				process.exit(1);
 			}
 
+		} else if (command === 'shepherd') {
+			result = await HANDLERS.shepherd.handler(args, {}, process.cwd());
+			if (result.success) {
+				console.log(`✓ shepherd: ${result.state}`);
+				if (result.reason) console.log(`  ${result.reason}`);
+			} else {
+				console.error(`✗ shepherd: ${result.state || 'failed'}`);
+				if (result.error) console.error(`  ${result.error}`);
+				if (result.reason) console.error(`  ${result.reason}`);
+				process.exit(1);
+			}
+
 		} else {
 			// review, merge, verify - not yet implemented as automated CLI commands
 			// These stages require interactive AI assistance
@@ -351,4 +388,5 @@ module.exports = {
 	getHelpText,
 	findWorkPlanDoc,
 	findPlanDocForBranch,
+	ALLOWED_FLAGS,
 };
