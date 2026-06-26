@@ -1,6 +1,10 @@
 ---
 name: research
-description: Runs deep, parallel web and codebase research and documents findings in the design doc. Use for the Forge research stage when gathering technical research, OWASP analysis, and TDD scenarios before planning or development. Trigger keywords: research, deep research, web search, OWASP, codebase exploration, technical research.
+description: >
+  Runs deep, parallel web and codebase research and documents findings in the design
+  doc. Use for the Forge research stage when gathering technical research, OWASP
+  analysis, and TDD scenarios before planning or development. Trigger keywords are
+  research, deep research, web search, OWASP, codebase exploration, technical research.
 allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
 ---
 

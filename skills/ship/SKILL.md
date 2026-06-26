@@ -1,6 +1,10 @@
 ---
 name: ship
-description: Pushes the validated branch and opens a pull request populated from the project's PR template with full context and documentation links. Use for the Forge ship stage after /validate passes — triggers: ship, create PR, open pull request, push branch, gh pr create.
+description: >
+  Pushes the validated branch and opens a pull request populated from the project's
+  PR template with full context and documentation links. Use for the Forge ship stage
+  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
+  gh pr create.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 

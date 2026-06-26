@@ -1,6 +1,11 @@
 ---
 name: plan
-description: Use for the Forge plan stage: capture design intent through one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up the branch, worktree, and a complete TDD task list ready for /dev. Trigger when starting a new feature, planning or scoping work, writing a design doc, or preparing a worktree and task list before development.
+description: >
+  Use for the Forge plan stage to capture design intent through
+  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
+  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
+  starting a new feature, planning or scoping work, writing a design doc, or preparing
+  a worktree and task list before development.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 

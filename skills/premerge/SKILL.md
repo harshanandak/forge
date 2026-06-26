@@ -1,6 +1,12 @@
 ---
 name: premerge
-description: Completes all documentation updates on the feature branch (CHANGELOG, README, API reference, CLAUDE.md USER section, AGENTS.md), verifies CI is green, syncs the Forge issue store, and hands the PR off to the user for manual merge in the GitHub UI — it never runs the merge itself. Use for the Forge premerge stage when finalizing a PR before merge, after /review, to make a PR merge-ready with code, tests, and docs in one unit (keywords: premerge, merge-readiness, doc updates, CHANGELOG, hand off PR).
+description: >
+  Completes all documentation updates on the feature branch (CHANGELOG, README, API
+  reference, CLAUDE.md USER section, AGENTS.md), verifies CI is green, syncs the Forge
+  issue store, and hands the PR off to the user for manual merge in the GitHub UI; it
+  never runs the merge itself. Use for the Forge premerge stage when finalizing a PR
+  before merge, after /review, to make a PR merge-ready with code, tests, and docs in
+  one unit. Keywords: premerge, merge-readiness, doc updates, CHANGELOG, hand off PR.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
