@@ -32,19 +32,15 @@ describe('forge release check command', () => {
     expect(result.error).toContain('Forge release readiness check: 0.1.0');
 
     const blockerIds = result.report.blockers.map(blocker => blocker.id);
+    // kernel-backed-forge-issue cleared once _issue.js was de-beaded, the kernel
+    // adapter exposed `dep`, and claim/release became kernel-backed static commands.
     expect(blockerIds).toEqual([
       'bd-hot-path-issue-commands',
-      'kernel-backed-forge-issue',
-      'forge-orient-issue-recap',
       'premerge-embedded-gate',
       'fresh-clone-no-beads-acceptance',
     ]);
 
-    const issueBlocker = result.report.blockers.find(blocker => blocker.id === 'kernel-backed-forge-issue');
-    expect(issueBlocker).toBeDefined();
-    expect(issueBlocker.detail).toContain('Required claim/release commands: claim, release');
-    expect(issueBlocker.evidence.some(item => item.path === 'lib/commands/claim.js')).toBe(true);
-    expect(issueBlocker.evidence.some(item => item.path === 'lib/commands/release.js')).toBe(true);
+    expect(result.report.blockers.some(blocker => blocker.id === 'kernel-backed-forge-issue')).toBe(false);
   }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('rejects unsupported targets explicitly', async () => {
@@ -89,7 +85,9 @@ describe('0.1.0 readiness report', () => {
 
     const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
     expect(hotPathBlocker).toBeDefined();
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/_issue.js')).toBe(true);
+    // lib/commands/_issue.js is no longer hot-path evidence: it was de-beaded (all bd
+    // translation moved into the beads backend), so it carries no bd/.beads/dolt token.
+    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/_issue.js')).toBe(false);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/sync.js')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/worktree.js')).toBe(true);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/setup.js')).toBe(true);

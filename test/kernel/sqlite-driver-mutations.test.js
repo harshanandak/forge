@@ -578,4 +578,46 @@ describe('Kernel SQLite driver — issue mutations via guarded path (Wave 3)', (
 		const releasedShow = await driver.issueOperation('show', ['claimable-1'], {}, config);
 		expect(releasedShow.data.claimed_by).toBeNull();
 	});
+
+	test('claim accepts the issue id as a POSITIONAL arg (the CLI form)', async () => {
+		// The CLI invokes `forge claim <id>` with the issue id as a positional, not as
+		// --issue. buildClaimMutationEvent previously read only flags.issue, so the
+		// positional form left issue_id undefined → buildClaimScope returned null →
+		// the broker quarantined every CLI claim as invalid_claim_scope.
+		await broker.runIssueOperation(
+			'create', ['--id', 'pos-claim-1', '--title', 'Claim by positional', '--type', 'task'], { now, actor: 'tester' },
+		);
+
+		const claimed = await broker.runIssueOperation(
+			'claim', ['pos-claim-1'], { now: '2026-06-19T00:30:00.000Z', actor: 'bob' },
+		);
+
+		expect(claimed.ok).toBe(true);
+		expect(claimed.command).toBe('claim');
+
+		const claimedShow = await driver.issueOperation('show', ['pos-claim-1'], {}, config);
+		expect(claimedShow.data.claimed_by).toBe('bob');
+	});
+
+	test('release accepts the issue id as a POSITIONAL arg (the CLI form)', async () => {
+		// `forge release <id>` likewise passes the issue id positionally. With issue_id
+		// undefined the release UPDATE bound undefined to a SQLite parameter and threw
+		// "Provided value cannot be bound to SQLite parameter 1".
+		await broker.runIssueOperation(
+			'create', ['--id', 'pos-rel-1', '--title', 'Release by positional', '--type', 'task'], { now, actor: 'tester' },
+		);
+		await broker.runIssueOperation(
+			'claim', ['pos-rel-1'], { now: '2026-06-19T00:31:00.000Z', actor: 'carol' },
+		);
+
+		const released = await broker.runIssueOperation(
+			'release', ['pos-rel-1'], { now: '2026-06-19T00:32:00.000Z', actor: 'carol' },
+		);
+
+		expect(released.ok).toBe(true);
+		expect(released.command).toBe('release');
+
+		const releasedShow = await driver.issueOperation('show', ['pos-rel-1'], {}, config);
+		expect(releasedShow.data.claimed_by).toBeNull();
+	});
 });
