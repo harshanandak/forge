@@ -59,8 +59,8 @@ if [ "$1" = "issue" ] && [ "$2" = "update" ]; then
   echo "Updated"
   exit 0
 fi
-echo "forge shim: unknown command $*"
-exit 0
+echo "forge shim: unknown command $*" >&2
+exit 1
 `,
     { mode: 0o755 }
   );

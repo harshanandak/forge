@@ -65,8 +65,8 @@ if [ "$1" = "issue" ] && [ "$2" = "show" ] && [ "$4" = "--json" ]; then
   cat ${shQuote(`./${path.basename(shimDir)}/show.json`)}
   exit 0
 fi
-echo "forge shim: $*"
-exit 0
+echo "forge shim: $*" >&2
+exit 1
 `,
     { mode: 0o755 }
   );
