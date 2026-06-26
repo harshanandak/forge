@@ -2,28 +2,17 @@
 
 const { describe, test, expect } = require('bun:test');
 
-const { buildBdArgs, makeAliasCommand } = require('../../lib/commands/_issue');
+const { createIssueSubcommand } = require('../../lib/commands/_issue');
 
+// The issue command surface is de-beaded: every subcommand routes through the shared
+// runIssueOperation seam with the subcommand name as the operation (dep fans out to
+// dep.<action>). The backend abstraction (lib/forge-issues.js + the issue adapters)
+// owns all tracker selection and argument translation — those translations are pinned
+// in test/forge-issues.test.js, not here.
 describe('forge issue helpers', () => {
-  test('buildBdArgs maps create to bd create passthrough', () => {
-    expect(buildBdArgs('create', ['--title', 'Test', '--type', 'feature']))
-      .toEqual(['create', '--title', 'Test', '--type', 'feature']);
-  });
-
-  test('buildBdArgs maps claim to bd update --claim', () => {
-    expect(buildBdArgs('claim', ['forge-abc']))
-      .toEqual(['update', 'forge-abc', '--claim']);
-  });
-
-  test('buildBdArgs rejects claim without an issue id', () => {
-    expect(buildBdArgs('claim', [])).toEqual({
-      error: 'Missing issue id. Usage: forge claim <id> [bd-update-flags]',
-    });
-  });
-
-  test('claim alias routes through the shared issue operation runner', async () => {
+  test('claim routes through the shared issue operation runner with the claim op', async () => {
     const calls = [];
-    const claim = makeAliasCommand('claim');
+    const claim = createIssueSubcommand('claim');
 
     const result = await claim.handler(['forge-abc'], {}, '/repo', {
       runIssueOperation: async (operation, args, projectRoot, deps) => {
@@ -32,10 +21,10 @@ describe('forge issue helpers', () => {
       },
     });
 
-    expect(result).toEqual({ success: true, operation: 'update' });
+    expect(result).toEqual({ success: true, operation: 'claim' });
     expect(calls).toEqual([{
-      operation: 'update',
-      args: ['forge-abc', '--claim'],
+      operation: 'claim',
+      args: ['forge-abc'],
       projectRoot: '/repo',
       deps: {
         runIssueOperation: expect.any(Function),
@@ -45,7 +34,7 @@ describe('forge issue helpers', () => {
 
   test('read aliases route through the shared issue operation runner for Kernel backends', async () => {
     const calls = [];
-    const list = makeAliasCommand('list');
+    const list = createIssueSubcommand('list');
 
     const result = await list.handler(['--json'], {}, '/repo', {
       useKernelBroker: true,
@@ -77,9 +66,9 @@ describe('forge issue helpers', () => {
       },
     };
 
-    await makeAliasCommand('blocked').handler(['--json'], {}, '/repo', opts);
-    await makeAliasCommand('stale').handler(['--days', '7'], {}, '/repo', opts);
-    await makeAliasCommand('orphans').handler([], {}, '/repo', opts);
+    await createIssueSubcommand('blocked').handler(['--json'], {}, '/repo', opts);
+    await createIssueSubcommand('stale').handler(['--days', '7'], {}, '/repo', opts);
+    await createIssueSubcommand('orphans').handler([], {}, '/repo', opts);
 
     expect(calls.map(call => ({ operation: call.operation, args: call.args }))).toEqual([
       { operation: 'blocked', args: ['--json'] },
@@ -98,40 +87,11 @@ describe('forge issue helpers', () => {
       },
     };
 
-    await makeAliasCommand('lint').handler(['--json'], {}, '/repo', opts);
+    await createIssueSubcommand('lint').handler(['--json'], {}, '/repo', opts);
 
     expect(calls.map(call => ({ operation: call.operation, args: call.args }))).toEqual([
       { operation: 'lint', args: ['--json'] },
     ]);
-  });
-
-  test('KAP-7 read aliases map to Beads-compatible passthroughs', () => {
-    expect(buildBdArgs('blocked', ['--json'])).toEqual(['blocked', '--json']);
-    expect(buildBdArgs('stale', ['--days', '7'])).toEqual(['stale', '--days', '7']);
-    expect(buildBdArgs('orphans', [])).toEqual(['orphans']);
-    expect(buildBdArgs('lint', ['--json'])).toEqual(['lint', '--json']);
-  });
-
-  test('buildBdArgs maps comment to bd comments add passthrough', () => {
-    expect(buildBdArgs('comment', ['forge-abc', 'handoff note']))
-      .toEqual(['comments', 'add', 'forge-abc', 'handoff note']);
-  });
-
-  test('buildBdArgs maps Kernel contract read commands to Beads-compatible passthroughs', () => {
-    expect(buildBdArgs('search', ['kernel contract', '--json']))
-      .toEqual(['search', 'kernel contract', '--json']);
-    expect(buildBdArgs('stats', ['--json']))
-      .toEqual(['status', '--json']);
-  });
-
-  test('buildBdArgs maps dependency add and remove to bd dep subcommands', () => {
-    expect(buildBdArgs('dep', ['add', 'forge-work', 'forge-blocker']))
-      .toEqual(['dep', 'add', 'forge-work', 'forge-blocker']);
-    expect(buildBdArgs('dep', ['remove', 'forge-work', 'forge-blocker']))
-      .toEqual(['dep', 'remove', 'forge-work', 'forge-blocker']);
-    expect(buildBdArgs('dep', ['cycle', 'forge-work'])).toEqual({
-      error: 'Unsupported dependency action: cycle. Usage: forge issue dep <add|remove> <issue-id> <blocks-issue-id>',
-    });
   });
 
   test('nested dependency commands route through the shared runner with operation names', async () => {
@@ -156,10 +116,28 @@ describe('forge issue helpers', () => {
     }]);
   });
 
-  test('Kernel claim and release commands route to Kernel operations', async () => {
+  test('dep rejects an unknown action without hitting the runner', async () => {
+    let invoked = false;
+    const dep = createIssueSubcommand('dep');
+
+    const result = await dep.handler(['cycle', 'forge-work', 'forge-blocker'], {}, '/repo', {
+      runIssueOperation: async () => {
+        invoked = true;
+        return { success: true };
+      },
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Unsupported dependency action: cycle. Usage: forge issue dep <add|remove> <issue-id> <blocks-issue-id>',
+    });
+    expect(invoked).toBe(false);
+  });
+
+  test('claim and release route to their own operations through the shared runner', async () => {
     const calls = [];
-    const claim = makeAliasCommand('claim');
-    const release = makeAliasCommand('release');
+    const claim = createIssueSubcommand('claim');
+    const release = createIssueSubcommand('release');
     const opts = {
       useKernelBroker: true,
       runIssueOperation: async (operation, args, projectRoot) => {
@@ -178,21 +156,12 @@ describe('forge issue helpers', () => {
       { operation: 'release', args: ['forge-abc'], projectRoot: '/repo' },
     ]);
   });
-
-  test('release command reports Kernel-only behavior without a Kernel backend', async () => {
-    const release = makeAliasCommand('release');
-
-    await expect(release.handler(['forge-abc'], {}, '/repo')).resolves.toEqual({
-      success: false,
-      error: 'forge release <id> is defined for the Kernel issue backend; Beads passthrough has no verified release operation.',
-    });
-  });
 });
 
 describe('issue backend resolution from env/config', () => {
   test('FORGE_ISSUE_BACKEND=kernel injects issueBackend into the runner deps', async () => {
     const calls = [];
-    const create = makeAliasCommand('create');
+    const create = createIssueSubcommand('create');
 
     const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
       env: { FORGE_ISSUE_BACKEND: 'kernel' },
@@ -219,7 +188,7 @@ describe('issue backend resolution from env/config', () => {
 
   test('no backend signal leaves opts untouched and routes through beads', async () => {
     const calls = [];
-    const create = makeAliasCommand('create');
+    const create = createIssueSubcommand('create');
 
     const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
       env: {},
@@ -236,7 +205,7 @@ describe('issue backend resolution from env/config', () => {
 
   test('an explicit opts.issueBackend is preserved (not overwritten by the resolver)', async () => {
     const calls = [];
-    const ready = makeAliasCommand('ready');
+    const ready = createIssueSubcommand('ready');
 
     await ready.handler([], {}, '/repo', {
       issueBackend: 'kernel',
@@ -252,7 +221,7 @@ describe('issue backend resolution from env/config', () => {
 
   test('an explicit opts.issueBackend is run through the resolver (case-normalized)', async () => {
     const calls = [];
-    const ready = makeAliasCommand('ready');
+    const ready = createIssueSubcommand('ready');
 
     await ready.handler([], {}, '/repo', {
       issueBackend: 'KERNEL',
@@ -271,7 +240,7 @@ describe('issue backend resolution from env/config', () => {
   });
 
   test('a kernel error contract is normalized into a {success:false,error} result', async () => {
-    const show = makeAliasCommand('show');
+    const show = createIssueSubcommand('show');
 
     const result = await show.handler(['nope'], {}, '/repo', {
       issueBackend: 'kernel',
@@ -288,7 +257,7 @@ describe('issue backend resolution from env/config', () => {
   });
 
   test('a kernel ok contract preserves the FULL envelope in output (KAP-1)', async () => {
-    const create = makeAliasCommand('create');
+    const create = createIssueSubcommand('create');
 
     const result = await create.handler(['--title', 'X'], {}, '/repo', {
       issueBackend: 'kernel',
@@ -315,7 +284,7 @@ describe('issue backend resolution from env/config', () => {
     // `create` is a write subcommand, so it always routes through the shared
     // runner — letting us assert the normalizer leaves a {success,output} result
     // byte-identical (only the contract {ok,...} shape is transformed).
-    const create = makeAliasCommand('create');
+    const create = createIssueSubcommand('create');
 
     const result = await create.handler(['--title', 'X'], {}, '/repo', {
       env: {},
@@ -332,7 +301,7 @@ describe('kernel create positional-title parity', () => {
   // is translated to `--title <value>` so the title isn't dropped.
   function captureKernelCreate(args, extraOpts = {}) {
     const calls = [];
-    const create = makeAliasCommand('create');
+    const create = createIssueSubcommand('create');
     return create
       .handler(args, {}, '/repo', {
         issueBackend: 'kernel',
@@ -376,7 +345,7 @@ describe('kernel create positional-title parity', () => {
     // for Beads — letting us assert the positional is passed through verbatim with
     // NO --title injection (the mapping is kernel-path-only).
     const calls = [];
-    const create = makeAliasCommand('create');
+    const create = createIssueSubcommand('create');
     await create.handler(['my title'], {}, '/repo', {
       env: {},
       runIssueOperation: async (operation, operationArgs, projectRoot, deps) => {
@@ -396,7 +365,7 @@ describe('kernel batch close (KAP-9)', () => {
   // id on the KERNEL PATH ONLY and aggregates a single {success,output} result.
   test('closes each id and aggregates success on the kernel path', async () => {
     const calls = [];
-    const close = makeAliasCommand('close');
+    const close = createIssueSubcommand('close');
 
     const result = await close.handler(['k1', 'k2'], {}, '/repo', {
       issueBackend: 'kernel',
@@ -421,7 +390,7 @@ describe('kernel batch close (KAP-9)', () => {
 
   test('preserves trailing flags on each per-id kernel close call', async () => {
     const calls = [];
-    const close = makeAliasCommand('close');
+    const close = createIssueSubcommand('close');
 
     await close.handler(['k1', 'k2', '--reason', 'done'], {}, '/repo', {
       issueBackend: 'kernel',
@@ -437,7 +406,7 @@ describe('kernel batch close (KAP-9)', () => {
   });
 
   test('aggregates a failure: success=false and lists the failing id', async () => {
-    const close = makeAliasCommand('close');
+    const close = createIssueSubcommand('close');
 
     const result = await close.handler(['k1', 'k2'], {}, '/repo', {
       issueBackend: 'kernel',
@@ -458,7 +427,7 @@ describe('kernel batch close (KAP-9)', () => {
 
   test('a single kernel close id keeps the byte-identical envelope output', async () => {
     const calls = [];
-    const close = makeAliasCommand('close');
+    const close = createIssueSubcommand('close');
 
     const result = await close.handler(['k1'], {}, '/repo', {
       issueBackend: 'kernel',
@@ -485,7 +454,7 @@ describe('kernel batch close (KAP-9)', () => {
 
   test('the Beads path with multiple ids stays a single runner call', async () => {
     const calls = [];
-    const close = makeAliasCommand('close');
+    const close = createIssueSubcommand('close');
 
     const result = await close.handler(['k1', 'k2'], {}, '/repo', {
       env: {},
