@@ -64,11 +64,11 @@ async function bd(...args) {
 }
 
 describe('scripts/beads-context.sh command resolution', () => {
-	test('script includes Windows-aware bd resolution fallback', () => {
+	test('script includes Windows-aware forge resolution fallback', () => {
 		const content = fs.readFileSync(SCRIPT_PATH, 'utf8');
-		expect(content).toContain('resolve_bd_cmd');
+		expect(content).toContain('resolve_forge_cmd');
 		expect(content).toContain('where.exe');
-		expect(content).toContain('$HOME/.local/bin/bd.exe');
+		expect(content).toContain('$HOME/.local/bin/forge.exe');
 	});
 });
 

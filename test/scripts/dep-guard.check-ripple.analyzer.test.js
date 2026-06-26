@@ -146,6 +146,6 @@ ENDJSON
     expect(result.stderr).toContain('falling back to keyword-only ripple check');
     expect(result.stdout).toContain('Potential overlap');
     expect(result.stdout).toContain('Confidence: LOW');
-    expect(result.stdout).toContain('bd dep add forge-src forge-other');
+    expect(result.stdout).toContain('forge issue dep add forge-src forge-other');
   });
 });
