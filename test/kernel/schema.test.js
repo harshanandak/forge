@@ -26,6 +26,7 @@ const REQUIRED_TABLES = [
 	'events',
 	'outbox',
 	'dead_letters',
+	'memories',
 ];
 
 describe('kernel schema registry', () => {
@@ -54,6 +55,34 @@ describe('kernel schema registry', () => {
 		expect(issueFieldNames).toContain('design');
 		expect(issueFieldNames).toContain('notes');
 		expect(issueFieldNames).toContain('assignee');
+	});
+
+	test('registers the project-memory read-model table (kernel_memories)', () => {
+		const memories = KERNEL_TABLES.memories;
+		expect(memories).toBeDefined();
+		// Project memory is a read model, written directly (not via the issue CAS path).
+		expect(memories.storageClass).toBe('read_model');
+		expect(memories.sqlName).toBe('kernel_memories');
+
+		const fieldNames = memories.fields.map(field => field.name);
+		expect(fieldNames).toEqual([
+			'key',
+			'value_json',
+			'source_agent',
+			'scope',
+			'confidence',
+			'tags_json',
+			'supersedes_json',
+			'beads_refs_json',
+			'created_at',
+			'updated_at',
+		]);
+		expect(memories.fields.find(field => field.name === 'key').primaryKey).toBe(true);
+		expect(memories.indexes.map(index => index.name)).toContain('idx_kernel_memories_source_agent');
+		expect(classifyKernelStorage('memories')).toMatchObject({
+			storageClass: 'read_model',
+			authority: 'forge',
+		});
 	});
 
 	test('classifies every table and field with valid storage and authority metadata', () => {
