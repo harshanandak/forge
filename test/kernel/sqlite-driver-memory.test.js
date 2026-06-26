@@ -101,6 +101,14 @@ describe('Kernel SQLite driver — project-memory read model', () => {
 		expect(driver.loadMemory('nope')).toBe(null);
 	});
 
+	test('a re-write refreshes the surfaced timestamp (as-of), matching legacy behavior', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'k', value: 'v1', sourceAgent: 'Codex', tags: [], timestamp: '2026-05-16T10:00:00.000Z' });
+		driver.recordMemory({ key: 'k', value: 'v2', sourceAgent: 'Codex', tags: [], timestamp: '2026-06-01T12:00:00.000Z' });
+		// The entry timestamp reflects the LATEST write, not the first-seen time.
+		expect(driver.loadMemory('k').timestamp).toBe('2026-06-01T12:00:00.000Z');
+	});
+
 	test('searchMemories matches all whitespace tokens across key and value', () => {
 		const driver = makeDriver();
 		driver.recordMemory({ key: 'decisions:one', value: 'pick the kernel store', sourceAgent: 'Codex', tags: [] });
