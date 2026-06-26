@@ -547,9 +547,12 @@ irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 ```
 
 > **Why Forge + Beads?** Forge wraps the supported day-to-day issue workflow
-> (`forge ready`, `forge create`, `forge close`, `forge sync`) while Beads
-> remains the underlying store for initialization, dependencies, comments, and
-> Dolt-backed sync internals.
+> (`forge ready`, `forge create`, `forge close`, `forge sync`). The kernel is the
+> default underlying issue store for these commands; Beads is an opt-out backend
+> for initialization, dependencies, comments, and Dolt-backed sync internals when
+> selected. Backend selection precedence (highest first): the `--issue-backend`
+> flag, then `FORGE_ISSUE_BACKEND`, then `.forge/config.yaml` (`issueBackend`),
+> then the kernel default.
 
 ---
 

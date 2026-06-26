@@ -47,7 +47,7 @@ forge options stages
 
 ## Issue Wrappers
 
-These commands delegate to Beads when Beads is configured, except for Kernel-only surfaces explicitly called out below. The stable Kernel-era JSON contract is defined in [Forge Kernel issue command contract](forge-kernel-issue-command-contract.md).
+These commands delegate to the Kernel by default. Beads is used only when explicitly selected — precedence (highest first): the `--issue-backend beads` flag, then `FORGE_ISSUE_BACKEND=beads`, then the `.forge/config.yaml` key `issueBackend: beads`, otherwise the Kernel default. The stable Kernel-era JSON contract is defined in [Forge Kernel issue command contract](forge-kernel-issue-command-contract.md).
 
 ```bash
 forge ready

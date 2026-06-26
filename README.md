@@ -39,7 +39,7 @@ Forge helps you:
 
 - `forge init` for day-one `.forge/` adoption config in a fresh repository.
 - `forge setup` for installing agent instructions, skills, local Beads compatibility, and optional workflow files.
-- Beads-backed issue wrappers such as `forge ready`, `forge show`, `forge claim`, `forge create`, `forge update`, and `forge close`.
+- Kernel-backed issue wrappers such as `forge ready`, `forge show`, `forge claim`, `forge create`, `forge update`, and `forge close` (Beads available via `--issue-backend beads` / `FORGE_ISSUE_BACKEND=beads`).
 - Local state views with `forge status --json` and `forge board --json`.
 - Worktree helpers with `forge worktree create <slug>` and `forge worktree remove <slug>`.
 - Review adapter scaffolding and fixture replay for review adapters.
@@ -61,7 +61,7 @@ v0.0.11 is a documentation and positioning package release: canonical docs, corr
 - Runtime control plane: local commands, files, and checks that give agents a shared operating surface.
 - Workflow template: the default stage path Forge installs for agents, such as `/plan -> /dev -> /validate -> /ship -> /review -> /premerge`.
 - Harness: an agent-specific instruction surface. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
-- Beads: the optional local issue-state backend used by Forge issue wrappers.
+- Beads: an opt-out local issue-state backend for Forge issue wrappers; the kernel backend is used by default. Selection precedence (highest first): `--issue-backend beads`, then `FORGE_ISSUE_BACKEND=beads`, then `.forge/config.yaml` `issueBackend: beads`.
 - Adapter: an integration boundary for review or issue tools.
 - Protected state: files that should be changed through their owning command or API, not by casual edits.
 

@@ -111,7 +111,7 @@ describe('CLI Registry Integration', () => {
       expect(stdout).toContain('Source: authoritative workflow state');
     });
 
-    test('forge issues create --help reaches the issues handler instead of global help parsing', () => {
+    test('forge issues create --help prints subcommand usage without dispatching to a backend', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-help-'));
       const fakeBd = path.join(tempDir, process.platform === 'win32' ? 'bd.cmd' : 'bd');
 
@@ -127,6 +127,11 @@ describe('CLI Registry Integration', () => {
         fs.chmodSync(fakeBd, 0o755);
       }
 
+      // No backend pin: `--help` must short-circuit to the subcommand's usage BEFORE
+      // any backend dispatch (kernel default or beads), so the planted fake `bd` is
+      // never invoked. Guards the regression where --help was forwarded as an op arg
+      // (errored "Command failed" on the kernel default; silently minted on the
+      // singular path).
       const { stdout, stderr, status } = runForge(
         ['issues', 'create', '--help'],
         { PATH: `${tempDir}${path.delimiter}${process.env.PATH}` }
@@ -134,7 +139,8 @@ describe('CLI Registry Integration', () => {
 
       const combined = stdout + stderr;
       expect(status).toBe(0);
-      expect(combined).toContain('BD CREATE HELP');
+      expect(combined).toContain('forge create');
+      expect(combined).not.toContain('BD CREATE HELP');
       expect(combined).not.toContain('Usage:');
       expect(combined).not.toContain('npx forge setup');
     });

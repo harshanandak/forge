@@ -7,6 +7,7 @@ const {
   ISSUE_COMMANDS,
   stripSelectorTokens,
 } = require('../../lib/commands/_resolve-command-opts');
+const { SUBCOMMANDS } = require('../../lib/commands/_issue');
 
 const TIMEOUT = 5000;
 
@@ -54,16 +55,52 @@ describe('stripSelectorTokens — consume + remove --kernel / --issue-backend', 
 
 describe('resolveCommandOpts — issue commands', () => {
   test(
-    'default (no flag/env) → beads, no kernel deps, args unchanged',
+    'default (no flag/env) → kernel deps assembled, args unchanged',
     async () => {
+      const built = [];
       const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--reason=x'], {
+        env: {},
+        projectRoot: '/repo',
+        // Inject the factory so the test does not touch a real SQLite runtime.
+        buildKernelIssueDeps: (opts) => {
+          built.push(opts);
+          return { useKernelBroker: true, kernelDriver: { exec() {} }, kernelDatabasePath: ':memory:' };
+        },
+      });
+      expect(commandOpts.issueBackend).toBe('kernel');
+      expect(commandOpts.useKernelBroker).toBe(true);
+      expect(commandOpts.kernelDriver).toBeDefined();
+      expect(args).toEqual(['kap-10', '--reason=x']);
+      expect(built).toHaveLength(1);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'beads opt-out (--issue-backend beads) → no kernel deps, selector token stripped',
+    async () => {
+      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--issue-backend', 'beads', '--reason=x'], {
         env: {},
         projectRoot: '/repo',
       });
       expect(commandOpts.issueBackend).toBe('beads');
       expect(commandOpts.useKernelBroker).toBeFalsy();
       expect(commandOpts.kernelDriver).toBeUndefined();
+      // selector token removed; the real close args remain
       expect(args).toEqual(['kap-10', '--reason=x']);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'beads opt-out (FORGE_ISSUE_BACKEND=beads env) → no kernel deps',
+    async () => {
+      const { commandOpts } = await resolveCommandOpts('close', ['kap-10'], {
+        env: { FORGE_ISSUE_BACKEND: 'beads' },
+        projectRoot: '/repo',
+      });
+      expect(commandOpts.issueBackend).toBe('beads');
+      expect(commandOpts.useKernelBroker).toBeFalsy();
     },
     TIMEOUT,
   );
@@ -122,7 +159,21 @@ describe('resolveCommandOpts — issue commands', () => {
   test(
     'ISSUE_COMMANDS includes the alias verbs and the issue grouping command',
     () => {
-      for (const verb of ['close', 'create', 'update', 'claim', 'release', 'comment', 'show', 'list', 'ready', 'issue']) {
+      for (const verb of ['close', 'create', 'update', 'claim', 'release', 'comment', 'show', 'list', 'ready', 'blocked', 'stale', 'orphans', 'lint', 'issue']) {
+        expect(ISSUE_COMMANDS.has(verb)).toBe(true);
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'every SUBCOMMANDS verb is in ISSUE_COMMANDS (structural drift guard)',
+    () => {
+      // ISSUE_COMMANDS is hand-maintained and decoupled from the SUBCOMMANDS spec in
+      // _issue.js. A verb present in SUBCOMMANDS but missing here would — post the
+      // kernel default-flip — silently route to the retired Beads backend with no
+      // failing test (the cosmetic-flip class this work fixes). Fail CI on that drift.
+      for (const verb of Object.keys(SUBCOMMANDS)) {
         expect(ISSUE_COMMANDS.has(verb)).toBe(true);
       }
     },

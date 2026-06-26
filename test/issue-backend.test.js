@@ -59,7 +59,7 @@ describe('resolveIssueBackend precedence', () => {
     expect(resolved).toBe('kernel');
   });
 
-  test('defaults to beads when nothing is set', () => {
+  test('defaults to kernel when nothing is set', () => {
     const projectRoot = makeTempProject();
 
     const resolved = resolveIssueBackend({
@@ -67,13 +67,33 @@ describe('resolveIssueBackend precedence', () => {
       projectRoot,
     });
 
-    expect(resolved).toBe('beads');
+    expect(resolved).toBe('kernel');
   });
 
-  test('defaults to beads when config file is missing', () => {
+  test('defaults to kernel when config file is missing', () => {
     const projectRoot = makeTempProject();
 
     const resolved = resolveIssueBackend({ env: {}, projectRoot });
+
+    expect(resolved).toBe('kernel');
+  });
+
+  test('beads is reachable opt-out via config', () => {
+    const projectRoot = makeTempProject();
+    writeConfig(projectRoot, 'issueBackend: beads\n');
+
+    const resolved = resolveIssueBackend({ env: {}, projectRoot });
+
+    expect(resolved).toBe('beads');
+  });
+
+  test('beads is reachable opt-out via env', () => {
+    const projectRoot = makeTempProject();
+
+    const resolved = resolveIssueBackend({
+      env: { FORGE_ISSUE_BACKEND: 'beads' },
+      projectRoot,
+    });
 
     expect(resolved).toBe('beads');
   });
@@ -90,7 +110,7 @@ describe('resolveIssueBackend validation', () => {
       warn: (message) => warnings.push(message),
     });
 
-    expect(resolved).toBe('beads');
+    expect(resolved).toBe('kernel');
     expect(warnings.length).toBe(1);
     expect(warnings[0]).toContain('mongo');
   });
@@ -106,7 +126,7 @@ describe('resolveIssueBackend validation', () => {
       warn: (message) => warnings.push(message),
     });
 
-    expect(resolved).toBe('beads');
+    expect(resolved).toBe('kernel');
     expect(warnings.length).toBe(1);
     expect(warnings[0]).toContain('postgres');
   });
@@ -122,7 +142,7 @@ describe('resolveIssueBackend validation', () => {
       warn: (message) => warnings.push(message),
     });
 
-    expect(resolved).toBe('beads');
+    expect(resolved).toBe('kernel');
     expect(warnings.length).toBe(1);
   });
 });

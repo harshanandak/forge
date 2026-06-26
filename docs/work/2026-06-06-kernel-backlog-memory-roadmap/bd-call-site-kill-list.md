@@ -222,7 +222,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] docs/reference/test-environment.md (1)
   - lines: 483 (bd)
 - [ ] docs/reference/TOOLCHAIN.md (50)
-  - lines: 40 (dolt), 42 (bd), 50 (bd, dolt), 57 (bd), 64 (bd), 70 (bd), 71 (bd), 77 (bd), 78 (bd), 83 (.beads), 88 (.beads), 98 (bd, .beads), 102 (.beads), 105 (dolt), 111 (.beads), 112 (.beads), 113 (.beads), 114 (.beads), 118 (.beads), 122 (.beads), 126 (.beads), 127 (.beads), 132 (dolt), 137 (bd), 151 (bd), 163 (bd), 164 (bd), 165 (bd), 166 (bd), 167 (bd), 168 (bd), 169 (bd), 171 (bd), 188 (bd), 189 (bd), 190 (bd), 191 (bd), 192 (bd, dolt), 207 (bd), 532 (bd), 537 (bd), 552 (dolt), 579 (bd), 584 (bd), 587 (dolt), 607 (bd), 610 (bd), 611 (bd), 617 (bd), 619 (bd)
+  - lines: 40 (dolt), 42 (bd), 50 (bd, dolt), 57 (bd), 64 (bd), 70 (bd), 71 (bd), 77 (bd), 78 (bd), 83 (.beads), 88 (.beads), 98 (bd, .beads), 102 (.beads), 105 (dolt), 111 (.beads), 112 (.beads), 113 (.beads), 114 (.beads), 118 (.beads), 122 (.beads), 126 (.beads), 127 (.beads), 132 (dolt), 137 (bd), 151 (bd), 163 (bd), 164 (bd), 165 (bd), 166 (bd), 167 (bd), 168 (bd), 169 (bd), 171 (bd), 188 (bd), 189 (bd), 190 (bd), 191 (bd), 192 (bd, dolt), 207 (bd), 532 (bd), 537 (bd), 552 (dolt), 582 (bd), 587 (bd), 590 (dolt), 610 (bd), 613 (bd), 614 (bd), 620 (bd), 622 (bd)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-interface-layer.md (15)
   - lines: 7 (bd, dolt), 9 (bd), 15 (bd), 16 (bd), 17 (bd), 18 (bd), 19 (bd), 20 (bd), 21 (bd), 31 (bd), 44 (dolt), 54 (bd), 64 (bd, dolt), 67 (bd), 77 (bd)
 - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/beads-fidelity.md (1)

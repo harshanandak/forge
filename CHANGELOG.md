@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The default issue backend changed from Beads to the built-in kernel store.
+
+#### Migration notes
+
+- `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the kernel issue store by default; no Beads install or initialization is required.
+- Existing `.beads` data is no longer read unless Beads is explicitly selected.
+- Opt back in to Beads (precedence: highest first) with the CLI flag `--issue-backend beads`, the environment variable `FORGE_ISSUE_BACKEND=beads`, or the `.forge/config.yaml` key `issueBackend: beads`.
+
 ## [0.0.11] - 2026-06-03
 
 This is the public documentation and positioning release.
