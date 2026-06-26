@@ -34,9 +34,11 @@ cat > "$mock_dir/forge" << 'MOCK'
 args="$*"
 emit() { printf '{"data":{"issues":%s}}\n' "$1"; }
 
-aaa='{"id":"forge-aaa","title":"Feature A","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T10:00:00Z","dependencies":[]}'
+# forge-aaa BLOCKS forge-ccc (kernel: the blocker carries the dependency edge),
+# so forge-ccc is the blocked one — blocked_by resolves to forge-aaa by reverse scan.
+aaa='{"id":"forge-aaa","title":"Feature A","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T10:00:00Z","dependencies":["forge-ccc"]}'
 bbb='{"id":"forge-bbb","title":"Feature B","status":"open","assignee":"devtwo","updated_at":"2026-03-25T10:00:00Z","dependencies":[]}'
-ccc='{"id":"forge-ccc","title":"Feature C","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T09:00:00Z","dependencies":["forge-aaa"]}'
+ccc='{"id":"forge-ccc","title":"Feature C","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T09:00:00Z","dependencies":[]}'
 # Dotted sub-ID: the id flows through verbatim from JSON, never truncated.
 m1n8='{"id":"forge-m1n8.6","title":"Sub-feature X (dotted ID)","status":"in_progress","assignee":"devthree","updated_at":"2026-03-27T08:00:00Z","dependencies":[]}'
 

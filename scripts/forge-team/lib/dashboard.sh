@@ -61,20 +61,26 @@ _forge_active_issues_json() {
 # _issue_detail_lines <issues-json>
 # Emit one pipe-delimited line per issue:
 #   id|title|STATUS|owner|updated_iso|blocked_by
-# STATUS is the upper-cased Kernel status; owner is assignee/claimed_by; and
-# blocked_by is a comma-joined list of dependency ids.
+# STATUS is the upper-cased Kernel status; owner is assignee/claimed_by.
+# A Kernel issue's `.dependencies` lists the issues it BLOCKS (outgoing edges),
+# so blocked_by is computed by reverse scan: the issues (within this active set)
+# whose `.dependencies` include this issue.
 _issue_detail_lines() {
   printf '%s' "$1" | jq -r '
-    .[]
-    | [ .id,
-        (.title // ""),
-        ((.status // "open") | ascii_upcase),
-        (.assignee // .claimed_by // ""),
-        ((.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
-        ((.dependencies // [])
-          | map(if type == "object" then (.id // .to // "") else . end)
-          | map(select(. != ""))
-          | join(","))
+    . as $all
+    | $all[]
+    | . as $x
+    | [ $x.id,
+        ($x.title // ""),
+        (($x.status // "open") | ascii_upcase),
+        ($x.assignee // $x.claimed_by // ""),
+        (($x.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
+        ( [ $all[]
+            | select( (.dependencies // [])
+                | map(if type == "object" then (.id // .to // "") else . end)
+                | any(. == $x.id) )
+            | .id ]
+          | join(",") )
       ]
     | join("|")' | tr -d '\r'
 }

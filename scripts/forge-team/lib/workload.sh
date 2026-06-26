@@ -106,17 +106,24 @@ _collect_issues() {
     --argjson b "${inprog_json:-null}" \
     '((($a.data.issues) // []) + (($b.data.issues) // []))' 2>/dev/null)" || issues_json="[]"
 
+  # A Kernel issue's `.dependencies` lists the issues it BLOCKS (outgoing), so
+  # depends_on (the issues that block THIS one) is a reverse scan: issues within
+  # the active set whose `.dependencies` include this issue.
   printf '%s' "$issues_json" | jq -r '
-    .[]
-    | [ .id,
-        (.title // ""),
-        ((.status // "open") | ascii_upcase),
-        (.assignee // .claimed_by // "unassigned"),
-        ((.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
-        ((.dependencies // [])
-          | map(if type == "object" then (.id // .to // "") else . end)
-          | map(select(. != ""))
-          | join(","))
+    . as $all
+    | $all[]
+    | . as $x
+    | [ $x.id,
+        ($x.title // ""),
+        (($x.status // "open") | ascii_upcase),
+        ($x.assignee // $x.claimed_by // "unassigned"),
+        (($x.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
+        ( [ $all[]
+            | select( (.dependencies // [])
+                | map(if type == "object" then (.id // .to // "") else . end)
+                | any(. == $x.id) )
+            | .id ]
+          | join(",") )
       ]
     | join("|")' | tr -d '\r'
 }
