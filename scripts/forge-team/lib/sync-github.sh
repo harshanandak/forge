@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# scripts/forge-team/lib/sync-github.sh — Bidirectional sync between Beads and GitHub
+# scripts/forge-team/lib/sync-github.sh — Bidirectional sync between Forge issues and GitHub
 #
 # Functions:
-#   sync_issue_create  <beads-id>             — Create GitHub issue from Beads
-#   sync_issue_claim   <beads-id>             — Assign current dev on GitHub
-#   sync_issue_status  <beads-id> <status>    — Update status label on GitHub
-#   sync_issue_close   <beads-id>             — Close GitHub issue
-#   sync_issue_deps    <beads-id-a> <beads-id-b> — Add "Blocked by" comment
-#   _get_github_issue_number <beads-id>       — Extract canonical GitHub issue from bd show
+#   sync_issue_create  <issue-id>             — Create GitHub issue from a Forge issue
+#   sync_issue_claim   <issue-id>             — Assign current dev on GitHub
+#   sync_issue_status  <issue-id> <status>    — Update status label on GitHub
+#   sync_issue_close   <issue-id>             — Close GitHub issue
+#   sync_issue_deps    <issue-id-a> <issue-id-b> — Add "Blocked by" comment
+#   _get_github_issue_number <issue-id>       — Extract canonical GitHub issue from issue show
 #
 # Env overrides (for testing):
-#   GH_CMD  — Path to gh binary (default: gh)
-#   BD_CMD  — Path to bd binary (default: bd)
+#   GH_CMD    — Path to gh binary (default: gh)
+#   FORGE_CMD — Path to forge binary (default: forge)
 #
 # All GitHub-sourced strings are sanitized via sanitize_for_agent() before
 # use in shell commands (OWASP A03).
@@ -87,45 +87,6 @@ _extract_issue_number_from_url() {
   printf '%s' "$suffix"
 }
 
-_extract_issue_title_from_show() {
-  local input="${1:-}"
-
-  printf '%s' "$input" | node -e '
-    const fs = require("node:fs");
-    const input = fs.readFileSync(0, "utf8");
-    const lines = input.split(/\r?\n/);
-    const titledLine = lines.find((line) => /^Title:\s*/.test(line));
-
-    if (titledLine) {
-      process.stdout.write(titledLine.replace(/^Title:\s*/, "").trim());
-      process.exit(0);
-    }
-
-    const summaryLine = lines.find((line) => line.trim().length > 0);
-    if (!summaryLine) {
-      process.exit(0);
-    }
-
-    const separators = [" - ", " \u00B7 ", " \u2022 "];
-    for (const separator of separators) {
-      const separatorIndex = summaryLine.indexOf(separator);
-      if (separatorIndex === -1) {
-        continue;
-      }
-
-      const candidate = summaryLine
-        .slice(separatorIndex + separator.length)
-        .replace(/\s+\[[^\]]*\]\s*$/u, "")
-        .trim();
-
-      if (candidate.length > 0) {
-        process.stdout.write(candidate);
-        break;
-      }
-    }
-  '
-}
-
 _sync_mapping_file() {
   local root="${TEAM_MAP_ROOT:-.}"
   printf '%s' "${SYNC_MAPPING_FILE:-$root/.github/beads-mapping.json}"
@@ -196,41 +157,30 @@ NODE
 }
 
 # ── _get_github_issue_number ─────────────────────────────────────────────
-# Extracts the canonical GitHub issue number from `bd show <id> --json`.
+# Extracts the canonical GitHub issue number from the issue's github_issue:<n>
+# label (via `issue show <id> --json`), falling back to the local mapping file.
 # Returns the number or empty string (exit 1 if not found).
 _get_github_issue_number() {
   local beads_id="${1:-}"
   if [[ -z "$beads_id" ]]; then
-    _sync_error "beads-id required"
+    _sync_error "issue id required"
     return 1
   fi
 
-  local bd_cmd="${BD_CMD:-bd}"
+  local forge_cmd="${FORGE_CMD:-forge}"
   local show_output
-  show_output="$("$bd_cmd" show "$beads_id" --json 2>/dev/null)" || {
-    _sync_error "Failed to get beads info for $beads_id"
+  show_output="$("$forge_cmd" issue show "$beads_id" --json 2>/dev/null)" || {
+    _sync_error "Failed to get issue info for $beads_id"
     return 1
   }
 
   local issue_num
-  issue_num="$(printf '%s' "$show_output" | node -e '
-    const fs = require("node:fs");
-    const input = fs.readFileSync(0, "utf8");
-    try {
-      const data = JSON.parse(input);
-      const issue = Array.isArray(data) ? data[0] : data;
-      const value = issue?.github?.number
-        ?? issue?.githubNumber
-        ?? issue?.issueNumber
-        ?? issue?.github_issue
-        ?? null;
-      if (value != null && value !== "") {
-        process.stdout.write(String(value));
-      }
-    } catch (_err) {
-      process.exitCode = 0;
-    }
-  ')"
+  issue_num="$(printf '%s' "$show_output" | jq -r '
+    (.data.issue // .data // {})
+    | (.labels // [])
+    | map(select(startswith("github_issue:")))
+    | (.[0] // "")
+    | ltrimstr("github_issue:")' 2>/dev/null)"
 
   if [[ -z "$issue_num" ]]; then
     issue_num="$(_get_issue_number_from_mapping "$beads_id" 2>/dev/null || true)"
@@ -246,16 +196,16 @@ _get_github_issue_number() {
 }
 
 # ── _get_issue_title ─────────────────────────────────────────────────────
-# Extracts issue title from `bd show <id>` output.
-# Looks for "Title: <text>" line or falls back to the summary line.
+# Extracts the issue title from `issue show <id> --json`. Falls back to the
+# issue id when the title is empty.
 _get_issue_title() {
   local beads_id="${1:-}"
-  local bd_cmd="${BD_CMD:-bd}"
+  local forge_cmd="${FORGE_CMD:-forge}"
   local show_output
-  show_output="$("$bd_cmd" show "$beads_id" 2>/dev/null)" || return 1
+  show_output="$("$forge_cmd" issue show "$beads_id" --json 2>/dev/null)" || return 1
 
   local title
-  title="$(_extract_issue_title_from_show "$show_output")"
+  title="$(printf '%s' "$show_output" | jq -r '(.data.issue // .data // {}) | (.title // "")' 2>/dev/null)"
 
   if [[ -z "$title" ]]; then
     title="$beads_id"
@@ -266,10 +216,10 @@ _get_issue_title() {
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-# sync_issue_create <beads-id>
-# Creates GitHub issue from Beads issue data.
-# Persists both the canonical mapping file and the legacy github_issue state
-# until downstream hook and verify flows stop reading bd show output.
+# sync_issue_create <issue-id>
+# Creates a GitHub issue from the Forge issue data.
+# Persists both the canonical mapping file and the github_issue:<n> label so
+# that downstream hook and verify flows can resolve the GitHub association.
 # Returns 0 on success, 1 on failure.
 sync_issue_create() {
   local beads_id="${1:-}"
@@ -279,9 +229,9 @@ sync_issue_create() {
   fi
 
   local gh_cmd="${GH_CMD:-gh}"
-  local bd_cmd="${BD_CMD:-bd}"
+  local forge_cmd="${FORGE_CMD:-forge}"
 
-  # Get title from bd show
+  # Get title from the issue backend
   local raw_title
   raw_title="$(_get_issue_title "$beads_id")" || {
     _sync_error "Failed to get title for $beads_id"
@@ -313,8 +263,8 @@ sync_issue_create() {
     return 1
   fi
 
-  if ! "$bd_cmd" set-state "$beads_id" "github_issue=$issue_num" >/dev/null 2>&1; then
-    _sync_error "Failed to store github_issue=$issue_num for $beads_id"
+  if ! "$forge_cmd" issue update "$beads_id" --label "github_issue:$issue_num" >/dev/null 2>&1; then
+    _sync_error "Failed to store github_issue:$issue_num for $beads_id"
     return 1
   fi
 
