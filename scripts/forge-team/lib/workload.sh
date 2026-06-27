@@ -88,7 +88,9 @@ _json_escape() {
 }
 
 # _collect_issues — Gather all open/in_progress issues with details
-# Outputs lines: id|title|status|owner|updated|depends_on
+# Outputs tab-delimited (jq @tsv) lines: id<TAB>title<TAB>status<TAB>owner<TAB>updated<TAB>depends_on
+# @tsv escapes any tab/newline/CR inside fields, so user-controlled titles that
+# contain '|', tabs, or newlines never shift the downstream columns.
 #
 # The Kernel list filter does not accept comma-joined statuses, so query each
 # active status separately and concatenate the JSON issue arrays. Every field
@@ -125,7 +127,7 @@ _collect_issues() {
             | .id ]
           | join(",") )
       ]
-    | join("|")' | tr -d '\r'
+    | @tsv' | tr -d '\r'
 }
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -187,7 +189,7 @@ cmd_workload() {
   local work_dir
   work_dir="$(mktemp -d)"
 
-  while IFS='|' read -r issue_id title status owner updated depends_on; do
+  while IFS=$'\t' read -r issue_id title status owner updated depends_on; do
     [[ -z "$issue_id" ]] && continue
 
     # Apply developer filter

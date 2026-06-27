@@ -231,6 +231,21 @@ sync_issue_create() {
   local gh_cmd="${GH_CMD:-gh}"
   local forge_cmd="${FORGE_CMD:-forge}"
 
+  # Retry-safety / idempotency: the mapping file is persisted *before* the
+  # github_issue:<n> label is stored, so a previous run that created the GitHub
+  # issue and mapping but failed on the label leaves a recoverable mapping entry.
+  # On retry, repair the missing label from the mapping instead of calling
+  # `gh issue create` again and creating a duplicate GitHub issue.
+  local existing_num
+  existing_num="$(_get_issue_number_from_mapping "$beads_id" 2>/dev/null || true)"
+  if [[ -n "$existing_num" ]]; then
+    if ! "$forge_cmd" issue update "$beads_id" --label "github_issue:$existing_num" >/dev/null 2>&1; then
+      _sync_error "Failed to store github_issue:$existing_num for $beads_id"
+      return 1
+    fi
+    return 0
+  fi
+
   # Get title from the issue backend
   local raw_title
   raw_title="$(_get_issue_title "$beads_id")" || {

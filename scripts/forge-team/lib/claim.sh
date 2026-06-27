@@ -192,8 +192,13 @@ claim_with_lock() {
           exit 1
         fi
       fi
-      # Claim on both the Forge issue backend and GitHub
-      "$forge_cmd" issue claim "$beads_id" >/dev/null 2>&1 || true
+      # Claim on both the Forge issue backend and GitHub. The Forge claim is the
+      # authoritative backend update, so a failure must abort (exit the flock
+      # subshell non-zero); the GitHub assignee edit stays best-effort.
+      "$forge_cmd" issue claim "$beads_id" >/dev/null 2>&1 || {
+        _claim_error "Failed to claim $beads_id in Forge"
+        exit 1
+      }
       "$gh_cmd" issue edit "$issue_num" --add-assignee "$current_user" >/dev/null 2>&1 || true
     ) 200>"$lock_file"
     local subshell_rc=$?
@@ -221,8 +226,13 @@ claim_with_lock() {
         return 1
       fi
     fi
-    # Claim on both the Forge issue backend and GitHub
-    "$forge_cmd" issue claim "$beads_id" >/dev/null 2>&1 || true
+    # Claim on both the Forge issue backend and GitHub. The Forge claim is the
+    # authoritative backend update, so a failure must abort (return non-zero so
+    # the RETURN trap releases the lock); the GitHub assignee edit stays best-effort.
+    "$forge_cmd" issue claim "$beads_id" >/dev/null 2>&1 || {
+      _claim_error "Failed to claim $beads_id in Forge"
+      return 1
+    }
     "$gh_cmd" issue edit "$issue_num" --add-assignee "$current_user" >/dev/null 2>&1 || true
   fi
 

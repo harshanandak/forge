@@ -59,8 +59,10 @@ _forge_active_issues_json() {
 }
 
 # _issue_detail_lines <issues-json>
-# Emit one pipe-delimited line per issue:
-#   id|title|STATUS|owner|updated_iso|blocked_by
+# Emit one tab-delimited (jq @tsv) line per issue:
+#   id<TAB>title<TAB>STATUS<TAB>owner<TAB>updated_iso<TAB>blocked_by
+# @tsv escapes any tab/newline/CR inside fields (issue titles are user-controlled
+# and may contain '|', tabs, or newlines), so parsing stays field-aligned.
 # STATUS is the upper-cased Kernel status; owner is assignee/claimed_by.
 # A Kernel issue's `.dependencies` lists the issues it BLOCKS (outgoing edges),
 # so blocked_by is computed by reverse scan: the issues (within this active set)
@@ -82,7 +84,7 @@ _issue_detail_lines() {
             | .id ]
           | join(",") )
       ]
-    | join("|")' | tr -d '\r'
+    | @tsv' | tr -d '\r'
 }
 
 # ── Dashboard Command ────────────────────────────────────────────────────
@@ -136,7 +138,7 @@ cmd_dashboard() {
   local total_open=0 total_inprogress=0 total_blocked=0 total_stale=0
 
   for entry in "${issues[@]}"; do
-    IFS='|' read -r _id _title _status _owner _updated_iso _blocked_by <<< "$entry"
+    IFS=$'\t' read -r _id _title _status _owner _updated_iso _blocked_by <<< "$entry"
 
     local _updated_epoch=0
     if [[ -n "$_updated_iso" ]]; then
@@ -172,7 +174,7 @@ cmd_dashboard() {
     if [[ -n "$_blocked_by" ]]; then
       dev_blocked[$_owner]=$(( ${dev_blocked[$_owner]} + 1 ))
       total_blocked=$((total_blocked + 1))
-      blocked_entries+=("$_id|$_owner|$_title|$_blocked_by")
+      blocked_entries+=("$_id"$'\t'"$_owner"$'\t'"$_title"$'\t'"$_blocked_by")
     fi
 
     # Check for stale (>48h since last update)
@@ -182,7 +184,7 @@ cmd_dashboard() {
         local hours=$(( age / 3600 ))
         dev_stale[$_owner]=$(( ${dev_stale[$_owner]} + 1 ))
         total_stale=$((total_stale + 1))
-        stale_entries+=("$_id|$_owner|$_title|${hours}h since last update")
+        stale_entries+=("$_id"$'\t'"$_owner"$'\t'"$_title"$'\t'"${hours}h since last update")
       fi
     fi
   done
@@ -248,7 +250,7 @@ _dashboard_text() {
     echo "Stale assignments (>48h):"
     local entry
     for entry in "${stale_entries[@]}"; do
-      IFS='|' read -r _id _owner _title _age <<< "$entry"
+      IFS=$'\t' read -r _id _owner _title _age <<< "$entry"
       echo "  ⚠ $_id [$_owner] — $_title ($_age)"
     done
   fi
@@ -259,7 +261,7 @@ _dashboard_text() {
     echo "Blocked issues:"
     local entry
     for entry in "${blocked_entries[@]}"; do
-      IFS='|' read -r _id _owner _title _deps <<< "$entry"
+      IFS=$'\t' read -r _id _owner _title _deps <<< "$entry"
       echo "  ⚠ $_id [$_owner] — $_title (blocked by $_deps)"
     done
   fi
@@ -294,7 +296,7 @@ _dashboard_json() {
   for entry in "${stale_entries[@]}"; do
     [[ $first -eq 0 ]] && stale_json+=","
     first=0
-    IFS='|' read -r _id _owner _title _age <<< "$entry"
+    IFS=$'\t' read -r _id _owner _title _age <<< "$entry"
     stale_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg age "$_age" '{id:$id,owner:$owner,title:$title,age:$age}')"
   done
   stale_json+="]"
@@ -305,7 +307,7 @@ _dashboard_json() {
   for entry in "${blocked_entries[@]}"; do
     [[ $first -eq 0 ]] && blocked_json+=","
     first=0
-    IFS='|' read -r _id _owner _title _deps <<< "$entry"
+    IFS=$'\t' read -r _id _owner _title _deps <<< "$entry"
     blocked_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg deps "$_deps" '{id:$id,owner:$owner,title:$title,blocked_by:$deps}')"
   done
   blocked_json+="]"

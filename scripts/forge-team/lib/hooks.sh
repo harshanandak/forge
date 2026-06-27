@@ -153,7 +153,11 @@ forge_team_sync() {
   while IFS=$'\t' read -r issue_id has_github; do
     [[ -z "$issue_id" ]] && continue
 
-    if [[ "$has_github" != "true" ]]; then
+    # Skip only when there is neither a github_issue:<n> label nor a legacy
+    # mapping-file association. _get_github_issue_number (from sync-github.sh)
+    # checks the label first, then the mapping-file fallback, so mapping-only
+    # linked issues are still synced instead of being skipped here.
+    if [[ "$has_github" != "true" ]] && ! _get_github_issue_number "$issue_id" >/dev/null 2>&1; then
       # No GitHub issue linked, skip but warn
       warnings=$((warnings + 1))
       if [[ "$quiet" == "false" ]]; then

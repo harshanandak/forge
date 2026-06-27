@@ -132,21 +132,61 @@ cmd_verify() {
     issues_found=$((issues_found + 1))
   fi
 
-  # ── Check 3: Orphan tracked issues (no GitHub counterpart) ──────────
-  # The GitHub association is stored as a `github_issue:<n>` label on each
-  # issue, so synced/orphan status comes straight from the list JSON labels.
+  # ── Association set: labels ∪ mapping (shared by Check 3 and Check 4) ─
+  # A GitHub↔Forge association can live in either the issue's `github_issue:<n>`
+  # label OR the local mapping file. Build a single set from BOTH so Check 3
+  # (Forge→GitHub) and Check 4 (GitHub→Forge) agree: a label-only or
+  # mapping-only association must never be misreported as an orphan.
+  local mapping_file
+  mapping_file="$(_mapping_file)"
+  local mapping_content="{}"
+  [[ -f "$mapping_file" ]] && mapping_content="$(cat "$mapping_file" 2>/dev/null || echo '{}')"
+
   local issues_json
   issues_json="$(_verify_active_issues_json)"
 
-  local issue_total issue_synced
+  local -A assoc_gh_num=()   # associated GitHub numbers (mapping keys ∪ label numbers)
+  local -A assoc_beads=()    # associated Forge ids (mapping values ∪ labelled ids)
+
+  # From the mapping file: keys are GitHub numbers, values are Forge ids. The
+  # value is a string today; tolerate a legacy/forward object form ({beads_id}).
+  local _m_num _m_bid
+  while IFS=$'\t' read -r _m_num _m_bid; do
+    [[ -n "$_m_num" ]] && assoc_gh_num["$_m_num"]=1
+    [[ -n "$_m_bid" && "$_m_bid" != "null" ]] && assoc_beads["$_m_bid"]=1
+  done <<< "$(printf '%s' "$mapping_content" | jq -r '
+    to_entries[]
+    | [ (.key | tostring),
+        (if (.value | type) == "object" then (.value.beads_id // "") else (.value | tostring) end) ]
+    | @tsv' 2>/dev/null | tr -d '\r')"
+
+  # From active issues: a github_issue:<n> label links the issue id to number n.
+  local _l_id _l_num
+  while IFS=$'\t' read -r _l_id _l_num; do
+    [[ -z "$_l_id" ]] && continue
+    assoc_beads["$_l_id"]=1
+    [[ -n "$_l_num" ]] && assoc_gh_num["$_l_num"]=1
+  done <<< "$(printf '%s' "$issues_json" | jq -r '
+    .[]
+    | . as $x
+    | ((($x.labels // []) | map(select(startswith("github_issue:"))) | .[0] // "") | ltrimstr("github_issue:")) as $num
+    | select($num != "")
+    | [ $x.id, $num ] | @tsv' 2>/dev/null | tr -d '\r')"
+
+  # ── Check 3: Orphan tracked issues (no GitHub counterpart) ──────────
+  local issue_total issue_synced=0
   issue_total="$(printf '%s' "$issues_json" | jq 'length' 2>/dev/null || echo 0)"
-  issue_synced="$(printf '%s' "$issues_json" | jq '[.[] | select((.labels // []) | any(test("^github_issue:")))] | length' 2>/dev/null || echo 0)"
 
   local issue_orphans=()
-  while IFS= read -r oid; do
-    [[ -z "$oid" ]] && continue
-    issue_orphans+=("$oid")
-  done <<< "$(printf '%s' "$issues_json" | jq -r '.[] | select(((.labels // []) | any(test("^github_issue:"))) | not) | .id' 2>/dev/null | tr -d '\r')"
+  local _aid
+  while IFS= read -r _aid; do
+    [[ -z "$_aid" ]] && continue
+    if [[ -n "${assoc_beads[$_aid]:-}" ]]; then
+      issue_synced=$((issue_synced + 1))
+    else
+      issue_orphans+=("$_aid")
+    fi
+  done <<< "$(printf '%s' "$issues_json" | jq -r '.[].id' 2>/dev/null | tr -d '\r')"
 
   if [[ ${#issue_orphans[@]} -eq 0 ]]; then
     echo "✓ Forge→GitHub: ${issue_synced}/${issue_total} issues synced"
@@ -159,9 +199,8 @@ cmd_verify() {
   fi
 
   # ── Check 4: Orphan GitHub issues (no tracked counterpart) ──────────
-  local mapping_file
-  mapping_file="$(_mapping_file)"
-
+  # Uses the same association set: a GitHub number is mapped when it appears in
+  # the mapping file OR as a github_issue:<n> label on an active issue.
   local gh_issues_json
   gh_issues_json="$("$gh_cmd" issue list --state open --json number,title --limit 100 2>/dev/null)" || gh_issues_json="[]"
 
@@ -169,35 +208,15 @@ cmd_verify() {
   gh_issue_count="$(printf '%s' "$gh_issues_json" | jq 'length')"
 
   local gh_orphans=()
-
-  if [[ "$gh_issue_count" -gt 0 ]] && [[ -f "$mapping_file" ]]; then
-    local mapping_content
-    mapping_content="$(cat "$mapping_file")"
-
-    local i=0
-    while [[ $i -lt $gh_issue_count ]]; do
-      local issue_num
-      issue_num="$(printf '%s' "$gh_issues_json" | jq -r ".[$i].number")"
-
-      # Check if this GitHub issue number is a key in the mapping
-      local mapped
-      mapped="$(printf '%s' "$mapping_content" | jq -r --arg n "$issue_num" '.[$n] // empty')"
-
-      if [[ -z "$mapped" ]]; then
-        gh_orphans+=("$issue_num")
-      fi
-      i=$((i + 1))
-    done
-  elif [[ "$gh_issue_count" -gt 0 ]] && [[ ! -f "$mapping_file" ]]; then
-    # No mapping file — all GitHub issues are orphans
-    local i=0
-    while [[ $i -lt $gh_issue_count ]]; do
-      local issue_num
-      issue_num="$(printf '%s' "$gh_issues_json" | jq -r ".[$i].number")"
+  local i=0
+  while [[ $i -lt $gh_issue_count ]]; do
+    local issue_num
+    issue_num="$(printf '%s' "$gh_issues_json" | jq -r ".[$i].number")"
+    if [[ -z "${assoc_gh_num[$issue_num]:-}" ]]; then
       gh_orphans+=("$issue_num")
-      i=$((i + 1))
-    done
-  fi
+    fi
+    i=$((i + 1))
+  done
 
   if [[ ${#gh_orphans[@]} -eq 0 ]]; then
     local mapped_count=$((gh_issue_count))

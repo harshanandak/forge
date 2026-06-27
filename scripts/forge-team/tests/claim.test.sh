@@ -65,12 +65,13 @@ case "$sub" in
       forge-unassigned) labels='["github_issue:43"]' ;;
       forge-mine)       labels='["github_issue:44"]' ;;
       forge-nogithub)   labels='[]' ;;
-      *)                labels='[]' ;;
+      *)                printf 'unexpected issue id: %s\n' "$id" >&2; exit 64 ;;
     esac
     printf '{"data":{"issue":{"id":"%s","labels":%s}}}\n' "$id" "$labels"
     ;;
   "issue claim")   printf '{"data":{"id":"%s"}}\n' "$id" ;;
   "issue comment") printf '{"data":{"id":"%s"}}\n' "$id" ;;
+  *) printf 'unexpected forge command: %s\n' "$*" >&2; exit 64 ;;
 esac
 MOCK
 chmod +x "$mock_dir/forge"
