@@ -16,13 +16,14 @@ describe('detectProjectStatus() feature gate', () => {
     expect(fnBody).not.toContain('hasDocsWorkflow');
   });
 
-  test('fully set up condition only requires hasAgentsMd and hasClaudeCommands', () => {
-    // The upgrade detection should check ONLY hasAgentsMd && hasClaudeCommands
-    // without requiring hasDocsWorkflow
-    const upgradeCondition = fnBody.match(/if\s*\(status\.hasAgentsMd\s*&&\s*status\.hasClaudeCommands\b[^)]*\)/);
+  test('fully set up condition only requires hasAgentsMd (A0d: hasClaudeCommands removed)', () => {
+    // After A0d, hasClaudeCommands is removed from detectProjectStatus.
+    // The upgrade detection should check ONLY hasAgentsMd.
+    const upgradeCondition = fnBody.match(/if\s*\(status\.hasAgentsMd\s*\)/);
     expect(upgradeCondition).not.toBeNull();
-    // The matched condition should NOT contain hasDocsWorkflow
+    // The matched condition should NOT contain removed properties
     expect(upgradeCondition[0]).not.toContain('hasDocsWorkflow');
+    expect(upgradeCondition[0]).not.toContain('hasClaudeCommands');
   });
 
   test('no references to hasDocsWorkflow anywhere in the file', () => {

@@ -23,7 +23,6 @@ const PACKAGE_LEVEL_PATHS = new Set([
 ]);
 
 const KNOWN_TARGETABLE_PREFIXES = [
-  '.claude/commands/',
   '.cursor/',
   '.codex/',
   '.forge/',

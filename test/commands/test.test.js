@@ -470,7 +470,7 @@ describe('forge test command', () => {
 			]);
 		});
 
-		test('maps legacy command edits to the skills drift test', async () => {
+		test('unmapped .claude/commands/ edits fall back to full suite (A0d: commands surface removed)', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {
 				fs: makeFsStub({
@@ -484,11 +484,9 @@ describe('forge test command', () => {
 				spawnSync: spawnSpy,
 			});
 
-			expect(spawnSpy.calls[0].args).toEqual([
-				'run',
-				'test',
-				'test/structural/skills-sync-drift.test.js',
-			]);
+			// .claude/commands/ is no longer a forge-managed surface (removed in A0d).
+			// getAffectedTestFiles returns [] → no targeted tests → falls back to full suite.
+			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
 		});
 
 		test('maps mirrored agent assets to sync-oriented tests', async () => {

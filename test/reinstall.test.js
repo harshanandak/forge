@@ -35,7 +35,7 @@ describe('reinstall', () => {
   test('calls resetHard then setupFn', async () => {
     scaffold(tmpDir, [
       '.forge/setup-state.json',
-      '.claude/commands/plan.md',
+      '.claude/skills/plan/SKILL.md',
       '.claude/rules/workflow.md',
     ]);
 
@@ -51,7 +51,7 @@ describe('reinstall', () => {
 
     // Forge files should have been removed
     expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills'))).toBe(false);
 
     // Setup function was called with project root
     expect(setupCalled).toBe(true);

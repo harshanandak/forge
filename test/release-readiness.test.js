@@ -185,9 +185,9 @@ describe('release readiness bd call-site audit', () => {
     const root = makeRepo();
     writeRepoAgentPluginManifests(root);
     writeFile(root, '.forge/sync-manifest.json', JSON.stringify({
-      files: ['.cursor/commands/dev.md'],
+      files: ['.cursor/rules/dev.mdc'],
     }));
-    writeFile(root, '.cursor/commands/dev.md', 'Use `bd ready` before selecting work.\n');
+    writeFile(root, '.cursor/rules/dev.mdc', 'Use `bd ready` before selecting work.\n');
 
     const audit = auditBdCallSites(root, { scanRoots: [] });
 
@@ -195,7 +195,7 @@ describe('release readiness bd call-site audit', () => {
     expect(audit.totalFiles).toBe(1);
     expect(audit.groups.docs.files).toEqual([
       expect.objectContaining({
-        path: '.cursor/commands/dev.md',
+        path: '.cursor/rules/dev.mdc',
         count: 1,
       }),
     ]);
@@ -443,16 +443,16 @@ module.exports = {
     writeRepoAgentPluginManifests(root);
     const outsidePath = path.join(path.dirname(root), `${path.basename(root)}-outside.md`);
     writeFile(root, '.forge/sync-manifest.json', JSON.stringify({
-      files: ['.cursor/commands/dev.md', `../${path.basename(outsidePath)}`],
+      files: ['.cursor/rules/dev.mdc', `../${path.basename(outsidePath)}`],
     }));
-    writeFile(root, '.cursor/commands/dev.md', 'Use `bd ready` before selecting work.\n');
+    writeFile(root, '.cursor/rules/dev.mdc', 'Use `bd ready` before selecting work.\n');
     writeAbsoluteFile(outsidePath, 'Escaped `bd` instruction.\n');
 
     const audit = auditBdCallSites(root, { scanRoots: [] });
 
     expect(audit.groups.docs.files).toEqual([
       expect.objectContaining({
-        path: '.cursor/commands/dev.md',
+        path: '.cursor/rules/dev.mdc',
         count: 1,
       }),
     ]);

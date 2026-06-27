@@ -362,7 +362,7 @@ async function main() { // NOSONAR S3776
 			const prRef = positionalArgs[0] ? ` ${positionalArgs[0]}` : '';
 			console.log(`ℹ️  '${command}' is a guided workflow stage.`);
 			console.log(`   Use your AI agent with the /${command}${prRef} slash command for interactive execution.`);
-			console.log(`   See .claude/commands/${command}.md for the full workflow guide.`);
+			console.log(`   See skills/${command}/SKILL.md for the full workflow guide.`);
 		}
 
 		process.exit(0);

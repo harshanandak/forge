@@ -199,7 +199,8 @@ describe('setup runtime flags', () => {
     const result = await runSetup(['--agents', 'claude', '--keep', '--skip-external'], tmpDir);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Keeping existing .claude/commands/ (--keep)');
+    // .claude/commands/ is no longer a forge-managed surface (removed in A0d);
+    // the file survives untouched regardless of --keep since setup never writes there.
     expect(fs.readFileSync(path.join(claudeDir, 'plan.md'), 'utf8')).toBe(sentinel);
   });
 

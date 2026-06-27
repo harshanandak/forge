@@ -85,15 +85,16 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual(expect.arrayContaining(riskTargets));
   });
 
-  test('classifyPushTests maps legacy command edits to the skills drift check', () => {
+  test('classifyPushTests marks .claude/commands/ edits as unmapped — full suite (A0d: commands surface removed)', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '.claude/commands/ship.md\n',
     }));
 
-    expect(plan.testTargets).toEqual([
-      'test/structural/skills-sync-drift.test.js',
-      ...riskTargets,
-    ]);
+    // .claude/commands/ is not in KNOWN_TARGETABLE_PREFIXES (removed in A0d).
+    // hasUnmappedFiles → shouldRunFullSuite → testTargets is affectedTestTargets (empty).
+    expect(plan.runFullSuite).toBe(true);
+    expect(plan.hasUnmappedFiles).toBe(true);
+    expect(plan.testTargets).toEqual([]);
   });
 
   test('classifyPushTests maps mirrored agent assets without forcing a full suite', () => {
@@ -354,7 +355,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
   });
 
-  test('runPrePushTests skips broad unit tests when only legacy command docs changed', () => {
+  test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', () => {
     const spawnSync = makeSpawnSync(0);
     const status = runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
@@ -365,14 +366,11 @@ describe('scripts/test pre-push runner', () => {
       spawnSync,
     });
 
+    // .claude/commands/ is unmapped (removed in A0d) → hasUnmappedFiles → full suite via test-full-suite.js.
     expect(status).toBe(0);
     expect(spawnSync.calls).toHaveLength(1);
-    expect(spawnSync.calls[0].args).toEqual([
-      'run',
-      'test',
-      'test/structural/skills-sync-drift.test.js',
-      ...riskTargets,
-    ]);
+    expect(spawnSync.calls[0].command).toBe('node');
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
   test('runPrePushTests falls back to the full unit suite for unmapped pushed files', () => {
