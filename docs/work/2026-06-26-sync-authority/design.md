@@ -108,9 +108,14 @@ The protocol is **event-log replication with serialized acceptance** — *not* f
   revision), `duplicate` (dedupe), or `quarantine` (stale-revision conflict).
 - **Pull:** the local kernel requests events since its last-known server-sequence **cursor** and
   applies them locally. Application is idempotent — the broker already classifies re-applied events
-  as `duplicate`/`projection_echo`, so replays are safe.
+  as `duplicate`/`projection_echo`, so replays are safe. For the `git-jsonl` bridge (§3) the inbound
+  equivalent is **importing the committed JSONL records pulled from git** rather than requesting events
+  from a server; both directions apply through the same idempotent broker path (see §3 for the import
+  contract and its applied-commit marker).
 - **Cursor:** the local kernel persists a server-sequence high-water mark. This is the only new piece
-  of local state the server era adds.
+  of local state the server era adds. For the `git-jsonl` bridge the analogous resumable marker is an
+  **applied-commit marker** (the last git commit whose JSONL records have been imported), so a machine
+  replays only the new records after each `git pull` instead of re-importing the whole history.
 
 ### 2.2 Conflict model / who-wins
 - The server is the **serializer**; local is a working copy/cache. There is **no last-writer-wins**.
@@ -152,8 +157,15 @@ interface SyncBackend {
   /** One-shot convenience used by `forge sync`. push()+pull() or a no-op. */
   sync(opts): Promise<{ success: boolean, synced: boolean, message?: string, error?: string }>;
 
-  /** Send un-acked local events to the authority. */
-  push(opts): Promise<{ pushed: number, accepted: object[], rejected: object[] }>;
+  /**
+   * Send un-acked local events to the authority. The result preserves the
+   * per-event protocol outcomes of §2.1 — `accepted` (with assigned server
+   * revision), `duplicate` (deduped), and `quarantine` (stale-revision conflict
+   * needing rebase) — rather than collapsing them into a generic accepted/
+   * rejected split, so callers keep the rebase/quarantine signal. `push()` is the
+   * transport verb; it carries the protocol states, it does not redefine them.
+   */
+  push(opts): Promise<{ pushed: number, accepted: object[], duplicate: object[], quarantine: object[] }>;
 
   /** Pull accepted events since the local cursor; apply idempotently. */
   pull(opts): Promise<{ pulled: number, appliedThrough: string | null }>;
@@ -174,12 +186,21 @@ interface SyncBackend {
   `{ success: true, synced: false, message: 'Local kernel is single-machine authority; no remote
   configured.' }`. `status().configured = false`. This is the literal "local-noop now" the
   maintainer asked for; it makes the de-bead a clean, honest swap.
-- **`GitJsonlSyncBackend` (recommended first *real* implementation — see decision in §5).** `sync()`
-  drains the projection outbox into the **committable** mirror `.forge/kernel/{issues,comments,
-  dependencies}.jsonl` + `manifest.json` (the format `projection-jsonl-writer.js` already produces;
-  `DEFAULT_PROJECTION_DIR = .forge/kernel`, confirmed **not** gitignored). Cross-machine sharing then
-  rides the existing `forge push`/git flow — the same "JSONL-in-git" model Beads used, but
-  kernel-native and Dolt-free. No server required.
+- **`GitJsonlSyncBackend` (recommended first *real* implementation — see decision in §5).** This bridge
+  is **bidirectional** — it must both export local state and re-import it on another machine, or the
+  git-backed flow can publish but never rehydrate:
+  - **Push (export):** `push()`/`sync()` drains the projection outbox into the **committable** mirror
+    `.forge/kernel/{issues,comments,dependencies}.jsonl` + `manifest.json` (the format
+    `projection-jsonl-writer.js` already produces; `DEFAULT_PROJECTION_DIR = .forge/kernel`, confirmed
+    **not** gitignored). Cross-machine sharing then rides the existing `forge push`/git flow — the same
+    "JSONL-in-git" model Beads used, but kernel-native and Dolt-free. No server required.
+  - **Pull (import/replay):** after `git pull`, `pull()` reads the committed JSONL records and applies
+    them to the local kernel as inbound events **through the broker**, so application is idempotent —
+    re-applied events are classified `duplicate`/`projection_echo` and replay is safe. It advances an
+    **applied-commit marker** (the last imported git commit, e.g. persisted at
+    `.forge/kernel/.applied-commit`), the git-side analog of §2.1's server-sequence cursor, so each
+    machine resumes from the right point and never re-imports the whole history. This import half is
+    what lets a second machine *rehydrate* from git rather than only export to it.
 - **`ServerSyncBackend` (future).** Implements §2 push/pull/status against the Forge server over
   HTTP/gRPC. This is the seam the server team implements.
 
@@ -264,14 +285,23 @@ without touching `.beads` or Dolt.
 - Rename `BD_CMD` → `FORGE_ISSUES_CMD` (or similar) for the test override.
 - **Keep the entire jq scoring/session/team-activity engine unchanged** — it operates on a JSON array
   of issues.
-**Required verification (do not assume):** the scoring jq depends on exact fields — `.dependent_count`,
-`.dependency_count`, `.dependents`, `.type`, `.priority`, `.updated_at`, `.status`. The compat
-adapter `lib/adapters/beads-kernel-compat.js` already emits beads-shaped `type`/`priority`/
-`updated_at`/dependencies, but the **denormalized** `dependent_count`/`dependency_count`/`dependents`
-(readiness fields) must be confirmed present in `forge issue list --json` (see
-`lib/kernel/readiness-model.js`). If absent, either extend the list projection or adjust the jq to
-derive them from the dependency edges. This is the riskiest de-bead — it is a field-shape contract,
-not a command rename.
+**Verified field-shape gap (do not assume):** the scoring jq depends on exact fields — `.dependent_count`,
+`.dependency_count`, `.dependents`, `.type`, `.priority`, `.updated_at`, `.status`. **Confirmed against
+the kernel projection:** `forge issue list --json` is built by `rowToIssueSummary`
+(`lib/kernel/sqlite-driver.js`), which emits `type`, `priority`, `updated_at`, `status`, `dependencies`
+(the ids this issue depends on) and a boolean `blocked` — but **not** the denormalized
+`dependent_count`/`dependency_count`/`dependents` readiness counts. The compat adapter
+`lib/adapters/beads-kernel-compat.js` reshapes the beads-style `type`/`priority`/`updated_at`/
+dependencies but likewise does not synthesize those counts. **So the switch is blocked on closing this
+gap first — choose one before repointing `smart-status.sh`:**
+- **(a) Extend the list projection** to denormalize `dependent_count`/`dependency_count`/`dependents`
+  (derive `dependents` as the reverse of `dependencies`, and the counts from both edge directions; the
+  readiness pass in `lib/kernel/readiness-model.js` already walks these edges), or
+- **(b) Adjust the `smart-status.sh` jq** to derive `dependents`/`dependent_count`/`dependency_count`
+  from the `dependencies` array (and `blocked`) already present in the list output — keeps the change
+  script-local.
+
+This remains the riskiest de-bead — it is a field-shape contract, not a command rename.
 
 ---
 
