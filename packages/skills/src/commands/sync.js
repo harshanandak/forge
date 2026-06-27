@@ -213,7 +213,7 @@ function listFilesRecursiveForCheck(dir) {
     }
   };
   if (existsSync(dir)) walk(dir, '');
-  return out.sort();
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
 /** Compare two skill dirs; line-ending-normalized so Windows CRLF is not drift. */

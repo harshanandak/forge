@@ -408,6 +408,30 @@
       "line": 492,
       "target": "./building-block-pivot.md",
       "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 150,
+      "target": "../../../.claude/commands/plan.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 150,
+      "target": "../../../.claude/commands/dev.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 150,
+      "target": "../../../.claude/commands/validate.md",
+      "reason": "Target file does not exist"
+    },
+    {
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "line": 378,
+      "target": "../../../scripts/sync-commands.js",
+      "reason": "Target file does not exist"
     }
   ]
 }
