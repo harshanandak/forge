@@ -52,7 +52,7 @@ describe('lib/dep-guard/keyword-ripple.js', () => {
     expect(report.overlapCount).toBe(1);
     expect(report.output).toContain('Potential overlap');
     expect(report.output).toContain('forge-other');
-    expect(report.output).toContain('bd dep add forge-src forge-other');
+    expect(report.output).toContain('forge issue dep add forge-src forge-other');
     expect(report.output).toContain('Confidence: LOW');
   });
 

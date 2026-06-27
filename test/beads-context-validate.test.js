@@ -31,11 +31,15 @@ function toBashPath(filePath) {
  */
 function runValidate(issueId, shimBehavior = {}) {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const shimDir = path.join(ROOT, `.bd-validate-shim-${suffix}`);
-  const shimPath = path.join(shimDir, 'bd');
+  const shimDir = path.join(ROOT, `.forge-validate-shim-${suffix}`);
+  const shimPath = path.join(shimDir, 'forge');
 
   fs.mkdirSync(shimDir, { recursive: true });
 
+  // `forge issue show --json` returns the issue with its comment history inline,
+  // so comment text is embedded in the show payload (matching the {text:...}[]
+  // shape consumed by lib/workflow/state-manager.js) instead of a separate read.
+  const commentsText = (shimBehavior.comments || '').replace(/\\n/g, '\n');
   const showJson = shimBehavior.showJson ?? JSON.stringify({
     id: issueId,
     title: 'Test issue',
@@ -43,31 +47,26 @@ function runValidate(issueId, shimBehavior = {}) {
     design: 'design' in shimBehavior ? shimBehavior.design : '5 tasks | docs/plans/test-tasks.md',
     notes: shimBehavior.notes ?? '',
     status: 'in_progress',
+    comments: commentsText ? [{ text: commentsText }] : [],
   });
 
-  const commentsOutput = shimBehavior.comments || '';
   const showExitCode = shimBehavior.showExitCode || 0;
 
-  fs.writeFileSync(path.join(shimDir, 'comments.txt'), commentsOutput.replace(/\\n/g, '\n'));
   fs.writeFileSync(path.join(shimDir, 'show.json'), showJson);
 
   fs.writeFileSync(
     shimPath,
     `#!/usr/bin/env bash
-if [ "$1" = "show" ] && [ "$3" = "--json" ]; then
+if [ "$1" = "issue" ] && [ "$2" = "show" ] && [ "$4" = "--json" ]; then
   if [ "${showExitCode}" -ne 0 ]; then
-    echo "Error resolving issue: $2" >&2
+    echo "Error resolving issue: $3" >&2
     exit ${showExitCode}
   fi
   cat ${shQuote(`./${path.basename(shimDir)}/show.json`)}
   exit 0
 fi
-if [ "$1" = "comments" ] && [ "$2" = "${issueId}" ]; then
-  cat ${shQuote(`./${path.basename(shimDir)}/comments.txt`)}
-  exit 0
-fi
-echo "bd shim: $*"
-exit 0
+echo "forge shim: $*" >&2
+exit 1
 `,
     { mode: 0o755 }
   );
@@ -76,7 +75,7 @@ exit 0
     cwd: ROOT,
     env: {
       ...process.env,
-      BD_CMD: toBashPath(shimPath),
+      FORGE_CMD: toBashPath(shimPath),
     },
     encoding: 'utf8',
     timeout: SHELL_TEST_TIMEOUT_MS,
