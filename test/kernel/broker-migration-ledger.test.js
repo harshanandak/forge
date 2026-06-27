@@ -57,6 +57,21 @@ describe('Kernel broker — migration ledger', () => {
 		expect(Number(count[0].n)).toBe(expectedIds.length);
 	});
 
+	test('initialize() creates the kernel_memories read-model table and a re-run is idempotent', async () => {
+		const first = await makeBroker().initialize();
+		expect(first.migrationsNewlyApplied).toContain('005_kernel_memories');
+
+		// The read-model table is queryable after the first initialize().
+		const empty = await driver.queryAll('SELECT COUNT(*) AS n FROM kernel_memories;', config);
+		expect(Number(empty[0].n)).toBe(0);
+
+		// A second initialize() applies nothing new and does not error (idempotent).
+		const second = await makeBroker().initialize();
+		expect(second.migrationsNewlyApplied).toEqual([]);
+		const ids = await ledgerIds();
+		expect(ids.filter(id => id === '005_kernel_memories')).toEqual(['005_kernel_memories']);
+	});
+
 	test('a second initialize applies nothing (the ledger short-circuits)', async () => {
 		await makeBroker().initialize();
 		const before = await ledgerIds();
