@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Post-merge health check for the Forge verify stage — confirms the merge landed on main, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
+description: Post-merge health check for the Forge verify stage — confirms the merge landed on master, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
@@ -18,14 +18,14 @@ This skill runs AFTER the user has merged the PR. It checks system health — no
 
 ## What This Skill Does
 
-### Step 1: Switch to Main and Pull
+### Step 1: Switch to Master and Pull
 
 ```bash
 git checkout master
 git pull
 ```
 
-Confirm the merge actually landed on main. If the PR isn't merged yet, stop and tell the user to merge first.
+Confirm the merge actually landed on master. If the PR isn't merged yet, stop and tell the user to merge first.
 
 ### Step 2: Confirm PR Is Merged
 
@@ -39,7 +39,7 @@ gh pr list --state merged --base master --limit 1 --json number,state,mergedAt,m
 - If no PR found: the merge may not have landed yet — stop and tell the user to merge first
 - If the wrong PR appears: user can specify the number directly with `gh pr view <number> --json state,mergedAt,mergedBy`
 
-### Step 3: Check CI on Main After Merge
+### Step 3: Check CI on Master After Merge
 
 ```bash
 gh run list --branch master --limit 5
@@ -48,7 +48,7 @@ gh run list --branch master --limit 5
 Check the most recent workflow runs on `master`:
 - All should be passing or in progress
 - If any failed: identify which workflow and what failed
-- Failed CI on main after merge may need a hotfix PR
+- Failed CI on master after merge may need a hotfix PR
 
 ### Step 4: Check Deployments (if applicable)
 
@@ -219,7 +219,7 @@ Do NOT declare /verify complete until:
 - **Never commits code** — this skill may update Beads issue state after post-merge health is verified
 - **Never creates PRs** — if fixes are needed, that's a new /dev cycle
 - **Runs after user confirms merge** — not before
-- **Reports honestly** — if CI is broken on main, say so clearly
+- **Reports honestly** — if CI is broken on master, say so clearly
 
 ## Example Output (Healthy)
 
