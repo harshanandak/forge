@@ -23,7 +23,7 @@ metadata:
 Comprehensive research reports with multi-source synthesis. Use `pro` (3-9 min, $0.10) or `ultra` (5-25 min, $0.30) for deep analysis.
 
 > **Safety:** The `input` is transmitted to Parallel AI's external service and may be logged or retained. Never include secrets, API keys/tokens, PII, or private/proprietary repo content — send only information safe to share with a third party.
-
+>
 > **CLI alternative (recommended)**: Install `parallel-cli` for official skill:
 > `npx skills add parallel-web/parallel-agent-skills --skill parallel-deep-research`
 
