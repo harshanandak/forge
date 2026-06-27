@@ -108,10 +108,33 @@ describe('skills/ directory structure', () => {
   });
 
   describe('skills/ contains only expected directories', () => {
+    // Canonical skill set after the skills-only migration: the 12 workflow stage
+    // skills + the `kernel` umbrella (ported from the removed .claude/commands/
+    // surface) plus the three packaged skills. These are the single source of
+    // truth; agent harness dirs are generated from them by `skills sync` / setup.
+    const expectedSkillDirs = [
+      'dev',
+      'plan',
+      'premerge',
+      'research',
+      'review',
+      'rollback',
+      'shepherd',
+      'ship',
+      'sonarcloud',
+      'status',
+      'validate',
+      'verify',
+      'kernel',
+      'hermes-forge',
+      'parallel-deep-research',
+      'sonarcloud-analysis',
+    ];
+
     test('skills/ contains exactly the expected skill directories', () => {
       const dirs = fs.readdirSync(path.join(ROOT, 'skills'))
         .filter(d => fs.statSync(path.join(ROOT, 'skills', d)).isDirectory());
-      expect(dirs.sort()).toEqual(['hermes-forge', 'parallel-deep-research', 'sonarcloud-analysis'].sort());
+      expect(dirs.sort()).toEqual(expectedSkillDirs.sort());
     });
   });
 });

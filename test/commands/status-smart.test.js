@@ -5,7 +5,7 @@ const { join } = require("node:path");
 const ROOT = join(__dirname, "../..");
 
 describe("/status command - smart-status integration", () => {
-  const statusPath = join(ROOT, ".claude/commands/status.md");
+  const statusPath = join(ROOT, "skills/status/SKILL.md");
   const content = readFileSync(statusPath, "utf-8");
 
   it("references smart-status.sh as the primary status command", () => {
@@ -26,16 +26,12 @@ describe("/status command - smart-status integration", () => {
     expect(content).toContain("git log");
   });
 
-  it("agent copies (.cursor, .codex) also reference smart-status.sh", () => {
-    const agentPaths = [
-      join(ROOT, ".cursor", "commands/status.md"),
-      join(ROOT, ".codex", "skills/status/SKILL.md"),
-    ];
-    for (const agentPath of agentPaths) {
-      expect(existsSync(agentPath)).toBe(true);
-      const agentContent = readFileSync(agentPath, "utf-8");
-      expect(agentContent).toContain("bash scripts/smart-status.sh");
-    }
+  it("codex skill copy also references smart-status.sh", () => {
+    // .cursor/commands/ was removed in A0d; check codex skill (generated from canonical)
+    const codexPath = join(ROOT, ".codex", "skills/status/SKILL.md");
+    expect(existsSync(codexPath)).toBe(true);
+    const codexContent = readFileSync(codexPath, "utf-8");
+    expect(codexContent).toContain("bash scripts/smart-status.sh");
   });
 
   it("does not instruct users to pass --workflow-state or --issue-id for status discovery", () => {

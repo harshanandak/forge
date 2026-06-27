@@ -5,22 +5,19 @@
   "description": "Anthropic's CLI agent",
   "homepage": "https://claude.ai/code",
   "capabilities": {
-    "commands": true,
+    "commands": false,
     "skills": true,
     "hooks": true
   },
   "directories": {
-    "commands": ".claude/commands",
     "rules": ".claude/rules",
-    "skills": ".claude/skills/forge-workflow",
+    "skills": ".claude/skills",
     "scripts": ".claude/scripts"
   },
   "files": {
-    "rootConfig": "CLAUDE.md",
-    "skillDefinition": ".claude/skills/forge-workflow/SKILL.md"
+    "rootConfig": "CLAUDE.md"
   },
   "setup": {
-    "copyCommands": true,
     "copyRules": true,
     "copyScripts": true,
     "createSkill": true

@@ -5,7 +5,8 @@ const { join } = require("node:path");
 const ROOT = join(__dirname, "..", "..");
 
 describe("/validate disambiguation note", () => {
-  const validatePath = join(ROOT, ".claude", "commands", "validate.md");
+  // Canonical source is now skills/validate/SKILL.md (A0d migration)
+  const validatePath = join(ROOT, "skills", "validate", "SKILL.md");
   const content = readFileSync(validatePath, "utf-8");
 
   it('contains "Three" disambiguation intro', () => {
@@ -20,13 +21,9 @@ describe("/validate disambiguation note", () => {
     expect(content).toContain("bun run check");
   });
 
-  it("is synced to .cursor agent directory", () => {
-    const cursorPath = join(ROOT, ".cursor", "commands", "validate.md");
-    if (!existsSync(cursorPath)) {
-      throw new Error(".cursor/commands/validate.md does not exist — run sync-commands.js");
-    }
-    const cursorContent = readFileSync(cursorPath, "utf-8");
-    expect(cursorContent).toContain("forge-preflight");
+  it(".claude/commands/validate.md no longer exists (deleted in A0d)", () => {
+    const legacyPath = join(ROOT, ".claude", "commands", "validate.md");
+    expect(existsSync(legacyPath)).toBe(false);
   });
 
   it("is synced to .codex agent directory", () => {

@@ -79,7 +79,7 @@ describe('resetSoft', () => {
   test('returns removed and preserved lists', () => {
     scaffold(tmpDir, [
       '.forge/setup-state.json',
-      '.claude/commands/plan.md',
+      '.claude/rules/workflow.md',
     ]);
 
     const result = resetSoft(tmpDir, { force: true });

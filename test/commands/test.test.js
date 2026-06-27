@@ -470,13 +470,12 @@ describe('forge test command', () => {
 			]);
 		});
 
-		test('maps canonical command edits to command sync tests', async () => {
+		test('unmapped .claude/commands/ edits fall back to full suite (A0d: commands surface removed)', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {
 				fs: makeFsStub({
 					existingPaths: [
-						'/fake/root/test/command-sync-check.test.js',
-						'/fake/root/test/structural/command-sync.test.js',
+						'/fake/root/test/structural/skills-sync-drift.test.js',
 					],
 				}),
 				execFileSync: makeExecFileSync({
@@ -485,12 +484,9 @@ describe('forge test command', () => {
 				spawnSync: spawnSpy,
 			});
 
-			expect(spawnSpy.calls[0].args).toEqual([
-				'run',
-				'test',
-				'test/command-sync-check.test.js',
-				'test/structural/command-sync.test.js',
-			]);
+			// .claude/commands/ is no longer a forge-managed surface (removed in A0d).
+			// getAffectedTestFiles returns [] → no targeted tests → falls back to full suite.
+			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
 		});
 
 		test('maps mirrored agent assets to sync-oriented tests', async () => {
@@ -499,9 +495,8 @@ describe('forge test command', () => {
 				fs: makeFsStub({
 					existingPaths: [
 						'/fake/root/test/agent-gaps.test.js',
-						'/fake/root/test/command-sync-check.test.js',
 						'/fake/root/test/scripts/check-agents.test.js',
-						'/fake/root/test/structural/command-sync.test.js',
+						'/fake/root/test/structural/skills-sync-drift.test.js',
 					],
 				}),
 				execFileSync: makeExecFileSync({
@@ -514,9 +509,8 @@ describe('forge test command', () => {
 				'run',
 				'test',
 				'test/agent-gaps.test.js',
-				'test/command-sync-check.test.js',
 				'test/scripts/check-agents.test.js',
-				'test/structural/command-sync.test.js',
+				'test/structural/skills-sync-drift.test.js',
 			]);
 		});
 

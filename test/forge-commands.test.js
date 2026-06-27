@@ -29,58 +29,12 @@ afterEach(() => {
   }
 });
 
-let getWorkflowCommands;
-try {
-  ({ getWorkflowCommands } = require('../bin/forge.js'));
-} catch (_e) {
-  // Expected during RED phases in earlier task history.
-}
-
-describe('getWorkflowCommands', () => {
-  test('returns an array of command names from .claude/commands/*.md', () => {
-    const commands = getWorkflowCommands();
-    expect(Array.isArray(commands)).toBe(true);
-    expect(commands.length).toBeGreaterThan(0);
-
-    const packageDir = path.resolve(__dirname, '..');
-    const commandsDir = path.join(packageDir, '.claude', 'commands');
-    const expected = fs.readdirSync(commandsDir)
-      .filter((file) => file.endsWith('.md'))
-      .map((file) => file.replace(/\.md$/, ''))
-      .sort();
-
-    expect(commands.sort()).toEqual(expected);
-  });
-
-  test('filters out non-.md files', () => {
-    const commands = getWorkflowCommands();
-    const packageDir = path.resolve(__dirname, '..');
-    const commandsDir = path.join(packageDir, '.claude', 'commands');
-    for (const command of commands) {
-      const mdPath = path.join(commandsDir, `${command}.md`);
-      expect(fs.existsSync(mdPath)).toBe(true);
-    }
-  });
-
-  test('returns empty array and warns when directory does not exist', () => {
-    const origReaddir = fs.readdirSync;
-    const warns = [];
-    const origWarn = console.warn;
-    fs.readdirSync = (dirPath, ...rest) => {
-      if (String(dirPath).includes('.claude') && String(dirPath).includes('commands')) {
-        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-      }
-      return origReaddir(dirPath, ...rest);
-    };
-    console.warn = (...args) => warns.push(args.join(' '));
-    try {
-      const result = getWorkflowCommands();
-      expect(result).toEqual([]);
-      expect(warns.length).toBeGreaterThan(0);
-    } finally {
-      fs.readdirSync = origReaddir;
-      console.warn = origWarn;
-    }
+// getWorkflowCommands was removed in A0d (command surface deleted).
+// Verify the export was removed so callers get a clear error instead of stale data.
+describe('getWorkflowCommands (removed in A0d)', () => {
+  test('getWorkflowCommands is no longer exported from bin/forge.js', () => {
+    const exports = require('../bin/forge.js');
+    expect(exports.getWorkflowCommands).toBeUndefined();
   });
 });
 

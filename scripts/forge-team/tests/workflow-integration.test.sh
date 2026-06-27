@@ -31,11 +31,11 @@ assert_contains_file "ship calls sync" "forge-team.*sync" "$SHIP"
 assert_contains_file "ship calls verify" "forge-team.*verify" "$SHIP"
 
 echo ""
-echo "── Sync check ──"
-if node "$SCRIPT_DIR/scripts/sync-commands.js" --check 2>&1 | grep -qi 'error\|drift\|mismatch'; then
-  FAIL=$((FAIL + 1)); echo "  FAIL: sync drift detected"
+echo "── Skill sync check ──"
+if (cd "$SCRIPT_DIR" && node -e "const r=require('./lib/skills-sync').checkSkillsSync({repoRoot:process.cwd()}); process.exit(r.inSync?0:1)"); then
+  PASS=$((PASS + 1)); echo "  PASS: all agent skill dirs in sync"
 else
-  PASS=$((PASS + 1)); echo "  PASS: all agent dirs in sync"
+  FAIL=$((FAIL + 1)); echo "  FAIL: skill drift detected"
 fi
 
 echo ""

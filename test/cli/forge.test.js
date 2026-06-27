@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -14,7 +14,6 @@ describe('bin/forge.js structure', () => {
       'saveWorkflowTypeOverride',
       'displayExistingInstallation',
       'promptForOverwriteDecisions',
-      'loadAndSetupClaudeCommands',
       'setupSelectedAgents',
       'handleExternalServicesStep',
     ];
@@ -30,7 +29,6 @@ describe('bin/forge.js structure', () => {
       'handleFlagsOverride(flags',
       'displayExistingInstallation(projectStatus)',
       'promptForOverwriteDecisions(question',
-      'loadAndSetupClaudeCommands(selectedAgents',
       'setupSelectedAgents(selectedAgents',
       'handleExternalServicesStep(flags',
     ];
@@ -85,8 +83,7 @@ describe('bin/forge.js structure', () => {
     const quickSetupDelegations = [
       'autoInstallLefthook()',
       'autoSetupToolsInQuickMode()',
-      'loadAndSetupClaudeCommands(selectedAgents)',
-      'setupSelectedAgents(selectedAgents, claudeCommands)',
+      'setupSelectedAgents(selectedAgents)',
       'configureDefaultExternalServices(skipExternal)',
     ];
 

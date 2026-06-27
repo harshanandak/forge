@@ -417,7 +417,7 @@ describe('Dev Command - TDD Cycle Management', () => {
 		test('task completion gate should require fresh verification evidence', () => {
 			const fs = require('fs');
 			const path = require('path');
-			const devMdPath = path.join(__dirname, '../../.claude/commands/dev.md');
+			const devMdPath = path.join(__dirname, '../../skills/dev/SKILL.md');
 			const content = fs.readFileSync(devMdPath, 'utf8');
 
 			// Find the section between <HARD-GATE: task completion> and </HARD-GATE>

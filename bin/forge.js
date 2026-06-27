@@ -47,6 +47,7 @@ const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
+const { populateAgentSkills, listCanonicalSkills } = require('../lib/skills-sync');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const {
   listTopics,
@@ -151,7 +152,8 @@ function loadAgentsFromPlugins() {
       customSetup: plugin.setup?.customSetup || '',
       needsConversion: plugin.setup?.needsConversion || false,
       copyCommands: plugin.setup?.copyCommands || false,
-      promptFormat: plugin.setup?.promptFormat || false
+      promptFormat: plugin.setup?.promptFormat || false,
+      skillsDir: plugin.directories?.skills || null
     };
   });
 
@@ -300,25 +302,6 @@ function _checkWritePermission(filePath) {
   }
 }
 
-/**
- * Reads workflow command names from .claude/commands/*.md in the package directory.
- * @returns {string[]} Command names (filenames without .md extension)
- */
-function getWorkflowCommands() {
-  const commandsDir = path.join(packageDir, '.claude', 'commands');
-  try {
-    return fs.readdirSync(commandsDir)
-      .filter(f => f.endsWith('.md'))
-      .map(f => f.replace(/\.md$/, ''));
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      console.warn(`Warning: .claude/commands directory not found at ${commandsDir}`);
-    } else {
-      console.warn(`Warning: failed to read .claude/commands — ${err.code}: ${err.message}`);
-    }
-    return [];
-  }
-}
 
 
 // Helper function to safely execute commands (no user input)
@@ -437,55 +420,6 @@ function checkPrerequisites() {
   return { errors, warnings };
 }
 
-// Universal SKILL.md content
-const SKILL_CONTENT = `---
-name: forge-workflow
-description: Composable TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
-category: Development Workflow
-tags: [tdd, workflow, pr, git, testing]
-tools: [Bash, Read, Write, Edit, Grep, Glob]
----
-
-# Forge Workflow Skill
-
-A TDD-first workflow for AI coding agents. Ship features with confidence.
-
-## When to Use
-
-Automatically invoke this skill when the user wants to:
-- Build a new feature
-- Fix a bug
-- Create a pull request
-- Run the development workflow
-
-## Default Workflow Template
-
-| Default Step | Command | Description |
-|-------|---------|-------------|
-| utility | \`/status\` | Check current context, active work, recent completions |
-| 1 | \`/plan\` | Design intent -> research -> branch + worktree + task list |
-| 2 | \`/dev\` | TDD development (implementer -> spec review -> quality review) |
-| 3 | \`/validate\` | Type check, lint, security, tests - all fresh output |
-| 4 | \`/ship\` | Push branch and create PR with full documentation |
-| 5 | \`/review\` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
-| 6 | \`/premerge\` | Update docs, hand off PR to user |
-| 7 | \`/verify\` | Post-merge health check (CI on main, close Beads) |
-
-## Workflow Composition
-
-These commands are default building blocks. Use the whole flow when it fits, or invoke individual commands/skills when the active project plan permits a smaller path.
-
-\`\`\`
-/status -> /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
-\`\`\`
-
-## Core Principles
-
-- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
-- **Research-First**: Understand before building, document decisions
-- **Security Built-In**: OWASP Top 10 analysis for every feature
-- **Documentation Progressive**: Update at each stage, verify at end
-`;
 
 // Cursor MDC rule content
 const CURSOR_RULE = `---
@@ -617,11 +551,6 @@ function createSymlinkOrCopy(source, target, options = {}) {
 
   // Delegate to lib/symlink-utils after security validation
   return libCreateSymlinkOrCopy(fullSource, fullTarget, options);
-}
-
-function stripFrontmatter(content) {
-  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
-  return match ? match[1] : content;
 }
 
 // Read existing .env.local
@@ -788,7 +717,6 @@ async function detectProjectStatus() {
     type: 'fresh', // 'fresh', 'upgrade', or 'partial'
     hasAgentsMd: fs.existsSync(path.join(projectRoot, 'AGENTS.md')),
     hasClaudeMd: fs.existsSync(path.join(projectRoot, 'CLAUDE.md')),
-    hasClaudeCommands: fs.existsSync(path.join(projectRoot, '.claude/commands')),
     hasEnvLocal: fs.existsSync(path.join(projectRoot, '.env.local')),
     existingEnvVars: {},
     agentsMdSize: 0,
@@ -822,9 +750,9 @@ async function detectProjectStatus() {
   }
 
   // Determine installation type
-  if (status.hasAgentsMd && status.hasClaudeCommands) {
+  if (status.hasAgentsMd) {
     status.type = 'upgrade'; // Full forge installation exists
-  } else if (status.hasClaudeCommands || status.hasEnvLocal) {
+  } else if (status.hasEnvLocal) {
     status.type = 'partial'; // Agent-specific files exist (not just base files from postinstall)
   }
   // else: 'fresh' - new installation (or just postinstall baseline with AGENTS.md)
@@ -1865,20 +1793,8 @@ function minimalInstall() {
 }
 
 // Helper: Setup Claude agent
-function setupClaudeAgent(skipFiles = {}) {
-  // Copy commands from package (unless skipped)
-  if (skipFiles.claudeCommands) {
-    console.log('  Skipped: .claude/commands/ (keeping existing)');
-  } else {
-    const cmds = getWorkflowCommands();
-    let copied = 0;
-    cmds.forEach(cmd => {
-      const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
-      if (copyFile(src, `.claude/commands/${cmd}.md`)) copied++;
-    });
-    console.log(`  Copied: ${copied} workflow commands`);
-  }
-
+function setupClaudeAgent() {
+  // Skills-only surface: per-skill SKILL.md dirs are populated by createAgentSkill.
   // Copy rules
   const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
   copyFile(rulesSrc, '.claude/rules/workflow.md');
@@ -1892,36 +1808,6 @@ function setupClaudeAgent(skipFiles = {}) {
 function setupCursorAgent() {
   writeFile('.cursor/rules/forge-workflow.mdc', CURSOR_RULE);
   console.log('  Created: .cursor/rules/forge-workflow.mdc');
-}
-
-// Helper: Convert command to agent-specific format
-function convertCommandToAgentFormat(cmd, content, agent) {
-  let targetContent = content;
-  let targetFile = cmd;
-
-  if (agent.needsConversion) {
-    targetContent = stripFrontmatter(content);
-  }
-
-  if (agent.promptFormat) {
-    targetFile = cmd.replace('.md', '.prompt.md');
-    targetContent = stripFrontmatter(content);
-  }
-
-  return { targetFile, targetContent };
-}
-
-// Helper: Copy commands for agent
-function copyAgentCommands(agent, claudeCommands) {
-  if (!claudeCommands) return;
-  if (!agent.needsConversion && !agent.copyCommands && !agent.promptFormat) return;
-
-  Object.entries(claudeCommands).forEach(([cmd, content]) => {
-    const { targetFile, targetContent } = convertCommandToAgentFormat(cmd, content, agent);
-    const targetDir = agent.dirs[0]; // First dir is commands/workflows
-    writeFile(`${targetDir}/${targetFile}`, targetContent);
-  });
-  console.log(`  Converted: ${Object.keys(claudeCommands).length} workflow commands`);
 }
 
 // Helper: Copy rules for agent
@@ -1941,14 +1827,22 @@ function copyAgentRules(agent) {
 }
 
 // Helper: Create skill file for agent
-function createAgentSkill(agent) {
-  if (!agent.hasSkill) return;
-
-  const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-  if (skillDir) {
-    writeFile(`${skillDir}/SKILL.md`, SKILL_CONTENT);
-    console.log('  Created: forge-workflow skill');
+function createAgentSkill(agent, agentKey) {
+  if (agentKey === 'codex') {
+    // Codex global skill install is handled via buildCodexSkillInstallPlan in setup.js
+    return;
   }
+
+  if (!agent.hasSkill || !agent.skillsDir) return;
+
+  // Skills-only surface: populate every canonical skill into the agent skills dir
+  // (.claude/skills, .cursor/skills) from the packaged canonical `skills/` source.
+  const { written } = populateAgentSkills({
+    sourceRoot: packageDir,
+    targetSkillsDir: path.join(projectRoot, agent.skillsDir),
+    clean: true,
+  });
+  console.log(`  Created: ${written.length} skills in ${agent.skillsDir}/`);
 }
 
 // Helper: Setup MCP config for Claude
@@ -1983,7 +1877,7 @@ function createAgentLinkFile(agent, symlinkOnly = false) {
 }
 
 // Setup specific agent
-function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
+function setupAgent(agentKey, skipFiles = {}) {
   const agent = AGENTS[agentKey];
   if (!agent) return;
 
@@ -2001,14 +1895,11 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
     setupCursorAgent();
   }
 
-  // Convert/copy commands
-  copyAgentCommands(agent, claudeCommands);
-
   // Copy rules if needed
   copyAgentRules(agent);
 
   // Create SKILL.md
-  createAgentSkill(agent);
+  createAgentSkill(agent, agentKey);
 
   // Setup MCP configs
   if (agentKey === 'claude') {
@@ -2042,7 +1933,6 @@ function displayInstallationStatus(projectStatus) {
   }
 
   if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
-  if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
   if (projectStatus.hasEnvLocal) console.log('  - .env.local');
   console.log('');
 }
@@ -2106,7 +1996,6 @@ async function promptForFileOverwrite(question, fileType, exists, skipFiles) {
 
   const fileLabels = {
     agentsMd: { prompt: 'Found existing AGENTS.md. Overwrite?', message: 'AGENTS.md', key: 'agentsMd' },
-    claudeCommands: { prompt: 'Found existing .claude/commands/. Overwrite?', message: '.claude/commands/', key: 'claudeCommands' }
   };
 
   const config = fileLabels[fileType];
@@ -2282,34 +2171,11 @@ async function installAgentsMd(skipFiles) {
 }
 
 /**
- * Load Claude commands for conversion
- */
-function loadClaudeCommands(selectedAgents) {
-  const claudeCommands = {};
-  const needsClaudeCommands = selectedAgents.includes('claude') ||
-    selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands);
-
-  if (!needsClaudeCommands) {
-    return claudeCommands;
-  }
-
-  getWorkflowCommands().forEach(cmd => {
-    const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-    const content = readFile(cmdPath);
-    if (content) {
-      claudeCommands[`${cmd}.md`] = content;
-    }
-  });
-
-  return claudeCommands;
-}
-
-/**
  * Setup agents with progress indication
  * Delegates to setupSelectedAgents to avoid duplicate implementations (S4144)
  */
-function setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles) {
-  setupSelectedAgents(selectedAgents, claudeCommands, skipFiles);
+function setupAgentsWithProgress(selectedAgents, skipFiles) {
+  setupSelectedAgents(selectedAgents, skipFiles);
 }
 
 /**
@@ -2324,14 +2190,10 @@ function displaySetupSummary(selectedAgents) {
   console.log('What\'s installed:');
   console.log('  - AGENTS.md (universal instructions)');
 
-  const workflowCount = getWorkflowCommands().length;
   selectedAgents.forEach(key => {
     const agent = AGENTS[key];
     if (agent.linkFile) {
       console.log(`  - ${agent.linkFile} (${agent.name})`);
-    }
-    if (agent.hasCommands) {
-      console.log(`  - .claude/commands/ (${workflowCount} workflow commands)`);
     }
     if (agent.hasSkill) {
       const skillDir = agent.dirs.find(d => d.includes('/skills/'));
@@ -2437,12 +2299,10 @@ async function _interactiveSetup() {
   // Track which files to skip based on user choices
   const skipFiles = {
     agentsMd: false,
-    claudeCommands: false
   };
 
   // Ask about overwriting existing files
   await promptForFileOverwrite(question, 'agentsMd', projectStatus.hasAgentsMd, skipFiles);
-  await promptForFileOverwrite(question, 'claudeCommands', projectStatus.hasClaudeCommands, skipFiles);
 
   if (projectStatus.type !== 'fresh') {
     console.log('');
@@ -2465,19 +2325,13 @@ async function _interactiveSetup() {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands if needed
-  let claudeCommands = {};
-  if (selectedAgents.includes('claude') || selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands)) {
-    // First ensure Claude is set up
-    if (selectedAgents.includes('claude')) {
-      setupAgent('claude', null, skipFiles);
-    }
-    // Then load the commands
-    claudeCommands = loadClaudeCommands(selectedAgents);
+  // Setup Claude first if selected, then remaining agents
+  if (selectedAgents.includes('claude')) {
+    setupAgent('claude', skipFiles);
   }
 
   // Setup each selected agent with progress indication
-  setupAgentsWithProgress(selectedAgents, claudeCommands, skipFiles);
+  setupAgentsWithProgress(selectedAgents, skipFiles);
 
   // =============================================
   // STEP 2: Project Tools Setup
@@ -3513,9 +3367,11 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Auto-setup project tools (Beads, Skills)
   autoSetupToolsInQuickMode();
 
-  // Load Claude commands and setup agents (reuse existing helpers)
-  const claudeCommands = loadAndSetupClaudeCommands(selectedAgents);
-  setupSelectedAgents(selectedAgents, claudeCommands);
+  // Setup Claude first if selected, then remaining agents
+  if (selectedAgents.includes('claude')) {
+    setupAgent('claude');
+  }
+  setupSelectedAgents(selectedAgents);
 
   // Detect Husky and migrate before installing Lefthook hooks
   await handleHuskyMigration();
@@ -3640,7 +3496,6 @@ function displayExistingInstallation(projectStatus) {
     : 'Found partial installation:');
 
   if (projectStatus.hasAgentsMd) console.log('  - AGENTS.md');
-  if (projectStatus.hasClaudeCommands) console.log('  - .claude/commands/');
   if (projectStatus.hasEnvLocal) console.log('  - .env.local');
   console.log('');
 }
@@ -3649,19 +3504,12 @@ function displayExistingInstallation(projectStatus) {
 async function promptForOverwriteDecisions(question, projectStatus) {
   const skipFiles = {
     agentsMd: false,
-    claudeCommands: false
   };
 
   if (projectStatus.hasAgentsMd) {
     const overwriteAgents = await askYesNo(question, 'Found existing AGENTS.md. Overwrite?', true);
     skipFiles.agentsMd = !overwriteAgents;
     console.log(overwriteAgents ? '  Will overwrite AGENTS.md' : '  Keeping existing AGENTS.md');
-  }
-
-  if (projectStatus.hasClaudeCommands) {
-    const overwriteCommands = await askYesNo(question, 'Found existing .claude/commands/. Overwrite?', true);
-    skipFiles.claudeCommands = !overwriteCommands;
-    console.log(overwriteCommands ? '  Will overwrite .claude/commands/' : '  Keeping existing .claude/commands/');
   }
 
   if (projectStatus.type !== 'fresh') {
@@ -3671,41 +3519,14 @@ async function promptForOverwriteDecisions(question, projectStatus) {
   return skipFiles;
 }
 
-// Helper: Load and setup Claude commands - extracted to reduce cognitive complexity
-function loadAndSetupClaudeCommands(selectedAgents, skipFiles) {
-  const claudeCommands = {};
-  const needsClaudeCommands = selectedAgents.includes('claude') ||
-    selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands);
-
-  if (!needsClaudeCommands) {
-    return claudeCommands;
-  }
-
-  // First ensure Claude is set up
-  if (selectedAgents.includes('claude')) {
-    setupAgent('claude', null, skipFiles);
-  }
-
-  // Then load the commands (from existing or newly created)
-  getWorkflowCommands().forEach(cmd => {
-    const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-    const content = readFile(cmdPath);
-    if (content) {
-      claudeCommands[`${cmd}.md`] = content;
-    }
-  });
-
-  return claudeCommands;
-}
-
 // Helper: Setup all selected agents - extracted to reduce cognitive complexity
-function setupSelectedAgents(selectedAgents, claudeCommands, skipFiles) {
+function setupSelectedAgents(selectedAgents, skipFiles) {
   const totalAgents = selectedAgents.length;
   selectedAgents.forEach((agentKey, index) => {
     const agent = AGENTS[agentKey];
     console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
     if (agentKey !== 'claude') { // Claude already done above
-      setupAgent(agentKey, claudeCommands, skipFiles);
+      setupAgent(agentKey, skipFiles);
     }
   });
 
@@ -3805,11 +3626,13 @@ async function interactiveSetupWithFlags(flags) {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands if needed (delegated to helper)
-  const claudeCommands = loadAndSetupClaudeCommands(selectedAgents, skipFiles);
+  // Setup Claude first if selected (delegated to helper), then remaining agents
+  if (selectedAgents.includes('claude')) {
+    setupAgent('claude', skipFiles);
+  }
 
   // Setup each selected agent with progress indication (delegated to helper)
-  setupSelectedAgents(selectedAgents, claudeCommands, skipFiles);
+  setupSelectedAgents(selectedAgents, skipFiles);
 
   // Handle external services step (delegated to helper)
   await handleExternalServicesStep(flags, rl, question, selectedAgents, projectStatus);
@@ -3922,15 +3745,10 @@ function dryRunSetup(agents) {
       addFileAction(dir + '/', 'Create agent directory');
     }
 
-    // Claude-specific files
+    // Claude-specific files (skills are listed by the per-skill block below)
     if (agentKey === 'claude') {
-      const cmds = getWorkflowCommands();
-      for (const cmd of cmds) {
-        addFileAction(`.claude/commands/${cmd}.md`, 'Workflow command');
-      }
       addFileAction('.claude/rules/workflow.md', 'Workflow rules');
       addFileAction('.claude/scripts/load-env.sh', 'Environment loader script');
-      addFileAction('.claude/skills/forge-workflow/SKILL.md', 'Forge workflow skill');
       addFileAction('.mcp.json', 'MCP server configuration');
       addFileAction('CLAUDE.md', 'Claude root config (links to AGENTS.md)');
     }
@@ -3940,15 +3758,7 @@ function dryRunSetup(agents) {
       addFileAction('.cursor/rules/forge-workflow.mdc', 'Cursor workflow rule');
     }
 
-    // Agent commands (converted from Claude format)
-    if (agent.needsConversion || agent.copyCommands || agent.promptFormat) {
-      const cmds = getWorkflowCommands();
-      const targetDir = agent.dirs[0];
-      for (const cmd of cmds) {
-        const ext = agent.promptFormat ? '.prompt.md' : '.md';
-        addFileAction(`${targetDir}/${cmd}${ext}`, 'Converted workflow command');
-      }
-    }
+
 
     // Agent rules (copied from Claude)
     if (agent.needsConversion) {
@@ -3958,11 +3768,10 @@ function dryRunSetup(agents) {
       }
     }
 
-    // Agent skill
-    if (agent.hasSkill) {
-      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-      if (skillDir) {
-        addFileAction(`${skillDir}/SKILL.md`, 'Forge workflow skill');
+    // Agent skill — enumerate canonical skills per-agent (codex handled globally elsewhere)
+    if (agentKey !== 'codex' && agent.hasSkill && agent.skillsDir) {
+      for (const skill of listCanonicalSkills(packageDir)) {
+        addFileAction(`${agent.skillsDir}/${skill.name}/SKILL.md`, 'Forge stage skill');
       }
     }
 
@@ -4012,15 +3821,11 @@ async function executeSetup(config) {
   setupCoreDocs();
   console.log('');
 
-  // Load Claude commands — use loadAndSetupClaudeCommands when claude is selected
-  // so that .claude/commands/ are seeded before reading them
-  const claudeCommands = agents.includes('claude')
-    ? loadAndSetupClaudeCommands(agents)
-    : loadClaudeCommands(agents);
-
-  // Setup agents with progress output (setupSelectedAgents skips claude internally
-  // since loadAndSetupClaudeCommands already handled it above)
-  setupSelectedAgents(agents, claudeCommands);
+  // Setup Claude first if selected, then remaining agents
+  if (agents.includes('claude')) {
+    setupAgent('claude');
+  }
+  setupSelectedAgents(agents);
 
   // Detect Husky and migrate before installing Lefthook hooks
   await handleHuskyMigration();
@@ -4899,7 +4704,6 @@ if (require.main === module) {
 
 module.exports = {
   ensureDirWithNote,
-  getWorkflowCommands,
   validateDirectoryPathInput,
   validateUserInput,
 };

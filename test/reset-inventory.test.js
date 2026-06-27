@@ -39,7 +39,7 @@ describe('getForgeFiles', () => {
     scaffold(tmpDir, [
       '.forge/setup-state.json',
       '.forge/hooks/pre-commit',
-      '.claude/commands/plan.md',
+      '.claude/skills/plan/SKILL.md',
       '.claude/rules/workflow.md',
       '.claude/scripts/greptile-resolve.sh',
       '.cursor/rules/forge-workflow.mdc',
@@ -50,7 +50,7 @@ describe('getForgeFiles', () => {
     const result = getForgeFiles(tmpDir);
 
     expect(result.config).toContain('.forge');
-    expect(result.commands.length).toBeGreaterThan(0);
+    expect(result.skillDirs.length).toBeGreaterThan(0);
     expect(result.rules.length).toBeGreaterThan(0);
     expect(result.scripts.length).toBeGreaterThan(0);
     expect(result.agentDirs.length).toBeGreaterThan(0);
@@ -69,7 +69,6 @@ describe('getForgeFiles', () => {
     // workflow.md is a forge template, my-custom-rule.md is user-created
     const allPaths = [
       ...result.rules,
-      ...result.commands,
       ...result.scripts,
     ];
 
@@ -84,7 +83,7 @@ describe('getForgeFiles', () => {
     const result = getForgeFiles(tmpDir);
 
     expect(result.config).toEqual([]);
-    expect(result.commands).toEqual([]);
+    expect(result.skillDirs).toEqual([]);
     expect(result.rules).toEqual([]);
     expect(result.scripts).toEqual([]);
     expect(result.agentDirs).toEqual([]);
@@ -103,5 +102,18 @@ describe('getForgeFiles', () => {
 
     expect(normalized).toContain('.cursor');
     expect(normalized).toContain('.codex');
+  });
+
+  test('detects skill directories', () => {
+    scaffold(tmpDir, [
+      '.claude/skills/plan/SKILL.md',
+      '.cursor/skills/dev/SKILL.md',
+    ]);
+
+    const result = getForgeFiles(tmpDir);
+    const normalized = result.skillDirs.map(p => p.replace(/\\/g, '/'));
+
+    expect(normalized).toContain('.claude/skills');
+    expect(normalized).toContain('.cursor/skills');
   });
 });

@@ -154,16 +154,16 @@ Task 2: Validation logic
 
 ## Documentation Index (Context Pointers)
 
-**Detailed command instructions** are located in:
-- [.claude/commands/status.md](.claude/commands/status.md) - How to check current context (utility)
-- [.claude/commands/plan.md](.claude/commands/plan.md) - How to plan features (3 phases: design intent + research + branch/worktree/tasks)
-- [.claude/commands/dev.md](.claude/commands/dev.md) - How to implement with subagent-driven TDD and decision gate
-- [.claude/commands/validate.md](.claude/commands/validate.md) - How to run validation (with HARD-GATE exit)
-- [.claude/commands/ship.md](.claude/commands/ship.md) - How to create PRs
-- [.claude/commands/review.md](.claude/commands/review.md) - How to address PR feedback (with HARD-GATE exit)
-- [.claude/commands/shepherd.md](.claude/commands/shepherd.md) - How to run a bounded PR monitor pass (utility; never merges, never resolves threads)
-- [.claude/commands/premerge.md](.claude/commands/premerge.md) - How to complete docs and hand off PR for merge
-- [.claude/commands/verify.md](.claude/commands/verify.md) - How to verify post-merge health
+**Detailed stage skill instructions** are located in:
+- [skills/status/SKILL.md](skills/status/SKILL.md) - How to check current context (utility)
+- [skills/plan/SKILL.md](skills/plan/SKILL.md) - How to plan features (3 phases: design intent + research + branch/worktree/tasks)
+- [skills/dev/SKILL.md](skills/dev/SKILL.md) - How to implement with subagent-driven TDD and decision gate
+- [skills/validate/SKILL.md](skills/validate/SKILL.md) - How to run validation (with HARD-GATE exit)
+- [skills/ship/SKILL.md](skills/ship/SKILL.md) - How to create PRs
+- [skills/review/SKILL.md](skills/review/SKILL.md) - How to address PR feedback (with HARD-GATE exit)
+- [skills/shepherd/SKILL.md](skills/shepherd/SKILL.md) - How to run a bounded PR monitor pass (utility; never merges, never resolves threads)
+- [skills/premerge/SKILL.md](skills/premerge/SKILL.md) - How to complete docs and hand off PR for merge
+- [skills/verify/SKILL.md](skills/verify/SKILL.md) - How to verify post-merge health
 
 **Planning documents** (created by `/plan`, consumed by `/dev`):
 - `docs/work/YYYY-MM-DD-<slug>/design.md` - Design intent + technical research

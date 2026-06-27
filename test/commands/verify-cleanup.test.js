@@ -2,7 +2,7 @@ const { describe, test, expect } = require('bun:test');
 const { readFileSync } = require('fs');
 const { join } = require('path');
 
-const verifyMdPath = join(__dirname, '../../.claude/commands/verify.md');
+const verifyMdPath = join(__dirname, '../../skills/verify/SKILL.md');
 const verifyMd = readFileSync(verifyMdPath, 'utf8');
 
 describe('verify.md — Step 6: Worktree and Branch Cleanup', () => {

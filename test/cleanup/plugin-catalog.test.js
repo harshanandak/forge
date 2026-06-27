@@ -25,9 +25,13 @@ describe('agent plugin catalog — capability flags', () => {
         expect(plugin.id).toBe(agent);
       });
 
-      test('capabilities.commands is true', () => {
+      test('capabilities.commands is false for skills-only agents, true for codex', () => {
         const plugin = loadPlugin(agent);
-        expect(plugin.capabilities.commands).toBe(true);
+        if (agent === 'codex') {
+          expect(plugin.capabilities.commands).toBe(true);
+        } else {
+          expect(plugin.capabilities.commands).toBe(false);
+        }
       });
 
       test('directories object is not empty', () => {

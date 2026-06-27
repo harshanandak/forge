@@ -65,6 +65,7 @@ program
   .command('sync')
   .description('Synchronize skills to agent directories')
   .option('--preserve-agents', 'Skip AGENTS.md update')
+  .option('--check', 'Report drift between canonical skills and agent mirrors; exit non-zero on drift (no writes)')
   .action(syncCommand);
 
 // skills remove <name>

@@ -1,495 +1,194 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, afterEach } = require('bun:test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
 /**
- * Tests for scripts/check-agents.js
+ * Tests for scripts/check-agents.js (skills-only surface).
  *
  * The module exports:
  * - checkAgents(repoRoot) -> { errors: string[], warnings: string[] }
+ *
+ * check-agents now validates: (1) skill drift between canonical skills/ and the
+ * generated agent mirrors (.codex/skills), and (2) plugin.json schema/parity.
+ * The old .claude/commands sync-drift surface was removed in PR-A0.
  */
 
 const { checkAgents } = require('../../scripts/check-agents.js');
-const { syncCommands } = require('../../scripts/sync-commands.js');
+const { populateAgentSkills } = require('../../lib/skills-sync.js');
+
+const tmpDirs = [];
+
+function defaultPlugin() {
+  return {
+    id: 'codex',
+    name: 'Codex',
+    version: '1.0.0',
+    capabilities: { skills: true },
+    directories: { skills: '.codex/skills' },
+  };
+}
 
 /**
- * Create a temp directory with a .claude/commands/ structure and
- * lib/agents/*.plugin.json files for testing.
- *
- * @param {Record<string, string>} commands - Map of command name to file content
- * @param {Array<object>} [plugins] - Plugin JSON objects to write (auto-generates defaults if omitted)
- * @returns {string} Absolute path to the temp repo root
+ * Create a temp repo with canonical skills/, generated .codex/skills mirror,
+ * and lib/agents/*.plugin.json files.
  */
-function createTempRepo(commands, plugins) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-check-test-'));
-  const cmdDir = path.join(tmpDir, '.claude', 'commands');
-  fs.mkdirSync(cmdDir, { recursive: true });
-  for (const [name, content] of Object.entries(commands)) {
-    fs.writeFileSync(path.join(cmdDir, `${name}.md`), content);
+function createTempRepo({ skills = { plan: 'plan body\n' }, plugins, populate = true } = {}) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-check-agents-'));
+  tmpDirs.push(tmpDir);
+
+  for (const [name, body] of Object.entries(skills)) {
+    const dir = path.join(tmpDir, 'skills', name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), body, 'utf8');
   }
 
-  // Write plugin files
-  const agentDir = path.join(tmpDir, 'lib', 'agents');
-  fs.mkdirSync(agentDir, { recursive: true });
-
-  if (plugins) {
-    for (const plugin of plugins) {
-      fs.writeFileSync(
-        path.join(agentDir, `${plugin.id}.plugin.json`),
-        JSON.stringify(plugin, null, 2)
-      );
-    }
+  const agentsDir = path.join(tmpDir, 'lib', 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  const pluginList = plugins || [defaultPlugin()];
+  for (const p of pluginList) {
+    fs.writeFileSync(path.join(agentsDir, `${p.id || 'x'}.plugin.json`), JSON.stringify(p), 'utf8');
   }
 
+  if (populate) {
+    populateAgentSkills({ sourceRoot: tmpDir, targetSkillsDir: path.join(tmpDir, '.codex', 'skills') });
+  }
   return tmpDir;
 }
 
-/**
- * Clean up a temp directory.
- *
- * @param {string} tmpDir
- */
-function cleanupTempRepo(tmpDir) {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-}
-
-// ---- Happy path: all files in sync -----------------------------------------------
+afterEach(() => {
+  while (tmpDirs.length) {
+    const d = tmpDirs.pop();
+    try {
+      fs.rmSync(d, { recursive: true, force: true });
+    } catch (_e) {
+      /* best effort */
+    }
+  }
+});
 
 describe('checkAgents — happy path', () => {
-  test('returns no errors when all files are in sync and plugins are valid', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan a feature\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        capabilities: { commands: true },
-        directories: { commands: '.cursor/commands' },
-      },
-    ]);
-    try {
-      // Write synced files first (creates manifest + agent files)
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-
-      const result = checkAgents(tmpDir);
-      expect(result.errors).toHaveLength(0);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+  test('returns no errors when skills are in sync and plugins are valid', () => {
+    const tmpDir = createTempRepo();
+    const result = checkAgents(tmpDir);
+    expect(result.errors).toHaveLength(0);
   });
 
   test('returns correct shape with current repo root', () => {
-    const repoRoot = path.resolve(__dirname, '..', '..');
+    const repoRoot = path.resolve(__dirname, '../..');
     const result = checkAgents(repoRoot);
     expect(Array.isArray(result.errors)).toBe(true);
     expect(Array.isArray(result.warnings)).toBe(true);
   });
 });
 
-// ---- Sync check integration ------------------------------------------------------
-
-describe('checkAgents — sync check', () => {
-  test('reports error when agent files are out of sync', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    });
-    try {
-      // Write synced files
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Modify one file to create drift
-      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
-      fs.writeFileSync(cursorFile, 'Manually modified content');
-
-      const result = checkAgents(tmpDir);
-      expect(result.errors.length).toBeGreaterThan(0);
-      expect(result.errors.some((e) => e.includes('out of sync') || e.includes('Out of sync'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+describe('checkAgents — skill drift', () => {
+  test('reports error when a mirrored skill file is modified', () => {
+    const tmpDir = createTempRepo();
+    fs.writeFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'tampered', 'utf8');
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('Out of sync') && e.includes('plan'))).toBe(true);
   });
 
-  test('reports error when manifest is missing', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    });
-    try {
-      // Write synced files, then delete manifest
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      fs.unlinkSync(path.join(tmpDir, '.forge', 'sync-manifest.json'));
-
-      const result = checkAgents(tmpDir);
-      // Should have a warning or error about missing manifest
-      const allMessages = [...result.errors, ...result.warnings];
-      expect(allMessages.some((m) => m.includes('manifest'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+  test('reports stale mirror dir with no canonical source', () => {
+    const tmpDir = createTempRepo();
+    fs.mkdirSync(path.join(tmpDir, '.codex', 'skills', 'ghost'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.codex', 'skills', 'ghost', 'SKILL.md'), 'x', 'utf8');
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('Out of sync') && e.includes('stale'))).toBe(true);
   });
 
-  test('reports stale files as errors', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-      dev: '---\ndescription: Dev\n---\n\nDev body.',
-    });
-    try {
-      // Sync both commands
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Delete 'dev' from canonical source
-      fs.unlinkSync(path.join(tmpDir, '.claude', 'commands', 'dev.md'));
+  test('reports missing canonical skill in the mirror', () => {
+    const tmpDir = createTempRepo({ skills: { plan: 'p\n', dev: 'd\n' } });
+    fs.rmSync(path.join(tmpDir, '.codex', 'skills', 'dev'), { recursive: true, force: true });
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('Out of sync') && e.includes('dev'))).toBe(true);
+  });
 
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('stale') || e.includes('Stale'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+  test('warns (no error) when no agent skill dirs exist yet', () => {
+    const tmpDir = createTempRepo({ populate: false });
+    const result = checkAgents(tmpDir);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings.some((w) => w.includes('skipped'))).toBe(true);
+  });
+
+  test('errors when no canonical skills/ exist', () => {
+    const tmpDir = createTempRepo({ skills: {}, populate: false });
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('No canonical skills'))).toBe(true);
   });
 });
-
-// ---- Plugin catalog validation ---------------------------------------------------
 
 describe('checkAgents — plugin catalog', () => {
   test('reports error when plugin support metadata is invalid', () => {
     const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
+      plugins: [{
+        id: 'codex',
+        name: 'Codex',
         version: '1.0.0',
-        capabilities: { commands: true },
-        support: { status: 'gold-tier' },
-        directories: { commands: '.cursor/commands' },
-      },
-    ]);
-    try {
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('support.status'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+        capabilities: { skills: true },
+        directories: { skills: '.codex/skills' },
+        support: { status: 'bogus-tier' },
+      }],
+    });
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('support.status'))).toBe(true);
   });
 
-  test('reports error when commands-capable plugin has no sync adapter', () => {
+  test('reports error when rules capability has no scaffold path', () => {
     const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'mystery-agent',
-        name: 'Mystery Agent',
+      plugins: [{
+        id: 'codex',
+        name: 'Codex',
         version: '1.0.0',
-        capabilities: { commands: true },
-        directories: { commands: '.mystery/commands' },
-      },
-    ]);
-    try {
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('sync adapter') && e.includes('mystery-agent'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+        capabilities: { rules: true },
+        directories: { skills: '.codex/skills' },
+      }],
+    });
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('rules'))).toBe(true);
   });
 
-  test('reports error when plugin command directory does not match sync adapter output', () => {
+  test('reports error when skills capability has no scaffold path', () => {
     const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
+      plugins: [{
+        id: 'codex',
+        name: 'Codex',
         version: '1.0.0',
-        capabilities: { commands: true },
-        directories: { commands: '.cursor/workflows' },
-      },
-    ]);
-    try {
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('sync output') && e.includes('.cursor/workflows'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('reports error when rules capability is declared without any scaffold path', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        version: '1.0.0',
-        capabilities: { commands: true, rules: true },
-        directories: { commands: '.cursor/commands' },
-      },
-    ]);
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('rules') && e.includes('cursor'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('reports error when skills capability is declared without any scaffold path', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        version: '1.0.0',
-        capabilities: { commands: true, skills: true },
-        directories: { commands: '.cursor/commands' },
-      },
-    ]);
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('skills') && e.includes('cursor'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+        capabilities: { skills: true },
+        directories: { rules: '.codex/rules' },
+      }],
+    });
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('skills'))).toBe(true);
   });
 
   test('reports error when deprecated plugin still claims skill parity', () => {
     const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
+      plugins: [{
+        id: 'legacy',
+        name: 'Legacy',
         version: '1.0.0',
-        capabilities: { commands: true, skills: true },
-        support: { status: 'deprecated', surface: 'editor-native' },
-        directories: {
-          commands: '.cursor/commands',
-          skills: '.cursor/skills/forge-workflow',
-        },
-        setup: {
-          createSkill: true,
-        },
-      },
-    ]);
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'skills', 'forge-workflow'), { recursive: true });
-
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('deprecated') && e.includes('skills'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('accepts deprecated compatibility plugin when it only claims command parity', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        version: '1.0.0',
-        capabilities: { commands: true, skills: false },
-        support: {
-          status: 'deprecated',
-          surface: 'editor-native',
-          install: { required: false, repairRequired: false },
-        },
-        directories: {
-          commands: '.cursor/commands',
-        },
-        files: {
-          rootConfig: '.cursorrules',
-        },
-        setup: {
-          copyCommands: true,
-        },
-      },
-    ]);
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-
-      const result = checkAgents(tmpDir);
-      expect(result.errors).toHaveLength(0);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('accepts plugin metadata when support tier, sync path, and scaffolds align', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        version: '1.0.0',
-        capabilities: {
-          commands: true,
-          rules: true,
-          skills: true,
-          hooks: { blocking: false },
-          mcp: true,
-          contextMode: false,
-        },
-        support: {
-          status: 'supported',
-          surface: 'editor-native',
-          install: { required: true, repairRequired: false },
-        },
-        directories: {
-          commands: '.cursor/commands',
-          rules: '.cursor/rules',
-          skills: '.cursor/skills/forge-workflow',
-        },
-        files: {
-          rootConfig: '.cursorrules',
-        },
-        setup: {
-          copyRules: true,
-          createSkill: true,
-        },
-      },
-    ]);
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'rules'), { recursive: true });
-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'skills', 'forge-workflow'), { recursive: true });
-
-      const result = checkAgents(tmpDir);
-      expect(result.errors).toHaveLength(0);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('reports error when plugin with commands:true has empty command directory', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        capabilities: { commands: true },
-        directories: { commands: '.cursor/commands' },
-      },
-    ]);
-    try {
-      // Do NOT sync — so .cursor/commands/ doesn't exist
-      const result = checkAgents(tmpDir);
-      expect(result.errors.some((e) => e.includes('cursor') || e.includes('Cursor'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('no plugin error when commands:false even if directory is missing', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'test-agent',
-        name: 'Test Agent',
-        capabilities: { commands: false },
-        directories: { commands: '.test-agent/commands' },
-      },
-    ]);
-    try {
-      // Sync to create manifest (avoid sync errors dominating)
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-
-      const result = checkAgents(tmpDir);
-      // Should not have an error about test-agent missing commands
-      expect(result.errors.some((e) => e.includes('test-agent') || e.includes('Test Agent'))).toBe(false);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('reports error when command directory exists but is empty', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'cursor',
-        name: 'Cursor',
-        capabilities: { commands: true },
-        directories: { commands: '.cursor/commands' },
-      },
-    ]);
-    try {
-      // Create the directory but leave it empty
-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'commands'), { recursive: true });
-      // Sync to get manifest (but this will also populate .cursor/commands)
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // Delete all files from .cursor/commands/ to simulate empty dir
-      const cursorCmdDir = path.join(tmpDir, '.cursor', 'commands');
-      for (const f of fs.readdirSync(cursorCmdDir)) {
-        fs.unlinkSync(path.join(cursorCmdDir, f));
-      }
-
-      const result = checkAgents(tmpDir);
-      // Should catch that sync is out of sync (missing files)
-      expect(result.errors.length).toBeGreaterThan(0);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('handles plugins without directories field gracefully', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
-    }, [
-      {
-        id: 'minimal',
-        name: 'Minimal Agent',
-        capabilities: { commands: true },
-      },
-    ]);
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-
-      const result = checkAgents(tmpDir);
-      // Should not crash — gracefully handle missing directories
-      expect(Array.isArray(result.errors)).toBe(true);
-      expect(Array.isArray(result.warnings)).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
-  });
-
-  test('handles repo with no plugin files gracefully', () => {
-    const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+        capabilities: { skills: true },
+        directories: { skills: '.legacy/skills' },
+        support: { status: 'deprecated' },
+      }],
     });
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      // lib/agents/ doesn't exist at all
-      const result = checkAgents(tmpDir);
-      // Should have a warning about no plugins found
-      const allMessages = [...result.errors, ...result.warnings];
-      expect(allMessages.some((m) => m.includes('plugin') || m.includes('No plugin'))).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+    const result = checkAgents(tmpDir);
+    expect(result.errors.some((e) => e.includes('deprecated') && e.includes('skills'))).toBe(true);
   });
-});
 
-// ---- Return shape ----------------------------------------------------------------
-
-describe('checkAgents — return shape', () => {
-  test('always returns errors and warnings arrays', () => {
+  test('accepts a valid skills-only plugin', () => {
     const tmpDir = createTempRepo({
-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+      plugins: [{
+        id: 'codex',
+        name: 'Codex',
+        version: '1.0.0',
+        capabilities: { skills: true },
+        directories: { skills: '.codex/skills' },
+      }],
     });
-    try {
-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
-      const result = checkAgents(tmpDir);
-      expect(Array.isArray(result.errors)).toBe(true);
-      expect(Array.isArray(result.warnings)).toBe(true);
-    } finally {
-      cleanupTempRepo(tmpDir);
-    }
+    const result = checkAgents(tmpDir);
+    expect(result.errors).toHaveLength(0);
   });
 });

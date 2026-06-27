@@ -160,7 +160,7 @@ describe('setup runtime flags', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Auto-detected agents (--detect): cursor');
-    expect(result.stdout).toContain('.cursor/commands/');
+    expect(result.stdout).toContain('.cursor/skills/');
     expect(result.stdout).not.toContain('.codex/skills/');
     expect(result.stdout).not.toContain('.claude/commands/plan.md');
   });
@@ -199,7 +199,8 @@ describe('setup runtime flags', () => {
     const result = await runSetup(['--agents', 'claude', '--keep', '--skip-external'], tmpDir);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Keeping existing .claude/commands/ (--keep)');
+    // .claude/commands/ is no longer a forge-managed surface (removed in A0d);
+    // the file survives untouched regardless of --keep since setup never writes there.
     expect(fs.readFileSync(path.join(claudeDir, 'plan.md'), 'utf8')).toBe(sentinel);
   });
 
@@ -209,8 +210,8 @@ describe('setup runtime flags', () => {
     const result = await runSetup(['--agents', 'claude', 'cursor', '--dry-run'], tmpDir);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('.claude/commands/plan.md');
-    expect(result.stdout).toContain('.cursor/commands/');
+    expect(result.stdout).toContain('.claude/skills/plan/SKILL.md');
+    expect(result.stdout).toContain('.cursor/skills/');
   });
 
   serialTest('--dry-run shows workflow runtime assets that shipped commands require', async () => {

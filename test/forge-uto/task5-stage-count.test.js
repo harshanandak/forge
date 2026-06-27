@@ -17,15 +17,19 @@ describe('Task 5: workflow template language', () => {
     expect(src).not.toContain('7-stage TDD-first workflow');
   });
 
-  test('SKILL_CONTENT heading says ## Default Workflow Template not fixed stages', () => {
-    expect(src).not.toContain('## 9 Stages');
-    expect(src).not.toContain('## 7 Stages');
-    expect(src).toContain('## Default Workflow Template');
+  // The umbrella workflow template moved out of bin/forge.js (SKILL_CONTENT)
+  // into the canonical kernel skill during the command→skills migration.
+  const kernelSkill = fs.readFileSync(path.join(root, 'skills/kernel/SKILL.md'), 'utf8');
+
+  test('kernel skill frames stages as a template, not a fixed count', () => {
+    expect(kernelSkill).not.toContain('## 9 Stages');
+    expect(kernelSkill).not.toContain('## 7 Stages');
+    expect(kernelSkill).toContain('## Stage skills (the TDD ladder)');
   });
 
-  test('SKILL_CONTENT workflow composition keeps command order as default template', () => {
-    expect(src).not.toContain('/status -> /research -> /plan');
-    expect(src).toContain('/status -> /plan -> /dev');
+  test('kernel skill keeps the default stage order', () => {
+    expect(kernelSkill).not.toContain('status → research → plan');
+    expect(kernelSkill).toContain('status → plan → dev');
   });
 
   test('SKILL_CONTENT plan row does not reference OpenSpec', () => {

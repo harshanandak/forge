@@ -69,17 +69,10 @@ describe('P2 bug fixes integration', () => {
     expect(forgeSource).toMatch(/--yes/);
   });
 
-  // forge-cpnj: executeSetup wired with loadAndSetupClaudeCommands
+  // forge-cpnj: executeSetup wires the agent surface. After the command→skills
+  // migration this is skills-based (setupSelectedAgents); the legacy
+  // loadAndSetupClaudeCommands helper was removed.
   test('bin/forge.js contains executeSetup function', () => {
     expect(forgeSource).toMatch(/function executeSetup/);
-  });
-
-  test('bin/forge.js uses loadAndSetupClaudeCommands in executeSetup context', () => {
-    // Extract the executeSetup function body and verify it references loadAndSetupClaudeCommands
-    const execSetupMatch = forgeSource.match(
-      /function executeSetup[\s\S]*?(?=\n(?:async )?function |module\.exports|\n\/\*\*\n)/
-    );
-    expect(execSetupMatch).not.toBeNull();
-    expect(execSetupMatch[0]).toMatch(/loadAndSetupClaudeCommands/);
   });
 });

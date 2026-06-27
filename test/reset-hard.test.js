@@ -35,7 +35,7 @@ describe('resetHard', () => {
   test('removes all forge files when force=true', () => {
     scaffold(tmpDir, [
       '.forge/setup-state.json',
-      '.claude/commands/plan.md',
+      '.claude/skills/plan/SKILL.md',
       '.claude/rules/workflow.md',
       '.claude/scripts/greptile-resolve.sh',
       '.cursor/rules/forge-workflow.mdc',
@@ -46,7 +46,7 @@ describe('resetHard', () => {
     resetHard(tmpDir, { force: true });
 
     expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills'))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'rules', 'workflow.md'))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, '.cursor'))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, '.github', 'workflows', 'beads-to-github.yml'))).toBe(false);
@@ -56,19 +56,17 @@ describe('resetHard', () => {
     scaffold(tmpDir, [
       '.claude/rules/workflow.md',
       '.claude/rules/my-custom-rule.md',
-      '.claude/commands/plan.md',
-      '.claude/commands/my-custom-cmd.md',
+      '.claude/skills/plan/SKILL.md',
     ]);
 
     resetHard(tmpDir, { force: true });
 
     // Forge templates removed
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'rules', 'workflow.md'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'plan.md'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills'))).toBe(false);
 
     // User files preserved
     expect(fs.existsSync(path.join(tmpDir, '.claude', 'rules', 'my-custom-rule.md'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'commands', 'my-custom-cmd.md'))).toBe(true);
   });
 
   test('throws when force is not set', () => {

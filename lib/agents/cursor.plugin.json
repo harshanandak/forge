@@ -5,14 +5,13 @@
   "description": "AI-first code editor with native rules and skills",
   "homepage": "https://cursor.sh",
   "capabilities": {
-    "commands": true,
+    "commands": false,
     "skills": true,
     "hooks": false
   },
   "directories": {
-    "commands": ".cursor/commands",
     "rules": ".cursor/rules",
-    "skills": ".cursor/skills/forge-workflow"
+    "skills": ".cursor/skills"
   },
   "files": {
     "rootConfig": ".cursorrules"
