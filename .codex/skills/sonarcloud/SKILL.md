@@ -1,5 +1,7 @@
 ---
-description: Pull issues, metrics, quality gates, and analysis data from SonarCloud
+name: sonarcloud
+description: Pulls issues, metrics, quality gates, security hotspots, and analysis history from SonarCloud via its API. Use for the Forge sonarcloud stage when querying code quality data for a project, branch, or PR — triggers on sonarcloud, code quality, issues, metrics, quality gate, hotspots, coverage.
+allowed-tools: Bash, Read, Grep, Glob, WebFetch
 ---
 
 # SonarCloud Query Command

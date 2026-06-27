@@ -1,12 +1,14 @@
 ---
-description: Subagent-driven TDD implementation per task from /plan task list
+name: dev
+description: Implements each task from the plan task list using a subagent-driven loop (implementer → spec-compliance reviewer → code-quality reviewer) with TDD and HARD-GATE enforcement. Use for the Forge dev stage when implementing planned tasks — triggers include /dev, dev stage, build the tasks, subagent TDD, implement task list.
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 Implement each task from the /plan task list using a subagent-driven loop: implementer → spec compliance reviewer → code quality reviewer per task.
 
 # Dev
 
-This command reads the task list created by `/plan` and implements each task using a three-stage subagent loop. TDD is enforced inside each implementer subagent.
+This skill reads the task list created by `/plan` and implements each task using a three-stage subagent loop. TDD is enforced inside each implementer subagent.
 
 ## Usage
 
@@ -72,8 +74,8 @@ Before starting the per-task loop, check for cross-developer conflicts:
 # Auto-sync to get latest team state (non-blocking)
 forge sync || true
 
-# Check for conflicts with the current beads issue
-bash scripts/conflict-detect.sh --issue <beads-id>
+# Check for conflicts with the current Forge issue
+bash scripts/conflict-detect.sh --issue <forge-id>
 ```
 
 If exit code 2 (validation error): show error message, abort — do not show conflict prompt.
@@ -82,7 +84,7 @@ If exit code 1 (conflicts found):
 - Display the conflict output to the developer
 - Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"
 - If `n`: exit cleanly, no side effects
-- If `y`: log override via `bd comments add <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
+- If `y`: log override via `forge comment <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
 - Audit: record conflict override per OWASP A09
 
 If exit code 0: proceed silently to Per-Task Loop.
@@ -299,7 +301,7 @@ Document the gate count in the final commit message.
 
 ## Dynamic Output
 
-The completion summary is generated from the live task list, decisions log, Beads state, commits, and validation output at runtime. Do not copy a static example into this command file; run `/dev` to view the current task/status summary.
+The completion summary is generated from the live task list, decisions log, Beads state, commits, and validation output at runtime. Do not copy a static example into this skill file; run `/dev` to view the current task/status summary.
 
 ## Integration with Workflow
 

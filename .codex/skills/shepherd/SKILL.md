@@ -1,5 +1,7 @@
 ---
-description: Monitor-driven PR shepherd — one bounded pass per invocation; never merges, never resolves review threads
+name: shepherd
+description: Runs one bounded monitor pass over a pull request — reads CI and check state, takes at most one idempotent action, then hands off; never merges and never resolves review threads. Use for the Forge shepherd stage when polling PR checks, re-running flaky required checks, posting status replies, or escalating merge-readiness after /review.
+allowed-tools: Bash, Read, Grep, Glob
 ---
 
 Run one bounded monitor pass over a pull request: read CI and check state, take at most one idempotent action, then hand off. Never merges and never resolves review threads.

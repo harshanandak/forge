@@ -1,65 +1,46 @@
 /**
- * Tests for agent command parity and explicit exceptions.
+ * Tests for agent parity and explicit exceptions in the skills-only surface.
  *
- * The canonical workflow source remains `.claude/commands/`, with Claude Code
- * intentionally skipped during sync because it is the source adapter.
+ * The canonical workflow source is root skills/. Agent harness skill dirs are
+ * generated from it by `skills sync` / `forge setup`. There is no command-sync
+ * adapter layer anymore (the .claude/commands surface was removed in PR-A0).
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
-const { AGENT_ADAPTERS, syncCommands } = require('../scripts/sync-commands');
 
 const repoRoot = path.resolve(__dirname, '..');
+const SUPPORTED_AGENTS = ['claude', 'codex', 'cursor', 'hermes'];
 
 describe('agent parity gaps', () => {
-  test('claude-code remains the canonical adapter and is intentionally skipped', () => {
-    const adapter = AGENT_ADAPTERS['claude-code'];
-    expect(adapter).toBeDefined();
-    expect(adapter.skip).toBe(true);
-    expect(typeof adapter.transformFrontmatter).toBe('function');
+  test('all supported agents have plugin definitions', () => {
+    const agentsDir = path.join(repoRoot, 'lib', 'agents');
+    for (const agent of SUPPORTED_AGENTS) {
+      expect(fs.existsSync(path.join(agentsDir, `${agent}.plugin.json`))).toBe(true);
+    }
   });
 
-  test('sync does not generate files for the canonical claude-code adapter', () => {
-    const result = syncCommands({ dryRun: true, check: false, repoRoot });
-    const claudeEntries = result.planned.filter((entry) => entry.agent === 'claude-code');
-    expect(claudeEntries).toEqual([]);
+  test('canonical workflow source is skills/', () => {
+    const skillsDir = path.join(repoRoot, 'skills');
+    expect(fs.existsSync(skillsDir)).toBe(true);
+    const entries = fs.readdirSync(skillsDir).filter((d) =>
+      fs.statSync(path.join(skillsDir, d)).isDirectory()
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    // The umbrella + a representative stage skill are present.
+    expect(entries).toContain('kernel');
+    expect(entries).toContain('plan');
   });
 
-  test('sync generates files for every non-skipped registered agent', () => {
-    const result = syncCommands({ dryRun: true, check: false, repoRoot });
-    const agentsWithEntries = new Set(result.planned.map((entry) => entry.agent));
-    for (const agentName of Object.keys(AGENT_ADAPTERS)) {
-      if (AGENT_ADAPTERS[agentName].skip) {
-        expect(agentsWithEntries.has(agentName)).toBe(false);
-      } else {
-        expect(agentsWithEntries.has(agentName)).toBe(true);
+  test('every plugin declaring skills capability configures a skills directory', () => {
+    const agentsDir = path.join(repoRoot, 'lib', 'agents');
+    for (const file of fs.readdirSync(agentsDir).filter((f) => f.endsWith('.plugin.json'))) {
+      const plugin = JSON.parse(fs.readFileSync(path.join(agentsDir, file), 'utf8'));
+      if (plugin.capabilities && plugin.capabilities.skills) {
+        expect(plugin.directories && plugin.directories.skills).toBeTruthy();
       }
     }
-  });
-
-  test('canonical source is .claude/commands/', () => {
-    const commandsDir = path.join(repoRoot, '.claude', 'commands');
-    expect(fs.existsSync(commandsDir)).toBe(true);
-
-    const result = syncCommands({ dryRun: true, check: false, repoRoot });
-    expect(result.planned.length).toBeGreaterThan(0);
-  });
-
-  test('all supported agents have adapters', () => {
-    const expected = ['claude-code', 'cursor', 'codex'];
-    for (const agent of expected) {
-      expect(AGENT_ADAPTERS[agent]).toBeDefined();
-    }
-    expect(Object.keys(AGENT_ADAPTERS).sort()).toEqual(expected.slice().sort());
-  });
-
-  test('contentHash is exported from sync-commands', () => {
-    const { contentHash } = require('../scripts/sync-commands');
-    expect(typeof contentHash).toBe('function');
-    const hash = contentHash('test content');
-    expect(typeof hash).toBe('string');
-    expect(hash.length).toBe(64);
   });
 
   test('removed agents have no plugin definitions', () => {

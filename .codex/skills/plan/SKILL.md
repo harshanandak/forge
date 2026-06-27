@@ -1,5 +1,12 @@
 ---
-description: Design intent → research → branch + worktree + task list
+name: plan
+description: >
+  Use for the Forge plan stage to capture design intent through
+  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
+  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
+  starting a new feature, planning or scoping work, writing a design doc, or preparing
+  a worktree and task list before development.
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 Plan a feature from scratch: brainstorm design intent, research technical approach, then set up branch, worktree, and a complete task list ready for /dev.
@@ -72,7 +79,7 @@ Before proceeding to Phase 1, check for cross-developer conflicts:
 forge sync || true
 
 # Check for conflicts with this issue's planned work area
-bash scripts/conflict-detect.sh --issue <beads-id>
+bash scripts/conflict-detect.sh --issue <forge-id>
 ```
 
 If exit code 2 (validation error): show error message, abort — do not show conflict prompt.
@@ -81,7 +88,7 @@ If exit code 1 (conflicts found):
 - Display the conflict output to the developer
 - Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"
 - If `n`: exit cleanly, no side effects
-- If `y`: log override via `bd comments add <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Phase 1
+- If `y`: log override via `forge comment <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Phase 1
 - Audit: record conflict override per OWASP A09
 
 If exit code 0: proceed silently to Phase 1.
@@ -110,7 +117,7 @@ If merge conflicts or unmet dependencies are found:
 - Display the findings to the developer
 - Ask: "In-flight PRs have potential conflicts. Proceed with planning anyway? (y/n)"
 - If `n`: exit cleanly, no side effects
-- If `y`: log override via `bd comments add <id> "PR coordination override: proceeding despite in-flight conflicts"`, then continue to Phase 1
+- If `y`: log override via `forge comment <id> "PR coordination override: proceeding despite in-flight conflicts"`, then continue to Phase 1
 
 ---
 
@@ -135,11 +142,11 @@ If verify reports issues, address them before proceeding (the output will includ
 Before exploring context or asking questions, check for potential conflicts with in-flight work:
 
 ```bash
-# If a Beads issue ID is known (e.g., from /status or bd ready):
-bash scripts/dep-guard.sh check-ripple <beads-issue-id>
+# If a Beads issue ID is known (e.g., from /status or forge ready):
+bash scripts/dep-guard.sh check-ripple <forge-issue-id>
 
 # If no issue exists yet (first-time plan):
-bd list --status=open,in_progress
+forge list --status=open,in_progress
 ```
 
 Review the output. If overlaps are detected:
@@ -166,7 +173,7 @@ When `check-ripple` detects overlapping issues AND contract metadata is availabl
    - **CRITICAL**: Consumer is in an active in_progress issue's task list
 3. **When uncertain, default to HIGH** — conservative over permissive
 4. Recommend one action:
-   - Add dependency (`bd dep add <source> <target>`)
+   - Add dependency (`forge issue dep add <source> <target>`)
    - Coordinate with other issue's developer
    - Scope down current feature to avoid overlap
    - Proceed as-is (no real conflict)
@@ -369,7 +376,7 @@ bash scripts/beads-context.sh stage-transition <id> research setup
 The epic was created in the Entry HARD-GATE (Phase 1 entry). If this feature requires child issues (sub-tasks tracked separately), create them now and link to the epic:
 
 ```bash
-bd create --title="<sub-task-name>" --type=feature --parent=<epic-id>
+forge create --title="<sub-task-name>" --type=feature --parent=<epic-id>
 ```
 
 ### Step 2: Branch + worktree
@@ -389,7 +396,7 @@ else
 
   # Step 2c: Create a Beads-aware worktree rooted on master
   git checkout master
-  bd worktree create .worktrees/<slug> --branch feat/<slug>
+  forge worktree create .worktrees/<slug> --branch feat/<slug>
   cd .worktrees/<slug>
 fi
 ```
@@ -495,7 +502,7 @@ If the user approves a dependency mutation, apply it explicitly:
 bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
 ```
 
-That approval step must validate with `bd dep cycles`, show `bd graph`, summarize `bd ready`, and persist the decision via `bd set-state` plus `bd comments`. Beads remains the canonical machine-readable decision record; the plan docs hold only the concise summary.
+That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge set-state` plus `forge comment`. Beads remains the canonical machine-readable decision record; the plan docs hold only the concise summary.
 
 ### Step 6: User review
 

@@ -5,11 +5,12 @@
  *
  * CLI command that validates all agent configs are complete and in sync.
  *
- * 1. Runs syncCommands({ check: true }) to verify agent command files match canonical source
- * 2. Reads lib/agents/*.plugin.json to verify each agent with capabilities.commands: true
- *    has its command directory populated with expected files
- * 3. Reports: missing files, out-of-sync files, stale files
- * 4. Exits 0 if all clean, exits non-zero if issues found
+ * 1. Runs the skills drift check (lib/skills-sync) to verify generated agent
+ *    skill mirrors (e.g. .codex/skills) match the canonical root skills/ source.
+ * 2. Reads lib/agents/*.plugin.json to validate each plugin's schema/parity
+ *    (support metadata, rules/skills scaffold paths, deprecated-tier consistency).
+ * 3. Reports: skill drift, missing/stale skills, plugin parity errors.
+ * 4. Exits 0 if all clean, exits non-zero if issues found.
  *
  * Usage:
  *   node scripts/check-agents.js
@@ -18,46 +19,22 @@
  *   checkAgents(repoRoot) -> { errors: string[], warnings: string[] }
  */
 
-const { syncCommands } = require('./sync-commands');
-const { AGENT_ADAPTERS } = require('./sync-commands');
 const path = require('path');
 const fs = require('fs');
+const { checkSkillsSync } = require('../lib/skills-sync');
 const { validatePluginSchema } = require('../lib/plugin-manager');
 
-const SYNC_ADAPTER_BY_PLUGIN_ID = Object.freeze({
-  claude: 'claude-code',
-  codex: 'codex',
-  cursor: 'cursor',
-});
-
-function normalizeRelativeDir(dir) {
-  if (!dir) return null;
-  return String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
-}
-
-function getDeclaredCommandDir(plugin) {
-  const dirs = plugin.directories || {};
-  return dirs.commands || dirs.workflows || dirs.prompts || dirs.skills || null;
-}
-
-function getExpectedCommandDir(plugin) {
-  const adapterId = SYNC_ADAPTER_BY_PLUGIN_ID[plugin.id];
-  if (!adapterId) {
-    return null;
-  }
-
-  const adapter = AGENT_ADAPTERS[adapterId];
-  if (!adapter) {
-    return null;
-  }
-
-  if (plugin.id === 'codex') {
-    return normalizeRelativeDir(plugin.directories?.skills || adapter.baseDir);
-  }
-
-  return normalizeRelativeDir(adapter.baseDir);
-}
-
+/**
+ * Validate a single plugin's schema + capability/scaffold parity.
+ *
+ * Command-surface parity is intentionally NOT validated: Forge is skills-only
+ * (the .claude/commands/.cursor/commands/.codex/skills command surface was
+ * removed in PR-A0). The surviving checks cover support metadata, the rules and
+ * skills scaffold paths, and deprecated-tier consistency.
+ *
+ * @param {object} plugin
+ * @param {string[]} errors - mutated with any parity errors
+ */
 function validatePluginParity(plugin, errors) {
   const validation = validatePluginSchema(plugin);
   if (!validation.valid) {
@@ -72,25 +49,6 @@ function validatePluginParity(plugin, errors) {
   const capabilities = plugin.capabilities || {};
   const dirs = plugin.directories || {};
   const supportStatus = plugin.support?.status;
-
-  if (capabilities.commands) {
-    const expectedDir = getExpectedCommandDir(plugin);
-    const declaredDir = normalizeRelativeDir(getDeclaredCommandDir(plugin));
-
-    if (!expectedDir) {
-      errors.push(
-        `Plugin "${plugin.name}" (${plugin.id}) declares commands support but has no Forge sync adapter.`
-      );
-    } else if (!declaredDir) {
-      errors.push(
-        `Plugin "${plugin.name}" (${plugin.id}) declares commands support but has no command directory configured.`
-      );
-    } else if (declaredDir !== expectedDir) {
-      errors.push(
-        `Plugin "${plugin.name}" (${plugin.id}) command directory "${declaredDir}" does not match sync output "${expectedDir}".`
-      );
-    }
-  }
 
   if (capabilities.rules && !dirs.rules) {
     errors.push(
@@ -131,47 +89,34 @@ function checkAgents(repoRoot) {
   /** @type {string[]} */
   const warnings = [];
 
-  // ---- 1. Run sync check ----
-  let syncResult;
+  // ---- 1. Skills drift check ----
+  let driftResult;
   try {
-    syncResult = syncCommands({ check: true, dryRun: false, repoRoot });
+    driftResult = checkSkillsSync({ repoRoot });
   } catch (err) {
-    errors.push(`Sync check failed: ${err.message}`);
+    errors.push(`Skills sync check failed: ${err.message}`);
     return { errors, warnings };
   }
 
-  if (syncResult.empty) {
-    errors.push('No command files found in .claude/commands/ — cannot verify sync.');
+  const canonicalSkillsDir = path.join(repoRoot, 'skills');
+  if (!fs.existsSync(canonicalSkillsDir)) {
+    errors.push('No canonical skills found in skills/ — cannot verify skill sync.');
     return { errors, warnings };
-  } else {
-    if (syncResult.manifestMissing) {
-      warnings.push(
-        'Sync manifest (.forge/sync-manifest.json) not found — stale file detection skipped. ' +
-        'Run "node scripts/sync-commands.js" to generate it.'
-      );
-    }
+  }
 
-    if (syncResult.outOfSync && syncResult.outOfSync.length > 0) {
-      for (const entry of syncResult.outOfSync) {
-        const relPath = path.join(entry.dir, entry.filename);
-        const exists = fs.existsSync(entry.filePath);
-        const status = exists ? 'modified' : 'missing';
-        errors.push(`Out of sync [${entry.agent}]: ${relPath} (${status})`);
-      }
-    }
+  if (driftResult.checkedAgents.length === 0) {
+    warnings.push(
+      'No generated agent skill directories found (e.g. .codex/skills) — skill drift check skipped. ' +
+      'Run "forge setup" or "skills sync" to populate them.'
+    );
+  }
 
-    if (syncResult.staleFiles && syncResult.staleFiles.length > 0) {
-      for (const filePath of syncResult.staleFiles) {
-        const relPath = path.relative(repoRoot, filePath);
-        errors.push(`Stale file (no longer generated, should be removed): ${relPath}`);
-      }
-    }
+  for (const d of driftResult.drift) {
+    errors.push(`Out of sync [${d.agent}]: ${d.skill}/${d.file} (${d.status})`);
   }
 
   // ---- 2. Validate plugin catalog ----
   const pluginDir = path.join(repoRoot, 'lib', 'agents');
-  /** @type {object[]} */
-  const plugins = [];
 
   if (!fs.existsSync(pluginDir)) {
     warnings.push('No plugin directory found at lib/agents/ — plugin catalog validation skipped.');
@@ -185,52 +130,9 @@ function checkAgents(repoRoot) {
     for (const file of pluginFiles) {
       try {
         const plugin = JSON.parse(fs.readFileSync(path.join(pluginDir, file), 'utf8'));
-        plugins.push(plugin);
         validatePluginParity(plugin, errors);
       } catch (_err) {
         errors.push(`Failed to parse plugin file: lib/agents/${file}`);
-      }
-    }
-
-    // For each plugin with commands: true, verify its command directory has files
-    for (const plugin of plugins) {
-      if (!plugin.capabilities || !plugin.capabilities.commands) {
-        continue;
-      }
-
-      // Find the command directory from the plugin's directories config
-      const dirs = plugin.directories || {};
-      // Plugins use different keys: commands, workflows, prompts, skills
-      const commandDir = dirs.commands || dirs.workflows || dirs.prompts;
-
-      if (!commandDir) {
-        // Plugin declares commands: true but has no command directory configured
-        // Codex is the only agent that uses skills as its command mechanism
-        if (plugin.id === 'codex' && dirs.skills) {
-          // Codex CLI: commands live in .codex/skills/<name>/SKILL.md — skip standard check
-          continue;
-        }
-        warnings.push(
-          `Plugin "${plugin.name}" (${plugin.id}) has commands: true but no command directory configured.`
-        );
-        continue;
-      }
-
-      const absCmdDir = path.join(repoRoot, commandDir);
-
-      if (!fs.existsSync(absCmdDir)) {
-        errors.push(
-          `Plugin "${plugin.name}" (${plugin.id}) has commands: true but directory "${commandDir}" does not exist.`
-        );
-        continue;
-      }
-
-      // Check the directory has at least one file
-      const files = fs.readdirSync(absCmdDir).filter((f) => !f.startsWith('.'));
-      if (files.length === 0) {
-        errors.push(
-          `Plugin "${plugin.name}" (${plugin.id}) has commands: true but directory "${commandDir}" is empty.`
-        );
       }
     }
   }

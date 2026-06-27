@@ -1,12 +1,14 @@
 ---
-description: Post-merge health check — confirm merge landed, CI is clean, deployments are up
+name: verify
+description: Post-merge health check for the Forge verify stage — confirms the merge landed on main, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
+allowed-tools: Bash, Read, Grep, Glob
 ---
 
 Verify that the merge landed correctly and everything is running properly after merge.
 
 # Verify
 
-This command runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled in `/premerge`).
+This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled in `/premerge`).
 
 ## Usage
 
@@ -14,7 +16,7 @@ This command runs AFTER the user has merged the PR. It checks system health — 
 /verify
 ```
 
-## What This Command Does
+## What This Skill Does
 
 ### Step 1: Switch to Main and Pull
 
@@ -142,7 +144,7 @@ Branch: <branch-name> deleted ✓
 **Never commit inline.** If something is wrong, create a tracking issue:
 
 ```bash
-bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
+forge create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
 ### Step 8: Close Beads Issues (if healthy)
@@ -156,24 +158,24 @@ If everything is clean, close all Beads issues referenced in the merged PR.
 PR_BODY=$(gh pr view <number> --json body --jq '.body')
 PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
 
-# Extract beads IDs from PR body (matches "Closes beads-xxx", "closes forge-xxx", etc.)
+# Extract beads IDs from PR body (matches "Closes forge-xxx", "closes forge-xxx", etc.)
 # Patterns: "Closes <prefix>-<id>", "Fixes <prefix>-<id>", "Resolves <prefix>-<id>"
 BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]{3,6}$')
 
 # Validate each ID exists in beads
 VALID_IDS=""
 for id in $BEADS_IDS; do
-  if bd show "$id" >/dev/null 2>&1; then
+  if forge show "$id" >/dev/null 2>&1; then
     VALID_IDS="$VALID_IDS $id"
   fi
 done
 BEADS_IDS="$VALID_IDS"
 
 # Also check branch name for beads ID — extract segment after last /
-# then validate with bd show to avoid false matches like "pr-templa"
+# then validate with forge show to avoid false matches like "pr-templa"
 BRANCH_SLUG=$(echo "$PR_BRANCH" | sed 's|.*/||')
 BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
-if [ -n "$BRANCH_ID" ] && ! bd show "$BRANCH_ID" >/dev/null 2>&1; then
+if [ -n "$BRANCH_ID" ] && ! forge show "$BRANCH_ID" >/dev/null 2>&1; then
   BRANCH_ID=""  # Not a valid beads ID — discard
 fi
 ```
@@ -214,7 +216,7 @@ Do NOT declare /verify complete until:
 
 ## Rules
 
-- **Never commits code** — this command may update Beads issue state after post-merge health is verified
+- **Never commits code** — this skill may update Beads issue state after post-merge health is verified
 - **Never creates PRs** — if fixes are needed, that's a new /dev cycle
 - **Runs after user confirms merge** — not before
 - **Reports honestly** — if CI is broken on main, say so clearly

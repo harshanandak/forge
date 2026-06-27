@@ -1,12 +1,14 @@
 ---
-description: Address ALL PR issues (GitHub Actions, Greptile, SonarCloud, CI/CD)
+name: review
+description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or preparing a PR for premerge.
+allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 
 Process ALL pull request issues including GitHub Actions failures, Greptile inline comments, SonarCloud analysis, and other CI/CD checks.
 
 # Review
 
-This command handles ALL issues that arise after creating a pull request.
+This skill handles ALL issues that arise after creating a pull request.
 
 ## Usage
 
@@ -14,7 +16,7 @@ This command handles ALL issues that arise after creating a pull request.
 /review <pr-number>
 ```
 
-## What This Command Does
+## What This Skill Does
 
 ### Step 1: Fetch Complete PR Status
 ```bash
@@ -247,7 +249,7 @@ gh pr comment <pr-number> --body "## Greptile Summary Response
 Addressed all key recommendations:
 - [Recommendation 1]: ✓ Fixed in commit <sha>
 - [Recommendation 2]: ✓ Explained (see inline response)
-- [Recommendation 3]: ⏭️ Out of scope for this PR (created issue bd-xxx)
+- [Recommendation 3]: ⏭️ Out of scope for this PR (created issue forge-xxx)
 
 All critical and high-priority items resolved."
 ```

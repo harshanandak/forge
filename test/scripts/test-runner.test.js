@@ -85,14 +85,13 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual(expect.arrayContaining(riskTargets));
   });
 
-  test('classifyPushTests maps canonical command edits to command sync checks', () => {
+  test('classifyPushTests maps legacy command edits to the skills drift check', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: '.claude/commands/ship.md\n',
     }));
 
     expect(plan.testTargets).toEqual([
-      'test/command-sync-check.test.js',
-      'test/structural/command-sync.test.js',
+      'test/structural/skills-sync-drift.test.js',
       ...riskTargets,
     ]);
   });
@@ -106,9 +105,8 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
       'test/agent-gaps.test.js',
-      'test/command-sync-check.test.js',
       'test/scripts/check-agents.test.js',
-      'test/structural/command-sync.test.js',
+      'test/structural/skills-sync-drift.test.js',
       ...riskTargets,
     ]);
   });
@@ -218,9 +216,8 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
       'test/agent-gaps.test.js',
-      'test/command-sync-check.test.js',
       'test/scripts/check-agents.test.js',
-      'test/structural/command-sync.test.js',
+      'test/structural/skills-sync-drift.test.js',
       ...riskTargets,
     ]);
   });
@@ -357,7 +354,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
   });
 
-  test('runPrePushTests skips broad unit tests when only canonical command docs changed', () => {
+  test('runPrePushTests skips broad unit tests when only legacy command docs changed', () => {
     const spawnSync = makeSpawnSync(0);
     const status = runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
@@ -373,8 +370,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual([
       'run',
       'test',
-      'test/command-sync-check.test.js',
-      'test/structural/command-sync.test.js',
+      'test/structural/skills-sync-drift.test.js',
       ...riskTargets,
     ]);
   });

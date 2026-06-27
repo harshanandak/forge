@@ -1,5 +1,11 @@
 ---
-description: Deep research with parallel-deep-research, document findings
+name: research
+description: >
+  Runs deep, parallel web and codebase research and documents findings in the design
+  doc. Use for the Forge research stage when gathering technical research, OWASP
+  analysis, and TDD scenarios before planning or development. Trigger keywords are
+  research, deep research, web search, OWASP, codebase exploration, technical research.
+allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
 ---
 
 > **Note**: `/research` is legacy support for the research capability used by planning workflows.
@@ -14,7 +20,7 @@ description: Deep research with parallel-deep-research, document findings
 
 # Research (Legacy Alias)
 
-This command previously ran a standalone research phase. It is now embedded in `/plan` as Phase 2.
+This skill previously ran a standalone research phase. It is now embedded in `/plan` as Phase 2.
 
 ## If you want to run just the research phase
 

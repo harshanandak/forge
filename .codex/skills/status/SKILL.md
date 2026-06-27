@@ -1,12 +1,14 @@
 ---
-description: Check current stage and context
+name: status
+description: Checks the current Forge workflow stage and surfaces in-progress work, ranked ready issues, stale in-progress reconciliation, recent commits, and team context. Use for the Forge status stage when starting a session or deciding what to work on next. Triggers include status, current stage, what's in progress, where am I, and resume work.
+allowed-tools: Bash, Read, Grep, Glob
 ---
 
 Check where you are in the project and what work is in progress.
 
 # Status Check
 
-This command helps you understand the current state of the project before starting new work.
+This skill helps you understand the current state of the project before starting new work.
 
 ## Usage
 
@@ -14,7 +16,7 @@ This command helps you understand the current state of the project before starti
 /status
 ```
 
-## What This Command Does
+## What This Skill Does
 
 ## Step 0: Sync team state
 
@@ -30,7 +32,7 @@ bash scripts/smart-status.sh
 ```
 This command dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed.
 
-For full context on any issue: `bd show <id>`
+For full context on any issue: `forge show <id>`
 
 ### Step 1b: Reconcile stale in-progress issues
 
@@ -47,7 +49,7 @@ fi
 
 # For each in_progress issue, check if its PR was already merged
 if [ -n "$DEFAULT_BRANCH" ]; then
-  bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
+  forge list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
     # Search git log for the issue ID in commit messages (fixed-strings for literal match)
     if git log --oneline --first-parent "$DEFAULT_BRANCH" --fixed-strings --grep="$id" | grep -q .; then
       echo "STALE: $id -- found in git history, likely already merged"

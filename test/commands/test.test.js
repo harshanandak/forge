@@ -470,13 +470,12 @@ describe('forge test command', () => {
 			]);
 		});
 
-		test('maps canonical command edits to command sync tests', async () => {
+		test('maps legacy command edits to the skills drift test', async () => {
 			const spawnSpy = makeSpawnSync();
 			await testCommand.handler([], { affected: true }, '/fake/root', {
 				fs: makeFsStub({
 					existingPaths: [
-						'/fake/root/test/command-sync-check.test.js',
-						'/fake/root/test/structural/command-sync.test.js',
+						'/fake/root/test/structural/skills-sync-drift.test.js',
 					],
 				}),
 				execFileSync: makeExecFileSync({
@@ -488,8 +487,7 @@ describe('forge test command', () => {
 			expect(spawnSpy.calls[0].args).toEqual([
 				'run',
 				'test',
-				'test/command-sync-check.test.js',
-				'test/structural/command-sync.test.js',
+				'test/structural/skills-sync-drift.test.js',
 			]);
 		});
 
@@ -499,9 +497,8 @@ describe('forge test command', () => {
 				fs: makeFsStub({
 					existingPaths: [
 						'/fake/root/test/agent-gaps.test.js',
-						'/fake/root/test/command-sync-check.test.js',
 						'/fake/root/test/scripts/check-agents.test.js',
-						'/fake/root/test/structural/command-sync.test.js',
+						'/fake/root/test/structural/skills-sync-drift.test.js',
 					],
 				}),
 				execFileSync: makeExecFileSync({
@@ -514,9 +511,8 @@ describe('forge test command', () => {
 				'run',
 				'test',
 				'test/agent-gaps.test.js',
-				'test/command-sync-check.test.js',
 				'test/scripts/check-agents.test.js',
-				'test/structural/command-sync.test.js',
+				'test/structural/skills-sync-drift.test.js',
 			]);
 		});
 

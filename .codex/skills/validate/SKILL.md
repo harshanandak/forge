@@ -1,5 +1,7 @@
 ---
-description: Complete validation (type/lint/tests/security)
+name: validate
+description: Runs comprehensive pre-pull-request validation for the Forge validate stage — rebases onto the base branch, then runs type checking, linting, code review, security review (OWASP Top 10), and tests, requiring fresh passing output before shipping. Use for the Forge validate stage or when asked to validate changes, run quality gates, type-check, lint, security-scan, or run the full test suite before opening a PR.
+allowed-tools: Bash, Read, Grep, Glob
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
@@ -11,7 +13,7 @@ Run comprehensive validation including type checking, linting, code review, secu
 
 # Validate
 
-This command validates all code before creating a pull request.
+This skill validates all code before creating a pull request.
 
 ## Usage
 
@@ -260,8 +262,8 @@ Ready for /ship
   - validation.test.ts: Assertion failed
   - auth.test.ts: Timeout exceeded
 
-✓ Beads issue created: bd-k8m3 "Fix validation test"
-✓ Current issue marked: Blocked by bd-k8m3
+✓ Beads issue created: forge-k8m3 "Fix validation test"
+✓ Current issue marked: Blocked by forge-k8m3
 
 Fix issues then re-run /validate
 ```

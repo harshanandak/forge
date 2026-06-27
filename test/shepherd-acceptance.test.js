@@ -10,7 +10,6 @@
  */
 
 const { describe, test, expect } = require('bun:test');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -189,10 +188,11 @@ describe('shepherd acceptance §5', () => {
     }
   });
 
-  // §5.8 — sync integrity.
-  test('§5.8 node scripts/sync-commands.js --check exits 0', () => {
-    const out = execFileSync('node', ['scripts/sync-commands.js', '--check'], { cwd: ROOT, encoding: 'utf8' });
-    expect(typeof out).toBe('string');
+  // §5.8 — sync integrity (skills drift check; the command-sync surface was removed in PR-A0).
+  test('§5.8 skill mirrors are in sync with canonical skills/', () => {
+    const { checkSkillsSync } = require('../lib/skills-sync');
+    const result = checkSkillsSync({ repoRoot: ROOT });
+    expect(result.inSync).toBe(true);
   });
 
   // §5.9 — Shepherd is decoupled from the release gate. Observable assertion:

@@ -1,12 +1,18 @@
 ---
-description: Create PR with comprehensive documentation
+name: ship
+description: >
+  Pushes the validated branch and opens a pull request populated from the project's
+  PR template with full context and documentation links. Use for the Forge ship stage
+  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
+  gh pr create.
+allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 
 Push code and create a pull request with full context and documentation links.
 
 # Ship
 
-This command creates a PR after validation passes.
+This skill creates a PR after validation passes.
 
 ## Usage
 
@@ -24,7 +30,7 @@ Do NOT create PR until:
 </HARD-GATE>
 ```
 
-## What This Command Does
+## What This Skill Does
 
 ### Step 1: Verify /validate Passed
 Ensure all four validation checks completed successfully with fresh output in this session.
@@ -65,7 +71,7 @@ If merge simulation finds conflicts:
 - Display conflicted files
 - Ask: "Merge conflicts detected with base branch. These PRs should merge first: [list]. Proceed with PR creation anyway? (y/n)"
 - If `n`: exit cleanly
-- If `y`: log override via `bd comments add <id> "Ship override: creating PR despite merge conflicts"`, then continue
+- If `y`: log override via `forge comment <id> "Ship override: creating PR despite merge conflicts"`, then continue
 
 After PR creation completes:
 ```bash
@@ -117,7 +123,7 @@ If a PR template exists:
 2. **Fill in every section** with actual data from the current PR context:
    - Replace HTML comments (`<!-- ... -->`) with real content
    - Check applicable checkboxes (`- [x]`)
-   - Fill in beads issue IDs (replace `beads-xxx` with actual ID)
+   - Fill in Forge issue IDs (replace `forge-xxx` with actual ID)
    - Fill in test results, validation status, and other concrete data
    - Reference the design doc: `docs/work/YYYY-MM-DD-<slug>/design.md`
 3. **Do NOT remove any sections** — fill them all, even if "N/A"
@@ -135,7 +141,7 @@ If no PR template exists, use this minimal fallback:
 [How it was tested, test results]
 
 ## Beads
-Closes beads-xxx
+Closes forge-xxx
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
@@ -148,9 +154,9 @@ gh pr create --title "<type>: <concise description>" --body "<populated-template
 
 Rules for the PR body:
 - **Use the project's template structure** — never substitute your own format
-- **Fill in concrete data** — commit counts, test results, actual file paths, real beads IDs
+- **Fill in concrete data** — commit counts, test results, actual file paths, real Forge IDs
 - **Check applicable checkboxes** — `[x]` for items that apply, `[ ]` for items that don't
-- **Include "Closes beads-xxx"** in the Beads section (required for auto-close in /verify)
+- **Include "Closes forge-xxx"** in the Beads section (required for auto-close in /verify)
 
 ### Step 6: Validate Context and Record Stage Transition
 ```bash
@@ -176,7 +182,7 @@ forge team verify 2>&1 || true
 
 ## Output
 
-`/ship` reports live validation status, branch freshness, Beads PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this command file.
+`/ship` reports live validation status, branch freshness, Beads PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
 
 When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
 
@@ -201,7 +207,7 @@ Manual/support surfaces:
 
 - **Use the project's PR template**: Always read `.github/pull_request_template.md` (or equivalent) and populate it — never substitute your own format
 - **Fill every section**: Even if "N/A" — empty/missing sections cause review friction
-- **Include "Closes beads-xxx"**: Required for auto-close in /verify
+- **Include "Closes forge-xxx"**: Required for auto-close in /verify
 - **Concrete data only**: Test counts, file paths, commit SHAs — not placeholder text
 - **Poll briefly, then stop**: Check PR status for up to 60 seconds, then hand off if checks are still pending
 - **NO auto-merge**: Always wait for /review phase

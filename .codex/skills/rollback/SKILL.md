@@ -1,12 +1,14 @@
 ---
-description: Safely rollback changes with USER section preservation
+name: rollback
+description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use for the Forge rollback stage when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
+allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 
 Comprehensive rollback system with multiple methods and automatic USER content preservation.
 
 # Rollback
 
-This command provides safe rollback operations with comprehensive validation and USER section preservation.
+This skill provides safe rollback operations with comprehensive validation and USER section preservation.
 
 ## Usage
 
@@ -343,7 +345,7 @@ bunx forge rollback
 
 ## Beads Integration
 
-If Beads is installed (`bun install -g @beads/bd`), rollback automatically updates issue tracking.
+If Beads is installed (`bunx forge setup`), rollback automatically updates issue tracking.
 
 ### PR Rollback → Issue Status
 
@@ -636,7 +638,7 @@ bunx forge rollback
 # ✓ Beads: Issue #123 → status: reverted
 # ✓ Rollback complete!
 
-bd show 123
+forge show 123
 # ID: 123
 # Title: Add real-time updates
 # Status: reverted
