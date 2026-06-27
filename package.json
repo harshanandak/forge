@@ -78,7 +78,6 @@
     "bin/",
     "lib/",
     "skills/",
-    ".claude/commands/",
     ".claude/rules/",
     ".claude/scripts/",
     ".claude/skills/",

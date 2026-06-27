@@ -47,6 +47,7 @@ const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
 const PluginManager = require('../lib/plugin-manager');
+const { populateAgentSkills, listCanonicalSkills } = require('../lib/skills-sync');
 const { copyEssentialDocs } = require('../lib/docs-copy');
 const {
   listTopics,
@@ -151,7 +152,8 @@ function loadAgentsFromPlugins() {
       customSetup: plugin.setup?.customSetup || '',
       needsConversion: plugin.setup?.needsConversion || false,
       copyCommands: plugin.setup?.copyCommands || false,
-      promptFormat: plugin.setup?.promptFormat || false
+      promptFormat: plugin.setup?.promptFormat || false,
+      skillsDir: plugin.directories?.skills || null
     };
   });
 
@@ -438,6 +440,7 @@ function checkPrerequisites() {
 }
 
 // Universal SKILL.md content
+// eslint-disable-next-line no-unused-vars -- retained for workflow-template tests; removed with the command surface in A0d
 const SKILL_CONTENT = `---
 name: forge-workflow
 description: Composable TDD-first workflow for feature development. Use when building features, fixing bugs, or shipping PRs.
@@ -1865,20 +1868,8 @@ function minimalInstall() {
 }
 
 // Helper: Setup Claude agent
-function setupClaudeAgent(skipFiles = {}) {
-  // Copy commands from package (unless skipped)
-  if (skipFiles.claudeCommands) {
-    console.log('  Skipped: .claude/commands/ (keeping existing)');
-  } else {
-    const cmds = getWorkflowCommands();
-    let copied = 0;
-    cmds.forEach(cmd => {
-      const src = path.join(packageDir, `.claude/commands/${cmd}.md`);
-      if (copyFile(src, `.claude/commands/${cmd}.md`)) copied++;
-    });
-    console.log(`  Copied: ${copied} workflow commands`);
-  }
-
+function setupClaudeAgent() {
+  // Skills-only surface: per-skill SKILL.md dirs are populated by createAgentSkill.
   // Copy rules
   const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
   copyFile(rulesSrc, '.claude/rules/workflow.md');
@@ -1941,14 +1932,22 @@ function copyAgentRules(agent) {
 }
 
 // Helper: Create skill file for agent
-function createAgentSkill(agent) {
-  if (!agent.hasSkill) return;
-
-  const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-  if (skillDir) {
-    writeFile(`${skillDir}/SKILL.md`, SKILL_CONTENT);
-    console.log('  Created: forge-workflow skill');
+function createAgentSkill(agent, agentKey) {
+  if (agentKey === 'codex') {
+    // Codex global skill install is handled via buildCodexSkillInstallPlan in setup.js
+    return;
   }
+
+  if (!agent.hasSkill || !agent.skillsDir) return;
+
+  // Skills-only surface: populate every canonical skill into the agent skills dir
+  // (.claude/skills, .cursor/skills) from the packaged canonical `skills/` source.
+  const { written } = populateAgentSkills({
+    sourceRoot: packageDir,
+    targetSkillsDir: path.join(projectRoot, agent.skillsDir),
+    clean: true,
+  });
+  console.log(`  Created: ${written.length} skills in ${agent.skillsDir}/`);
 }
 
 // Helper: Setup MCP config for Claude
@@ -2008,7 +2007,7 @@ function setupAgent(agentKey, claudeCommands, skipFiles = {}) {
   copyAgentRules(agent);
 
   // Create SKILL.md
-  createAgentSkill(agent);
+  createAgentSkill(agent, agentKey);
 
   // Setup MCP configs
   if (agentKey === 'claude') {
@@ -3673,29 +3672,13 @@ async function promptForOverwriteDecisions(question, projectStatus) {
 
 // Helper: Load and setup Claude commands - extracted to reduce cognitive complexity
 function loadAndSetupClaudeCommands(selectedAgents, skipFiles) {
-  const claudeCommands = {};
-  const needsClaudeCommands = selectedAgents.includes('claude') ||
-    selectedAgents.some(a => AGENTS[a].needsConversion || AGENTS[a].copyCommands);
-
-  if (!needsClaudeCommands) {
-    return claudeCommands;
-  }
-
-  // First ensure Claude is set up
+  // Skills-only surface: no command files are copied or loaded. Claude is still
+  // set up first (so setupSelectedAgents can skip it). Returns an empty command
+  // map for callers that still thread it through.
   if (selectedAgents.includes('claude')) {
     setupAgent('claude', null, skipFiles);
   }
-
-  // Then load the commands (from existing or newly created)
-  getWorkflowCommands().forEach(cmd => {
-    const cmdPath = path.join(projectRoot, `.claude/commands/${cmd}.md`);
-    const content = readFile(cmdPath);
-    if (content) {
-      claudeCommands[`${cmd}.md`] = content;
-    }
-  });
-
-  return claudeCommands;
+  return {};
 }
 
 // Helper: Setup all selected agents - extracted to reduce cognitive complexity
@@ -3922,15 +3905,10 @@ function dryRunSetup(agents) {
       addFileAction(dir + '/', 'Create agent directory');
     }
 
-    // Claude-specific files
+    // Claude-specific files (skills are listed by the per-skill block below)
     if (agentKey === 'claude') {
-      const cmds = getWorkflowCommands();
-      for (const cmd of cmds) {
-        addFileAction(`.claude/commands/${cmd}.md`, 'Workflow command');
-      }
       addFileAction('.claude/rules/workflow.md', 'Workflow rules');
       addFileAction('.claude/scripts/load-env.sh', 'Environment loader script');
-      addFileAction('.claude/skills/forge-workflow/SKILL.md', 'Forge workflow skill');
       addFileAction('.mcp.json', 'MCP server configuration');
       addFileAction('CLAUDE.md', 'Claude root config (links to AGENTS.md)');
     }
@@ -3958,11 +3936,10 @@ function dryRunSetup(agents) {
       }
     }
 
-    // Agent skill
-    if (agent.hasSkill) {
-      const skillDir = agent.dirs.find(d => d.includes('/skills/'));
-      if (skillDir) {
-        addFileAction(`${skillDir}/SKILL.md`, 'Forge workflow skill');
+    // Agent skill — enumerate canonical skills per-agent (codex handled globally elsewhere)
+    if (agentKey !== 'codex' && agent.hasSkill && agent.skillsDir) {
+      for (const skill of listCanonicalSkills(packageDir)) {
+        addFileAction(`${agent.skillsDir}/${skill.name}/SKILL.md`, 'Forge stage skill');
       }
     }
 
