@@ -36,31 +36,31 @@ function transitionTest(name, callback) {
 
 /**
  * Helper: run beads-context.sh stage-transition with given args.
- * Uses a bd shim that captures the comment text passed to `bd comments add`.
- * This avoids needing a real Beads installation for unit tests.
+ * Uses a forge shim that captures the comment text passed to `forge issue comment`.
+ * This avoids needing a real issue tracker installation for unit tests.
  */
 function runTransition(args, _env = {}) {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const shimDir = path.join(ROOT, `.bd-shim-${suffix}`);
+  const shimDir = path.join(ROOT, `.forge-shim-${suffix}`);
   const captureFile = path.join(shimDir, 'capture.txt');
-  const shimPath = path.join(shimDir, 'bd');
+  const shimPath = path.join(shimDir, 'forge');
 
   fs.mkdirSync(shimDir, { recursive: true });
   fs.writeFileSync(
     shimPath,
     `#!/usr/bin/env bash
-if [ "$1" = "comments" ] && [ "$2" = "add" ]; then
+if [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
   last_arg="\${!#}"
   printf '%s' "$last_arg" > ${shQuote(`./${path.basename(shimDir)}/capture.txt`)}
   echo "Comment added"
   exit 0
 fi
-if [ "$1" = "update" ]; then
+if [ "$1" = "issue" ] && [ "$2" = "update" ]; then
   echo "Updated"
   exit 0
 fi
-echo "bd shim: unknown command $*"
-exit 0
+echo "forge shim: unknown command $*" >&2
+exit 1
 `,
     { mode: 0o755 }
   );
@@ -69,7 +69,7 @@ exit 0
     cwd: ROOT,
     env: {
       ...process.env,
-      BD_CMD: shimPath,
+      FORGE_CMD: shimPath,
     },
     encoding: 'utf8',
     timeout: 45000,
