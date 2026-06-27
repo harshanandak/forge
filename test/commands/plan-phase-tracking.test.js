@@ -2,7 +2,7 @@ const { describe, test, expect } = require('bun:test');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
-const planPath = join(__dirname, '..', '..', '.claude', 'commands', 'plan.md');
+const planPath = join(__dirname, '..', '..', 'skills', 'plan', 'SKILL.md');
 const planContent = readFileSync(planPath, 'utf-8');
 
 describe('/plan phase tracking', () => {

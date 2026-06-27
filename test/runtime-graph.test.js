@@ -65,13 +65,15 @@ describe('runtime graph contract', () => {
     ]);
   });
 
-  test('keeps graph command actions compatible with checked-in command docs', () => {
+  test('keeps graph command actions compatible with checked-in skill docs', () => {
     const repoRoot = path.resolve(__dirname, '..');
     const graph = getResolvedRuntimeGraph();
     const commandActions = graph.actions.filter(action => action.kind === 'command');
 
+    // The command surface migrated to canonical skills/<name>/SKILL.md; each
+    // graph command action must still have its backing skill doc.
     for (const action of commandActions) {
-      const docPath = path.join(repoRoot, '.claude', 'commands', `${action.command}.md`);
+      const docPath = path.join(repoRoot, 'skills', action.command, 'SKILL.md');
       expect(fs.existsSync(docPath), `${action.id} should have ${docPath}`).toBe(true);
       const doc = fs.readFileSync(docPath, 'utf8');
       expect(doc).toContain(`/${action.command}`);

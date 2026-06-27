@@ -106,7 +106,8 @@ describe('plugin-manager support metadata', () => {
 
     expect(claude).toBeTruthy();
     expect(claude.normalizedCapabilities).toBeTruthy();
-    expect(claude.normalizedCapabilities.commands).toBeTruthy();
+    // Post command→skills migration, the claude plugin provides skills, not commands.
+    expect(claude.normalizedCapabilities.skills).toBeTruthy();
     expect(claude.normalizedCapabilities.hooks.blocking).toBeTruthy();
   });
 });

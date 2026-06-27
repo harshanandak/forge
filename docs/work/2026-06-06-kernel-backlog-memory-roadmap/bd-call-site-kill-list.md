@@ -9,14 +9,14 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 108 | 11 |
 | runtime | 282 | 36 |
-| docs | 452 | 68 |
-| skills | 22 | 9 |
+| docs | 400 | 48 |
+| skills | 1 | 1 |
 | hooks | 0 | 0 |
 
 ## command
 
 - [ ] bin/forge.js (26)
-  - lines: 2372 (bd), 2374 (bd), 2528 (bd), 2930 (bd), 2939 (bd), 2952 (bd), 2965 (.beads), 2985 (bd), 2987 (bd), 2989 (bd), 3024 (bd), 3048 (bd), 3134 (bd), 3178 (bd), 3202 (bd), 3208 (bd), 3212 (bd), 3217 (bd), 3223 (bd), 3233 (bd), 3365 (bd), 3370 (bd), 3381 (bd), 3448 (bd), 4190 (bd), 4666 (bd)
+  - lines: 2234 (bd), 2236 (bd), 2382 (bd), 2784 (bd), 2793 (bd), 2806 (bd), 2819 (.beads), 2839 (bd), 2841 (bd), 2843 (bd), 2878 (bd), 2902 (bd), 2988 (bd), 3032 (bd), 3056 (bd), 3062 (bd), 3066 (bd), 3071 (bd), 3077 (bd), 3087 (bd), 3219 (bd), 3224 (bd), 3235 (bd), 3302 (bd), 3995 (bd), 4471 (bd)
 - [ ] lib/commands/_resolve-command-opts.js (2)
   - lines: 8 (bd), 10 (bd)
 - [ ] lib/commands/clean.js (2)
@@ -26,7 +26,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/commands/plan.js (5)
   - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
 - [ ] lib/commands/setup.js (32)
-  - lines: 219 (.beads), 231 (.beads), 292 (bd, dolt), 345 (bd), 352 (dolt), 353 (bd, dolt), 357 (dolt), 358 (bd, dolt), 363 (bd), 2418 (bd), 2420 (bd), 2741 (bd), 2750 (bd), 2763 (bd), 2778 (.beads), 2802 (bd), 2804 (bd), 2806 (bd), 2841 (bd), 2865 (bd), 2963 (bd), 3010 (bd), 3038 (bd), 3044 (bd), 3048 (bd), 3053 (bd), 3059 (bd), 3069 (bd), 3216 (bd), 3221 (bd), 3232 (bd), 3321 (bd)
+  - lines: 198 (.beads), 210 (.beads), 271 (bd, dolt), 324 (bd), 331 (dolt), 332 (bd, dolt), 336 (dolt), 337 (bd, dolt), 342 (bd), 2259 (bd), 2261 (bd), 2574 (bd), 2583 (bd), 2596 (bd), 2611 (.beads), 2635 (bd), 2637 (bd), 2639 (bd), 2674 (bd), 2698 (bd), 2796 (bd), 2843 (bd), 2871 (bd), 2877 (bd), 2881 (bd), 2886 (bd), 2892 (bd), 2902 (bd), 3049 (bd), 3054 (bd), 3065 (bd), 3154 (bd)
 - [ ] lib/commands/status.js (10)
   - lines: 228 (.beads), 229 (.beads), 230 (.beads), 231 (.beads), 232 (.beads), 233 (.beads), 234 (.beads), 236 (.beads), 356 (bd), 414 (bd)
 - [ ] lib/commands/sync.js (9)
@@ -115,48 +115,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## docs
 
-- [ ] .claude/commands/dev.md (1)
-  - lines: 85 (bd)
-- [ ] .claude/commands/plan.md (8)
-  - lines: 84 (bd), 113 (bd), 138 (bd), 142 (bd), 169 (bd), 372 (bd), 392 (bd), 498 (bd)
-- [ ] .claude/commands/review.md (1)
-  - lines: 250 (bd)
-- [ ] .claude/commands/rollback.md (2)
-  - lines: 346 (bd), 639 (bd)
-- [ ] .claude/commands/ship.md (1)
-  - lines: 68 (bd)
-- [ ] .claude/commands/status.md (2)
-  - lines: 33 (bd), 50 (bd)
-- [ ] .claude/commands/validate.md (2)
-  - lines: 263 (bd), 264 (bd)
-- [ ] .claude/commands/verify.md (4)
-  - lines: 145 (bd), 166 (bd), 173 (bd), 176 (bd)
-- [ ] .claude/rules/workflow.md (6)
-  - lines: 47 (bd), 48 (bd), 49 (bd), 50 (bd), 51 (bd), 61 (bd, dolt)
-- [ ] .cursor/commands/dev.md (1)
-  - lines: 82 (bd)
-- [ ] .cursor/commands/plan.md (8)
-  - lines: 81 (bd), 110 (bd), 135 (bd), 139 (bd), 166 (bd), 369 (bd), 389 (bd), 495 (bd)
-- [ ] .cursor/commands/review.md (1)
-  - lines: 247 (bd)
-- [ ] .cursor/commands/rollback.md (2)
-  - lines: 343 (bd), 636 (bd)
-- [ ] .cursor/commands/ship.md (1)
-  - lines: 65 (bd)
-- [ ] .cursor/commands/status.md (2)
-  - lines: 30 (bd), 47 (bd)
-- [ ] .cursor/commands/validate.md (2)
-  - lines: 260 (bd), 261 (bd)
-- [ ] .cursor/commands/verify.md (4)
-  - lines: 142 (bd), 163 (bd), 170 (bd), 173 (bd)
-- [ ] .cursor/rules/permissions-guidance.mdc (1)
-  - lines: 16 (bd)
-- [ ] .cursorrules (1)
-  - lines: 34 (bd)
 - [ ] AGENTS.md (6)
   - lines: 123 (bd), 181 (dolt), 239 (bd), 252 (bd, dolt), 253 (bd), 254 (bd)
-- [ ] CLAUDE.md (2)
-  - lines: 99 (dolt), 100 (dolt)
 - [ ] docs/guides/BEADS_GITHUB_SYNC.md (3)
   - lines: 7 (.beads), 10 (dolt), 32 (.beads)
 - [ ] docs/guides/SETUP.md (5)
@@ -254,22 +214,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## skills
 
-- [ ] .codex/skills/dev/SKILL.md (1)
-  - lines: 85 (bd)
-- [ ] .codex/skills/plan/SKILL.md (8)
-  - lines: 84 (bd), 113 (bd), 138 (bd), 142 (bd), 169 (bd), 372 (bd), 392 (bd), 498 (bd)
-- [ ] .codex/skills/review/SKILL.md (1)
-  - lines: 250 (bd)
-- [ ] .codex/skills/rollback/SKILL.md (2)
-  - lines: 346 (bd), 639 (bd)
-- [ ] .codex/skills/ship/SKILL.md (1)
-  - lines: 68 (bd)
-- [ ] .codex/skills/status/SKILL.md (2)
-  - lines: 33 (bd), 50 (bd)
-- [ ] .codex/skills/validate/SKILL.md (2)
-  - lines: 263 (bd), 264 (bd)
-- [ ] .codex/skills/verify/SKILL.md (4)
-  - lines: 145 (bd), 166 (bd), 173 (bd), 176 (bd)
 - [ ] packages/skills/README.md (1)
   - lines: 356 (bd)
 

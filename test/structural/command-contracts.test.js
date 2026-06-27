@@ -5,15 +5,20 @@ const path = require('node:path');
 // Find repo root
 const repoRoot = path.resolve(__dirname, '../..');
 
-const commandsDir = path.join(repoRoot, '.claude', 'commands');
+const skillsDir = path.join(repoRoot, 'skills');
 
 /**
- * Read a command file and return its content.
- * @param {string} filename - The command file name (e.g. 'plan.md')
- * @returns {string} The file content
+ * Read a stage skill's content by its former command filename.
+ *
+ * The command surface (`.claude/commands/<name>.md`) migrated to
+ * `skills/<name>/SKILL.md`; these stage-to-stage contracts now hold against
+ * the canonical skills. Map the legacy command name to its skill.
+ * @param {string} filename - The legacy command file name (e.g. 'plan.md')
+ * @returns {string} The skill content
  */
 function readCommand(filename) {
-  return fs.readFileSync(path.join(commandsDir, filename), 'utf8');
+  const name = filename.replace(/\.md$/, '');
+  return fs.readFileSync(path.join(skillsDir, name, 'SKILL.md'), 'utf8');
 }
 
 // ─── Contract 1: /plan task list output → /dev task list input ──────────────

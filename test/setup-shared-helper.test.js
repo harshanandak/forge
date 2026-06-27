@@ -33,13 +33,6 @@ describe('executeSetup shared helper (forge-cpnj)', () => {
     expect(funcBody).not.toContain("agentKey !== 'claude'");
   });
 
-  test('executeSetup uses loadAndSetupClaudeCommands when claude is in agents', () => {
-    const funcStart = content.indexOf('async function executeSetup(');
-    expect(funcStart).toBeGreaterThan(-1);
-    const funcBody = content.substring(funcStart, funcStart + 3000);
-    expect(funcBody).toContain('loadAndSetupClaudeCommands');
-  });
-
   test('executeSetup calls setupAgent for all agents without claude exclusion', () => {
     const funcStart = content.indexOf('async function executeSetup(');
     expect(funcStart).toBeGreaterThan(-1);

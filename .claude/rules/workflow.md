@@ -42,23 +42,23 @@
 
 ## Issue Tracking
 
-Use Beads for persistent tracking across sessions:
+Use the Forge Kernel for persistent tracking across sessions (`forge issue <subcommand>`):
 ```bash
-bd create --title="Feature name" --type=feature   # Create issue
-bd update <id> --status=in_progress               # Claim work
-bd update <id> --comment "Progress"               # Add notes
-bd close <id>                                     # Complete
-bd sync                                           # Sync with git
+forge issue create --title="Feature name" --type=feature   # Create issue
+forge issue claim <id>                                     # Claim work
+forge issue comment <id> "Progress"                        # Add a note
+forge issue close <id> --reason="Done"                     # Complete
 ```
+Run `forge issue --help` for the full subcommand list (ready, list, show, dep, blocked, …).
 
 ## Forge CLI Commands
 
-Use forge commands instead of raw tools — forge handles OS quirks, beads integration, and quality gates:
+Use forge commands instead of raw tools — forge handles OS quirks, issue tracking, and quality gates:
 
 | Instead of... | Use... |
 |---------------|--------|
 | `git worktree add .worktrees/<slug> -b feat/<slug>` | `forge worktree create <slug>` |
-| `bd dolt pull && bd dolt push` / `bd sync` | `forge sync` |
+| Manual issue-store sync | `forge sync` |
 | `bun test` / `bun run test` | `forge test` or `forge test --affected` |
 | `git push` (with manual checks) | `forge push` or `forge push --quick` |
 | Manual worktree cleanup | `forge clean` or `forge clean --dry-run` |

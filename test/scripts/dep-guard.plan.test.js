@@ -3,7 +3,7 @@ const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 
 describe('plan.md integration', () => {
-  const planMdPath = path.join(__dirname, '..', '..', '.claude', 'commands', 'plan.md');
+  const planMdPath = path.join(__dirname, '..', '..', 'skills', 'plan', 'SKILL.md');
 
   test('Phase 1 includes dep-guard ripple check step', () => {
     const content = fs.readFileSync(planMdPath, 'utf-8');
@@ -42,11 +42,11 @@ describe('plan.md integration', () => {
     expect(content).toContain('Recommendation');
   });
 
-  test('plan.md documents the Beads-aware Phase 3 approval flow', () => {
+  test('plan skill documents the Phase 3 dependency approval flow', () => {
     const content = fs.readFileSync(planMdPath, 'utf-8');
-    expect(content).toContain('bd worktree create');
-    expect(content).toContain('logic-level analysis');
+    expect(content).toContain('forge worktree create');
+    expect(content).toContain('logic-level dependency review');
     expect(content).toContain('user approval');
-    expect(content).toContain('bd dep cycles');
+    expect(content).toContain('forge issue dep cycles');
   });
 });

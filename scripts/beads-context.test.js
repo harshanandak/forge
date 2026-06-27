@@ -411,9 +411,9 @@ describe('/plan command integration with beads-context.sh', () => {
 	const PLAN_MD_PATH = path.join(
 		__dirname,
 		'..',
-		'.claude',
-		'commands',
-		'plan.md',
+		'skills',
+		'plan',
+		'SKILL.md',
 	);
 	let planContent;
 
@@ -453,9 +453,9 @@ describe('/dev command integration with beads-context.sh', () => {
 	const DEV_MD_PATH = path.join(
 		__dirname,
 		'..',
-		'.claude',
-		'commands',
-		'dev.md',
+		'skills',
+		'dev',
+		'SKILL.md',
 	);
 	let devContent;
 
@@ -491,9 +491,9 @@ describe('/status command integration with smart-status', () => {
 	const STATUS_MD_PATH = path.join(
 		__dirname,
 		'..',
-		'.claude',
-		'commands',
-		'status.md',
+		'skills',
+		'status',
+		'SKILL.md',
 	);
 	let statusContent;
 
@@ -505,8 +505,8 @@ describe('/status command integration with smart-status', () => {
 		expect(statusContent).toContain('bash scripts/smart-status.sh');
 	});
 
-	test('status.md should include hint to use bd show for full context', () => {
-		expect(statusContent).toMatch(/bd show/i);
+	test('status skill should include hint to use forge show for full context', () => {
+		expect(statusContent).toMatch(/forge show/i);
 	});
 
 	test('status.md should describe dynamic ranked output', () => {
@@ -518,9 +518,9 @@ describe('/validate command integration with beads-context.sh', () => {
 	const VALIDATE_MD_PATH = path.join(
 		__dirname,
 		'..',
-		'.claude',
-		'commands',
-		'validate.md',
+		'skills',
+		'validate',
+		'SKILL.md',
 	);
 	let validateContent;
 
@@ -541,9 +541,9 @@ describe('/ship command integration with beads-context.sh', () => {
 	const SHIP_MD_PATH = path.join(
 		__dirname,
 		'..',
-		'.claude',
-		'commands',
-		'ship.md',
+		'skills',
+		'ship',
+		'SKILL.md',
 	);
 	let shipContent;
 
@@ -564,9 +564,9 @@ describe('/review command integration with beads-context.sh', () => {
 	const REVIEW_MD_PATH = path.join(
 		__dirname,
 		'..',
-		'.claude',
-		'commands',
-		'review.md',
+		'skills',
+		'review',
+		'SKILL.md',
 	);
 	let reviewContent;
 

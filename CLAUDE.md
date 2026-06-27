@@ -94,10 +94,10 @@ git commit --no-verify           # Skip pre-commit hooks
 ```bash
 forge push              # Runs branch protection + lint + tests, then pushes
 forge push --quick      # Review-cycle: lint-only push (CI runs full suite)
-forge worktree create <slug>  # Creates worktree with Beads integration
-forge test              # Runs tests with correct timeouts + Beads skip
-forge sync              # Syncs Beads data (dolt pull + push)
-forge clean             # Removes merged worktrees (stops Dolt servers)
+forge worktree create <slug>  # Creates a worktree
+forge test              # Runs tests with correct timeouts
+forge sync              # Syncs issue data
+forge clean             # Removes merged worktrees
 ```
 
 See [.github/pull_request_template.md](.github/pull_request_template.md) for PR guidelines.
@@ -114,8 +114,7 @@ As you work, when you give the same instruction twice, add it here:
 - **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
-- **Command sync**: After editing `.claude/commands/*.md`, run `node scripts/sync-commands.js` to update all supported agent directories (Claude Code, Codex, Cursor). Use `--check` in CI to detect drift. Use `--dry-run` to preview.
-- **Dynamic commands**: Never hardcode example output in command files (`.claude/commands/*.md`) when a script generates that output dynamically. Command files should reference the script and describe what it does — not duplicate its output with fake data that becomes stale.
+- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. Never hand-edit generated agent skill copies — edit the canonical `skills/` source.
 - **Review follow-up completion**: After fixing review feedback, always push the changes and resolve the related GitHub review threads via the GraphQL API before considering the work complete.
 
 <!-- USER:END -->

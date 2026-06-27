@@ -43,7 +43,7 @@ resolve from the installed location).
 
 The Forge Kernel is the single source of truth. Hermes obtains project state
 **exclusively** through two thin CLI wrappers and must not infer state by
-reading `.beads`-style stores, design files, or kernel internals directly:
+reading raw issue stores, design files, or kernel internals directly:
 
 ```bash
 forge orient --json                # bounded project orientation (envelope)
