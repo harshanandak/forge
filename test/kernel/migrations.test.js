@@ -21,8 +21,11 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
-		// Rollback runs migrations in reverse, so 004's last column drop comes first.
-		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_issues DROP COLUMN assignee;');
+		// Rollback runs migrations in reverse, so 005 (the latest migration) rolls back
+		// first: its search index drop precedes the kernel_memories table drop.
+		expect(plan.rollback[0]).toBe('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
+		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
+		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN assignee;');
 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_claims_active_lease;');
 		expect(plan.rollback).toContain('CREATE TABLE IF NOT EXISTS kernel_events_002_rollback (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.rollback).toContain('INSERT INTO kernel_events_002_rollback (id, entity_type, entity_id, event_type, idempotency_key, actor, origin, payload_json, created_at) SELECT id, entity_type, entity_id, event_type, idempotency_key, actor, origin, payload_json, created_at FROM kernel_events;');
@@ -33,7 +36,40 @@ describe('kernel migration plans', () => {
 			'002_kernel_events_expected_revision',
 			'003_kernel_claims_active_lease',
 			'004_kernel_issues_content_fields',
+			'005_kernel_memories',
 		]);
+	});
+
+	test('migration 005 creates the kernel_memories read-model table and drops it on rollback', () => {
+		const { buildMemoryProjectionMigration } = require('../../lib/kernel/migrations');
+		const migration = buildMemoryProjectionMigration();
+
+		expect(migration.id).toBe('005_kernel_memories');
+		// Idempotent CREATE IF NOT EXISTS so a fresh DB and an existing DB both migrate
+		// cleanly through the broker ledger.
+		expect(migration.apply[0]).toContain('CREATE TABLE IF NOT EXISTS kernel_memories');
+		expect(migration.apply[0]).toContain('key TEXT NOT NULL PRIMARY KEY');
+		expect(migration.apply).toContain(
+			'CREATE INDEX IF NOT EXISTS idx_kernel_memories_source_agent ON kernel_memories (source_agent);',
+		);
+		expect(migration.rollback).toEqual([
+			'DROP INDEX IF EXISTS idx_kernel_memories_source_agent;',
+			'DROP TABLE IF EXISTS kernel_memories;',
+		]);
+
+		// Registered in the default plan so the broker's initialize() creates it.
+		const plan = buildKernelMigrationPlan();
+		expect(plan.apply).toContain(
+			'CREATE INDEX IF NOT EXISTS idx_kernel_memories_source_agent ON kernel_memories (source_agent);',
+		);
+	});
+
+	test('the initial (001) schema migration excludes kernel_memories (created by 005)', () => {
+		const plan = buildKernelMigrationPlan();
+		const schemaMigration = plan.migrations.find(migration => migration.id === '001_kernel_schema');
+		// kernel_memories must NOT be created by 001 — it is owned by migration 005 so a
+		// fresh DB creates it exactly once and an existing DB picks it up via the ledger.
+		expect(schemaMigration.apply.some(statement => statement.includes('kernel_memories'))).toBe(false);
 	});
 
 	test('KAP-10/11: migration 004 adds design/notes/assignee content fields and drops them on rollback', () => {
