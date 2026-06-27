@@ -26,7 +26,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/commands/plan.js (5)
   - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
 - [ ] lib/commands/setup.js (32)
-  - lines: 198 (.beads), 210 (.beads), 271 (bd, dolt), 324 (bd), 331 (dolt), 332 (bd, dolt), 336 (dolt), 337 (bd, dolt), 342 (bd), 2259 (bd), 2261 (bd), 2574 (bd), 2583 (bd), 2596 (bd), 2611 (.beads), 2635 (bd), 2637 (bd), 2639 (bd), 2674 (bd), 2698 (bd), 2796 (bd), 2843 (bd), 2871 (bd), 2877 (bd), 2881 (bd), 2886 (bd), 2892 (bd), 2902 (bd), 3049 (bd), 3054 (bd), 3065 (bd), 3154 (bd)
+  - lines: 198 (.beads), 210 (.beads), 271 (bd, dolt), 324 (bd), 331 (dolt), 332 (bd, dolt), 336 (dolt), 337 (bd, dolt), 342 (bd), 2261 (bd), 2263 (bd), 2576 (bd), 2585 (bd), 2598 (bd), 2613 (.beads), 2637 (bd), 2639 (bd), 2641 (bd), 2676 (bd), 2700 (bd), 2798 (bd), 2845 (bd), 2873 (bd), 2879 (bd), 2883 (bd), 2888 (bd), 2894 (bd), 2904 (bd), 3051 (bd), 3056 (bd), 3067 (bd), 3156 (bd)
 - [ ] lib/commands/status.js (10)
   - lines: 228 (.beads), 229 (.beads), 230 (.beads), 231 (.beads), 232 (.beads), 233 (.beads), 234 (.beads), 236 (.beads), 356 (bd), 414 (bd)
 - [ ] lib/commands/sync.js (9)
