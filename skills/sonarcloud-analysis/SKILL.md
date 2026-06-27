@@ -77,12 +77,12 @@ export SONARCLOUD_ORG="your-org"
 export SONARCLOUD_PROJECT="your-project"
 
 # Common queries
-curl -H "Authorization: Bearer $TOKEN" \
-  "https://sonarcloud.io/api/issues/search?organization=$ORG&componentKeys=$PROJECT&resolved=false"
-curl -H "Authorization: Bearer $TOKEN" \
-  "https://sonarcloud.io/api/measures/component?component=$PROJECT&metricKeys=bugs,coverage"
-curl -H "Authorization: Bearer $TOKEN" \
-  "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT"
+curl -H "Authorization: Bearer $SONARCLOUD_TOKEN" \
+  "https://sonarcloud.io/api/issues/search?organization=$SONARCLOUD_ORG&componentKeys=$SONARCLOUD_PROJECT&resolved=false"
+curl -H "Authorization: Bearer $SONARCLOUD_TOKEN" \
+  "https://sonarcloud.io/api/measures/component?component=$SONARCLOUD_PROJECT&metricKeys=bugs,coverage"
+curl -H "Authorization: Bearer $SONARCLOUD_TOKEN" \
+  "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$SONARCLOUD_PROJECT"
 ```
 
 ## Endpoints

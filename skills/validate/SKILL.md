@@ -67,7 +67,7 @@ reflect the true state of what will be merged.
 </HARD-GATE>
 ```
 
-## What This Command Does
+## What This Skill Does
 
 **Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
 

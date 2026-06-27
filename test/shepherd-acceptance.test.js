@@ -193,6 +193,7 @@ describe('shepherd acceptance §5', () => {
     const { checkSkillsSync } = require('../lib/skills-sync');
     const result = checkSkillsSync({ repoRoot: ROOT });
     expect(result.inSync).toBe(true);
+    expect(result.checkedAgents).toContain('.codex/skills');
   });
 
   // §5.9 — Shepherd is decoupled from the release gate. Observable assertion:

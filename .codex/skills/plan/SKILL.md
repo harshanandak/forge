@@ -142,7 +142,7 @@ If verify reports issues, address them before proceeding (the output will includ
 Before exploring context or asking questions, check for potential conflicts with in-flight work:
 
 ```bash
-# If a Beads issue ID is known (e.g., from /status or forge ready):
+# If a Forge issue ID is known (e.g., from /status or forge ready):
 bash scripts/dep-guard.sh check-ripple <forge-issue-id>
 
 # If no issue exists yet (first-time plan):
@@ -396,7 +396,7 @@ else
 
   # Step 2c: Create a Beads-aware worktree rooted on master
   git checkout master
-  forge worktree create .worktrees/<slug> --branch feat/<slug>
+  forge worktree create <slug> --branch feat/<slug>
   cd .worktrees/<slug>
 fi
 ```

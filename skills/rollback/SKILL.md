@@ -1,6 +1,6 @@
 ---
 name: rollback
-description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use for the Forge rollback stage when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
+description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 
