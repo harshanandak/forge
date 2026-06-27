@@ -10,7 +10,7 @@ TEST_TMP=""
 setup() {
   mkdir -p /c/tmp/forge-team-integ
   TEST_TMP="$(mktemp -d /c/tmp/forge-team-integ/run.XXXXXX)"
-  mkdir -p "$TEST_TMP/.beads" "$TEST_TMP/mock"
+  mkdir -p "$TEST_TMP/.forge" "$TEST_TMP/mock"
   export TEAM_MAP_ROOT="$TEST_TMP"
 }
 
@@ -18,7 +18,7 @@ teardown() {
   rm -rf "$TEST_TMP"
   unset TEAM_MAP_ROOT || true
   unset GH_CMD || true
-  unset BD_CMD || true
+  unset FORGE_CMD || true
 }
 
 assert_exit_code() {
@@ -64,32 +64,25 @@ esac
 MOCK
   chmod +x "$TEST_TMP/mock/gh"
 
-  cat > "$TEST_TMP/mock/bd" << 'MOCK'
+  cat > "$TEST_TMP/mock/forge" << 'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *"list --status=open,in_progress"*)
-    echo "◐ forge-t1 · Test Task 1"
-    echo "○ forge-t2 · Test Task 2" ;;
-  *"show forge-t1"*)
-    echo "◐ forge-t1 · Test Task 1 [● P2 · IN_PROGRESS]"
-    echo "Owner: testdev"
-    echo "Updated: 2026-03-27T10:00:00Z" ;;
-  *"show forge-t2"*)
-    echo "○ forge-t2 · Test Task 2 [● P3 · OPEN]"
-    echo "Owner: testdev"
-    echo "Updated: 2026-03-27T09:00:00Z" ;;
+  *"issue list"*"--status=in_progress"*)
+    printf '{"data":{"issues":[{"id":"forge-t1","title":"Test Task 1","status":"in_progress","assignee":"testdev","updated_at":"2026-03-27T10:00:00Z","dependencies":[]}]}}\n' ;;
+  *"issue list"*"--status=open"*)
+    printf '{"data":{"issues":[{"id":"forge-t2","title":"Test Task 2","status":"open","assignee":"testdev","updated_at":"2026-03-27T09:00:00Z","dependencies":[]}]}}\n' ;;
   *) exit 0 ;;
 esac
 MOCK
-  chmod +x "$TEST_TMP/mock/bd"
+  chmod +x "$TEST_TMP/mock/forge"
 
-  export GH_CMD="$TEST_TMP/mock/gh" BD_CMD="$TEST_TMP/mock/bd"
+  export GH_CMD="$TEST_TMP/mock/gh" FORGE_CMD="$TEST_TMP/mock/forge"
 
   # Run identity auto-detect in subshell to avoid readonly clashes
   local id_rc
   bash -c '
     set -euo pipefail
-    export GH_CMD="'"$TEST_TMP"'/mock/gh" BD_CMD="'"$TEST_TMP"'/mock/bd" TEAM_MAP_ROOT="'"$TEST_TMP"'"
+    export GH_CMD="'"$TEST_TMP"'/mock/gh" FORGE_CMD="'"$TEST_TMP"'/mock/forge" TEAM_MAP_ROOT="'"$TEST_TMP"'"
     source "'"$SCRIPT_DIR"'/lib/identity.sh"
     _GITHUB_USER_CACHE=""
     auto_detect_identity
@@ -98,7 +91,7 @@ MOCK
 
   # Check team map has entry
   local map_content
-  map_content="$(cat "$TEST_TMP/.beads/team-map.jsonl" 2>/dev/null || echo "")"
+  map_content="$(cat "$TEST_TMP/.forge/team-map.jsonl" 2>/dev/null || echo "")"
   assert_contains "team map has testdev" "testdev" "$map_content"
 
   # Workload shows issues
@@ -125,26 +118,19 @@ esac
 MOCK
   chmod +x "$TEST_TMP/mock/gh"
 
-  cat > "$TEST_TMP/mock/bd" << 'MOCK'
+  cat > "$TEST_TMP/mock/forge" << 'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *"list --status=open,in_progress"*)
-    echo "◐ forge-aa · Task A"
-    echo "○ forge-bb · Task B" ;;
-  *"show forge-aa"*)
-    echo "◐ forge-aa · Task A [● P2 · IN_PROGRESS]"
-    echo "Owner: dev-a"
-    echo "Updated: 2026-03-27T10:00:00Z" ;;
-  *"show forge-bb"*)
-    echo "○ forge-bb · Task B [● P3 · OPEN]"
-    echo "Owner: dev-b"
-    echo "Updated: 2026-03-27T09:00:00Z" ;;
+  *"issue list"*"--status=in_progress"*)
+    printf '{"data":{"issues":[{"id":"forge-aa","title":"Task A","status":"in_progress","assignee":"dev-a","updated_at":"2026-03-27T10:00:00Z","dependencies":[]}]}}\n' ;;
+  *"issue list"*"--status=open"*)
+    printf '{"data":{"issues":[{"id":"forge-bb","title":"Task B","status":"open","assignee":"dev-b","updated_at":"2026-03-27T09:00:00Z","dependencies":[]}]}}\n' ;;
   *) exit 0 ;;
 esac
 MOCK
-  chmod +x "$TEST_TMP/mock/bd"
+  chmod +x "$TEST_TMP/mock/forge"
 
-  export GH_CMD="$TEST_TMP/mock/gh" BD_CMD="$TEST_TMP/mock/bd"
+  export GH_CMD="$TEST_TMP/mock/gh" FORGE_CMD="$TEST_TMP/mock/forge"
 
   local output rc
   output="$(bash "$FORGE_TEAM" workload 2>&1)" && rc=$? || rc=$?
@@ -173,23 +159,24 @@ esac
 MOCK
   chmod +x "$TEST_TMP/mock/gh"
 
-  cat > "$TEST_TMP/mock/bd" << 'MOCK'
+  cat > "$TEST_TMP/mock/forge" << 'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *"show forge-claimed"*) echo "○ forge-claimed · Claimed [● P2 · OPEN] [github_issue:42]" ;;
+  *"issue show forge-claimed"*)
+    printf '{"data":{"issue":{"id":"forge-claimed","title":"Claimed","status":"open","labels":["github_issue:42"]}}}\n' ;;
   *) exit 0 ;;
 esac
 MOCK
-  chmod +x "$TEST_TMP/mock/bd"
+  chmod +x "$TEST_TMP/mock/forge"
 
-  export GH_CMD="$TEST_TMP/mock/gh" BD_CMD="$TEST_TMP/mock/bd"
+  export GH_CMD="$TEST_TMP/mock/gh" FORGE_CMD="$TEST_TMP/mock/forge"
 
   # Run in subshell to avoid readonly clashes from re-sourcing
   local output rc
   output="$(
     bash -c '
       set -euo pipefail
-      export GH_CMD="'"$TEST_TMP"'/mock/gh" BD_CMD="'"$TEST_TMP"'/mock/bd" TEAM_MAP_ROOT="'"$TEST_TMP"'"
+      export GH_CMD="'"$TEST_TMP"'/mock/gh" FORGE_CMD="'"$TEST_TMP"'/mock/forge" TEAM_MAP_ROOT="'"$TEST_TMP"'"
       source "'"$SCRIPT_DIR"'/lib/claim.sh"
       _GITHUB_USER_CACHE=""
       pre_claim_check "forge-claimed" 2>&1
@@ -217,24 +204,22 @@ esac
 MOCK
   chmod +x "$TEST_TMP/mock/gh"
 
-  cat > "$TEST_TMP/mock/bd" << 'MOCK'
+  cat > "$TEST_TMP/mock/forge" << 'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *"list --status=open,in_progress"*)
-    echo "○ forge-orphan · Orphan Task" ;;
-  *"show forge-orphan"*)
-    echo "○ forge-orphan · Orphan Task [● P3 · OPEN]"
-    echo "Owner: testdev"
-    echo "Updated: 2026-03-27T10:00:00Z" ;;
+  *"issue list"*"--status=open"*)
+    printf '{"data":{"issues":[{"id":"forge-orphan","title":"Orphan Task","status":"open","assignee":"testdev","updated_at":"2026-03-27T10:00:00Z","labels":[],"dependencies":[]}]}}\n' ;;
+  *"issue list"*"--status=in_progress"*)
+    printf '{"data":{"issues":[]}}\n' ;;
   *) exit 0 ;;
 esac
 MOCK
-  chmod +x "$TEST_TMP/mock/bd"
+  chmod +x "$TEST_TMP/mock/forge"
 
-  export GH_CMD="$TEST_TMP/mock/gh" BD_CMD="$TEST_TMP/mock/bd"
+  export GH_CMD="$TEST_TMP/mock/gh" FORGE_CMD="$TEST_TMP/mock/forge"
 
   # Seed team map so identity check passes
-  echo '{"github":"testdev","display_name":"testdev","updated_at":"2026-03-27T10:00:00Z","is_bot":false}' > "$TEST_TMP/.beads/team-map.jsonl"
+  echo '{"github":"testdev","display_name":"testdev","updated_at":"2026-03-27T10:00:00Z","is_bot":false}' > "$TEST_TMP/.forge/team-map.jsonl"
 
   local output rc
   output="$(bash "$FORGE_TEAM" verify 2>&1)" && rc=$? || rc=$?
@@ -261,19 +246,19 @@ esac
 MOCK
   chmod +x "$TEST_TMP/mock/gh"
 
-  cat > "$TEST_TMP/mock/bd" << 'MOCK'
+  cat > "$TEST_TMP/mock/forge" << 'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *"list"*) echo "" ;;
+  *"issue list"*) printf '{"data":{"issues":[]}}\n' ;;
   *) exit 0 ;;
 esac
 MOCK
-  chmod +x "$TEST_TMP/mock/bd"
+  chmod +x "$TEST_TMP/mock/forge"
 
-  export GH_CMD="$TEST_TMP/mock/gh" BD_CMD="$TEST_TMP/mock/bd"
+  export GH_CMD="$TEST_TMP/mock/gh" FORGE_CMD="$TEST_TMP/mock/forge"
 
   # Seed team map so identity check passes
-  echo '{"github":"testdev","display_name":"testdev","updated_at":"2026-03-27T10:00:00Z","is_bot":false}' > "$TEST_TMP/.beads/team-map.jsonl"
+  echo '{"github":"testdev","display_name":"testdev","updated_at":"2026-03-27T10:00:00Z","is_bot":false}' > "$TEST_TMP/.forge/team-map.jsonl"
 
   # No mapping file — all GitHub issues should be orphans
   local output rc
@@ -299,26 +284,19 @@ esac
 MOCK
   chmod +x "$TEST_TMP/mock/gh"
 
-  cat > "$TEST_TMP/mock/bd" << 'MOCK'
+  cat > "$TEST_TMP/mock/forge" << 'MOCK'
 #!/usr/bin/env bash
 case "$*" in
-  *"list --status=open,in_progress"*)
-    echo "○ forge-bot1 · Bot Task"
-    echo "◐ forge-real · Real Task" ;;
-  *"show forge-bot1"*)
-    echo "○ forge-bot1 · Bot Task [● P4 · OPEN]"
-    echo "Owner: dependabot[bot]"
-    echo "Updated: 2026-03-27T10:00:00Z" ;;
-  *"show forge-real"*)
-    echo "◐ forge-real · Real Task [● P2 · IN_PROGRESS]"
-    echo "Owner: testdev"
-    echo "Updated: 2026-03-27T10:00:00Z" ;;
+  *"issue list"*"--status=in_progress"*)
+    printf '{"data":{"issues":[{"id":"forge-real","title":"Real Task","status":"in_progress","assignee":"testdev","updated_at":"2026-03-27T10:00:00Z","dependencies":[]}]}}\n' ;;
+  *"issue list"*"--status=open"*)
+    printf '{"data":{"issues":[{"id":"forge-bot1","title":"Bot Task","status":"open","assignee":"dependabot[bot]","updated_at":"2026-03-27T10:00:00Z","dependencies":[]}]}}\n' ;;
   *) exit 0 ;;
 esac
 MOCK
-  chmod +x "$TEST_TMP/mock/bd"
+  chmod +x "$TEST_TMP/mock/forge"
 
-  export GH_CMD="$TEST_TMP/mock/gh" BD_CMD="$TEST_TMP/mock/bd"
+  export GH_CMD="$TEST_TMP/mock/gh" FORGE_CMD="$TEST_TMP/mock/forge"
 
   local output rc
   output="$(bash "$FORGE_TEAM" workload 2>&1)" && rc=$? || rc=$?

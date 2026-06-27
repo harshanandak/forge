@@ -29,43 +29,31 @@ exit 1
 MOCK
 chmod +x "$mock_dir/gh"
 
-cat > "$mock_dir/bd" << 'MOCK'
+# Mock forge: `issue show --json` carries the github_issue:<n> association as a
+# label; `issue update --label` records it. Args are logged for assertions.
+cat > "$mock_dir/forge" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
-case "$1" in
-  show)
-    if [[ "${3:-}" == "--json" ]]; then
-      cat <<'JSON'
-{"id":"beads-001","github":{"number":42,"nodeId":"I_kwDOForge42","url":"https://github.com/test/repo/issues/42"},"shared":{"title":"Test Issue"}}
-JSON
-    else
-      echo "o $2 - Test Issue"
-      echo "Title: Test Issue"
-    fi
+case "$1 $2" in
+  "issue show")
+    printf '{"data":{"issue":{"id":"beads-001","title":"Test Issue","labels":["github_issue:42"]}}}\n'
     ;;
-  set-state) echo "State set" ;;
+  "issue update") echo "Updated" ;;
 esac
 MOCK
-chmod +x "$mock_dir/bd"
+chmod +x "$mock_dir/forge"
 
-cat > "$mock_dir/bd-no-gh" << 'MOCK'
+cat > "$mock_dir/forge-no-gh" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
-case "$1" in
-  show)
-    if [[ "${3:-}" == "--json" ]]; then
-      cat <<'JSON'
-{"id":"beads-999","shared":{"title":"Test Issue"}}
-JSON
-    else
-      echo "o $2 - Test Issue"
-      echo "Title: Test Issue"
-    fi
+case "$1 $2" in
+  "issue show")
+    printf '{"data":{"issue":{"id":"beads-999","title":"Test Issue","labels":[]}}}\n'
     ;;
-  set-state) echo "State set" ;;
+  "issue update") echo "Updated" ;;
 esac
 MOCK
-chmod +x "$mock_dir/bd-no-gh"
+chmod +x "$mock_dir/forge-no-gh"
 
 cat > "$portable_bin/grep" << 'MOCK'
 #!/usr/bin/env bash
@@ -83,7 +71,7 @@ chmod +x "$portable_bin/grep"
 
 export LOG_FILE="$log_file"
 export GH_CMD="$mock_dir/gh"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 export TEAM_MAP_ROOT="$TEST_TMP"
 mapping_file="$TEAM_MAP_ROOT/.github/beads-mapping.json"
 
@@ -145,8 +133,8 @@ log_contents="$(cat "$log_file")"
 assert_contains "gh issue create called" "issue create" "$log_contents"
 assert_contains "title includes Test Issue" "Test Issue" "$log_contents"
 assert_contains "body includes beads-001" "beads-001" "$log_contents"
-assert_contains "sync create writes legacy github_issue state" "github_issue=42" "$log_contents"
-assert_contains "sync create calls set-state for hook compatibility" "set-state" "$log_contents"
+assert_contains "sync create writes github_issue label" "github_issue:42" "$log_contents"
+assert_contains "sync create calls issue update for the label" "issue update" "$log_contents"
 assert_contains "sync create persists mapping entry" '"42": "beads-001"' "$(cat "$mapping_file")"
 
 echo
@@ -211,10 +199,10 @@ cat > "$mapping_file" << 'JSON'
   "77": "beads-999"
 }
 JSON
-export BD_CMD="$mock_dir/bd-no-gh"
+export FORGE_CMD="$mock_dir/forge-no-gh"
 result="$(_get_github_issue_number "beads-999")"
 assert_eq "mapping fallback returns issue number 77" "77" "$result"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 echo
 echo "== Test 8: Mapping fallback returns newest issue number =="
@@ -225,69 +213,54 @@ cat > "$mapping_file" << 'JSON'
   "88": "beads-other"
 }
 JSON
-export BD_CMD="$mock_dir/bd-no-gh"
+export FORGE_CMD="$mock_dir/forge-no-gh"
 result="$(_get_github_issue_number "beads-999")"
 assert_eq "mapping fallback returns newest matching issue number" "91" "$result"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 echo
 echo "== Test 9: Missing canonical GitHub number =="
 rm -f "$mapping_file"
-export BD_CMD="$mock_dir/bd-no-gh"
+export FORGE_CMD="$mock_dir/forge-no-gh"
 rc=0
 result="$(_get_github_issue_number "beads-999" 2>/dev/null)" || rc=$?
 assert_exit "returns error when no canonical github number" 1 "$rc"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 echo
-echo "== Test 10: Legacy github_issue state fallback =="
-cat > "$mock_dir/bd-legacy" << 'MOCK'
+echo "== Test 10: github_issue label lookup =="
+cat > "$mock_dir/forge-legacy" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
-case "$1" in
-  show)
-    if [[ "${3:-}" == "--json" ]]; then
-      cat <<'JSON'
-{"id":"beads-legacy","github_issue":43,"shared":{"title":"Legacy Issue"}}
-JSON
-    else
-      echo "o $2 - Legacy Issue"
-      echo "github_issue:43"
-      echo "Title: Legacy Issue"
-    fi
+case "$1 $2" in
+  "issue show")
+    printf '{"data":{"issue":{"id":"beads-legacy","title":"Legacy Issue","labels":["github_issue:43"]}}}\n'
     ;;
-  set-state) echo "State set" ;;
+  "issue update") echo "Updated" ;;
 esac
 MOCK
-chmod +x "$mock_dir/bd-legacy"
-export BD_CMD="$mock_dir/bd-legacy"
+chmod +x "$mock_dir/forge-legacy"
+export FORGE_CMD="$mock_dir/forge-legacy"
 rc=0
 result="$(_get_github_issue_number "beads-legacy" 2>/dev/null)" || rc=$?
 assert_exit "legacy github_issue exits successfully" 0 "$rc"
 assert_eq "legacy github_issue returns number" "43" "$result"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 echo
 echo "== Test 11: Injection in title sanitized =="
-cat > "$mock_dir/bd-inject" << 'MOCK'
+cat > "$mock_dir/forge-inject" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
-case "$1" in
-  show)
-    if [[ "${3:-}" == "--json" ]]; then
-      cat <<'JSON'
-{"id":"beads-inject","github":{"number":99,"url":"https://github.com/test/repo/issues/99"},"shared":{"title":"Evil $(rm -rf /) Issue"}}
-JSON
-    else
-      echo 'o beads-inject - Evil $(rm -rf /) Issue'
-      echo 'Title: Evil $(rm -rf /) Issue'
-    fi
+case "$1 $2" in
+  "issue show")
+    printf '{"data":{"issue":{"id":"beads-inject","title":"Evil $(rm -rf /) Issue","labels":["github_issue:99"]}}}\n'
     ;;
-  set-state) echo "State set" ;;
+  "issue update") echo "Updated" ;;
 esac
 MOCK
-chmod +x "$mock_dir/bd-inject"
-export BD_CMD="$mock_dir/bd-inject"
+chmod +x "$mock_dir/forge-inject"
+export FORGE_CMD="$mock_dir/forge-inject"
 > "$log_file"
 rc=0
 sync_issue_create "beads-inject" || rc=$?
@@ -300,7 +273,7 @@ else
   PASS=$((PASS + 1))
   echo "  PASS: injection sanitized - no \$\(rm in gh call"
 fi
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 echo
 echo "== Test 11: sync_issue_create without grep -P =="
@@ -314,32 +287,26 @@ assert_contains "gh issue create called without PCRE grep" "issue create" "$log_
 export PATH="$ORIGINAL_PATH"
 
 echo
-echo "== Test 12: sync_issue_create with summary-only bd show =="
-cat > "$mock_dir/bd-summary-only" << 'MOCK'
+echo "== Test 12: sync_issue_create reads title from issue show JSON =="
+cat > "$mock_dir/forge-summary-only" << 'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG_FILE"
-case "$1" in
-  show)
-    if [[ "${3:-}" == "--json" ]]; then
-      cat <<'JSON'
-{"id":"beads-summary","github":{"number":77,"url":"https://github.com/test/repo/issues/77"},"shared":{"title":"Summary Only Title"}}
-JSON
-    else
-      echo "o $2 - Summary Only Title"
-    fi
+case "$1 $2" in
+  "issue show")
+    printf '{"data":{"issue":{"id":"beads-summary","title":"Summary Only Title","labels":["github_issue:77"]}}}\n'
     ;;
-  set-state) echo "State set" ;;
+  "issue update") echo "Updated" ;;
 esac
 MOCK
-chmod +x "$mock_dir/bd-summary-only"
-export BD_CMD="$mock_dir/bd-summary-only"
+chmod +x "$mock_dir/forge-summary-only"
+export FORGE_CMD="$mock_dir/forge-summary-only"
 > "$log_file"
 rc=0
 sync_issue_create "beads-summary" || rc=$?
-assert_exit "sync_issue_create works with summary-only bd show" 0 "$rc"
+assert_exit "sync_issue_create works with title from issue show JSON" 0 "$rc"
 log_contents="$(cat "$log_file")"
 assert_contains "summary-only title is passed to gh issue create" "Summary Only Title" "$log_contents"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

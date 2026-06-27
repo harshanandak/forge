@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# Override TEAM_MAP_ROOT so tests don't touch real .beads/
+# Override TEAM_MAP_ROOT so tests don't touch real .forge/
 export TEAM_MAP_ROOT="$TEST_TMP"
 
 # Fix "now" so stale detection is deterministic
@@ -27,75 +27,41 @@ esac
 MOCK
 chmod +x "$mock_dir/gh"
 
-# ── Create mock bd ───────────────────────────────────────────────────────
-cat > "$mock_dir/bd" << 'MOCK'
+# ── Create mock forge ─────────────────────────────────────────────────────
+# Emits Kernel-shaped JSON ({"data":{"issues":[...]}}) for `issue list`.
+cat > "$mock_dir/forge" << 'MOCK'
 #!/usr/bin/env bash
-case "$1 $2" in
-  "list --status=open,in_progress")
-    exit 1
-    ;;
-  "list --status=open")
-    echo "○ forge-bbb · Feature B"
-    ;;
-  "list --status=in_progress")
-    echo "◐ forge-aaa · Feature A"
-    echo "◐ forge-ccc · Feature C"
-    echo "◐ forge-m1n8.6 · Sub-feature X (dotted ID)"
-    ;;
-  "show forge-aaa")
-    echo "◐ forge-aaa · Feature A [● P2 · IN_PROGRESS]"
-    echo "Owner: devone"
-    echo "Updated: 2026-03-27T10:00:00Z"
-    ;;
-  "show forge-bbb")
-    echo "○ forge-bbb · Feature B [● P2 · OPEN]"
-    echo "Owner: devtwo"
-    echo "Updated: 2026-03-25T10:00:00Z"
-    ;;
-  "show forge-ccc")
-    echo "◐ forge-ccc · Feature C [● P1 · IN_PROGRESS]"
-    echo "Owner: devone"
-    echo "Updated: 2026-03-27T09:00:00Z"
-    echo ""
-    echo "DEPENDS ON"
-    echo "  → forge-aaa: Feature A"
-    ;;
-  "show forge-m1n8.6")
-    # Dotted sub-ID — bd show must receive the full ID including .6
-    echo "◐ forge-m1n8.6 · Sub-feature X [● P2 · IN_PROGRESS]"
-    echo "Owner: devthree"
-    echo "Updated: 2026-03-27T08:00:00Z"
-    ;;
-  "show forge-m1n8")
-    # Parent epic — if a buggy parser truncates forge-m1n8.6 to forge-m1n8,
-    # the workload would get this WRONG owner and trigger the guard below.
-    echo "◐ forge-m1n8 · PARENT EPIC (WRONG — dotted ID was truncated)"
-    echo "Owner: WRONG_OWNER_DO_NOT_USE"
-    echo "Updated: 2026-03-20T10:00:00Z"
-    ;;
-esac
-MOCK
-chmod +x "$mock_dir/bd"
+args="$*"
+emit() { printf '{"data":{"issues":%s}}\n' "$1"; }
 
-# ── Create mock bd with no issues ────────────────────────────────────────
-cat > "$mock_dir/bd-empty" << 'MOCK'
-#!/usr/bin/env bash
-case "$1 $2" in
-  "list --status=open,in_progress")
-    echo ""
-    ;;
-  "list --status=open")
-    echo "○ forge-should-not-appear · Open fallback sentinel"
-    ;;
-  "list --status=in_progress")
-    echo "◐ forge-should-not-appear-2 · In-progress fallback sentinel"
-    ;;
-esac
+# forge-aaa BLOCKS forge-ccc (kernel: the blocker carries the dependency edge),
+# so forge-ccc is the blocked one — blocked_by resolves to forge-aaa by reverse scan.
+aaa='{"id":"forge-aaa","title":"Feature A","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T10:00:00Z","dependencies":["forge-ccc"]}'
+bbb='{"id":"forge-bbb","title":"Feature B","status":"open","assignee":"devtwo","updated_at":"2026-03-25T10:00:00Z","dependencies":[]}'
+ccc='{"id":"forge-ccc","title":"Feature C","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T09:00:00Z","dependencies":[]}'
+# Dotted sub-ID: the id flows through verbatim from JSON, never truncated.
+m1n8='{"id":"forge-m1n8.6","title":"Sub-feature X (dotted ID)","status":"in_progress","assignee":"devthree","updated_at":"2026-03-27T08:00:00Z","dependencies":[]}'
+
+if [[ "$args" == *"issue list"* ]]; then
+  if [[ "$args" == *"--status=open"* ]]; then emit "[$bbb]"
+  elif [[ "$args" == *"--status=in_progress"* ]]; then emit "[$aaa,$ccc,$m1n8]"
+  else emit "[]"; fi
+  exit 0
+fi
+exit 0
 MOCK
-chmod +x "$mock_dir/bd-empty"
+chmod +x "$mock_dir/forge"
+
+# ── Create mock forge with no issues ──────────────────────────────────────
+cat > "$mock_dir/forge-empty" << 'MOCK'
+#!/usr/bin/env bash
+printf '{"data":{"issues":[]}}\n'
+exit 0
+MOCK
+chmod +x "$mock_dir/forge-empty"
 
 export GH_CMD="$mock_dir/gh"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 # Source the library under test
 source "$SCRIPT_DIR/lib/workload.sh"
@@ -183,13 +149,13 @@ assert_not_contains "excludes devtwo" "Developer: devtwo" "$output"
 echo ""
 echo "── Test 4: No issues → No active work ──"
 unset _GITHUB_USER_CACHE
-export BD_CMD="$mock_dir/bd-empty"
+export FORGE_CMD="$mock_dir/forge-empty"
 rc=0
 output="$(cmd_workload 2>/dev/null)" || rc=$?
 assert_exit "exits 0" 0 "$rc"
 assert_contains "shows no active work message" "No active work" "$output"
-assert_not_contains "does not fall back when combined query succeeds with no issues" "forge-should-not-appear" "$output"
-export BD_CMD="$mock_dir/bd"
+assert_not_contains "empty issue lists yield no issue entries" "forge-" "$output"
+export FORGE_CMD="$mock_dir/forge"
 
 # ── Test 5: Stale assignment flagged (>48h) ──────────────────────────────
 echo ""

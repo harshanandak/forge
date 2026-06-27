@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# Override TEAM_MAP_ROOT so tests don't touch real .beads/
+# Override TEAM_MAP_ROOT so tests don't touch real .forge/
 export TEAM_MAP_ROOT="$TEST_TMP"
 
 # ── Create mock gh ───────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ echo "── Test 3: team_map_add creates parseable JSONL ──"
 export GH_CMD="$mock_dir/gh"
 unset _GITHUB_USER_CACHE
 team_map_add "testuser" "Test User"
-mapfile="$TEAM_MAP_ROOT/.beads/team-map.jsonl"
+mapfile="$TEAM_MAP_ROOT/.forge/team-map.jsonl"
 # Entry should be parseable JSON
 last_line="$(tail -1 "$mapfile")"
 parsed="$(echo "$last_line" | jq -r '.github')"
@@ -146,7 +146,7 @@ assert_exit "not a bot" 1 "$rc"
 echo ""
 echo "── Test 9: auto_detect_identity ──"
 # Clean state
-rm -rf "$TEAM_MAP_ROOT/.beads"
+rm -rf "$TEAM_MAP_ROOT/.forge"
 unset _GITHUB_USER_CACHE
 export GH_CMD="$mock_dir/gh"
 auto_detect_identity

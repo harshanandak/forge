@@ -7,53 +7,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# ── Create mock bd ───────────────────────────────────────────────────────
+# ── Create mock forge ─────────────────────────────────────────────────────
+# Emits Kernel-shaped JSON ({"data":{"issues":[...]}}) for `issue list`.
 mock_dir="$(mktemp -d)"
 
-cat > "$mock_dir/bd" << 'MOCK'
+cat > "$mock_dir/forge" << 'MOCK'
 #!/usr/bin/env bash
-case "$1" in
-  list)
-    if echo "$*" | grep -q -- "--status=open,in_progress"; then
-      if [[ -n "${BD_MOCK_EMPTY:-}" ]]; then
-        # No output for empty test
-        :
-      elif [[ -n "${BD_MOCK_SINGLE:-}" ]]; then
-        echo "◐ forge-aaa · Feature A"
-      else
-        echo "◐ forge-aaa · Feature A"
-        echo "○ forge-bbb · Feature B"
-        echo "◐ forge-ccc · Feature C"
-      fi
-    fi
-    ;;
-  show)
-    case "$2" in
-      forge-aaa)
-        echo "◐ forge-aaa · Feature A [● P2 · IN_PROGRESS]"
-        echo "Owner: devone"
-        echo "Updated: 2026-03-27T10:00:00Z"
-        ;;
-      forge-bbb)
-        echo "○ forge-bbb · Feature B [● P2 · OPEN]"
-        echo "Owner: devtwo"
-        echo "Updated: 2026-03-24T10:00:00Z"
-        ;;
-      forge-ccc)
-        echo "◐ forge-ccc · Feature C [● P1 · IN_PROGRESS]"
-        echo "Owner: devone"
-        echo "Updated: 2026-03-27T09:00:00Z"
-        echo ""
-        echo "DEPENDS ON"
-        echo "  → ◐ forge-aaa: Feature A"
-        ;;
-    esac
-    ;;
-esac
-MOCK
-chmod +x "$mock_dir/bd"
+args="$*"
+emit() { printf '{"data":{"issues":%s}}\n' "$1"; }
 
-export BD_CMD="$mock_dir/bd"
+# forge-aaa BLOCKS forge-ccc (kernel: blocker carries the dependency edge), so
+# forge-ccc is the blocked one — its blocked_by resolves to forge-aaa via reverse scan.
+aaa='{"id":"forge-aaa","title":"Feature A","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T10:00:00Z","dependencies":["forge-ccc"]}'
+bbb='{"id":"forge-bbb","title":"Feature B","status":"open","assignee":"devtwo","updated_at":"2026-03-24T10:00:00Z","dependencies":[]}'
+ccc='{"id":"forge-ccc","title":"Feature C","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T09:00:00Z","dependencies":[]}'
+
+if [[ "$args" == *"issue list"* ]]; then
+  if [[ -n "${FORGE_MOCK_EMPTY:-}" ]]; then
+    emit "[]"
+  elif [[ -n "${FORGE_MOCK_SINGLE:-}" ]]; then
+    if [[ "$args" == *"--status=in_progress"* ]]; then emit "[$aaa]"; else emit "[]"; fi
+  else
+    if [[ "$args" == *"--status=open"* ]]; then emit "[$bbb]"
+    elif [[ "$args" == *"--status=in_progress"* ]]; then emit "[$aaa,$ccc]"
+    else emit "[]"; fi
+  fi
+  exit 0
+fi
+exit 0
+MOCK
+chmod +x "$mock_dir/forge"
+
+export FORGE_CMD="$mock_dir/forge"
 
 # Source the library under test
 source "$SCRIPT_DIR/lib/dashboard.sh"
@@ -132,24 +117,24 @@ assert_contains "blocked shows dependency" "forge-aaa" "$output"
 echo ""
 echo "── Test 4: No issues → clear message ──"
 
-export BD_MOCK_EMPTY=1
+export FORGE_MOCK_EMPTY=1
 rc=0
 output_empty="$(cmd_dashboard 2>&1)" || rc=$?
 assert_exit "empty dashboard exits 0" 0 "$rc"
 assert_contains "shows no active issues" "No active issues" "$output_empty"
-unset BD_MOCK_EMPTY
+unset FORGE_MOCK_EMPTY
 
 # ── Test 5: Single developer → works correctly ──────────────────────────
 echo ""
 echo "── Test 5: Single developer ──"
 
-export BD_MOCK_SINGLE=1
+export FORGE_MOCK_SINGLE=1
 rc=0
 output_single="$(cmd_dashboard 2>&1)" || rc=$?
 assert_exit "single dev dashboard exits 0" 0 "$rc"
 assert_contains "shows devone" "devone" "$output_single"
 assert_not_contains "no devtwo in single mode" "devtwo" "$output_single"
-unset BD_MOCK_SINGLE
+unset FORGE_MOCK_SINGLE
 
 # ── Test 6: --format=json → valid JSON ──────────────────────────────────
 echo ""

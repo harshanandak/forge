@@ -2,7 +2,7 @@
 # scripts/forge-team/lib/identity.sh — GitHub-username-only identity mapping
 #
 # Auto-detects developer via `gh api user`. Stores identity in
-# .beads/team-map.jsonl (append-only, LWW per GitHub username).
+# .forge/team-map.jsonl (append-only, LWW per GitHub username).
 #
 # Functions:
 #   get_github_user       — Current dev's GitHub username (cached)
@@ -14,7 +14,7 @@
 #
 # Env overrides:
 #   GH_CMD          — Path to gh binary (for testing)
-#   TEAM_MAP_ROOT   — Root dir for .beads/team-map.jsonl (default: .)
+#   TEAM_MAP_ROOT   — Root dir for .forge/team-map.jsonl (default: .)
 #
 # This file does NOT set errexit/pipefail — callers manage their own shell options.
 
@@ -69,7 +69,7 @@ _identity_prompt() {
 # _team_map_file — Returns the path to team-map.jsonl
 _team_map_file() {
   local root="${TEAM_MAP_ROOT:-.}"
-  printf '%s' "$root/.beads/team-map.jsonl"
+  printf '%s' "$root/.forge/team-map.jsonl"
 }
 
 # _validate_github_username <username>
@@ -124,7 +124,7 @@ get_github_user() {
 }
 
 # team_map_add <github-user> [display-name]
-# Adds/updates entry in .beads/team-map.jsonl.
+# Adds/updates entry in .forge/team-map.jsonl.
 # Schema: {"github":"<user>","display_name":"<name>","updated_at":"<ts>","is_bot":false}
 team_map_add() {
   local github_user="${1:-}"
