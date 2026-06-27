@@ -2,12 +2,12 @@
 # dashboard.sh — Team health dashboard for forge-team.
 #
 # Provides cmd_dashboard [--format=json] which aggregates team issue data
-# from Beads and displays per-developer stats, stale assignments, and
-# blocked issues.
+# from the Forge issue backend and displays per-developer stats, stale
+# assignments, and blocked issues.
 
 # ── Dependencies ─────────────────────────────────────────────────────────
-# BD_CMD — path to bd binary (default: bd)
-BD_CMD="${BD_CMD:-bd}"
+# FORGE_CMD — path to forge binary (default: forge)
+FORGE_CMD="${FORGE_CMD:-forge}"
 
 # FORGE_NOW — override current epoch for testing (default: real time)
 _now() {
@@ -45,73 +45,46 @@ _iso_to_epoch() {
 
 # ── Data Collection ──────────────────────────────────────────────────────
 
-# Parse bd list output into issue IDs and titles.
-# Each line: "◐ forge-aaa · Feature A" or "○ forge-bbb · Feature B"
-_parse_issue_list() {
-  local line
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    # Extract issue ID: between status icon and " · "
-    local id title
-    id="$(echo "$line" | sed -E 's/^[^ ]+ +([^ ]+) +·.*/\1/')"
-    title="$(echo "$line" | sed -E 's/^[^ ]+ +[^ ]+ +· +(.*)/\1/')"
-    echo "$id|$title"
-  done
+# _forge_active_issues_json — Merged JSON array of open + in_progress issues.
+# The Kernel list filter does not accept comma-joined statuses, so query each
+# status separately and concatenate the issue arrays.
+_forge_active_issues_json() {
+  local open_json inprog_json
+  open_json="$("$FORGE_CMD" issue list --status=open --json 2>/dev/null)" || open_json=""
+  inprog_json="$("$FORGE_CMD" issue list --status=in_progress --json 2>/dev/null)" || inprog_json=""
+  jq -n \
+    --argjson a "${open_json:-null}" \
+    --argjson b "${inprog_json:-null}" \
+    '(((($a.data.issues) // []) + (($b.data.issues) // [])))' 2>/dev/null || echo "[]"
 }
 
-# Get issue details: status, owner, updated timestamp, blocked-by list
-# Output: id|title|status|owner|updated_epoch|blocked_by
-_get_issue_details() {
-  local issue_id="$1"
-  local show_output
-  show_output="$($BD_CMD show "$issue_id" 2>/dev/null)" || return 1
-
-  local status="OPEN" owner="" updated="" blocked_by="" title=""
-
-  local line
-  local in_depends=0
-  while IFS= read -r line; do
-    # First line has status: "◐ forge-aaa · Feature A [● P2 · IN_PROGRESS]"
-    if [[ "$line" =~ \[.*·[[:space:]]*(OPEN|IN_PROGRESS|BLOCKED)\] ]]; then
-      status="${BASH_REMATCH[1]}"
-      # Extract title from first line
-      title="$(echo "$line" | sed -E 's/^[^ ]+ +[^ ]+ +· +(.+) +\[.*/\1/')"
-    fi
-
-    # Owner line
-    if [[ "$line" =~ ^Owner:[[:space:]]*(.+) ]]; then
-      owner="${BASH_REMATCH[1]}"
-    fi
-
-    # Updated line
-    if [[ "$line" =~ ^Updated:[[:space:]]*(.+) ]]; then
-      updated="${BASH_REMATCH[1]}"
-    fi
-
-    # DEPENDS ON section
-    if [[ "$line" == "DEPENDS ON" ]]; then
-      in_depends=1
-      continue
-    fi
-
-    if [[ $in_depends -eq 1 && "$line" =~ →.*([a-z]+-[a-z]+):.* ]]; then
-      # Extract dependency issue ID
-      local dep_id
-      dep_id="$(echo "$line" | sed -E 's/.*→ +[^ ]+ +([a-z]+-[a-z0-9]+):.*/\1/')"
-      if [[ -n "$blocked_by" ]]; then
-        blocked_by="$blocked_by,$dep_id"
-      else
-        blocked_by="$dep_id"
-      fi
-    fi
-  done <<< "$show_output"
-
-  local updated_epoch=0
-  if [[ -n "$updated" ]]; then
-    updated_epoch="$(_iso_to_epoch "$updated")"
-  fi
-
-  echo "$issue_id|$title|$status|$owner|$updated_epoch|$blocked_by"
+# _issue_detail_lines <issues-json>
+# Emit one tab-delimited (jq @tsv) line per issue:
+#   id<TAB>title<TAB>STATUS<TAB>owner<TAB>updated_iso<TAB>blocked_by
+# @tsv escapes any tab/newline/CR inside fields (issue titles are user-controlled
+# and may contain '|', tabs, or newlines), so parsing stays field-aligned.
+# STATUS is the upper-cased Kernel status; owner is assignee/claimed_by.
+# A Kernel issue's `.dependencies` lists the issues it BLOCKS (outgoing edges),
+# so blocked_by is computed by reverse scan: the issues (within this active set)
+# whose `.dependencies` include this issue.
+_issue_detail_lines() {
+  printf '%s' "$1" | jq -r '
+    . as $all
+    | $all[]
+    | . as $x
+    | [ $x.id,
+        ($x.title // ""),
+        (($x.status // "open") | ascii_upcase),
+        ($x.assignee // $x.claimed_by // ""),
+        (($x.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
+        ( [ $all[]
+            | select( (.dependencies // [])
+                | map(if type == "object" then (.id // .to // "") else . end)
+                | any(. == $x.id) )
+            | .id ]
+          | join(",") )
+      ]
+    | @tsv' | tr -d '\r'
 }
 
 # ── Dashboard Command ────────────────────────────────────────────────────
@@ -128,12 +101,14 @@ cmd_dashboard() {
     esac
   done
 
-  # 1. Get all open/in_progress issues
-  local issue_list
-  issue_list="$($BD_CMD list --status=open,in_progress 2>/dev/null)" || issue_list=""
+  # 1. Get all open/in_progress issues as a merged JSON array
+  local issues_json
+  issues_json="$(_forge_active_issues_json)"
 
   # Check for empty
-  if [[ -z "$issue_list" ]]; then
+  local active_count
+  active_count="$(printf '%s' "$issues_json" | jq 'length' 2>/dev/null || echo 0)"
+  if [[ "$active_count" -eq 0 ]]; then
     if [[ "$format" == "json" ]]; then
       echo '{"developers":{},"total":0,"stale":[],"blocked":[],"message":"No active issues — team is clear"}'
     else
@@ -142,12 +117,12 @@ cmd_dashboard() {
     return 0
   fi
 
-  # 2. Parse issue IDs
+  # 2. Build per-issue detail lines: id|title|STATUS|owner|updated_iso|blocked_by
   local issues=()
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
     issues+=("$entry")
-  done <<< "$(echo "$issue_list" | _parse_issue_list)"
+  done <<< "$(_issue_detail_lines "$issues_json")"
 
   # 3. Collect details for each issue
   local now_epoch
@@ -163,12 +138,12 @@ cmd_dashboard() {
   local total_open=0 total_inprogress=0 total_blocked=0 total_stale=0
 
   for entry in "${issues[@]}"; do
-    local issue_id="${entry%%|*}"
+    IFS=$'\t' read -r _id _title _status _owner _updated_iso _blocked_by <<< "$entry"
 
-    local details
-    details="$(_get_issue_details "$issue_id")" || continue
-
-    IFS='|' read -r _id _title _status _owner _updated_epoch _blocked_by <<< "$details"
+    local _updated_epoch=0
+    if [[ -n "$_updated_iso" ]]; then
+      _updated_epoch="$(_iso_to_epoch "$_updated_iso")"
+    fi
 
     # Default owner if empty
     [[ -z "$_owner" ]] && _owner="unassigned"
@@ -199,7 +174,7 @@ cmd_dashboard() {
     if [[ -n "$_blocked_by" ]]; then
       dev_blocked[$_owner]=$(( ${dev_blocked[$_owner]} + 1 ))
       total_blocked=$((total_blocked + 1))
-      blocked_entries+=("$_id|$_owner|$_title|$_blocked_by")
+      blocked_entries+=("$_id"$'\t'"$_owner"$'\t'"$_title"$'\t'"$_blocked_by")
     fi
 
     # Check for stale (>48h since last update)
@@ -209,7 +184,7 @@ cmd_dashboard() {
         local hours=$(( age / 3600 ))
         dev_stale[$_owner]=$(( ${dev_stale[$_owner]} + 1 ))
         total_stale=$((total_stale + 1))
-        stale_entries+=("$_id|$_owner|$_title|${hours}h since last update")
+        stale_entries+=("$_id"$'\t'"$_owner"$'\t'"$_title"$'\t'"${hours}h since last update")
       fi
     fi
   done
@@ -275,7 +250,7 @@ _dashboard_text() {
     echo "Stale assignments (>48h):"
     local entry
     for entry in "${stale_entries[@]}"; do
-      IFS='|' read -r _id _owner _title _age <<< "$entry"
+      IFS=$'\t' read -r _id _owner _title _age <<< "$entry"
       echo "  ⚠ $_id [$_owner] — $_title ($_age)"
     done
   fi
@@ -286,7 +261,7 @@ _dashboard_text() {
     echo "Blocked issues:"
     local entry
     for entry in "${blocked_entries[@]}"; do
-      IFS='|' read -r _id _owner _title _deps <<< "$entry"
+      IFS=$'\t' read -r _id _owner _title _deps <<< "$entry"
       echo "  ⚠ $_id [$_owner] — $_title (blocked by $_deps)"
     done
   fi
@@ -321,7 +296,7 @@ _dashboard_json() {
   for entry in "${stale_entries[@]}"; do
     [[ $first -eq 0 ]] && stale_json+=","
     first=0
-    IFS='|' read -r _id _owner _title _age <<< "$entry"
+    IFS=$'\t' read -r _id _owner _title _age <<< "$entry"
     stale_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg age "$_age" '{id:$id,owner:$owner,title:$title,age:$age}')"
   done
   stale_json+="]"
@@ -332,7 +307,7 @@ _dashboard_json() {
   for entry in "${blocked_entries[@]}"; do
     [[ $first -eq 0 ]] && blocked_json+=","
     first=0
-    IFS='|' read -r _id _owner _title _deps <<< "$entry"
+    IFS=$'\t' read -r _id _owner _title _deps <<< "$entry"
     blocked_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg deps "$_deps" '{id:$id,owner:$owner,title:$title,blocked_by:$deps}')"
   done
   blocked_json+="]"

@@ -7,7 +7,7 @@
 #   cmd_workload  — Main entry point for `forge team workload`
 #
 # Env overrides (for testing):
-#   BD_CMD          — Path to bd binary
+#   FORGE_CMD       — Path to forge binary
 #   GH_CMD          — Path to gh binary
 #   WORKLOAD_NOW    — Override "now" timestamp for testing (ISO 8601)
 #
@@ -88,70 +88,46 @@ _json_escape() {
 }
 
 # _collect_issues — Gather all open/in_progress issues with details
-# Outputs lines: id|title|status|owner|updated|depends_on
+# Outputs tab-delimited (jq @tsv) lines: id<TAB>title<TAB>status<TAB>owner<TAB>updated<TAB>depends_on
+# @tsv escapes any tab/newline/CR inside fields, so user-controlled titles that
+# contain '|', tabs, or newlines never shift the downstream columns.
+#
+# The Kernel list filter does not accept comma-joined statuses, so query each
+# active status separately and concatenate the JSON issue arrays. Every field
+# the workload view needs (status, assignee, updated_at, dependencies) is
+# present in `issue list --json`, so no per-issue lookup is required.
 _collect_issues() {
-  local bd_cmd="${BD_CMD:-bd}"
-  local list_output
-  local combined_exit=0
+  local forge_cmd="${FORGE_CMD:-forge}"
+  local open_json inprog_json issues_json
 
-  # beads 0.62 rejects comma-separated status filters, so fall back to
-  # separate queries when the combined form fails.
-  list_output="$("$bd_cmd" list --status=open,in_progress 2>/dev/null)"
-  combined_exit=$?
-  if [[ "$combined_exit" -ne 0 ]]; then
-    list_output="$(
-      {
-        "$bd_cmd" list --status=open 2>/dev/null || true
-        "$bd_cmd" list --status=in_progress 2>/dev/null || true
-      } | awk 'NF && !seen[$0]++'
-    )"
-  fi
+  open_json="$("$forge_cmd" issue list --status=open --json 2>/dev/null)" || open_json=""
+  inprog_json="$("$forge_cmd" issue list --status=in_progress --json 2>/dev/null)" || inprog_json=""
 
-  # Filter empty lines
-  if [[ -z "$list_output" ]] || [[ -z "$(printf '%s' "$list_output" | tr -d '[:space:]')" ]]; then
-    return 0
-  fi
+  issues_json="$(jq -n \
+    --argjson a "${open_json:-null}" \
+    --argjson b "${inprog_json:-null}" \
+    '((($a.data.issues) // []) + (($b.data.issues) // []))' 2>/dev/null)" || issues_json="[]"
 
-  while IFS= read -r line; do
-    # Skip empty lines
-    [[ -z "$line" ]] && continue
-
-    # Extract issue id: first field like "forge-xxx" after optional icon
-    local issue_id
-    issue_id="$(echo "$line" | grep -oE 'forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*' | head -1)"
-    [[ -z "$issue_id" ]] && continue
-
-    # Get details via bd show
-    local show_output
-    show_output="$("$bd_cmd" show "$issue_id" 2>/dev/null)" || continue
-
-    # Parse owner
-    local owner
-    owner="$(echo "$show_output" | grep -E '^Owner:' | sed 's/^Owner:[[:space:]]*//')"
-    [[ -z "$owner" ]] && owner="unassigned"
-
-    # Parse status from the header line [● Px · STATUS]
-    local status
-    status="$(echo "$show_output" | head -1 | grep -oE '(IN_PROGRESS|OPEN|BLOCKED|CLOSED)' | head -1)"
-    [[ -z "$status" ]] && status="OPEN"
-
-    # Parse title — text after "forge-xxx · " on first line
-    local title
-    title="$(echo "$show_output" | head -1 | sed -E 's/^[^·]*·[[:space:]]*//' | sed -E 's/[[:space:]]*\[.*//')"
-
-    # Parse updated timestamp
-    local updated
-    updated="$(echo "$show_output" | grep -E '^Updated:' | sed 's/^Updated:[[:space:]]*//')"
-    [[ -z "$updated" ]] && updated=""
-
-    # Parse dependencies (DEPENDS ON section)
-    local depends_on=""
-    if echo "$show_output" | grep -q "DEPENDS ON"; then
-      depends_on="$(echo "$show_output" | grep -E '^\s*→' | sed -E 's/^\s*→\s*//' | sed -E 's/:.*//' | tr '\n' ',' | sed 's/,$//')"
-    fi
-
-    echo "${issue_id}|${title}|${status}|${owner}|${updated}|${depends_on}"
-  done <<< "$list_output"
+  # A Kernel issue's `.dependencies` lists the issues it BLOCKS (outgoing), so
+  # depends_on (the issues that block THIS one) is a reverse scan: issues within
+  # the active set whose `.dependencies` include this issue.
+  printf '%s' "$issues_json" | jq -r '
+    . as $all
+    | $all[]
+    | . as $x
+    | [ $x.id,
+        ($x.title // ""),
+        (($x.status // "open") | ascii_upcase),
+        ($x.assignee // $x.claimed_by // "unassigned"),
+        (($x.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
+        ( [ $all[]
+            | select( (.dependencies // [])
+                | map(if type == "object" then (.id // .to // "") else . end)
+                | any(. == $x.id) )
+            | .id ]
+          | join(",") )
+      ]
+    | @tsv' | tr -d '\r'
 }
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -213,7 +189,7 @@ cmd_workload() {
   local work_dir
   work_dir="$(mktemp -d)"
 
-  while IFS='|' read -r issue_id title status owner updated depends_on; do
+  while IFS=$'\t' read -r issue_id title status owner updated depends_on; do
     [[ -z "$issue_id" ]] && continue
 
     # Apply developer filter

@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 108 | 11 |
-| runtime | 351 | 48 |
+| runtime | 282 | 36 |
 | docs | 452 | 68 |
 | skills | 22 | 9 |
 | hooks | 0 | 0 |
@@ -46,8 +46,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 78 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (1)
   - lines: 670 (.beads)
-- [ ] lib/agents-config.js (2)
-  - lines: 232 (bd), 233 (bd, dolt)
 - [ ] lib/audit-evidence.js (3)
   - lines: 148 (bd), 214 (bd), 240 (bd)
 - [ ] lib/beads-bootstrap.js (6)
@@ -58,8 +56,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 17 (.beads), 18 (dolt), 19 (.beads), 76 (.beads), 78 (.beads), 86 (.beads), 94 (dolt), 102 (.beads, dolt), 104 (.beads), 109 (.beads), 117 (dolt), 118 (dolt), 160 (.beads), 161 (dolt), 162 (.beads), 187 (.beads), 188 (dolt), 189 (.beads), 237 (.beads), 238 (.beads), 241 (bd, dolt), 244 (bd), 250 (.beads), 262 (bd), 278 (dolt), 286 (.beads), 312 (.beads), 319 (dolt), 323 (bd), 411 (bd), 417 (bd), 424 (bd), 425 (bd), 430 (.beads, dolt), 432 (bd), 440 (bd), 441 (bd), 476 (.beads, dolt), 480 (.beads), 487 (bd), 496 (bd)
 - [ ] lib/beads-sync-scaffold.js (3)
   - lines: 65 (bd), 76 (bd), 86 (bd)
-- [ ] lib/dep-guard/keyword-ripple.js (2)
-  - lines: 163 (bd), 165 (bd)
 - [ ] lib/deprecated-sync-cleanup.js (4)
   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
 - [ ] lib/forge-issues.js (11)
@@ -76,8 +72,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 26 (.beads)
 - [ ] lib/plugin-catalog.js (1)
   - lines: 102 (bd)
-- [ ] lib/project-memory.js (4)
-  - lines: 17 (bd), 138 (bd), 149 (bd), 176 (bd)
 - [ ] lib/protected-path-manifest.js (2)
   - lines: 23 (bd), 33 (bd)
 - [ ] lib/protected-state-surfaces.js (4)
@@ -86,10 +80,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 176 (bd), 217 (.beads), 276 (.beads), 334 (.beads), 490 (bd), 518 (bd), 521 (bd), 522 (bd), 561 (bd)
 - [ ] lib/status/beads-snapshot.js (1)
   - lines: 31 (.beads)
-- [ ] lib/workflow/state-manager.js (2)
-  - lines: 108 (bd), 155 (bd)
-- [ ] scripts/beads-context.sh (24)
-  - lines: 47 (bd), 48 (bd), 105 (bd), 106 (bd), 110 (bd), 111 (bd), 116 (bd), 117 (bd), 118 (bd), 119 (bd), 142 (bd), 148 (bd), 151 (bd), 152 (bd), 155 (bd), 158 (bd), 159 (bd), 172 (bd), 183 (bd), 300 (bd), 301 (bd), 306 (bd), 314 (bd), 453 (bd)
 - [ ] scripts/beads-migrate-to-dolt.sh (1)
   - lines: 7 (dolt)
 - [ ] scripts/beads-upgrade-smoke.sh (1)
@@ -104,22 +94,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 328 (bd), 332 (bd), 333 (bd), 335 (bd), 414 (bd), 415 (bd), 454 (bd), 460 (bd), 466 (bd), 473 (bd), 520 (bd)
 - [ ] scripts/file-index.sh (2)
   - lines: 4 (.beads), 38 (.beads)
-- [ ] scripts/forge-team/lib/claim.sh (7)
-  - lines: 14 (bd), 65 (bd), 68 (bd), 93 (.beads), 152 (bd), 237 (bd), 242 (bd)
-- [ ] scripts/forge-team/lib/dashboard.sh (3)
-  - lines: 9 (bd), 10 (bd), 48 (bd)
 - [ ] scripts/forge-team/lib/epic.sh (4)
   - lines: 10 (bd), 22 (bd), 24 (bd), 27 (bd)
-- [ ] scripts/forge-team/lib/hooks.sh (5)
-  - lines: 11 (bd), 12 (.beads), 59 (.beads), 63 (.beads), 111 (bd)
-- [ ] scripts/forge-team/lib/identity.sh (4)
-  - lines: 5 (.beads), 17 (.beads), 72 (.beads), 127 (.beads)
-- [ ] scripts/forge-team/lib/sync-github.sh (9)
-  - lines: 10 (bd), 14 (bd), 199 (bd), 208 (bd), 249 (bd), 253 (bd), 272 (bd), 282 (bd), 284 (bd)
-- [ ] scripts/forge-team/lib/verify.sh (4)
-  - lines: 16 (bd), 17 (.beads), 70 (bd), 87 (bd)
-- [ ] scripts/forge-team/lib/workload.sh (3)
-  - lines: 10 (bd), 93 (bd), 124 (bd)
 - [ ] scripts/github-beads-sync/index.mjs (9)
   - lines: 14 (bd), 75 (bd), 86 (bd), 91 (bd), 199 (bd), 230 (bd), 237 (bd), 240 (bd), 241 (bd)
 - [ ] scripts/github-beads-sync/run-bd.mjs (21)

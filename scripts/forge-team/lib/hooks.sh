@@ -8,8 +8,8 @@
 #
 # Env overrides (for testing):
 #   GH_CMD      — Path to gh binary (default: gh)
-#   BD_CMD      — Path to bd binary (default: bd)
-#   BEADS_ROOT  — Path to .beads/ parent directory (default: .)
+#   FORGE_CMD   — Path to forge binary (default: forge)
+#   FORGE_ROOT  — Path to .forge/ parent directory (default: .)
 #
 # This file does NOT set errexit/pipefail — callers manage their own shell options.
 
@@ -56,11 +56,11 @@ _hooks_warn() {
 }
 
 # ── _check_auto_sync_enabled ─────────────────────────────────────────────
-# Reads .beads/config.yaml for team.auto-sync setting.
+# Reads .forge/config.yaml for the team.auto-sync setting.
 # Returns 0 if enabled (default), 1 if disabled.
 _check_auto_sync_enabled() {
-  local beads_root="${BEADS_ROOT:-.}"
-  local config_file="$beads_root/.beads/config.yaml"
+  local forge_root="${FORGE_ROOT:-.}"
+  local config_file="$forge_root/.forge/config.yaml"
 
   if [[ ! -f "$config_file" ]]; then
     # Default: enabled
@@ -108,7 +108,7 @@ forge_team_sync() {
   done
 
   local gh_cmd="${GH_CMD:-gh}"
-  local bd_cmd="${BD_CMD:-bd}"
+  local forge_cmd="${FORGE_CMD:-forge}"
 
   # 1. Check gh auth status
   if ! "$gh_cmd" auth status >/dev/null 2>&1; then
@@ -122,44 +122,42 @@ forge_team_sync() {
     return 0
   fi
 
-  # 3. Get all in_progress issues
-  local list_output
-  list_output="$("$bd_cmd" list --status=in_progress 2>/dev/null)" || {
+  # 3. Get all in_progress issues as JSON
+  local list_json
+  list_json="$("$forge_cmd" issue list --status=in_progress --json 2>/dev/null)" || {
     if [[ "$quiet" == "false" ]]; then
       _hooks_warn "Failed to list issues, sync skipped"
     fi
     return 0
   }
 
-  # Filter empty lines
-  if [[ -z "$list_output" ]] || [[ -z "$(echo "$list_output" | tr -d '[:space:]')" ]]; then
+  # Build "id<TAB>has_github" lines (has_github is true when a github_issue:<n>
+  # label is present on the issue).
+  local issue_lines
+  issue_lines="$(printf '%s' "$list_json" | jq -r '
+    (.data.issues // [])[]
+    | [ .id, (((.labels // []) | any(test("^github_issue:"))) | tostring) ]
+    | join("\t")' 2>/dev/null | tr -d '\r')"
+
+  if [[ -z "$issue_lines" ]] || [[ -z "$(printf '%s' "$issue_lines" | tr -d '[:space:]')" ]]; then
     if [[ "$quiet" == "false" ]]; then
       _hooks_info "Nothing to sync"
     fi
     return 0
   fi
 
-  # 4. For each issue, check for github_issue state and sync
+  # 4. For each issue with a github_issue label, sync its status to GitHub
   local synced=0
   local warnings=0
 
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-
-    # Extract issue id
-    local issue_id
-    issue_id="$(echo "$line" | grep -oE 'forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*' | head -1)"
+  while IFS=$'\t' read -r issue_id has_github; do
     [[ -z "$issue_id" ]] && continue
 
-    # Get details to check for github_issue state
-    local show_output
-    show_output="$("$bd_cmd" show "$issue_id" 2>/dev/null)" || continue
-
-    # Check if it has github_issue:N state
-    local gh_issue_num
-    gh_issue_num="$(printf '%s' "$show_output" | grep -oP 'github_issue:\K[0-9]+' | head -1 || true)"
-
-    if [[ -z "$gh_issue_num" ]]; then
+    # Skip only when there is neither a github_issue:<n> label nor a legacy
+    # mapping-file association. _get_github_issue_number (from sync-github.sh)
+    # checks the label first, then the mapping-file fallback, so mapping-only
+    # linked issues are still synced instead of being skipped here.
+    if [[ "$has_github" != "true" ]] && ! _get_github_issue_number "$issue_id" >/dev/null 2>&1; then
       # No GitHub issue linked, skip but warn
       warnings=$((warnings + 1))
       if [[ "$quiet" == "false" ]]; then
@@ -177,7 +175,7 @@ forge_team_sync() {
         _hooks_warn "Failed to sync $issue_id to GitHub"
       fi
     fi
-  done <<< "$list_output"
+  done <<< "$issue_lines"
 
   # 5. Report
   if [[ "$quiet" == "false" ]]; then

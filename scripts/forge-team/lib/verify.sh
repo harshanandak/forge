@@ -7,15 +7,15 @@
 # Checks:
 #   1. gh auth status (GitHub CLI authenticated)
 #   2. Identity mapped in team-map.jsonl
-#   3. Orphan Beads issues (Beads without GitHub counterpart)
-#   4. Orphan GitHub issues (GitHub without Beads counterpart)
-#   5. Assignee consistency between Beads and GitHub
+#   3. Orphan tracked issues (no GitHub counterpart)
+#   4. Orphan GitHub issues (no tracked counterpart)
+#   5. Assignee consistency between tracked issues and GitHub
 #
 # Env overrides (for testing):
 #   GH_CMD              — Path to gh binary (default: gh)
-#   BD_CMD              — Path to bd binary (default: bd)
-#   TEAM_MAP_ROOT       — Root dir for .beads/ and .github/ (default: .)
-#   VERIFY_MAPPING_FILE — Path to beads-mapping.json (default: $TEAM_MAP_ROOT/.github/beads-mapping.json)
+#   FORGE_CMD           — Path to forge binary (default: forge)
+#   TEAM_MAP_ROOT       — Root dir for .forge/ and .github/ (default: .)
+#   VERIFY_MAPPING_FILE — Path to the GitHub issue mapping (default: $TEAM_MAP_ROOT/.github/beads-mapping.json)
 #
 # This file does NOT set errexit/pipefail — callers manage their own shell options.
 
@@ -66,16 +66,19 @@ _mapping_file() {
   printf '%s' "${VERIFY_MAPPING_FILE:-$root/.github/beads-mapping.json}"
 }
 
-# ── _extract_beads_ids ───────────────────────────────────────────────────
-# Parse bd list output to extract beads IDs.
-# Input format: "◐ forge-aaa · Feature A" or "○ forge-bbb · Feature B"
-# Output: one ID per line
-_extract_beads_ids() {
-  local input="${1:-}"
-  if [[ -z "$input" ]]; then
-    return 0
-  fi
-  printf '%s\n' "$input" | grep -oP '(forge-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)' || true
+# ── _verify_active_issues_json ─────────────────────────────────────────────
+# Merged JSON array of open + in_progress issues. The Kernel list filter does
+# not accept comma-joined statuses, so query each status separately and
+# concatenate the issue arrays.
+_verify_active_issues_json() {
+  local forge_cmd="${FORGE_CMD:-forge}"
+  local open_json inprog_json
+  open_json="$("$forge_cmd" issue list --status=open --json 2>/dev/null)" || open_json=""
+  inprog_json="$("$forge_cmd" issue list --status=in_progress --json 2>/dev/null)" || inprog_json=""
+  jq -n \
+    --argjson a "${open_json:-null}" \
+    --argjson b "${inprog_json:-null}" \
+    '((($a.data.issues) // []) + (($b.data.issues) // []))' 2>/dev/null || echo "[]"
 }
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -84,7 +87,6 @@ _extract_beads_ids() {
 # Exit 0 if all clean, exit 1 if any issues found.
 cmd_verify() {
   local gh_cmd="${GH_CMD:-gh}"
-  local bd_cmd="${BD_CMD:-bd}"
   local issues_found=0
 
   echo "forge team verify"
@@ -130,47 +132,75 @@ cmd_verify() {
     issues_found=$((issues_found + 1))
   fi
 
-  # ── Check 3: Orphan Beads issues (Beads without GitHub) ─────────────
-  local bd_output
-  bd_output="$("$bd_cmd" list --status=open,in_progress 2>/dev/null)" || bd_output=""
-
-  local beads_ids
-  beads_ids="$(_extract_beads_ids "$bd_output")"
-
-  local beads_total=0
-  local beads_synced=0
-  local beads_orphans=()
-
-  if [[ -n "$beads_ids" ]]; then
-    while IFS= read -r bid; do
-      [[ -z "$bid" ]] && continue
-      beads_total=$((beads_total + 1))
-
-      # Check if this beads issue has github_issue state
-      local show_output
-      show_output="$("$bd_cmd" show "$bid" 2>/dev/null)" || show_output=""
-      if printf '%s' "$show_output" | grep -qP 'github_issue:\d+'; then
-        beads_synced=$((beads_synced + 1))
-      else
-        beads_orphans+=("$bid")
-      fi
-    done <<< "$beads_ids"
-  fi
-
-  if [[ ${#beads_orphans[@]} -eq 0 ]]; then
-    echo "✓ Beads→GitHub: ${beads_synced}/${beads_total} issues synced"
-  else
-    echo "✗ Beads→GitHub: ${#beads_orphans[@]} orphan issues found"
-    for orphan in "${beads_orphans[@]}"; do
-      _verify_prompt "${orphan} has no GitHub issue. Run: forge team sync-issue ${orphan}"
-    done
-    issues_found=$((issues_found + ${#beads_orphans[@]}))
-  fi
-
-  # ── Check 4: Orphan GitHub issues (GitHub without Beads) ────────────
+  # ── Association set: labels ∪ mapping (shared by Check 3 and Check 4) ─
+  # A GitHub↔Forge association can live in either the issue's `github_issue:<n>`
+  # label OR the local mapping file. Build a single set from BOTH so Check 3
+  # (Forge→GitHub) and Check 4 (GitHub→Forge) agree: a label-only or
+  # mapping-only association must never be misreported as an orphan.
   local mapping_file
   mapping_file="$(_mapping_file)"
+  local mapping_content="{}"
+  [[ -f "$mapping_file" ]] && mapping_content="$(cat "$mapping_file" 2>/dev/null || echo '{}')"
 
+  local issues_json
+  issues_json="$(_verify_active_issues_json)"
+
+  local -A assoc_gh_num=()   # associated GitHub numbers (mapping keys ∪ label numbers)
+  local -A assoc_beads=()    # associated Forge ids (mapping values ∪ labelled ids)
+
+  # From the mapping file: keys are GitHub numbers, values are Forge ids. The
+  # value is a string today; tolerate a legacy/forward object form ({beads_id}).
+  local _m_num _m_bid
+  while IFS=$'\t' read -r _m_num _m_bid; do
+    [[ -n "$_m_num" ]] && assoc_gh_num["$_m_num"]=1
+    [[ -n "$_m_bid" && "$_m_bid" != "null" ]] && assoc_beads["$_m_bid"]=1
+  done <<< "$(printf '%s' "$mapping_content" | jq -r '
+    to_entries[]
+    | [ (.key | tostring),
+        (if (.value | type) == "object" then (.value.beads_id // "") else (.value | tostring) end) ]
+    | @tsv' 2>/dev/null | tr -d '\r')"
+
+  # From active issues: a github_issue:<n> label links the issue id to number n.
+  local _l_id _l_num
+  while IFS=$'\t' read -r _l_id _l_num; do
+    [[ -z "$_l_id" ]] && continue
+    assoc_beads["$_l_id"]=1
+    [[ -n "$_l_num" ]] && assoc_gh_num["$_l_num"]=1
+  done <<< "$(printf '%s' "$issues_json" | jq -r '
+    .[]
+    | . as $x
+    | ((($x.labels // []) | map(select(startswith("github_issue:"))) | .[0] // "") | ltrimstr("github_issue:")) as $num
+    | select($num != "")
+    | [ $x.id, $num ] | @tsv' 2>/dev/null | tr -d '\r')"
+
+  # ── Check 3: Orphan tracked issues (no GitHub counterpart) ──────────
+  local issue_total issue_synced=0
+  issue_total="$(printf '%s' "$issues_json" | jq 'length' 2>/dev/null || echo 0)"
+
+  local issue_orphans=()
+  local _aid
+  while IFS= read -r _aid; do
+    [[ -z "$_aid" ]] && continue
+    if [[ -n "${assoc_beads[$_aid]:-}" ]]; then
+      issue_synced=$((issue_synced + 1))
+    else
+      issue_orphans+=("$_aid")
+    fi
+  done <<< "$(printf '%s' "$issues_json" | jq -r '.[].id' 2>/dev/null | tr -d '\r')"
+
+  if [[ ${#issue_orphans[@]} -eq 0 ]]; then
+    echo "✓ Forge→GitHub: ${issue_synced}/${issue_total} issues synced"
+  else
+    echo "✗ Forge→GitHub: ${#issue_orphans[@]} orphan issues found"
+    for orphan in "${issue_orphans[@]}"; do
+      _verify_prompt "${orphan} has no GitHub issue. Run: forge team sync-issue ${orphan}"
+    done
+    issues_found=$((issues_found + ${#issue_orphans[@]}))
+  fi
+
+  # ── Check 4: Orphan GitHub issues (no tracked counterpart) ──────────
+  # Uses the same association set: a GitHub number is mapped when it appears in
+  # the mapping file OR as a github_issue:<n> label on an active issue.
   local gh_issues_json
   gh_issues_json="$("$gh_cmd" issue list --state open --json number,title --limit 100 2>/dev/null)" || gh_issues_json="[]"
 
@@ -178,43 +208,23 @@ cmd_verify() {
   gh_issue_count="$(printf '%s' "$gh_issues_json" | jq 'length')"
 
   local gh_orphans=()
-
-  if [[ "$gh_issue_count" -gt 0 ]] && [[ -f "$mapping_file" ]]; then
-    local mapping_content
-    mapping_content="$(cat "$mapping_file")"
-
-    local i=0
-    while [[ $i -lt $gh_issue_count ]]; do
-      local issue_num
-      issue_num="$(printf '%s' "$gh_issues_json" | jq -r ".[$i].number")"
-
-      # Check if this GitHub issue number is a key in the mapping
-      local mapped
-      mapped="$(printf '%s' "$mapping_content" | jq -r --arg n "$issue_num" '.[$n] // empty')"
-
-      if [[ -z "$mapped" ]]; then
-        gh_orphans+=("$issue_num")
-      fi
-      i=$((i + 1))
-    done
-  elif [[ "$gh_issue_count" -gt 0 ]] && [[ ! -f "$mapping_file" ]]; then
-    # No mapping file — all GitHub issues are orphans
-    local i=0
-    while [[ $i -lt $gh_issue_count ]]; do
-      local issue_num
-      issue_num="$(printf '%s' "$gh_issues_json" | jq -r ".[$i].number")"
+  local i=0
+  while [[ $i -lt $gh_issue_count ]]; do
+    local issue_num
+    issue_num="$(printf '%s' "$gh_issues_json" | jq -r ".[$i].number")"
+    if [[ -z "${assoc_gh_num[$issue_num]:-}" ]]; then
       gh_orphans+=("$issue_num")
-      i=$((i + 1))
-    done
-  fi
+    fi
+    i=$((i + 1))
+  done
 
   if [[ ${#gh_orphans[@]} -eq 0 ]]; then
     local mapped_count=$((gh_issue_count))
-    echo "✓ GitHub→Beads: ${mapped_count}/${mapped_count} issues mapped"
+    echo "✓ GitHub→Forge: ${mapped_count}/${mapped_count} issues mapped"
   else
-    echo "✗ GitHub→Beads: ${#gh_orphans[@]} orphan issues found"
+    echo "✗ GitHub→Forge: ${#gh_orphans[@]} orphan issues found"
     for orphan_num in "${gh_orphans[@]}"; do
-      _verify_prompt "GitHub #${orphan_num} has no Beads issue. Run: forge team import #${orphan_num}"
+      _verify_prompt "GitHub #${orphan_num} has no tracked issue. Run: forge team import #${orphan_num}"
     done
     issues_found=$((issues_found + ${#gh_orphans[@]}))
   fi

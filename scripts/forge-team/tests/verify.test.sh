@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# Override TEAM_MAP_ROOT so tests don't touch real .beads/
+# Override TEAM_MAP_ROOT so tests don't touch real .forge/
 export TEAM_MAP_ROOT="$TEST_TMP"
 
 # ── Create mock directories ────────────────────────────────────────────
@@ -66,47 +66,34 @@ exit 1
 MOCK
 chmod +x "$mock_dir/gh-noauth"
 
-# ── Mock bd ────────────────────────────────────────────────────────────
-cat > "$mock_dir/bd" << 'MOCK'
+# ── Mock forge (emits Kernel-shaped issue list JSON) ───────────────────
+# The GitHub association lives in each issue's labels as github_issue:<n>.
+# Tests drive which issues appear via FORGE_MOCK_OPEN / FORGE_MOCK_INPROGRESS
+# (JSON arrays, each defaulting to []).
+cat > "$mock_dir/forge" << 'MOCK'
 #!/usr/bin/env bash
-case "$1" in
-  list)
-    if [[ -n "${BD_MOCK_OUTPUT:-}" ]]; then
-      echo "$BD_MOCK_OUTPUT"
-    fi
-    exit 0
-    ;;
-  show)
-    case "${2:-}" in
-      forge-aaa)
-        echo "◐ forge-aaa · Feature A [● P2 · IN_PROGRESS]"
-        echo "Owner: devone"
-        if [[ -z "${BD_MOCK_NO_GITHUB_AAA:-}" ]]; then
-          echo "State: github_issue:10"
-        fi
-        ;;
-      forge-bbb)
-        echo "○ forge-bbb · Feature B [● P2 · OPEN]"
-        echo "Owner: devtwo"
-        if [[ -z "${BD_MOCK_NO_GITHUB_BBB:-}" ]]; then
-          echo "State: github_issue:20"
-        fi
-        ;;
-      forge-ccc)
-        echo "◐ forge-ccc · Feature C [● P1 · IN_PROGRESS]"
-        echo "Owner: devone"
-        # forge-ccc never has github_issue (for orphan tests)
-        ;;
-    esac
-    exit 0
-    ;;
-esac
+args="$*"
+if [[ "$args" == *"issue list"* ]]; then
+  if [[ "$args" == *"--status=open"* ]]; then
+    printf '{"data":{"issues":%s}}\n' "${FORGE_MOCK_OPEN:-[]}"
+  elif [[ "$args" == *"--status=in_progress"* ]]; then
+    printf '{"data":{"issues":%s}}\n' "${FORGE_MOCK_INPROGRESS:-[]}"
+  else
+    printf '{"data":{"issues":[]}}\n'
+  fi
+  exit 0
+fi
 exit 0
 MOCK
-chmod +x "$mock_dir/bd"
+chmod +x "$mock_dir/forge"
+
+# Reusable issue fixtures (synced issues carry a github_issue:<n> label)
+ccc_orphan='{"id":"forge-ccc","title":"Feature C","status":"in_progress","assignee":"devone","labels":[],"dependencies":[]}'
+aaa_synced='{"id":"forge-aaa","title":"Feature A","status":"in_progress","assignee":"devone","labels":["github_issue:10"],"dependencies":[]}'
+bbb_synced='{"id":"forge-bbb","title":"Feature B","status":"open","assignee":"devtwo","labels":["github_issue:20"],"dependencies":[]}'
 
 export GH_CMD="$mock_dir/gh"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 # Source the library under test
 source "$SCRIPT_DIR/lib/agent-prompt.sh"
@@ -158,11 +145,12 @@ echo "── Test 1: All clean → exit 0 ──"
 # Setup: identity exists in team map
 unset _GITHUB_USER_CACHE
 export GH_CMD="$mock_dir/gh"
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 team_map_add "testuser" "Test User"
 
-# No beads issues, no github issues
-export BD_MOCK_OUTPUT=""
+# No tracked issues, no github issues
+export FORGE_MOCK_OPEN="[]"
+export FORGE_MOCK_INPROGRESS="[]"
 export GH_MOCK_ISSUES="[]"
 
 # Create empty mapping file
@@ -194,10 +182,11 @@ echo "── Test 3: Orphan Beads issue detected ──"
 
 unset _GITHUB_USER_CACHE
 export GH_CMD="$mock_dir/gh"
-export BD_MOCK_OUTPUT="◐ forge-ccc · Feature C"
+export FORGE_MOCK_OPEN="[]"
+export FORGE_MOCK_INPROGRESS="[$ccc_orphan]"
 export GH_MOCK_ISSUES="[]"
 
-# forge-ccc has no github_issue state (see mock bd above)
+# forge-ccc carries no github_issue label (see fixtures above)
 rc=0
 output="$(cmd_verify 2>&1)" || rc=$?
 assert_exit "orphan beads exits 1" 1 "$rc"
@@ -210,7 +199,8 @@ echo "── Test 4: Orphan GitHub issue detected ──"
 
 unset _GITHUB_USER_CACHE
 export GH_CMD="$mock_dir/gh"
-export BD_MOCK_OUTPUT=""
+export FORGE_MOCK_OPEN="[]"
+export FORGE_MOCK_INPROGRESS="[]"
 export GH_MOCK_ISSUES='[{"number":42,"title":"Some feature"},{"number":45,"title":"Another feature"}]'
 
 # Mapping file has neither #42 nor #45
@@ -231,8 +221,8 @@ unset _GITHUB_USER_CACHE
 export GH_CMD="$mock_dir/gh"
 
 # Setup: forge-aaa has github_issue:10, forge-bbb has github_issue:20
-export BD_MOCK_OUTPUT="◐ forge-aaa · Feature A
-○ forge-bbb · Feature B"
+export FORGE_MOCK_OPEN="[$bbb_synced]"
+export FORGE_MOCK_INPROGRESS="[$aaa_synced]"
 
 # Create mapping with both issues
 cat > "$TEST_TMP/.github/beads-mapping.json" << 'EOF'
@@ -300,7 +290,8 @@ echo "── Test 6: No issues at all → exit 0 ──"
 
 unset _GITHUB_USER_CACHE
 export GH_CMD="$mock_dir/gh"
-export BD_MOCK_OUTPUT=""
+export FORGE_MOCK_OPEN="[]"
+export FORGE_MOCK_INPROGRESS="[]"
 export GH_MOCK_ISSUES="[]"
 echo '{}' > "$TEST_TMP/.github/beads-mapping.json"
 

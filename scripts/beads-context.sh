@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# beads-context.sh — Helper script to manage Beads issue context
+# beads-context.sh — Helper script to manage issue context
 # for the Forge 7-stage workflow.
 #
 # Subcommands:
@@ -44,8 +44,8 @@ die() {
   exit 1
 }
 
-# Resolve a Windows bd.exe installation for bash-based helper flows.
-# This covers WSL/Git Bash cases where PowerShell can run bd.exe but bash PATH
+# Resolve a Windows forge.exe installation for bash-based helper flows.
+# This covers WSL/Git Bash cases where PowerShell can run forge.exe but bash PATH
 # does not include the Windows install directory.
 convert_windows_path() {
   local raw="${1%$'\r'}"
@@ -74,7 +74,7 @@ convert_windows_path() {
   printf '/mnt/%s%s' "$drive" "$rest"
 }
 
-is_runnable_bd_candidate() {
+is_runnable_forge_candidate() {
   local candidate="${1:-}"
 
   if [[ -z "$candidate" || ! -f "$candidate" ]]; then
@@ -84,41 +84,41 @@ is_runnable_bd_candidate() {
   [[ -x "$candidate" || "$candidate" == *.exe ]]
 }
 
-resolve_bd_cmd() {
+resolve_forge_cmd() {
   local candidate=""
   local converted=""
 
-  if [[ -n "${BD_CMD:-}" ]]; then
-    if [[ "${BD_CMD}" == *"/"* || "${BD_CMD}" == *"\\"* ]]; then
-      converted="$(convert_windows_path "$BD_CMD")"
-      if is_runnable_bd_candidate "$converted"; then
+  if [[ -n "${FORGE_CMD:-}" ]]; then
+    if [[ "${FORGE_CMD}" == *"/"* || "${FORGE_CMD}" == *"\\"* ]]; then
+      converted="$(convert_windows_path "$FORGE_CMD")"
+      if is_runnable_forge_candidate "$converted"; then
         printf '%s' "$converted"
         return 0
       fi
 
-      is_runnable_bd_candidate "$BD_CMD" || return 1
+      is_runnable_forge_candidate "$FORGE_CMD" || return 1
     fi
-    printf '%s' "$BD_CMD"
+    printf '%s' "$FORGE_CMD"
     return 0
   fi
 
-  if command -v bd >/dev/null 2>&1; then
-    printf '%s' "bd"
+  if command -v forge >/dev/null 2>&1; then
+    printf '%s' "forge"
     return 0
   fi
 
-  if command -v bd.exe >/dev/null 2>&1; then
-    printf '%s' "bd.exe"
+  if command -v forge.exe >/dev/null 2>&1; then
+    printf '%s' "forge.exe"
     return 0
   fi
 
   for candidate in \
-    "$HOME/.local/bin/bd" \
-    "$HOME/.local/bin/bd.exe" \
-    "$HOME/.bun/bin/bd" \
-    "$HOME/.bun/bin/bd.exe"
+    "$HOME/.local/bin/forge" \
+    "$HOME/.local/bin/forge.exe" \
+    "$HOME/.bun/bin/forge" \
+    "$HOME/.bun/bin/forge.exe"
   do
-    if is_runnable_bd_candidate "$candidate"; then
+    if is_runnable_forge_candidate "$candidate"; then
       printf '%s' "$candidate"
       return 0
     fi
@@ -130,38 +130,38 @@ resolve_bd_cmd() {
       [[ -z "$candidate" ]] && continue
 
       converted="$(convert_windows_path "$candidate")"
-      if is_runnable_bd_candidate "$converted"; then
+      if is_runnable_forge_candidate "$converted"; then
         printf '%s' "$converted"
         return 0
       fi
 
-      if is_runnable_bd_candidate "$candidate"; then
+      if is_runnable_forge_candidate "$candidate"; then
         printf '%s' "$candidate"
         return 0
       fi
-    done < <(where.exe bd 2>/dev/null || true)
+    done < <(where.exe forge 2>/dev/null || true)
   fi
 
   return 1
 }
 
-BD=""
+FORGE=""
 
-get_bd_cmd() {
-  if [[ -z "$BD" ]]; then
-    BD="$(resolve_bd_cmd)" || die "bd is required but not found"
+get_forge_cmd() {
+  if [[ -z "$FORGE" ]]; then
+    FORGE="$(resolve_forge_cmd)" || die "forge is required but not found"
   fi
 
-  printf '%s' "$BD"
+  printf '%s' "$FORGE"
 }
 
-# Run bd update and check for errors in both exit code and output.
-# bd update exits 0 even for non-existent issues, so we check stdout too.
-bd_update() {
-  local bd_cmd
-  bd_cmd="$(get_bd_cmd)"
+# Run forge issue update and check for errors in both exit code and output.
+# The update operation exits 0 even for non-existent issues, so we check stdout too.
+forge_update() {
+  local forge_cmd
+  forge_cmd="$(get_forge_cmd)"
   local output
-  output="$("$bd_cmd" update "$@" 2>&1)"
+  output="$("$forge_cmd" issue update "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -169,7 +169,7 @@ bd_update() {
     return 1
   fi
 
-  # bd prints "Error resolving/updating ..." to stdout for non-existent issues
+  # Forge prints "Error resolving/updating ..." to stdout for non-existent issues
   # Use specific patterns to avoid false positives from data containing "error"
   if printf '%s' "$output" | grep -Eqi '^Error|Error resolving|Error updating'; then
     echo "$output" >&2
@@ -180,12 +180,12 @@ bd_update() {
   return 0
 }
 
-# Run bd comments add and check for errors similarly.
-bd_comment() {
-  local bd_cmd
-  bd_cmd="$(get_bd_cmd)"
+# Run forge issue comment and check for errors similarly.
+forge_comment() {
+  local forge_cmd
+  forge_cmd="$(get_forge_cmd)"
   local output
-  output="$("$bd_cmd" comments add "$@" 2>&1)"
+  output="$("$forge_cmd" issue comment "$@" 2>&1)"
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -201,6 +201,25 @@ bd_comment() {
 
   echo "$output"
   return 0
+}
+
+# Extract concatenated comment text from a `forge issue show --json` payload.
+# Forge/issue show returns comments as an array of objects ({text:...}) — matching
+# the issue-state contract in lib/workflow/state-manager.js — or, defensively, a
+# raw string. jq is preferred; a grep/sed fallback captures "text" fields.
+extract_comments_text() {
+  local json="$1"
+
+  if command -v jq &>/dev/null; then
+    printf '%s' "$json" | jq -r '
+      ((if type == "array" then .[0] else . end).comments // [])
+      | if type == "array" then (map(.text? // tostring) | join("\n"))
+        else tostring end
+    ' 2>/dev/null || true
+    return 0
+  fi
+
+  printf '%s' "$json" | grep -o '"text": *"[^"]*"' | sed 's/^"text": *"//;s/"$//' || true
 }
 
 # ── Subcommands ──────────────────────────────────────────────────────────
@@ -219,7 +238,7 @@ cmd_set_design() {
 
   local design_text="${task_count} tasks | ${task_file}"
 
-  if ! bd_update "$issue_id" --design "$design_text" > /dev/null; then
+  if ! forge_update "$issue_id" --design "$design_text" > /dev/null; then
     die "Failed to set design on issue ${issue_id}"
   fi
 
@@ -236,7 +255,7 @@ cmd_set_acceptance() {
   local criteria
   criteria="$(sanitize "$2")"
 
-  if ! bd_update "$issue_id" --acceptance "$criteria" > /dev/null; then
+  if ! forge_update "$issue_id" --acceptance "$criteria" > /dev/null; then
     die "Failed to set acceptance on issue ${issue_id}"
   fi
 
@@ -276,7 +295,7 @@ cmd_update_progress() {
 
   local note="Task ${task_num}/${total} done: ${title} | ${test_count} tests | ${commit_sha} | ${gate_count} gates"
 
-  if ! bd_update "$issue_id" --append-notes "$note" > /dev/null; then
+  if ! forge_update "$issue_id" --append-notes "$note" > /dev/null; then
     die "Failed to update progress on issue ${issue_id}"
   fi
 
@@ -290,20 +309,20 @@ cmd_parse_progress() {
   fi
 
   local issue_id="$1"
-  local bd_cmd
-  bd_cmd="$(get_bd_cmd)"
+  local forge_cmd
+  forge_cmd="$(get_forge_cmd)"
 
   # Get the issue JSON — detect non-existent issues
   local json
-  json="$("$bd_cmd" show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
+  json="$("$forge_cmd" issue show "$issue_id" --json 2>&1)" || die "Failed to show issue ${issue_id}"
 
-  # bd show may exit 0 but print an error for non-existent issues
-  # Match specific bd error patterns, not the word "error" in data fields
+  # show may exit 0 but print an error for non-existent issues
+  # Match specific error patterns, not the word "error" in data fields
   if printf '%s' "$json" | grep -Eqi '^Error (fetching|resolving)'; then
     die "Issue not found: ${issue_id}"
   fi
 
-  # bd show returns "[]" or empty for non-existent issues
+  # show returns "[]" or empty for non-existent issues
   if [[ -z "$json" || "$json" == "[]" || "$json" == "null" ]]; then
     die "Issue not found: ${issue_id}"
   fi
@@ -311,7 +330,7 @@ cmd_parse_progress() {
   # Extract notes field from JSON — prefer jq if available, fall back to grep/sed
   local notes
   if command -v jq &>/dev/null; then
-    # Handle both array ([{...}]) and object ({...}) responses from bd show
+    # Handle both array ([{...}]) and object ({...}) show responses
     notes="$(printf '%s' "$json" | jq -r 'if type == "array" then .[0].notes else .notes end // empty' 2>/dev/null || true)"
   else
     notes="$(printf '%s' "$json" | grep -o '"notes": *"[^"]*"' | head -1 | sed 's/^"notes": *"//;s/"$//' || true)"
@@ -425,7 +444,7 @@ Next: ${flag_next}"
 WorkflowState: ${flag_workflow_state}"
   fi
 
-  if ! bd_comment "$issue_id" "$comment" > /dev/null; then
+  if ! forge_comment "$issue_id" "$comment" > /dev/null; then
     die "Failed to record stage transition on issue ${issue_id}"
   fi
 
@@ -440,17 +459,17 @@ cmd_validate() {
 
   local issue_id="$1"
   local warnings=0
-  local bd_cmd
-  bd_cmd="$(get_bd_cmd)"
+  local forge_cmd
+  forge_cmd="$(get_forge_cmd)"
 
   # Get issue JSON
   local json
-  json="$("$bd_cmd" show "$issue_id" --json 2>&1)" || {
+  json="$("$forge_cmd" issue show "$issue_id" --json 2>&1)" || {
     echo "Error: Failed to retrieve issue ${issue_id}" >&2
     exit 1
   }
 
-  # Check for bd error patterns
+  # Check for error patterns
   if printf '%s' "$json" | grep -Eqi '^Error|Error resolving|Error fetching'; then
     echo "Error: Issue not found: ${issue_id}" >&2
     exit 1
@@ -477,9 +496,11 @@ cmd_validate() {
     warnings=$((warnings + 1))
   fi
 
-  # Get comments to check for stage transitions
+  # The issue payload returned by `forge issue show --json` already includes its
+  # comment history, so the stage-transition checks read comments from that single
+  # response rather than issuing a separate comment-list query.
   local comments
-  comments="$("$bd_cmd" comments "$issue_id" 2>/dev/null || true)"
+  comments="$(extract_comments_text "$json")"
 
   # Check 2: At least one stage transition exists
   local has_transition=false
