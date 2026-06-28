@@ -57,6 +57,7 @@ check_tool() {
 }
 
 check_tools() {
+  check_tool "node" "install Node.js (https://nodejs.org)" || true
   check_tool "jq" "winget install jqlang.jq" || true
 
   if check_tool "gh" "winget install GitHub.cli"; then

@@ -95,6 +95,7 @@ describe('0.1.0 readiness report', () => {
     // kernel instead of installing beads, and preflight validates the kernel. They carry no token.
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/sync.js')).toBe(false);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/worktree.js')).toBe(false);
+    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/clean.js')).toBe(false);
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/setup.js')).toBe(false);
     // lib/workflow/state-manager.js is no longer hot-path evidence: its issue reads
     // route through `forge issue show --json` (the comment-list fallback collapsed into
