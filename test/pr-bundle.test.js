@@ -174,13 +174,29 @@ describe('gatherPrBundle — complete PR-state gather', () => {
     const { adapter } = makeAdapter({ noComments: true, noConflicts: true });
     const bundle = await gatherPrBundle({ ...BASE_CTX, adapter });
     expect(bundle.unresolvedComments).toEqual([]);
+    // capability absent ≠ read failed: available is false but there is no error.
+    expect(bundle.unresolvedCommentsAvailable).toBe(false);
+    expect(bundle.unresolvedCommentsError).toBeNull();
     expect(bundle.conflicts.supported).toBe(false);
   });
 
-  test('a throwing readComments does not collapse the bundle', async () => {
+  test('a successful read marks the comments available with no error', async () => {
+    const { adapter } = makeAdapter({
+      threads: [{ threadId: 'T1', path: 'a.js', line: 1, isResolved: false, comments: [{ author: 'x', body: 'b' }] }],
+    });
+    const bundle = await gatherPrBundle({ ...BASE_CTX, adapter });
+    expect(bundle.unresolvedCommentsAvailable).toBe(true);
+    expect(bundle.unresolvedCommentsError).toBeNull();
+  });
+
+  test('a throwing readComments does not collapse the bundle but surfaces the failure', async () => {
     const { adapter } = makeAdapter({ commentsThrow: new Error('graphql boom'), required: [] });
     const bundle = await gatherPrBundle({ ...BASE_CTX, adapter });
     expect(bundle.unresolvedComments).toEqual([]);
+    // The read FAILURE must be distinguishable from "no unresolved threads": a
+    // monitor must not treat unreadable comments as "no feedback" and skip work.
+    expect(bundle.unresolvedCommentsAvailable).toBe(false);
+    expect(bundle.unresolvedCommentsError).toContain('graphql boom');
     expect(bundle.mergeState.mergeable).toBe('MERGEABLE');
   });
 

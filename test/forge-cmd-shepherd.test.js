@@ -51,10 +51,34 @@ describe('forge-cmd shepherd dispatch', () => {
     expect(v.valid).toBe(true);
   });
 
+  test('validateArgs rejects standalone --json (only valid with --bundle)', () => {
+    const v = validateArgs('shepherd', ['123', '--json']);
+    expect(v.valid).toBe(false);
+    expect(v.error).toContain('--bundle');
+  });
+
   test('forge shepherd with an unknown flag exits non-zero before running a pass', () => {
     const res = spawnSync('node', [CLI, 'shepherd', '123', '--auto-reabse'], { encoding: 'utf8', timeout: 20000 });
     const combined = `${res.stdout || ''}${res.stderr || ''}`;
     expect(res.status).not.toBe(0);
     expect(combined).toContain('--auto-reabse');
+  });
+
+  test('forge shepherd <pr> --json (no --bundle) is rejected at the CLI before any pass', () => {
+    const res = spawnSync('node', [CLI, 'shepherd', '123', '--json'], { encoding: 'utf8', timeout: 20000 });
+    expect(res.status).not.toBe(0);
+    expect(`${res.stdout || ''}${res.stderr || ''}`).toContain('--bundle');
+  });
+
+  test('the execution banner prints for a normal command (control)', () => {
+    const res = spawnSync('node', [CLI, 'status'], { encoding: 'utf8', timeout: 20000 });
+    expect(res.stdout || '').toContain('Executing:');
+  });
+
+  test('--bundle suppresses the execution banner so stdout stays valid JSON', () => {
+    // A bogus PR makes the gather fail fast; we only assert the human banner is
+    // absent from stdout (machine-consumable JSON requires nothing else there).
+    const res = spawnSync('node', [CLI, 'shepherd', '0', '--bundle'], { encoding: 'utf8', timeout: 25000 });
+    expect(res.stdout || '').not.toContain('Executing:');
   });
 });

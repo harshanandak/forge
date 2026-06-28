@@ -178,6 +178,16 @@ function validateArgs(command, args) {
 	const required = REQUIRED_ARGS[command] || [];
 	const positionalArgs = args.filter(a => !a.startsWith('--'));
 
+	// `--json` has no standalone meaning for shepherd — it only toggles the JSON
+	// rendering of the `--bundle` gather. Without `--bundle` it would silently fall
+	// back to the human-readable pass output, so reject it loudly instead.
+	if (command === 'shepherd' && args.includes('--json') && !args.includes('--bundle')) {
+		return {
+			valid: false,
+			error: "Error: '--json' is only supported with 'forge shepherd <pr> --bundle --json'",
+		};
+	}
+
 	if (required.length > 0 && positionalArgs.length < required.length) {
 		const missing = required.slice(positionalArgs.length);
 		return {
@@ -272,8 +282,14 @@ async function main() { // NOSONAR S3776
 	// Execute command
 	try {
 		const quotedArgs = args.map(a => `"${a.replaceAll('"', '\\"')}"`);  // NOSONAR S7780 - intentional backslash escape for console quoting
-		console.log(`Executing: forge ${command}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`);
-		console.log('');
+		// `forge shepherd <pr> --bundle` emits a machine-consumable JSON bundle on
+		// stdout (the monitor parses it). Suppress the human banner + blank line in
+		// that mode so stdout stays valid standalone JSON.
+		const quietJsonMode = command === 'shepherd' && args.includes('--bundle');
+		if (!quietJsonMode) {
+			console.log(`Executing: forge ${command}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`);
+			console.log('');
+		}
 
 		let result;
 		const positionalArgs = args.filter(a => !a.startsWith('--'));

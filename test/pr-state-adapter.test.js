@@ -236,6 +236,51 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(threads[0].line).toBeNull();
   });
 
+  test('readComments paginates reviewThreads AND nested comments until exhausted', async () => {
+    // Page 1: thread A (comments complete inline) + more threads to come.
+    const outerPage1 = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: true, endCursor: 'C1' },
+        nodes: [{
+          id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'bot' }, body: 'a1' }] },
+        }],
+      } } } },
+    });
+    // Page 2 (after=C1): thread B whose comment chain itself spills to a 2nd page.
+    const outerPage2 = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: false, endCursor: 'C1' },
+        nodes: [{
+          id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
+          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ author: { login: 'bot' }, body: 'b1' }] },
+        }],
+      } } } },
+    });
+    // Remaining comments of thread B, fetched by node id.
+    const innerCommentsPage = JSON.stringify({
+      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'human' }, body: 'b2' }] } } },
+    });
+    // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
+    const { run, calls } = makeRunner([
+      ['id=PRRT_B', innerCommentsPage],
+      ['after=C1', outerPage2],
+      ['api graphql', outerPage1],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const threads = await adapter.readComments({ owner: 'o', repo: 'r', pr: '7' });
+
+    // Both pages of threads are present (no 100-cap drop).
+    expect(threads.map((t) => t.threadId)).toEqual(['PRRT_A', 'PRRT_B']);
+    // Thread B's full comment chain spans both pages (later human reply preserved).
+    expect(threads[1].comments.map((c) => c.body)).toEqual(['b1', 'b2']);
+    // The first page must NOT send an `after` cursor (null cursor = from the start).
+    const firstGraphql = calls.find((c) => c.args.join(' ').includes('reviewThreads'));
+    expect(firstGraphql.args.join(' ')).not.toContain('after=');
+    // The query declares the cursor variable + pageInfo on both connections.
+    expect(firstGraphql.args.join(' ')).toContain('pageInfo{hasNextPage endCursor}');
+  });
+
   test('detectConflicts reports a clean merge when merge-tree exits 0', async () => {
     const { run, calls } = makeRunner([['merge-tree', 'TREEOID\n']]);
     const adapter = new PrStateAdapter({ gh: run, git: run });
