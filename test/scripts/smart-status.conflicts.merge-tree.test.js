@@ -1,6 +1,6 @@
 const { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } = require('bun:test');
 
-const { cleanupTmpDir, createMockBd, daysAgo, runSmartStatus } = require('./smart-status.helpers');
+const { cleanupTmpDir, createMockForge, daysAgo, runSmartStatus } = require('./smart-status.helpers');
 const { createMockGitTier2, twoBranchPorcelain } = require('./smart-status.conflicts.helpers');
 
 setDefaultTimeout(20000);
@@ -10,7 +10,7 @@ describe('smart-status.sh > merge-tree conflict detection smoke', () => {
 	let scenarios;
 
 	beforeAll(() => {
-		mockBd = createMockBd({
+		mockBd = createMockForge({
 			issues: [
 				{ id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
 			],
@@ -40,7 +40,7 @@ describe('smart-status.sh > merge-tree conflict detection smoke', () => {
 
 	test('shows merge conflict annotations when merge-tree reports a real conflict', () => {
 		const result = runSmartStatus([], {
-			BD_CMD: mockBd.mockScript,
+			FORGE_CMD: mockBd.forgeScript,
 			GIT_CMD: scenarios.realConflict.mockScript,
 			REAL_GIT: scenarios.realConflict.realGit,
 			NO_COLOR: '1',
@@ -53,7 +53,7 @@ describe('smart-status.sh > merge-tree conflict detection smoke', () => {
 
 	test('omits merge_conflicts from JSON output when merge-tree finds no real conflict', () => {
 		const result = runSmartStatus(['--json'], {
-			BD_CMD: mockBd.mockScript,
+			FORGE_CMD: mockBd.forgeScript,
 			GIT_CMD: scenarios.jsonNoConflict.mockScript,
 			REAL_GIT: scenarios.jsonNoConflict.realGit,
 			NO_COLOR: '1',

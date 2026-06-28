@@ -1,16 +1,16 @@
 const { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } = require('bun:test');
 
-const { cleanupTmpDir, createMockBd, daysAgo, runSmartStatus } = require('./smart-status.helpers');
+const { cleanupTmpDir, createMockForge, daysAgo, runSmartStatus } = require('./smart-status.helpers');
 const { createMockGitWithDiff } = require('./smart-status.conflicts.helpers');
 
 setDefaultTimeout(30000);
 
 describe('smart-status.sh > file-level conflict detection smoke', () => {
-	let mockBd;
+	let mockForge;
 	let scenarios;
 
 	beforeAll(() => {
-		mockBd = createMockBd({
+		mockForge = createMockForge({
 			issues: [
 				{ id: 'i1', title: 'Work', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
 			],
@@ -36,7 +36,7 @@ describe('smart-status.sh > file-level conflict detection smoke', () => {
 	});
 
 	afterAll(() => {
-		cleanupTmpDir(mockBd?.tmpDir);
+		cleanupTmpDir(mockForge?.tmpDir);
 		for (const scenario of Object.values(scenarios || {})) {
 			cleanupTmpDir(scenario?.tmpDir);
 		}
@@ -44,7 +44,7 @@ describe('smart-status.sh > file-level conflict detection smoke', () => {
 
 	test('truncates long changed-file lists in the shell output', () => {
 		const result = runSmartStatus([], {
-			BD_CMD: mockBd.mockScript,
+			FORGE_CMD: mockForge.forgeScript,
 			GIT_CMD: scenarios.truncatedNoConflict.mockScript,
 			REAL_GIT: scenarios.truncatedNoConflict.realGit,
 			NO_COLOR: '1',
@@ -61,7 +61,7 @@ describe('smart-status.sh > file-level conflict detection smoke', () => {
 
 	test('renders conflict risk for overlapping files', () => {
 		const result = runSmartStatus([], {
-			BD_CMD: mockBd.mockScript,
+			FORGE_CMD: mockForge.forgeScript,
 			GIT_CMD: scenarios.overlap.mockScript,
 			REAL_GIT: scenarios.overlap.realGit,
 			NO_COLOR: '1',

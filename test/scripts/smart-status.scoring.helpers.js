@@ -1,22 +1,22 @@
 const {
   cleanupTmpDir,
-  createMockBd,
+  createMockForge,
   parseIssues,
   runSmartStatus,
 } = require('./smart-status.helpers');
 
-function withMockBd(mockData, callback) {
-  const { tmpDir, mockScript } = createMockBd(mockData);
+function withMockForge(mockData, callback) {
+  const { tmpDir, forgeScript } = createMockForge(mockData);
   try {
-    return callback(mockScript);
+    return callback(forgeScript);
   } finally {
     cleanupTmpDir(tmpDir);
   }
 }
 
 function runScoringJson(mockData, env = {}) {
-  return withMockBd(mockData, (mockScript) => {
-    const result = runSmartStatus(['--json'], { BD_CMD: mockScript, ...env });
+  return withMockForge(mockData, (forgeScript) => {
+    const result = runSmartStatus(['--json'], { FORGE_CMD: forgeScript, ...env });
     return {
       result,
       scored: result.status === 0 ? parseIssues(result.stdout) : [],
@@ -25,8 +25,8 @@ function runScoringJson(mockData, env = {}) {
 }
 
 function runScoringText(mockData, env = {}) {
-  return withMockBd(mockData, (mockScript) => runSmartStatus([], {
-    BD_CMD: mockScript,
+  return withMockForge(mockData, (forgeScript) => runSmartStatus([], {
+    FORGE_CMD: forgeScript,
     ...env,
   }));
 }
@@ -34,5 +34,5 @@ function runScoringText(mockData, env = {}) {
 module.exports = {
   runScoringJson,
   runScoringText,
-  withMockBd,
+  withMockForge,
 };

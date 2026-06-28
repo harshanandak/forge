@@ -5,7 +5,7 @@ const {
   PROJECT_ROOT,
   SCRIPT,
   cleanupTmpDir,
-  createMockBd,
+  createMockForge,
   daysAgo,
   parseIssues,
   resolveBashCommand,
@@ -29,7 +29,7 @@ describe('smart-status.sh', () => {
     let epicIssues;
 
     beforeAll(() => {
-      groupedMock = createMockBd({
+      groupedMock = createMockForge({
         issues: [
           { id: 'wip1', title: 'Active work', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
           { id: 'chain1', title: 'Unblock chain item', priority: 'P2', type: 'feature', status: 'open', dependent_count: 3, dependency_count: 0, updated_at: daysAgo(1) },
@@ -43,19 +43,19 @@ describe('smart-status.sh', () => {
         ],
       });
 
-      freshMock = createMockBd({
+      freshMock = createMockForge({
         issues: [
           { id: 'fresh1', title: 'Fresh item', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(3) },
         ],
       });
 
-      colorMock = createMockBd({
+      colorMock = createMockForge({
         issues: [
           { id: 'c1', title: 'Color test', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, dependency_count: 0, updated_at: daysAgo(1) },
         ],
       });
 
-      epicMock = createMockBd({
+      epicMock = createMockForge({
         issues: [
           { id: 'epic1', title: 'Epic 1', priority: 'P2', type: 'epic', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
           { id: 'child1', title: 'Child 1', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1), parent_id: 'epic1' },
@@ -74,10 +74,10 @@ describe('smart-status.sh', () => {
         ],
       });
 
-      groupedResult = runSmartStatus([], { BD_CMD: groupedMock.mockScript, NO_COLOR: '1' });
-      freshResult = runSmartStatus([], { BD_CMD: freshMock.mockScript, NO_COLOR: '1' });
+      groupedResult = runSmartStatus([], { FORGE_CMD: groupedMock.forgeScript, NO_COLOR: '1' });
+      freshResult = runSmartStatus([], { FORGE_CMD: freshMock.forgeScript, NO_COLOR: '1' });
 
-      const env = { ...process.env, BD_CMD: colorMock.mockScript, GIT_CMD: 'true' };
+      const env = { ...process.env, FORGE_CMD: colorMock.forgeScript, GIT_CMD: 'true' };
       delete env.NO_COLOR;
       colorStdout = (spawnSync(resolveBashCommand(), [toBashPath(SCRIPT)], {
         cwd: PROJECT_ROOT,
@@ -87,7 +87,6 @@ describe('smart-status.sh', () => {
       }).stdout || '').trim();
 
       epicIssues = parseIssues(runSmartStatus(['--json'], {
-        BD_CMD: epicMock.mockScript,
         FORGE_CMD: epicMock.forgeScript,
       }).stdout);
     });
