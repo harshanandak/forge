@@ -168,11 +168,15 @@ function createMockForge(jsonData) {
   }).join('\n');
   const emptyEnvelope = '{"schema_version":"forge.issue.v1","command":"issue.children","data":{"epic":null,"children":[],"rollup":{"total":0,"done":0,"in_progress":0,"open":0,"review":0,"cancelled":0,"blocked":0,"percentage":0,"by_status":{}},"count":0},"next_commands":[]}';
   const forgeContent = `#!/usr/bin/env bash
-if [[ "$1" == "issue" && "$2" == "list" ]]; then
+if [[ "$1" == "issue" && "$2" == "list" && "$3" == "--json" ]]; then
   cat <<'JSONEOF'
 ${JSON.stringify(listEnvelope)}
 JSONEOF
   exit 0
+fi
+if [[ "$1" == "issue" && "$2" == "list" ]]; then
+  echo "mock forge: expected 'issue list --json', got: $*" >&2
+  exit 2
 fi
 if [[ "$1" == "issue" && "$2" == "children" ]]; then
   EPIC_ID="$3"
