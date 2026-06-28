@@ -23,22 +23,21 @@ describe('workflow state layer', () => {
 			'validate',
 			'ship',
 			'review',
-			'premerge',
 			'verify',
 		]);
 
 		expect(Object.keys(STAGE_MODEL)).toEqual(STAGE_IDS);
-		expect(getWorkflowPath('standard')).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'premerge']);
-		expect(getWorkflowPath('critical')).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify']);
-		expect(getWorkflowPath('refactor')).toEqual(['plan', 'dev', 'validate', 'ship', 'premerge']);
+		expect(getWorkflowPath('standard')).toEqual(['plan', 'dev', 'validate', 'ship', 'review']);
+		expect(getWorkflowPath('critical')).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'verify']);
+		expect(getWorkflowPath('refactor')).toEqual(['plan', 'dev', 'validate', 'ship']);
 		expect(getWorkflowPath('simple')).toEqual(['dev', 'validate', 'ship']);
 		expect(getWorkflowPath('hotfix')).toEqual(['dev', 'validate', 'ship']);
 		expect(getWorkflowPath('docs')).toEqual(['verify', 'ship']);
-		expect(WORKFLOW_STAGE_MATRIX.standard).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'premerge']);
+		expect(WORKFLOW_STAGE_MATRIX.standard).toEqual(['plan', 'dev', 'validate', 'ship', 'review']);
 		expect(WORKFLOW_TERMINAL_STAGES).toEqual({
 			critical: 'verify',
-			standard: 'premerge',
-			refactor: 'premerge',
+			standard: 'review',
+			refactor: 'ship',
 			simple: 'ship',
 			hotfix: 'ship',
 			docs: 'ship',
