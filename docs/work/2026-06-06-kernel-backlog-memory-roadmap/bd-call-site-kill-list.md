@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 108 | 11 |
-| runtime | 282 | 36 |
+| runtime | 279 | 35 |
 | docs | 400 | 48 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -58,8 +58,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 65 (bd), 76 (bd), 86 (bd)
 - [ ] lib/deprecated-sync-cleanup.js (4)
   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
-- [ ] lib/forge-issues.js (11)
-  - lines: 24 (bd), 25 (bd), 34 (bd), 88 (bd), 89 (bd), 92 (bd), 126 (bd), 150 (bd), 152 (bd), 156 (bd), 269 (bd)
+- [ ] lib/forge-issues.js (13)
+  - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 93 (bd), 94 (bd), 97 (bd), 131 (bd), 155 (bd), 157 (bd), 161 (bd), 274 (bd)
 - [ ] lib/harness-capability-matrix.js (1)
   - lines: 121 (bd)
 - [ ] lib/insights.js (7)
@@ -94,8 +94,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 328 (bd), 332 (bd), 333 (bd), 335 (bd), 414 (bd), 415 (bd), 454 (bd), 460 (bd), 466 (bd), 473 (bd), 520 (bd)
 - [ ] scripts/file-index.sh (2)
   - lines: 4 (.beads), 38 (.beads)
-- [ ] scripts/forge-team/lib/epic.sh (4)
-  - lines: 10 (bd), 22 (bd), 24 (bd), 27 (bd)
 - [ ] scripts/github-beads-sync/index.mjs (9)
   - lines: 14 (bd), 75 (bd), 86 (bd), 91 (bd), 199 (bd), 230 (bd), 237 (bd), 240 (bd), 241 (bd)
 - [ ] scripts/github-beads-sync/run-bd.mjs (21)
@@ -108,8 +106,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 53 (bd), 59 (bd), 61 (bd), 78 (bd), 94 (bd), 113 (bd), 130 (bd), 152 (bd), 268 (bd), 275 (bd), 312 (bd), 375 (bd), 488 (bd), 493 (bd)
 - [ ] scripts/preflight.sh (16)
   - lines: 51 (.beads), 56 (dolt), 58 (.beads), 62 (.beads), 64 (dolt), 65 (dolt), 69 (.beads), 78 (bd), 115 (bd), 145 (bd), 150 (bd), 153 (bd), 161 (bd), 170 (bd), 172 (bd), 175 (bd)
-- [ ] scripts/smart-status.sh (16)
-  - lines: 4 (bd), 14 (bd), 113 (bd), 151 (dolt), 153 (bd), 156 (bd), 157 (bd), 161 (bd), 164 (.beads), 175 (bd), 176 (.beads), 177 (bd), 182 (bd), 186 (bd), 209 (bd), 242 (bd)
+- [ ] scripts/smart-status.sh (15)
+  - lines: 4 (bd), 14 (bd), 113 (bd), 152 (dolt), 154 (bd), 157 (bd), 158 (bd), 162 (bd), 165 (.beads), 176 (bd), 177 (.beads), 178 (bd), 183 (bd), 187 (bd), 248 (bd)
 - [ ] scripts/sync-utils.sh (23)
   - lines: 88 (.beads), 94 (.beads), 106 (.beads), 113 (.beads), 158 (.beads), 219 (.beads), 260 (bd), 262 (.beads), 273 (bd, dolt), 281 (bd), 288 (dolt), 307 (.beads), 311 (.beads), 312 (.beads), 319 (bd, dolt), 321 (bd, dolt), 371 (.beads), 372 (.beads), 408 (bd), 420 (.beads), 421 (.beads), 450 (.beads), 458 (.beads)
 
