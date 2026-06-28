@@ -3,7 +3,12 @@
 const { describe, test, expect } = require('bun:test');
 
 // ---------------------------------------------------------------------------
-// forge sync command — test/forge-sync.test.js
+// forge sync command — test/commands/sync.test.js
+//
+// `forge sync` routes through the SyncBackend seam (lib/sync-backend.js). The
+// default backend is `local-noop`: the local kernel is single-machine
+// authority, so sync is a graceful no-op that names the model. These tests
+// cover the command wiring, not the (future) git-jsonl/server transports.
 // ---------------------------------------------------------------------------
 
 describe('forge sync command', () => {
@@ -17,102 +22,51 @@ describe('forge sync command', () => {
     expect(typeof mod.handler).toBe('function');
   });
 
-  // (b) Happy path: bd exists, dolt pull + push succeed
-  test('returns { success: true, synced: true } when bd and dolt succeed', async () => {
+  // (b) Default local-noop: graceful no-op that names the model
+  test('returns a graceful no-op by default (local-noop)', async () => {
     const mod = require('../../lib/commands/sync');
-    const mockExec = (_cmd, args, _opts) => {
-      if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
-      if (args[0] === 'dolt' && args[1] === 'pull') return Buffer.from('ok\n');
-      if (args[0] === 'dolt' && args[1] === 'push') return Buffer.from('ok\n');
-      throw new Error(`unexpected call: ${args.join(' ')}`);
-    };
-    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
-    expect(result).toEqual({ success: true, synced: true });
-  });
-
-  // (c) bd not found: execFileSync throws ENOENT on bd --version
-  test('returns graceful skip when bd is not installed', async () => {
-    const mod = require('../../lib/commands/sync');
-    const mockExec = (_cmd, args, _opts) => {
-      if (args[0] === '--version') {
-        const err = new Error('spawn bd ENOENT');
-        err.code = 'ENOENT';
-        throw err;
-      }
-      throw new Error(`unexpected call: ${args.join(' ')}`);
-    };
-    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
+    const result = await mod.handler([], {}, '/fake/root');
     expect(result.success).toBe(true);
     expect(result.synced).toBe(false);
-    expect(result.message).toContain('not installed');
+    expect(result.message).toContain('single-machine authority');
   });
 
-  // (d) dolt pull fails: returns { success: false } with error containing 'pull'
-  test('returns failure when dolt pull fails', async () => {
+  // (c) Delegates to the resolved/injected backend and returns its result
+  test('returns the backend.sync() result verbatim', async () => {
     const mod = require('../../lib/commands/sync');
-    const mockExec = (_cmd, args, _opts) => {
-      if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
-      if (args[0] === 'dolt' && args[1] === 'pull') {
-        throw new Error('dolt pull failed: connection refused');
-      }
-      throw new Error(`unexpected call: ${args.join(' ')}`);
+    const fakeBackend = {
+      name: 'fake',
+      async sync(opts) {
+        return { success: true, synced: true, message: `synced ${opts.projectRoot}` };
+      },
     };
-    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
+    const result = await mod.handler([], {}, '/fake/root', { _backend: fakeBackend });
+    expect(result).toEqual({ success: true, synced: true, message: 'synced /fake/root' });
+  });
+
+  // (d) A throwing backend is reported as a failure, never a crash
+  test('returns { success: false } when the backend throws', async () => {
+    const mod = require('../../lib/commands/sync');
+    const fakeBackend = {
+      name: 'fake',
+      async sync() {
+        throw new Error('transport exploded');
+      },
+    };
+    const result = await mod.handler([], {}, '/fake/root', { _backend: fakeBackend });
     expect(result.success).toBe(false);
     expect(result.synced).toBe(false);
-    expect(result.error).toContain('pull');
+    expect(result.error).toContain('transport exploded');
   });
 
-  // (e) dolt push fails: returns { success: false } with error containing 'push'
-  test('returns failure when dolt push fails', async () => {
+  // (e) Selecting an unimplemented backend surfaces an honest error
+  test('returns a clear error when an unimplemented backend is selected', async () => {
     const mod = require('../../lib/commands/sync');
-    const mockExec = (_cmd, args, _opts) => {
-      if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
-      if (args[0] === 'dolt' && args[1] === 'pull') return Buffer.from('ok\n');
-      if (args[0] === 'dolt' && args[1] === 'push') {
-        throw new Error('dolt push failed: auth error');
-      }
-      throw new Error(`unexpected call: ${args.join(' ')}`);
-    };
-    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
-    expect(result.success).toBe(false);
-    expect(result.synced).toBe(false);
-    expect(result.error).toContain('push');
-  });
-
-  test('returns failure for auth/network errors during sync (not masked as recoverable)', async () => {
-    const mod = require('../../lib/commands/sync');
-    const mockExec = (_cmd, args, _opts) => {
-      if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
-      if (args[0] === 'dolt' && args[1] === 'pull') {
-        throw new Error('failed to pull from origin/main: authentication required');
-      }
-      throw new Error(`unexpected call: ${args.join(' ')}`);
-    };
-
-    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
-
-    expect(result.success).toBe(false);
-    expect(result.synced).toBe(false);
-    expect(result.error).toContain('authentication');
-  });
-
-  test('returns graceful skip when Dolt sync remote is not configured', async () => {
-    const mod = require('../../lib/commands/sync');
-    const mockExec = (_cmd, args, _opts) => {
-      if (args[0] === '--version') return Buffer.from('beads 1.0.0\n');
-      if (args[0] === 'dolt' && args[1] === 'pull') {
-        throw new Error("failed to pull from origin/main: fatal: remote 'origin' not found");
-      }
-      throw new Error(`unexpected call: ${args.join(' ')}`);
-    };
-
-    const result = await mod.handler([], {}, '/fake/root', { _exec: mockExec });
-
-    expect(result).toEqual({
-      success: true,
-      synced: false,
-      message: 'Beads is installed but not initialized for sync in this worktree — skipping sync',
+    const result = await mod.handler([], {}, '/fake/root', {
+      deps: { syncBackend: 'git-jsonl' },
     });
+    expect(result.success).toBe(false);
+    expect(result.synced).toBe(false);
+    expect(result.error).toContain('not implemented');
   });
 });

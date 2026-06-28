@@ -1,18 +1,6 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
-const path = require('path');
-
-function createMockSafeBeadsInit() {
-  return (root, options) => {
-    try {
-      options.execBdInit(root);
-      return { success: true, skipped: false, warnings: [], errors: [] };
-    } catch (error) {
-      return { success: false, skipped: false, warnings: [], errors: [error.message] };
-    }
-  };
-}
 
 // ---------------------------------------------------------------------------
 // forge worktree command — test/forge-worktree.test.js
@@ -123,202 +111,6 @@ describe('forge worktree command', () => {
     expect(wtAdd).toBeTruthy();
     expect(wtAdd.args).toContain('-b');
     expect(wtAdd.args).toContain('feat/my-feature');
-  });
-
-  // (c) create: uses junction symlink on Windows for .beads
-  test('create uses junction symlink on Windows', async () => {
-    const mod = require('../../lib/commands/worktree');
-    const calls = [];
-    const mockExec = (cmd, args, _opts) => {
-      calls.push({ cmd, args });
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
-      if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
-      return Buffer.from('');
-    };
-    const mockSpawn = () => ({ status: 0 });
-    const symlinkCalls = [];
-    const mockFs = {
-      mkdirSync: () => {},
-      existsSync: (p) => p.endsWith('.beads'),
-      symlinkSync: (target, dest, type) => { symlinkCalls.push({ target, dest, type }); },
-      readdirSync: () => [],
-      cpSync: () => {},
-    };
-
-    await mod.handler(
-      ['create', 'win-test'], {}, '/fake/root',
-      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'win32' }
-    );
-
-    expect(symlinkCalls.length).toBeGreaterThan(0);
-    expect(symlinkCalls[0].type).toBe('junction');
-  });
-
-  // (d) create: falls back to backup restore on EPERM
-  test('create restores from backup when symlink throws EPERM', async () => {
-    const mod = require('../../lib/commands/worktree');
-    const calls = [];
-    const mockExec = (cmd, args, _opts) => {
-      calls.push({ cmd, args });
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
-      if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
-      return Buffer.from('');
-    };
-    const mockSpawn = () => ({ status: 0 });
-    const mockFs = {
-      mkdirSync: () => {},
-      existsSync: (p) => p.endsWith('.beads'),
-      symlinkSync: () => {
-        const err = new Error('Operation not permitted');
-        err.code = 'EPERM';
-        throw err;
-      },
-      readdirSync: (_p) => ['issues.jsonl'],
-      cpSync: () => {
-        throw new Error('copy fallback should not be used');
-      },
-    };
-
-    const result = await mod.handler(
-      ['create', 'perm-test'], {}, '/fake/root',
-      {
-        _exec: mockExec,
-        _spawn: mockSpawn,
-        _fs: mockFs,
-        _platform: 'linux',
-        _safeBeadsInit: createMockSafeBeadsInit()
-      }
-    );
-
-    expect(result.success).toBe(true);
-    expect(calls).toContainEqual({
-      cmd: 'bd',
-      args: ['init', '--force']
-    });
-    expect(calls).toContainEqual({
-      cmd: 'bd',
-      args: ['backup', 'restore', path.resolve('/fake/root', '.beads', 'backup')]
-    });
-    expect(result.beadsWarning).toContain('restored from backup');
-  });
-
-  test('create warns after fresh init when backup restore is unavailable', async () => {
-    const mod = require('../../lib/commands/worktree');
-    const calls = [];
-    const mockExec = (cmd, args, _opts) => {
-      calls.push({ cmd, args });
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
-      if (cmd === 'bd' && args[0] === '--version') return Buffer.from('beads 1.0.0\n');
-      if (cmd === 'bd' && args[0] === 'backup' && args[1] === 'restore') {
-        throw new Error('no backup files found');
-      }
-      return Buffer.from('');
-    };
-    const mockSpawn = () => ({ status: 0 });
-    const mockFs = {
-      mkdirSync: () => {},
-      existsSync: (p) => p.endsWith('.beads'),
-      symlinkSync: () => {
-        const err = new Error('Operation not permitted');
-        err.code = 'EPERM';
-        throw err;
-      },
-      readdirSync: (_p) => [],
-      cpSync: () => {
-        throw new Error('copy fallback should not be used');
-      },
-    };
-
-    const result = await mod.handler(
-      ['create', 'fresh-init'], {}, '/fake/root',
-      {
-        _exec: mockExec,
-        _spawn: mockSpawn,
-        _fs: mockFs,
-        _platform: 'linux',
-        _safeBeadsInit: createMockSafeBeadsInit()
-      }
-    );
-
-    expect(result.success).toBe(true);
-    expect(calls).toContainEqual({
-      cmd: 'bd',
-      args: ['init', '--force']
-    });
-    expect(result.beadsWarning).toContain('initialized fresh');
-  });
-
-  test('create keeps going with a warning when EPERM fallback cannot run bd init', async () => {
-    const mod = require('../../lib/commands/worktree');
-    const calls = [];
-    const mockExec = (cmd, args, _opts) => {
-      calls.push({ cmd, args });
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
-      if (cmd === 'bd' && args[0] === 'init') {
-        throw new Error('spawn bd ENOENT');
-      }
-      if (cmd === 'bd' && args[0] === '--version') {
-        throw new Error('spawn bd ENOENT');
-      }
-      return Buffer.from('');
-    };
-    const mockSpawn = () => ({ status: 0 });
-    const mockFs = {
-      mkdirSync: () => {},
-      existsSync: (p) => p.endsWith('.beads'),
-      symlinkSync: () => {
-        const err = new Error('Operation not permitted');
-        err.code = 'EPERM';
-        throw err;
-      },
-      readdirSync: (_p) => [],
-    };
-
-    const result = await mod.handler(
-      ['create', 'missing-bd'], {}, '/fake/root',
-      {
-        _exec: mockExec,
-        _spawn: mockSpawn,
-        _fs: mockFs,
-        _platform: 'linux',
-        _safeBeadsInit: createMockSafeBeadsInit()
-      }
-    );
-
-    expect(result.success).toBe(true);
-    expect(calls).toContainEqual({
-      cmd: 'bd',
-      args: ['init', '--force']
-    });
-    expect(result.beadsWarning).toContain('fresh init failed');
-  });
-
-  // (e) create: skips beads setup when .beads doesn't exist
-  test('create skips beads setup when .beads does not exist', async () => {
-    const mod = require('../../lib/commands/worktree');
-    const symlinkCalls = [];
-    const mockExec = (cmd, args, _opts) => {
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
-      return Buffer.from('');
-    };
-    const mockSpawn = () => ({ status: 0 });
-    const mockFs = {
-      mkdirSync: () => {},
-      existsSync: () => false, // .beads does not exist, worktree does not exist
-      symlinkSync: (target, dest, type) => { symlinkCalls.push({ target, dest, type }); },
-      readdirSync: () => [],
-      cpSync: () => {},
-    };
-
-    const result = await mod.handler(
-      ['create', 'no-beads'], {}, '/fake/root',
-      { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
-    );
-
-    expect(result.success).toBe(true);
-    expect(result.beadsWarning).toContain('not installed');
-    // Should NOT have attempted symlink
-    expect(symlinkCalls.length).toBe(0);
   });
 
   // (f) create: creates .worktrees dir if missing
@@ -432,30 +224,27 @@ describe('forge worktree command', () => {
     expect(wtRemove.args[2]).toContain('old-feature');
   });
 
-  // (n) remove: calls stopDolt before git worktree remove
-  test('remove calls stopDolt before git worktree remove', async () => {
+  // (n) remove: cleanup is pure git — no per-worktree issue-store server to stop
+  test('remove uses git worktree remove without stopping any server', async () => {
     const mod = require('../../lib/commands/worktree');
     const callOrder = [];
     const mockExec = (cmd, args, _opts) => {
-      if (cmd === 'bd' && args[0] === 'dolt' && args[1] === 'stop') {
-        callOrder.push('stopDolt');
-        return Buffer.from('');
+      if (cmd !== 'git') {
+        throw new Error(`unexpected non-git command: ${cmd}`);
       }
-      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'remove') {
+      if (args[0] === 'worktree' && args[1] === 'remove') {
         callOrder.push('worktreeRemove');
         return Buffer.from('');
       }
       return Buffer.from('');
     };
-    const mockFs = { readFileSync: () => { throw new Error('ENOENT'); } };
 
     await mod.handler(
       ['remove', 'done-feature'], {}, '/fake/root',
-      { _exec: mockExec, _fs: mockFs }
+      { _exec: mockExec }
     );
 
-    expect(callOrder[0]).toBe('stopDolt');
-    expect(callOrder[1]).toBe('worktreeRemove');
+    expect(callOrder).toEqual(['worktreeRemove']);
   });
 
   // (j) error: missing slug returns helpful error
