@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 
 // Module under test
 const {
@@ -21,24 +21,24 @@ describe('workflow-profiles', () => {
       expect(PROFILES.refactor).toBeTruthy();
     });
 
-    test('critical profile should have 8 stages', () => {
-      expect(PROFILES.critical.stages.length).toBe(8);
+    test('critical profile should have 7 stages', () => {
+      expect(PROFILES.critical.stages.length).toBe(7);
       expect(PROFILES.critical.stages.includes('/status')).toBeTruthy();
-      expect(PROFILES.critical.stages.includes('/premerge')).toBeTruthy();
+      expect(PROFILES.critical.stages.includes('/premerge')).toBeFalsy();
       expect(PROFILES.critical.stages.includes('/verify')).toBeTruthy();
       expect(PROFILES.critical.tdd).toBe('strict');
     });
 
     test('standard profile should include the default command template', () => {
-      expect(PROFILES.standard.stages.length).toBe(7);
+      expect(PROFILES.standard.stages.length).toBe(6);
       expect(PROFILES.standard.stages.includes('/status')).toBeTruthy();
       expect(PROFILES.standard.stages.includes('/plan')).toBeTruthy();
-      expect(PROFILES.standard.stages.includes('/premerge')).toBeTruthy();
+      expect(PROFILES.standard.stages.includes('/premerge')).toBeFalsy();
       expect(PROFILES.standard.tdd).toBe('required');
     });
 
-    test('simple profile should have 4 stages', () => {
-      expect(PROFILES.simple.stages.length).toBe(4);
+    test('simple profile should have 3 stages', () => {
+      expect(PROFILES.simple.stages.length).toBe(3);
       expect(PROFILES.simple.stages.includes('/dev')).toBeTruthy();
       expect(!PROFILES.simple.stages.includes('/research')).toBeTruthy();
       expect(PROFILES.simple.tdd).toBe('recommended');
@@ -51,14 +51,14 @@ describe('workflow-profiles', () => {
       expect(PROFILES.hotfix.tdd).toBe('required');
     });
 
-    test('docs profile should have 3 stages', () => {
-      expect(PROFILES.docs.stages.length).toBe(3);
+    test('docs profile should have 2 stages', () => {
+      expect(PROFILES.docs.stages.length).toBe(2);
       expect(PROFILES.docs.stages.includes('/verify')).toBeTruthy();
       expect(PROFILES.docs.tdd).toBe('no');
     });
 
-    test('refactor profile should have 5 stages', () => {
-      expect(PROFILES.refactor.stages.length).toBe(5);
+    test('refactor profile should have 4 stages', () => {
+      expect(PROFILES.refactor.stages.length).toBe(4);
       expect(PROFILES.refactor.stages.includes('/plan')).toBeTruthy();
       expect(PROFILES.refactor.tdd).toBe('strict');
     });
