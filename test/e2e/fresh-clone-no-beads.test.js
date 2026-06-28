@@ -86,14 +86,14 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
         const repoNodeModules = path.join(REPO_ROOT, 'node_modules');
         const cloneNodeModules = path.join(freshCloneDir, 'node_modules');
         if (fs.existsSync(repoNodeModules) && !fs.existsSync(cloneNodeModules)) {
-          if (IS_WINDOWS) {
-            execFileSync('cmd', ['/c', 'mklink', '/J', cloneNodeModules, repoNodeModules], { stdio: 'pipe' });
-          } else {
-            try {
-              fs.symlinkSync(repoNodeModules, cloneNodeModules, 'junction');
-            } catch {
-              fs.symlinkSync(repoNodeModules, cloneNodeModules, 'dir');
-            }
+          // `fs.symlinkSync(..., 'junction')` makes a Windows junction (no admin,
+          // no shell-out) and a normal dir symlink elsewhere. Using the Node API
+          // instead of `cmd /c mklink` avoids building a shell command from path
+          // values (CodeQL js/shell-command-injection-from-environment).
+          try {
+            fs.symlinkSync(repoNodeModules, cloneNodeModules, 'junction');
+          } catch {
+            fs.symlinkSync(repoNodeModules, cloneNodeModules, 'dir');
           }
         }
         expect(fs.existsSync(cloneNodeModules)).toBe(true);
