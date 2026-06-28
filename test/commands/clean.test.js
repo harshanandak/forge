@@ -66,8 +66,6 @@ describe('forge clean command', () => {
           `worktree ${activePath}\nbranch refs/heads/feat/active-feature\n\n`
         );
       }
-      // bd dolt stop succeeds
-      if (cmd === 'bd') return Buffer.from('');
       // git worktree remove
       if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'remove') {
         removedPaths.push(args[2]);
@@ -84,8 +82,8 @@ describe('forge clean command', () => {
     expect(removedPaths[0]).toContain('merged-feature');
   });
 
-  // (d) Calls stopDolt before removing worktree
-  test('calls stopDolt before removing each merged worktree', async () => {
+  // (d) Cleanup is pure git — no per-worktree issue-store server to stop
+  test('removes merged worktrees with pure git (no server-stop step)', async () => {
     const mod = require('../../lib/commands/clean');
     const callOrder = [];
     const mockFs = {
@@ -99,18 +97,17 @@ describe('forge clean command', () => {
       readFileSync: () => '',
     };
     const mockExec = (cmd, args, _opts) => {
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--merged') {
+      if (cmd !== 'git') {
+        throw new Error(`unexpected non-git command: ${cmd}`);
+      }
+      if (args[0] === 'branch' && args[1] === '--merged') {
         return Buffer.from('  feat/done-feature\n');
       }
-      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'list') {
+      if (args[0] === 'worktree' && args[1] === 'list') {
         const wtPath = path.resolve('/fake/root', '.worktrees', 'done-feature');
         return Buffer.from(`worktree ${wtPath}\nbranch refs/heads/feat/done-feature\n\n`);
       }
-      if (cmd === 'bd' && args[0] === 'dolt' && args[1] === 'stop') {
-        callOrder.push('stopDolt');
-        return Buffer.from('');
-      }
-      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'remove') {
+      if (args[0] === 'worktree' && args[1] === 'remove') {
         callOrder.push('worktreeRemove');
         return Buffer.from('');
       }
@@ -118,7 +115,7 @@ describe('forge clean command', () => {
     };
 
     await mod.handler([], {}, '/fake/root', { _exec: mockExec, _fs: mockFs });
-    expect(callOrder).toEqual(['stopDolt', 'worktreeRemove']);
+    expect(callOrder).toEqual(['worktreeRemove']);
   });
 
   // (e) --dry-run reports without removing
