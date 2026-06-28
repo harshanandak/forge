@@ -34,9 +34,11 @@ describe('forge release check command', () => {
     const blockerIds = result.report.blockers.map(blocker => blocker.id);
     // kernel-backed-forge-issue cleared once _issue.js was de-beaded, the kernel
     // adapter exposed `dep`, and claim/release became kernel-backed static commands.
+    // premerge-embedded-gate cleared once pre-merge was re-homed as a task-type
+    // gate (WORKFLOW_GATES) and the premerge token left stages.js, workflow-profiles.js,
+    // and AGENTS.md.
     expect(blockerIds).toEqual([
       'bd-hot-path-issue-commands',
-      'premerge-embedded-gate',
       'fresh-clone-no-beads-acceptance',
     ]);
 

@@ -11,8 +11,9 @@ This project ships a **default TDD-first workflow template** with 7 named stage 
 | 3     | `/validate`    | Validate + 4-phase debug mode on failure                    | All types    |
 | 4     | `/ship`     | Create PR with documentation                             | All types    |
 | 5     | `/review`   | Address ALL PR feedback                                  | Critical, Standard |
-| 6     | `/premerge` | Complete docs on feature branch, hand off PR             | All types    |
-| 7     | `/verify`   | Post-merge health check (CI, deployments)                | All types    |
+| 6     | `/verify`   | Post-merge health check (CI, deployments)                | All types    |
+
+**Pre-merge gate (not a numbered stage)**: Completing docs on the feature branch and handing off the PR for merge is a **task-type gate and checkpoint**, not a standalone workflow stage. The gate runs for Critical, Standard, and Refactor work and is embedded in the `/ship` and `/review` stages — finish the doc updates, confirm CI is green, then hand off the PR. Simple, Hotfix, and Docs work skip the gate.
 
 **Utility**: `/status` — Context check before starting work (not a numbered stage)
 
@@ -25,12 +26,12 @@ When the user requests work, **you MUST automatically classify** the change type
 ### Critical (Full default workflow template)
 **Triggers:** Security, authentication, payments, breaking changes, new architecture, data migrations
 **Example:** "Add OAuth login", "Migrate database schema", "Implement payment gateway"
-**Workflow:** plan → dev → validate → ship → review → premerge → verify
+**Workflow:** plan → dev → validate → ship → review → verify (pre-merge gate before merge)
 
 ### Standard (default workflow without post-merge verify)
 **Triggers:** Normal features, enhancements, new components
 **Example:** "Add user profile page", "Create notification system"
-**Workflow:** plan → dev → validate → ship → review → premerge
+**Workflow:** plan → dev → validate → ship → review (pre-merge gate before merge)
 
 ### Simple (3-stage workflow, skip plan)
 **Triggers:** Bug fixes, UI tweaks, small changes, minor refactors
@@ -50,7 +51,7 @@ When the user requests work, **you MUST automatically classify** the change type
 ### Refactor (5-stage workflow for safe cleanup)
 **Triggers:** Code cleanup, performance optimization, technical debt reduction
 **Example:** "Refactor auth service", "Extract utility functions"
-**Workflow:** plan → dev → validate → ship → premerge
+**Workflow:** plan → dev → validate → ship (pre-merge gate before merge)
 
 ## Enforcement Philosophy
 
@@ -120,7 +121,7 @@ Task 2: Validation logic
 
 ```json
 {
-  "id": "bd-x7y2",
+  "id": "forge-x7y2",
   "type": "critical",
   "currentStage": "dev",
   "completedStages": ["plan"],
@@ -162,7 +163,6 @@ Task 2: Validation logic
 - [skills/ship/SKILL.md](skills/ship/SKILL.md) - How to create PRs
 - [skills/review/SKILL.md](skills/review/SKILL.md) - How to address PR feedback (with HARD-GATE exit)
 - [skills/shepherd/SKILL.md](skills/shepherd/SKILL.md) - How to run a bounded PR monitor pass (utility; never merges, never resolves threads)
-- [skills/premerge/SKILL.md](skills/premerge/SKILL.md) - How to complete docs and hand off PR for merge
 - [skills/verify/SKILL.md](skills/verify/SKILL.md) - How to verify post-merge health
 
 **Planning documents** (created by `/plan`, consumed by `/dev`):
@@ -178,7 +178,7 @@ Task 2: Validation logic
 **Forge v3 / Kernel Plan (active design):**
 - [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) — canonical Forge Kernel authority reset plan for issue authority, local broker, team authority, adapters, storage, and gates
 - [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D44 decisions ledger with rationale + tradeoffs + anti-decisions; D44 supersedes Beads-only authority portions of earlier decisions
-- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its Beads/Dolt default-substrate language over D44
+- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its legacy default-substrate language over D44
 - See [docs/INDEX.md](docs/INDEX.md) for the full reading order across the v3 design folder
 
 **Load these files when you need detailed instructions for a specific stage.**
@@ -196,7 +196,7 @@ Every stage transition should carry structured context so the next stage (or a n
 | /validate  | All checks pass/fail summary | Failures diagnosed | Scripts/commands run | Ship readiness |
 | /ship      | PR created, checks pending | Template sections filled | PR URL, branch name | Review focus areas |
 | /review    | All feedback addressed | Comment resolutions | Fixed files, commit SHAs | Doc update needs |
-| /premerge  | Docs updated, CI green | N/A | Updated doc files | Merge instructions |
+| pre-merge gate | Docs updated, CI green | N/A | Updated doc files | Merge instructions |
 
 ### Validation Command
 
@@ -233,10 +233,9 @@ bash scripts/beads-context.sh stage-transition <id> dev validate \
 
 This convention is **advisory only**. The `validate` subcommand prints warnings but always exits 0. It does not block any stage transition. The goal is to build good habits, not to create friction.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
+## Forge Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+This project uses the **Forge Kernel** for issue tracking. Run `forge prime` to see full workflow context and commands.
 
 ### Quick Reference
 
@@ -249,9 +248,9 @@ forge close <id>      # Complete work
 
 ### Rules
 
-- Use `forge` as the routine command surface for current bd-backed issue tracking and sync workflows until Forge Kernel replaces it — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. Beads (`bd`) remains the current operational tracker for existing issues, but not the target architecture. New issue-authority work must route through the Forge Kernel design. Use `bd` directly only for operations Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, and `bd dolt *`. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to Beads (see `docs/guides/BEADS_GITHUB_SYNC.md`).
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Use `forge` as the routine command surface for issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. New issue-authority work routes through the Forge Kernel design. Use `forge issue` subcommands (e.g. `forge issue dep`, `forge issue comment`) for operations beyond the shortcuts above. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to the issue store.
+- Run `forge prime` for detailed command reference and session close protocol
+- Use `forge remember` for persistent knowledge — do NOT use MEMORY.md files
 
 ## Session Completion
 
@@ -265,7 +264,7 @@ forge close <id>      # Complete work
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
     git pull --rebase
-    forge sync     # wraps the supported Beads sync flow when Beads is configured
+    forge sync     # wraps the supported issue-store sync flow when the issue store is configured
     git push
     git status  # MUST show "up to date with origin"
    ```
@@ -279,4 +278,3 @@ forge close <id>      # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 - After fixing review feedback, always push the changes and resolve the related GitHub review threads via the GraphQL API before considering the work complete
-<!-- END BEADS INTEGRATION -->
