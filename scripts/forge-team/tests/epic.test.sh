@@ -87,7 +87,7 @@ output="$(cmd_epic "forge-epic1" 2>&1)" || rc=$?
 assert_exit "exits 0" 0 "$rc"
 assert_contains "shows epic id" "forge-epic1" "$output"
 assert_contains "progress shows 1/3" "1/3" "$output"
-assert_contains "shows done child marker" "forge-child1" "$output"
+assert_contains "shows done child marker" "✓ forge-child1" "$output"
 assert_contains "shows in_progress child" "forge-child2" "$output"
 assert_contains "shows open child" "forge-child3" "$output"
 

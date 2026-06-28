@@ -109,8 +109,16 @@ fi
   const forgeScript = path.join(tmpDir, 'forge');
   const forgeCases = (jsonData.epicChildren || []).map((ec) => {
     const kids = ec.children || [];
-    const total = kids.length;
-    const done = kids.filter((k) => k.status === 'closed' || k.status === 'done').length;
+    // The real issue.children rollup excludes cancelled children from
+    // total/percentage; mirror that here so a cancelled-child fixture exercises
+    // the payload production actually emits (and can't hide scoring bugs).
+    const activeKids = kids.filter((k) => k.status !== 'cancelled');
+    const total = activeKids.length;
+    const done = activeKids.filter((k) => k.status === 'closed' || k.status === 'done').length;
+    const inProgress = activeKids.filter((k) => k.status === 'in_progress').length;
+    const review = activeKids.filter((k) => k.status === 'review').length;
+    const open = activeKids.filter((k) => k.status === 'open').length;
+    const cancelled = kids.length - activeKids.length;
     const envelope = {
       schema_version: 'forge.issue.v1',
       command: 'issue.children',
@@ -120,10 +128,10 @@ fi
         rollup: {
           total,
           done,
-          in_progress: 0,
-          open: total - done,
-          review: 0,
-          cancelled: 0,
+          in_progress: inProgress,
+          open,
+          review,
+          cancelled,
           blocked: 0,
           percentage: total === 0 ? 0 : Math.round((done / total) * 100),
           by_status: {},

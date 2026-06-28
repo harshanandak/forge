@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 50 | 7 |
-| runtime | 263 | 34 |
+| runtime | 265 | 34 |
 | docs | 394 | 47 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -50,8 +50,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 65 (bd), 76 (bd), 86 (bd)
 - [ ] lib/deprecated-sync-cleanup.js (4)
   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
-- [ ] lib/forge-issues.js (13)
-  - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 93 (bd), 94 (bd), 97 (bd), 131 (bd), 155 (bd), 157 (bd), 161 (bd), 274 (bd)
+- [ ] lib/forge-issues.js (15)
+  - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 99 (bd), 100 (bd), 103 (bd), 137 (bd), 161 (bd), 163 (bd), 167 (bd), 267 (bd), 286 (bd)
 - [ ] lib/harness-capability-matrix.js (1)
   - lines: 121 (bd)
 - [ ] lib/insights.js (7)

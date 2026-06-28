@@ -76,8 +76,10 @@ cmd_epic() {
   # 4. Empty epic → no children.
   if [[ "$total" -eq 0 ]]; then
     if [[ "$format_flag" == "--format=json" ]]; then
-      printf '{"epic_id":"%s","title":"%s","total":0,"done":0,"in_progress":0,"open_count":0,"percentage":0,"children":[],"by_developer":{},"blocked":[]}\n' \
-        "$issue_id" "$epic_title"
+      # Build via jq --arg so a title containing quotes/backslashes stays valid
+      # JSON (parity with the non-empty path below).
+      jq -cn --arg epic_id "$issue_id" --arg title "$epic_title" \
+        '{epic_id:$epic_id,title:$title,total:0,done:0,in_progress:0,open_count:0,percentage:0,children:[],by_developer:{},blocked:[]}'
       return 0
     fi
     echo "Epic: $issue_id — $epic_title"
