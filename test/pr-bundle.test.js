@@ -127,8 +127,30 @@ describe('gatherPrBundle — complete PR-state gather', () => {
     expect(unresolvedComments.map((c) => c.threadId)).toEqual(['T1', 'T3']);
     // bot author is retained (any author), unlike the shepherd's human-only filter
     expect(unresolvedComments[0]).toEqual({
-      author: 'coderabbitai', path: 'src/a.js', line: 10, body: 'nit: rename', threadId: 'T1',
+      author: 'coderabbitai',
+      path: 'src/a.js',
+      line: 10,
+      body: 'nit: rename',
+      threadId: 'T1',
+      comments: [{ author: 'coderabbitai', body: 'nit: rename' }],
     });
+  });
+
+  test('a later human reply on a bot-opened thread is preserved (not hidden)', async () => {
+    const { adapter } = makeAdapter({
+      threads: [{
+        threadId: 'T9', path: 'x.js', line: 1, isResolved: false,
+        comments: [
+          { author: 'coderabbitai', body: 'consider X' },
+          { author: 'maintainer', body: 'actually do Y instead' },
+        ],
+      }],
+    });
+    const { unresolvedComments } = await gatherPrBundle({ ...BASE_CTX, adapter });
+    // opener anchors author/body, but the full conversation rides along so the
+    // fixer-agent sees the maintainer's actionable reply.
+    expect(unresolvedComments[0].comments).toHaveLength(2);
+    expect(unresolvedComments[0].comments[1]).toEqual({ author: 'maintainer', body: 'actually do Y instead' });
   });
 
   test('required set null (unreadable) → required is null per check, never false', async () => {
@@ -188,6 +210,7 @@ describe('buildCi / toUnresolvedComment helpers', () => {
     const mapped = toUnresolvedComment({ comments: [{ author: 'x', body: 'hi' }] });
     expect(mapped).toEqual({
       author: 'x', path: null, line: null, body: 'hi', threadId: null,
+      comments: [{ author: 'x', body: 'hi' }],
     });
   });
 });
