@@ -46,6 +46,7 @@ function normalizeBashEnv(env = {}) {
   return {
     ...env,
     ...(env.BD_CMD ? { BD_CMD: toBashPath(env.BD_CMD) } : {}),
+    ...(env.FORGE_CMD ? { FORGE_CMD: toBashPath(env.FORGE_CMD) } : {}),
     ...(env.GIT_CMD ? { GIT_CMD: toBashPath(env.GIT_CMD) } : {}),
     ...(env.JQ_CMD ? { JQ_CMD: toBashPath(env.JQ_CMD) } : {}),
     ...(env.REAL_GIT ? { REAL_GIT: toBashPath(env.REAL_GIT) } : {}),
@@ -96,19 +97,64 @@ if [[ "$1" == "list" ]]; then
   cat <<'JSONEOF'
 ${JSON.stringify(jsonData.issues || [])}
 JSONEOF
-elif [[ "$1" == "children" ]]; then
-  EPIC_ID="$2"
-  case "$EPIC_ID" in
-${(jsonData.epicChildren || []).map((ec) => `    "${ec.id}") cat <<'JSONEOF'
-${JSON.stringify(ec.children)}
-JSONEOF
-    ;;`).join('\n')}
-    *) echo "[]" ;;
-  esac
 fi
 `;
   fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
-  return { tmpDir, mockScript };
+
+  // The de-beaded smart-status.sh sources epic child rollups from
+  // `forge issue children <id> --json` (the kernel issue-command-contract envelope),
+  // not from `bd children`. Build a matching forge mock from the same epicChildren
+  // fixtures — smart-status reads only .data.rollup.total + .data.rollup.done, and the
+  // kernel `done` status replaces the legacy beads `closed`.
+  const forgeScript = path.join(tmpDir, 'forge');
+  const forgeCases = (jsonData.epicChildren || []).map((ec) => {
+    const kids = ec.children || [];
+    // The real issue.children rollup excludes cancelled children from
+    // total/percentage; mirror that here so a cancelled-child fixture exercises
+    // the payload production actually emits (and can't hide scoring bugs).
+    const activeKids = kids.filter((k) => k.status !== 'cancelled');
+    const total = activeKids.length;
+    const done = activeKids.filter((k) => k.status === 'closed' || k.status === 'done').length;
+    const inProgress = activeKids.filter((k) => k.status === 'in_progress').length;
+    const review = activeKids.filter((k) => k.status === 'review').length;
+    const open = activeKids.filter((k) => k.status === 'open').length;
+    const cancelled = kids.length - activeKids.length;
+    const envelope = {
+      schema_version: 'forge.issue.v1',
+      command: 'issue.children',
+      data: {
+        epic: { id: ec.id, title: ec.id, type: 'epic', status: 'open' },
+        children: kids.map((k) => ({ id: k.id, status: k.status === 'closed' ? 'done' : k.status })),
+        rollup: {
+          total,
+          done,
+          in_progress: inProgress,
+          open,
+          review,
+          cancelled,
+          blocked: 0,
+          percentage: total === 0 ? 0 : Math.round((done / total) * 100),
+          by_status: {},
+        },
+        count: total,
+      },
+      next_commands: [],
+    };
+    return `    "${ec.id}") cat <<'JSONEOF'\n${JSON.stringify(envelope)}\nJSONEOF\n    ;;`;
+  }).join('\n');
+  const emptyEnvelope = '{"schema_version":"forge.issue.v1","command":"issue.children","data":{"epic":null,"children":[],"rollup":{"total":0,"done":0,"in_progress":0,"open":0,"review":0,"cancelled":0,"blocked":0,"percentage":0,"by_status":{}},"count":0},"next_commands":[]}';
+  const forgeContent = `#!/usr/bin/env bash
+if [[ "$1" == "issue" && "$2" == "children" ]]; then
+  EPIC_ID="$3"
+  case "$EPIC_ID" in
+${forgeCases}
+    *) echo '${emptyEnvelope}' ;;
+  esac
+fi
+`;
+  fs.writeFileSync(forgeScript, forgeContent, { mode: 0o755 });
+
+  return { tmpDir, mockScript, forgeScript };
 }
 
 function cleanupTmpDir(tmpDir) {

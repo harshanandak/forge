@@ -88,6 +88,7 @@ describe('smart-status.sh', () => {
 
       epicIssues = parseIssues(runSmartStatus(['--json'], {
         BD_CMD: epicMock.mockScript,
+        FORGE_CMD: epicMock.forgeScript,
       }).stdout);
     });
 

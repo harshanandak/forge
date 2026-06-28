@@ -102,9 +102,12 @@ describe('0.1.0 readiness report', () => {
     // that single read), so it carries no bd/.beads/dolt token.
     expect(hotPathBlocker.evidence.some(item => item.path === 'lib/workflow/state-manager.js')).toBe(false);
     expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/preflight.sh')).toBe(false);
-    // Still hot-path evidence until the sibling lanes land (epic + premerge PRs).
+    // scripts/forge-team/ (epic.sh) was de-beaded in THIS lane: epic rendering now
+    // consumes `forge issue children`'s kernel envelope, so it carries no bd token.
+    expect(hotPathBlocker.evidence.some(item => item.path.startsWith('scripts/forge-team/'))).toBe(false);
+    // scripts/smart-status.sh is the last remaining hot-path surface — its full
+    // bd-list de-bead + scorer reshape is deferred to a dedicated follow-up.
     expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/smart-status.sh')).toBe(true);
-    expect(hotPathBlocker.evidence.some(item => item.path.startsWith('scripts/forge-team/'))).toBe(true);
   }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('renders human-readable blocker output and the checked-in D20 audit artifact', () => {

@@ -7,74 +7,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-# ── Create mock bd ───────────────────────────────────────────────────────
+# ── Create mock forge ────────────────────────────────────────────────────
+# Only handles `forge issue children <id> --json`, emitting the kernel
+# issue-command-contract envelope ({schema_version,command,data:{epic,children,
+# rollup,count},next_commands}). An unknown id mirrors the kernel not-found path:
+# error on stderr, empty stdout, non-zero exit.
 mock_dir="$(mktemp -d)"
 
-cat > "$mock_dir/bd" << 'MOCK'
+cat > "$mock_dir/forge" << 'MOCK'
 #!/usr/bin/env bash
-case "$1 $2" in
-  "show forge-epic1")
-    cat << 'SHOW'
-◐ forge-epic1 · Test Epic [● P2 · IN_PROGRESS]
-Owner: devone
-
-BLOCKS
-  ← ✓ forge-child1: Child 1 (closed)
-  ← ◐ forge-child2: Child 2 (in_progress)
-  ← ○ forge-child3: Child 3 (open)
-SHOW
-    ;;
-  "show forge-child1")
-    echo "✓ forge-child1 · Child 1 [● P2 · CLOSED]"
-    echo "Owner: devone"
-    ;;
-  "show forge-child2")
-    echo "◐ forge-child2 · Child 2 [● P2 · IN_PROGRESS]"
-    echo "Owner: devtwo"
-    ;;
-  "show forge-child3")
-    echo "○ forge-child3 · Child 3 [● P3 · OPEN]"
-    echo "Owner: devone"
-    ;;
-  "show forge-empty")
-    cat << 'SHOW'
-○ forge-empty · Empty Epic [● P2 · OPEN]
-Owner: devone
-SHOW
-    ;;
-  "show forge-blocked")
-    cat << 'SHOW'
-◐ forge-blocked · Blocked Epic [● P2 · IN_PROGRESS]
-Owner: devone
-
-BLOCKS
-  ← ✓ forge-bchild1: Bchild 1 (closed)
-  ← ◐ forge-bchild2: Bchild 2 (in_progress)
-  ← ○ forge-bchild3: Bchild 3 (open)
-SHOW
-    ;;
-  "show forge-bchild1")
-    echo "✓ forge-bchild1 · Bchild 1 [● P2 · CLOSED]"
-    echo "Owner: devone"
-    ;;
-  "show forge-bchild2")
-    cat << 'SHOW'
-◐ forge-bchild2 · Bchild 2 [● P2 · IN_PROGRESS]
-Owner: devtwo
-
-BLOCKED_BY
-  → forge-bchild1: Bchild 1
-SHOW
-    ;;
-  "show forge-bchild3")
-    echo "○ forge-bchild3 · Bchild 3 [● P3 · OPEN]"
-    echo "Owner: devone"
-    ;;
-esac
+if [[ "$1" == "issue" && "$2" == "children" ]]; then
+  id="$3"
+  case "$id" in
+    forge-epic1)
+      cat << 'JSON'
+{"schema_version":"forge.issue.v1","command":"issue.children","data":{"epic":{"id":"forge-epic1","title":"Test Epic","type":"epic","status":"in_progress"},"children":[{"id":"forge-child1","title":"Child 1","status":"done","assignee":"devone","blocked":false,"blocked_by":[],"dependencies":[],"dependents":[]},{"id":"forge-child2","title":"Child 2","status":"in_progress","assignee":"devtwo","blocked":false,"blocked_by":[],"dependencies":[],"dependents":[]},{"id":"forge-child3","title":"Child 3","status":"open","assignee":"devone","blocked":false,"blocked_by":[],"dependencies":[],"dependents":[]}],"rollup":{"total":3,"done":1,"in_progress":1,"open":1,"review":0,"cancelled":0,"blocked":0,"percentage":33,"by_status":{"open":1,"in_progress":1,"review":0,"done":1,"cancelled":0}},"count":3},"next_commands":[]}
+JSON
+      ;;
+    forge-empty)
+      cat << 'JSON'
+{"schema_version":"forge.issue.v1","command":"issue.children","data":{"epic":{"id":"forge-empty","title":"Empty Epic","type":"epic","status":"open"},"children":[],"rollup":{"total":0,"done":0,"in_progress":0,"open":0,"review":0,"cancelled":0,"blocked":0,"percentage":0,"by_status":{"open":0,"in_progress":0,"review":0,"done":0,"cancelled":0}},"count":0},"next_commands":[]}
+JSON
+      ;;
+    forge-blocked)
+      cat << 'JSON'
+{"schema_version":"forge.issue.v1","command":"issue.children","data":{"epic":{"id":"forge-blocked","title":"Blocked Epic","type":"epic","status":"in_progress"},"children":[{"id":"forge-bchild1","title":"Bchild 1","status":"done","assignee":"devone","blocked":false,"blocked_by":[],"dependencies":[],"dependents":["forge-bchild2"]},{"id":"forge-bchild2","title":"Bchild 2","status":"in_progress","assignee":"devtwo","blocked":true,"blocked_by":["forge-bchild1"],"dependencies":["forge-bchild1"],"dependents":[]},{"id":"forge-bchild3","title":"Bchild 3","status":"open","assignee":"devone","blocked":false,"blocked_by":[],"dependencies":[],"dependents":[]}],"rollup":{"total":3,"done":1,"in_progress":1,"open":1,"review":0,"cancelled":0,"blocked":1,"percentage":33,"by_status":{"open":1,"in_progress":1,"review":0,"done":1,"cancelled":0}},"count":3},"next_commands":[]}
+JSON
+      ;;
+    *)
+      echo "Issue $id not found" >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+exit 1
 MOCK
-chmod +x "$mock_dir/bd"
+chmod +x "$mock_dir/forge"
 
-export BD_CMD="$mock_dir/bd"
+export FORGE_CMD="$mock_dir/forge"
 
 # Source the library under test
 source "$SCRIPT_DIR/lib/epic.sh"
@@ -116,7 +87,7 @@ output="$(cmd_epic "forge-epic1" 2>&1)" || rc=$?
 assert_exit "exits 0" 0 "$rc"
 assert_contains "shows epic id" "forge-epic1" "$output"
 assert_contains "progress shows 1/3" "1/3" "$output"
-assert_contains "shows closed child marker" "forge-child1" "$output"
+assert_contains "shows done child marker" "✓ forge-child1" "$output"
 assert_contains "shows in_progress child" "forge-child2" "$output"
 assert_contains "shows open child" "forge-child3" "$output"
 
@@ -145,13 +116,14 @@ echo "── Test 5: --format=json ──"
 rc=0
 output_json="$(cmd_epic "forge-epic1" "--format=json" 2>&1)" || rc=$?
 assert_exit "json exits 0" 0 "$rc"
-# Validate it's actual JSON (check for opening brace and key fields)
-assert_contains "json has epic_id" "epic_id" "$output_json"
-assert_contains "json has total" "total" "$output_json"
-assert_contains "json has done" "done" "$output_json"
-assert_contains "json has percentage" "percentage" "$output_json"
-assert_contains "json has children" "children" "$output_json"
-assert_contains "json has by_developer" "by_developer" "$output_json"
+# Validate it parses as JSON and carries the expected fields/values.
+assert_eq "json total is 3" "3" "$(printf '%s' "$output_json" | jq -r '.total')"
+assert_eq "json done is 1" "1" "$(printf '%s' "$output_json" | jq -r '.done')"
+assert_eq "json percentage is 33" "33" "$(printf '%s' "$output_json" | jq -r '.percentage')"
+assert_eq "json has 3 children" "3" "$(printf '%s' "$output_json" | jq -r '.children | length')"
+assert_eq "json by_developer devone total 2" "2" "$(printf '%s' "$output_json" | jq -r '.by_developer.devone.total')"
+assert_eq "json by_developer devone done 1" "1" "$(printf '%s' "$output_json" | jq -r '.by_developer.devone.done')"
+assert_eq "json epic_id" "forge-epic1" "$(printf '%s' "$output_json" | jq -r '.epic_id')"
 
 # ── Test 6: Missing issue-id → error ────────────────────────────────────
 echo ""
@@ -169,6 +141,15 @@ output_blocked="$(cmd_epic "forge-blocked" 2>&1)" || rc=$?
 assert_exit "blocked epic exits 0" 0 "$rc"
 assert_contains "blocked section present" "Blocked" "$output_blocked"
 assert_contains "blocked child mentioned" "forge-bchild2" "$output_blocked"
+assert_contains "blocked-by id mentioned" "forge-bchild1" "$output_blocked"
+
+# ── Test 8: Unknown epic id → not-found error ────────────────────────────
+echo ""
+echo "── Test 8: Unknown epic id ──"
+rc=0
+output_unknown="$(cmd_epic "forge-nope" 2>&1)" || rc=$?
+assert_exit "unknown id returns 1" 1 "$rc"
+assert_contains "error about fetch" "Could not fetch" "$output_unknown"
 
 # ── Results ──────────────────────────────────────────────────────────────
 echo ""

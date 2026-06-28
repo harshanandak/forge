@@ -111,6 +111,7 @@ jq() {
 # Ã¢â€â‚¬Ã¢â€â‚¬ Configuration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 BD="${BD_CMD:-bd}"
+FORGE="${FORGE_CMD:-forge}"
 GIT="${GIT_CMD:-git}"
 JSON_MODE=0
 
@@ -206,9 +207,14 @@ if [ -n "$EPIC_IDS" ]; then
   # Process each epic (bash 3.2 compatible Ã¢â‚¬â€ read line by line)
   while IFS= read -r epic_id; do
     [ -z "$epic_id" ] && continue
-    CHILDREN_JSON="$("$BD" children "$epic_id" --json 2>/dev/null || echo '[]')"
-    TOTAL="$(printf '%s' "$CHILDREN_JSON" | jq 'length')"
-    CLOSED="$(printf '%s' "$CHILDREN_JSON" | jq '[.[] | select(.status == "closed")] | length')"
+    # Kernel `forge issue children` returns the rollup envelope; read total + the done
+    # count straight from the kernel-computed rollup (the kernel `done` status replaces
+    # the beads `closed` this math used to count). EPIC_STATS keeps its { total, closed }
+    # shape, so smart-status-score.js / scoring.js:getEpicProximity stay untouched.
+    CHILDREN_JSON="$("$FORGE" issue children "$epic_id" --json 2>/dev/null || echo '{}')"
+    [ -z "$CHILDREN_JSON" ] && CHILDREN_JSON='{}'
+    TOTAL="$(printf '%s' "$CHILDREN_JSON" | jq -r '(.data.rollup.total // 0)')"
+    CLOSED="$(printf '%s' "$CHILDREN_JSON" | jq -r '(.data.rollup.done // 0)')"
     EPIC_STATS="$(printf '%s' "$EPIC_STATS" | jq --arg id "$epic_id" --argjson total "$TOTAL" --argjson closed "$CLOSED" '. + {($id): {total: $total, closed: $closed}}')"
   done <<EOF
 $EPIC_IDS

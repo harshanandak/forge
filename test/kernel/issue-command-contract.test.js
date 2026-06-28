@@ -21,6 +21,7 @@ describe('Kernel issue command contract', () => {
 			'issue.stale',
 			'issue.orphans',
 			'issue.lint',
+			'issue.children',
 			'issue.create',
 			'issue.update',
 			'issue.close',

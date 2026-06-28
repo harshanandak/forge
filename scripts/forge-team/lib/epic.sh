@@ -2,12 +2,15 @@
 # scripts/forge-team/lib/epic.sh — Epic rollup view
 #
 # Shows epic progress with per-developer breakdown and blocked issue tracking.
+# All data comes from a SINGLE `forge issue children <id> --json` call: the kernel
+# computes the rollup (done-only percentage, per-status counts) and emits each child
+# with its assignee + blocked_by, so this layer only renders.
 #
 # Functions:
 #   cmd_epic  — Top-level dispatcher entry point
 #
 # Env overrides (for testing):
-#   BD_CMD   — Path to bd binary
+#   FORGE_CMD   — Path to forge binary (default: forge)
 #
 # This file does NOT set errexit/pipefail — callers manage their own shell options.
 
@@ -19,85 +22,10 @@ _EPIC_LIB_LOADED=1
 
 # ── Internal helpers ─────────────────────────────────────────────────────
 
-# _epic_get_bd — Returns the bd command path
-_epic_get_bd() {
-  printf '%s' "${BD_CMD:-bd}"
-}
-
-# _epic_parse_blocks <bd-show-output>
-# Extracts child issue IDs from the BLOCKS section.
-# Each line in BLOCKS looks like: ← ✓ forge-child1: Child 1 (closed)
-# Returns one ID per line.
-_epic_parse_blocks() {
-  local bd_output="$1"
-  local in_blocks=0
-
-  while IFS= read -r line; do
-    if [[ "$line" == "BLOCKS" ]]; then
-      in_blocks=1
-      continue
-    fi
-    # Stop at next section header (non-indented, non-empty line after BLOCKS)
-    if [[ $in_blocks -eq 1 ]]; then
-      if [[ -z "$line" ]]; then
-        continue
-      fi
-      if [[ "$line" =~ ^[A-Z] ]]; then
-        break
-      fi
-      # Extract issue ID: matches forge-XXXX pattern after the arrow+status marker
-      local child_id
-      child_id="$(printf '%s' "$line" | sed -n 's/.*← [^ ]* \([a-z0-9-]*\):.*/\1/p')"
-      if [[ -n "$child_id" ]]; then
-        printf '%s\n' "$child_id"
-      fi
-    fi
-  done <<< "$bd_output"
-}
-
-# _epic_get_child_info <child-id>
-# Returns: id|status|owner|title|blocked_by
-_epic_get_child_info() {
-  local child_id="$1"
-  local bd_cmd
-  bd_cmd="$(_epic_get_bd)"
-
-  local child_output
-  child_output="$("$bd_cmd" show "$child_id" 2>/dev/null)" || return 1
-
-  local first_line
-  first_line="$(printf '%s' "$child_output" | head -1)"
-
-  # Parse status from the first character/marker
-  local status="open"
-  if [[ "$first_line" == *"CLOSED"* ]] || [[ "$first_line" == *"✓"* ]]; then
-    status="closed"
-  elif [[ "$first_line" == *"IN_PROGRESS"* ]] || [[ "$first_line" == *"◐"* ]]; then
-    status="in_progress"
-  fi
-
-  # Parse title — between · and [
-  local title
-  title="$(printf '%s' "$first_line" | sed -n 's/^[^ ]* [^ ]* · \(.*\) \[.*/\1/p')"
-  if [[ -z "$title" ]]; then
-    title="$child_id"
-  fi
-
-  # Parse owner from "Owner: xxx" line
-  local owner=""
-  owner="$(printf '%s' "$child_output" | sed -n 's/^Owner: *//p' | head -1)"
-
-  # Check for BLOCKED_BY section
-  local blocked_by=""
-  blocked_by="$(printf '%s' "$child_output" | sed -n '/^BLOCKED_BY$/,/^[A-Z]/{ /^  /{ s/.*→ \([a-z0-9-]*\):.*/\1/p; }; }')"
-
-  printf '%s|%s|%s|%s|%s' "$child_id" "$status" "$owner" "$title" "$blocked_by"
-}
-
-# _epic_status_icon <status>
+# _epic_status_icon <status>  (kernel status vocabulary: open|in_progress|review|done|cancelled)
 _epic_status_icon() {
   case "$1" in
-    closed)      printf '%s' "✓" ;;
+    done)        printf '%s' "✓" ;;
     in_progress) printf '%s' "◐" ;;
     *)           printf '%s' "○" ;;
   esac
@@ -115,35 +43,43 @@ cmd_epic() {
     return 1
   fi
 
-  local bd_cmd
-  bd_cmd="$(_epic_get_bd)"
+  local forge_cmd
+  forge_cmd="${FORGE_CMD:-forge}"
 
-  # 1. Get epic details
-  local epic_output
-  epic_output="$("$bd_cmd" show "$issue_id" 2>/dev/null)" || {
+  # 1. Single query: epic header + direct children + kernel-computed rollup. A missing
+  #    or invalid id makes `forge issue children` fail (empty stdout) — treat as not found.
+  local response
+  response="$("$forge_cmd" issue children "$issue_id" --json 2>/dev/null)" || {
     echo "ERROR: Could not fetch epic $issue_id" >&2
     return 1
   }
-
-  # Parse epic title from first line
-  local epic_first_line
-  epic_first_line="$(printf '%s' "$epic_output" | head -1)"
-  local epic_title
-  epic_title="$(printf '%s' "$epic_first_line" | sed -n 's/^[^ ]* [^ ]* · \(.*\) \[.*/\1/p')"
-  if [[ -z "$epic_title" ]]; then
-    epic_title="$issue_id"
+  if [[ -z "$response" ]]; then
+    echo "ERROR: Could not fetch epic $issue_id" >&2
+    return 1
   fi
 
-  # 2. Parse BLOCKS section to find child issues
-  local children_ids
-  children_ids="$(_epic_parse_blocks "$epic_output")"
+  # 2. Epic title (fall back to the id when the header carries no title).
+  local epic_title
+  epic_title="$(printf '%s' "$response" | jq -r '.data.epic.title // empty' | tr -d '\r')"
+  [[ -z "$epic_title" ]] && epic_title="$issue_id"
 
-  # Handle empty epic
-  if [[ -z "$children_ids" ]]; then
+  # 3. Rollup counts (kernel-computed). open_count keeps the historical invariant
+  #    total = done + in_progress + open_count (the catch-all bucket also absorbs the
+  #    kernel review/cancelled statuses), so downstream consumers see a stable shape.
+  local total done_count in_progress_count open_count percentage
+  total="$(printf '%s' "$response" | jq -r '.data.rollup.total // 0' | tr -d '\r')"
+  done_count="$(printf '%s' "$response" | jq -r '.data.rollup.done // 0' | tr -d '\r')"
+  in_progress_count="$(printf '%s' "$response" | jq -r '.data.rollup.in_progress // 0' | tr -d '\r')"
+  percentage="$(printf '%s' "$response" | jq -r '.data.rollup.percentage // 0' | tr -d '\r')"
+  open_count=$((total - done_count - in_progress_count))
+
+  # 4. Empty epic → no children.
+  if [[ "$total" -eq 0 ]]; then
     if [[ "$format_flag" == "--format=json" ]]; then
-      cat <<ENDJSON
-{"epic_id":"$issue_id","title":"$epic_title","total":0,"done":0,"in_progress":0,"open_count":0,"percentage":0,"children":[],"by_developer":{},"blocked":[]}
-ENDJSON
+      # Build via jq --arg so a title containing quotes/backslashes stays valid
+      # JSON (parity with the non-empty path below).
+      jq -cn --arg epic_id "$issue_id" --arg title "$epic_title" \
+        '{epic_id:$epic_id,title:$title,total:0,done:0,in_progress:0,open_count:0,percentage:0,children:[],by_developer:{},blocked:[]}'
       return 0
     fi
     echo "Epic: $issue_id — $epic_title"
@@ -151,181 +87,81 @@ ENDJSON
     return 0
   fi
 
-  # 3. For each child: get status, assignee
-  local total=0
-  local done_count=0
-  local in_progress_count=0
-  local open_count=0
-  local blocked_list=""
-
-  # Arrays for child data (using indexed approach for bash 3 compat)
-  local child_lines=""
-  # Developer tracking: accumulate "dev:status" pairs
-  local dev_entries=""
-
-  while IFS= read -r child_id; do
-    [[ -z "$child_id" ]] && continue
-
-    local info
-    info="$(_epic_get_child_info "$child_id")" || continue
-
-    local c_id c_status c_owner c_title c_blocked
-    IFS='|' read -r c_id c_status c_owner c_title c_blocked <<< "$info"
-
-    total=$((total + 1))
-
-    case "$c_status" in
-      closed)      done_count=$((done_count + 1)) ;;
-      in_progress) in_progress_count=$((in_progress_count + 1)) ;;
-      *)           open_count=$((open_count + 1)) ;;
-    esac
-
-    # Track blocked children
-    if [[ -n "$c_blocked" ]]; then
-      if [[ -n "$blocked_list" ]]; then
-        blocked_list="$blocked_list"$'\n'"$c_id blocked by $c_blocked"
-      else
-        blocked_list="$c_id blocked by $c_blocked"
-      fi
-    fi
-
-    # Build child line for display
-    local icon
-    icon="$(_epic_status_icon "$c_status")"
-    local display_owner="${c_owner:-unassigned}"
-    child_lines="${child_lines}  $icon $c_id  [$display_owner]  $c_title ($c_status)"$'\n'
-
-    # Track developer entries
-    if [[ -n "$c_owner" ]]; then
-      dev_entries="${dev_entries}${c_owner}:${c_status}"$'\n'
-    fi
-  done <<< "$children_ids"
-
-  # 4. Calculate completion percentage
-  local percentage=0
-  if [[ $total -gt 0 ]]; then
-    percentage=$(( (done_count * 100) / total ))
-  fi
-
-  # 5. Build per-developer breakdown
-  # Collect unique developers
-  local devs=""
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    local dev="${entry%%:*}"
-    if [[ -z "$devs" ]] || ! printf '%s' "$devs" | grep -qxF "$dev"; then
-      if [[ -n "$devs" ]]; then
-        devs="$devs"$'\n'"$dev"
-      else
-        devs="$dev"
-      fi
-    fi
-  done <<< "$dev_entries"
-
-  # JSON output
+  # 5. JSON output — one jq transform from the kernel response. Preserves the historical
+  #    cmd_epic shape (epic_id,title,total,done,in_progress,open_count,percentage,
+  #    children,by_developer,blocked). Unassigned children are excluded from by_developer
+  #    (matches the prior behavior), and per-dev open is the same total-done-in_progress
+  #    catch-all.
   if [[ "$format_flag" == "--format=json" ]]; then
-    local children_json="["
-    local first_child=1
-    while IFS= read -r child_id; do
-      [[ -z "$child_id" ]] && continue
-      local info
-      info="$(_epic_get_child_info "$child_id")" || continue
-      local c_id c_status c_owner c_title c_blocked
-      IFS='|' read -r c_id c_status c_owner c_title c_blocked <<< "$info"
-
-      if [[ $first_child -eq 0 ]]; then
-        children_json="$children_json,"
-      fi
-      first_child=0
-      children_json="$children_json{\"id\":\"$c_id\",\"status\":\"$c_status\",\"owner\":\"$c_owner\",\"title\":\"$c_title\",\"blocked_by\":\"$c_blocked\"}"
-    done <<< "$children_ids"
-    children_json="$children_json]"
-
-    local dev_json="{"
-    local first_dev=1
-    while IFS= read -r dev; do
-      [[ -z "$dev" ]] && continue
-      local d_done=0 d_in_progress=0 d_open=0 d_total=0
-      while IFS= read -r entry; do
-        [[ -z "$entry" ]] && continue
-        local e_dev="${entry%%:*}"
-        local e_status="${entry#*:}"
-        if [[ "$e_dev" == "$dev" ]]; then
-          d_total=$((d_total + 1))
-          case "$e_status" in
-            closed)      d_done=$((d_done + 1)) ;;
-            in_progress) d_in_progress=$((d_in_progress + 1)) ;;
-            *)           d_open=$((d_open + 1)) ;;
-          esac
-        fi
-      done <<< "$dev_entries"
-
-      if [[ $first_dev -eq 0 ]]; then
-        dev_json="$dev_json,"
-      fi
-      first_dev=0
-      dev_json="$dev_json\"$dev\":{\"total\":$d_total,\"done\":$d_done,\"in_progress\":$d_in_progress,\"open\":$d_open}"
-    done <<< "$devs"
-    dev_json="$dev_json}"
-
-    local blocked_json="["
-    if [[ -n "$blocked_list" ]]; then
-      local first_blocked=1
-      while IFS= read -r bline; do
-        [[ -z "$bline" ]] && continue
-        if [[ $first_blocked -eq 0 ]]; then
-          blocked_json="$blocked_json,"
-        fi
-        first_blocked=0
-        blocked_json="$blocked_json\"$bline\""
-      done <<< "$blocked_list"
-    fi
-    blocked_json="$blocked_json]"
-
-    printf '{"epic_id":"%s","title":"%s","total":%d,"done":%d,"in_progress":%d,"open_count":%d,"percentage":%d,"children":%s,"by_developer":%s,"blocked":%s}\n' \
-      "$issue_id" "$epic_title" "$total" "$done_count" "$in_progress_count" "$open_count" "$percentage" \
-      "$children_json" "$dev_json" "$blocked_json"
+    printf '%s' "$response" | jq -c \
+      --arg epic_id "$issue_id" \
+      --arg title "$epic_title" '
+      (.data.children // []) as $children
+      | {
+          epic_id: $epic_id,
+          title: $title,
+          total: (.data.rollup.total // 0),
+          done: (.data.rollup.done // 0),
+          in_progress: (.data.rollup.in_progress // 0),
+          open_count: ((.data.rollup.total // 0) - (.data.rollup.done // 0) - (.data.rollup.in_progress // 0)),
+          percentage: (.data.rollup.percentage // 0),
+          children: [ $children[] | {
+            id: .id,
+            status: .status,
+            owner: (.assignee // ""),
+            title: (.title // .id),
+            blocked_by: ((.blocked_by // []) | join(","))
+          } ],
+          by_developer: (
+            [ $children[] | select((.assignee // "") != "") ]
+            | group_by(.assignee)
+            | map(
+                (.[0].assignee) as $dev
+                | length as $t
+                | ([.[] | select(.status == "done")] | length) as $d
+                | ([.[] | select(.status == "in_progress")] | length) as $ip
+                | { key: $dev, value: { total: $t, done: $d, in_progress: $ip, open: ($t - $d - $ip) } }
+              )
+            | from_entries
+          ),
+          blocked: [ $children[] | select(.blocked == true) | "\(.id) blocked by \((.blocked_by // []) | join(","))" ]
+        }' | tr -d '\r'
     return 0
   fi
 
-  # Text output
+  # 6. Text output.
   echo "Epic: $issue_id — $epic_title"
   echo "Progress: $done_count/$total ($percentage%)"
-  printf '%s' "$child_lines"
+  while IFS=$'\t' read -r c_id c_status c_owner c_title; do
+    [[ -z "$c_id" ]] && continue
+    local icon
+    icon="$(_epic_status_icon "$c_status")"
+    echo "  $icon $c_id  [${c_owner:-unassigned}]  $c_title ($c_status)"
+  done < <(printf '%s' "$response" | jq -r '.data.children[] | [.id, .status, (.assignee // ""), (.title // .id)] | @tsv' | tr -d '\r')
 
   echo ""
   echo "By developer:"
-  while IFS= read -r dev; do
-    [[ -z "$dev" ]] && continue
-    local d_done=0 d_in_progress=0 d_open=0 d_total=0
-    while IFS= read -r entry; do
-      [[ -z "$entry" ]] && continue
-      local e_dev="${entry%%:*}"
-      local e_status="${entry#*:}"
-      if [[ "$e_dev" == "$dev" ]]; then
-        d_total=$((d_total + 1))
-        case "$e_status" in
-          closed)      d_done=$((d_done + 1)) ;;
-          in_progress) d_in_progress=$((d_in_progress + 1)) ;;
-          *)           d_open=$((d_open + 1)) ;;
-        esac
-      fi
-    done <<< "$dev_entries"
-
-    local dev_parts=""
-    dev_parts="$d_done/$d_total done"
-    [[ $d_in_progress -gt 0 ]] && dev_parts="$dev_parts, $d_in_progress in progress"
-    [[ $d_open -gt 0 ]] && dev_parts="$dev_parts, $d_open open"
-    echo "  $dev: $dev_parts"
-  done <<< "$devs"
+  printf '%s' "$response" | jq -r '
+    [ (.data.children // [])[] | select((.assignee // "") != "") ]
+    | group_by(.assignee)
+    | map(
+        (.[0].assignee) as $dev
+        | length as $t
+        | ([.[] | select(.status == "done")] | length) as $d
+        | ([.[] | select(.status == "in_progress")] | length) as $ip
+        | ($t - $d - $ip) as $op
+        | "  \($dev): \($d)/\($t) done"
+          + (if $ip > 0 then ", \($ip) in progress" else "" end)
+          + (if $op > 0 then ", \($op) open" else "" end)
+      )
+    | .[]' | tr -d '\r'
 
   echo ""
-  if [[ -n "$blocked_list" ]]; then
+  local blocked_lines
+  blocked_lines="$(printf '%s' "$response" | jq -r '.data.children[] | select(.blocked == true) | "  \(.id) blocked by \((.blocked_by // []) | join(","))"' | tr -d '\r')"
+  if [[ -n "$blocked_lines" ]]; then
     echo "Blocked:"
-    while IFS= read -r bline; do
-      [[ -z "$bline" ]] && continue
-      echo "  $bline"
-    done <<< "$blocked_list"
+    printf '%s\n' "$blocked_lines"
   else
     echo "Blocked: none"
   fi
