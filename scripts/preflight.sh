@@ -6,8 +6,9 @@ if [ -f "$SCRIPT_DIR/bootstrap-windows-tools.sh" ]; then
   source "$SCRIPT_DIR/bootstrap-windows-tools.sh"
 fi
 
+FORGE_CLI="$SCRIPT_DIR/../bin/forge.js"
+
 exit_code=0
-have_bd=0
 have_gh=0
 
 ok() {
@@ -24,62 +25,6 @@ fixed() {
 action() {
   printf 'ACTION %s - %s\n' "$1" "$2"
   exit_code=2
-}
-
-snapshot_hooks_dir() {
-  hooks_dir="$1"
-  hooks_snapshot_dir="$(mktemp -d 2>/dev/null || mktemp -d -t forge-preflight-hooks)"
-
-  if [ -d "$hooks_dir" ]; then
-    cp -pR "$hooks_dir"/. "$hooks_snapshot_dir"/
-  fi
-}
-
-restore_hooks_dir() {
-  hooks_dir="$1"
-  mkdir -p "$hooks_dir"
-
-  find "$hooks_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-
-  if [ -d "$hooks_snapshot_dir" ]; then
-    cp -pR "$hooks_snapshot_dir"/. "$hooks_dir"/
-    rm -rf "$hooks_snapshot_dir"
-  fi
-}
-
-write_beads_config() {
-  mkdir -p .beads
-  {
-    printf '%s\n' 'issue-prefix: forge'
-    printf '\n'
-    printf '%s\n' 'database:'
-    printf '%s\n' '  backend: dolt'
-    printf '\n'
-  } > .beads/config.yaml
-}
-
-write_beads_gitignore() {
-  mkdir -p .beads
-  {
-    printf '%s\n' '# Dolt database files (binary, not suitable for git)'
-    printf '%s\n' 'dolt/'
-    printf '%s\n' '*.db'
-    printf '%s\n' '*.lock'
-    printf '\n'
-  } > .beads/.gitignore
-}
-
-safe_bd_init() {
-  hooks_dir="$(git rev-parse --git-path hooks 2>/dev/null || printf '.git/hooks')"
-  write_beads_config
-  write_beads_gitignore
-  snapshot_hooks_dir "$hooks_dir"
-
-  bd init --database forge --prefix forge >/dev/null 2>&1
-  init_status=$?
-
-  restore_hooks_dir "$hooks_dir"
-  return "$init_status"
 }
 
 is_windows_shell() {
@@ -112,10 +57,7 @@ check_tool() {
 }
 
 check_tools() {
-  if check_tool "bd" "install Forge/Beads tooling, then rerun: bunx forge setup --quick"; then
-    have_bd=1
-  fi
-
+  check_tool "node" "install Node.js (https://nodejs.org)" || true
   check_tool "jq" "winget install jqlang.jq" || true
 
   if check_tool "gh" "winget install GitHub.cli"; then
@@ -136,50 +78,30 @@ check_github_auth() {
   action "github-auth" "not logged in; run: gh auth login"
 }
 
-check_beads() {
-  if [ "$have_bd" -ne 1 ]; then
+# Validate the Forge Kernel issue store. The kernel DB is a single-machine
+# SQLite store in the git common dir; any kernel issue command auto-migrates it
+# via broker.initialize(), so the ensure step is just a kernel read. `forge
+# doctor` then reports the filesystem class of that DB path (D19) — it only
+# reports, it does not init, which is why the ensure step runs first.
+check_kernel() {
+  if node "$FORGE_CLI" issue list --json >/dev/null 2>&1; then
+    ok "kernel-init" "Kernel issue store is readable"
+  else
+    action "kernel-init" "kernel issue store not initializable; inspect: node bin/forge.js doctor"
     return 0
   fi
 
-  init_ok=0
-  if bd list --json --limit 1 >/dev/null 2>&1; then
-    ok "beads-init" "Beads database is readable"
-    init_ok=1
+  if node "$FORGE_CLI" doctor >/dev/null 2>&1; then
+    ok "kernel-doctor" "forge doctor reports a healthy filesystem for the kernel database"
   else
-    if safe_bd_init; then
-      fixed "beads-init" "ran hook-preserving bd init --database forge --prefix forge"
-      init_ok=1
-    else
-      action "beads-init" "bd init failed; inspect Beads setup manually"
-    fi
-  fi
-
-  if [ "$init_ok" -ne 1 ]; then
-    return 0
-  fi
-
-  doctor_output="$(bd doctor --fix --yes 2>&1)"
-  doctor_status=$?
-  if [ "$doctor_status" -eq 0 ]; then
-    doctor_output_lower="$(printf '%s' "$doctor_output" | tr '[:upper:]' '[:lower:]')"
-    if [ "$exit_code" -eq 1 ] ||
-      [[ "$doctor_output_lower" == *fix* ]] ||
-      [[ "$doctor_output_lower" == *repair* ]] ||
-      [[ "$doctor_output_lower" == *migrat* ]] ||
-      [[ "$doctor_output_lower" == *updat* ]]; then
-      fixed "beads-doctor" "ran bd doctor --fix --yes after Beads repair"
-    else
-      ok "beads-doctor" "bd doctor --fix --yes succeeded"
-    fi
-  else
-    action "beads-doctor" "bd doctor --fix --yes failed; inspect Beads manually"
+    action "kernel-doctor" "forge doctor reports an unhealthy filesystem; inspect the kernel database path"
   fi
 }
 
 main() {
   check_tools
   check_github_auth
-  check_beads
+  check_kernel
   exit "$exit_code"
 }
 
