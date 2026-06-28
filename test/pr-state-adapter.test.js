@@ -177,3 +177,140 @@ describe('PrStateAdapter', () => {
     expect(/\bdolt\b/i.test(src)).toBe(false);
   });
 });
+
+// Fields the monitor bundle (lib/pr-bundle.js) depends on. These are additive to
+// the read surface; the shepherd's existing consumers ignore them.
+describe('PrStateAdapter — bundle gather fields', () => {
+  test('PR_VIEW_FIELDS requests mergeable and readState surfaces it', async () => {
+    expect(PR_VIEW_FIELDS.split(',')).toContain('mergeable');
+    const { run } = makeRunner([
+      ['pr view', JSON.stringify({
+        headRefOid: 'abc', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY',
+        state: 'OPEN', statusCheckRollup: [],
+      })],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const state = await adapter.readState('123');
+    expect(state.mergeable).toBe('CONFLICTING');
+  });
+
+  test('readState defaults mergeable to UNKNOWN when gh omits it', async () => {
+    const { run } = makeRunner([['pr view', PR_VIEW_JSON]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const state = await adapter.readState('123');
+    expect(state.mergeable).toBe('UNKNOWN');
+  });
+
+  test('readComments surfaces threadId, path and line per thread', async () => {
+    const graphqlJson = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: { nodes: [
+        {
+          id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+          comments: { nodes: [{ author: { login: 'coderabbitai' }, body: 'nit' }] },
+        },
+      ] } } } },
+    });
+    const { run, calls } = makeRunner([['api graphql', graphqlJson]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const threads = await adapter.readComments({ owner: 'o', repo: 'r', pr: '7' });
+
+    expect(threads[0].threadId).toBe('PRRT_1');
+    expect(threads[0].path).toBe('src/a.js');
+    expect(threads[0].line).toBe(42);
+    expect(threads[0].comments[0].author).toBe('coderabbitai');
+    // the GraphQL query must actually request the new fields
+    const q = calls.find((c) => c.args.join(' ').includes('graphql')).args.join(' ');
+    expect(q).toContain('id isResolved');
+    expect(q).toContain('path line');
+  });
+
+  test('readComments coerces a missing line to null', async () => {
+    const graphqlJson = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: { nodes: [
+        { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { nodes: [] } },
+      ] } } } },
+    });
+    const { run } = makeRunner([['api graphql', graphqlJson]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const threads = await adapter.readComments({ owner: 'o', repo: 'r', pr: '7' });
+    expect(threads[0].line).toBeNull();
+  });
+
+  test('readComments paginates reviewThreads AND nested comments until exhausted', async () => {
+    // Page 1: thread A (comments complete inline) + more threads to come.
+    const outerPage1 = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: true, endCursor: 'C1' },
+        nodes: [{
+          id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'bot' }, body: 'a1' }] },
+        }],
+      } } } },
+    });
+    // Page 2 (after=C1): thread B whose comment chain itself spills to a 2nd page.
+    const outerPage2 = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: false, endCursor: 'C1' },
+        nodes: [{
+          id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
+          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ author: { login: 'bot' }, body: 'b1' }] },
+        }],
+      } } } },
+    });
+    // Remaining comments of thread B, fetched by node id.
+    const innerCommentsPage = JSON.stringify({
+      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'human' }, body: 'b2' }] } } },
+    });
+    // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
+    const { run, calls } = makeRunner([
+      ['id=PRRT_B', innerCommentsPage],
+      ['after=C1', outerPage2],
+      ['api graphql', outerPage1],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const threads = await adapter.readComments({ owner: 'o', repo: 'r', pr: '7' });
+
+    // Both pages of threads are present (no 100-cap drop).
+    expect(threads.map((t) => t.threadId)).toEqual(['PRRT_A', 'PRRT_B']);
+    // Thread B's full comment chain spans both pages (later human reply preserved).
+    expect(threads[1].comments.map((c) => c.body)).toEqual(['b1', 'b2']);
+    // The first page must NOT send an `after` cursor (null cursor = from the start).
+    const firstGraphql = calls.find((c) => c.args.join(' ').includes('reviewThreads'));
+    expect(firstGraphql.args.join(' ')).not.toContain('after=');
+    // The query declares the cursor variable + pageInfo on both connections.
+    expect(firstGraphql.args.join(' ')).toContain('pageInfo{hasNextPage endCursor}');
+  });
+
+  test('detectConflicts reports a clean merge when merge-tree exits 0', async () => {
+    const { run, calls } = makeRunner([['merge-tree', 'TREEOID\n']]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const res = await adapter.detectConflicts({ baseRef: 'origin/master' });
+    expect(res).toEqual({ supported: true, conflicted: false, files: [] });
+    const call = calls.find((c) => c.args.join(' ').includes('merge-tree'));
+    expect(call.args).toContain('--write-tree');
+    expect(call.args).toContain('--name-only');
+  });
+
+  test('detectConflicts parses conflicted files from a merge-tree exit-1 failure', async () => {
+    // git merge-tree exits 1 on a conflicted merge; the OID is line 1, then paths.
+    const err = new Error('conflict');
+    err.status = 1;
+    err.stdout = 'TREEOID\nsrc/a.js\nsrc/b.js\n';
+    const { run } = makeRunner([['merge-tree', () => { throw err; }]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const res = await adapter.detectConflicts({ baseRef: 'origin/master' });
+    expect(res.supported).toBe(true);
+    expect(res.conflicted).toBe(true);
+    expect(res.files).toEqual(['src/a.js', 'src/b.js']);
+  });
+
+  test('detectConflicts degrades to unsupported on a non-conflict error (e.g. old git)', async () => {
+    const err = new Error('unknown option --write-tree');
+    err.status = 129;
+    const { run } = makeRunner([['merge-tree', () => { throw err; }]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const res = await adapter.detectConflicts({ baseRef: 'origin/master' });
+    expect(res.supported).toBe(false);
+    expect(res.reason).toContain('--write-tree');
+  });
+});

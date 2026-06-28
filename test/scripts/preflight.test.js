@@ -31,20 +31,12 @@ exec ${name} "$@"
   );
 }
 
-function isExecutable(filePath) {
-  if (process.platform === 'win32') {
-    return true;
-  }
-  return Boolean(fs.statSync(filePath).mode & 0o111);
-}
-
 function makeMockBin({
-  includeBd = true,
+  includeNode = true,
   includeGh = true,
   includeJq = true,
-  bdListStatus = 0,
-  bdInitStatus = 0,
-  bdDoctorStatus = 0,
+  kernelListStatus = 0,
+  kernelDoctorStatus = 0,
   ghAuthStatus = 0,
 } = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-bin-'));
@@ -54,20 +46,19 @@ function makeMockBin({
     writeUtilityShim(tmpDir, tool);
   }
 
-  if (includeBd) {
+  if (includeNode) {
+    // The kernel checks run `node <forge.js> issue list --json` and
+    // `node <forge.js> doctor`. $2 is the forge subcommand.
     writeExecutable(
-      path.join(tmpDir, 'bd'),
+      path.join(tmpDir, 'node'),
       `#!/bin/sh
-printf 'bd %s\\n' "$*" >> "${toBashPath(logPath)}"
-case "$1" in
-  list)
-    exit ${bdListStatus}
-    ;;
-  init)
-    exit ${bdInitStatus}
+printf 'node %s\\n' "$*" >> "${toBashPath(logPath)}"
+case "$2" in
+  issue)
+    exit ${kernelListStatus}
     ;;
   doctor)
-    exit ${bdDoctorStatus}
+    exit ${kernelDoctorStatus}
     ;;
   *)
     exit 64
@@ -144,171 +135,55 @@ function makeMockPathEnv(tmpDir) {
     : { PATH: pathValue };
 }
 
-function makeGitDirWithHooks() {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-git-'));
-  const hooksDir = path.join(tmpDir, 'hooks');
-  fs.mkdirSync(hooksDir, { recursive: true });
-
-  const prepareHook = path.join(hooksDir, 'prepare-commit-msg');
-  writeExecutable(prepareHook, '#!/bin/sh\nprintf custom-hook\n');
-  return { hooksDir, prepareHook, tmpDir };
-}
-
 describe('scripts/preflight.sh', () => {
-  test('exits 0 when tools, GitHub auth, Beads init, and doctor are healthy', () => {
+  test('exits 0 when tools, GitHub auth, and the kernel are healthy', () => {
     const { tmpDir, logPath } = makeMockBin();
     try {
       const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain('OK tool bd');
       expect(result.stdout).toContain('OK tool jq');
       expect(result.stdout).toContain('OK tool gh');
       expect(result.stdout).toContain('OK github-auth');
-      expect(result.stdout).toContain('OK beads-init');
-      expect(result.stdout).toContain('OK beads-doctor');
+      expect(result.stdout).toContain('OK kernel-init');
+      expect(result.stdout).toContain('OK kernel-doctor');
 
       const calls = readCalls(logPath);
       expect(calls).toContain('gh auth status');
-      expect(calls).toContain('bd list --json --limit 1');
-      expect(calls).toContain('bd doctor --fix --yes');
-      expect(calls).not.toContain('bd init');
+      expect(calls).toContain('issue list --json');
+      expect(calls).toContain('doctor');
     } finally {
       cleanupTmpDir(tmpDir);
     }
   });
 
-  test('runs bd init and exits 1 when Beads is not initialized', () => {
-    const { tmpDir, logPath } = makeMockBin({ bdListStatus: 1 });
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-project-'));
+  test('exits 2 when the kernel issue store is not initializable', () => {
+    const { tmpDir, logPath } = makeMockBin({ kernelListStatus: 1 });
     try {
-      const result = runPreflight(makeMockPathEnv(tmpDir), projectRoot);
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
-      expect(result.stdout).toContain('FIXED beads-init');
-      expect(result.status).toBe(1);
-      expect(result.stdout).toContain('FIXED beads-doctor');
-
+      expect(result.status).toBe(2);
+      expect(result.stdout).toContain('ACTION kernel-init');
+      // doctor only runs after a readable kernel, so it must NOT be invoked here
+      expect(result.stdout).not.toContain('kernel-doctor');
       const calls = readCalls(logPath);
-      expect(calls).toContain('bd list --json --limit 1');
-      expect(calls).toContain('bd init --database forge --prefix forge');
-      expect(calls).toContain('bd doctor --fix --yes');
+      expect(calls).toContain('issue list --json');
+      expect(calls).not.toContain('doctor');
     } finally {
       cleanupTmpDir(tmpDir);
-      cleanupTmpDir(projectRoot);
     }
   });
 
-  test('preserves all existing git hooks and executable modes around bd init', () => {
-    const { tmpDir, logPath } = makeMockBin({ bdListStatus: 1 });
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-project-'));
-    const git = makeGitDirWithHooks();
+  test('exits 2 when forge doctor reports an unhealthy filesystem', () => {
+    const { tmpDir } = makeMockBin({ kernelDoctorStatus: 1 });
     try {
-      const bdPath = path.join(tmpDir, 'bd');
-      writeExecutable(
-        path.join(tmpDir, 'git'),
-        `#!/bin/sh
-if [ "$1" = "rev-parse" ] && [ "$2" = "--git-path" ] && [ "$3" = "hooks" ]; then
-  printf '%s\\n' "${toBashPath(git.hooksDir)}"
-  exit 0
-fi
-exit 64
-`,
-      );
-      writeExecutable(
-        bdPath,
-        `#!/bin/sh
-printf 'bd %s\\n' "$*" >> "${toBashPath(logPath)}"
-case "$1" in
-  list)
-    exit 1
-    ;;
-  init)
-    printf '#!/bin/sh\\nprintf generated\\n' > "${toBashPath(path.join(git.hooksDir, 'pre-push'))}"
-    chmod +x "${toBashPath(path.join(git.hooksDir, 'pre-push'))}"
-    rm -f "${toBashPath(git.prepareHook)}"
-    exit 0
-    ;;
-  doctor)
-    exit 0
-    ;;
-  *)
-    exit 64
-    ;;
-esac
-`,
-      );
+      const result = runPreflight(makeMockPathEnv(tmpDir));
 
-      const result = runPreflight({
-        ...makeMockPathEnv(tmpDir),
-        GIT_DIR: toBashPath(git.tmpDir),
-      }, projectRoot);
-
-      expect(result.status).toBe(1);
-      expect(fs.existsSync(git.prepareHook)).toBe(true);
-      expect(fs.readFileSync(git.prepareHook, 'utf8')).toContain('custom-hook');
-      expect(isExecutable(git.prepareHook)).toBe(true);
-      expect(fs.existsSync(path.join(git.hooksDir, 'pre-push'))).toBe(false);
+      expect(result.status).toBe(2);
+      expect(result.stdout).toContain('OK kernel-init');
+      expect(result.stdout).toContain('ACTION kernel-doctor');
     } finally {
       cleanupTmpDir(tmpDir);
-      cleanupTmpDir(projectRoot);
-      cleanupTmpDir(git.tmpDir);
-    }
-  });
-
-  test('writes Beads prefix config before bd init', () => {
-    const { tmpDir } = makeMockBin({ bdListStatus: 1 });
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-project-'));
-    const configCopyPath = path.join(tmpDir, 'config-before-init.yaml');
-    const gitignoreCopyPath = path.join(tmpDir, 'gitignore-before-init');
-    const git = makeGitDirWithHooks();
-    try {
-      writeExecutable(
-        path.join(tmpDir, 'git'),
-        `#!/bin/sh
-if [ "$1" = "rev-parse" ] && [ "$2" = "--git-path" ] && [ "$3" = "hooks" ]; then
-  printf '%s\\n' "${toBashPath(git.hooksDir)}"
-  exit 0
-fi
-exit 64
-`,
-      );
-      writeExecutable(
-        path.join(tmpDir, 'bd'),
-        `#!/bin/sh
-set -e
-case "$1" in
-  list)
-    exit 1
-    ;;
-  init)
-    cp .beads/config.yaml "${toBashPath(configCopyPath)}"
-    cp .beads/.gitignore "${toBashPath(gitignoreCopyPath)}"
-    exit 0
-    ;;
-  doctor)
-    exit 0
-    ;;
-  *)
-    exit 64
-    ;;
-esac
-`,
-      );
-
-      const result = runPreflight(makeMockPathEnv(tmpDir), projectRoot);
-
-      expect(result.stdout).toContain('FIXED beads-init');
-      expect(result.status).toBe(1);
-      expect(fs.readFileSync(configCopyPath, 'utf8'))
-        .toContain('issue-prefix: forge');
-      expect(fs.readFileSync(configCopyPath, 'utf8'))
-        .toContain('  backend: dolt');
-      expect(fs.readFileSync(gitignoreCopyPath, 'utf8'))
-        .toContain('dolt/');
-    } finally {
-      cleanupTmpDir(tmpDir);
-      cleanupTmpDir(projectRoot);
-      cleanupTmpDir(git.tmpDir);
     }
   });
 
@@ -326,16 +201,16 @@ esac
     }
   });
 
-  test('exits 2 with Windows guidance when bd and jq are missing', () => {
-    const { tmpDir, logPath } = makeMockBin({ includeBd: false, includeJq: false });
+  test('exits 2 with Windows guidance when jq is missing', () => {
+    const { tmpDir, logPath } = makeMockBin({ includeJq: false });
     try {
       const result = runPreflight(makeMockPathEnv(tmpDir));
 
       expect(result.status).toBe(2);
-      expect(result.stdout).toContain('ACTION tool bd');
-      expect(result.stdout).toContain('bunx forge setup --quick');
       expect(result.stdout).toContain('ACTION tool jq');
       expect(result.stdout).toContain('winget install jqlang.jq');
+      // bd is no longer a checked tool
+      expect(result.stdout).not.toContain('tool bd');
       expect(readCalls(logPath)).not.toContain('bd ');
     } finally {
       cleanupTmpDir(tmpDir);

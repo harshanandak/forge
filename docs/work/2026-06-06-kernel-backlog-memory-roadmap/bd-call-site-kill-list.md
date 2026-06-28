@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 108 | 11 |
-| runtime | 279 | 35 |
+| command | 50 | 7 |
+| runtime | 263 | 34 |
 | docs | 394 | 47 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -19,24 +19,16 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 2234 (bd), 2236 (bd), 2382 (bd), 2784 (bd), 2793 (bd), 2806 (bd), 2819 (.beads), 2839 (bd), 2841 (bd), 2843 (bd), 2878 (bd), 2902 (bd), 2988 (bd), 3032 (bd), 3056 (bd), 3062 (bd), 3066 (bd), 3071 (bd), 3077 (bd), 3087 (bd), 3219 (bd), 3224 (bd), 3235 (bd), 3302 (bd), 3995 (bd), 4471 (bd)
 - [ ] lib/commands/_resolve-command-opts.js (2)
   - lines: 8 (bd), 10 (bd)
-- [ ] lib/commands/clean.js (2)
-  - lines: 10 (dolt), 175 (dolt)
 - [ ] lib/commands/dev.js (1)
   - lines: 466 (bd)
 - [ ] lib/commands/plan.js (5)
   - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
-- [ ] lib/commands/setup.js (32)
-  - lines: 198 (.beads), 210 (.beads), 271 (bd, dolt), 324 (bd), 331 (dolt), 332 (bd, dolt), 336 (dolt), 337 (bd, dolt), 342 (bd), 2263 (bd), 2265 (bd), 2578 (bd), 2587 (bd), 2600 (bd), 2615 (.beads), 2639 (bd), 2641 (bd), 2643 (bd), 2678 (bd), 2702 (bd), 2800 (bd), 2847 (bd), 2875 (bd), 2881 (bd), 2885 (bd), 2890 (bd), 2896 (bd), 2906 (bd), 3053 (bd), 3058 (bd), 3069 (bd), 3158 (bd)
 - [ ] lib/commands/status.js (10)
   - lines: 228 (.beads), 229 (.beads), 230 (.beads), 231 (.beads), 232 (.beads), 233 (.beads), 234 (.beads), 236 (.beads), 356 (bd), 414 (bd)
-- [ ] lib/commands/sync.js (9)
-  - lines: 18 (dolt), 25 (dolt), 30 (dolt), 41 (bd), 43 (bd), 44 (bd), 52 (dolt), 54 (bd, dolt), 55 (bd, dolt)
 - [ ] lib/commands/test.js (5)
   - lines: 8 (dolt), 60 (bd), 63 (bd), 67 (bd), 70 (bd)
 - [ ] lib/commands/validate.js (1)
   - lines: 25 (.beads)
-- [ ] lib/commands/worktree.js (15)
-  - lines: 36 (dolt), 37 (bd, dolt), 38 (dolt), 52 (bd, dolt), 54 (bd, dolt), 55 (bd, dolt), 56 (bd), 60 (.beads, dolt), 61 (.beads), 96 (.beads), 97 (.beads), 109 (bd), 110 (bd), 114 (bd, .beads), 226 (dolt)
 
 ## runtime
 
@@ -104,8 +96,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 200 (.beads), 232 (.beads), 233 (.beads), 234 (.beads), 253 (.beads), 254 (.beads), 255 (.beads), 256 (.beads), 261 (.beads), 279 (bd), 283 (.beads), 299 (bd), 309 (.beads), 314 (bd), 318 (bd), 319 (bd), 321 (.beads), 326 (bd), 472 (dolt), 475 (.beads)
 - [ ] scripts/pr-coordinator.sh (14)
   - lines: 53 (bd), 59 (bd), 61 (bd), 78 (bd), 94 (bd), 113 (bd), 130 (bd), 152 (bd), 268 (bd), 275 (bd), 312 (bd), 375 (bd), 488 (bd), 493 (bd)
-- [ ] scripts/preflight.sh (16)
-  - lines: 51 (.beads), 56 (dolt), 58 (.beads), 62 (.beads), 64 (dolt), 65 (dolt), 69 (.beads), 78 (bd), 115 (bd), 145 (bd), 150 (bd), 153 (bd), 161 (bd), 170 (bd), 172 (bd), 175 (bd)
 - [ ] scripts/smart-status.sh (15)
   - lines: 4 (bd), 14 (bd), 113 (bd), 152 (dolt), 154 (bd), 157 (bd), 158 (bd), 162 (bd), 165 (.beads), 176 (bd), 177 (.beads), 178 (bd), 183 (bd), 187 (bd), 248 (bd)
 - [ ] scripts/sync-utils.sh (23)
