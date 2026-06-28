@@ -46,6 +46,11 @@ describe('forge-cmd shepherd dispatch', () => {
     expect(v.valid).toBe(true);
   });
 
+  test('validateArgs accepts the --bundle and --json shepherd flags', () => {
+    const v = validateArgs('shepherd', ['123', '--bundle', '--json']);
+    expect(v.valid).toBe(true);
+  });
+
   test('forge shepherd with an unknown flag exits non-zero before running a pass', () => {
     const res = spawnSync('node', [CLI, 'shepherd', '123', '--auto-reabse'], { encoding: 'utf8', timeout: 20000 });
     const combined = `${res.stdout || ''}${res.stderr || ''}`;

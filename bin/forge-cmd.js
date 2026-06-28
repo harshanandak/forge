@@ -102,7 +102,7 @@ const REQUIRED_ARGS = {
 // (e.g. a typo like `--auto-reabse` must not run shepherd with default
 // behaviour). Commands NOT listed here keep their permissive flag handling.
 const ALLOWED_FLAGS = {
-	shepherd: ['--auto-rebase'],
+	shepherd: ['--auto-rebase', '--bundle', '--json'],
 };
 
 /**
@@ -346,7 +346,11 @@ async function main() { // NOSONAR S3776
 
 		} else if (command === 'shepherd') {
 			result = await HANDLERS.shepherd.handler(args, {}, process.cwd());
-			if (result.success) {
+			if (result.bundle !== undefined) {
+				// --bundle: emit the gathered PR-state bundle as JSON only, so the
+				// output is machine-consumable by the monitor/fixer-agent.
+				console.log(JSON.stringify(result.bundle, null, 2));
+			} else if (result.success) {
 				console.log(`✓ shepherd: ${result.state}`);
 				if (result.reason) console.log(`  ${result.reason}`);
 			} else {
