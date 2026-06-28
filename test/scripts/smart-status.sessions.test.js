@@ -3,7 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } = require('bun:test');
 
-const { cleanupTmpDir, createMockBd, daysAgo, runSmartStatus } = require('./smart-status.helpers');
+const { cleanupTmpDir, createMockForge, daysAgo, runSmartStatus } = require('./smart-status.helpers');
 
 setDefaultTimeout(20000);
 
@@ -46,7 +46,7 @@ describe('smart-status.sh > session detection smoke', () => {
 			'branch refs/heads/feat/workflow-intelligence',
 			'',
 		].join('\n'));
-		trackedBd = createMockBd({
+		trackedBd = createMockForge({
 			issues: [
 				{ id: 'forge-68oj', title: 'Workflow intelligence', priority: 'P1', type: 'feature', status: 'in_progress', dependent_count: 0, updated_at: daysAgo(1) },
 			],
@@ -61,7 +61,7 @@ describe('smart-status.sh > session detection smoke', () => {
 			'branch refs/heads/feat/orphan-branch',
 			'',
 		].join('\n'));
-		orphanBd = createMockBd({
+		orphanBd = createMockForge({
 			issues: [
 				{ id: 'forge-abc', title: 'Some issue', priority: 'P2', type: 'feature', status: 'open', dependent_count: 0, updated_at: daysAgo(1) },
 			],
@@ -76,7 +76,7 @@ describe('smart-status.sh > session detection smoke', () => {
 
 	test('shows ACTIVE SESSIONS before grouped output and matches the branch to an in-progress issue', () => {
 		const result = runSmartStatus([], {
-			BD_CMD: trackedBd.mockScript,
+			FORGE_CMD: trackedBd.forgeScript,
 			GIT_CMD: trackedGit.mockScript,
 			NO_COLOR: '1',
 		});
@@ -90,7 +90,7 @@ describe('smart-status.sh > session detection smoke', () => {
 
 	test('shows unmatched branches as untracked', () => {
 		const result = runSmartStatus([], {
-			BD_CMD: orphanBd.mockScript,
+			FORGE_CMD: orphanBd.forgeScript,
 			GIT_CMD: orphanGit.mockScript,
 			NO_COLOR: '1',
 		});

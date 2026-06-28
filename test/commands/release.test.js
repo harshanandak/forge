@@ -32,17 +32,16 @@ describe('forge release check command', () => {
     expect(result.error).toContain('Forge release readiness check: 0.1.0');
 
     const blockerIds = result.report.blockers.map(blocker => blocker.id);
-    // kernel-backed-forge-issue cleared once _issue.js was de-beaded, the kernel
-    // adapter exposed `dep`, and claim/release became kernel-backed static commands.
-    // premerge-embedded-gate cleared once pre-merge was re-homed as a task-type
-    // gate (WORKFLOW_GATES) and the premerge token left stages.js, workflow-profiles.js,
-    // and AGENTS.md.
+    // bd-hot-path-issue-commands cleared once scripts/smart-status.sh — the last
+    // hot-path surface — was de-beaded (it now reads `forge issue list --json`),
+    // so the only remaining 0.1.0 blocker is the fresh-clone acceptance test.
+    // (kernel-backed-forge-issue + premerge-embedded-gate cleared in earlier lanes.)
     expect(blockerIds).toEqual([
-      'bd-hot-path-issue-commands',
       'fresh-clone-no-beads-acceptance',
     ]);
 
     expect(result.report.blockers.some(blocker => blocker.id === 'kernel-backed-forge-issue')).toBe(false);
+    expect(result.report.blockers.some(blocker => blocker.id === 'bd-hot-path-issue-commands')).toBe(false);
   }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('rejects unsupported targets explicitly', async () => {
@@ -69,7 +68,7 @@ describe('forge release check command', () => {
     const report = JSON.parse(result.stdout);
     expect(report.success).toBe(false);
     expect(report.target).toBe('0.1.0');
-    expect(report.blockers.map(blocker => blocker.id)).toContain('bd-hot-path-issue-commands');
+    expect(report.blockers.map(blocker => blocker.id)).toContain('fresh-clone-no-beads-acceptance');
     expect(result.stderr).toContain('Forge release readiness check failed for 0.1.0');
   }, FULL_REPO_READINESS_TIMEOUT_MS);
 });
@@ -85,29 +84,14 @@ describe('0.1.0 readiness report', () => {
     expect(report.audit.groups.skills.count).toBeGreaterThan(0);
     expect(report.audit.groups.hooks).toBeDefined();
 
+    // The bd-hot-path blocker is fully CLEARED: every D20 hot-path surface
+    // (issue/sync/worktree/setup/preflight/forge-team and finally
+    // scripts/smart-status.sh in this lane) was de-beaded, so hotPathBlocker
+    // returns null and the blocker drops out of the report. The audit groups
+    // above still count non-hot-path bd references (docs/runtime), which are
+    // tracked but never block the gate.
     const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
-    expect(hotPathBlocker).toBeDefined();
-    // lib/commands/_issue.js is no longer hot-path evidence: it was de-beaded (all bd
-    // translation moved into the beads backend), so it carries no bd/.beads/dolt token.
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/_issue.js')).toBe(false);
-    // The sync-cluster (sync/worktree/setup) + preflight were de-beaded: forge sync routes
-    // through the SyncBackend seam (local-noop), worktree/clean are pure git, setup ensures the
-    // kernel instead of installing beads, and preflight validates the kernel. They carry no token.
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/sync.js')).toBe(false);
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/worktree.js')).toBe(false);
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/clean.js')).toBe(false);
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/commands/setup.js')).toBe(false);
-    // lib/workflow/state-manager.js is no longer hot-path evidence: its issue reads
-    // route through `forge issue show --json` (the comment-list fallback collapsed into
-    // that single read), so it carries no bd/.beads/dolt token.
-    expect(hotPathBlocker.evidence.some(item => item.path === 'lib/workflow/state-manager.js')).toBe(false);
-    expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/preflight.sh')).toBe(false);
-    // scripts/forge-team/ (epic.sh) was de-beaded in THIS lane: epic rendering now
-    // consumes `forge issue children`'s kernel envelope, so it carries no bd token.
-    expect(hotPathBlocker.evidence.some(item => item.path.startsWith('scripts/forge-team/'))).toBe(false);
-    // scripts/smart-status.sh is the last remaining hot-path surface — its full
-    // bd-list de-bead + scorer reshape is deferred to a dedicated follow-up.
-    expect(hotPathBlocker.evidence.some(item => item.path === 'scripts/smart-status.sh')).toBe(true);
+    expect(hotPathBlocker).toBeUndefined();
   }, FULL_REPO_READINESS_TIMEOUT_MS);
 
   test('renders human-readable blocker output and the checked-in D20 audit artifact', () => {
@@ -123,7 +107,7 @@ describe('0.1.0 readiness report', () => {
     );
 
     expect(output).toContain('Result: FAIL');
-    expect(output).toContain('bd in D20 hot-path surfaces');
+    expect(output).toContain('fresh-clone-no-beads-acceptance');
     expect(auditMarkdown).toContain('# D20 bd Call-Site Kill List');
     expect(auditMarkdown).toContain('## command');
     expect(auditMarkdown).toContain('## runtime');

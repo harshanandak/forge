@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # smart-status.sh Ã¢â‚¬â€ Workflow intelligence scoring engine
 #
-# Reads issues via `bd list --json --limit 0`, computes a composite score
-# for each issue, and outputs them sorted by score descending.
+# Reads issues via `forge issue list --json` (Forge Kernel), computes a composite
+# score for each issue, and outputs them sorted by score descending.
 #
 # Composite score:
 #   priority_weight * unblock_chain * type_weight * status_boost * epic_proximity * staleness_boost
@@ -11,7 +11,7 @@
 #   smart-status.sh [--json]
 #
 # Environment:
-#   BD_CMD  Ã¢â‚¬â€ override the bd command (for testing with mocks)
+#   FORGE_CMDÃ¢â‚¬â€ override the forge command (for testing with mocks)
 #   GIT_CMD Ã¢â‚¬â€ override the git command (for testing with mocks)
 #   DEFAULT_BRANCH Ã¢â‚¬â€ override the default branch name (default: auto-detect)
 #
@@ -110,7 +110,6 @@ jq() {
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Configuration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-BD="${BD_CMD:-bd}"
 FORGE="${FORGE_CMD:-forge}"
 GIT="${GIT_CMD:-git}"
 JSON_MODE=0
@@ -149,42 +148,16 @@ done
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Fetch issues Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-# Auto-recover beads database if Dolt server lost the database (e.g. branch
-# switch, fresh clone, server restart).  Checks for the specific "database
-# not found" error, runs bd init --force + bd backup restore, then retries.
-# Capture stderr into variable (2>&1 redirects stderr to stdout for capture,
-# then >/dev/null discards original stdout so only errors remain).
-if ! command -v "$BD" >/dev/null 2>&1; then
-  echo "Error: bd is required but not found." >&2
-  exit 1
-fi
-
-_bd_list_err="$("$BD" list --json --limit 0 2>&1 >/dev/null || true)"
-if printf '%s' "$_bd_list_err" | grep -qi "database.*not found"; then
-  _repo_root="$("$GIT" rev-parse --show-toplevel 2>/dev/null || pwd)"
-  _metadata_path="$_repo_root/.beads/metadata.json"
-  _bd_prefix=""
-  if [ -f "$_metadata_path" ]; then
-    if _metadata_prefix="$(cat "$_metadata_path" 2>/dev/null | jq -r '(.dolt_database // "") | strings')"; then
-      _bd_prefix="$(printf '%s' "$_metadata_prefix" | tr -d '\r')"
-    fi
-  fi
-  if [ -z "$_bd_prefix" ]; then
-    _bd_prefix="$(basename "$_repo_root" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]-' '-' | sed 's/^-//;s/-$//')"
-  fi
-  echo "Beads database not found - attempting auto-recovery..." >&2
-  if "$BD" init --force --prefix "$_bd_prefix" >/dev/null 2>&1; then
-    if [ -d "$_repo_root/.beads/backup" ] && ls "$_repo_root/.beads/backup"/*.jsonl >/dev/null 2>&1; then
-      "$BD" backup restore >/dev/null 2>&1 && echo "Beads: restored from backup." >&2 || echo "Beads: backup restore failed." >&2
-    else
-      echo "Beads: initialized fresh (no backup found)." >&2
-    fi
-  else
-    echo "Beads: auto-recovery failed - run 'bd doctor' manually." >&2
-  fi
-fi
-
-ISSUES_JSON="$("$BD" list --json --limit 0 2>/dev/null || echo '[]')"
+# Fetch issues from the Forge Kernel and normalize the envelope into the bare
+# array the scorer + grouping expect: extract .data.issues and drop terminal
+# (done/cancelled) issues so completed work never pollutes the work queue. The
+# kernel already supplies each issue's `dependents` (reverse-graph) and
+# `dependencies` arrays, so no per-issue reshaping is needed. The kernel
+# auto-migrates its single-machine SQLite store on read — nothing to recover.
+ISSUES_JSON="$("$FORGE" issue list --json 2>/dev/null | jq '[
+  .data.issues[]
+  | select(.status != "done" and .status != "cancelled")
+]' 2>/dev/null || echo '[]')"
 
 # Bail early on empty
 if [ "$(printf '%s' "$ISSUES_JSON" | jq 'length')" = "0" ]; then
@@ -245,10 +218,9 @@ WORKTREE_PORCELAIN="$("$GIT" worktree list --porcelain 2>/dev/null || echo '')"
 # only performs command execution and rendering.
 IN_PROGRESS_JSON="[]"
 if [ -n "$WORKTREE_PORCELAIN" ]; then
-  IN_PROGRESS_JSON="$("$BD" list --status in_progress --json --limit 0 2>/dev/null || echo '')"
-  if [ -z "$IN_PROGRESS_JSON" ] || ! printf '%s' "$IN_PROGRESS_JSON" | jq empty 2>/dev/null; then
-    IN_PROGRESS_JSON="$(printf '%s' "$ISSUES_JSON" | jq '[.[] | select(.status == "in_progress")]')"
-  fi
+  # In-progress issues come straight from the already-fetched kernel list (it
+  # includes in_progress; only done/cancelled were dropped during the fetch).
+  IN_PROGRESS_JSON="$(printf '%s' "$ISSUES_JSON" | jq '[.[] | select(.status == "in_progress")]')"
 fi
 
 SESSIONS_JSON="$(printf '{"baseBranch":%s,"worktreePorcelain":%s,"inProgressIssues":%s}' \
@@ -505,14 +477,18 @@ else
       # Group assignment (priority order: RESUME > UNBLOCK_CHAINS > BLOCKED > BACKLOG > READY_WORK)
       # Note: in_progress issues with active blockers still show in RESUME (you started
       # the work, you need to see it) but get a "BLOCKED" annotation in the output.
+      # Counts come from the scorer output: dependents is the reverse-graph
+      # array it computes, dependencies is the normalized { depends_on_id }
+      # list. done/cancelled were dropped at fetch; the status guards below stay
+      # as defense-in-depth so a terminal issue can never land in BLOCKED.
       (if .status == "in_progress" then "RESUME"
-       elif (.dependent_count // 0) >= 2 then "UNBLOCK_CHAINS"
-       elif (.dependency_count // 0) > 0 and .status != "closed" then "BLOCKED"
+       elif ((.dependents // []) | length) >= 2 then "UNBLOCK_CHAINS"
+       elif ((.dependencies // []) | length) > 0 and .status != "done" and .status != "cancelled" then "BLOCKED"
        elif (.priority == "P4" or .priority == 4) then "BACKLOG"
        else "READY_WORK"
        end) as $group |
       # Flag in_progress issues that have active blockers
-      (if .status == "in_progress" and (.dependency_count // 0) > 0 then true else false end) as $blocked_resume |
+      (if .status == "in_progress" and ((.dependencies // []) | length) > 0 then true else false end) as $blocked_resume |
       $item + { group: $group, days_ago: $days_ago, blocked_resume: $blocked_resume }
     ] |
 

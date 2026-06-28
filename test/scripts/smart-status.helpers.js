@@ -45,7 +45,6 @@ const BASH_PATH_ENV = resolveBashPathEnv();
 function normalizeBashEnv(env = {}) {
   return {
     ...env,
-    ...(env.BD_CMD ? { BD_CMD: toBashPath(env.BD_CMD) } : {}),
     ...(env.FORGE_CMD ? { FORGE_CMD: toBashPath(env.FORGE_CMD) } : {}),
     ...(env.GIT_CMD ? { GIT_CMD: toBashPath(env.GIT_CMD) } : {}),
     ...(env.JQ_CMD ? { JQ_CMD: toBashPath(env.JQ_CMD) } : {}),
@@ -89,23 +88,48 @@ function parseIssues(stdout) {
   return parsed.issues;
 }
 
-function createMockBd(jsonData) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-test-'));
-  const mockScript = path.join(tmpDir, 'bd');
-  const scriptContent = `#!/usr/bin/env bash
-if [[ "$1" == "list" ]]; then
-  cat <<'JSONEOF'
-${JSON.stringify(jsonData.issues || [])}
-JSONEOF
-fi
-`;
-  fs.writeFileSync(mockScript, scriptContent, { mode: 0o755 });
+// Convert a bd-shaped fixture issue into the Forge Kernel `issue.list` shape:
+// `closed` -> `done`; dependency/dependent COUNTS -> id ARRAYS (the kernel
+// supplies dependents/dependencies as arrays, not counts). Synthetic ids are
+// fine — the scorer + grouping read only array lengths, and the "Unblocks"
+// display asserts presence, not specific ids. An explicit `dependencies` array
+// of `{ depends_on_id }` objects is flattened to the kernel id-string form.
+function toKernelIssue(issue) {
+  const out = { ...issue };
+  if (out.status === 'closed') {
+    out.status = 'done';
+  }
+  if (Array.isArray(out.dependencies)) {
+    out.dependencies = out.dependencies.map((d) => (typeof d === 'string' ? d : d.depends_on_id));
+  } else if (typeof out.dependency_count === 'number') {
+    out.dependencies = Array.from({ length: out.dependency_count }, (_, i) => `__dep_${out.id}_${i}`);
+  } else {
+    out.dependencies = [];
+  }
+  if (!Array.isArray(out.dependents) && typeof out.dependent_count === 'number') {
+    out.dependents = Array.from({ length: out.dependent_count }, (_, i) => `__dependent_${out.id}_${i}`);
+  } else if (!Array.isArray(out.dependents)) {
+    out.dependents = [];
+  }
+  delete out.dependent_count;
+  delete out.dependency_count;
+  return out;
+}
 
-  // The de-beaded smart-status.sh sources epic child rollups from
-  // `forge issue children <id> --json` (the kernel issue-command-contract envelope),
-  // not from `bd children`. Build a matching forge mock from the same epicChildren
-  // fixtures — smart-status reads only .data.rollup.total + .data.rollup.done, and the
-  // kernel `done` status replaces the legacy beads `closed`.
+// Build a `forge` mock that answers both the issue-list fetch and the epic-child
+// rollup the de-beaded smart-status.sh relies on:
+//   - `forge issue list --json`        -> the kernel issue.list envelope
+//   - `forge issue children <id> --json` -> the kernel issue.children envelope
+// smart-status reads only .data.rollup.total + .data.rollup.done from children,
+// and the kernel `done` status replaces the legacy beads `closed`.
+function createMockForge(jsonData) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-test-'));
+  const listEnvelope = {
+    schema_version: 'forge.issue.v1',
+    command: 'issue.list',
+    data: { issues: (jsonData.issues || []).map(toKernelIssue) },
+  };
+
   const forgeScript = path.join(tmpDir, 'forge');
   const forgeCases = (jsonData.epicChildren || []).map((ec) => {
     const kids = ec.children || [];
@@ -144,6 +168,16 @@ fi
   }).join('\n');
   const emptyEnvelope = '{"schema_version":"forge.issue.v1","command":"issue.children","data":{"epic":null,"children":[],"rollup":{"total":0,"done":0,"in_progress":0,"open":0,"review":0,"cancelled":0,"blocked":0,"percentage":0,"by_status":{}},"count":0},"next_commands":[]}';
   const forgeContent = `#!/usr/bin/env bash
+if [[ "$1" == "issue" && "$2" == "list" && "$3" == "--json" ]]; then
+  cat <<'JSONEOF'
+${JSON.stringify(listEnvelope)}
+JSONEOF
+  exit 0
+fi
+if [[ "$1" == "issue" && "$2" == "list" ]]; then
+  echo "mock forge: expected 'issue list --json', got: $*" >&2
+  exit 2
+fi
 if [[ "$1" == "issue" && "$2" == "children" ]]; then
   EPIC_ID="$3"
   case "$EPIC_ID" in
@@ -154,7 +188,7 @@ fi
 `;
   fs.writeFileSync(forgeScript, forgeContent, { mode: 0o755 });
 
-  return { tmpDir, mockScript, forgeScript };
+  return { tmpDir, forgeScript };
 }
 
 function cleanupTmpDir(tmpDir) {
@@ -184,58 +218,6 @@ REAL_JQ="${cachedRealJq}"
   return { tmpDir, wrapperPath };
 }
 
-function createMetadataRecoveryMocks({ repoRoot, databaseName, metadata }) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-recovery-'));
-  const bdScript = path.join(tmpDir, 'bd');
-  const gitScript = path.join(tmpDir, 'git');
-  const capturePath = path.join(tmpDir, 'init-args.txt');
-  const restoredFlag = path.join(tmpDir, 'restored.flag');
-
-  fs.mkdirSync(path.join(repoRoot, '.beads', 'backup'), { recursive: true });
-  fs.writeFileSync(
-    path.join(repoRoot, '.beads', 'metadata.json'),
-    JSON.stringify(metadata || { database: 'dolt', dolt_database: databaseName }, null, 2),
-  );
-  fs.writeFileSync(path.join(repoRoot, '.beads', 'backup', 'issues.jsonl'), '{"id":"forge-1"}\n');
-
-  fs.writeFileSync(bdScript, `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "list" ]]; then
-  if [[ -f ${JSON.stringify(toBashPath(restoredFlag))} ]]; then
-    echo "[]"
-    exit 0
-  fi
-  echo "database repo-root not found" >&2
-  exit 1
-fi
-if [[ "$1" == "init" ]]; then
-  printf '%s' "$*" > ${JSON.stringify(toBashPath(capturePath))}
-  exit 0
-fi
-if [[ "$1" == "backup" && "$2" == "restore" ]]; then
-  touch ${JSON.stringify(toBashPath(restoredFlag))}
-  exit 0
-fi
-if [[ "$1" == "children" ]]; then
-  echo "[]"
-  exit 0
-fi
-echo "[]" 
-`, { mode: 0o755 });
-
-  fs.writeFileSync(gitScript, `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "rev-parse" && "$2" == "--show-toplevel" ]]; then
-  printf '%s\\n' ${JSON.stringify(toBashPath(repoRoot))}
-  exit 0
-fi
-echo "unexpected git args: $*" >&2
-exit 1
-`, { mode: 0o755 });
-
-  return { tmpDir, bdScript, gitScript, capturePath };
-}
-
 function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
@@ -248,8 +230,7 @@ module.exports = {
   SCRIPT,
   cleanupTmpDir,
   createCrLfJqWrapper,
-  createMetadataRecoveryMocks,
-  createMockBd,
+  createMockForge,
   daysAgo,
   normalizeBashEnv,
   parseIssues,
