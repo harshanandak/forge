@@ -89,4 +89,4 @@ forge team dashboard 2>&1 | head -5 || true
 
 - **If starting new work**: Run `/plan <feature-name>`
 - **If continuing work**: Resume with appropriate phase command
-- **If reviewing**: Run `/review <pr-number>` or `/premerge <pr-number>`
+- **If reviewing**: Run `/review <pr-number>` (the pre-merge doc gate is embedded in `/ship` and `/review`)

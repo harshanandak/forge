@@ -7,10 +7,10 @@ const YAML = require('yaml');
 const repoRoot = path.resolve(__dirname, '../..');
 const skillsDir = path.join(repoRoot, 'skills');
 
-// The 12 workflow stage skills migrated from the removed .claude/commands/ surface,
+// The 11 workflow stage skills migrated from the removed .claude/commands/ surface,
 // plus the `kernel` umbrella that indexes them. These are the canonical, committed
 // skill source — agent harness dirs are generated from these by `forge setup` /
-// `skills sync`.
+// `skills sync`. Pre-merge is a doc-update gate embedded in ship/review, not a skill.
 const STAGE_SKILLS = [
   'plan',
   'dev',
@@ -18,7 +18,6 @@ const STAGE_SKILLS = [
   'verify',
   'ship',
   'review',
-  'premerge',
   'research',
   'rollback',
   'status',
@@ -96,7 +95,7 @@ describe('stage skill surface (skills/<stage>/SKILL.md)', () => {
 });
 
 describe('stage skill surface completeness', () => {
-  test('all 12 stage skills + kernel umbrella are present', () => {
+  test('all 11 stage skills + kernel umbrella are present', () => {
     const present = fs.existsSync(skillsDir)
       ? fs
           .readdirSync(skillsDir)

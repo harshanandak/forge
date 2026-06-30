@@ -8,7 +8,7 @@ Run one bounded monitor pass over a pull request: read CI and check state, take 
 
 # Shepherd
 
-`shepherd` is a **utility command, not a workflow stage.** It automates the polling / rerun / escalation loop that today is done by hand after `/review`. It does **not** replace `/review` (which still owns semantic review and its stage transition) and does **not** touch `/premerge`.
+`shepherd` is a **utility command, not a workflow stage.** It automates the polling / rerun / escalation loop that today is done by hand after `/review`. It does **not** replace `/review` (which still owns semantic review and its stage transition) and does **not** perform the pre-merge doc gate (embedded in `/ship` and `/review`).
 
 ## Usage
 
@@ -21,13 +21,13 @@ forge shepherd <pr-number> --auto-rebase   # opt-in, default OFF
 
 Each `forge shepherd <pr>` invocation is **ONE discrete bounded pass**: it reads PR state, takes at most the allowed Tier-A action, then **exits**. It never sits in-process polling "until merge-ready."
 
-This mirrors the project's documented ergonomic from `/review`, `/premerge`, and the Greptile process: **poll briefly, then stop and hand off.** Any pass that finds checks still pending exits as `PENDING`, and the next scheduled pass picks up where it left off.
+This mirrors the project's documented ergonomic from `/review`, the pre-merge gate, and the Greptile process: **poll briefly, then stop and hand off.** Any pass that finds checks still pending exits as `PENDING`, and the next scheduled pass picks up where it left off.
 
 A `--watch` affordance, if you want one, lives in an **external scheduler** (e.g. cron or a `/loop`) that re-invokes the bounded pass on an interval with debounce (>= 60s between passes, cancel-in-progress). There is no in-process infinite loop.
 
 ## What it never does
 
-- **Never merges.** There is no merge action and no server-side auto-merge latch. The shepherd terminates at `MERGE_READY` and hands off to the human, who merges in the GitHub UI (mirroring the `/premerge` handoff).
+- **Never merges.** There is no merge action and no server-side auto-merge latch. The shepherd terminates at `MERGE_READY` and hands off to the human, who merges in the GitHub UI (mirroring the pre-merge gate's merge handoff).
 - **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/greptile-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
 
 ## Action ladder

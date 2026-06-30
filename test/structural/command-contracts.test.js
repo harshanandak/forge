@@ -110,7 +110,7 @@ describe('Contract: workflow commands use configurable template language', () =>
    * runtime building blocks. Command docs must not reintroduce hardcoded
    * Stage N gate language.
    */
-  const workflowCommands = ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'];
+  const workflowCommands = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
 
   for (const command of workflowCommands) {
     test(`${command}.md references the default template without Stage N numbering`, () => {
