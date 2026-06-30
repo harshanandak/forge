@@ -84,6 +84,10 @@ describe('Beads Kernel compatibility adapter', () => {
 		const importedChild = result.kernel.issues.find(issue => issue.id === 'forge-child');
 		expect(JSON.parse(importedChild.labels)).toEqual(['0.0.20', 'adapter']);
 		expect(importedChild.acceptance_criteria).toBeNull();
+		// Full-fidelity import: the beads author is carried onto the Kernel created_by column.
+		expect(importedChild.created_by).toBe('Harsha Nanda');
+		// forge-child carries no issue-level metadata, so the Kernel metadata column stays null.
+		expect(importedChild.metadata).toBeNull();
 		expect(result.kernel.dependencies).toEqual(expect.arrayContaining([
 			expect.objectContaining({
 				issue_id: 'forge-child',
@@ -134,7 +138,7 @@ describe('Beads Kernel compatibility adapter', () => {
 			dependencies: 2,
 			comments: 2,
 			closeEvents: 1,
-			unsupportedFields: 4,
+			unsupportedFields: 3,
 		});
 		expect(result.report.preservedFields).toEqual(expect.arrayContaining([
 			'issues.id',
@@ -147,7 +151,6 @@ describe('Beads Kernel compatibility adapter', () => {
 			'events.close_reason',
 		]));
 		expect(result.report.gaps).toEqual(expect.arrayContaining([
-			expect.objectContaining({ field: 'issues.created_by', reason: 'no Kernel issue creator column in schema v1' }),
 			expect.objectContaining({ field: 'issues.owner', reason: 'no Kernel issue owner column in schema v1' }),
 			expect.objectContaining({ field: 'dependencies.created_by', reason: 'no Kernel dependency creator column in schema v1' }),
 			expect.objectContaining({ field: 'dependencies.metadata', reason: 'no Kernel dependency metadata column in schema v1' }),
@@ -155,11 +158,73 @@ describe('Beads Kernel compatibility adapter', () => {
 		const gapFields = result.report.gaps.map(gap => gap.field);
 		expect(gapFields).not.toContain('issues.labels');
 		expect(gapFields).not.toContain('issues.acceptance_criteria');
+		// created_by and issue metadata are now carried onto the Kernel record, not dropped.
+		expect(gapFields).not.toContain('issues.created_by');
+		expect(gapFields).not.toContain('issues.metadata');
 		expect(result.rollback).toMatchObject({
 			available: true,
 			mode: 'import-only',
 			reason: 'Import did not mutate Beads files; discard imported Kernel records to roll back.',
 		});
+	});
+
+	test('carries beads issue created_by and metadata onto the Kernel record', () => {
+		const snapshot = {
+			issues: [{
+				id: 'forge-md',
+				title: 'Issue with author and metadata',
+				status: 'open',
+				priority: 2,
+				issue_type: 'task',
+				owner: 'harsha@example.com',
+				created_by: 'Harsha Nanda',
+				metadata: JSON.stringify({ team: 'kernel', sprint: 3 }),
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+		};
+
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+		const [imported] = result.kernel.issues;
+
+		expect(imported.created_by).toBe('Harsha Nanda');
+		expect(JSON.parse(imported.metadata)).toEqual({ team: 'kernel', sprint: 3 });
+
+		const gapFields = result.report.gaps.map(gap => gap.field);
+		expect(gapFields).not.toContain('issues.created_by');
+		expect(gapFields).not.toContain('issues.metadata');
+	});
+
+	test('falls back to the beads owner for Kernel created_by when no author is recorded', () => {
+		const result = importBeadsSnapshot({
+			issues: [{ id: 'forge-owned', title: 'Owner only', status: 'open', owner: 'owner@example.com' }],
+		}, { importedAt: IMPORTED_AT });
+
+		expect(result.kernel.issues[0].created_by).toBe('owner@example.com');
+	});
+
+	test('strips the internal forge_projection marker from carried Kernel metadata', () => {
+		const snapshot = {
+			issues: [{
+				id: 'forge-proj',
+				title: 'Projection marker only',
+				status: 'open',
+				priority: 2,
+				issue_type: 'task',
+				metadata: JSON.stringify({
+					forge_projection: { source: 'forge-kernel', target: 'beads' },
+				}),
+				created_at: IMPORTED_AT,
+				updated_at: IMPORTED_AT,
+			}],
+		};
+
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+		const [imported] = result.kernel.issues;
+
+		// forge_projection is an internal Forge->Beads marker, not user metadata, so it is stripped.
+		expect(imported.metadata).toBeNull();
+		expect(result.report.gaps.map(gap => gap.field)).not.toContain('issues.metadata');
 	});
 
 	test('falls back to revision zero for malformed Beads close-event revisions', () => {
@@ -288,7 +353,7 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
-	test('reports malformed Forge projection metadata as unsupported', () => {
+	test('ignores malformed Forge projection provenance without dropping issue metadata', () => {
 		const exportResult = exportClosedKernelIssue();
 
 		const [exportedIssue] = parseJsonl(exportResult.files['issues.jsonl']);
@@ -313,9 +378,12 @@ describe('Beads Kernel compatibility adapter', () => {
 		}, { importedAt: IMPORTED_AT });
 		const [closeEvent] = importResult.kernel.events;
 
-		expect(importResult.report.gaps).toEqual(expect.arrayContaining([
-			expect.objectContaining({ field: 'issues.metadata' }),
-		]));
+		// Metadata is now carried (not reported as an unsupported gap); the forge_projection marker
+		// is stripped, so the only key here leaves an empty Kernel metadata column.
+		const gapFields = importResult.report.gaps.map(gap => gap.field);
+		expect(gapFields).not.toContain('issues.metadata');
+		expect(importResult.kernel.issues[0].metadata).toBeNull();
+		// A malformed projection still grants no provenance to the close event.
 		expect(JSON.parse(closeEvent.payload_json).projection_origin).toBeUndefined();
 	});
 
@@ -427,14 +495,18 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(importedIssue.type).toBe('task');
 		expect(JSON.parse(importedIssue.labels)).toEqual(expect.arrayContaining(['migration', 'feature']));
 		expect(importedIssue.acceptance_criteria).toBe(JSON.stringify(['Imported issue keeps migration context visible.']));
+		// The beads author is carried; "{}" metadata holds no user data, so the column stays null.
+		expect(importedIssue.created_by).toBe('Harsha Nanda');
+		expect(importedIssue.metadata).toBeNull();
 		expect(result.report.gaps).toEqual(expect.arrayContaining([
 			expect.objectContaining({ field: 'issues.assignee' }),
-			expect.objectContaining({ field: 'issues.created_by' }),
 			expect.objectContaining({ field: 'issues.design' }),
 		]));
 		const aa1GapFields = result.report.gaps.map(gap => gap.field);
 		expect(aa1GapFields).not.toContain('issues.labels');
 		expect(aa1GapFields).not.toContain('issues.acceptance_criteria');
+		// created_by is now carried onto the Kernel record, no longer a fidelity gap.
+		expect(aa1GapFields).not.toContain('issues.created_by');
 	});
 
 	test('imports dependency rows with non-lossy generated ids', () => {
