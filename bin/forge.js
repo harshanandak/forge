@@ -4024,7 +4024,11 @@ async function main() {
           process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);
         }
         console.error(result.error || result.message || 'Command failed');
-        process.exit(1);
+        // Issue commands surface the issue-command-contract exit_code as
+        // `result.exitCode` (e.g. not-found=3, validation=6). Honor it so failed
+        // commands no longer collapse to exit 1; other registry commands omit
+        // `exitCode` and keep the historical exit 1.
+        process.exit(Number.isInteger(result.exitCode) ? result.exitCode : 1);
       }
       if (result && typeof result.output === 'string' && result.output.length > 0) {
         process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);

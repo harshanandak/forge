@@ -173,10 +173,12 @@ describe('issue backend resolution from env/config', () => {
 
     // The kernel contract {ok,data,...} is normalized into the {success,output}
     // shape the CLI result printer understands. output preserves the FULL contract
-    // envelope (schema_version/command/data/next_commands) — see KAP-1.
+    // envelope (ok/schema_version/command/data/next_commands) — see KAP-1. A success
+    // envelope MUST carry ok:true (response-contract parity).
     expect(result.success).toBe(true);
     expect(result.operation).toBe('create');
     expect(JSON.parse(result.output)).toEqual({
+      ok: true,
       command: 'create',
       data: { id: 'k1' },
       next_commands: [],
@@ -239,9 +241,12 @@ describe('issue backend resolution from env/config', () => {
     expect(calls[0].deps.issueBackend).toBe('kernel');
   });
 
-  test('a kernel error contract is normalized into a {success:false,error} result', async () => {
+  test('a kernel error contract is normalized into a {success:false,error,exitCode} result', async () => {
     const show = createIssueSubcommand('show');
 
+    // No --json: the human message goes to stderr, but the contract exit_code is
+    // still surfaced as result.exitCode so the bin printer exits with the error
+    // class's code instead of collapsing every failure to exit 1.
     const result = await show.handler(['nope'], {}, '/repo', {
       issueBackend: 'kernel',
       env: {},
@@ -253,7 +258,7 @@ describe('issue backend resolution from env/config', () => {
       }),
     });
 
-    expect(result).toEqual({ success: false, error: 'Issue nope not found' });
+    expect(result).toEqual({ success: false, error: 'Issue nope not found', exitCode: 4 });
   });
 
   test('a kernel ok contract preserves the FULL envelope in output (KAP-1)', async () => {
@@ -274,6 +279,7 @@ describe('issue backend resolution from env/config', () => {
     expect(result.success).toBe(true);
     expect(result.operation).toBe('create');
     const envelope = JSON.parse(result.output);
+    expect(envelope.ok).toBe(true);
     expect(envelope.schema_version).toBe('forge.issue.v1');
     expect(envelope.command).toBe('issue.create');
     expect(envelope.data).toEqual({ id: 'k1' });
@@ -380,12 +386,20 @@ describe('kernel batch close (KAP-9)', () => {
     expect(calls[1]).toEqual({ operation: 'close', args: ['k2'] });
     expect(result.success).toBe(true);
     expect(result.operation).toBe('close');
-    const summary = JSON.parse(result.output);
+    // Response-contract parity: a multi-id close aggregates into ONE forge.issue.v1
+    // envelope (the contract `mutationBatch` shape), never a bare array.
+    const envelope = JSON.parse(result.output);
+    expect(Array.isArray(envelope)).toBe(false);
+    expect(envelope.ok).toBe(true);
+    expect(envelope.schema_version).toBe('forge.issue.v1');
+    expect(envelope.command).toBe('issue.close');
+    const summary = envelope.data.results;
     expect(summary).toHaveLength(2);
     expect(summary[0].id).toBe('k1');
-    expect(summary[0].success).toBe(true);
+    expect(summary[0].ok).toBe(true);
     expect(summary[1].id).toBe('k2');
-    expect(summary[1].success).toBe(true);
+    expect(summary[1].ok).toBe(true);
+    expect(envelope.data.closed).toEqual(['k1', 'k2']);
   });
 
   test('preserves trailing flags on each per-id kernel close call', async () => {
@@ -420,9 +434,15 @@ describe('kernel batch close (KAP-9)', () => {
 
     expect(result.success).toBe(false);
     expect(result.operation).toBe('close');
-    const summary = JSON.parse(result.output);
-    expect(summary[0]).toEqual({ id: 'k1', success: true });
-    expect(summary[1]).toEqual({ id: 'k2', success: false, error: 'Issue k2 not found' });
+    // One envelope (ok:false) carrying per-id outcomes; the failing id keeps the
+    // structured contract error object, not a flattened string.
+    const envelope = JSON.parse(result.output);
+    expect(Array.isArray(envelope)).toBe(false);
+    expect(envelope.ok).toBe(false);
+    const summary = envelope.data.results;
+    expect(summary[0]).toEqual({ id: 'k1', ok: true });
+    expect(summary[1]).toEqual({ id: 'k2', ok: false, error: { message: 'Issue k2 not found' } });
+    expect(envelope.data.closed).toEqual(['k1']);
   });
 
   test('a single kernel close id keeps the byte-identical envelope output', async () => {

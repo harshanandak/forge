@@ -94,6 +94,24 @@ describe('Kernel issue command contract', () => {
 			.required).not.toContain('validation');
 	});
 
+	test('multi-id close declares a mutationBatch envelope (single envelope, not a bare array)', () => {
+		const { ISSUE_COMMAND_RESPONSE_SCHEMAS } = require('../../lib/kernel/issue-command-contract');
+		const batch = ISSUE_COMMAND_RESPONSE_SCHEMAS.mutationBatch;
+
+		// Existence first (clean RED — never a TypeError on undefined.required).
+		expect(batch).toBeDefined();
+		expect(batch.required).toEqual(['ok', 'schema_version', 'command', 'data', 'next_commands']);
+		// `ok` is a plain boolean here (true only when EVERY id closed), unlike the
+		// single-mutation schema whose ok is const:true.
+		expect(batch.properties.ok).toEqual({ type: 'boolean' });
+		expect(batch.properties.schema_version).toEqual({ const: 'forge.issue.v1' });
+		// Per-id outcomes live in data.results; data.closed lists the terminal ids.
+		expect(batch.properties.data.required).toEqual(['results', 'count', 'closed']);
+		const resultItem = batch.properties.data.properties.results.items;
+		expect(resultItem.required).toEqual(['id', 'ok']);
+		expect(resultItem.properties.ok).toEqual({ type: 'boolean' });
+	});
+
 	test('KAP-3: issue summary schema declares an optional comments array', () => {
 		const { ISSUE_COMMAND_RESPONSE_SCHEMAS } = require('../../lib/kernel/issue-command-contract');
 		// The show response's data is the issue summary schema; comments live there.
