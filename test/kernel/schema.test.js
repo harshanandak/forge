@@ -55,6 +55,13 @@ describe('kernel schema registry', () => {
 		expect(issueFieldNames).toContain('design');
 		expect(issueFieldNames).toContain('notes');
 		expect(issueFieldNames).toContain('assignee');
+
+		// Beads full-fidelity import: author, close timestamp, raw close reason and a
+		// verbatim metadata JSON blob (migration 006 backfills existing DBs).
+		expect(issueFieldNames).toContain('created_by');
+		expect(issueFieldNames).toContain('closed_at');
+		expect(issueFieldNames).toContain('close_reason');
+		expect(issueFieldNames).toContain('metadata');
 	});
 
 	test('registers the project-memory read-model table (kernel_memories)', () => {

@@ -95,6 +95,44 @@ describe('Kernel broker — migration ledger', () => {
 		expect(await ledgerIds()).toEqual([...planIds].sort());
 	});
 
+	test('migration 006 backfills the beads fidelity columns on a DB created at the prior schema version', async () => {
+		const {
+			buildSchemaMigration,
+			buildEventExpectedRevisionMigration,
+			buildClaimActiveLeaseMigration,
+			buildIssueContentFieldsMigration,
+			buildMemoryProjectionMigration,
+		} = require('../../lib/kernel/migrations');
+		const fidelityColumns = ['created_by', 'closed_at', 'close_reason', 'metadata'];
+
+		// A DB migrated only through 005 — the schema version BEFORE the fidelity columns.
+		const priorPlan = buildKernelMigrationPlan([
+			buildSchemaMigration(),
+			buildEventExpectedRevisionMigration(),
+			buildClaimActiveLeaseMigration(),
+			buildIssueContentFieldsMigration(),
+			buildMemoryProjectionMigration(),
+		]);
+		await makeBroker(priorPlan).initialize();
+
+		const before = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
+		const beforeCols = before.map(col => col.name);
+		for (const column of fidelityColumns) {
+			expect(beforeCols).not.toContain(column);
+		}
+
+		// The full plan adds migration 006, which ALTERs the four columns in without error.
+		const result = await makeBroker(buildKernelMigrationPlan()).initialize();
+		expect(result.success).toBe(true);
+		expect(result.migrationsNewlyApplied).toEqual(['006_kernel_issue_fidelity_columns']);
+
+		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
+		const afterCols = after.map(col => col.name);
+		for (const column of fidelityColumns) {
+			expect(afterCols).toContain(column);
+		}
+	});
+
 	test('a newly added ADD COLUMN migration applies once on an up-to-date DB', async () => {
 		await makeBroker().initialize();
 
