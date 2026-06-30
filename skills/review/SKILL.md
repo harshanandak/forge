@@ -1,6 +1,6 @@
 ---
 name: review
-description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or preparing a PR for premerge.
+description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or running the pre-merge doc gate before merge.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 
@@ -360,7 +360,7 @@ forge sync
 ✓ All checks passing: ✓
 ✓ Beads updated: Ready for merge
 
-Next: /premerge <pr-number>
+Next: pre-merge gate — finish docs + confirm CI green, then hand off the PR for merge
 ```
 
 ```
@@ -371,13 +371,27 @@ Do NOT declare /review complete until:
 3. gh pr checks <pr-number> shows all checks passing
 4. Context check: Run `bash scripts/beads-context.sh validate <id>` and address any warnings
 5. Stage transition: Run the following → exit 0 confirmed:
-   bash scripts/beads-context.sh stage-transition <id> review premerge \
+   bash scripts/beads-context.sh stage-transition <id> review verify \
      --summary "<all feedback addressed summary>" \
      --decisions "<comment resolutions — valid fixes and justified rejections>" \
      --artifacts "<fixed files, commit SHAs>" \
-     --next "<doc update needs for premerge>"
+     --next "<pre-merge gate: finish docs + CI green, then hand off for merge>"
 </HARD-GATE>
 ```
+
+## Pre-merge gate (before merge)
+
+Pre-merge is a doc-update **gate/checkpoint**, not a separate stage — run it here, once feedback is addressed and before the PR is handed off for merge, whenever the change touches anything documented:
+
+1. **Finish the docs on the feature branch** (update only what genuinely changed):
+   - `CHANGELOG.md` (always) — entry under `## [Unreleased]` using Keep a Changelog categories, with PR number + issue ID.
+   - `README.md` (user-facing), `docs/reference/API_REFERENCE.md` (API), architecture docs (structural).
+   - `CLAUDE.md` — **USER section only** (between the USER markers); never touch other managed blocks.
+   - `AGENTS.md` (agent config, skills, or cross-agent workflow changes).
+   Commit the doc updates to the feature branch and push.
+2. **Confirm CI is green** — doc commits re-trigger CI; poll briefly (~60s), then hand off if still pending.
+3. **Sync the issue store** — `forge sync`.
+4. **Hand off for MANUAL merge** — present the PR and stop. **Never run `gh pr merge`; never auto-merge.** The user merges in the GitHub UI, then runs `/verify`.
 
 ## Integration with Workflow
 
@@ -392,8 +406,7 @@ Default template:
   /review    -> Address PR feedback
   /verify    -> Post-merge health check
 
-Manual/support surfaces:
-  /premerge  -> Merge-readiness checks when the active template requires them
+Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review (not a separate stage).
 ```
 
 ## Understanding the Tools
@@ -450,7 +463,7 @@ Manual/support surfaces:
 - **Reply inline to Greptile**: Respond to each comment directly
 - **Post summary response**: Address Greptile's overall assessment
 - **Use sonarcloud skill**: Don't just check the web UI
-- **Verify all checks**: Ensure everything is green before /premerge
+- **Verify all checks**: Ensure everything is green before the pre-merge gate / merge
 - **Update Beads**: Keep issue status current
 - **Research if needed**: Use WebSearch for unclear suggestions
 - **Document fixes**: Clear commit messages for all fixes

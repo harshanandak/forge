@@ -108,14 +108,14 @@ describe('skills/ directory structure', () => {
   });
 
   describe('skills/ contains only expected directories', () => {
-    // Canonical skill set after the skills-only migration: the 12 workflow stage
+    // Canonical skill set after the skills-only migration: the 11 workflow stage
     // skills + the `kernel` umbrella (ported from the removed .claude/commands/
     // surface) plus the three packaged skills. These are the single source of
     // truth; agent harness dirs are generated from them by `skills sync` / setup.
+    // Pre-merge is a doc-update gate embedded in ship/review, not a skill.
     const expectedSkillDirs = [
       'dev',
       'plan',
-      'premerge',
       'research',
       'review',
       'rollback',

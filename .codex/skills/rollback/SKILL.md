@@ -294,7 +294,7 @@ No changes made (dry run).
 - CI/CD failures indicate architecture problems
 - Breaking changes need to be reverted
 
-**After Merging** (`/premerge` + user merge):
+**After Merging** (pre-merge gate + user merge):
 - Production issues discovered
 - Need to revert feature entirely
 - Rollback PR merge commit
@@ -308,7 +308,7 @@ No changes made (dry run).
 
 ```bash
 # Standard workflow
-/status → /plan → /dev → /validate → /ship → /review → /premerge → /verify
+/status → /plan → /dev → /validate → /ship → /review → /verify   (pre-merge doc gate runs inside /ship and /review)
 
 # Recovery workflow
 /dev → (issues discovered) → bunx forge rollback → /dev (retry)

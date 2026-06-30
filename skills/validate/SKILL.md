@@ -281,8 +281,7 @@ Default template:
   /review    -> Address PR feedback
   /verify    -> Post-merge health check
 
-Manual/support surfaces:
-  /premerge  -> Merge-readiness checks when the active template requires them
+Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review (not a separate stage).
 ```
 
 ## Tips

@@ -28,7 +28,7 @@ describe('.claude/commands/ deletion (A0d)', () => {
 
 // ─── canonical skills source ─────────────────────────────────────────────────
 
-const STAGE_SKILLS = ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'];
+const STAGE_SKILLS = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
 const skillsDir = path.join(repoRoot, 'skills');
 
 describe('skills/ canonical source', () => {
