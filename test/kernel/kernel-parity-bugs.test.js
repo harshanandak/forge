@@ -217,4 +217,91 @@ describe('Kernel parity bugs', () => {
 		expect(typeof added.data.dependency_id).toBe('string');
 		expect(added.data.dependency_id).not.toBe('pd-a');
 	});
+
+	// --- BUG 4: priority is persisted, normalized, filterable and sortable -----
+	// Kernel `--priority` was decorative: the bare-int and P-label forms stored
+	// DIFFERENT verbatim values ('1' vs 'P1'), priority_rank was never derived from
+	// the label (always 0), `list --priority` ignored the filter, and list order did
+	// not reflect priority. Canonical stored form is the P0..P4 label (contract
+	// normalizePriority), with priority_rank = the numeric rank.
+
+	test('create --priority=1 and --priority=P1 both persist the canonical P1 label + rank', async () => {
+		await createIssue(['--id', 'prio-bare', '--title', 'bare', '--type', 'task', '--priority', '1']);
+		await createIssue(['--id', 'prio-label', '--title', 'label', '--type', 'task', '--priority', 'P1']);
+
+		const bare = await driver.issueOperation('show', ['prio-bare'], {}, config);
+		const label = await driver.issueOperation('show', ['prio-label'], {}, config);
+		expect(bare.data.priority).toBe('P1');
+		expect(label.data.priority).toBe('P1');
+		expect(bare.data.rank).toBe(1);
+		expect(label.data.rank).toBe(1);
+	});
+
+	test('create surfaces the normalized priority on the mutation response', async () => {
+		const bare = await createIssue(['--id', 'prio-resp-1', '--title', 'x', '--type', 'task', '--priority', '1']);
+		const label = await createIssue(['--id', 'prio-resp-2', '--title', 'y', '--type', 'task', '--priority', 'P1']);
+		expect(bare.data.priority).toBe('P1');
+		expect(label.data.priority).toBe('P1');
+	});
+
+	test('update --priority=2 normalizes the stored label + rank to P2/2', async () => {
+		await createIssue(['--id', 'prio-upd', '--title', 'x', '--type', 'task', '--priority', 'P0']);
+		const updated = await broker.runIssueOperation(
+			'update',
+			['prio-upd', '--priority', '2'],
+			{ now: '2026-06-29T01:00:00.000Z', actor: 'tester' },
+		);
+		expect(updated.ok).toBe(true);
+		expect(updated.data.priority).toBe('P2');
+
+		const shown = await driver.issueOperation('show', ['prio-upd'], {}, config);
+		expect(shown.data.priority).toBe('P2');
+		expect(shown.data.rank).toBe(2);
+	});
+
+	test('list --priority filter returns only matching issues, incl. legacy bare-int rows', async () => {
+		// Legacy row stored in the pre-normalization bare-int form ('1', rank 0),
+		// inserted directly to model data already on disk.
+		await driver.exec(
+			`INSERT INTO kernel_issues (id,title,type,status,priority,priority_rank,created_at,updated_at,entity_revision)
+				VALUES ('legacy-p1','Legacy bare int','task','open','1',0,'${now}','${now}',0)`,
+			config,
+		);
+		await createIssue(['--id', 'new-p1', '--title', 'new', '--type', 'task', '--priority', 'P1']);
+		await createIssue(['--id', 'other-p2', '--title', 'other', '--type', 'task', '--priority', '2']);
+
+		for (const arg of ['--priority=1', '--priority=P1']) {
+			const res = await driver.issueOperation('list', [arg], {}, config);
+			const ids = res.data.issues.map(issue => issue.id).sort();
+			expect(ids).toEqual(['legacy-p1', 'new-p1']);
+		}
+	});
+
+	test('a default-priority create derives rank from its P2 label (sorts after P1, not before)', async () => {
+		// No --priority: the row defaults to the P2 LABEL, so its rank must derive to 2 —
+		// not the seed 0, which would sort the common default-priority issue ABOVE an
+		// explicit P1 in `list` (priority order inverted for the typical case).
+		await createIssue(['--id', 'def-p2', '--title', 'default', '--type', 'task']);
+		const shown = await driver.issueOperation('show', ['def-p2'], {}, config);
+		expect(shown.data.priority).toBe('P2');
+		expect(shown.data.rank).toBe(2);
+
+		await createIssue(['--id', 'exp-p1', '--title', 'explicit', '--type', 'task', '--priority', 'P1']);
+		const res = await driver.issueOperation('list', [], {}, config);
+		const order = res.data.issues.map(issue => issue.id);
+		expect(order.indexOf('exp-p1')).toBeLessThan(order.indexOf('def-p2'));
+	});
+
+	test('list orders issues by priority (P0 before P1 before P3)', async () => {
+		// Ids are chosen so their alphabetical order (a < b < c) is the REVERSE of the
+		// expected priority order — proving the sort keys on derived rank, not on id.
+		await createIssue(['--id', 'ord-a', '--title', 'three', '--type', 'task', '--priority', '3']);
+		await createIssue(['--id', 'ord-b', '--title', 'one', '--type', 'task', '--priority', 'P1']);
+		await createIssue(['--id', 'ord-c', '--title', 'zero', '--type', 'task', '--priority', 'P0']);
+
+		const res = await driver.issueOperation('list', [], {}, config);
+		const order = res.data.issues.map(issue => issue.id);
+		expect(order.indexOf('ord-c')).toBeLessThan(order.indexOf('ord-b'));
+		expect(order.indexOf('ord-b')).toBeLessThan(order.indexOf('ord-a'));
+	});
 });
