@@ -83,7 +83,7 @@ describe('kernel CLI response-contract parity (BUG A/B)', () => {
   // --- BUG B part 2: multi-id close is ONE envelope, not a bare array -------
   test('multi-id kernel close returns a single forge.issue.v1 envelope (not a bare array)', async () => {
     const result = await runIssueSubcommand('close', ['k1', 'k2', '--json'], '/repo', KERNEL_OPTS(
-      async (operation, args) => ({
+      async (_operation, args) => ({
         ok: true,
         schema_version: 'forge.issue.v1',
         command: 'issue.close',
@@ -102,11 +102,12 @@ describe('kernel CLI response-contract parity (BUG A/B)', () => {
     expect(envelope.data.results.map(entry => entry.id)).toEqual(['k1', 'k2']);
     expect(envelope.data.results.every(entry => entry.ok === true)).toBe(true);
     expect(envelope.data.closed).toEqual(['k1', 'k2']);
+    expect(envelope.data.count).toBe(2);
   });
 
   test('multi-id kernel close with one failure: ok:false, per-id error, exit code propagated', async () => {
     const result = await runIssueSubcommand('close', ['k1', 'k2', '--json'], '/repo', KERNEL_OPTS(
-      async (operation, args) => {
+      async (_operation, args) => {
         if (args[0] === 'k2') {
           return {
             ok: false,
@@ -137,5 +138,6 @@ describe('kernel CLI response-contract parity (BUG A/B)', () => {
     expect(k2.ok).toBe(false);
     expect(k2.error.code).toBe('FORGE_ISSUE_NOT_FOUND');
     expect(envelope.data.closed).toEqual(['k1']);
+    expect(envelope.data.count).toBe(2);
   });
 });
