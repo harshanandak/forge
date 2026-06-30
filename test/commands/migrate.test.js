@@ -79,6 +79,15 @@ describe('forge migrate command contract', () => {
 		expect(result.success).toBe(false);
 		expect(result.error).toContain('Only forge migrate --dry-run is implemented');
 	});
+
+	// A flag supplied without a value must be rejected, not silently swallowed —
+	// otherwise `--from beads --source` would auto-detect an unintended source.
+	test('rejects --source with no value instead of falling through to auto-detect', async () => {
+		const result = await migrateCommand.handler(['--from', 'beads', '--source'], {}, process.cwd());
+		expect(result.success).toBe(false);
+		expect(result.exitCode).toBe(1);
+		expect(result.error).toContain('--source requires a value');
+	});
 });
 
 describe('forge migrate --from beads — dry run', () => {
