@@ -93,6 +93,40 @@ describe('resetHard', () => {
     expect(result.removed).toEqual([]);
   });
 
+  test('preserves user/third-party skills while removing Forge-managed skills', () => {
+    // Fixture canonical source: Forge "owns" only the 'plan' skill here.
+    const sourceRoot = path.join(tmpDir, '_forge-src');
+    scaffold(sourceRoot, ['skills/plan/SKILL.md']);
+
+    // Project skills dir mixes a Forge-managed skill and a user-authored one.
+    scaffold(tmpDir, [
+      '.claude/skills/plan/SKILL.md',
+      '.claude/skills/my-custom-skill/SKILL.md',
+    ]);
+
+    resetHard(tmpDir, { force: true, sourceRoot });
+
+    // Forge-managed skill removed
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills', 'plan'))).toBe(false);
+    // User/third-party skill preserved
+    expect(
+      fs.existsSync(path.join(tmpDir, '.claude', 'skills', 'my-custom-skill', 'SKILL.md'))
+    ).toBe(true);
+    // Surrounding skills dir intact (not wiped) because a user skill remains
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills'))).toBe(true);
+  });
+
+  test('removes Forge skill dir entirely when no user skills remain', () => {
+    const sourceRoot = path.join(tmpDir, '_forge-src');
+    scaffold(sourceRoot, ['skills/plan/SKILL.md']);
+    scaffold(tmpDir, ['.claude/skills/plan/SKILL.md']);
+
+    resetHard(tmpDir, { force: true, sourceRoot });
+
+    // Empty Forge skills dir is cleaned up
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'skills'))).toBe(false);
+  });
+
   test('removes multiple agent directories', () => {
     scaffold(tmpDir, [
       '.cursor/rules/forge-workflow.mdc',
