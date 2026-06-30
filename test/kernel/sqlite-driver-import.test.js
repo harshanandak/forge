@@ -152,9 +152,10 @@ describe('Kernel SQLite driver — faithful beads import write path', () => {
 		// Legacy `feature` issue_type collapses to `task` with a `feature` alias label.
 		expect(aa1.data.type).toBe('task');
 		expect(aa1.data.labels).toContain('feature');
-		// created_by is a known mapper GAP (no issue record field) — it does NOT survive
-		// the current mapper, proving the write path persists only what it is given.
-		expect(aa1.data.created_by).toBeNull();
+		// created_by now survives the mapper (PR #261): the beads `created_by` (falling
+		// back to `owner`) is carried onto the kernel created_by column, so the legacy
+		// fixture's author lands on the imported issue.
+		expect(aa1.data.created_by).toBe('Harsha Nanda');
 		// Real comment + synthetic note comment (collectComments turns distinct notes into
 		// a beads-note-* comment) → 2 comments on forge-aa1.
 		expect(aa1.data.comments.length).toBe(2);
