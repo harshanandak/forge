@@ -3,7 +3,7 @@ name: kernel
 description: >
   Forge kernel surface — the umbrella index for working in a Forge project. Use
   at the start of any session and whenever you need to orient: it routes to the
-  per-stage workflow skills (plan, dev, validate, ship, review, premerge, verify,
+  per-stage workflow skills (plan, dev, validate, ship, review, verify,
   plus status, research, rollback, sonarcloud, shepherd) and documents the
   day-to-day issue, board, and orientation verbs of the `forge` CLI. Trigger on
   "what's the workflow", "what should I work on", "forge issues", "claim an
@@ -34,15 +34,18 @@ smaller path.
 | 3 | `validate` | Type check, lint, code review, security, tests — all fresh output |
 | 4 | `ship` | Push branch and open the PR with design-doc reference |
 | 5 | `review` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
-| 6 | `premerge` | Complete docs on the feature branch, hand off PR to the user |
-| 7 | `verify` | Post-merge health check (CI on main, close issues) |
+| 6 | `verify` | Post-merge health check (CI on main, close issues) |
+
+**Pre-merge gate** (not a numbered stage): before merge, finish the doc updates on
+the feature branch and confirm CI is green, then hand off the PR for manual merge.
+The gate is embedded in `ship` and `review` — it is not a standalone skill.
 
 Utility skills outside the linear ladder: `research` (deep web research),
 `rollback` (safe revert operations), `sonarcloud` (code-quality queries),
 `shepherd` (cross-harness PR monitoring).
 
 ```
-status → plan → dev → validate → ship → review → premerge → verify
+status → plan → dev → validate → ship → review → verify
 ```
 
 ## Day-to-day verbs (the `forge` CLI)
@@ -111,7 +114,8 @@ the team. TodoWrite is for scratch tracking only.
 2. **Claim before you build.** `forge claim <id>` takes the lease; one issue at a
    time. `forge release <id>` if you abandon it.
 3. **Work the ladder.** `plan` → `dev` → `validate` → `ship` → `review` →
-   `premerge` → `verify`, skipping stages only when the plan allows.
+   `verify`, skipping stages only when the plan allows. The pre-merge doc gate
+   runs inside `ship` and `review` before merge — it is not a separate stage.
 4. **Record evidence as you go.** Progress and decisions go to
    `forge comment <id> "…"`, not to memory.
 5. **Hand off cleanly.** Close completed issues (`forge close <id> --reason …`)

@@ -186,6 +186,20 @@ forge team verify 2>&1 || true
 
 When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
 
+## Pre-merge gate (before merge)
+
+Pre-merge is a doc-update **gate/checkpoint**, not a separate stage — run it here, before the PR is handed off for merge, whenever the change touches anything documented:
+
+1. **Finish the docs on the feature branch** (update only what genuinely changed):
+   - `CHANGELOG.md` (always) — entry under `## [Unreleased]` using Keep a Changelog categories, with PR number + issue ID.
+   - `README.md` (user-facing), `docs/reference/API_REFERENCE.md` (API), architecture docs (structural).
+   - `CLAUDE.md` — **USER section only** (between the USER markers); never touch other managed blocks.
+   - `AGENTS.md` (agent config, skills, or cross-agent workflow changes).
+   Commit the doc updates to the feature branch and push.
+2. **Confirm CI is green** — doc commits re-trigger CI; poll briefly (~60s), then hand off if still pending. New review feedback → run `/review` again.
+3. **Sync the issue store** — `forge sync`.
+4. **Hand off for MANUAL merge** — present the PR and stop. **Never run `gh pr merge`; never auto-merge.** The user merges in the GitHub UI, then runs `/verify`.
+
 ## Integration with Workflow
 
 ```
@@ -199,8 +213,7 @@ Default template:
   /review    -> Address PR feedback
   /verify    -> Post-merge health check
 
-Manual/support surfaces:
-  /premerge  -> Merge-readiness checks when the active template requires them
+Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review (not a separate stage).
 ```
 
 ## Tips

@@ -561,7 +561,8 @@ Default template:
 
 Manual/support surfaces:
   /validate  -> Cold-start or recovery validation, not a required stage boundary
-  /premerge  -> Merge-readiness checks move to PR-state hook in v3
+
+Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review (not a separate stage).
 ```
 
 ## Tips

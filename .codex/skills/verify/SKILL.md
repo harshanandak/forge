@@ -8,7 +8,7 @@ Verify that the merge landed correctly and everything is running properly after 
 
 # Verify
 
-This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled in `/premerge`).
+This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled by the pre-merge gate embedded in `/ship` and `/review`).
 
 ## Usage
 
@@ -270,6 +270,5 @@ Default template:
   /review    -> Address PR feedback
   /verify    -> Post-merge health check
 
-Manual/support surfaces:
-  /premerge  -> Merge-readiness checks when the active template requires them
+Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review (not a separate stage).
 ```

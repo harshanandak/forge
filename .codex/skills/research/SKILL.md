@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
 
 > **Note**: `/research` is legacy support for the research capability used by planning workflows.
 >
-> Forge v3 treats `/plan`, `/dev`, `/validate`, `/ship`, `/review`, `/premerge`, and `/verify` as configurable building blocks over runtime skills, not a product-wide mandatory ladder.
+> Forge v3 treats `/plan`, `/dev`, `/validate`, `/ship`, `/review`, and `/verify` as configurable building blocks over runtime skills, not a product-wide mandatory ladder. The pre-merge doc gate runs inside `/ship` and `/review` rather than as its own stage.
 > `/plan` remains the default planner template and can include:
 > - Design intent: constraints, success criteria, and ambiguity policy
 > - Technical research: web search, OWASP, codebase exploration, TDD scenarios
@@ -48,6 +48,5 @@ Default template:
   /review    -> Address PR feedback
   /verify    -> Post-merge health check
 
-Manual/support surfaces:
-  /premerge  -> Merge-readiness checks when the active template requires them
+Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review (not a separate stage).
 ```
