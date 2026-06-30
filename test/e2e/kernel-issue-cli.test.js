@@ -158,4 +158,30 @@ describe('kernel issue CLI — multi-id close E2E', () => {
     },
     TIMEOUT,
   );
+
+  test(
+    'a not-found close on --json prints the forge.issue.error.v1 envelope and exits 3',
+    () => {
+      // BUG A parity: a failed kernel issue command must emit the structured error
+      // envelope on stdout (under --json) and exit with the contract exit_code for
+      // the error class (not-found = 3), NOT collapse every failure to exit 1.
+      let thrown;
+      try {
+        runForge(repo, ['close', 'no-such-id', '--json', '--kernel']);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeTruthy();
+      expect(thrown.status).toBe(3);
+
+      const envelope = JSON.parse(thrown.stdout);
+      expect(envelope.ok).toBe(false);
+      expect(envelope.schema_version).toBe('forge.issue.error.v1');
+      expect(envelope.command).toBe('issue.close');
+      expect(envelope.error.code).toBe('FORGE_ISSUE_NOT_FOUND');
+      expect(envelope.error.exit_code).toBe(3);
+    },
+    TIMEOUT,
+  );
 });
