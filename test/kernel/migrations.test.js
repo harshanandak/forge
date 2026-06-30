@@ -21,9 +21,10 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
-		// Rollback runs migrations in reverse, so 005 (the latest migration) rolls back
-		// first: its search index drop precedes the kernel_memories table drop.
-		expect(plan.rollback[0]).toBe('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
+		// Rollback runs migrations in reverse, so 006 (the latest migration) rolls back
+		// first: its last-added fidelity column (metadata) drops before everything else.
+		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_issues DROP COLUMN metadata;');
+		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
 		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN assignee;');
 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_claims_active_lease;');
@@ -37,6 +38,7 @@ describe('kernel migration plans', () => {
 			'003_kernel_claims_active_lease',
 			'004_kernel_issues_content_fields',
 			'005_kernel_memories',
+			'006_kernel_issue_fidelity_columns',
 		]);
 	});
 
@@ -96,6 +98,43 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('ALTER TABLE kernel_issues ADD COLUMN notes TEXT;');
 		expect(plan.apply).toContain('ALTER TABLE kernel_issues ADD COLUMN assignee TEXT;');
 		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN assignee;');
+	});
+
+	test('beads fidelity: migration 006 adds created_by/closed_at/close_reason/metadata and drops them on rollback', () => {
+		const { buildIssueFidelityColumnsMigration } = require('../../lib/kernel/migrations');
+		const migration = buildIssueFidelityColumnsMigration();
+
+		expect(migration.id).toBe('006_kernel_issue_fidelity_columns');
+		// The four additive full-fidelity beads-import columns, in declaration order.
+		expect(migration.apply).toEqual([
+			'ALTER TABLE kernel_issues ADD COLUMN created_by TEXT;',
+			'ALTER TABLE kernel_issues ADD COLUMN closed_at TEXT;',
+			'ALTER TABLE kernel_issues ADD COLUMN close_reason TEXT;',
+			'ALTER TABLE kernel_issues ADD COLUMN metadata TEXT;',
+		]);
+		// Rollback drops them in reverse so dependent ordering is symmetric.
+		expect(migration.rollback).toEqual([
+			'ALTER TABLE kernel_issues DROP COLUMN metadata;',
+			'ALTER TABLE kernel_issues DROP COLUMN close_reason;',
+			'ALTER TABLE kernel_issues DROP COLUMN closed_at;',
+			'ALTER TABLE kernel_issues DROP COLUMN created_by;',
+		]);
+
+		// Registered in the default plan so fresh and existing DBs both migrate.
+		const plan = buildKernelMigrationPlan();
+		expect(plan.apply).toContain('ALTER TABLE kernel_issues ADD COLUMN created_by TEXT;');
+		expect(plan.apply).toContain('ALTER TABLE kernel_issues ADD COLUMN closed_at TEXT;');
+		expect(plan.apply).toContain('ALTER TABLE kernel_issues ADD COLUMN close_reason TEXT;');
+		expect(plan.apply).toContain('ALTER TABLE kernel_issues ADD COLUMN metadata TEXT;');
+		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN metadata;');
+
+		// The initial (001) schema must EXCLUDE the four columns — they are owned by 006,
+		// so a fresh DB does not create them before the ALTER … ADD COLUMN runs.
+		const schemaMigration = plan.migrations.find(entry => entry.id === '001_kernel_schema');
+		const createIssues = schemaMigration.apply.find(statement => statement.includes('CREATE TABLE IF NOT EXISTS kernel_issues'));
+		for (const column of ['created_by', 'closed_at', 'close_reason', 'metadata']) {
+			expect(createIssues.includes(`${column} TEXT`)).toBe(false);
+		}
 	});
 
 	test('enforces a single active claim lease per issue via a partial unique index (9.5.10)', () => {
