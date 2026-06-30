@@ -267,6 +267,58 @@ describe('Kernel SQLite driver — issue mutations via guarded path (Wave 3)', (
 		expect(shown.data.assignee).toBe('bob');
 	});
 
+	// Beads full-fidelity import (migration 006): created_by/closed_at/close_reason/
+	// metadata persist on create via the issue-upsert write allow-list and surface on
+	// show. close_reason is a distinct COLUMN from the --reason close-event payload.
+	test('create persists created_by/closed_at/close_reason/metadata (beads fidelity)', async () => {
+		await broker.runIssueOperation(
+			'create',
+			[
+				'--id', 'fid-1', '--title', 'Imported issue', '--type', 'task',
+				'--created-by', 'importer', '--closed-at', '2026-06-01T00:00:00.000Z',
+				'--close-reason', 'completed upstream', '--metadata', '{"beads_id":"bd-7"}',
+			],
+			{ now, actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['fid-1'], {}, config);
+		expect(shown.data.created_by).toBe('importer');
+		expect(shown.data.closed_at).toBe('2026-06-01T00:00:00.000Z');
+		expect(shown.data.close_reason).toBe('completed upstream');
+		expect(shown.data.metadata).toBe('{"beads_id":"bd-7"}');
+
+		// Persisted directly to their columns (not just the event payload). metadata is
+		// stored verbatim — the JSON blob is not re-encoded.
+		const rows = await driver.queryAll(
+			'SELECT created_by, closed_at, close_reason, metadata FROM kernel_issues WHERE id = \'fid-1\'',
+			config,
+		);
+		expect(rows[0]).toEqual({
+			created_by: 'importer',
+			closed_at: '2026-06-01T00:00:00.000Z',
+			close_reason: 'completed upstream',
+			metadata: '{"beads_id":"bd-7"}',
+		});
+	});
+
+	// Update reassigns the fidelity columns the same way the content fields do.
+	test('update overwrites the beads fidelity columns', async () => {
+		await broker.runIssueOperation(
+			'create', ['--id', 'fid-2', '--title', 'Reimport', '--type', 'task', '--created-by', 'old'],
+			{ now, actor: 'tester' },
+		);
+
+		await broker.runIssueOperation(
+			'update',
+			['fid-2', '--created-by', 'new', '--metadata', '{"v":2}'],
+			{ now: '2026-06-19T00:13:00.000Z', actor: 'tester' },
+		);
+
+		const shown = await driver.issueOperation('show', ['fid-2'], {}, config);
+		expect(shown.data.created_by).toBe('new');
+		expect(shown.data.metadata).toBe('{"v":2}');
+	});
+
 	// KAP-5: close --reason is captured in the close EVENT payload (no column/migration).
 	test('close --reason succeeds and records the reason in the close event payload', async () => {
 		await broker.runIssueOperation(
