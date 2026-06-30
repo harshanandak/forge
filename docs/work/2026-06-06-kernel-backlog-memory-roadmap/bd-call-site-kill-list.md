@@ -37,7 +37,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/adapters/beads-issue-adapter.js (1)
   - lines: 78 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (1)
-  - lines: 670 (.beads)
+  - lines: 686 (.beads)
 - [ ] lib/audit-evidence.js (3)
   - lines: 148 (bd), 214 (bd), 240 (bd)
 - [ ] lib/beads-bootstrap.js (6)
