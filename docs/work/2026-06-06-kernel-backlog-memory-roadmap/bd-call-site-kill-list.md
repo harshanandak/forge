@@ -22,7 +22,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/commands/dev.js (1)
   - lines: 466 (bd)
 - [ ] lib/commands/migrate.js (14)
-  - lines: 74 (bd, dolt), 75 (bd), 78 (bd), 85 (bd), 87 (bd), 92 (dolt), 99 (bd, dolt), 100 (bd), 103 (bd), 110 (.beads), 111 (bd, .beads, dolt), 126 (.beads), 136 (.beads), 289 (.beads)
+  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 306 (.beads)
 - [ ] lib/commands/plan.js (5)
   - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
 - [ ] lib/commands/status.js (10)
