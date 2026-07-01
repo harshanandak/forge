@@ -1,6 +1,6 @@
 # Forge Workflow Rules
 
-7-stage TDD-first development workflow for any project.
+TDD-first development workflow for any project: plan → dev → validate → ship → review → verify (pre-merge gate before merge).
 
 ## Workflow Commands
 
@@ -12,8 +12,9 @@
 | 3 | `/validate` | Type check, lint, code review, security, tests — all fresh output |
 | 4 | `/ship` | Push and create PR with design doc reference |
 | 5 | `/review` | Handle ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
-| 6 | `/premerge` | Complete docs on feature branch, hand off PR to user |
-| 7 | `/verify` | Post-merge health check (CI on main, close Beads) |
+| 6 | `/verify` | Post-merge health check (CI on main, close Beads) |
+
+> **Pre-merge gate (not a numbered stage)**: finish docs on the feature branch, confirm CI is green, and hand off the PR — embedded in the `/ship` and `/review` stages, not a standalone command.
 
 ## Core Principles
 
@@ -113,9 +114,11 @@ Skill("parallel-deep-research")  # Deep analysis, market reports, web research
 ## Flow Visualization
 
 ```
-/plan → /dev → /validate → /ship → /review → /premerge → /verify
-  ↓        ↓        ↓        ↓        ↓          ↓         ↓
-Design   Task-by  Validate   PR      Address    Merge    Verify
-+Research  task    +GATE    create   feedback    +docs    CI on
-+Tasks    TDD                                   GATE     master
+/plan → /dev → /validate → /ship → /review → /verify
+  ↓        ↓        ↓        ↓        ↓         ↓
+Design   Task-by  Validate   PR      Address   Verify
++Research  task    +GATE    create   feedback   CI on
++Tasks    TDD                                   master
+
+Pre-merge gate (docs done + CI green + hand off PR) runs inside /ship and /review, before merge.
 ```
