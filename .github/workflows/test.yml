@@ -48,7 +48,7 @@ jobs:
         node-version: [22, 24]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v6
         with:
@@ -93,7 +93,7 @@ jobs:
         shard-index: [0, 1, 2, 3]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -134,7 +134,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -173,7 +173,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -222,7 +222,7 @@ jobs:
             label: windows-node22
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Setup Node.js ${{ matrix.node-version }}
@@ -327,7 +327,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -382,7 +382,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -423,7 +423,7 @@ jobs:
       RUN_BEADS_INTEGRATION: '1'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -462,7 +462,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
         with:
@@ -493,7 +493,7 @@ jobs:
     needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Download test artifacts
         uses: actions/download-artifact@v8
         with:
@@ -524,7 +524,7 @@ jobs:
     needs: [full-matrix, coverage, e2e, beads-integration]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Download test artifacts
         uses: actions/download-artifact@v8
         with:
