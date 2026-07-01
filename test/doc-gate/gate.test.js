@@ -104,6 +104,15 @@ describe('evaluateGate — real git diff (base...head) path', () => {
     expect(r.docChangesSeen).toEqual([]);
   });
 
+  test('(fail-closed) an invalid base ref fails CLOSED, never passes open', () => {
+    const dir = baseOnly(RESOLVED_JS_BASE);
+    const head = gitOut(dir, ['rev-parse', 'HEAD']);
+    // A bogus base ref must NOT yield an empty diff that silently passes.
+    const r = evaluateGate({ root: dir, base: '0000000000000000000000000000000000000000', head });
+    expect(r.decision).toBe('fail');
+    expect(r.reason).toMatch(/failing closed|could not compute/i);
+  });
+
   test('(b) code change + CHANGELOG update → pass', () => {
     const { dir, base, head } = twoCommit(RESOLVED_JS_BASE, {
       write: {
