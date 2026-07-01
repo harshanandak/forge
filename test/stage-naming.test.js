@@ -30,8 +30,13 @@ describe('Stage naming consistency', () => {
       expect(cursorRule).toContain('/validate');
     });
 
-    test('contains /premerge as stage name', () => {
-      expect(cursorRule).toContain('/premerge');
+    test('does not list /premerge as a stage command', () => {
+      // Pre-merge is a gate embedded in /ship and /review, not a numbered stage.
+      expect(cursorRule).not.toContain('/premerge');
+    });
+
+    test('mentions the pre-merge gate', () => {
+      expect(cursorRule.toLowerCase()).toContain('pre-merge gate');
     });
   });
 

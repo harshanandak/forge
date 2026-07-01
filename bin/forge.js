@@ -437,8 +437,9 @@ Use these default-template commands via \`/command-name\`:
 - \`/validate\` - Type check, lint, security, tests (HARD-GATE)
 - \`/ship\` - Push and create PR with design doc reference
 - \`/review\` - Handle ALL PR issues (Actions, Greptile, SonarCloud)
-- \`/premerge\` - Complete docs on feature branch, hand off PR to user
 - \`/verify\` - Post-merge health check (CI on main, close Beads)
+
+Pre-merge gate (not a numbered stage): finish docs + confirm CI green + hand off the PR — embedded in the /ship and /review stages.
 
 See AGENTS.md for full workflow details.
 `;
