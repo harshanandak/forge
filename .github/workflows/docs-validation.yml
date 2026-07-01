@@ -25,7 +25,11 @@ on:
   # workflow on every PR keeps the required check always-reporting. (The existing
   # `docs` job validates repo state, not PR content, so running it on every PR is
   # safe.)
+  #
+  # `types` includes labeled/unlabeled (the default omits them) so that adding or
+  # removing the `no-docs-needed` skip label re-triggers the doc-gate check.
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
