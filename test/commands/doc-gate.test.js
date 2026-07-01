@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const docGate = require('../../lib/commands/doc-gate');
+const { detect } = require('../../lib/doc-gate/detect');
 
 const createdDirs = [];
 
@@ -62,7 +63,7 @@ describe('forge doc-gate command', () => {
     const parsed = JSON.parse(res.output);
     expect(parsed.source.value).toEqual(['src']);
     expect(parsed.toolchain.value).toBe('cargo');
-    expect(parsed.verdict).toBeDefined();
+    expect(parsed).toEqual(detect(repo)); // thin-wrapper: CLI --json equals detect() exactly
   });
 
   test('--json also honored via parsed flags object', async () => {
