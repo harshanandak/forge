@@ -161,6 +161,28 @@ describe('detect() honors a committed declaration', () => {
     expect(r.toolchain.source).toBe('declared');
   });
 
+  test('overriding an already CODE-RESOLVED field drops it from codeHighConfidence', () => {
+    // A single JS package resolves source+toolchain as code/high; a declaration
+    // overriding them makes them 'declared', so they must leave codeHighConfidence
+    // (which lists only code-derived, silent-wrong-eligible fields).
+    const decl = `${JSON.stringify({ version: 1, source: ['app'], toolchain: 'pnpm' }, null, 2)}\n`;
+    const dir = makeRepo({
+      'package.json': '{"name":"x","version":"1.0.0"}\n',
+      'package-lock.json': '{}\n',
+      'lib/index.js': 'module.exports = 1;\n',
+      '.docgate.json': decl,
+    });
+    const r = detect(dir);
+    expect(r.verdict).toBe('DECLARED');
+    expect(r.codeHighConfidence).not.toContain('source');
+    expect(r.codeHighConfidence).not.toContain('toolchain');
+    // Invariant preserved: every remaining field is genuinely code-derived + high.
+    for (const field of r.codeHighConfidence) {
+      expect(r[field].source).toBe('code');
+      expect(r[field].confidence).toBe('high');
+    }
+  });
+
   test('INVALID declaration → declarationErrors set, detection still runs', () => {
     const dir = makeRepo({ ...MONOREPO_BASE, '.docgate.json': `${JSON.stringify({ version: 9, source: ['packages/a'] })}\n` });
     const r = detect(dir);
