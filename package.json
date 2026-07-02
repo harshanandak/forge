@@ -66,6 +66,9 @@
   ],
   "author": "Harsha Nandak",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.16.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/harshanandak/forge.git"
@@ -88,6 +91,7 @@
     "scripts/",
     "!scripts/github-beads-sync/",
     "!scripts/github-beads-sync.config.json",
+    "!scripts/**/*.test.js",
     ".github/PLUGIN_TEMPLATE.json",
     ".forge/hooks/",
     ".forge/protected-paths.yaml",

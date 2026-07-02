@@ -127,6 +127,20 @@ forge add
 
 `forge migrate` is dry-run oriented in the current public docs. Do not present it as a migration executor.
 
+## Doc Gate
+
+`forge doc-gate` inspects a repository's documentation structure and enforces that code changes ship with a documentation update. It is a thin CLI wrapper over the validated doc-gate detector and gate.
+
+```bash
+forge doc-gate detect [--json]
+forge doc-gate check --base <ref> --head <ref> [--skip] [--json]
+```
+
+- `detect` runs the repo-structure detector against the current working directory and prints a human-readable summary — detected source surface, toolchain, CI provider, CHANGELOG, and AGENTS.md, plus an overall verdict — or a structured object with `--json`. Any verdict, including `ESCALATE→agent` or `MANUAL-CONFIG`, exits 0; it exits non-zero only on a real error (not a git repository, or no commits yet).
+- `check` compares the `--base` and `--head` refs and **fails when a code change lands without an accompanying documentation update**. A `pass` or `abstain` decision exits 0; a hard `fail` exits 1. Use `--skip` to record an explicit skip without supplying refs.
+
+Both subcommands require a git working tree with at least one commit (`HEAD`). The related `forge doc-gate init` (scaffold a doc-gate declaration file) and `forge doc-gate okf` (OKF bundle generation) subcommands are also registered; run `forge doc-gate` with no arguments for full usage.
+
 ## Kernel Filesystem Safety
 
 The Forge Kernel stores its SQLite database under `.git/forge/kernel.sqlite`. SQLite WAL mode corrupts when a cloud-sync client (OneDrive, Dropbox, Google Drive, iCloud) or a network filesystem (UNC / SMB / NFS / mapped drive) rewrites the database mid-write. A default-on gate in `broker.initialize()` therefore **refuses** to initialize the kernel on those filesystems — the throw happens *before* any database file is created, so nothing is written to the unsafe location.
