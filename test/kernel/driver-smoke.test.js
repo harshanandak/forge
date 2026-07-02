@@ -220,7 +220,7 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 			projectionDir,
 			projectRoot,
 			now: '2026-06-20T00:10:00.000Z',
-			target: 'beads', // commitGuardedAccept defaults the outbox target to 'beads'
+			target: 'jsonl', // the CLI Kernel mutation path steers the outbox target to 'jsonl' (D16 export)
 		});
 
 		expect(result.written).toBe(true);
@@ -235,7 +235,7 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 			projectionDir,
 			projectRoot,
 			now: '2026-06-20T00:11:00.000Z',
-			target: 'beads',
+			target: 'jsonl',
 		});
 		expect(second.drained).toBe(0);
 		expect(second.written).toBe(false);
@@ -257,7 +257,7 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 			classifyFilesystem: LOCAL_OK_CLASSIFIER,
 		});
 
-		const pending = await consumerBroker.listProjectionOutbox({ target: 'beads', status: 'pending', now: '2026-06-20T00:10:00.000Z' });
+		const pending = await consumerBroker.listProjectionOutbox({ target: 'jsonl', status: 'pending', now: '2026-06-20T00:10:00.000Z' });
 		expect(pending.length).toBe(1);
 		const row = pending[0];
 
@@ -271,17 +271,17 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 
 		// The row is still pending but in backoff — a now-gated list before the
 		// backoff elapses must NOT return it.
-		const beforeBackoff = await consumerBroker.listProjectionOutbox({ target: 'beads', status: 'pending', now: '2026-06-20T00:30:00.000Z' });
+		const beforeBackoff = await consumerBroker.listProjectionOutbox({ target: 'jsonl', status: 'pending', now: '2026-06-20T00:30:00.000Z' });
 		expect(beforeBackoff.map(entry => entry.id)).not.toContain(row.id);
 		// After the backoff elapses, the row is eligible again.
-		const afterBackoff = await consumerBroker.listProjectionOutbox({ target: 'beads', status: 'pending', now: '2026-06-20T02:00:00.000Z' });
+		const afterBackoff = await consumerBroker.listProjectionOutbox({ target: 'jsonl', status: 'pending', now: '2026-06-20T02:00:00.000Z' });
 		expect(afterBackoff.map(entry => entry.id)).toContain(row.id);
 
 		// Dead-letter it: a dead_letters row is inserted and the outbox row leaves
 		// 'pending' so it is never re-drained.
 		const dead = await consumerBroker.deadLetterProjection({
 			outbox_id: row.id,
-			target: 'beads',
+			target: 'jsonl',
 			error: 'boom',
 			payload_json: JSON.stringify({ event_id: row.event_id, attempts: 5 }),
 			now: '2026-06-20T02:00:00.000Z',
@@ -293,7 +293,7 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 		expect(deadLetters).toHaveLength(1);
 		expect(deadLetters[0].outbox_id).toBe(row.id);
 
-		const stillPending = await consumerBroker.listProjectionOutbox({ target: 'beads', status: 'pending', now: '2026-06-20T03:00:00.000Z' });
+		const stillPending = await consumerBroker.listProjectionOutbox({ target: 'jsonl', status: 'pending', now: '2026-06-20T03:00:00.000Z' });
 		expect(stillPending.map(entry => entry.id)).not.toContain(row.id);
 	});
 });

@@ -165,15 +165,14 @@ forge doctor --json   # machine-readable report (schemaVersion 1)
 The default agent workflow template is:
 
 ```text
-/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
+/plan -> /dev -> /validate -> /ship -> /review -> /verify
 ```
 
-These are stage skills and installed agent workflows. They are intentionally documented separately from current `forge` CLI commands. The workflow is core to Forge, but it is packaged through agent harness files and skills rather than through one CLI command per stage.
+These are stage skills and installed agent workflows. They are intentionally documented separately from current `forge` CLI commands. The workflow is core to Forge, but it is packaged through agent harness files and skills rather than through one CLI command per stage. Pre-merge is not one of these numbered stages or a `/premerge` command; it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages that finishes docs and confirms CI before merge.
 
 Do not document these as current CLI commands unless the matching `lib/commands/<name>.js` file exists:
 
 ```text
 forge review
-forge premerge
 forge verify
 ```
