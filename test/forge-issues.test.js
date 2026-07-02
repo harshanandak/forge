@@ -295,6 +295,9 @@ describe('forge issue service contract', () => {
       operationContext: {
         projectRoot: '/repo',
         deps: expect.objectContaining({ useKernelBroker: true }),
+        // Kernel mutations steer the projection-outbox marker to the 'jsonl' target
+        // that `forge export` (D16) drains; the broker primitive default is 'beads'.
+        projectionTarget: 'jsonl',
       },
     }]);
   });
