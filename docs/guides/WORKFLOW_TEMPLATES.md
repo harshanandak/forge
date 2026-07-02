@@ -1,13 +1,13 @@
 # Workflow Templates
 
-Forge's workflow is a core product surface, not a side note. The default template gives agents a known path for planning, development, validation, shipping, review, premerge handoff, and post-merge verification.
+Forge's workflow is a core product surface, not a side note. The default template gives agents a known path for planning, development, validation, shipping, review, and post-merge verification, with a pre-merge documentation gate that finishes docs and hands off the PR inside the ship and review stages.
 
 ## Default Template
 
 The full default template is:
 
 ```text
-/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
+/plan -> /dev -> /validate -> /ship -> /review -> /verify
 ```
 
 Projects can use the full template or smaller profile-specific paths. The important boundary is that these are agent workflow stages, not necessarily standalone `forge <stage>` CLI commands.
@@ -21,8 +21,9 @@ The template gives AI-assisted work a repeatable operating model:
 - `/validate` gathers evidence from project checks.
 - `/ship` prepares a reviewable PR.
 - `/review` handles PR feedback and evaluator findings.
-- `/premerge` finishes documentation and handoff context.
 - `/verify` proves post-merge health when the workflow type requires it.
+
+Before merge, a pre-merge documentation gate finishes documentation and handoff context. It is not a numbered stage or a `/premerge` command; it runs inside the `/ship` and `/review` stages.
 
 The value is not the exact number of stages. The value is recoverable state, known handoff points, validation evidence, and clear ownership while agents work.
 
@@ -45,11 +46,11 @@ Current docs describe these profiles:
 | Type | Intended use | Typical path |
 | --- | --- | --- |
 | Critical | Security, auth, payments, migrations, breaking changes | Full template |
-| Standard | Normal features and enhancements | Plan through premerge |
+| Standard | Normal features and enhancements | Plan through review |
 | Simple | Small fixes and focused changes | Shorter dev, validate, ship path |
 | Hotfix | Production emergencies | Short path with urgent validation |
-| Docs | Documentation-only changes | Verify, ship, premerge where configured |
-| Refactor | Behavior-preserving cleanup | Plan, dev, validate, ship, premerge |
+| Docs | Documentation-only changes | Verify and ship |
+| Refactor | Behavior-preserving cleanup | Plan, dev, validate, ship |
 
 Profile docs must be checked against `lib/workflow-profiles.js` and `AGENTS.md` before release because command files, skills, and runtime profiles can drift.
 

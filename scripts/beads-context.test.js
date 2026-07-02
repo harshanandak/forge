@@ -578,7 +578,9 @@ describe('/review command integration with beads-context.sh', () => {
 		expect(reviewContent).toContain('beads-context.sh stage-transition');
 	});
 
-	test('review.md should reference stage-transition from review to premerge', () => {
-		expect(reviewContent).toContain('review premerge');
+	test('review.md should reference stage-transition from review to verify', () => {
+		// Pre-merge is a doc-update gate embedded in /review, not a numbered stage,
+		// so the stage-transition advances review -> verify (the next numbered stage).
+		expect(reviewContent).toContain('review verify');
 	});
 });
