@@ -30,7 +30,7 @@ This is the public documentation and positioning release.
 
 #### Migration notes
 
-- Treat `/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify` as an agent workflow template. Do not assume every stage is a standalone `forge <stage>` CLI command.
+- Treat `/plan -> /dev -> /validate -> /ship -> /review -> /verify` as an agent workflow template. Pre-merge is a documentation gate embedded in `/ship` and `/review`, not a numbered stage. Do not assume every stage is a standalone `forge <stage>` CLI command.
 - Use `forge init` for the `.forge/` adoption skeleton and `forge setup` for agent instructions, Beads/GitHub sync scaffolding, and harness files.
 - Use `--agents`, not the stale singular `--agent`, when documenting or invoking setup.
 - Internal roadmap labels such as `0.0.19` are future planning labels, not current public package availability.

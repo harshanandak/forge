@@ -44,7 +44,7 @@ Forge helps you:
 - Worktree helpers with `forge worktree create <slug>` and `forge worktree remove <slug>`.
 - Review adapter scaffolding and fixture replay for review adapters.
 - Validation via `bun run check`, which runs typecheck, lint, security audit, and tests through the repository validation script.
-- Documentation and stage skills for `/plan`, `/dev`, `/validate`, `/ship`, `/review`, `/premerge`, and `/verify`.
+- Documentation and stage skills for `/plan`, `/dev`, `/validate`, `/ship`, `/review`, and `/verify`. The pre-merge documentation gate is embedded in `/ship` and `/review`, not a separate stage skill.
 
 ## Experimental Or Configuration-Dependent
 
@@ -59,7 +59,7 @@ v0.0.11 is a documentation and positioning package release: canonical docs, corr
 ## Terms
 
 - Runtime control plane: local commands, files, and checks that give agents a shared operating surface.
-- Workflow template: the default stage path Forge installs for agents, such as `/plan -> /dev -> /validate -> /ship -> /review -> /premerge`.
+- Workflow template: the default stage path Forge installs for agents, such as `/plan -> /dev -> /validate -> /ship -> /review -> /verify`.
 - Harness: an agent-specific instruction surface. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
 - Beads: an opt-out local issue-state backend for Forge issue wrappers; the kernel backend is used by default. Selection precedence (highest first): `--issue-backend beads`, then `FORGE_ISSUE_BACKEND=beads`, then `.forge/config.yaml` `issueBackend: beads`.
 - Adapter: an integration boundary for review or issue tools.
@@ -118,7 +118,7 @@ bun run check
 npm pack --dry-run
 ```
 
-Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow stages, not currently standalone `forge review`, `forge premerge`, or `forge verify` CLI commands.
+Stage commands such as `/review` and `/verify` are agent workflow stages, not currently standalone `forge review` or `forge verify` CLI commands. Pre-merge is neither a numbered stage nor a `/premerge` command; it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages.
 
 ## Documentation Map
 
