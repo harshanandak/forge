@@ -3941,9 +3941,9 @@ async function main() {
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")
       const agentDisplay = agentFlag.replace(/,/g, ', ');
-      console.log(`Non-interactive mode: using provided agent selection (${agentDisplay})`);
+      console.error(`Non-interactive mode: using provided agent selection (${agentDisplay})`);
     } else {
-      console.log('Non-interactive mode: using default agent selection (all)');
+      console.error('Non-interactive mode: using default agent selection (all)');
     }
   }
 
