@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 64 | 8 |
-| runtime | 250 | 33 |
+| command | 68 | 8 |
+| runtime | 256 | 34 |
 | docs | 394 | 47 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -23,8 +23,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 466 (bd)
 - [ ] lib/commands/migrate.js (14)
   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 306 (.beads)
-- [ ] lib/commands/plan.js (5)
-  - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
+- [ ] lib/commands/plan.js (9)
+  - lines: 237 (bd), 273 (bd), 275 (bd), 289 (bd), 310 (bd), 321 (bd), 324 (bd), 718 (bd), 753 (bd)
 - [ ] lib/commands/status.js (10)
   - lines: 238 (.beads), 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 246 (.beads), 366 (bd), 424 (bd)
 - [ ] lib/commands/test.js (5)
@@ -70,10 +70,12 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 23 (bd), 33 (bd)
 - [ ] lib/protected-state-surfaces.js (4)
   - lines: 43 (.beads), 50 (.beads), 51 (bd), 362 (bd)
-- [ ] lib/runtime-health.js (9)
-  - lines: 176 (bd), 217 (.beads), 276 (.beads), 334 (.beads), 490 (bd), 518 (bd), 521 (bd), 522 (bd), 561 (bd)
+- [ ] lib/runtime-health.js (13)
+  - lines: 177 (bd), 218 (.beads), 277 (.beads), 335 (.beads), 507 (bd), 538 (bd), 540 (bd), 543 (bd), 544 (bd), 547 (bd), 552 (bd), 553 (bd), 596 (bd)
 - [ ] lib/status/beads-snapshot.js (1)
   - lines: 31 (.beads)
+- [ ] lib/workflow/enforce-stage.js (2)
+  - lines: 118 (bd), 119 (bd)
 - [ ] scripts/beads-migrate-to-dolt.sh (1)
   - lines: 7 (dolt)
 - [ ] scripts/beads-upgrade-smoke.sh (1)
