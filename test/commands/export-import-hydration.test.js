@@ -11,6 +11,7 @@
 // versioned-manifest refusal, and the no-broker message are covered too.
 
 const { describe, test, expect } = require('bun:test');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -60,17 +61,30 @@ async function freshBroker(projectRoot, databasePath) {
 	return { broker, driver };
 }
 
+// Full-fidelity fixture: every kernel_issues column is populated with a non-default
+// value on at least one issue, including the beads-carried fields Fable flagged as
+// silently stripped (labels, assignee, closed_at, close_reason). `hydr-2` is a CLOSED
+// issue so its close metadata is exercised. labels/metadata/stage_state are stored as
+// the JSON *string* the driver persists (kernel_issues stores them as TEXT).
 const FIXTURE_MODEL = {
 	issues: [
 		{
 			id: 'hydr-1', title: 'Parent', body: 'the parent body', type: 'task',
 			status: 'in_progress', priority: 'P1', priority_rank: 10,
-			created_by: 'alice@example.com', created_at: NOW, updated_at: NOW, entity_revision: 3,
+			created_at: NOW, updated_at: NOW, entity_revision: 3,
+			parent_id: null, sprint_id: 'sprint-7', release_id: 'rel-1', stage_state: '{"stage":"dev"}',
+			labels: '["urgent","backend"]', acceptance_criteria: 'all tests pass', estimate: '3',
+			design: 'design.md#parent', notes: 'internal note', assignee: 'dev@example.com',
+			created_by: 'alice@example.com', closed_at: null, close_reason: null, metadata: '{"src":"seed"}',
 		},
 		{
 			id: 'hydr-2', title: 'Child', body: null, type: 'bug',
-			status: 'open', priority: 'P2', priority_rank: 0,
-			created_by: 'bob', created_at: NOW, updated_at: NOW, entity_revision: 1,
+			status: 'closed', priority: 'P2', priority_rank: 0,
+			created_at: NOW, updated_at: NOW, entity_revision: 1,
+			parent_id: 'hydr-1', sprint_id: null, release_id: null, stage_state: null,
+			labels: '["regression"]', acceptance_criteria: null, estimate: null,
+			design: null, notes: null, assignee: 'qa@example.com',
+			created_by: 'bob', closed_at: NOW, close_reason: 'fixed in #42', metadata: null,
 		},
 	],
 	comments: [
@@ -82,44 +96,59 @@ const FIXTURE_MODEL = {
 };
 
 describe('forge export --import — JSONL → kernel hydration', () => {
-	test('a fresh clone (empty DB + committed JSONL) restores issues/comments/deps with fidelity', async () => {
+	test('a fresh clone restores the FULL kernel_issues column set with lossless fidelity', async () => {
 		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hydrate-'));
 		const projectionDir = path.join(projectRoot, '.forge', 'kernel');
-		// Author the committed snapshot exactly as `forge export` would.
-		writeProjection({ model: FIXTURE_MODEL, projectionDir });
 
-		const { broker, driver } = await freshBroker(projectRoot, path.join(projectRoot, 'kernel-fresh.sqlite'));
+		// Author DB: seed the full-fidelity fixture (this is exactly what
+		// `forge migrate --from beads` writes), then read back the canonical rows.
+		const author = await freshBroker(projectRoot, path.join(projectRoot, 'kernel-author.sqlite'));
+		// Fresh clone DB: empty, but the committed JSONL survives.
+		const fresh = await freshBroker(projectRoot, path.join(projectRoot, 'kernel-fresh.sqlite'));
 		try {
-			// Sanity: the fresh clone starts empty.
-			const before = await broker.loadProjectionModel();
+			await author.broker.importIssues(FIXTURE_MODEL, { now: NOW });
+			const authorModel = await author.broker.loadProjectionModel();
+			// Author the committed snapshot exactly as `forge export` would.
+			writeProjection({ model: authorModel, projectionDir });
+
+			const before = await fresh.broker.loadProjectionModel();
 			expect(before.issues).toHaveLength(0);
 
-			const result = await exportCommand.handler(['--import'], {}, projectRoot, { _broker: broker, _now: NOW });
-
+			const result = await exportCommand.handler(['--import'], {}, projectRoot, { _broker: fresh.broker, _now: NOW });
 			expect(result.success).toBe(true);
-			expect(result.imported).toBe(true);
 			expect(result.counts.issues.inserted).toBe(2);
 			expect(result.counts.comments.inserted).toBe(1);
 			expect(result.counts.dependencies.inserted).toBe(1);
 
-			// The fresh DB now holds the issues with fidelity.
-			const after = await broker.loadProjectionModel();
-			const byId = Object.fromEntries(after.issues.map(i => [i.id, i]));
-			expect(after.issues).toHaveLength(2);
-			expect(byId['hydr-1'].status).toBe('in_progress');
-			expect(byId['hydr-1'].priority).toBe('P1');
-			expect(byId['hydr-1'].body).toBe('the parent body');
-			expect(byId['hydr-1'].created_by).toBe('alice@example.com');
-			expect(byId['hydr-2'].created_by).toBe('bob');
-			expect(after.comments).toHaveLength(1);
-			expect(after.comments[0].issue_id).toBe('hydr-1');
-			expect(after.dependencies).toHaveLength(1);
-			expect(after.dependencies[0].blocks_issue_id).toBe('hydr-1');
+			const freshModel = await fresh.broker.loadProjectionModel();
+
+			// Lossless: EVERY column of every issue/comment/dependency round-trips
+			// identically (both sides pass through the same driver coercion).
+			expect(freshModel.issues).toEqual(authorModel.issues);
+			expect(freshModel.comments).toEqual(authorModel.comments);
+			expect(freshModel.dependencies).toEqual(authorModel.dependencies);
+
+			// Explicit proof for the beads-carried columns Fable flagged as stripped
+			// by the v2 (11-key) projection.
+			const byId = Object.fromEntries(freshModel.issues.map(i => [i.id, i]));
+			expect(byId['hydr-1'].labels).toBe('["urgent","backend"]');
+			expect(byId['hydr-1'].assignee).toBe('dev@example.com');
+			expect(byId['hydr-1'].sprint_id).toBe('sprint-7');
+			expect(byId['hydr-1'].release_id).toBe('rel-1');
+			expect(byId['hydr-1'].stage_state).toBe('{"stage":"dev"}');
+			expect(byId['hydr-1'].acceptance_criteria).toBe('all tests pass');
+			expect(byId['hydr-1'].metadata).toBe('{"src":"seed"}');
+			expect(byId['hydr-2'].closed_at).toBe(NOW);
+			expect(byId['hydr-2'].close_reason).toBe('fixed in #42');
+			expect(byId['hydr-2'].assignee).toBe('qa@example.com');
+			expect(byId['hydr-2'].labels).toBe('["regression"]');
+			expect(byId['hydr-2'].parent_id).toBe('hydr-1');
 		} finally {
-			driver.close();
+			author.driver.close();
+			fresh.driver.close();
 			await removeDirWithRetry(projectRoot);
 		}
-	}, 15000);
+	}, 20000);
 
 	test('re-importing is idempotent — no duplicates, second run applies nothing', async () => {
 		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hydrate-'));
@@ -182,4 +211,49 @@ describe('forge export --import — JSONL → kernel hydration', () => {
 			await removeDirWithRetry(projectRoot);
 		}
 	}, 15000);
+
+	test('reads older v1 and v2 snapshots under the v3 reader (missing columns hydrate as null)', async () => {
+		// Backward-read compat: hand-craft older-version snapshots — v1 (11-key issues,
+		// no created_by) and v2 (12-key issues, with created_by). Both must import under
+		// the v3 reader; the newer columns are simply absent and hydrate as null.
+		const legacy = [
+			{ version: 1, issue: { kind: 'issue', id: 'v1-1', title: 'Legacy v1', body: null, type: 'task', status: 'open', priority: 'P2', priority_rank: 0, created_at: NOW, updated_at: NOW, entity_revision: 1 } },
+			{ version: 2, issue: { kind: 'issue', id: 'v2-1', title: 'Legacy v2', body: null, type: 'task', status: 'open', priority: 'P2', priority_rank: 0, created_at: NOW, updated_at: NOW, entity_revision: 1, created_by: 'legacy@example.com' } },
+		];
+
+		for (const { version, issue } of legacy) {
+			const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), `forge-hydrate-v${version}-`));
+			const projectionDir = path.join(projectRoot, '.forge', 'kernel');
+			fs.mkdirSync(projectionDir, { recursive: true });
+
+			const issuesJsonl = JSON.stringify(issue) + '\n';
+			const commentsJsonl = '';
+			const depsJsonl = '';
+			// Match importProjection's integrity hash: sha256 over the concatenated bytes.
+			const sha = crypto.createHash('sha256').update(issuesJsonl).update(commentsJsonl).update(depsJsonl).digest('hex');
+			const manifest = { schema_version: version, source: 'kernel', counts: { issues: 1, comments: 0, dependencies: 0 }, content_sha256: sha };
+			fs.writeFileSync(path.join(projectionDir, 'issues.jsonl'), issuesJsonl);
+			fs.writeFileSync(path.join(projectionDir, 'comments.jsonl'), commentsJsonl);
+			fs.writeFileSync(path.join(projectionDir, 'dependencies.jsonl'), depsJsonl);
+			fs.writeFileSync(path.join(projectionDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+
+			const { broker, driver } = await freshBroker(projectRoot, path.join(projectRoot, 'kernel-fresh.sqlite'));
+			try {
+				const result = await exportCommand.handler(['--import'], {}, projectRoot, { _broker: broker, _now: NOW });
+				expect(result.success).toBe(true);
+				expect(result.counts.issues.inserted).toBe(1);
+
+				const after = await broker.loadProjectionModel();
+				expect(after.issues).toHaveLength(1);
+				expect(after.issues[0].id).toBe(issue.id);
+				// Columns absent from the older format hydrate as null — no error.
+				expect(after.issues[0].labels).toBeNull();
+				expect(after.issues[0].assignee).toBeNull();
+				expect(after.issues[0].created_by).toBe(version === 2 ? 'legacy@example.com' : null);
+			} finally {
+				driver.close();
+				await removeDirWithRetry(projectRoot);
+			}
+		}
+	}, 20000);
 });
