@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The default issue backend changed from Beads to the built-in kernel store.
 
+### Changed
+
+- Internal de-stage of pre-merge: the AGENTS.md/Cursor workflow generator, the plugin catalog, `forge recommend`, and the harness capability matrix no longer model pre-merge as a standalone `/premerge` stage or command. Pre-merge is now consistently presented as a documentation gate embedded in `/ship` and `/review`. Legacy `currentStage: 'premerge'` workflow state still round-trips on read, and the release-readiness gate now certifies the de-stage across those generator/taxonomy surfaces.
+
 #### Migration notes
 
 - `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the kernel issue store by default; no Beads install or initialization is required.

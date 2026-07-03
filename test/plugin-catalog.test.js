@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 
 const {
   CATALOG,
@@ -49,16 +49,18 @@ describe('plugin-catalog', () => {
   });
 
   describe('STAGES', () => {
-    test('covers all 7 workflow stages', () => {
+    test('covers the 6 workflow stages (pre-merge is an embedded gate, not a stage)', () => {
       const values = Object.values(STAGES);
-      expect(values.length).toBe(7);
+      expect(values.length).toBe(6);
       expect(values.includes('research')).toBeTruthy();
       expect(values.includes('plan')).toBeTruthy();
       expect(values.includes('dev')).toBeTruthy();
       expect(values.includes('validate')).toBeTruthy();
       expect(values.includes('ship')).toBeTruthy();
       expect(values.includes('review')).toBeTruthy();
-      expect(values.includes('premerge')).toBeTruthy();
+      // Pre-merge was retired as a standalone stage and re-homed as a gate embedded
+      // in ship/review, so it must NOT appear in the catalog stage taxonomy.
+      expect(values.includes('premerge')).toBeFalsy();
     });
   });
 
