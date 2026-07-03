@@ -47,7 +47,10 @@ describe('Cursor config generation', () => {
     expect(content.includes('/validate')).toBeTruthy();
     expect(content.includes('/ship')).toBeTruthy();
     expect(content.includes('/review')).toBeTruthy();
-    expect(content.includes('/premerge')).toBeTruthy();
+    // Pre-merge is an embedded documentation gate inside /ship and /review — NOT a
+    // numbered stage or a standalone /premerge command.
+    expect(content.includes('/premerge')).toBeFalsy();
+    expect(content).toMatch(/pre-merge gate/i);
     expect(content.includes('/verify')).toBeTruthy();
   });
 
