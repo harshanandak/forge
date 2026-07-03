@@ -91,6 +91,67 @@ describe('workflow enforce-stage', () => {
     })).rejects.toThrow(/BD_MISSING/);
   });
 
+  test('enforceStageEntry resolves the kernel backend (default) and allows stage entry when bd is absent', async () => {
+    const prev = process.env.FORGE_ISSUE_BACKEND;
+    delete process.env.FORGE_ISSUE_BACKEND;
+    try {
+      let seenOptions = null;
+      const result = await enforceStageEntry({
+        commandName: 'validate',
+        flags: {},
+        projectRoot: process.cwd(),
+        workflowState: createWorkflowState('validate', 'standard'),
+        // Injected health check (same style as the `health`/`repairRuntime` seams):
+        // simulates the kernel-native gate where a missing bd is advisory-only.
+        checkHealth: (_root, options) => {
+          seenOptions = options;
+          return {
+            healthy: true,
+            hardStop: false,
+            diagnostics: [],
+            advisories: [{ code: 'BD_MISSING', severity: 'advisory' }]
+          };
+        }
+      });
+
+      expect(seenOptions).not.toBeNull();
+      expect(seenOptions.issueBackend).toBe('kernel');
+      expect(result.allowed).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.FORGE_ISSUE_BACKEND;
+      else process.env.FORGE_ISSUE_BACKEND = prev;
+    }
+  });
+
+  test('enforceStageEntry still blocks stage entry when beads is selected and bd is missing', async () => {
+    const prev = process.env.FORGE_ISSUE_BACKEND;
+    process.env.FORGE_ISSUE_BACKEND = 'beads';
+    try {
+      let seenOptions = null;
+      await expect(enforceStageEntry({
+        commandName: 'validate',
+        flags: {},
+        projectRoot: process.cwd(),
+        workflowState: createWorkflowState('validate', 'standard'),
+        checkHealth: (_root, options) => {
+          seenOptions = options;
+          // With beads selected, checkRuntimeHealth still hard-stops on missing bd.
+          return {
+            healthy: false,
+            hardStop: true,
+            diagnostics: [{ code: 'BD_MISSING', message: 'bd required for the beads backend' }]
+          };
+        }
+      })).rejects.toThrow(/BD_MISSING/);
+
+      expect(seenOptions).not.toBeNull();
+      expect(seenOptions.issueBackend).toBe('beads');
+    } finally {
+      if (prev === undefined) delete process.env.FORGE_ISSUE_BACKEND;
+      else process.env.FORGE_ISSUE_BACKEND = prev;
+    }
+  });
+
   test('enforceStageEntry reads workflow-state and override payloads from raw CLI args', async () => {
     const result = await enforceStageEntry({
       commandName: 'ship',

@@ -129,12 +129,13 @@ describe('runtime health checks', () => {
     expect(lefthookStatus.binaryAvailable).toBe(true);
   });
 
-  test('missing bd produces a hard-stop diagnostic', () => {
+  test('missing bd produces a hard-stop diagnostic when the beads backend is selected', () => {
     const projectRoot = createProjectRoot();
 
     const result = checkRuntimeHealth(projectRoot, {
       _exec: createExecStub({ missing: new Set(['bd']) }),
       platform: 'linux',
+      issueBackend: 'beads',
       shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
     });
 
@@ -147,6 +148,62 @@ describe('runtime health checks', () => {
       })
     );
     expect(result.checks.bd.available).toBe(false);
+  });
+
+  test('missing bd is advisory-only (not a hard-stop) when the kernel backend is selected', () => {
+    const projectRoot = createProjectRoot();
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ missing: new Set(['bd']) }),
+      platform: 'linux',
+      issueBackend: 'kernel',
+      _canExecuteHook: () => true,
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    // Kernel is the default issue backend and needs no bd binary: stage entry must run.
+    expect(result.healthy).toBe(true);
+    expect(result.hardStop).toBe(false);
+    expect(result.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: 'BD_MISSING' })
+    );
+    // Still surfaced, but only as a non-blocking advisory.
+    expect(result.advisories).toContainEqual(
+      expect.objectContaining({ code: 'BD_MISSING', severity: 'advisory' })
+    );
+    expect(result.checks.bd.available).toBe(false);
+    expect(result.checks.issueBackend).toBe('kernel');
+  });
+
+  test('missing bd defaults to the kernel backend (no signal) and does not hard-stop', () => {
+    const projectRoot = createProjectRoot();
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ missing: new Set(['bd']) }),
+      platform: 'linux',
+      env: {}, // no FORGE_ISSUE_BACKEND signal → resolver defaults to kernel
+      _canExecuteHook: () => true,
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.issueBackend).toBe('kernel');
+  });
+
+  test('missing gh still hard-stops on the kernel backend (gh stays a hard requirement)', () => {
+    const projectRoot = createProjectRoot();
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ missing: new Set(['gh']) }),
+      platform: 'linux',
+      issueBackend: 'kernel',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.hardStop).toBe(true);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'GH_MISSING', severity: 'hard-stop' })
+    );
   });
 
   test('missing jq produces a hard-stop diagnostic', () => {
