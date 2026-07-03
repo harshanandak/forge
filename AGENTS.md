@@ -117,7 +117,7 @@ Task 2: Validation logic
 
 > GitHub issue lifecycle may sync to Beads via CI -- see [docs/guides/BEADS_GITHUB_SYNC.md](docs/guides/BEADS_GITHUB_SYNC.md).
 
-**Current implementation**: Beads is the temporary durable issue-state authority for existing issue workflows. **Target architecture (D44)**: Forge Kernel becomes the issue/workflow/run authority; Beads becomes import/export/projection compatibility. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
+**Current implementation**: The Forge Kernel is the default issue-state authority; issue commands read and write the kernel store unless Beads is explicitly selected (`--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`), where it serves as an import/export/projection compatibility layer. **Direction (D44)**: continue consolidating issue/workflow/run authority in the Kernel with Beads remaining a compatibility projection. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
 
 ```json
 {

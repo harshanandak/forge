@@ -3941,9 +3941,11 @@ async function main() {
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")
       const agentDisplay = agentFlag.replace(/,/g, ', ');
-      console.log(`Non-interactive mode: using provided agent selection (${agentDisplay})`);
+      // Diagnostic banner → stderr so it never prepends structured (JSON) stdout
+      // of kernel issue commands parsed by non-TTY agents/CI.
+      console.error(`Non-interactive mode: using provided agent selection (${agentDisplay})`);
     } else {
-      console.log('Non-interactive mode: using default agent selection (all)');
+      console.error('Non-interactive mode: using default agent selection (all)');
     }
   }
 
