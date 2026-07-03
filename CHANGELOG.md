@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The default issue backend changed from Beads to the built-in kernel store.
 
+### Changed
+
+- Pre-merge is presented as an embedded documentation gate inside the `/ship` and `/review` stages — not a numbered workflow stage, and not an invokable `/premerge` command. (#269)
+- Packaging: added an `engines.node` requirement of `>=22.16.0`, excluded a stray test file from the published npm tarball, and documented the `forge doc-gate` command. (#271)
+
+### Fixed
+
+- `forge export` now projects Kernel issues to git-tracked JSONL (command-dispatcher broker injection + `jsonl` projection-outbox target), so the Kernel's git-persistence/portability loop works end to end. (#270)
+
 #### Migration notes
 
 - `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the kernel issue store by default; no Beads install or initialization is required.
