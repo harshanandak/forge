@@ -24,7 +24,11 @@ The default issue backend changed from Beads to the built-in kernel store.
 ### Fixed
 
 - The canonical stage skills (`/plan`, `/dev`, `/validate`, `/ship`, `/review`) no longer hard-gate their exit criteria on Beads shell scripts, so a model following them on the kernel-native default is not blocked. Design/acceptance capture now uses native Kernel fields (`forge update <id> --design ...` / `--acceptance ...`); stage-transition and context-validation steps invoke the `beads-context.sh` helper only when present (kernel-native `forge comment` / `forge issue show` otherwise); and the `dep-guard` contract/ripple review is advisory and skipped (non-fatal) when its tooling is unavailable. `Beads issue` wording across the stage surface is now `Forge issue`. (#279)
+- Kernel JSONL projection now round-trips the **full `kernel_issues` column set** (labels, assignee, closed_at, close_reason, parent_id, sprint_id, release_id, stage_state, acceptance_criteria, estimate, design, notes, metadata) instead of the previous 12-key subset, so `forge migrate --from beads` → `export` → hydrate no longer silently drops beads-carried fields. `schema_version` bumped 2 → 3 (additive; v1/v2 snapshots still import, with the newer columns defaulting to null). (#278)
 - `forge export` now projects Kernel issues to git-tracked JSONL (command-dispatcher broker injection + `jsonl` projection-outbox target), so the Kernel's git-persistence/portability loop works end to end. (#270)
+- `forge plan` no longer mislabels kernel-created issues as "Beads": the result now carries backend-accurate `issueId` and `issueBackend`, and the printed label reflects the active backend ("Kernel:" vs "Beads:"). `beadsIssueId` is retained as a deprecated alias of `issueId` for backward compatibility.
+- `skills-sync` setup (`populateAgentSkills`) now pre-clears a pre-existing dangling symlink sitting at a target skill path before copying, fixing skill-sync failures caused by that cruft. Only symlinks are removed — real directories with content are never deleted.
+- Corrected a stale `.gitignore` comment that described agent skill directories as "junctions/symlinks"; they are populated at setup time as real file copies.
 
 #### Migration notes
 

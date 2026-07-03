@@ -8,6 +8,7 @@ const {
 	extractDesignDecisions,
 	extractTasksFromResearch,
 	executePlan,
+	handler,
 } = require('../../lib/commands/plan.js');
 
 const nodeFs = require('node:fs');
@@ -269,7 +270,50 @@ Major architectural impact.
 
 				expect(result.success).toBe(true);
 				expect(kernelRunnerCalled).toBe(true);
+				// Backend-accurate keys: kernel-created issues report the kernel backend
+				// and a neutral issueId (not mislabeled as a Beads id).
+				expect(result.issueBackend).toBe('kernel');
+				expect(result.issueId).toBe('kernel-xyz');
+				// Backward-compat alias retained for any consumer still reading beadsIssueId.
 				expect(result.beadsIssueId).toBe('kernel-xyz');
+			} finally {
+				process.chdir(prevCwd);
+				if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
+				else process.env.FORGE_ISSUE_BACKEND = prevEnv;
+				nodeFs.rmSync(repo, { recursive: true, force: true });
+			}
+		});
+
+		test('handler prints a backend-accurate label (Kernel, not Beads) on the kernel path', async () => {
+			const repo = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-plan-handler-'));
+			const gitEnv = {
+				...process.env,
+				GIT_AUTHOR_NAME: 'test',
+				GIT_AUTHOR_EMAIL: 'test@example.com',
+				GIT_COMMITTER_NAME: 'test',
+				GIT_COMMITTER_EMAIL: 'test@example.com',
+			};
+			nodeExecFileSync('git', ['init', '-q'], { cwd: repo });
+			nodeExecFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo, env: gitEnv });
+			nodeFs.mkdirSync(nodePath.join(repo, 'docs', 'research'), { recursive: true });
+			nodeFs.writeFileSync(
+				nodePath.join(repo, 'docs', 'research', 'kernel-label-demo.md'),
+				'# Kernel Label Demo\n\n**Timeline**: 2 hours\n**Strategic/Tactical**: Tactical\n',
+			);
+
+			const prevCwd = process.cwd();
+			const prevEnv = process.env.FORGE_ISSUE_BACKEND;
+			delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
+			process.chdir(repo);
+			try {
+				const fakeRun = async () => ({ ok: true, command: 'issue.create', data: { id: 'kernel-lbl-1' }, next_commands: [] });
+
+				const result = await handler(['kernel label demo'], {}, repo, { runIssueOperation: fakeRun });
+
+				expect(result.success).toBe(true);
+				// The kernel-created issue must not be mislabeled "Beads:" in the output.
+				expect(result.output).toContain('Kernel: kernel-lbl-1');
+				expect(result.output).not.toContain('Beads:');
 			} finally {
 				process.chdir(prevCwd);
 				if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
