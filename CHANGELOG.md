@@ -23,7 +23,7 @@ The default issue backend changed from Beads to the built-in kernel store.
 
 ### Fixed
 
-- The canonical stage skills (`/plan`, `/dev`, `/validate`, `/ship`, `/review`) no longer hard-gate their exit criteria on Beads shell scripts, so a model following them on the kernel-native default is not blocked. Design/acceptance capture now uses native Kernel fields (`forge update <id> --design ...` / `--acceptance ...`); stage-transition and context-validation steps invoke the `beads-context.sh` helper only when present (kernel-native `forge comment` / `forge issue show` otherwise); and the `dep-guard` contract/ripple review is advisory and skipped (non-fatal) when its tooling is unavailable. `Beads issue` wording across the stage surface is now `Forge issue`. (#277)
+- The canonical stage skills (`/plan`, `/dev`, `/validate`, `/ship`, `/review`) no longer hard-gate their exit criteria on Beads shell scripts, so a model following them on the kernel-native default is not blocked. Design/acceptance capture now uses native Kernel fields (`forge update <id> --design ...` / `--acceptance ...`); stage-transition and context-validation steps invoke the `beads-context.sh` helper only when present (kernel-native `forge comment` / `forge issue show` otherwise); and the `dep-guard` contract/ripple review is advisory and skipped (non-fatal) when its tooling is unavailable. `Beads issue` wording across the stage surface is now `Forge issue`. (#279)
 - `forge export` now projects Kernel issues to git-tracked JSONL (command-dispatcher broker injection + `jsonl` projection-outbox target), so the Kernel's git-persistence/portability loop works end to end. (#270)
 
 #### Migration notes
