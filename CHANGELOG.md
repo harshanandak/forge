@@ -23,6 +23,7 @@ The default issue backend changed from Beads to the built-in kernel store.
 
 ### Fixed
 
+- Kernel JSONL projection now round-trips the **full `kernel_issues` column set** (labels, assignee, closed_at, close_reason, parent_id, sprint_id, release_id, stage_state, acceptance_criteria, estimate, design, notes, metadata) instead of the previous 12-key subset, so `forge migrate --from beads` → `export` → hydrate no longer silently drops beads-carried fields. `schema_version` bumped 2 → 3 (additive; v1/v2 snapshots still import, with the newer columns defaulting to null). (#277)
 - `forge export` now projects Kernel issues to git-tracked JSONL (command-dispatcher broker injection + `jsonl` projection-outbox target), so the Kernel's git-persistence/portability loop works end to end. (#270)
 
 #### Migration notes

@@ -75,8 +75,11 @@ describe('normalizeProjectionModel', () => {
 		expect(issue.id).toBe('forge-1');
 		expect(issue.extra_field).toBeUndefined();
 		expect(Object.keys(issue)).toEqual([
-			'kind', 'id', 'title', 'body', 'type', 'status',
-			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision', 'created_by',
+			'kind', 'id', 'title', 'body', 'type', 'status', 'priority', 'priority_rank',
+			'created_at', 'updated_at', 'entity_revision',
+			'parent_id', 'sprint_id', 'release_id', 'stage_state', 'labels',
+			'acceptance_criteria', 'estimate', 'design', 'notes', 'assignee',
+			'created_by', 'closed_at', 'close_reason', 'metadata',
 		]);
 	});
 
@@ -587,7 +590,7 @@ describe('PR #218 review hardening', () => {
 	}
 
 	test('exposes SCHEMA_VERSION and DEFAULT_BASE_BACKOFF_MS', () => {
-		expect(SCHEMA_VERSION).toBe(2);
+		expect(SCHEMA_VERSION).toBe(3);
 		expect(DEFAULT_BASE_BACKOFF_MS).toBe(5000);
 	});
 
@@ -617,8 +620,11 @@ describe('PR #218 review hardening', () => {
 		expect(result.model.issues[0].kind).toBe('issue');
 		expect(result.model.issues[0].extra_field).toBeUndefined();
 		expect(Object.keys(result.model.issues[0])).toEqual([
-			'kind', 'id', 'title', 'body', 'type', 'status',
-			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision', 'created_by',
+			'kind', 'id', 'title', 'body', 'type', 'status', 'priority', 'priority_rank',
+			'created_at', 'updated_at', 'entity_revision',
+			'parent_id', 'sprint_id', 'release_id', 'stage_state', 'labels',
+			'acceptance_criteria', 'estimate', 'design', 'notes', 'assignee',
+			'created_by', 'closed_at', 'close_reason', 'metadata',
 		]);
 	});
 
