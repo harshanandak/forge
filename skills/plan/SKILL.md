@@ -44,8 +44,9 @@ Before ANY planning work begins:
    ```bash
    forge create --title="<feature-name>" --type=epic
    forge update <id> --status=in_progress
-   # Optional context logging: run the transition helper only when present (kernel-only setups skip it)
-   [ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh stage-transition <id> none plan || true
+   # Optional context logging: run the transition helper only when present (kernel-only setups skip it).
+   # Only skips when the helper is absent — a real logging failure from the helper stays visible.
+   if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> none plan; fi
    ```
 6. ONLY THEN begin Phase 1.
 
@@ -144,9 +145,10 @@ Before exploring context or asking questions, check for potential conflicts with
 
 ```bash
 # If a Forge issue ID is known (e.g., from /status or forge ready):
-# Advisory only — needs the dep-guard tooling; any failure is non-fatal and skipped.
-[ -f scripts/dep-guard.sh ] && bash scripts/dep-guard.sh check-ripple <forge-issue-id> \
-  || echo "dep-guard unavailable — skipping ripple check (advisory)"
+# Advisory only — runs when the dep-guard tooling is present; a failure is non-fatal.
+if [ -f scripts/dep-guard.sh ]; then
+  bash scripts/dep-guard.sh check-ripple <forge-issue-id> || echo "dep-guard ripple check skipped (advisory)"
+fi
 
 # If no issue exists yet (first-time plan):
 forge list --status=open,in_progress
@@ -272,9 +274,9 @@ Do NOT begin Phase 2 (web research) until:
 
 **Goal**: Find HOW to build it — best practices, known issues, security risks, TDD scenarios.
 
-Record the phase transition before starting research (optional context logging; kernel-only setups skip it):
+Record the phase transition before starting research (optional context logging; kernel-only setups skip it — a real helper failure stays visible):
 ```bash
-[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh stage-transition <id> plan research || true
+if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> plan research; fi
 ```
 
 Run these in parallel:
@@ -369,9 +371,9 @@ Do NOT begin Phase 3 (setup) until:
 
 **Goal**: Create branch, worktree, and a complete task list ready for /dev.
 
-Record the phase transition before starting setup (optional context logging; kernel-only setups skip it):
+Record the phase transition before starting setup (optional context logging; kernel-only setups skip it — a real helper failure stays visible):
 ```bash
-[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh stage-transition <id> research setup || true
+if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> research setup; fi
 ```
 
 ### Step 1: Link child issues to the epic
@@ -481,16 +483,14 @@ After saving the task list and issue context, extract and store contract metadat
 
 ```bash
 if [ -f scripts/dep-guard.sh ]; then
-  # Extract contracts — only call store-contracts if extract succeeds (exit 0)
+  # extract-contracts exits 1 when there simply are no contracts (normal, not an error),
+  # so store-contracts only runs when contracts were actually extracted.
   if bash scripts/dep-guard.sh extract-contracts docs/work/YYYY-MM-DD-<slug>/tasks.md > /tmp/contracts.txt; then
-    bash scripts/dep-guard.sh store-contracts <id> "$(cat /tmp/contracts.txt)" || echo "store-contracts unavailable (advisory)"
-  else
-    echo "No contracts found — skipping store-contracts"
+    # Contracts found — store them. A real store-contracts failure stays visible (not masked).
+    bash scripts/dep-guard.sh store-contracts <id> "$(cat /tmp/contracts.txt)"
   fi
-  # Re-run ripple check using issue data + logic-level analysis
-  bash scripts/dep-guard.sh check-ripple <id> || echo "ripple check unavailable (advisory)"
-else
-  echo "dep-guard tooling unavailable — skipping contract/ripple review (advisory)"
+  # check-ripple is advisory (needs the dependency-guard tooling); a failure is non-fatal.
+  bash scripts/dep-guard.sh check-ripple <id> || echo "dep-guard ripple check skipped (advisory)"
 fi
 ```
 
@@ -539,10 +539,16 @@ If only a sub-skill was invoked, do not claim full `/plan` completion. Record th
 After all HARD-GATE items pass, confirm issue context and record the stage transition. The structured transition helper is optional; on a kernel-only setup, log the handoff directly on the Forge issue:
 
 ```bash
-# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue)
-[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh validate <id> || forge issue show <id>
+# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue).
+# Only falls back to `forge issue show` when the helper is absent — a real validate failure stays visible.
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh validate <id>
+else
+  forge issue show <id>
+fi
 
-# Record the plan→dev transition (structured helper when present; kernel-native comment otherwise)
+# Record the plan→dev transition (structured helper when present; kernel-native comment otherwise).
+# The fallback comment mirrors the same envelope the helper emits (Stage:/Summary:/Decisions:/Artifacts:/Next:).
 if [ -f scripts/beads-context.sh ]; then
   bash scripts/beads-context.sh stage-transition <id> plan dev \
     --summary "<design approach chosen, task count>" \
@@ -550,7 +556,11 @@ if [ -f scripts/beads-context.sh ]; then
     --artifacts "docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
     --next "<first dev task focus area>"
 else
-  forge comment <id> "plan→dev | summary: <design approach chosen, task count> | decisions: <key trade-offs resolved during Q&A> | artifacts: docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md | next: <first dev task focus area>"
+  forge comment <id> "Stage: plan complete → ready for dev
+Summary: <design approach chosen, task count>
+Decisions: <key trade-offs resolved during Q&A>
+Artifacts: docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md
+Next: <first dev task focus area>"
 fi
 ```
 

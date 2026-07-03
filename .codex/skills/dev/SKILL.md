@@ -277,10 +277,16 @@ Do NOT declare /dev complete until:
 ### Record stage transition
 
 ```bash
-# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue)
-[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh validate <id> || forge issue show <id>
+# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue).
+# Only falls back to `forge issue show` when the helper is absent — a real validate failure stays visible.
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh validate <id>
+else
+  forge issue show <id>
+fi
 
-# Record the dev→validate transition (structured helper when present; kernel-native comment otherwise)
+# Record the dev→validate transition (structured helper when present; kernel-native comment otherwise).
+# The fallback comment mirrors the same envelope the helper emits (Stage:/Summary:/Decisions:/Artifacts:/Next:).
 if [ -f scripts/beads-context.sh ]; then
   bash scripts/beads-context.sh stage-transition <id> dev validate \
     --summary "<N tasks done, M decision gates fired>" \
@@ -288,7 +294,11 @@ if [ -f scripts/beads-context.sh ]; then
     --artifacts "<changed source files and test files>" \
     --next "<validation priorities — lint issues, type concerns>"
 else
-  forge comment <id> "dev→validate | summary: <N tasks done, M decision gates fired> | decisions: <key spec gaps and how they were resolved> | artifacts: <changed source files and test files> | next: <validation priorities — lint issues, type concerns>"
+  forge comment <id> "Stage: dev complete → ready for validate
+Summary: <N tasks done, M decision gates fired>
+Decisions: <key spec gaps and how they were resolved>
+Artifacts: <changed source files and test files>
+Next: <validation priorities — lint issues, type concerns>"
 fi
 ```
 

@@ -239,7 +239,11 @@ Run the commands. Show the output. THEN declare done.
        --artifacts "<scripts and commands run>" \
        --next "<ship readiness notes>"
    else
-     forge comment <id> "validate→ship | summary: <all checks pass/fail summary> | decisions: <any failures diagnosed and fixed> | artifacts: <scripts and commands run> | next: <ship readiness notes>"
+     forge comment <id> "Stage: validate complete → ready for ship
+Summary: <all checks pass/fail summary>
+Decisions: <any failures diagnosed and fixed>
+Artifacts: <scripts and commands run>
+Next: <ship readiness notes>"
    fi
 </HARD-GATE>
 ```

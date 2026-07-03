@@ -378,7 +378,11 @@ Do NOT declare /review complete until:
        --artifacts "<fixed files, commit SHAs>" \
        --next "<pre-merge gate: finish docs + CI green, then hand off for merge>"
    else
-     forge comment <id> "review→verify | summary: <all feedback addressed summary> | decisions: <comment resolutions — valid fixes and justified rejections> | artifacts: <fixed files, commit SHAs> | next: <pre-merge gate: finish docs + CI green, then hand off for merge>"
+     forge comment <id> "Stage: review complete → ready for verify
+Summary: <all feedback addressed summary>
+Decisions: <comment resolutions — valid fixes and justified rejections>
+Artifacts: <fixed files, commit SHAs>
+Next: <pre-merge gate: finish docs + CI green, then hand off for merge>"
    fi
 </HARD-GATE>
 ```

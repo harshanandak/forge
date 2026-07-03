@@ -160,10 +160,16 @@ Rules for the PR body:
 
 ### Step 6: Confirm Context and Record Stage Transition
 ```bash
-# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue)
-[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh validate <id> || forge issue show <id>
+# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue).
+# Only falls back to `forge issue show` when the helper is absent — a real validate failure stays visible.
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh validate <id>
+else
+  forge issue show <id>
+fi
 
-# Record the ship→review transition (structured helper when present; kernel-native comment otherwise)
+# Record the ship→review transition (structured helper when present; kernel-native comment otherwise).
+# The fallback comment mirrors the same envelope the helper emits (Stage:/Summary:/Decisions:/Artifacts:/Next:).
 if [ -f scripts/beads-context.sh ]; then
   bash scripts/beads-context.sh stage-transition <id> ship review \
     --summary "<PR created, checks pending>" \
@@ -171,7 +177,11 @@ if [ -f scripts/beads-context.sh ]; then
     --artifacts "<PR URL, branch name>" \
     --next "<review focus areas>"
 else
-  forge comment <id> "ship→review | summary: <PR created, checks pending> | decisions: <template sections filled, issue linked> | artifacts: <PR URL, branch name> | next: <review focus areas>"
+  forge comment <id> "Stage: ship complete → ready for review
+Summary: <PR created, checks pending>
+Decisions: <template sections filled, issue linked>
+Artifacts: <PR URL, branch name>
+Next: <review focus areas>"
 fi
 ```
 
