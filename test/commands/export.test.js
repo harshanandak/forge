@@ -146,7 +146,7 @@ describe('forge export — robustness hardening', () => {
 });
 
 describe('forge export — import / bootstrap path', () => {
-	test('--import reads a committed snapshot from disk', async () => {
+	test('--import hydrates a committed snapshot into the Kernel via the broker', async () => {
 		const root = tmpRoot();
 		const dir = path.join(root, '.forge', 'kernel');
 		const model = normalizeProjectionModel({
@@ -156,11 +156,27 @@ describe('forge export — import / bootstrap path', () => {
 		});
 		writeProjection({ model, projectionDir: dir });
 
-		const result = await exportCommand.handler(['--import'], {}, root, { _now: NOW });
+		const importCalls = [];
+		const broker = {
+			async importIssues(records, importOpts) {
+				importCalls.push({ records, importOpts });
+				return {
+					issues: { inserted: 1, skipped: 0 },
+					comments: { inserted: 0, skipped: 0 },
+					dependencies: { inserted: 0, skipped: 0 },
+				};
+			},
+		};
+
+		const result = await exportCommand.handler(['--import'], {}, root, { _broker: broker, _now: NOW });
 
 		expect(result.success).toBe(true);
 		expect(result.imported).toBe(true);
-		expect(result.counts).toEqual({ issues: 1, comments: 0, dependencies: 0 });
+		expect(result.applied).toBe(1);
+		expect(result.counts.issues.inserted).toBe(1);
+		// The handler must pass the read snapshot model to the Kernel writer.
+		expect(importCalls).toHaveLength(1);
+		expect(importCalls[0].records.issues[0].id).toBe('forge-1');
 		expect(result.dir).toBe(path.resolve(dir));
 	});
 

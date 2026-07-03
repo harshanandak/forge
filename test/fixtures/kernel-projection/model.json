@@ -10,7 +10,8 @@
       "priority_rank": 10,
       "created_at": "2026-01-02T00:00:00.000Z",
       "updated_at": "2026-01-02T08:30:00.000Z",
-      "entity_revision": 3
+      "entity_revision": 3,
+      "created_by": "closer@example.com"
     },
     {
       "id": "forge-1",
@@ -22,7 +23,8 @@
       "priority_rank": 0,
       "created_at": "2026-01-01T00:00:00.000Z",
       "updated_at": "2026-01-01T00:00:00.000Z",
-      "entity_revision": 1
+      "entity_revision": 1,
+      "created_by": "author@example.com"
     }
   ],
   "comments": [
