@@ -20,6 +20,9 @@ The default issue backend changed from Beads to the built-in kernel store.
 ### Fixed
 
 - `forge export` now projects Kernel issues to git-tracked JSONL (command-dispatcher broker injection + `jsonl` projection-outbox target), so the Kernel's git-persistence/portability loop works end to end. (#270)
+- `forge plan` no longer mislabels kernel-created issues as "Beads": the result now carries backend-accurate `issueId` and `issueBackend`, and the printed label reflects the active backend ("Kernel:" vs "Beads:"). `beadsIssueId` is retained as a deprecated alias of `issueId` for backward compatibility.
+- `skills-sync` setup (`populateAgentSkills`) now pre-clears a pre-existing dangling symlink sitting at a target skill path before copying, fixing skill-sync failures caused by that cruft. Only symlinks are removed — real directories with content are never deleted.
+- Corrected a stale `.gitignore` comment that described agent skill directories as "junctions/symlinks"; they are populated at setup time as real file copies.
 
 #### Migration notes
 

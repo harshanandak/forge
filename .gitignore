@@ -56,7 +56,9 @@ test-results/*
 .skills/
 skills-lock.json
 
-# Agent skill dirs created by skills.sh (junctions/symlinks, not committed)
+# Agent skill dirs populated at setup time as real file copies (forge setup /
+# skills-sync populateAgentSkills), not symlinks. Gitignored because they are
+# regenerated locally from canonical skills/; .codex/skills is the committed mirror.
 .goose/
 .augment/
 .claude/skills/
