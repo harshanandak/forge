@@ -1,13 +1,19 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 const {
 	readResearchDoc,
 	detectScope,
 	createBeadsIssue,
+	createKernelIssue,
 	createFeatureBranch,
 	extractDesignDecisions,
 	extractTasksFromResearch,
 	executePlan,
 } = require('../../lib/commands/plan.js');
+
+const nodeFs = require('node:fs');
+const nodeOs = require('node:os');
+const nodePath = require('node:path');
+const { execFileSync: nodeExecFileSync } = require('node:child_process');
 
 describe('Plan Command - Beads Integration', () => {
 	describe('Research document analysis', () => {
@@ -177,6 +183,99 @@ Major architectural impact.
 			expect(result.summary).toBeTruthy();
 			expect(result.nextCommand).toBeTruthy();
 			expect(result.nextCommand === '/dev' || result.nextCommand === 'wait').toBeTruthy();
+		});
+	});
+
+	describe('Kernel-native issue creation', () => {
+		test('createKernelIssue routes through the kernel broker (never bd) and returns the created id', async () => {
+			const calls = [];
+			const fakeRun = async (operation, args, projectRoot, deps) => {
+				calls.push({ operation, args, projectRoot, deps });
+				return {
+					ok: true,
+					schema_version: 'forge.issue.v1',
+					command: 'issue.create',
+					data: { id: 'k-abc123', revision: 0, priority: 'P2' },
+					next_commands: [],
+				};
+			};
+
+			const result = await createKernelIssue(
+				'Payment Integration',
+				'docs/research/payment-integration.md',
+				'tactical',
+				{ projectRoot: '/tmp/repo', runIssueOperation: fakeRun },
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.issueId).toBe('k-abc123');
+			expect(calls).toHaveLength(1);
+			expect(calls[0].operation).toBe('create');
+			expect(calls[0].projectRoot).toBe('/tmp/repo');
+			// Kernel-native: deps must route to the kernel broker, not bd.
+			expect(calls[0].deps.issueBackend).toBe('kernel');
+			expect(calls[0].deps.useKernelBroker).toBe(true);
+			expect(calls[0].args).toContain('--type=feature');
+			expect(calls[0].args.some(a => a.startsWith('--title='))).toBe(true);
+			expect(calls[0].args.some(a => a.startsWith('--description='))).toBe(true);
+		});
+
+		test('createKernelIssue surfaces a kernel failure result', async () => {
+			const fakeRun = async () => ({ ok: false, error: 'kernel exploded' });
+
+			const result = await createKernelIssue(
+				'Feature X',
+				'docs/research/feature-x.md',
+				'tactical',
+				{ projectRoot: '/tmp/repo', runIssueOperation: fakeRun },
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toBeTruthy();
+		});
+
+		test('executePlan creates its issue via the kernel (no bd) when the kernel backend is active', async () => {
+			const repo = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-plan-kernel-'));
+			const gitEnv = {
+				...process.env,
+				GIT_AUTHOR_NAME: 'test',
+				GIT_AUTHOR_EMAIL: 'test@example.com',
+				GIT_COMMITTER_NAME: 'test',
+				GIT_COMMITTER_EMAIL: 'test@example.com',
+			};
+			nodeExecFileSync('git', ['init', '-q'], { cwd: repo });
+			nodeExecFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo, env: gitEnv });
+			nodeFs.mkdirSync(nodePath.join(repo, 'docs', 'research'), { recursive: true });
+			nodeFs.writeFileSync(
+				nodePath.join(repo, 'docs', 'research', 'kernel-plan-demo.md'),
+				'# Kernel Plan Demo\n\n**Timeline**: 2 hours\n**Strategic/Tactical**: Tactical\n',
+			);
+
+			const prevCwd = process.cwd();
+			const prevEnv = process.env.FORGE_ISSUE_BACKEND;
+			delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
+			process.chdir(repo);
+			try {
+				let kernelRunnerCalled = false;
+				const fakeRun = async () => {
+					kernelRunnerCalled = true;
+					return { ok: true, command: 'issue.create', data: { id: 'kernel-xyz' }, next_commands: [] };
+				};
+
+				const result = await executePlan('kernel plan demo', {
+					projectRoot: repo,
+					runIssueOperation: fakeRun,
+				});
+
+				expect(result.success).toBe(true);
+				expect(kernelRunnerCalled).toBe(true);
+				expect(result.beadsIssueId).toBe('kernel-xyz');
+			} finally {
+				process.chdir(prevCwd);
+				if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
+				else process.env.FORGE_ISSUE_BACKEND = prevEnv;
+				nodeFs.rmSync(repo, { recursive: true, force: true });
+			}
 		});
 	});
 });
