@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The default issue backend changed from Beads to the built-in kernel store.
 
+### Added
+
+- `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+
 ### Changed
 
 - Internal de-stage of pre-merge: the AGENTS.md/Cursor workflow generator, the plugin catalog, `forge recommend`, and the harness capability matrix no longer model pre-merge as a standalone `/premerge` stage or command. Pre-merge is now consistently presented as a documentation gate embedded in `/ship` and `/review`. Legacy `currentStage: 'premerge'` workflow state still round-trips on read, and the release-readiness gate now certifies the de-stage across those generator/taxonomy surfaces. (#275)

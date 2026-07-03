@@ -76,7 +76,7 @@ describe('normalizeProjectionModel', () => {
 		expect(issue.extra_field).toBeUndefined();
 		expect(Object.keys(issue)).toEqual([
 			'kind', 'id', 'title', 'body', 'type', 'status',
-			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision',
+			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision', 'created_by',
 		]);
 	});
 
@@ -161,7 +161,7 @@ describe('serializeProjection', () => {
 		const model = normalizeProjectionModel({ issues: [ISSUE_RAW], comments: [], dependencies: [] });
 		const { files } = serializeProjection(model);
 		const manifest = JSON.parse(files['manifest.json']);
-		expect(manifest.schema_version).toBe(1);
+		expect(manifest.schema_version).toBe(SCHEMA_VERSION);
 		expect(manifest.source).toBe('kernel');
 		expect(manifest.counts).toEqual({ issues: 1, comments: 0, dependencies: 0 });
 		expect(typeof manifest.content_sha256).toBe('string');
@@ -587,7 +587,7 @@ describe('PR #218 review hardening', () => {
 	}
 
 	test('exposes SCHEMA_VERSION and DEFAULT_BASE_BACKOFF_MS', () => {
-		expect(SCHEMA_VERSION).toBe(1);
+		expect(SCHEMA_VERSION).toBe(2);
 		expect(DEFAULT_BASE_BACKOFF_MS).toBe(5000);
 	});
 
@@ -618,7 +618,7 @@ describe('PR #218 review hardening', () => {
 		expect(result.model.issues[0].extra_field).toBeUndefined();
 		expect(Object.keys(result.model.issues[0])).toEqual([
 			'kind', 'id', 'title', 'body', 'type', 'status',
-			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision',
+			'priority', 'priority_rank', 'created_at', 'updated_at', 'entity_revision', 'created_by',
 		]);
 	});
 
