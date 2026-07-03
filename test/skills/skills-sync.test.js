@@ -84,6 +84,48 @@ describe('skills-sync: populateAgentSkills', () => {
     expect(written).toEqual(['plan']);
     expect(fs.existsSync(path.join(target, 'dev'))).toBe(false);
   });
+
+  test('pre-cleans a dangling symlink at a target skill path, then writes a real copy', () => {
+    write('skills/plan/SKILL.md', 'plan body');
+    const target = path.join(tmp, '.codex/skills');
+    fs.mkdirSync(target, { recursive: true });
+    const skillPath = path.join(target, 'plan');
+
+    // Seed the exact cruft that broke local skill-sync: a dangling symlink sitting
+    // where the skill dir should be (its target does not exist).
+    try {
+      fs.symlinkSync(path.join(tmp, 'no-such-target'), skillPath, 'dir');
+    } catch (err) {
+      // Windows without admin / Developer Mode cannot create symlinks — skip cleanly.
+      if (['EPERM', 'ENOSYS', 'UNKNOWN'].includes(err.code)) return;
+      throw err;
+    }
+    expect(fs.lstatSync(skillPath).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(skillPath)).toBe(false); // dangling
+
+    const { written } = populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+
+    expect(written).toContain('plan');
+    // The dangling link was removed and replaced by a real directory + file.
+    expect(fs.lstatSync(skillPath).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(skillPath, 'SKILL.md'), 'utf8')).toBe('plan body');
+  });
+
+  test('never removes a real (non-symlink) skill dir — overwrites in place', () => {
+    write('skills/plan/SKILL.md', 'new body');
+    const target = path.join(tmp, '.codex/skills');
+    const skillPath = path.join(target, 'plan');
+    fs.mkdirSync(skillPath, { recursive: true });
+    fs.writeFileSync(path.join(skillPath, 'SKILL.md'), 'old body', 'utf8');
+    fs.writeFileSync(path.join(skillPath, 'keepme.txt'), 'preexisting', 'utf8');
+
+    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+
+    // Canonical file is overwritten...
+    expect(fs.readFileSync(path.join(skillPath, 'SKILL.md'), 'utf8')).toBe('new body');
+    // ...but the real dir is not nuked: an unrelated pre-existing file survives.
+    expect(fs.readFileSync(path.join(skillPath, 'keepme.txt'), 'utf8')).toBe('preexisting');
+  });
 });
 
 describe('skills-sync: diffSkillDir', () => {

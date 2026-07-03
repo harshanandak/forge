@@ -313,7 +313,7 @@ async function main() { // NOSONAR S3776
 			result = await HANDLERS.plan.executePlan(positionalArgs[0]);
 			if (result.success) {
 				console.log(`✓ Plan created: ${result.summary || result.branchName || ''}`);
-				if (result.beadsIssueId) console.log(`  Beads: ${result.beadsIssueId}`);
+				if (result.issueId) console.log(`  ${HANDLERS.plan.issueBackendLabel(result.issueBackend)}: ${result.issueId}`);
 			} else {
 				console.error(`✗ Plan failed: ${result.error}`);
 				process.exit(1);
