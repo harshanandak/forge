@@ -25,7 +25,7 @@ This skill creates a PR after validation passes.
 Do NOT create PR until:
 1. /validate was run in this session with all four outputs shown (type, lint, tests, security)
 2. All checks confirmed passing — not assumed, not "was passing earlier"
-3. Beads issue is in_progress
+3. Forge issue is in_progress (`forge issue show <id>` confirms status)
 4. git branch --show-current output is NOT main or master
 </HARD-GATE>
 ```
@@ -88,7 +88,7 @@ forge update <id> --comment "PR created: <pr-url>. Awaiting review and merge ver
 forge sync
 ```
 
-Do not mark the Beads issue done during `/ship`. Completion happens only after merge and post-merge verification.
+Do not mark the Forge issue done during `/ship`. Completion happens only after merge and post-merge verification.
 
 ### Step 4: Push Branch
 
@@ -158,14 +158,21 @@ Rules for the PR body:
 - **Check applicable checkboxes** — `[x]` for items that apply, `[ ]` for items that don't
 - **Include "Closes forge-xxx"** in the Beads section (required for auto-close in /verify)
 
-### Step 6: Validate Context and Record Stage Transition
+### Step 6: Confirm Context and Record Stage Transition
 ```bash
-bash scripts/beads-context.sh validate <id>
-bash scripts/beads-context.sh stage-transition <id> ship review \
-  --summary "<PR created, checks pending>" \
-  --decisions "<template sections filled, beads linked>" \
-  --artifacts "<PR URL, branch name>" \
-  --next "<review focus areas>"
+# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue)
+[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh validate <id> || forge issue show <id>
+
+# Record the ship→review transition (structured helper when present; kernel-native comment otherwise)
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh stage-transition <id> ship review \
+    --summary "<PR created, checks pending>" \
+    --decisions "<template sections filled, issue linked>" \
+    --artifacts "<PR URL, branch name>" \
+    --next "<review focus areas>"
+else
+  forge comment <id> "ship→review | summary: <PR created, checks pending> | decisions: <template sections filled, issue linked> | artifacts: <PR URL, branch name> | next: <review focus areas>"
+fi
 ```
 
 ### Team sync after PR
@@ -182,7 +189,7 @@ forge team verify 2>&1 || true
 
 ## Output
 
-`/ship` reports live validation status, branch freshness, Beads PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
+`/ship` reports live validation status, branch freshness, Forge issue PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
 
 When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
 

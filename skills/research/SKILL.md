@@ -14,7 +14,7 @@ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
 > `/plan` remains the default planner template and can include:
 > - Design intent: constraints, success criteria, and ambiguity policy
 > - Technical research: web search, OWASP, codebase exploration, TDD scenarios
-> - Setup: branch, worktree, Beads issue, task list
+> - Setup: branch, worktree, Forge issue, task list
 >
 > Run `/plan <feature-slug>` when the active workflow needs the default planner template, or invoke the research skill fragment directly when the active plan permits it.
 

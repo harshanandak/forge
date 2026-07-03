@@ -313,7 +313,7 @@ gh pr checks <pr-number>
 # ✓ Other CI/CD checks
 ```
 
-### Step 10: Update Beads
+### Step 10: Update the Forge issue
 
 ```bash
 forge update <id> --comment "PR review complete: all issues addressed, all checks passing"
@@ -358,7 +358,7 @@ forge sync
 
 ✓ Fixes committed: 3c4d5e6
 ✓ All checks passing: ✓
-✓ Beads updated: Ready for merge
+✓ Forge issue updated: Ready for merge
 
 Next: pre-merge gate — finish docs + confirm CI green, then hand off the PR for merge
 ```
@@ -369,13 +369,17 @@ Do NOT declare /review complete until:
 1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
 2. ALL human reviewer comments are either resolved or have a reply with explanation
 3. gh pr checks <pr-number> shows all checks passing
-4. Context check: Run `bash scripts/beads-context.sh validate <id>` and address any warnings
-5. Stage transition: Run the following → exit 0 confirmed:
-   bash scripts/beads-context.sh stage-transition <id> review verify \
-     --summary "<all feedback addressed summary>" \
-     --decisions "<comment resolutions — valid fixes and justified rejections>" \
-     --artifacts "<fixed files, commit SHAs>" \
-     --next "<pre-merge gate: finish docs + CI green, then hand off for merge>"
+4. Context check: confirm design + acceptance on the Forge issue (`forge issue show <id>`); if the beads-context helper is present, run `bash scripts/beads-context.sh validate <id>` and address any warnings
+5. Stage transition recorded (structured helper when present; kernel-native comment otherwise):
+   if [ -f scripts/beads-context.sh ]; then
+     bash scripts/beads-context.sh stage-transition <id> review verify \
+       --summary "<all feedback addressed summary>" \
+       --decisions "<comment resolutions — valid fixes and justified rejections>" \
+       --artifacts "<fixed files, commit SHAs>" \
+       --next "<pre-merge gate: finish docs + CI green, then hand off for merge>"
+   else
+     forge comment <id> "review→verify | summary: <all feedback addressed summary> | decisions: <comment resolutions — valid fixes and justified rejections> | artifacts: <fixed files, commit SHAs> | next: <pre-merge gate: finish docs + CI green, then hand off for merge>"
+   fi
 </HARD-GATE>
 ```
 
@@ -464,7 +468,7 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review 
 - **Post summary response**: Address Greptile's overall assessment
 - **Use sonarcloud skill**: Don't just check the web UI
 - **Verify all checks**: Ensure everything is green before the pre-merge gate / merge
-- **Update Beads**: Keep issue status current
+- **Update the Forge issue**: Keep issue status current
 - **Research if needed**: Use WebSearch for unclear suggestions
 - **Document fixes**: Clear commit messages for all fixes
 - **Don't leave unresolved**: Address every comment and check

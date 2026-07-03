@@ -44,7 +44,8 @@ Before ANY planning work begins:
    ```bash
    forge create --title="<feature-name>" --type=epic
    forge update <id> --status=in_progress
-   bash scripts/beads-context.sh stage-transition <id> none plan
+   # Optional context logging: run the transition helper only when present (kernel-only setups skip it)
+   [ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh stage-transition <id> none plan || true
    ```
 6. ONLY THEN begin Phase 1.
 
@@ -143,7 +144,9 @@ Before exploring context or asking questions, check for potential conflicts with
 
 ```bash
 # If a Forge issue ID is known (e.g., from /status or forge ready):
-bash scripts/dep-guard.sh check-ripple <forge-issue-id>
+# Advisory only — needs the dep-guard tooling; any failure is non-fatal and skipped.
+[ -f scripts/dep-guard.sh ] && bash scripts/dep-guard.sh check-ripple <forge-issue-id> \
+  || echo "dep-guard unavailable — skipping ripple check (advisory)"
 
 # If no issue exists yet (first-time plan):
 forge list --status=open,in_progress
@@ -269,9 +272,9 @@ Do NOT begin Phase 2 (web research) until:
 
 **Goal**: Find HOW to build it — best practices, known issues, security risks, TDD scenarios.
 
-Record the phase transition before starting research:
+Record the phase transition before starting research (optional context logging; kernel-only setups skip it):
 ```bash
-bash scripts/beads-context.sh stage-transition <id> plan research
+[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh stage-transition <id> plan research || true
 ```
 
 Run these in parallel:
@@ -366,9 +369,9 @@ Do NOT begin Phase 3 (setup) until:
 
 **Goal**: Create branch, worktree, and a complete task list ready for /dev.
 
-Record the phase transition before starting setup:
+Record the phase transition before starting setup (optional context logging; kernel-only setups skip it):
 ```bash
-bash scripts/beads-context.sh stage-transition <id> research setup
+[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh stage-transition <id> research setup || true
 ```
 
 ### Step 1: Link child issues to the epic
@@ -394,7 +397,7 @@ else
   # Step 2b: Verify .worktrees/ is gitignored — add if missing
   git check-ignore -v .worktrees/ || echo ".worktrees/" >> .gitignore
 
-  # Step 2c: Create a Beads-aware worktree rooted on master
+  # Step 2c: Create an isolated worktree rooted on master
   git checkout master
   forge worktree create <slug> --branch feat/<slug>
   cd .worktrees/<slug>
@@ -458,51 +461,54 @@ For each task, confirm it maps to a specific requirement, success criterion, or 
 
 Save to `docs/work/YYYY-MM-DD-<slug>/tasks.md`.
 
-### Step 5b: Beads context
+### Step 5b: Issue context (design + acceptance)
 
-After saving the task list, attach design context and acceptance criteria to the Beads issue so downstream stages (`/dev`, `/validate`, `/review`) can retrieve it without re-reading the design doc.
+After saving the task list, attach design context and acceptance criteria to the Forge issue so downstream stages (`/dev`, `/validate`, `/review`) can retrieve it without re-reading the design doc. These are native Kernel issue fields — no Beads required.
 
 ```bash
-# Link design metadata (task count + task file path) to the Beads issue
-bash scripts/beads-context.sh set-design <id> <task-count> docs/work/YYYY-MM-DD-<slug>/tasks.md
+# Link design metadata (task count + task file path) to the Forge issue
+forge update <id> --design "<task-count> tasks | docs/work/YYYY-MM-DD-<slug>/tasks.md"
 
 # Record the success criteria from the design doc on the issue
-bash scripts/beads-context.sh set-acceptance <id> "<success-criteria from design doc>"
+forge update <id> --acceptance "<success-criteria from design doc>"
 ```
 
-Both commands must exit with code 0. If either fails, investigate (wrong issue ID? missing script?) before continuing.
+Both commands must exit with code 0. If either fails, investigate (wrong issue ID? bad flag value?) before continuing.
 
-### Step 5c: Contract extraction and logic-level dependency review
+### Step 5c: Contract extraction and logic-level dependency review (advisory, optional)
 
-After saving the task list and Beads context, extract and store contract metadata, then run the logic-level Phase 3 dependency review:
+After saving the task list and issue context, extract and store contract metadata, then run the logic-level Phase 3 dependency review. **This step uses the `dep-guard` dependency tooling; on a kernel-only setup it is skipped — it is advisory and never a hard block.**
 
 ```bash
-# Extract contracts — only call store-contracts if extract succeeds (exit 0)
-if bash scripts/dep-guard.sh extract-contracts docs/work/YYYY-MM-DD-<slug>/tasks.md > /tmp/contracts.txt; then
-  bash scripts/dep-guard.sh store-contracts <id> "$(cat /tmp/contracts.txt)"
+if [ -f scripts/dep-guard.sh ]; then
+  # Extract contracts — only call store-contracts if extract succeeds (exit 0)
+  if bash scripts/dep-guard.sh extract-contracts docs/work/YYYY-MM-DD-<slug>/tasks.md > /tmp/contracts.txt; then
+    bash scripts/dep-guard.sh store-contracts <id> "$(cat /tmp/contracts.txt)" || echo "store-contracts unavailable (advisory)"
+  else
+    echo "No contracts found — skipping store-contracts"
+  fi
+  # Re-run ripple check using issue data + logic-level analysis
+  bash scripts/dep-guard.sh check-ripple <id> || echo "ripple check unavailable (advisory)"
 else
-  echo "No contracts found — skipping store-contracts"
+  echo "dep-guard tooling unavailable — skipping contract/ripple review (advisory)"
 fi
-
-# Re-run ripple check using Beads JSON + logic-level analysis
-bash scripts/dep-guard.sh check-ripple <id>
 ```
 
 `extract-contracts` exits 1 when no contracts are found (not an error — just nothing to store). `store-contracts` must exit 0 if called.
 
-`check-ripple` is now advisory but logic-aware. It should:
-- read Beads issue data via JSON
+When available, `check-ripple` is advisory but logic-aware. It should:
+- read the issue data via JSON
 - analyze import/call-chain, contract, and behavioral dependency signals
 - show rubric score, confidence, issue pairs, and proposed dependency updates with pros/cons
 - stop for user approval whenever a dependency mutation is proposed
 
-If the user approves a dependency mutation, apply it explicitly:
+If the user approves a dependency mutation, apply it explicitly (only when the tooling is present):
 
 ```bash
 bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
 ```
 
-That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge set-state` plus `forge comment`. Beads remains the canonical machine-readable decision record; the plan docs hold only the concise summary.
+That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
 
 ### Step 6: User review
 
@@ -516,13 +522,13 @@ For a full `/plan` handoff only, do NOT hand off from `/plan` to `/dev` until AL
 1. git branch --show-current output shows feat/<slug>
 2. git worktree list shows .worktrees/<slug>
 3. Baseline tests ran — either passing OR user confirmed to proceed past failures
-4. Beads issue is created with status=in_progress
+4. Forge issue is created and in_progress (`forge issue show <id>` confirms status=in_progress)
 5. Task list exists at docs/work/YYYY-MM-DD-<slug>/tasks.md
 6. User has confirmed task list is correct
-7. `beads-context.sh set-design` ran successfully (exit code 0)
-8. `beads-context.sh set-acceptance` ran successfully (exit code 0)
-9. `dep-guard.sh store-contracts` ran successfully (exit code 0) — or skipped if no contracts found
-10. `dep-guard.sh check-ripple` ran successfully and any proposed dependency mutation was reviewed with the user before calling `apply-decision`
+7. Design captured on the Forge issue — `forge update <id> --design ...` ran successfully (exit code 0)
+8. Acceptance criteria captured on the Forge issue — `forge update <id> --acceptance ...` ran successfully (exit code 0)
+9. Contract metadata stored via `dep-guard store-contracts` (exit code 0) — or skipped if no contracts found OR the beads-backed dep-guard tooling is unavailable
+10. `dep-guard check-ripple` reviewed with the user before any `apply-decision` dependency mutation — or skipped when the dep-guard tooling is unavailable
 
 If `/dev` is entered from an external planner, this `/plan` exit gate is not required. Instead, the external artifact must satisfy the L1 `/dev` entry contract: structured task list, acceptance criteria, and enough design intent for TDD implementation.
 
@@ -530,22 +536,29 @@ If only a sub-skill was invoked, do not claim full `/plan` completion. Record th
 </HARD-GATE>
 ```
 
-After all HARD-GATE items pass, validate context and record the stage transition:
+After all HARD-GATE items pass, confirm issue context and record the stage transition. The structured transition helper is optional; on a kernel-only setup, log the handoff directly on the Forge issue:
 
 ```bash
-bash scripts/beads-context.sh validate <id>
-bash scripts/beads-context.sh stage-transition <id> plan dev \
-  --summary "<design approach chosen, task count>" \
-  --decisions "<key trade-offs resolved during Q&A>" \
-  --artifacts "docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
-  --next "<first dev task focus area>"
+# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue)
+[ -f scripts/beads-context.sh ] && bash scripts/beads-context.sh validate <id> || forge issue show <id>
+
+# Record the plan→dev transition (structured helper when present; kernel-native comment otherwise)
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh stage-transition <id> plan dev \
+    --summary "<design approach chosen, task count>" \
+    --decisions "<key trade-offs resolved during Q&A>" \
+    --artifacts "docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
+    --next "<first dev task focus area>"
+else
+  forge comment <id> "plan→dev | summary: <design approach chosen, task count> | decisions: <key trade-offs resolved during Q&A> | artifacts: docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md | next: <first dev task focus area>"
+fi
 ```
 
 ---
 
 ## Dynamic Phase 3 Output
 
-Phase 3 output is generated from the live Beads issue, branch/worktree setup, baseline validation, and task list paths at runtime. It reports the Beads issue, branch, worktree, `docs/work/YYYY-MM-DD-<slug>/design.md`, and `docs/work/YYYY-MM-DD-<slug>/tasks.md` from the actual run instead of a static example.
+Phase 3 output is generated from the live Forge issue, branch/worktree setup, baseline validation, and task list paths at runtime. It reports the Forge issue, branch, worktree, `docs/work/YYYY-MM-DD-<slug>/design.md`, and `docs/work/YYYY-MM-DD-<slug>/tasks.md` from the actual run instead of a static example.
 
 ## Integration with Workflow
 
