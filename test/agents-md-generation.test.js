@@ -40,7 +40,11 @@ describe('AGENTS.md generation', () => {
     expect(content.includes('/validate')).toBeTruthy();
     expect(content.includes('/ship')).toBeTruthy();
     expect(content.includes('/review')).toBeTruthy();
-    expect(content.includes('/premerge')).toBeTruthy();
+    // Pre-merge is an embedded documentation gate inside /ship and /review — NOT a
+    // numbered stage or a standalone /premerge command. The generated AGENTS.md must
+    // present the gate model, never emit a /premerge stage/command.
+    expect(content.includes('/premerge')).toBeFalsy();
+    expect(content).toMatch(/pre-merge gate/i);
     expect(content.includes('/verify')).toBeTruthy();
 
     // Verify it mentions supported Tier 1 agents
