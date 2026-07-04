@@ -138,7 +138,13 @@ describe('Beads Kernel compatibility adapter', () => {
 			dependencies: 2,
 			comments: 2,
 			closeEvents: 1,
-			unsupportedFields: 3,
+			// This fixture carries no events.jsonl/interactions.jsonl sidecars.
+			events: 0,
+			interactions: 0,
+			activityEvents: 0,
+			// Only the dependency creator remains unmapped (no kernel_dependencies.created_by
+			// column); owner/assignee/design and the empty "{}" dependency metadata are resolved.
+			unsupportedFields: 1,
 		});
 		expect(result.report.preservedFields).toEqual(expect.arrayContaining([
 			'issues.id',
@@ -150,10 +156,9 @@ describe('Beads Kernel compatibility adapter', () => {
 			'comments.body',
 			'events.close_reason',
 		]));
+		// The dependency creator is the only remaining unmapped field (no dedicated column).
 		expect(result.report.gaps).toEqual(expect.arrayContaining([
-			expect.objectContaining({ field: 'issues.owner', reason: 'no Kernel issue owner column in schema v1' }),
 			expect.objectContaining({ field: 'dependencies.created_by', reason: 'no Kernel dependency creator column in schema v1' }),
-			expect.objectContaining({ field: 'dependencies.metadata', reason: 'no Kernel dependency metadata column in schema v1' }),
 		]));
 		const gapFields = result.report.gaps.map(gap => gap.field);
 		expect(gapFields).not.toContain('issues.labels');
@@ -161,6 +166,9 @@ describe('Beads Kernel compatibility adapter', () => {
 		// created_by and issue metadata are now carried onto the Kernel record, not dropped.
 		expect(gapFields).not.toContain('issues.created_by');
 		expect(gapFields).not.toContain('issues.metadata');
+		// owner (→ assignee/metadata) and the empty "{}" dependency metadata are no longer gaps.
+		expect(gapFields).not.toContain('issues.owner');
+		expect(gapFields).not.toContain('dependencies.metadata');
 		expect(result.rollback).toMatchObject({
 			available: true,
 			mode: 'import-only',
@@ -201,6 +209,72 @@ describe('Beads Kernel compatibility adapter', () => {
 		}, { importedAt: IMPORTED_AT });
 
 		expect(result.kernel.issues[0].created_by).toBe('owner@example.com');
+	});
+
+	test('folds beads external_ref and started_at into metadata instead of dropping them', () => {
+		// Mirrors the real corpus: external_ref links (e.g. gh-88) and a started_at timestamp have
+		// no dedicated Kernel column and MUST NOT be silently dropped — they fold into metadata.
+		const result = importBeadsSnapshot({
+			issues: [{
+				id: 'forge-6wy',
+				title: 'Linked to GitHub',
+				status: 'open',
+				owner: 'harsha@example.com',
+				created_by: 'Harsha Nanda',
+				external_ref: 'gh-88',
+				started_at: '2026-04-26T18:00:32Z',
+			}],
+		}, { importedAt: IMPORTED_AT });
+
+		const [imported] = result.kernel.issues;
+		const metadata = JSON.parse(imported.metadata);
+		expect(metadata.beads_external_ref).toBe('gh-88');
+		expect(metadata.beads_started_at).toBe('2026-04-26T18:00:32Z');
+		// Folded, not gapped — and not silently dropped.
+		const gapFields = result.report.gaps.map(gap => gap.field);
+		expect(gapFields).not.toContain('issues.external_ref');
+		expect(gapFields).not.toContain('issues.started_at');
+	});
+
+	test('does not double-store owner in metadata when it already maps to assignee', () => {
+		const result = importBeadsSnapshot({
+			issues: [{
+				id: 'forge-owned2',
+				title: 'Owner equals assignee',
+				status: 'open',
+				owner: '  harsha@example.com  ',
+				assignee: 'harsha@example.com',
+			}],
+		}, { importedAt: IMPORTED_AT });
+
+		// A padded owner that matches the (trimmed) assignee is captured, so metadata stays null.
+		expect(result.kernel.issues[0].metadata).toBeNull();
+	});
+
+	test('reads a split .beads layout — events under backup/, interactions in the parent dir', () => {
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-split-'));
+		try {
+			const beadsDir = path.join(tmp, '.beads');
+			const backupDir = path.join(beadsDir, 'backup');
+			fs.mkdirSync(backupDir, { recursive: true });
+			// The backup export holds issues + events; the live interactions/memory log sits in .beads.
+			fs.writeFileSync(path.join(backupDir, 'issues.jsonl'), '{"id":"forge-aa1","title":"A","status":"open"}\n');
+			fs.writeFileSync(path.join(backupDir, 'events.jsonl'), '{"id":"ev-1","event_type":"created","issue_id":"forge-aa1","actor":"Harsha"}\n');
+			fs.writeFileSync(path.join(beadsDir, 'interactions.jsonl'), '{"id":"int-1","kind":"note","issue_id":"forge-aa1","actor":"Harsha","extra":{"note":"hi"}}\n');
+
+			// Pointing at .beads/backup still finds the parent's interactions (memory not missed).
+			const fromBackup = loadBeadsSnapshotFromDirectory(backupDir);
+			expect(fromBackup.events).toHaveLength(1);
+			expect(fromBackup.interactions).toHaveLength(1);
+
+			// Pointing at .beads still finds events under backup/ AND the sibling interactions.
+			const fromBeads = loadBeadsSnapshotFromDirectory(beadsDir);
+			expect(fromBeads.issues).toHaveLength(1);
+			expect(fromBeads.events).toHaveLength(1);
+			expect(fromBeads.interactions).toHaveLength(1);
+		} finally {
+			fs.rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 
 	test('strips the internal forge_projection marker from carried Kernel metadata', () => {
@@ -435,31 +509,58 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
-	test('reports unsupported legacy Beads event sidecars', () => {
+	test('lands legacy Beads activity events in the Kernel activity log without gaps', () => {
 		const snapshot = loadBeadsSnapshotFromDirectory(LEGACY_BACKUP_DIR);
 		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
 
 		expect(snapshot.events).toHaveLength(3);
-		expect(result.report.gaps).toEqual(expect.arrayContaining([
-			expect.objectContaining({
-				field: 'events.jsonl',
-				reason: 'legacy Beads event sidecar is not represented in Kernel schema v1',
-			}),
-		]));
+		// The event sidecar is no longer a data-loss gap — every event maps into activityEvents.
+		expect(result.report.gaps.map(gap => gap.field)).not.toContain('events.jsonl');
+		const created = result.kernel.activityEvents.find(
+			event => event.event_type === 'beads.event.created' && event.entity_id === 'forge-aa1',
+		);
+		expect(created).toMatchObject({
+			entity_type: 'issue',
+			entity_id: 'forge-aa1',
+			actor: 'Harsha Nanda',
+			origin: 'beads_import',
+			expected_revision: 0,
+		});
+		expect(JSON.parse(created.payload_json)).toMatchObject({ kind: 'created' });
+		// The dependency_added event's new_value survives verbatim in the payload.
+		const depAdded = result.kernel.activityEvents.find(event => event.event_type === 'beads.event.dependency_added');
+		expect(JSON.parse(depAdded.payload_json)).toMatchObject({ kind: 'dependency_added', new_value: 'forge-aa1' });
 	});
 
-	test('reports unsupported legacy Beads interaction sidecars', () => {
+	test('lands legacy Beads interaction records in the Kernel activity log without gaps', () => {
 		const result = importBeadsSnapshot({
 			issues: [],
-			interactions: [{ id: 'interaction-1', event_type: 'field_changed' }],
+			interactions: [{
+				id: 'interaction-1',
+				kind: 'field_change',
+				actor: 'Harsha Nanda',
+				issue_id: 'forge-xyz',
+				extra: { field: 'status', new_value: 'closed' },
+			}],
 		}, { importedAt: IMPORTED_AT });
 
-		expect(result.report.gaps).toEqual(expect.arrayContaining([
-			expect.objectContaining({
-				field: 'interactions.jsonl',
-				reason: 'legacy Beads interaction sidecar is not represented in Kernel schema v1',
-			}),
-		]));
+		expect(result.report.gaps.map(gap => gap.field)).not.toContain('interactions.jsonl');
+		expect(result.kernel.activityEvents).toHaveLength(1);
+		const [interaction] = result.kernel.activityEvents;
+		expect(interaction.id).toMatch(/^beads-interaction-/);
+		expect(interaction).toMatchObject({
+			entity_type: 'issue',
+			entity_id: 'forge-xyz',
+			event_type: 'beads.interaction.field_change',
+			idempotency_key: 'beads-interaction:interaction-1',
+			actor: 'Harsha Nanda',
+			origin: 'beads_import',
+		});
+		expect(JSON.parse(interaction.payload_json)).toMatchObject({
+			kind: 'field_change',
+			field: 'status',
+			new_value: 'closed',
+		});
 	});
 
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
@@ -498,15 +599,16 @@ describe('Beads Kernel compatibility adapter', () => {
 		// The beads author is carried; "{}" metadata holds no user data, so the column stays null.
 		expect(importedIssue.created_by).toBe('Harsha Nanda');
 		expect(importedIssue.metadata).toBeNull();
-		expect(result.report.gaps).toEqual(expect.arrayContaining([
-			expect.objectContaining({ field: 'issues.assignee' }),
-			expect.objectContaining({ field: 'issues.design' }),
-		]));
+		// assignee and design now land on their dedicated Kernel columns (migration 004), not gaps.
+		expect(importedIssue.assignee).toBe('harsha@example.com');
+		expect(importedIssue.design).toBe('Use the legacy Beads migration design.');
 		const aa1GapFields = result.report.gaps.map(gap => gap.field);
 		expect(aa1GapFields).not.toContain('issues.labels');
 		expect(aa1GapFields).not.toContain('issues.acceptance_criteria');
-		// created_by is now carried onto the Kernel record, no longer a fidelity gap.
+		// created_by/assignee/design are now carried onto the Kernel record, no longer gaps.
 		expect(aa1GapFields).not.toContain('issues.created_by');
+		expect(aa1GapFields).not.toContain('issues.assignee');
+		expect(aa1GapFields).not.toContain('issues.design');
 	});
 
 	test('imports dependency rows with non-lossy generated ids', () => {
