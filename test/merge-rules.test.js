@@ -114,6 +114,54 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
   });
 
+  test('checks_green { ignore } exempts a named failing check but still blocks on OTHER failures', () => {
+    const oneBadIgnored = greenContext({
+      checks: [
+        { name: 'coverage', conclusion: 'FAILURE' },
+        { name: 'ci', conclusion: 'SUCCESS' },
+      ],
+    });
+    // coverage is exempt; every other check (ci) is green → allowed.
+    expect(evaluateMergeRules(oneBadIgnored, [{ checks_green: { ignore: ['coverage'] } }]).allowed).toBe(true);
+
+    const anotherAlsoBad = greenContext({
+      checks: [
+        { name: 'coverage', conclusion: 'FAILURE' },
+        { name: 'ci', conclusion: 'FAILURE' },
+      ],
+    });
+    // coverage exempt, but ci (not exempt) still fails → unmet.
+    expect(evaluateMergeRules(anotherAlsoBad, [{ checks_green: { ignore: ['coverage'] } }]).allowed).toBe(false);
+  });
+
+  test('checks_green { ignore: [] } behaves like bare checks_green (strict)', () => {
+    expect(evaluateMergeRules(greenContext(), [{ checks_green: { ignore: [] } }]).allowed).toBe(true);
+    const bad = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
+    expect(evaluateMergeRules(bad, [{ checks_green: { ignore: [] } }]).allowed).toBe(false);
+  });
+
+  test('checks_green { only } requires ONLY the listed checks to be SUCCESS', () => {
+    const ctx = greenContext({
+      checks: [
+        { name: 'ci', conclusion: 'SUCCESS' },
+        { name: 'coverage', conclusion: 'FAILURE' },
+      ],
+    });
+    // only ci matters; coverage failure is ignored → allowed.
+    expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['ci'] } }]).allowed).toBe(true);
+    // only coverage matters; it fails → unmet.
+    expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['coverage'] } }]).allowed).toBe(false);
+    // a named check that is missing → unmet (must be present AND green).
+    expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['nonexistent'] } }]).allowed).toBe(false);
+  });
+
+  test('checks_green with BOTH ignore and only is malformed → fail-closed', () => {
+    const { allowed, unmet } = evaluateMergeRules(greenContext(), [{ checks_green: { ignore: ['a'], only: ['b'] } }]);
+    expect(allowed).toBe(false);
+    expect(unmet[0].rule).toContain('checks_green');
+    expect(unmet[0].reason).toMatch(/ignore.*only|only.*ignore|combine|malformed|both/i);
+  });
+
   test('threads_resolved fails with open threads (number OR array form)', () => {
     expect(evaluateMergeRules(greenContext({ unresolvedThreads: 2 }), ['threads_resolved']).allowed).toBe(false);
     expect(evaluateMergeRules(greenContext({ unresolvedThreads: [{}, {}] }), ['threads_resolved']).allowed).toBe(false);
