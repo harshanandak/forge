@@ -971,3 +971,111 @@ describe('runIssueOperation kernel auto-init', () => {
     expect(result).toEqual({ ok: true, command: 'ready', data: { issues: [] } });
   });
 });
+
+describe('runIssueOperation per-agent actor identity (kernel)', () => {
+  function makeKernelDeps() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-kernel-actor-'));
+    const gitCommonDir = path.join(dir, '.git');
+    fs.mkdirSync(gitCommonDir, { recursive: true });
+    return {
+      dir,
+      deps: {
+        issueBackend: 'kernel',
+        gitCommonDir,
+        kernelDatabasePath: path.join(gitCommonDir, 'forge', 'kernel.sqlite'),
+      },
+    };
+  }
+
+  // Regression for kernel d71a824b: the CLI issue path wired NO per-agent identity into
+  // the kernel context, so every agent claimed as the 'forge' default. Two distinct
+  // agents therefore produced the SAME `claim.create:<id>:forge` idempotency key and the
+  // 2nd claim replayed as a duplicate (ok:true) instead of a lease conflict — the
+  // lease-conflict guard could never fire because the actors were indistinguishable.
+  test('a distinct FORGE_ACTOR reaches the lease-conflict path; the same actor stays idempotent', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const { dir, deps } = makeKernelDeps();
+    // Same shared kernel DB, two different agent identities threaded via deps.env.
+    const asAlice = { ...deps, env: { FORGE_ACTOR: 'alice' } };
+    const asBob = { ...deps, env: { FORGE_ACTOR: 'bob' } };
+
+    try {
+      const created = await runIssueOperation(
+        'create',
+        ['--title', 'Lease contended by two agents', '--type', 'task'],
+        dir,
+        asAlice,
+      );
+      expect(created.ok).toBe(true);
+      const id = created.data.id;
+
+      // Alice acquires the lease.
+      const aliceClaim = await runIssueOperation('claim', [id], dir, asAlice);
+      expect(aliceClaim.ok).toBe(true);
+
+      // Bob claims the SAME issue with a distinct actor -> genuine lease conflict.
+      const bobClaim = await runIssueOperation('claim', [id], dir, asBob);
+      expect(bobClaim.ok).toBe(false);
+      expect(bobClaim.error.exit_code).toBe(4); // ISSUE_COMMAND_EXIT_CODES.conflict
+      expect(bobClaim.error.details.reason).toBe('claim_conflict');
+
+      // The active lease still belongs to alice — bob never displaced her.
+      const shown = await runIssueOperation('show', [id], dir, asAlice);
+      expect(shown.ok).toBe(true);
+      expect(shown.data.claimed_by).toBe('alice');
+
+      // Alice re-claiming her own lease is an idempotent duplicate, not a conflict.
+      const aliceReclaim = await runIssueOperation('claim', [id], dir, asAlice);
+      expect(aliceReclaim.ok).toBe(true);
+    } finally {
+      // Best-effort temp cleanup; a locked-file failure must not mask the assertions.
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // ignore: temp dir is reclaimed by the OS; cleanup is not the assertion.
+      }
+    }
+  }, 20000);
+
+  test('with no FORGE_ACTOR the kernel actor stays the historical "forge" default', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    const { dir, deps } = makeKernelDeps();
+    // No env -> resolveIssueActor returns undefined -> buildIssueMutationEvent keeps 'forge'.
+    const noActor = { ...deps, env: {} };
+
+    try {
+      const created = await runIssueOperation(
+        'create',
+        ['--title', 'Default actor', '--type', 'task'],
+        dir,
+        noActor,
+      );
+      expect(created.ok).toBe(true);
+      const id = created.data.id;
+
+      const claimed = await runIssueOperation('claim', [id], dir, noActor);
+      expect(claimed.ok).toBe(true);
+
+      const shown = await runIssueOperation('show', [id], dir, noActor);
+      expect(shown.ok).toBe(true);
+      expect(shown.data.claimed_by).toBe('forge');
+    } finally {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // ignore: temp dir is reclaimed by the OS; cleanup is not the assertion.
+      }
+    }
+  }, 20000);
+});
+
+describe('resolveIssueActor precedence', () => {
+  test('FORGE_ACTOR wins, then FORGE_SESSION_ID, else undefined (preserving the forge default)', () => {
+    const { resolveIssueActor } = require('../lib/forge-issues');
+    expect(resolveIssueActor({ FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 's1' })).toBe('alice');
+    expect(resolveIssueActor({ FORGE_SESSION_ID: 's1' })).toBe('s1');
+    expect(resolveIssueActor({ FORGE_ACTOR: '   ' })).toBeUndefined();
+    expect(resolveIssueActor({})).toBeUndefined();
+    expect(resolveIssueActor()).toBeUndefined();
+  });
+});

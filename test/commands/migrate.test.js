@@ -108,9 +108,12 @@ describe('forge migrate --from beads — dry run', () => {
 			issues: expectedKernel.issues.length,
 			comments: expectedKernel.comments.length,
 			dependencies: expectedKernel.dependencies.length,
+			events: expectedKernel.activityEvents.length,
 		});
 		expect(result.planned.issues).toBe(2);
 		expect(result.planned.dependencies).toBe(1);
+		// The legacy-backup fixture ships 3 events.jsonl + 2 interactions.jsonl records.
+		expect(result.planned.events).toBe(5);
 		// Gaps surfaced (count + brief).
 		expect(result.gaps.count).toBeGreaterThan(0);
 		expect(result.output).toContain('nothing written');
@@ -138,6 +141,8 @@ describe('forge migrate --from beads — real import', () => {
 		expect(result.imported.issues.inserted).toBe(2);
 		expect(result.imported.comments.inserted).toBe(expectedKernel.comments.length);
 		expect(result.imported.dependencies.inserted).toBe(1);
+		// The legacy activity log (events.jsonl + interactions.jsonl) lands in kernel_events.
+		expect(result.imported.events.inserted).toBe(expectedKernel.activityEvents.length);
 
 		const aa1 = await driver.issueOperation('show', ['forge-aa1'], {}, config);
 		expect(aa1.data.status).toBe('open');

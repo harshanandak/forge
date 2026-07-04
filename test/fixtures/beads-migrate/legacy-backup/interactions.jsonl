@@ -1,0 +1,2 @@
+{"id":"int-aa1-status","kind":"field_change","created_at":"2026-04-01T09:30:00Z","actor":"Harsha Nanda","issue_id":"forge-aa1","extra":{"field":"status","old_value":"open","new_value":"open","reason":"Reviewed during planning"}}
+{"id":"int-bb2-note","kind":"note","created_at":"2026-04-01T10:45:00Z","actor":"Worker B","issue_id":"forge-bb2","extra":{"note":"Escalated for review"}}
