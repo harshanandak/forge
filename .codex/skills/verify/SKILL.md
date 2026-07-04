@@ -147,68 +147,82 @@ Branch: <branch-name> deleted ✓
 forge create --title="Post-merge: <description of issue>" --type=bug --priority=1
 ```
 
-### Step 8: Close Beads Issues (if healthy)
+### Step 8: Close resolved issues (if healthy)
 
-If everything is clean, close all Beads issues referenced in the merged PR.
+If everything is clean, close all issues referenced in the merged PR.
 
-**Auto-detect beads issues from PR body and branch name:**
+**Auto-detect issues from PR body and branch name:**
 
 ```bash
 # Get PR body and branch name
 PR_BODY=$(gh pr view <number> --json body --jq '.body')
 PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
 
-# Extract beads IDs from PR body (matches "Closes forge-xxx", "closes forge-xxx", etc.)
-# Patterns: "Closes <prefix>-<id>", "Fixes <prefix>-<id>", "Resolves <prefix>-<id>"
-BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]{3,6}$')
+# Extract issue IDs from PR body
+# Matches short form (e.g. "Closes forge-abc") and kernel UUIDs (e.g. "Closes d71a824b-b0a2-...")
+# Patterns: "Closes <id>", "Fixes <id>", "Resolves <id>"
+SHORT_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]{3,6}$')
+UUID_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+ISSUE_IDS="$SHORT_IDS $UUID_IDS"
 
-# Validate each ID exists in beads
+# Validate each ID exists in the kernel
 VALID_IDS=""
-for id in $BEADS_IDS; do
+for id in $ISSUE_IDS; do
   if forge show "$id" >/dev/null 2>&1; then
     VALID_IDS="$VALID_IDS $id"
   fi
 done
-BEADS_IDS="$VALID_IDS"
+ISSUE_IDS="$VALID_IDS"
 
-# Also check branch name for beads ID — extract segment after last /
+# Also check branch name for an issue ID — extract segment after last /
 # then validate with forge show to avoid false matches like "pr-templa"
 BRANCH_SLUG=$(echo "$PR_BRANCH" | sed 's|.*/||')
-BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
+BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z]+-[a-z0-9]{3,6}' | head -1)
 if [ -n "$BRANCH_ID" ] && ! forge show "$BRANCH_ID" >/dev/null 2>&1; then
-  BRANCH_ID=""  # Not a valid beads ID — discard
+  BRANCH_ID=""  # Not a valid issue ID — discard
 fi
 ```
 
 **Close each matched issue:**
 
 ```bash
-# Close issues found in PR body
-for id in $BEADS_IDS; do
-  forge close "$id" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $id"
+# Close issues found in PR body. Track failures — a close that fails must
+# block /verify completion, not be downgraded to a warning.
+close_failed=0
+for id in $ISSUE_IDS; do
+  if ! forge close "$id" --reason="Merged and verified on master (PR #<number>)"; then
+    echo "Warning: could not close $id"
+    close_failed=1
+  fi
 done
 
 # If no issues found in body, try branch name match (skip if already closed above)
-if [ -z "$BEADS_IDS" ] && [ -n "$BRANCH_ID" ]; then
-  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
-elif [ -n "$BRANCH_ID" ] && ! echo "$BEADS_IDS" | grep -qw "$BRANCH_ID"; then
-  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+if [ -z "$ISSUE_IDS" ] && [ -n "$BRANCH_ID" ]; then
+  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" || { echo "Warning: could not close $BRANCH_ID"; close_failed=1; }
+elif [ -n "$BRANCH_ID" ] && ! echo "$ISSUE_IDS" | grep -qw "$BRANCH_ID"; then
+  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" || { echo "Warning: could not close $BRANCH_ID"; close_failed=1; }
+fi
+
+# Any intended close that failed → /verify is NOT complete.
+if [ "$close_failed" -ne 0 ]; then
+  echo "✗ One or more issues failed to close — /verify is NOT complete."
+  exit 1
 fi
 ```
 
-**If no beads issues detected at all**, prompt the user:
+**If no issues detected at all**, prompt the user:
 ```
-⚠ No beads issue ID found in PR body or branch name.
-  If this PR closes a beads issue, run: forge close <id> --reason="Merged and verified on master (PR #<number>)"
+⚠ No issue ID found in PR body or branch name.
+  If this PR closes an issue, run: forge close <id> --reason="Merged and verified on master (PR #<number>)"
 ```
 
 ```
 <HARD-GATE: /verify exit>
 Do NOT declare /verify complete until:
 1. gh run list --branch master --limit 3 shows actual CI output (not "should be fine")
-2. If healthy: Beads issues extracted from PR body/branch and closed (`forge close` run and confirmed)
-   - If no beads ID found: user was warned and given manual close command
-3. If issues found: Beads tracking issue created for every problem
+2. If healthy: issues extracted from PR body/branch and closed (`forge close` run and confirmed)
+   - If no issue ID found: user was warned and given manual close command
+3. If issues found: tracking issue created for every problem
 4. Worktree removed (or confirmed already gone) — OR Step 6 was intentionally skipped because CI was unhealthy; if skipped, state explicitly: "cleanup deferred, CI was not healthy"
 "It should be fine" is not evidence. Run the command. Show the output.
 </HARD-GATE>
