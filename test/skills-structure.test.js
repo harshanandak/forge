@@ -110,9 +110,10 @@ describe('skills/ directory structure', () => {
   describe('skills/ contains only expected directories', () => {
     // Canonical skill set after the skills-only migration: the 11 workflow stage
     // skills + the `kernel` umbrella (ported from the removed .claude/commands/
-    // surface) plus the three packaged skills, and the kernel-native skills
-    // (triage-ready, issue-basics) registered through the umbrella. These are the
-    // single source of truth; agent harness dirs are generated from them by
+    // surface) plus the three packaged skills, the kernel-native skills
+    // (triage-ready, issue-basics) registered through the umbrella, and the
+    // `smith` orchestrator super-skill that composes the stage skills. These are
+    // the single source of truth; agent harness dirs are generated from them by
     // `skills sync` / setup. Pre-merge is a doc-update gate embedded in
     // ship/review, not a skill.
     const expectedSkillDirs = [
@@ -134,6 +135,7 @@ describe('skills/ directory structure', () => {
       'sonarcloud-analysis',
       'triage-ready',
       'issue-basics',
+      'smith',
     ];
 
     test('skills/ contains exactly the expected skill directories', () => {

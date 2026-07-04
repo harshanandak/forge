@@ -3,10 +3,11 @@ name: kernel
 description: >
   Forge kernel surface — the umbrella index for working in a Forge project. Use
   at the start of any session and whenever you need to orient: it routes to the
-  per-stage workflow skills (plan, dev, validate, ship, review, verify,
-  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
-  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
-  and orientation verbs of the `forge` CLI. Trigger on
+  `smith` orchestrator super-skill, the per-stage workflow skills (plan, dev,
+  validate, ship, review, verify, plus status, research, rollback, sonarcloud,
+  shepherd) and the kernel-native skills (triage-ready, issue-basics), and
+  documents the day-to-day issue, board, and orientation verbs of the `forge`
+  CLI. Trigger on
   "what's the workflow", "what should I work on", "forge issues", "claim an
   issue", "project status", "orient", or when deciding between Forge issues and
   an ad-hoc TodoWrite list.
@@ -52,6 +53,20 @@ mutating it — a claim returning ok:true does not by itself prove ownership).
 ```
 status → plan → dev → validate → ship → review → verify
 ```
+
+## Orchestrator super-skill
+
+`smith` is the flagship: a thin orchestrator that COMPOSES the skills above into
+the right path for a piece of work — pick (`triage-ready`) → claim
+(`claim-safety`) → `plan` → `dev` → `validate` → `ship` → `review` → `verify` —
+driving autonomously between human gates and pausing AT them. The human gates are
+durable kernel EVENTS (`forge gate check|approve|reject|status <issue> <gate>`;
+gates `gate.intent` · `gate.plan-approval` · `gate.merge`), so a gated run is
+resume-safe across compaction. During planning `smith` calibrates how many gates
+the work needs from its size × importance × complexity and proposes that tier at
+the intent gate (the human confirms or overrides). Reach for `smith` to run a
+whole issue end to end under human control; invoke an individual stage skill to
+run a single step.
 
 ## Kernel-native skills
 
