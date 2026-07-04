@@ -56,7 +56,7 @@ never mutates kernel state. (`data.claimed_by` is lease-derived; there is no
 4. **Work** the issue (`dev`/edit/etc.).
 5. **RE-verify before `close`/`release`** — a live lease can be reclaimed on
    expiry while you worked. Run `forge issue owns <id>` again:
-   - **OWNED** → `forge release check --json` (release-readiness), then
+   - **OWNED** → `forge release check --target <release-ref> --json` (release-readiness; omit `--target` to use the project default), then
      `forge close <id> --reason "…"` or `forge release <id>`.
    - **NOT OWNED** → the lease was reclaimed (likely expired). Do NOT close/
      release someone else's lease; reselect and, if the work is still needed,
