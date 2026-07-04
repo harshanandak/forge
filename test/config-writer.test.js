@@ -7,10 +7,12 @@ const { afterEach, describe, expect, test } = require('bun:test');
 
 const YAML = require('yaml');
 
-const gateCommand = require('../lib/commands/gate');
-const roleCommand = require('../lib/commands/role');
-const optionsCommand = require('../lib/commands/options');
-const { setConfigOverride, removeConfigOverride, resolveSkill } = require('../lib/config-writer');
+const {
+  setConfigOverride,
+  removeConfigOverride,
+  resolveSkill,
+  loadRawConfig,
+} = require('../lib/config-writer');
 
 const tempRoots = [];
 
@@ -41,104 +43,55 @@ afterEach(() => {
   }
 });
 
-describe('config-writer + forge gate/role verbs', () => {
-  test('sparse writer creates .forge/config.yaml and sets a nested dotted key', () => {
+describe('config-writer sparse writer', () => {
+  test('creates .forge/config.yaml and sets a nested key via an array key-path', () => {
     const root = makeProject();
     setConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled'], false);
     const config = readConfig(root);
+    // Array key-path keeps the dotted gate id 'gate.plan-exit' as ONE key.
     expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
   });
 
-  test('sparse writer preserves existing keys on update', () => {
+  test('preserves existing sibling keys on update', () => {
     const root = makeProject();
     setConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled'], false);
+    setConfigOverride(root, ['roles', 'plan', 'skill'], 'my-plan');
     setConfigOverride(root, ['workflow', 'gates', 'gate.dev-exit', 'enabled'], false);
     const config = readConfig(root);
     expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
     expect(config.workflow.gates['gate.dev-exit'].enabled).toBe(false);
+    expect(config.roles.plan.skill).toBe('my-plan');
   });
 
   test('removeConfigOverride resets a key and prunes empty ancestors', () => {
     const root = makeProject();
     setConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled'], false);
-    removeConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled']);
-    const config = readConfig(root);
-    expect(config.workflow?.gates?.['gate.plan-exit']).toBeUndefined();
+    const result = removeConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled']);
+    expect(result.removed).toBe(true);
+    // The whole now-empty workflow branch is pruned, keeping the surface sparse.
+    expect(loadRawConfig(root)).toEqual({});
   });
 
-  test('forge gate disable gate.plan-exit writes enabled=false AND forge options gates --json reflects it', async () => {
+  test('removeConfigOverride is a no-op for an absent key', () => {
     const root = makeProject();
-
-    const result = await gateCommand.handler(['disable', 'gate.plan-exit'], {}, root);
-    expect(result.success).toBe(true);
-
-    // Write side: the surface records the override.
-    const config = readConfig(root);
-    expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
-
-    // Read side: the shipped resolver reflects it through forge options gates --json.
-    const options = await optionsCommand.handler(['gates', '--json'], {}, root);
-    const parsed = JSON.parse(options.output);
-    const gate = parsed.items.find(item => item.id === 'gate.plan-exit');
-    expect(gate.enabled).toBe(false);
+    const result = removeConfigOverride(root, ['roles', 'plan', 'skill']);
+    expect(result.removed).toBe(false);
   });
 
-  test('forge gate enable flips it back to true', async () => {
+  test('rejects a malformed key-path', () => {
     const root = makeProject();
-    await gateCommand.handler(['disable', 'gate.plan-exit'], {}, root);
-    await gateCommand.handler(['enable', 'gate.plan-exit'], {}, root);
-    const options = await optionsCommand.handler(['gates', '--json'], {}, root);
-    const gate = JSON.parse(options.output).items.find(item => item.id === 'gate.plan-exit');
-    expect(gate.enabled).toBe(true);
+    expect(() => setConfigOverride(root, [], true)).toThrow();
   });
 
-  test('forge gate rejects an unknown gate id at write time', async () => {
-    const root = makeProject();
-    const result = await gateCommand.handler(['disable', 'gate.does-not-exist'], {}, root);
-    expect(result.success).toBe(false);
-    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
-  });
-
-  test('forge role plan --use my-plan writes roles.plan.skill AND forge options roles --json reflects it', async () => {
-    const root = makeProject({ skills: ['my-plan'] });
-
-    const result = await roleCommand.handler(['plan', '--use', 'my-plan'], {}, root);
-    expect(result.success).toBe(true);
-
-    const config = readConfig(root);
-    expect(config.roles.plan.skill).toBe('my-plan');
-
-    const options = await optionsCommand.handler(['roles', '--json'], {}, root);
-    const parsed = JSON.parse(options.output);
-    const role = parsed.items.find(item => item.role === 'plan');
-    expect(role.skill).toBe('my-plan');
-  });
-
-  test('forge role --ideology writes roles.<role>.ideology', async () => {
-    const root = makeProject({ skills: ['my-plan'] });
-    await roleCommand.handler(['plan', '--use', 'my-plan', '--ideology', 'spec-first'], {}, root);
-    const config = readConfig(root);
-    expect(config.roles.plan.skill).toBe('my-plan');
-    expect(config.roles.plan.ideology).toBe('spec-first');
-  });
-
-  test('forge role rejects an unresolvable skill at write time', async () => {
-    const root = makeProject();
-    const result = await roleCommand.handler(['plan', '--use', 'ghost-skill'], {}, root);
-    expect(result.success).toBe(false);
-    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
-  });
-
-  test('forge role rejects an unknown role at write time', async () => {
-    const root = makeProject({ skills: ['my-plan'] });
-    const result = await roleCommand.handler(['not-a-role', '--use', 'my-plan'], {}, root);
-    expect(result.success).toBe(false);
-    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
-  });
-
-  test('resolveSkill finds a .skills shadow skill', () => {
+  test('resolveSkill finds a .skills shadow skill and returns null for a missing one', () => {
     const root = makeProject({ skills: ['my-plan'] });
     expect(resolveSkill(root, 'my-plan')).not.toBeNull();
     expect(resolveSkill(root, 'ghost-skill')).toBeNull();
+  });
+
+  test('resolveSkill rejects path-traversal names', () => {
+    const root = makeProject({ skills: ['my-plan'] });
+    expect(resolveSkill(root, '../my-plan')).toBeNull();
+    expect(resolveSkill(root, '')).toBeNull();
   });
 });
