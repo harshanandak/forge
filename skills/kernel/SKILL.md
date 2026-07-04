@@ -4,8 +4,9 @@ description: >
   Forge kernel surface — the umbrella index for working in a Forge project. Use
   at the start of any session and whenever you need to orient: it routes to the
   per-stage workflow skills (plan, dev, validate, ship, review, verify,
-  plus status, research, rollback, sonarcloud, shepherd) and documents the
-  day-to-day issue, board, and orientation verbs of the `forge` CLI. Trigger on
+  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
+  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
+  and orientation verbs of the `forge` CLI. Trigger on
   "what's the workflow", "what should I work on", "forge issues", "claim an
   issue", "project status", "orient", or when deciding between Forge issues and
   an ad-hoc TodoWrite list.
@@ -44,9 +45,24 @@ Utility skills outside the linear ladder: `research` (deep web research),
 `rollback` (safe revert operations), `sonarcloud` (code-quality queries),
 `shepherd` (cross-harness PR monitoring).
 
+Procedure skills (reusable operations any stage/agent embeds): `claim-safety`
+(claim an issue and PROVE you own the lease via `forge issue owns <id>` before
+mutating it — a claim returning ok:true does not by itself prove ownership).
+
 ```
 status → plan → dev → validate → ship → review → verify
 ```
+
+## Kernel-native skills
+
+Read-and-repair skills that work directly against the kernel's issue store. They
+complement the ladder: reach for them to decide *what* to do and to run the
+everyday issue operations, then route into a stage skill to execute.
+
+| Skill | Purpose |
+|-------|---------|
+| `triage-ready` | Read-only "what should I work on" — ranks and *explains* the ready queue via `forge issue ready` / `blocked` / `stats` (never `board`), then hands off the pick. |
+| `issue-basics` | The everyday CRUD floor — create/update/claim/release/comment/close/show/list/search/stats over the `forge issue` verbs, plus the label/reopen/delete disposition for teams migrating in. |
 
 ## Day-to-day verbs (the `forge` CLI)
 
@@ -63,6 +79,7 @@ families. Run them through Bash; never hand-edit the issue store.
 | List / filter issues | `forge list [--status …] [--json]` |
 | Create an issue | `forge create --title "…" --type <feature\|bug\|task>` |
 | Claim work (DB-enforced lease) | `forge claim <id>` |
+| Prove you own the lease | `forge issue owns <id>` — exit 0 iff you hold the live lease (see the `claim-safety` skill) |
 | Release a claim | `forge release <id>` |
 | Update fields | `forge update <id> --priority <n>` (etc.) |
 | Add a handoff comment | `forge comment <id> "…"` |
@@ -111,8 +128,10 @@ the team. TodoWrite is for scratch tracking only.
 
 1. **Orient first.** Start with the `status` skill (or `forge prime` /
    `forge orient`) — never reconstruct project state from raw files.
-2. **Claim before you build.** `forge claim <id>` takes the lease; one issue at a
-   time. `forge release <id>` if you abandon it.
+2. **Claim before you build — then prove it.** `forge claim <id>` takes the lease;
+   one issue at a time. A claim's ok:true does not by itself prove ownership, so
+   confirm with `forge issue owns <id>` before working and again before
+   `close`/`release` (the `claim-safety` skill). `forge release <id>` if you abandon it.
 3. **Work the ladder.** `plan` → `dev` → `validate` → `ship` → `review` →
    `verify`, skipping stages only when the plan allows. The pre-merge doc gate
    runs inside `ship` and `review` before merge — it is not a separate stage.
