@@ -14,12 +14,13 @@ Confirmed by the user after a cross-verify audit + a Fable guidance pass.
 - Internal store stays "kernel" in code/docs; never in a user-facing skill/command name.
 
 ## Architecture decisions (from Fable guidance, adopted)
-- **Human gates are enforced by kernel EVENTS, not skill prose.** Record gate approvals as
-  kernel events on the issue (e.g. `gate.approved:<gate-id>` by actor `human`). `ship`
-  (and the relevant stage) refuses to proceed without the required gate event UNLESS that
-  gate is toggled off. → evidence-checked HARD-GATEs + resume-from-kernel-state for free.
-  Add a real verb `forge gate approve <issue> <gate>` that writes the event; define the
-  rejection/redirect path (which stage a rejection loops back to).
+- **Human gates are enforced by kernel EVENTS, not skill prose.** (SHIPPED, #286.) Gate
+  decisions are durable kernel events on the issue — `event_type` `gate.approved` /
+  `gate.rejected`, with the gate id stored **separately in the payload** (not encoded as
+  `gate.approved:<gate-id>`) — written via `forge gate approve|reject|status|check <issue>
+  <gate>`. A stage refuses to proceed without the required gate event UNLESS that gate is
+  toggled off → evidence-checked HARD-GATEs + resume-from-kernel-state for free. (Follow-up:
+  define the rejection/redirect path — which stage a rejection loops back to.)
 - **Autonomy is calibrated in planning, not fixed.** `smith` reads the issue's size ×
   importance × complexity, maps it to an autonomy tier, and PROPOSES it at the intent gate;
   the human confirms or overrides. Higher stakes → MORE human checkpoints (design-approval,

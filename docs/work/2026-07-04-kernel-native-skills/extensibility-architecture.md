@@ -193,12 +193,14 @@ now keeps them independent so each is a clean single move:
 1. **Stop pausing (TOGGLE):** `forge gate disable gate.merge` → `workflow.gates.gate.merge.enabled
    = false`. The orchestrator no longer pauses for human approval at MERGE_READY. **By itself this
    merges nothing** — it just removes the pause.
-2. **Perform the merge (SWAP of a shipped, default-OFF executor):** the merge role carries an
-   on-pass action, `roles.merge.onPass`, with two shipped values:
+2. **Perform the merge (SWAP of a default-OFF executor) — PLANNED (§8), not yet shipped:** the
+   merge role would carry an on-pass action, `roles.merge.onPass`. NOTE: this is design intent —
+   the shipped `forge role` CLI today supports only `--use`/`--ideology` (`lib/commands/role.js`);
+   the `onPass` field and the `--on-pass` flag are future work. Two intended values:
    - `handoff` — **default**. Present the PR and stop (today's behavior; honors the
      never-auto-merge invariant: `pr-shepherd.js:11`, `ship/SKILL.md:218,243`).
-   - `auto-merge` — a **shipped executor that Forge provides but ships OFF**. `forge role merge
-     --on-pass auto-merge` opts in. The executor runs `gh pr merge --auto` **only when the
+   - `auto-merge` — a Forge-provided executor that would ship OFF. `forge role merge
+     --on-pass auto-merge` would opt in. The executor runs `gh pr merge --auto` **only when the
      family-B CI/review gates resolve green** (it reads `forge options gates --json`, see B),
      so "once CI + review pass" is the executor's own precondition.
 

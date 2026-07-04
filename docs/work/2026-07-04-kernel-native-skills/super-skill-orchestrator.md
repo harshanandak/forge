@@ -38,8 +38,9 @@ Autonomy ≠ absence of the human. The orchestrator is maximally *driving* but h
 - **Merge/ship gate.** Human approves the PR/merge (or a *configured* gated auto-merge).
 - **Between gates:** the agent works autonomously (TDD per task, validate, address review).
 
-Gates are **configurable** (ideology): a user can move a gate, remove one, or add one.
-Default = the three above. This is "conversational autonomy": drive between gates,
+Gates are **configurable** (ideology): a user can toggle a gate on/off via the config surface
+(`forge gate enable|disable`, which only flips *existing* gate ids). Adding, removing, or
+reordering a gate is a runtime-graph/schema change, not a config flip. Default = the three above. This is "conversational autonomy": drive between gates,
 steer at gates.
 
 ## 3b. Autonomy calibration — `smith` sets the human-loop density in planning
@@ -107,11 +108,12 @@ setup profile). A docs typo skips brainstorming; a critical feature runs the ful
 "Kernel" is the internal event-sourced store (`.git/forge/kernel.sqlite`). It must not
 surface in user-facing skill/agent names.
 
-- **Super-skill (the flagship):** candidates — `forge-flow`, `flow`, `operator`,
-  `conductor`, `driver`, `forge-agent`. (Avoid `autopilot` — implies no human.)
-- **Existing `kernel` umbrella skill:** also user-facing; rename candidates — `forge`,
-  `workflow`, `orient`, `surface`. Its ROLE (index/router that documents the issue verbs)
-  stays; only the name changes.
+- **Super-skill (the flagship): LOCKED → `smith`** (see `decisions.md`). Considered but not
+  chosen: `forge-flow`, `flow`, `operator`, `conductor`, `driver` (avoid `autopilot` — implies
+  no human).
+- **Existing `kernel` umbrella skill: LOCKED → rename to `compass`** (see `decisions.md`). Its
+  ROLE (index/router that documents the issue verbs) stays; only the name changes. Considered:
+  `forge`, `workflow`, `orient`, `surface`.
 - **Internal code / issue store:** stays "kernel" — it's an implementation term, fine in
   source and docs, not in the skill surface a customer reads.
 
