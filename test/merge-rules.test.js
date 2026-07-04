@@ -26,6 +26,9 @@ function greenContext(overrides = {}) {
       { author: 'bob', at: minAgo(15) },
     ],
     lastActivityAt: minAgo(15),
+    conflicting: false,
+    isDraft: false,
+    state: 'OPEN',
     now: NOW,
     ...overrides,
   };
@@ -131,6 +134,18 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     expect(evaluateMergeRules(greenContext({ behindBase: 3 }), ['not_behind']).allowed).toBe(false);
     expect(evaluateMergeRules(greenContext({ behindBase: true }), ['not_behind']).allowed).toBe(false);
     expect(evaluateMergeRules(greenContext({ behindBase: undefined }), ['not_behind']).allowed).toBe(false);
+  });
+
+  test('no_conflicts fails on a conflicting (DIRTY) branch and is fail-closed when unknown', () => {
+    expect(evaluateMergeRules(greenContext({ conflicting: true }), ['no_conflicts']).allowed).toBe(false);
+    expect(evaluateMergeRules(greenContext({ conflicting: undefined }), ['no_conflicts']).allowed).toBe(false);
+    expect(evaluateMergeRules(greenContext({ conflicting: false }), ['no_conflicts']).allowed).toBe(true);
+  });
+
+  test('not_draft fails on a draft PR and is fail-closed when unknown', () => {
+    expect(evaluateMergeRules(greenContext({ isDraft: true }), ['not_draft']).allowed).toBe(false);
+    expect(evaluateMergeRules(greenContext({ isDraft: undefined }), ['not_draft']).allowed).toBe(false);
+    expect(evaluateMergeRules(greenContext({ isDraft: false }), ['not_draft']).allowed).toBe(true);
   });
 
   test('idle_min:30 requires 30 minutes since the last activity', () => {

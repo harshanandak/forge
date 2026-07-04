@@ -111,4 +111,38 @@ describe('merge command — opt-in conditional auto-merge', () => {
     expect((await mergeCmd.handler(['1'], {}, root, {})).success).toBe(false);
     expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
   });
+
+  test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
+    const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
+    let mergeCalled = false;
+    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
+      fetchPrContext: async () => ({ state: 'MERGED' }),
+      mergePr: async () => { mergeCalled = true; },
+    });
+    expect(out.success).toBe(true);
+    expect(out.merged).toBe(false);
+    expect(out.state).toBe('MERGED');
+    expect(mergeCalled).toBe(false);
+  });
+
+  test('TOCTOU: aborts the merge when the live re-check fails (state changed after first pass)', async () => {
+    const root = makeProject({ merge: { auto: { enabled: true, rules: ['no_conflicts'] } } });
+    let mergeCalled = false;
+    let call = 0;
+    const out = await mergeCmd.handler(['77', '--auto'], {}, root, {
+      // 1st fetch: allowed (no conflicts). 2nd (pre-merge) fetch: now conflicting.
+      fetchPrContext: async () => {
+        call += 1;
+        return call === 1
+          ? { state: 'OPEN', conflicting: false }
+          : { state: 'OPEN', conflicting: true };
+      },
+      mergePr: async () => { mergeCalled = true; return { merged: true }; },
+    });
+    expect(call).toBe(2);
+    expect(out.merged).toBe(false);
+    expect(out.allowed).toBe(false);
+    expect(mergeCalled).toBe(false);
+    expect(out.reason).toMatch(/state changed|re-check/i);
+  });
 });
