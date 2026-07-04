@@ -10,9 +10,9 @@
 ## Value
 <!-- Who benefits, what improves, what risk is removed -->
 
-## Beads
-<!-- Link Beads issues this PR addresses — required for auto-close in /verify -->
-Closes beads-xxx
+## Issue
+<!-- Link the Forge issue(s) this PR closes (required for auto-close in /verify): `Closes <forge-issue-id>` -->
+Closes <forge-issue-id>
 
 <details>
 <summary>Implementation Details</summary>
