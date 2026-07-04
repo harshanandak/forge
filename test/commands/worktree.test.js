@@ -12,8 +12,12 @@ describe('forge worktree command', () => {
     const mod = require('../../lib/commands/worktree');
     expect(mod.name).toBe('worktree');
     expect(typeof mod.description).toBe('string');
-    expect(mod.usage).toBe('forge worktree <create|remove> <slug>');
-    expect(mod.flags).toEqual({ '--branch': 'Custom branch name (default: feat/<slug>)' });
+    expect(mod.usage).toBe('forge worktree <create|remove|list> <slug>');
+    expect(mod.flags).toEqual({
+      '--branch': 'Custom branch name (default: feat/<slug>)',
+      '--issue': 'Kernel issue id to link this worktree to (records issue → worktree)',
+      '--work-folder': 'Repo-relative work-folder this issue owns (records worktree → work-folder + drops a .forge-issue marker)',
+    });
     expect(typeof mod.handler).toBe('function');
   });
 
