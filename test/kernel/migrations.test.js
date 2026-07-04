@@ -21,9 +21,9 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
-		// Rollback runs migrations in reverse, so 006 (the latest migration) rolls back
-		// first: its last-added fidelity column (metadata) drops before everything else.
-		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_issues DROP COLUMN metadata;');
+		// Rollback runs migrations in reverse, so 007 (the latest migration) rolls back
+		// first: its last-added linkage column (work_folder) drops before everything else.
+		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_worktrees DROP COLUMN work_folder;');
 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
 		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN assignee;');
@@ -39,6 +39,7 @@ describe('kernel migration plans', () => {
 			'004_kernel_issues_content_fields',
 			'005_kernel_memories',
 			'006_kernel_issue_fidelity_columns',
+			'007_kernel_worktrees_linkage_columns',
 		]);
 	});
 
