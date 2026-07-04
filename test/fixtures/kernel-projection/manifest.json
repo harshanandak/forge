@@ -1,10 +1,10 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "source": "kernel",
   "counts": {
     "issues": 2,
     "comments": 2,
     "dependencies": 1
   },
-  "content_sha256": "ba61747f8358658eeea993a840ce3b52452f5627c829c9aad663470a68ba00bf"
+  "content_sha256": "91a24d60d591b8fa9a02779e5ff7e5014ad6c5460130aa4dd277cfd3b8e3dcaa"
 }

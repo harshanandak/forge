@@ -66,6 +66,19 @@ describe('forge JSONL portability — export → fresh clone → import round-tr
 		expect(exported.stdout.toLowerCase()).toMatch(/exported kernel projection/);
 		expect(fs.existsSync(path.join(repo, '.forge', 'kernel', 'issues.jsonl'))).toBe(true);
 
+		// The exported record carries the FULL kernel_issues column set (schema v3), so
+		// no column is silently stripped on export → hydrate. (Non-null values surviving
+		// the round-trip are proven exhaustively in export-import-hydration.test.js.)
+		const exportedRecord = JSON.parse(
+			fs.readFileSync(path.join(repo, '.forge', 'kernel', 'issues.jsonl'), 'utf8').trim().split('\n')[0],
+		);
+		for (const column of [
+			'labels', 'assignee', 'closed_at', 'close_reason', 'parent_id', 'sprint_id',
+			'release_id', 'stage_state', 'acceptance_criteria', 'estimate', 'design', 'notes', 'metadata',
+		]) {
+			expect(exportedRecord).toHaveProperty(column);
+		}
+
 		// 2) Simulate a fresh clone: the kernel DB lives under .git (never cloned);
 		//    delete it while the committed .forge/kernel JSONL survives.
 		rmrfWithRetry(path.join(repo, '.git', 'forge'));

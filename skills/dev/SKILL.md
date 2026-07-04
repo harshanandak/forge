@@ -194,7 +194,7 @@ Reviewer checks:
 - Structure: functions not too long, proper separation of concerns
 - Duplication: no copy-paste that could be extracted
 - Test coverage: tests cover happy path and at least one error path
-- No magic numbers, no commented-out code, no TODO without a Beads issue
+- No magic numbers, no commented-out code, no TODO without a Forge issue
 
 If quality issues found: implementer fixes → re-review → repeat until ✅
 
@@ -213,7 +213,7 @@ Do NOT mark task complete or move to next task until ALL confirmed in this sessi
 4. Run it fresh — show the actual output. "Last run was fine" is not evidence.
 5. Tests run fresh — actual output shows passing.
 6. Implementer has committed (git log shows the commit).
-7. `bash scripts/beads-context.sh update-progress <id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>` ran successfully (exit code 0). If it fails: STOP. Show error. Do not proceed to next task.
+7. Progress recorded on the Forge issue — `forge comment <id> "task <task-num>/<total> done: <title> (<commit-sha>, <test-count> tests, <gate-count> gates)"` ran successfully (exit code 0). If the beads-context helper is present, `bash scripts/beads-context.sh update-progress <id> <task-num> <total> "<title>" <commit-sha> <test-count> <gate-count>` may log it in structured form instead. Do NOT hard-block when the helper is absent — the Forge comment is the kernel-native record. If the recording command errors: STOP, show the error, do not proceed to the next task.
 
 Forbidden phrases (these are not evidence):
 - "should pass"
@@ -274,15 +274,32 @@ Do NOT declare /dev complete until:
 </HARD-GATE>
 ```
 
-### Beads update
+### Record stage transition
 
 ```bash
-bash scripts/beads-context.sh validate <id>
-bash scripts/beads-context.sh stage-transition <id> dev validate \
-  --summary "<N tasks done, M decision gates fired>" \
-  --decisions "<key spec gaps and how they were resolved>" \
-  --artifacts "<changed source files and test files>" \
-  --next "<validation priorities — lint issues, type concerns>"
+# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue).
+# Only falls back to `forge issue show` when the helper is absent — a real validate failure stays visible.
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh validate <id>
+else
+  forge issue show <id>
+fi
+
+# Record the dev→validate transition (structured helper when present; kernel-native comment otherwise).
+# The fallback comment mirrors the same envelope the helper emits (Stage:/Summary:/Decisions:/Artifacts:/Next:).
+if [ -f scripts/beads-context.sh ]; then
+  bash scripts/beads-context.sh stage-transition <id> dev validate \
+    --summary "<N tasks done, M decision gates fired>" \
+    --decisions "<key spec gaps and how they were resolved>" \
+    --artifacts "<changed source files and test files>" \
+    --next "<validation priorities — lint issues, type concerns>"
+else
+  forge comment <id> "Stage: dev complete → ready for validate
+Summary: <N tasks done, M decision gates fired>
+Decisions: <key spec gaps and how they were resolved>
+Artifacts: <changed source files and test files>
+Next: <validation priorities — lint issues, type concerns>"
+fi
 ```
 
 ---
@@ -301,7 +318,7 @@ Document the gate count in the final commit message.
 
 ## Dynamic Output
 
-The completion summary is generated from the live task list, decisions log, Beads state, commits, and validation output at runtime. Do not copy a static example into this skill file; run `/dev` to view the current task/status summary.
+The completion summary is generated from the live task list, decisions log, Forge issue state, commits, and validation output at runtime. Do not copy a static example into this skill file; run `/dev` to view the current task/status summary.
 
 ## Integration with Workflow
 
