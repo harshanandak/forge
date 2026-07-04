@@ -83,4 +83,20 @@ describe('forge role verb', () => {
     const result = await roleCommand.handler(['plan'], {}, root);
     expect(result.success).toBe(false);
   });
+
+  test('rejects --use with no following value (nothing written)', async () => {
+    const root = makeProject({ skills: ['my-plan'] });
+    const result = await roleCommand.handler(['plan', '--use'], {}, root);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/--use requires a value/);
+    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
+  });
+
+  test('rejects a dangling --ideology instead of silently dropping it (nothing written)', async () => {
+    const root = makeProject({ skills: ['my-plan'] });
+    const result = await roleCommand.handler(['plan', '--use', 'my-plan', '--ideology'], {}, root);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/--ideology requires a value/);
+    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
+  });
 });
