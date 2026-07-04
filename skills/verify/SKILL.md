@@ -186,16 +186,27 @@ fi
 **Close each matched issue:**
 
 ```bash
-# Close issues found in PR body
+# Close issues found in PR body. Track failures — a close that fails must
+# block /verify completion, not be downgraded to a warning.
+close_failed=0
 for id in $ISSUE_IDS; do
-  forge close "$id" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $id"
+  if ! forge close "$id" --reason="Merged and verified on master (PR #<number>)"; then
+    echo "Warning: could not close $id"
+    close_failed=1
+  fi
 done
 
 # If no issues found in body, try branch name match (skip if already closed above)
 if [ -z "$ISSUE_IDS" ] && [ -n "$BRANCH_ID" ]; then
-  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" || { echo "Warning: could not close $BRANCH_ID"; close_failed=1; }
 elif [ -n "$BRANCH_ID" ] && ! echo "$ISSUE_IDS" | grep -qw "$BRANCH_ID"; then
-  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" 2>&1 || echo "Warning: could not close $BRANCH_ID"
+  forge close "$BRANCH_ID" --reason="Merged and verified on master (PR #<number>)" || { echo "Warning: could not close $BRANCH_ID"; close_failed=1; }
+fi
+
+# Any intended close that failed → /verify is NOT complete.
+if [ "$close_failed" -ne 0 ]; then
+  echo "✗ One or more issues failed to close — /verify is NOT complete."
+  exit 1
 fi
 ```
 
