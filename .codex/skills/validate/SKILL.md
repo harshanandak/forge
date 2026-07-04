@@ -206,7 +206,7 @@ If you have attempted 3+ fixes without resolution:
 
 If any check fails:
 ```bash
-# Create Beads issue for problems
+# Create Forge issue for problems
 forge create "Fix <issue-description>"
 
 # Mark current issue as blocked
@@ -230,13 +230,21 @@ until ALL FOUR show fresh output in this session:
 "Should pass", "was passing earlier", and "I'm confident" are not evidence.
 Run the commands. Show the output. THEN declare done.
 
-5. Context check: Run `bash scripts/beads-context.sh validate <id>` and address any warnings
-6. Stage transition: Run the following → exit 0 confirmed:
-   bash scripts/beads-context.sh stage-transition <id> validate ship \
-     --summary "<all checks pass/fail summary>" \
-     --decisions "<any failures diagnosed and fixed>" \
-     --artifacts "<scripts and commands run>" \
-     --next "<ship readiness notes>"
+5. Context check: confirm design + acceptance on the Forge issue (`forge issue show <id>`); if the beads-context helper is present, run `bash scripts/beads-context.sh validate <id>` and address any warnings
+6. Stage transition recorded (structured helper when present; kernel-native comment otherwise):
+   if [ -f scripts/beads-context.sh ]; then
+     bash scripts/beads-context.sh stage-transition <id> validate ship \
+       --summary "<all checks pass/fail summary>" \
+       --decisions "<any failures diagnosed and fixed>" \
+       --artifacts "<scripts and commands run>" \
+       --next "<ship readiness notes>"
+   else
+     forge comment <id> "Stage: validate complete → ready for ship
+Summary: <all checks pass/fail summary>
+Decisions: <any failures diagnosed and fixed>
+Artifacts: <scripts and commands run>
+Next: <ship readiness notes>"
+   fi
 </HARD-GATE>
 ```
 
@@ -262,7 +270,7 @@ Ready for /ship
   - validation.test.ts: Assertion failed
   - auth.test.ts: Timeout exceeded
 
-✓ Beads issue created: forge-k8m3 "Fix validation test"
+✓ Forge issue created: forge-k8m3 "Fix validation test"
 ✓ Current issue marked: Blocked by forge-k8m3
 
 Fix issues then re-run /validate
@@ -288,6 +296,6 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review 
 
 - **All checks must pass**: Don't proceed to /ship with failures
 - **Security is mandatory**: OWASP Top 10 review required for all features
-- **Create issues for failures**: Track problems in Beads
+- **Create issues for failures**: Track problems in the Forge issue tracker
 - **TDD helps**: Tests should already pass from /dev phase
 - **Fix before shipping**: Resolve all issues before creating PR
