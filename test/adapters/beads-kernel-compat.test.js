@@ -211,6 +211,72 @@ describe('Beads Kernel compatibility adapter', () => {
 		expect(result.kernel.issues[0].created_by).toBe('owner@example.com');
 	});
 
+	test('folds beads external_ref and started_at into metadata instead of dropping them', () => {
+		// Mirrors the real corpus: external_ref links (e.g. gh-88) and a started_at timestamp have
+		// no dedicated Kernel column and MUST NOT be silently dropped — they fold into metadata.
+		const result = importBeadsSnapshot({
+			issues: [{
+				id: 'forge-6wy',
+				title: 'Linked to GitHub',
+				status: 'open',
+				owner: 'harsha@example.com',
+				created_by: 'Harsha Nanda',
+				external_ref: 'gh-88',
+				started_at: '2026-04-26T18:00:32Z',
+			}],
+		}, { importedAt: IMPORTED_AT });
+
+		const [imported] = result.kernel.issues;
+		const metadata = JSON.parse(imported.metadata);
+		expect(metadata.beads_external_ref).toBe('gh-88');
+		expect(metadata.beads_started_at).toBe('2026-04-26T18:00:32Z');
+		// Folded, not gapped — and not silently dropped.
+		const gapFields = result.report.gaps.map(gap => gap.field);
+		expect(gapFields).not.toContain('issues.external_ref');
+		expect(gapFields).not.toContain('issues.started_at');
+	});
+
+	test('does not double-store owner in metadata when it already maps to assignee', () => {
+		const result = importBeadsSnapshot({
+			issues: [{
+				id: 'forge-owned2',
+				title: 'Owner equals assignee',
+				status: 'open',
+				owner: '  harsha@example.com  ',
+				assignee: 'harsha@example.com',
+			}],
+		}, { importedAt: IMPORTED_AT });
+
+		// A padded owner that matches the (trimmed) assignee is captured, so metadata stays null.
+		expect(result.kernel.issues[0].metadata).toBeNull();
+	});
+
+	test('reads a split .beads layout — events under backup/, interactions in the parent dir', () => {
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-split-'));
+		try {
+			const beadsDir = path.join(tmp, '.beads');
+			const backupDir = path.join(beadsDir, 'backup');
+			fs.mkdirSync(backupDir, { recursive: true });
+			// The backup export holds issues + events; the live interactions/memory log sits in .beads.
+			fs.writeFileSync(path.join(backupDir, 'issues.jsonl'), '{"id":"forge-aa1","title":"A","status":"open"}\n');
+			fs.writeFileSync(path.join(backupDir, 'events.jsonl'), '{"id":"ev-1","event_type":"created","issue_id":"forge-aa1","actor":"Harsha"}\n');
+			fs.writeFileSync(path.join(beadsDir, 'interactions.jsonl'), '{"id":"int-1","kind":"note","issue_id":"forge-aa1","actor":"Harsha","extra":{"note":"hi"}}\n');
+
+			// Pointing at .beads/backup still finds the parent's interactions (memory not missed).
+			const fromBackup = loadBeadsSnapshotFromDirectory(backupDir);
+			expect(fromBackup.events).toHaveLength(1);
+			expect(fromBackup.interactions).toHaveLength(1);
+
+			// Pointing at .beads still finds events under backup/ AND the sibling interactions.
+			const fromBeads = loadBeadsSnapshotFromDirectory(beadsDir);
+			expect(fromBeads.issues).toHaveLength(1);
+			expect(fromBeads.events).toHaveLength(1);
+			expect(fromBeads.interactions).toHaveLength(1);
+		} finally {
+			fs.rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test('strips the internal forge_projection marker from carried Kernel metadata', () => {
 		const snapshot = {
 			issues: [{
