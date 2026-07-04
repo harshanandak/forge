@@ -46,9 +46,17 @@ when you calibrate a specific issue or need the exact gate IDs and commands.
    are not the owner, don't work it; reselect via `triage-ready`.
 
 3. **Calibrate autonomy during planning.** Read the issue's size × importance ×
-   complexity, map it to a tier (lean / standard / high), and *propose* that tier —
-   i.e. which human gates to enforce — at the intent gate. The human confirms or
-   overrides. Matching checkpoint density to stakes is the whole point: a docs typo
+   complexity, map it to a tier (lean / standard / high), and *propose that tier
+   directly to the human* — a short "here's how much oversight I think this needs."
+   This proposal is a plain conversational checkpoint at the start of planning; it
+   is deliberately **not** itself one of the enforcement gates, so it stays reachable
+   even for the Lean tier (which may require no intent gate at all). The human
+   confirms or overrides, and the chosen tier decides **which enforcement gates you
+   require approval for on this issue** (step 5). Keep the two mechanisms distinct:
+   `forge gate enable|disable <gate>` is the **repo-wide default** (a gate the user
+   turned off is always skipped), whereas the per-issue tier is *your* runtime
+   decision about which of the still-enabled gates to actually require for this one
+   issue. Matching checkpoint density to stakes is the whole point: a docs typo
    should not drag through a full brainstorm, and a risky refactor should not run
    unattended. When your read is uncertain, lean toward *more* gates — an extra
    approval costs seconds, a missing one can cost a lot of rework. See the
@@ -99,8 +107,13 @@ Full table and the reasoning are in the reference; the short version:
 - **High** — large · important · or complex work: enforce all three, plus
   per-milestone check-ins and a pre-ship pass.
 
-Enact a tier with `forge gate enable|disable <gate-id>`; a disabled gate makes
-`check` fall through, which is how a lean run skips a checkpoint.
+The tier is a **per-issue** decision: smith requires `check`/approval only for the
+gates its tier calls for on *this* issue and simply skips the rest — it does not
+toggle repo config per issue. Separately, `forge gate disable <gate-id>` is the
+**repo-wide** off switch (a disabled gate makes `check` fall through for *every*
+issue) — use it when the user never wants that checkpoint at all. So a lean run
+skips a checkpoint by not requiring it for this issue; disabling a gate removes it
+everywhere.
 
 ## Reliability
 
