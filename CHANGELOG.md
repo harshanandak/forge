@@ -24,6 +24,7 @@ The default issue backend changed from Beads to the built-in kernel store.
 - Internal de-stage of pre-merge: the AGENTS.md/Cursor workflow generator, the plugin catalog, `forge recommend`, and the harness capability matrix no longer model pre-merge as a standalone `/premerge` stage or command. Pre-merge is now consistently presented as a documentation gate embedded in `/ship` and `/review`. Legacy `currentStage: 'premerge'` workflow state still round-trips on read, and the release-readiness gate now certifies the de-stage across those generator/taxonomy surfaces. (#275)
 - Pre-merge is presented as an embedded documentation gate inside the `/ship` and `/review` stages — not a numbered workflow stage, and not an invokable `/premerge` command. (#269)
 - Packaging: added an `engines.node` requirement of `>=22.16.0`, excluded a stray test file from the published npm tarball, and documented the `forge doc-gate` command. (#271)
+- PR template `## Beads` section replaced with kernel-native `## Issue` (link with `Closes <forge-issue-id>`); `CONTRIBUTING.md` issue-tracking section updated to `forge issue …`; `/verify` Step 8 language de-beaded and auto-close matcher extended to also match kernel UUID issue IDs (`[0-9a-f]{8}-...-[0-9a-f]{12}`) in addition to short `prefix-xxx` form.
 
 ### Fixed
 
