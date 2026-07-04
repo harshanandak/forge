@@ -19,21 +19,17 @@ Thank you for your interest in contributing to Forge!
 | `plugin/` | New agent plugins | `plugin/add-zed-support` |
 | `docs/` | Documentation | `docs/update-examples` |
 
-## Issue Tracking (Beads)
+## Issue Tracking
 
-We use [Beads](https://github.com/beads-ai/bd) for issue tracking:
+Issue tracking uses the Forge kernel (`forge issue …`):
 
 ```bash
-bd create --title "Your issue title" --type task
-bd update <id> --status in_progress
-bd close <id>
+forge issue create --title "Your issue title" --type task
+forge issue list
+forge issue close <id>
 ```
 
-**Issue prefixes:**
-- `meta:` - Workflow improvements
-- `plugin:` - Agent plugin work
-- `feat:` - New features
-- `fix:` - Bug fixes
+Beads is also supported as an optional legacy backend.
 
 ## Plugin Development
 

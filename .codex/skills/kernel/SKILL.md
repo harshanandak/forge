@@ -4,8 +4,9 @@ description: >
   Forge kernel surface — the umbrella index for working in a Forge project. Use
   at the start of any session and whenever you need to orient: it routes to the
   per-stage workflow skills (plan, dev, validate, ship, review, verify,
-  plus status, research, rollback, sonarcloud, shepherd) and documents the
-  day-to-day issue, board, and orientation verbs of the `forge` CLI. Trigger on
+  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
+  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
+  and orientation verbs of the `forge` CLI. Trigger on
   "what's the workflow", "what should I work on", "forge issues", "claim an
   issue", "project status", "orient", or when deciding between Forge issues and
   an ad-hoc TodoWrite list.
@@ -47,6 +48,17 @@ Utility skills outside the linear ladder: `research` (deep web research),
 ```
 status → plan → dev → validate → ship → review → verify
 ```
+
+## Kernel-native skills
+
+Read-and-repair skills that work directly against the kernel's issue store. They
+complement the ladder: reach for them to decide *what* to do and to run the
+everyday issue operations, then route into a stage skill to execute.
+
+| Skill | Purpose |
+|-------|---------|
+| `triage-ready` | Read-only "what should I work on" — ranks and *explains* the ready queue via `forge issue ready` / `blocked` / `stats` (never `board`), then hands off the pick. |
+| `issue-basics` | The everyday CRUD floor — create/update/claim/release/comment/close/show/list/search/stats over the `forge issue` verbs, plus the label/reopen/delete disposition for teams migrating in. |
 
 ## Day-to-day verbs (the `forge` CLI)
 
