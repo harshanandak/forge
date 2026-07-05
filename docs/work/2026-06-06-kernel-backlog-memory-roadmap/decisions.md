@@ -22,7 +22,7 @@
 
 **Rationale:** MemPalace's strongest memory lesson is that verbatim storage avoids losing rationale and context. Summaries are useful, but they should not replace source material.
 
-**Implication:** `plan.md`, legacy `plan.md`, `tasks.md`, `decisions.md`, `evidence.md`, comments, issue bodies, stage runs, and validation logs are source material.
+**Implication:** `plan.md`, legacy `design.md`, `tasks.md`, `decisions.md`, `evidence.md`, comments, issue bodies, stage runs, and validation logs are source material.
 
 ## D4 — Scoped retrieval, not flat memory
 
@@ -92,7 +92,7 @@
 
 ## D12 — Fresh Forge setup must teach the work-folder artifact contract
 
-**Decision:** New projects should be guided to create per-work-item artifacts under `docs/work/<date>-<slug>/` using `plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files. `plan.md` remains for durable architecture/product design or backward-compatible reads, not the default work-item planning document.
+**Decision:** New projects should be guided to create per-work-item artifacts under `docs/work/<date>-<slug>/` using `plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files. `design.md` remains for durable architecture/product design or backward-compatible reads, not the default work-item planning document.
 
 **Rationale:** Project Knowledge and future `forge orient`/`forge recap` depend on predictable source artifacts. If fresh installs or skills teach inconsistent folders and filenames, later indexing and agent handoff will lose context.
 
@@ -142,7 +142,7 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
 - **D5 amendment:** `ready`/`blocked` are derived read-model facts, never stored statuses. Resolves the contradiction between `multi-evaluator-review.md` (derived) and the first-pass `backlog-frontend-model.md` (stored).
 - **D7 amendment:** Dolt's "first-class projection/history" status is scoped to **the migration period only**. Once D16 ships and Beads parity gates pass, Dolt demotes to an optional export adapter; its residual history/branch-experiment value does not justify a permanent test surface.
 - **D9/D10 amendment:** architecture capture blocks in CI on manifest paths only; humans get warn-at-commit, never block-at-commit; agents auto-draft the architecture note.
-- **D12 amendment:** `plan.md` → `plan.md` is a one-shot scripted migration of legacy work folders, after which dual-handling language is deleted from skills/templates/fixtures.
+- **D12 amendment:** `design.md` → `plan.md` is a one-shot scripted migration of legacy work folders, after which dual-handling language is deleted from skills/templates/fixtures.
 
 ## D16 — Kernel JSONL portability projection
 

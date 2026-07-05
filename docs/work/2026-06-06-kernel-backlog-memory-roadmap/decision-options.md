@@ -29,7 +29,7 @@ Project truth is Kernel events. Project Knowledge is a rebuildable SQLite read m
 Sources:
 
 - Kernel issue/decision/evidence/stage events.
-- `docs/work/**/plan.md`, `tasks.md`, `decisions.md`, legacy `plan.md`.
+- `docs/work/**/plan.md`, `tasks.md`, `decisions.md`, legacy `design.md`.
 - Issue bodies/comments, validation logs, evidence, PR reviews.
 - Derived summaries/facts only with citations.
 

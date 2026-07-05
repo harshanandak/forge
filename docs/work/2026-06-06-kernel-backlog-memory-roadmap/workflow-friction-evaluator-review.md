@@ -10,7 +10,7 @@ Initial scores:
 | --- | --- | --- | --- |
 | Self-hosting workflow UX / release readiness | REQUEST_CHANGES | 78/100 | Release-lane dependency direction was inverted; broad parent/self dependencies; hook/lint fix was coupled to downstream architecture-hook work; existing-project update path and release smoke gate were under-specified. |
 | Plumbing / state / worktree / hooks | REQUEST_CHANGES | 82/100 | Dependencies were too broad; generated-state manifest/contract missing; hook install semantics, protected-state repair constraints, and Dolt hot-path criteria needed sharper acceptance. |
-| Project Knowledge / setup / skills | REQUEST_CHANGES | 82/100 | `plan.md`/`plan.md` dependency cycle; orient/recap source classification missing; concrete renderer/template surfaces and evidence artifact contract were under-specified; Beads traceability needed command verification. |
+| Project Knowledge / setup / skills | REQUEST_CHANGES | 82/100 | `design.md`/`plan.md` dependency cycle; orient/recap source classification missing; concrete renderer/template surfaces and evidence artifact contract were under-specified; Beads traceability needed command verification. |
 
 ## Changes made after evaluator feedback
 
@@ -30,7 +30,7 @@ Initial scores:
 - Added clean-checkout + linked-worktree lifecycle smoke gate for push/review/verify/merge/post-merge cleanup without stash/manual repair.
 - Added existing-project update/repair coverage for fresh setup alignment.
 - Added concrete renderer/template surfaces: `AGENTS.md`, `CLAUDE.md`, `.claude/commands/**`, `.claude/rules/**`, cross-agent skills/templates, `docs/reference/AGENT_SKILL_PARITY.md`, `lib/harness-capability-matrix.js`, and packages/skills templates.
-- Added seed stale-reference surfaces for the `plan.md` to `plan.md` migration.
+- Added seed stale-reference surfaces for the `design.md` to `plan.md` migration.
 - Added KnowledgeStore/orient/recap source classes: `work_plan`, `legacy_work_design`, `architecture_design`, `task_list`, `decision_log`, `evidence`, `issue_body`, `comment`, `stage_run`, `generated_harness`, `runtime_projection`, `derived_summary`, and `proposal`.
 - Added proof artifact classification for `evidence.md`, `validation.md`, `validation-notes.md`, stage-run logs, and command evidence.
 - Added exact hook/lint Git path checks, lint discovery order, `--json`/`--dry-run`, and no-private-profile-write constraints.

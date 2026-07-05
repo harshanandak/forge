@@ -43,7 +43,7 @@
 - Later create: tests under `test/kernel/`
 
 **Steps:**
-1. Index verbatim `plan.md`, legacy `plan.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs.
+1. Index verbatim `plan.md`, legacy `design.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs.
 2. Add artifact metadata: issue, release, sprint, stage, source path, event id, actor, timestamp.
 3. Start with FTS5/read-model style retrieval; leave vectors optional.
 4. Treat summaries/facts as derived proposals with source refs.
@@ -120,9 +120,9 @@
 - Later modify: setup templates, generated agent instructions, skills, command prompts, docs, and tests
 
 **Steps:**
-1. Audit generated instructions and skills for `plan.md`, stage, and work-folder wording.
+1. Audit generated instructions and skills for `design.md`, stage, and work-folder wording.
 2. Teach `docs/work/<date>-<slug>/plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files as the default contract.
-3. Keep `plan.md` only for durable architecture/product designs or legacy compatibility reads.
+3. Keep `design.md` only for durable architecture/product designs or legacy compatibility reads.
 4. Recast pre-merge as a task-type gate/checkpoint rather than a universal top-level stage.
 5. Add fresh-project fixtures and drift tests.
 

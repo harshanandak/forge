@@ -30,7 +30,7 @@ MemPalace's core benchmark claim is that raw/verbatim session storage plus seman
 
 **Forge implication:**
 
-- Index `plan.md`, legacy `plan.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs, and validation logs as verbatim source chunks.
+- Index `plan.md`, legacy `design.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs, and validation logs as verbatim source chunks.
 - Keep summaries, memory proposals, accepted facts, and knowledge graph triples as derived/read-model records with provenance back to exact source files/events.
 - Do not let an extracted memory/fact become authority unless it is accepted through a Kernel event.
 
@@ -82,7 +82,7 @@ If Forge adds a project knowledge graph, it should be temporal and source-backed
 - `issue X assigned_to agent Y` valid during claim lease.
 - `workflow stage validate required` valid under config revision.
 - `plan chose SQLite WAL for local mode` valid from decision event until superseded.
-- legacy work-item `plan.md` files may be indexed/read during migration; new work-item planning uses `plan.md`; `plan.md` is reserved for durable architecture/product design.
+- legacy work-item `design.md` files may be indexed/read during migration; new work-item planning uses `plan.md`; `design.md` is reserved for durable architecture/product design.
 
 Contradiction checks then become possible: new plan conflicts with locked decision, stale sprint date, wrong assignee, or projection trying to override Kernel authority.
 
