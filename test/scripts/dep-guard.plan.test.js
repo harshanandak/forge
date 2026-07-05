@@ -47,6 +47,6 @@ describe('plan.md integration', () => {
     expect(content).toContain('forge worktree create');
     expect(content).toContain('logic-level dependency review');
     expect(content).toContain('user approval');
-    expect(content).toContain('forge issue dep cycles');
+    expect(content).toContain('forge issue blocked');
   });
 });

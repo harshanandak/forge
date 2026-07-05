@@ -9,6 +9,7 @@ on:
       - 'scripts/**'
       - 'test/**'
       - 'test-env/**'
+      - 'skills/**'
       - 'packages/**'
       - 'package.json'
       - 'bunfig.toml'
@@ -21,6 +22,7 @@ on:
       - 'scripts/**'
       - 'test/**'
       - 'test-env/**'
+      - 'skills/**'
       - 'packages/**'
       - 'package.json'
       - 'bunfig.toml'
@@ -205,6 +207,31 @@ jobs:
           name: test-artifacts-macos-smoke
           path: test-results/
           retention-days: 7
+
+  cross-os-gate:
+    # Stable, single required status check that enforces the cross-OS smoke lanes.
+    # Runs even when a smoke lane fails (if: always) and fails the PR unless BOTH
+    # Windows and macOS smoke succeeded (or were legitimately skipped). This is the
+    # context to mark Required in branch protection so a red Windows/macOS run
+    # cannot merge. For doc-only PRs the real smoke lanes are path-filtered out and
+    # the Cross-OS Gate no-op in required-checks-bypass.yml satisfies the check.
+    name: Cross-OS Gate
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [windows-smoke, macos-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Windows + macOS smoke to pass
+        run: |
+          w='${{ needs.windows-smoke.result }}'
+          m='${{ needs.macos-smoke.result }}'
+          echo "windows-smoke=$w  macos-smoke=$m"
+          for r in "$w" "$m"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::Cross-OS smoke did not pass (windows=$w macos=$m)"
+              exit 1
+            fi
+          done
+          echo "Cross-OS smoke OK (success or skipped on both)."
 
   followup-tests:
     name: Targeted PR Tests (${{ matrix.label }})

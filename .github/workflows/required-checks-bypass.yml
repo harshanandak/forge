@@ -23,6 +23,7 @@ on:
       - 'lib/**'
       - 'scripts/**'
       - 'packages/**'
+      - 'skills/**'
       - 'package.json'
       - '*.js'
       - '.claude/**/*.js'
@@ -54,7 +55,13 @@ jobs:
       - run: echo "No code changes — E2E tests not needed"
 
   test-dashboard:
-    name: Test Dashboard
+    name: Test Dashboard (PR)
     runs-on: ubuntu-latest
     steps:
       - run: echo "No code changes — dashboard not needed"
+
+  cross-os-gate:
+    name: Cross-OS Gate
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No code changes — cross-OS smoke not needed"
