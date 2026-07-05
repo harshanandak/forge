@@ -3,7 +3,7 @@
 The shepherd is a **monitor-driven utility command** that automates the manual
 polling / rerun / escalation loop a human otherwise runs by hand after
 `/review`. It is **not** a workflow stage and does not replace `/review` or
-`/premerge`.
+the pre-merge gate (the embedded documentation-and-handoff gate in `/ship` and `/review`).
 
 ```bash
 forge shepherd <pr-number>

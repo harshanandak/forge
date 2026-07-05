@@ -10,7 +10,7 @@ Forge is a local runtime control plane that coordinates several tool surfaces:
 Forge runtime control plane
   - workflow templates and stage skills
   - local project state and protected surfaces
-  - Beads-backed issue wrappers and sync
+  - kernel-backed issue wrappers and sync (Beads is an opt-out backend)
   - validation, packaging, and release evidence
   - review adapters and external service hooks
   - harness projections for agent-specific commands, prompts, workflows, and skills
@@ -521,7 +521,7 @@ volumes:
 ### GitHub CLI - PR Workflow
 
 **Installation**: [cli.github.com](https://cli.github.com)
-**Used in**: `/ship`, `/review`, `/premerge` stages
+**Used in**: `/ship` and `/review` stages
 
 ```bash
 # Install
@@ -583,8 +583,9 @@ This table maps tools to the default workflow template. It is not the complete F
 | `/validate` | Type check, lint, tests, SonarCloud |
 | `/ship` | `forge close`, `gh pr create` |
 | `/review` | `gh pr view`, Greptile, SonarCloud |
-| `/premerge` | `forge sync`, doc updates, hand off PR |
 | `/verify` | Documentation cross-check |
+
+Pre-merge is not a stage. Its work (`forge sync`, doc updates, hand off PR) runs inside the `/ship` and `/review` stages as an embedded documentation-and-handoff gate.
 
 ---
 

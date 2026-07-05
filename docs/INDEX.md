@@ -15,7 +15,6 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 ## Tutorials
 
 - [Quickstart](../QUICKSTART.md) - fastest path to a working local Forge install.
-- [Enhanced onboarding](guides/ENHANCED_ONBOARDING.md) - broader setup and onboarding flow.
 
 ## How-To Guides
 
@@ -74,6 +73,7 @@ The [docs/work archive](work/README.md) contains planning artifacts, decisions, 
 Historical references that should not be treated as current release instructions:
 
 - [Roadmap](reference/ROADMAP.md) - historical roadmap snapshot.
+- [Enhanced onboarding](guides/ENHANCED_ONBOARDING.md) - superseded by [Quickstart](../QUICKSTART.md); still references the old `/premerge` stage and undocumented flags. Historical reference only.
 - [Superpowers analysis](reference/superpowers-analysis.md) - historical analysis.
 - [Superpowers integration options](reference/superpowers-integration-options.md) - historical options.
 - `docs/work/2026-04-28-skeleton-pivot/*v3*` files - `v3` is an internal/historical codename, not a public package version.

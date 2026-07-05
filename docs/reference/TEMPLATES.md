@@ -44,7 +44,7 @@ forge init --full
 
 `forge setup --minimal` remains a separate shortcut for repositories that want setup behavior rather than only the day-one `.forge/` skeleton.
 
-Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow stages. Do not present them as standalone `forge review`, `forge premerge`, or `forge verify` CLI commands unless those commands exist in the current CLI registry.
+Stage commands such as `/review` and `/verify` are agent workflow stages. Do not present them as standalone `forge review` or `forge verify` CLI commands unless those commands exist in the current CLI registry. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in `/ship` and `/review`.
 
 ## Planning Template
 

@@ -2,7 +2,7 @@
 
 ## Default TDD-First Workflow Template
 
-This project ships a **default TDD-first workflow template** with 7 named stage skills. In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it.
+This project ships a **default TDD-first workflow template** with 6 workflow stages plus a composable **research** skill (a phase of `/plan` and usable standalone). In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it. Pre-merge is an embedded gate in `/ship` and `/review` (not a numbered stage); `/status` and `/shepherd` are utilities (not stages).
 
 | Stage | Command     | Purpose                                                   | Required For |
 |-------|-------------|-----------------------------------------------------------|--------------|
@@ -69,7 +69,7 @@ When the user requests work, **you MUST automatically classify** the change type
 
 "Skipping tests creates technical debt. I'll:
  ✓ Allow this commit
- ✓ Create follow-up Beads issue for tests
+ ✓ Create follow-up issue for tests
  ✓ Document in commit message as [tech-debt]
 
  Proceed?"
@@ -142,7 +142,9 @@ Task 2: Validation logic
 }
 ```
 
-## Git Hooks (Automatic Enforcement)
+## Git Hooks & Push Workflow (Automatic Enforcement)
+
+This project uses the **Professional Git Workflow** with Lefthook for automated quality gates.
 
 **Pre-commit hook enforces TDD:**
 - Blocks commits if source code modified without test files
@@ -150,8 +152,59 @@ Task 2: Validation logic
 - No AI decision required - automatic validation
 
 **Pre-push hook validates tests:**
+- Branch protection: blocks direct push to `main`/`master`
+- ESLint: blocks on errors and warnings (strict mode, `--max-warnings 0`)
 - All tests must pass before push
 - Can skip for hotfixes with documentation
+
+**Pull Request workflow:**
+- PR template auto-fills with a standardized format; the self-review checklist catches most bugs before review
+- Reference the issue id in the PR body (e.g. the Forge Kernel issue id); **all review comments must be resolved** before merge
+- Squash-only merging for a clean, linear history
+
+**⚠️ AI agents must NEVER use `LEFTHOOK=0`, `--no-verify`, or any hook bypass.** If a hook fails, fix the underlying issue. Only humans may bypass hooks in emergencies, documented in the PR description.
+
+**Preferred push workflow (AI agents and humans):**
+
+```bash
+forge push                    # Branch protection + lint + tests, then push
+forge push --quick            # Review-cycle: lint-only push (CI runs full suite)
+forge worktree create <slug>  # Create a worktree
+forge test                    # Run tests with correct timeouts
+forge sync                    # Sync issue data
+forge clean                   # Remove merged worktrees
+```
+
+## Build, Shell, and MCP
+
+**Package manager**: Bun (preferred for performance).
+
+```bash
+bun install      # Install dependencies
+bun run dev      # Start development
+bun run build    # Production build
+bun test         # Run tests
+```
+
+**GitHub CLI**: `gh auth login` for the PR workflow.
+
+### Shell Model
+
+| Platform | Shell used by Forge commands and scripts |
+| --- | --- |
+| Windows | Git Bash for helper-backed Forge stage flows |
+| macOS/Linux | Default login shell |
+
+On Windows, Forge runtime health enforces Git Bash for helper-backed stage flows. Native PowerShell is still used by some bootstrap paths, and WSL may be useful for adjacent development tasks. See [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md#shell-model).
+
+### MCP Servers (Optional)
+
+If your agent supports MCP, these enhance research:
+
+- **Context7** - up-to-date library documentation and API reference
+- **grep.app** - search 1M+ GitHub repos for real-world code examples
+
+See [.mcp.json.example](.mcp.json.example) for configuration (Claude Code: copy it to `.mcp.json`) and [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) for detailed setup.
 
 ## Documentation Index (Context Pointers)
 
@@ -251,6 +304,14 @@ forge close <id>      # Complete work
 - Use `forge` as the routine command surface for issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. New issue-authority work routes through the Forge Kernel design. Use `forge issue` subcommands (e.g. `forge issue dep`, `forge issue comment`) for operations beyond the shortcuts above. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to the issue store.
 - Run `forge prime` for detailed command reference and session close protocol
 - Use `forge remember` for persistent knowledge — do NOT use MEMORY.md files
+
+## Project Learnings
+
+- **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
+- **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
+- **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
+- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
+- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. Never hand-edit generated agent skill copies — edit the canonical `skills/` source.
 
 ## Session Completion
 

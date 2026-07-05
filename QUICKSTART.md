@@ -111,10 +111,10 @@ npm pack --dry-run
 The agent workflow stages are documented in `AGENTS.md` and the installed agent skill files:
 
 ```text
-/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
+/plan -> /dev -> /validate -> /ship -> /review -> /verify
 ```
 
-These are agent workflow stages. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
+These are the 6 agent workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages. A composable `research` skill runs as a phase of `/plan` or standalone. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
 
 The workflow template is core to Forge. It is also designed to become more configurable as runtime graph, stage-skill, adapter, and extension surfaces ship. See [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) and [Skills and command projections](docs/reference/SKILLS.md).
 
