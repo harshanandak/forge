@@ -95,7 +95,7 @@ bash scripts/pr-coordinator.sh stale-worktrees 2>&1 || true
 
 ### Step 3: Record PR Handoff
 ```bash
-forge update <id> --comment "PR created: <pr-url>. Awaiting review and merge verification."
+forge comment <id> "PR created: <pr-url>. Awaiting review and merge verification."
 forge sync
 ```
 

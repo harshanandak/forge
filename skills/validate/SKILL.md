@@ -18,7 +18,7 @@ allowed-tools: Bash, Read, Grep, Glob
 > **Note:** Three things share the "validate" name in Forge:
 > - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
 > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
-> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
+> - `bun run check` (scripts/validate.js): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
 
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
@@ -80,7 +80,7 @@ reflect the true state of what will be merged.
 
 ## What This Skill Does
 
-**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
+**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.js`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
 
 ### Step 1: Type Check
 ```bash
@@ -221,7 +221,8 @@ If any check fails:
 forge create "Fix <issue-description>"
 
 # Mark current issue as blocked
-forge update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
+forge update <current-id> --status blocked
+forge comment <current-id> "Blocked by <new-issue-id>"
 
 # Output what needs fixing
 ```

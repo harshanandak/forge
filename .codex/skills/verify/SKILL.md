@@ -71,7 +71,7 @@ Check if the project has a deployment target:
 gh run list --branch master --limit 1
 
 # Check Vercel deployments for the merged PR (use number from Step 2)
-gh pr view <number> --json deployments
+gh pr view <number> --json statusCheckRollup
 ```
 
 If deployments exist:

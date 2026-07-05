@@ -45,8 +45,10 @@ and `forge issue stats` exclusively.
 forge issue stats --json
 ```
 
-Returns `data.counts` (open/in_progress/done/cancelled), `ready_count`,
-`blocked_count`, and `active_claims`. A high `blocked_count` relative to
+Returns `data.counts` (`open`/`done`/`cancelled` — keys are present only when
+non-zero, and there is no `in_progress` bucket: claimed work stays in status
+`open` and is surfaced via `active_claims`), `ready_count`, `blocked_count`, and
+`active_claims`. A high `blocked_count` relative to
 `ready_count` is your signal that dependency repair (not new work) is the real
 bottleneck — hand off to `dependency-planning` / `backlog-hygiene`.
 
@@ -99,8 +101,10 @@ or close — it is strictly read-only.
 
 - **Recompute, never cache.** Readiness is derived; re-run `forge issue ready`
   every session rather than remembering a prior "ready" verdict.
-- **Respect non-claimable types.** Epics and decisions are `claimable:false` and
-  will not appear in `ready`; do not hand them off as work.
+- **Respect non-claimable types.** Epics and decisions never appear in `ready`
+  (the queue surfaces only claimable types — `task`/`bug`), so do not hand them
+  off as work. There is no `claimable` field in the CLI JSON; this is behavioral,
+  not a flag you can read.
 - **Check the envelope.** Every `--json` reply carries `ok`; on `ok:false` read
   `error.message` and retry the query rather than guessing at state.
 - **Read-only.** This skill runs only `stats`/`ready`/`blocked`/`show`. If a fix is

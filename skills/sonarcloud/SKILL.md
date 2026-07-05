@@ -58,7 +58,7 @@ Pull code quality data from SonarCloud. Requires `SONARCLOUD_TOKEN` environment 
    - Optional filters (branch, severity, type, new-code, etc.)
 2. Check for `SONARCLOUD_TOKEN` environment variable. If not set, inform user.
 3. Check for `SONARCLOUD_ORG` environment variable or ask user for organization key.
-4. Execute the appropriate API call using curl or the TypeScript client at `next-app/src/lib/integrations/sonarcloud.ts`
+4. Execute the appropriate API call against the SonarCloud REST API (see the API Reference section below for endpoints)
 5. Format and present results clearly:
    - For issues: Group by severity/type, show file, line, message
    - For metrics: Show as table with metric name and value

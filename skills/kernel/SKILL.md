@@ -109,11 +109,12 @@ families. Run them through Bash; never hand-edit the issue store.
 | Search / stats | `forge issue search "…"` · `forge issue stats` |
 | Blocked work | `forge blocked` |
 
-### B — Memory / knowledge (planned)
+### B — Memory / knowledge
 
-`forge remember` / `forge recall` / `forge knowledge search` are roadmap items —
-they are **not on the CLI yet**. Do not invoke them; record durable decisions as
-issue comments (`forge comment`) until the memory verbs land.
+`forge remember <note> [--tag <label>]... [--json]` and `forge recall` are live —
+they persist and retrieve project-memory notes from a file-backed store. Only
+`forge knowledge search` is not on the CLI yet; until it lands, capture durable
+decisions as `forge remember` notes or issue comments (`forge comment`).
 
 ### C — Board / planning / admin
 

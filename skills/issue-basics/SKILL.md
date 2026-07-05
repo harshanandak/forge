@@ -32,7 +32,7 @@ failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
 
 | Need | Command |
 |------|---------|
-| Create an issue | `forge issue create --title "…" --type <task\|feature\|bug\|epic>` |
+| Create an issue | `forge issue create --title "…" --type <task\|bug\|epic\|decision>` |
 | Inspect one issue | `forge issue show <id> [--json]` |
 | List / filter issues | `forge issue list [--status … --type … --priority … --label …] [--json]` |
 | Full-text search | `forge issue search "…" [--json]` |
@@ -47,15 +47,15 @@ failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
 ## Create — the flags that matter
 
 ```bash
-forge issue create --title "Add rate limiting" --type feature \
-  --priority P1 --label "api,security" --assignee alice \
+forge issue create --title "Add rate limiting" --type task \
+  --priority P1 --label "feature,api,security" --assignee alice \
   --acceptance "429 returned after N req/min; covered by a test"
 ```
 
 | Flag | Meaning | Default |
 |------|---------|---------|
 | `--title "…"` | Human title (a bare leading positional also works) | minted id |
-| `--type <…>` | `task` · `feature` · `bug` · `epic` · `decision` | `task` |
+| `--type <…>` | `task` · `bug` · `epic` · `decision` | `task` |
 | `--priority <…>` | `P0`..`P4` (or bare `0`..`4`); `P0` is highest | unset |
 | `--label "a,b"` | Comma-separated set — one flag, split on `,` (repeats do NOT accumulate) | none |
 | `--body "…"` | Long description (`--description` is an accepted alias) | empty |
@@ -64,8 +64,12 @@ forge issue create --title "Add rate limiting" --type feature \
 | `--parent <id>` | Parent/epic id | none |
 
 `--status` defaults to `open`. Status vocabulary: `open` · `in_progress` ·
-`review` · `done` · `cancelled`. Epics and decisions are non-claimable (they never
-enter the ready queue).
+`review` · `done` · `cancelled`. Unlike `--priority` and `--status` (which reject
+unknown values), `--type` is stored verbatim — a non-canonical value like
+`feature` is accepted without error but carries no kernel behaviour, so stick to
+the four canonical types. Epics and decisions are excluded from the ready queue
+(non-claimability is a queue convention, not enforcement — `forge issue claim`
+currently returns `ok:true` on them too).
 
 ## Update — same field flags, plus close
 
@@ -102,7 +106,7 @@ It is a canonical source you fork, not a fixed policy.
 
 | Knob | Default | How to change |
 |------|---------|---------------|
-| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--type feature` for user-facing work, `--type bug` for regressions. |
+| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--label feature` for user-facing work (feature is a label, not a canonical type), `--type bug` for regressions. |
 | **Default priority** | unset | Adopt a house scale (e.g. new work opens at `P2`, incidents at `P0`) and always pass `--priority`. |
 | **Fields required on create** | `--title` only | Require `--acceptance` (and `--label`/`--assignee`) on every create so issues are actionable from birth. |
 | **Id / reference convention** | kernel-minted ids | Standardize how you cite issues in commits/PRs (e.g. `Closes <id>`) and whether you pass an explicit `--id`. |

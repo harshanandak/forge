@@ -515,7 +515,7 @@ If the user approves a dependency mutation, apply it explicitly (only when the t
 bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
 ```
 
-That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
+That approval step must inspect blockers with `forge issue blocked` (and `forge issue children <epic-id>` for the epic rollup), summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
 
 ### Step 6: User review
 

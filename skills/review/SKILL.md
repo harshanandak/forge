@@ -332,7 +332,7 @@ gh pr checks <pr-number>
 ### Step 10: Update the Forge issue
 
 ```bash
-forge update <id> --comment "PR review complete: all issues addressed, all checks passing"
+forge comment <id> "PR review complete: all issues addressed, all checks passing"
 forge sync
 ```
 

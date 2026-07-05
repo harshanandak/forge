@@ -194,7 +194,7 @@ Rollback complete!
 **How it works**:
 ```bash
 git checkout HEAD~1 -- <file1> <file2> ...
-git commit -m "Rollback: <files>"
+git commit -m "chore: rollback <files>"
 ```
 
 **Example**:
@@ -212,7 +212,7 @@ bunx forge rollback
 ✓ Amended commit to preserve USER content
 
 Rollback complete!
-  Commit: q4r5s6t "Rollback: AGENTS.md, CLAUDE.md"
+  Commit: q4r5s6t "chore: rollback AGENTS.md, CLAUDE.md"
   Files affected: 2
 ```
 

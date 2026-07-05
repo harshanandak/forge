@@ -63,18 +63,16 @@ reading raw issue stores, design files, or kernel internals directly:
 forge orient --json                # bounded project orientation (envelope)
 forge orient --budget 4000 --json
 forge recap <issue-id> --json      # bounded per-issue recap (envelope)
-forge recap --json                 # legacy activity summary (NOT the envelope)
 ```
 
 `forge orient` and `forge recap <issue-id>` emit the deterministic JSON envelope
 described below (assembly `deterministic-file-assembly-v1`). Parse the JSON; do
 not screen-scrape the human text form.
 
-> Note: bare `forge recap --json` (no issue id) returns the legacy activity
-> summary (`generatedAt`, `issueSummary`, `reviewOutcomes`, `recentIssues`,
-> `insights`) — it does **not** carry `schema_version`, `sections`,
-> `token_budget`, or `assembly`. For the envelope contract, use `forge orient`
-> or `forge recap <issue-id>`.
+> Note: `forge recap` always requires an issue id — bare `forge recap --json`
+> (no id) prints its usage and exits non-zero rather than returning a summary.
+> Use `forge orient` for project-level orientation, or `forge recap <issue-id>`
+> for a single issue; both emit the deterministic envelope.
 
 ### Envelope shape
 
@@ -124,14 +122,13 @@ whole payload.
 
 Truncation is deterministic, never random:
 
-- Non-preserved sections are allocated budget in ascending numeric `priority`
-  order (lower `priority` first); when the budget is exhausted, the
-  later/higher-`priority` sections are the ones trimmed. Preserved sections are
-  kept whole and trimmed only as a last resort if the payload is still over
-  budget. The authoritative per-section signal is each section's `truncated`
-  flag plus its `priority`/`estimated_tokens` — not the nominal
-  `token_budget.truncation_order` list, which is a static hint and may not match
-  the priority-driven trim order.
+- Non-preserved sections are trimmed in the order given by
+  `token_budget.truncation_order`; when the budget is exhausted, sections later
+  in that order are trimmed first. Preserved sections are kept whole and trimmed
+  only as a last resort if the payload is still over budget. The authoritative
+  per-section signal is each section's `truncated` flag and `estimated_tokens` —
+  there is no per-section `priority` field; the overall trim order is
+  `token_budget.truncation_order`.
 - A trimmed section ends with the literal marker
   `[truncated deterministically by token budget]` and has `truncated: true`.
 - `token_budget.truncated === true` means the payload as a whole was trimmed.
