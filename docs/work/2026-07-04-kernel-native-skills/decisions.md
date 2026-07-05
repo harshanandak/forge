@@ -1,6 +1,6 @@
 # Kernel-native skills + super-skill — locked decisions (2026-07-04)
 
-Single source of truth for the decisions steering the build. Companion to `design.md`
+Single source of truth for the decisions steering the build. Companion to `plan.md`
 (sub-skill catalog), `super-skill-orchestrator.md`, and `extensibility-architecture.md`.
 Confirmed by the user after a cross-verify audit + a Fable guidance pass.
 

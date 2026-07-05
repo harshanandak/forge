@@ -44,7 +44,7 @@ Ship order: **FIRST** (no dependencies, highest ROI)
 
 **What to implement**: Verify that commands reference each other correctly:
 - `/plan` output mentions `docs/plans/YYYY-MM-DD-<slug>-tasks.md` → `/dev` input expects this pattern
-- `/plan` mentions `docs/plans/YYYY-MM-DD-<slug>-design.md` → `/ship` references design doc
+- `/plan` mentions `docs/plans/YYYY-MM-DD-<slug>-plan.md` → `/ship` references design doc
 - `/dev` mentions `bun test` or `TEST_COMMAND` → `/validate` runs tests
 - `/ship` mentions `gh pr create` → `/review` mentions PR
 - All 7 workflow commands reference the correct stage numbers (plan=1, dev=2, validate=3, ship=4, review=5, premerge=6, verify=7)

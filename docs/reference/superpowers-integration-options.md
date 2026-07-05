@@ -45,7 +45,7 @@ The `using-superpowers` skill contains a non-negotiable rule:
 
 **Source**: `skills/using-superpowers/SKILL.md` — https://github.com/obra/superpowers/blob/main/skills/using-superpowers/SKILL.md
 
-This means: if Superpowers is installed, **it will auto-trigger `brainstorming` every time a user requests a new feature** — before Forge's `/research` stage runs. The Superpowers `brainstorming` skill then hands off to `writing-plans`, creating its own planning artifact at `docs/plans/YYYY-MM-DD-<topic>-design.md`. This runs in parallel to Forge's `docs/research/<slug>.md`.
+This means: if Superpowers is installed, **it will auto-trigger `brainstorming` every time a user requests a new feature** — before Forge's `/research` stage runs. The Superpowers `brainstorming` skill then hands off to `writing-plans`, creating its own planning artifact at `docs/plans/YYYY-MM-DD-<topic>-plan.md`. This runs in parallel to Forge's `docs/research/<slug>.md`.
 
 The result of installing both without coordination:
 
@@ -162,7 +162,7 @@ docs/research/<slug>.md with OWASP analysis completed.
 
 **B. `brainstorming` stage** → New `/brainstorm` command or integrate into `/research`:
 - Before /research runs web search, run one-question-at-a-time design clarification
-- Save design doc to `docs/plans/YYYY-MM-DD-<slug>-design.md`
+- Save design doc to `docs/plans/YYYY-MM-DD-<slug>-plan.md`
 - HARD-GATE: no research until design intent is captured
 
 **C. `systematic-debugging`** → New `/debug` command with 4-phase methodology:

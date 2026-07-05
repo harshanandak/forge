@@ -57,7 +57,7 @@ No Superpowers plugin will be installed. Superpowers mechanics are ported native
 
 ### Decision 2: Add brainstorming as /plan Phase 1
 **Reasoning**: Superpowers brainstorming SKILL.md (fetched) shows it captures WHAT to build: purpose, constraints, success criteria, edge cases, approach selection. Forge had no WHAT phase — it jumped straight to HOW (web research). The WHAT phase front-loads all decisions that would otherwise surface as undocumented mid-dev surprises.
-**What changes**: /plan starts with one-question-at-a-time Q&A. Design doc saved to `docs/plans/YYYY-MM-DD-<slug>-design.md` before any research begins.
+**What changes**: /plan starts with one-question-at-a-time Q&A. Design doc saved to `docs/plans/YYYY-MM-DD-<slug>-plan.md` before any research begins.
 **HARD-GATE**: No Phase 2 until design doc exists AND user has approved it.
 
 ### Decision 3: Add task list creation as /plan Phase 3 final step
@@ -141,14 +141,14 @@ Steps:
    - Ambiguity policy: if spec gap found mid-dev, make reasonable choice + document, or pause for input?
 3. Propose 2-3 approaches with trade-offs and recommendation
 4. Present design in sections — get approval after each section
-5. Write design doc to `docs/plans/YYYY-MM-DD-<slug>-design.md`
+5. Write design doc to `docs/plans/YYYY-MM-DD-<slug>-plan.md`
 6. Commit design doc
 
 ```
 <HARD-GATE: Phase 1 exit>
 Do NOT begin Phase 2 (web research) until:
 1. User has approved the design in this session
-2. Design doc exists at docs/plans/YYYY-MM-DD-<slug>-design.md
+2. Design doc exists at docs/plans/YYYY-MM-DD-<slug>-plan.md
 3. Design doc includes: success criteria, edge cases, out-of-scope, ambiguity policy
 4. Design doc is committed to git
 </HARD-GATE>
@@ -157,7 +157,7 @@ Do NOT begin Phase 2 (web research) until:
 **--strategic flag behavior**: After writing design doc, push to branch and open PR:
 ```bash
 git push -u origin feat/<slug>-proposal
-gh pr create --title "Design: <slug>" --body "See docs/plans/YYYY-MM-DD-<slug>-design.md"
+gh pr create --title "Design: <slug>" --body "See docs/plans/YYYY-MM-DD-<slug>-plan.md"
 ```
 Then STOP. No Phase 2 until user merges proposal PR.
 
@@ -369,7 +369,7 @@ Do NOT create PR until:
 PR body template update — replace `/research` references with `/plan` design doc:
 ```
 ## Design Doc
-See: docs/plans/YYYY-MM-DD-<slug>-design.md
+See: docs/plans/YYYY-MM-DD-<slug>-plan.md
 
 ## Decisions Log
 See: docs/plans/YYYY-MM-DD-<slug>-decisions.md (if any undocumented decisions arose)

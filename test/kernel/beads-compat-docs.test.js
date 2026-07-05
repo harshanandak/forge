@@ -10,7 +10,7 @@ function readWorkDoc(fileName) {
 
 describe('Beads import/export adapter work docs', () => {
   test('documents the PR C adapter boundary and rollback path', () => {
-    const design = readWorkDoc('design.md');
+    const design = readWorkDoc('plan.md');
     const tasks = readWorkDoc('tasks.md');
     const decisions = readWorkDoc('decisions.md');
 

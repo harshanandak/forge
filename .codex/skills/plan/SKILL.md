@@ -231,7 +231,7 @@ Propose 2-3 concrete approaches with:
 
 ### Step 4: Write design doc
 
-Save to `docs/work/YYYY-MM-DD-<slug>/design.md` with these sections:
+Save to `docs/work/YYYY-MM-DD-<slug>/plan.md` with these sections:
 - **Feature**: slug, date, status
 - **Purpose**: what problem it solves
 - **Success criteria**: measurable, specific
@@ -243,7 +243,7 @@ Save to `docs/work/YYYY-MM-DD-<slug>/design.md` with these sections:
 
 Commit the design doc:
 ```bash
-git add docs/work/YYYY-MM-DD-<slug>/design.md
+git add docs/work/YYYY-MM-DD-<slug>/plan.md
 git commit -m "docs: add design doc for <slug>"
 ```
 
@@ -256,7 +256,7 @@ After committing the design doc, push to a proposal branch and open PR:
 git checkout -b feat/<slug>-proposal
 git push -u origin feat/<slug>-proposal
 gh pr create --title "Design: <feature-name>" \
-  --body "Design doc for review. See docs/work/YYYY-MM-DD-<slug>/design.md"
+  --body "Design doc for review. See docs/work/YYYY-MM-DD-<slug>/plan.md"
 ```
 
 **STOP here.** Present the PR URL. Wait for the user to merge the proposal PR.
@@ -268,7 +268,7 @@ After merge, run `/plan <slug> --continue` to proceed to Phase 2 + 3.
 <HARD-GATE: Phase 1 exit>
 Do NOT begin Phase 2 (web research) until:
 1. User has approved the design in this session OR external-planner evidence satisfies the `/dev` entry contract from D34
-2. Design doc exists at docs/work/YYYY-MM-DD-<slug>/design.md
+2. Design doc exists at docs/work/YYYY-MM-DD-<slug>/plan.md
 3. Design doc includes: success criteria, edge cases, out-of-scope, ambiguity policy
 4. Design doc is committed to git
 </HARD-GATE>
@@ -559,13 +559,13 @@ if [ -f scripts/beads-context.sh ]; then
   bash scripts/beads-context.sh stage-transition <id> plan dev \
     --summary "<design approach chosen, task count>" \
     --decisions "<key trade-offs resolved during Q&A>" \
-    --artifacts "docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
+    --artifacts "docs/work/YYYY-MM-DD-<slug>/plan.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
     --next "<first dev task focus area>"
 else
   forge comment <id> "Stage: plan complete → ready for dev
 Summary: <design approach chosen, task count>
 Decisions: <key trade-offs resolved during Q&A>
-Artifacts: docs/work/YYYY-MM-DD-<slug>/design.md docs/work/YYYY-MM-DD-<slug>/tasks.md
+Artifacts: docs/work/YYYY-MM-DD-<slug>/plan.md docs/work/YYYY-MM-DD-<slug>/tasks.md
 Next: <first dev task focus area>"
 fi
 ```
@@ -574,7 +574,7 @@ fi
 
 ## Dynamic Phase 3 Output
 
-Phase 3 output is generated from the live Forge issue, branch/worktree setup, baseline validation, and task list paths at runtime. It reports the Forge issue, branch, worktree, `docs/work/YYYY-MM-DD-<slug>/design.md`, and `docs/work/YYYY-MM-DD-<slug>/tasks.md` from the actual run instead of a static example.
+Phase 3 output is generated from the live Forge issue, branch/worktree setup, baseline validation, and task list paths at runtime. It reports the Forge issue, branch, worktree, `docs/work/YYYY-MM-DD-<slug>/plan.md`, and `docs/work/YYYY-MM-DD-<slug>/tasks.md` from the actual run instead of a static example.
 
 ## Integration with Workflow
 

@@ -90,4 +90,4 @@ New `/plan` artifacts live under:
 docs/work/YYYY-MM-DD-<slug>/
 ```
 
-Each work folder should contain `plan.md`, `tasks.md`, `decisions.md`, and supporting evidence when applicable. Reserve `design.md` for durable architecture/product design or legacy work-item reads during migration.
+Each work folder should contain `plan.md`, `tasks.md`, `decisions.md`, and supporting evidence when applicable. Reserve `plan.md` for durable architecture/product design or legacy work-item reads during migration.

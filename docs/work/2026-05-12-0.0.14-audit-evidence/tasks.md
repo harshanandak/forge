@@ -36,7 +36,7 @@ Acceptance:
 ## Task 3: Document CLI behavior and fallback decision
 
 Ownership:
-- `docs/work/2026-05-12-0.0.14-audit-evidence/design.md`
+- `docs/work/2026-05-12-0.0.14-audit-evidence/plan.md`
 - PR body
 
 TDD:

@@ -97,7 +97,7 @@ superpowers/
 ```
 1. brainstorming      → Explore context → ask questions one at a time → propose 2-3 approaches
                         → present design in sections → user approves → write design doc to
-                        docs/plans/YYYY-MM-DD-<topic>-design.md → commit
+                        docs/plans/YYYY-MM-DD-<topic>-plan.md → commit
 
 2. using-git-worktrees → Create isolated workspace on new branch → run project setup
                          → verify clean test baseline
@@ -225,7 +225,7 @@ Import specific Superpowers skills into Forge's `skills/` directory:
 
 ### Option C: Replace OpenSpec With Superpowers' `writing-plans`
 
-Superpowers' `writing-plans` creates detailed task-level implementation plans. OpenSpec creates formal architecture proposals with `proposal.md`, `tasks.md`, `design.md`.
+Superpowers' `writing-plans` creates detailed task-level implementation plans. OpenSpec creates formal architecture proposals with `proposal.md`, `tasks.md`, `plan.md`.
 
 **Assessment**: These solve different problems.
 - `writing-plans` → task-level implementation checklist (tactical)

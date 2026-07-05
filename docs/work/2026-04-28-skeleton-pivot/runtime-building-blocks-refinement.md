@@ -86,7 +86,7 @@ workflow:
 
 artifacts:
   design_doc:
-    path: docs/work/{date}-{slug}/design.md
+    path: docs/work/{date}-{slug}/plan.md
   patch:
     source: git_diff
 

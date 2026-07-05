@@ -115,7 +115,7 @@ your-project/
 ├── .claude/commands/            # Claude Code commands
 └── docs/
     ├── plans/
-    │   ├── YYYY-MM-DD-<slug>-design.md
+    │   ├── YYYY-MM-DD-<slug>-plan.md
     │   └── YYYY-MM-DD-<slug>-tasks.md
     └── TOOLCHAIN.md
 ```

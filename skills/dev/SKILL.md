@@ -40,7 +40,7 @@ ls docs/work/
 
 Read:
 - **Task list**: `docs/work/YYYY-MM-DD-<slug>/tasks.md` — extract ALL task text upfront
-- **Design doc**: `docs/work/YYYY-MM-DD-<slug>/design.md` — including ambiguity policy section
+- **Design doc**: `docs/work/YYYY-MM-DD-<slug>/plan.md` — including ambiguity policy section
 
 ### Step 2: Create decisions log
 

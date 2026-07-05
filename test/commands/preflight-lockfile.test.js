@@ -54,7 +54,7 @@ describe('preflight package manager detection', () => {
       fs.mkdirSync(path.join(tmpDir, 'docs', 'work', '2026-05-04-work-doc-contract'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'docs', 'research'), { recursive: true });
       fs.mkdirSync(path.join(tmpDir, 'test'), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'docs', 'work', '2026-05-04-work-doc-contract', 'design.md'), '# Design\n', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'docs', 'work', '2026-05-04-work-doc-contract', 'plan.md'), '# Design\n', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'docs', 'research', 'work-doc-contract.md'), '# Research\n', 'utf8');
 
       const result = spawnSync(process.execPath, [PREFLIGHT_PATH, 'dev'], {
