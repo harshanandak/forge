@@ -1,13 +1,21 @@
 ---
 name: triage-ready
 description: >
-  Surfaces and EXPLAINS the right next work in a Forge project — read-only. Ranks
-  the ready queue with `forge issue ready`, shows what is blocked and why with
-  `forge issue blocked`, and summarizes the backlog with `forge issue stats`. Never
-  uses `board` (which reads a legacy snapshot store, not the live kernel). Use when
-  deciding what to pick up next, or to justify why an item is workable. Trigger on
-  "what should I work on", "what's ready", "triage", "next task", "ready queue",
-  "why is this blocked", or "pick my next issue".
+  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
+  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
+  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
+  stats`, and justifies the pick from the full record via `forge issue show` — always against
+  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
+  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
+  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
+  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
+  my next task", "top of the ready queue", "which issue should I start", "why is this issue
+  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
+  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
+  create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
+  current workflow stage or "where am I / what's in flight" (use status), not for orienting a
+  whole session or routing to stage skills (use kernel), and not for driving an issue through
+  to a merged PR (use smith).
 allowed-tools: Read, Bash(forge:*)
 ---
 

@@ -1,6 +1,19 @@
 ---
 name: rollback
-description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
+description: >
+  Safely revert or undo a change that is already committed or shipped, using non-destructive
+  `git revert` (never `reset --hard`, `push --force`, or `clean`) and auto-preserving USER
+  sections plus custom commands. Drives the interactive `bunx forge rollback` menu: undo the
+  last commit, revert a specific commit by hash, revert a merged PR (git revert -m 1), restore
+  individual files to their prior version, revert a commit range, or dry-run/preview any of
+  these first. Use when the user says roll back, revert, undo, back out, or restore — e.g.
+  "undo the last commit", "undo that change, the approach was wrong", "back out PR #123",
+  "revert the merge commit", "restore src/auth.js to before my last commit", or when a
+  shipped/merged change broke something and must be pulled back (optionally re-flagging its
+  linked Beads issue). This is the RECOVERY skill for changes already in git history. Do NOT
+  use for: replying to or fixing PR review feedback (review), monitoring an open PR's checks
+  toward merge (shepherd), the post-merge CI health check on master (verify), pushing a branch
+  or opening a PR (ship), or ordinary issue status/field edits (issue-basics).
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 

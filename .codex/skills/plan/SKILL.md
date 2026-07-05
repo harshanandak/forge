@@ -1,11 +1,18 @@
 ---
 name: plan
 description: >
-  Use for the Forge plan stage to capture design intent through
-  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
-  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
-  starting a new feature, planning or scoping work, writing a design doc, or preparing
-  a worktree and task list before development.
+  Forge PLAN stage — the first stop when starting a NEW feature or an unscoped piece of work.
+  Runs one-question-at-a-time brainstorming to capture design intent, writes and commits a
+  design doc, runs technical/OWASP/DRY + codebase research, then sets up the branch, worktree,
+  and a complete TDD task list ready to hand to /dev. Trigger on "let's plan X", "start or
+  scope a new feature", "brainstorm this before we build", "write a design doc", "break this
+  into tasks", or "set up a worktree and task list before coding". Reach for this even when
+  the request sounds like only design or only scoping — plan owns intent → research →
+  task-list setup as a single stage. NOT for driving a feature all the way to a merged PR
+  (that is smith), NOT for implementing the tasks once they already exist (dev), NOT for a
+  standalone deep-research pass into an already-approved design doc (research), NOT for
+  reporting where current work stands or what is stale (status), and NOT for everyday issue
+  create/list/close or picking the next ready issue (issue-basics / triage-ready).
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 

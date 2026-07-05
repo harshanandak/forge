@@ -1,0 +1,42 @@
+[
+  {
+    "query": "I just sat down at this repo — what's the highest-priority thing I can actually start right now?",
+    "should_trigger": true
+  },
+  {
+    "query": "Give me the top few off the ready queue and tell me why the first one is unblocked.",
+    "should_trigger": true
+  },
+  {
+    "query": "Why can't I start forge-2agy.2.2 yet? What's holding it up?",
+    "should_trigger": true
+  },
+  {
+    "query": "The backlog feels stuck — is it mostly blocked, and which one dependency would unlock the most work?",
+    "should_trigger": true
+  },
+  {
+    "query": "Pick my next task and justify the choice, don't grab it yet.",
+    "should_trigger": true
+  },
+  {
+    "query": "Claim forge-abc123 for me and confirm I actually hold the lease before I start editing.",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a P1 bug titled 'login returns 500' and add a comment linking the repro.",
+    "should_trigger": false
+  },
+  {
+    "query": "Where am I in the workflow right now and what work is in flight?",
+    "should_trigger": false
+  },
+  {
+    "query": "Search every issue mentioning 'oauth' and list the open ones.",
+    "should_trigger": false
+  },
+  {
+    "query": "Take forge-xyz all the way through to a merged PR.",
+    "should_trigger": false
+  }
+]

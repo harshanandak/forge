@@ -1,6 +1,22 @@
 ---
 name: review
-description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or running the pre-merge doc gate before merge.
+description: >
+  Forge REVIEW stage — the one skill that drives an already-open pull request to all-green by
+  resolving EVERY piece of feedback on it: failing GitHub Actions / CI checks, Greptile and
+  CodeRabbit inline comments and summaries, and the SonarCloud quality gate. It actively fixes
+  the code, replies to each thread, and marks it resolved until the checks pass, then runs the
+  pre-merge doc gate (CHANGELOG / README / API / AGENTS docs) and hands the PR off for MANUAL
+  merge — it never runs `gh pr merge`. Reach for it whenever a PR already has review feedback
+  or red checks to work through: "address the review comments on PR #123", "the bots flagged
+  issues / my Greptile score is low", "fix the failing checks and resolve the threads",
+  "CodeRabbit and SonarCloud left comments — sort them out", "get my PR merge-ready". This is
+  the MUTATING feedback-resolution stage — distinct from shepherd (only WATCHES an open PR's
+  checks and settle window, changes nothing), verify (POST-merge CI-on-master health check +
+  closing issues), ship (pushing the branch and opening the PR in the first place), validate
+  (PRE-PR local type/lint/test/security on your branch), and the sonarcloud /
+  sonarcloud-analysis skills (which only QUERY SonarCloud data that this stage consumes). Use
+  those for a single tool or a passive watch; use this to work a PR's whole feedback set to
+  done.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 

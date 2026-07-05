@@ -1,0 +1,50 @@
+[
+  {
+    "query": "/dev",
+    "should_trigger": true
+  },
+  {
+    "query": "The plan and task list are done — start implementing the tasks one at a time, tests first.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the implementer then the spec and quality reviewer subagents over each task in tasks.md",
+    "should_trigger": true
+  },
+  {
+    "query": "Build out the task list from the design doc using red-green-refactor",
+    "should_trigger": true
+  },
+  {
+    "query": "Time to write the code for the planned tasks and TDD each one in this worktree",
+    "should_trigger": true
+  },
+  {
+    "query": "Work through tasks.md subagent by subagent until every task is committed and reviewed",
+    "should_trigger": true
+  },
+  {
+    "query": "Set up the branch, worktree, and TDD task list for this new feature",
+    "should_trigger": false
+  },
+  {
+    "query": "Type-check, lint, and run the full test suite before I open the PR",
+    "should_trigger": false
+  },
+  {
+    "query": "Push the validated branch and open the pull request",
+    "should_trigger": false
+  },
+  {
+    "query": "The PR has open review threads from the bots — fix each finding, reply, and mark them resolved.",
+    "should_trigger": false
+  },
+  {
+    "query": "Grab the next ready issue and drive it all the way to a merged PR",
+    "should_trigger": false
+  },
+  {
+    "query": "Which workflow stage am I on and what work is in flight right now?",
+    "should_trigger": false
+  }
+]

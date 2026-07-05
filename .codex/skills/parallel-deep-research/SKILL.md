@@ -1,17 +1,23 @@
 ---
 name: parallel-deep-research
 description: >
-  Produces comprehensive research reports that go far beyond what built-in web
-  search can achieve. Sends research tasks to Parallel AI's pro/ultra processors
-  which spend 3-25 minutes autonomously crawling, reading, and synthesizing dozens
-  of sources — returning structured reports with citations. Built-in WebSearch
-  can only run a few queries; this skill runs an entire research pipeline externally.
-  No binary install — requires PARALLEL_API_KEY in .env.local. ALWAYS use this
-  skill instead of doing multiple WebSearch calls when the user needs a comprehensive
-  report, market analysis, competitive landscape, industry deep-dive, strategic
-  recommendations, or multi-source synthesis. This is the RIGHT tool for any
-  research task that would require more than 3-4 web searches to answer properly.
-  Also trigger during /plan Phase 2 research and /research workflows.
+  Heavyweight EXTERNAL research reports — market, industry, competitive, and strategic —
+  delegated to Parallel AI's paid pro/ultra processors, which autonomously crawl, read, and
+  synthesize dozens of sources over 3-25 minutes and return one long structured report with
+  citations, far beyond what a handful of WebSearch calls can produce. Reach for this whenever
+  the user wants a comprehensive market analysis, competitive landscape, industry deep-dive,
+  multi-vendor/technology comparison across many sources, strategic recommendations, market
+  sizing/growth outlook, or any multi-source synthesis that would take more than 3-4 web
+  searches to answer well. Typical phrasings: "market analysis of X", "competitive landscape
+  comparing A/B/C", "industry deep-dive on...", "deep research report on...", "compare these
+  vendors at our scale", "strategic report with predictions for 2027". Requires
+  PARALLEL_API_KEY in .env.local; each run costs money and takes minutes, so it is the WRONG
+  tool for quick facts, a single-page fetch, one-URL scraping, or a small structured-field
+  extraction — use built-in WebSearch/WebFetch for those. It is also NOT the Forge RESEARCH or
+  PLAN stage itself: "run the research stage", "do Phase 2 for this feature", or
+  codebase/OWASP/DRY investigation that gets written into a design doc route to `research` and
+  `plan` — those stages may INVOKE this skill as their external research engine when a topic
+  genuinely needs dozens of sources, but a bare "run the stage" request is not this skill.
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
 metadata:
   author: harshanandak

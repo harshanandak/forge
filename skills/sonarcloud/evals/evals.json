@@ -1,0 +1,46 @@
+[
+  {
+    "query": "/sonarcloud gate my-project",
+    "should_trigger": true
+  },
+  {
+    "query": "/sonarcloud pr befach-web 214 --new-code",
+    "should_trigger": true
+  },
+  {
+    "query": "What does SonarCloud say about this pull request? Just the quality gate and the blocker issues, quick.",
+    "should_trigger": true
+  },
+  {
+    "query": "Show SonarCloud bugs and vulnerabilities on the develop branch for the api project",
+    "should_trigger": true
+  },
+  {
+    "query": "Any new-code SonarCloud issues on PR 88 before I ship?",
+    "should_trigger": true
+  },
+  {
+    "query": "Pull the SonarCloud coverage and code-smell numbers for my-project so I can eyeball them",
+    "should_trigger": true
+  },
+  {
+    "query": "Open an isolated SonarCloud deep-dive: correlate every flagged vulnerability with the actual source files, walk the analysis history for coverage trends, and hand back a synthesized technical-debt report",
+    "should_trigger": false
+  },
+  {
+    "query": "SonarCloud flagged issues on PR 214 — fix them, reply to each review thread, and mark them resolved",
+    "should_trigger": false
+  },
+  {
+    "query": "Run a SAST security scan over my code and list the vulnerabilities you find",
+    "should_trigger": false
+  },
+  {
+    "query": "Show me the open issues that are ready to work on next",
+    "should_trigger": false
+  },
+  {
+    "query": "Run lint and type-check and the test suite before I ship this branch",
+    "should_trigger": false
+  }
+]

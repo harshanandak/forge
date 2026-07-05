@@ -1,10 +1,21 @@
 ---
 name: ship
 description: >
-  Pushes the validated branch and opens a pull request populated from the project's
-  PR template with full context and documentation links. Use for the Forge ship stage
-  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
-  gh pr create.
+  Forge SHIP stage: push the already-validated feature branch and open a pull request
+  populated from the project's OWN PR template (design-doc link, Forge issue IDs, real
+  test/commit data), then hand the PR off for MANUAL merge — this skill never merges or
+  auto-merges. Reach for it the moment /validate has passed and you want a PR on the board.
+  Triggers on phrasings like "ship it", "ship this branch", "create/open the PR", "open a pull
+  request", "push and open a PR", "gh pr create", "make/raise a PR from my current branch",
+  "checks passed, now cut the PR". It runs the branch-freshness and parallel-PR
+  merge-simulation checks, force-with-lease pushes, records the ship->review handoff, then
+  stops. This is ONE stage — route elsewhere when the ask is broader or different: the whole
+  plan->dev->validate->ship->review pipeline or "drive it to done" (smith); running
+  type-check/lint/tests/security first (validate); addressing PR review comments or resolving
+  Greptile/SonarCloud/CodeRabbit threads on an existing PR (review); babysitting an
+  already-open PR's checks toward merge (shepherd); the post-merge CI health check and closing
+  issues (verify); or reverting an already-shipped change (rollback). If the PR already
+  exists, this is not the skill.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 

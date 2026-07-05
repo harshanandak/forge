@@ -1,13 +1,20 @@
 ---
 name: issue-basics
 description: >
-  The everyday issue CRUD floor for a Forge project — create, update, claim,
-  release, comment, close, show, list, search, and stats over the kernel via the
-  `forge issue` verbs. This is the parity floor a team needs on day one after
-  migrating off a Beads-style tracker, mapped one-to-one onto real `forge` verbs
-  with their actual flags. Use for routine issue work. Trigger on "create an
-  issue", "update an issue", "claim/close an issue", "comment on an issue", "list
-  issues", "search issues", "reopen", or "add a label".
+  Everyday single-issue CRUD over the `forge issue` verbs — create, update, show, list,
+  search, close, reopen, comment, set priority/labels/assignee, claim or release one issue,
+  and add/remove dependency edges, plus backlog `stats`. Reach for this on ANY routine one-off
+  issue operation: "create an issue/bug/task for X", "update or edit issue <id>", "close (or
+  reopen) this issue", "comment a handoff note on <id>", "list open bugs" or "filter issues by
+  label/priority/status", "search issues for …", "bump this to P1", "reassign to alice", "mark
+  <id> blocked by <id>", "add a label". This is also the parity floor when migrating off a
+  Beads-style tracker (label/reopen/delete map onto their forge equivalents). Scope is
+  single-operation issue plumbing only. It does NOT choose, rank, or explain the next issue to
+  work on or why one is blocked (use triage-ready); it does NOT run the
+  claim-then-prove-lease-ownership safety procedure before mutating shared work (use
+  claim-safety); it does NOT drive an issue through the plan->dev->validate->ship pipeline or
+  open a PR (use smith or the individual stage skills); and it does NOT report the current
+  workflow stage or what is in flight (use status).
 allowed-tools: Read, Bash(forge:*)
 ---
 
