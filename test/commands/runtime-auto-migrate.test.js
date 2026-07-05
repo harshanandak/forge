@@ -294,4 +294,24 @@ describe('resolveCommandOpts wires the runtime auto-migrate on the kernel path o
 		});
 		expect(commandOpts.issueBackend).toBe('kernel');
 	});
+
+	test('runs the REAL migrate require() path (no injection) without ever throwing', async () => {
+		// With no autoMigrateBeadsAtRuntime injected, the shared helper resolves
+		// require('./migrate') INSIDE its try — a bare temp dir has no jsonl store, so the
+		// real hook is a safe no-op and command-opts resolution still succeeds.
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-real-require-'));
+		cleanups.push(() => fs.rmSync(tmp, { recursive: true, force: true }));
+		const dbPath = path.join(tmp, 'kernel.sqlite');
+		const { commandOpts } = await resolveCommandOpts('list', [], {
+			env: {},
+			projectRoot: tmp,
+			buildKernelIssueDeps: async () => ({
+				useKernelBroker: true,
+				kernelBroker: { id: 'broker' },
+				kernelDriver: { id: 'driver' },
+				kernelDatabasePath: dbPath,
+			}),
+		});
+		expect(commandOpts.issueBackend).toBe('kernel');
+	});
 });
