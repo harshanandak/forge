@@ -23,6 +23,7 @@ on:
       - 'lib/**'
       - 'scripts/**'
       - 'packages/**'
+      - 'skills/**'
       - 'package.json'
       - '*.js'
       - '.claude/**/*.js'
