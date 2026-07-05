@@ -1,10 +1,10 @@
 ---
 name: plan
 description: >
-  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Runs
-  one-question-at-a-time brainstorming for design intent, commits a design doc, does
-  technical/OWASP/DRY + codebase research, then sets up the branch, worktree, and a TDD task
-  list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
+  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Sets up an
+  isolated worktree up front, then runs one-question-at-a-time brainstorming for design
+  intent, commits a design doc, does technical/OWASP/DRY + codebase research, and produces a
+  TDD task list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
   build", "write a design doc", "break this into tasks", or "set up a worktree and task list
   before coding". Reach for this even when the ask sounds like only design or only scoping —
   plan owns intent → research → task-list setup as one stage. NOT for driving a feature to a
