@@ -16,10 +16,13 @@ const skillsDir = path.join(repoRoot, 'skills');
 const DESCRIPTION_CHAR_CAP = 1024; // Anthropic Agent Skills spec limit (hard)
 const BODY_LINE_CAP = 500; // progressive-disclosure budget (loads on trigger)
 
-// Skills whose body still exceeds BODY_LINE_CAP, pending the Phase A3 references/
-// split. Remove each entry as A3 lands — the "allowlist stays honest" test below
-// forces removal once a skill is back within budget, so the gate tightens itself.
-const BODY_OVER_ALLOWLIST = new Set(['rollback', 'plan']);
+// Skills whose body still exceeds BODY_LINE_CAP, pending a references/ split.
+// `plan` stays whole: its HARD-GATEs and stage-transition contracts must load on
+// every trigger (structural/content tests assert they live in the body, not
+// references/), so it is allowlisted rather than split. `rollback` WAS split in
+// Phase A3 and is back within budget. The "allowlist stays honest" test below
+// forces removal once a skill is back within budget, so the gate only ever tightens.
+const BODY_OVER_ALLOWLIST = new Set(['plan']);
 
 function listSkills() {
   return fs
