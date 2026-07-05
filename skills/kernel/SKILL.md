@@ -1,22 +1,18 @@
 ---
 name: kernel
 description: >
-  Forge kernel surface — the umbrella index and router for a Forge project. Reach for this
-  FIRST when you are orienting rather than executing: at the very start of a Forge session,
-  when you need the map of how the whole system fits together, or when you are unsure WHICH
-  skill or `forge` verb a task belongs to. It routes to the `smith` end-to-end orchestrator,
-  the per-stage ladder skills (plan, dev, validate, ship, review, verify), the utility skills
-  (status, research, rollback, sonarcloud, shepherd), and the kernel-native issue skills
-  (triage-ready, claim-safety, issue-basics) — and it is the reference for the day-to-day
-  `forge` CLI issue, board, gate, and orientation verbs. Trigger on "how does the Forge
-  workflow work", "walk me through the stage ladder", "which forge command or skill do I use
-  for X", "what are the forge issue verbs", "I'm new to this repo, how is Forge set up", "map
-  the Forge skills for me", or "should this be a Forge issue or a TodoWrite". This is the
-  meta/index layer, so hand off the actual doing: ranking or picking the next ready issue →
-  `triage-ready`; the current stage, "where am I", or active/stale work → `status`;
-  create/update/close/search a single issue → `issue-basics`; claim-then-prove-ownership
-  before mutating → `claim-safety`; drive one issue from plan to a merged PR under human gates
-  → `smith`; token-bounded project state for the Hermes harness → `hermes-forge`.
+  Forge kernel — umbrella index/router for a Forge project. Reach for this FIRST when
+  orienting rather than executing: at session start, when you need the map of how the system
+  fits together, or when unsure WHICH skill or `forge` verb a task belongs to. It indexes
+  `smith` (end-to-end orchestrator), the stage ladder (plan → dev → validate → ship → review →
+  verify), the utility/issue skills, and the day-to-day `forge` CLI verbs. Trigger on "how
+  does the Forge workflow work", "which forge command or skill for X", "I'm new here, how is
+  Forge set up", or "should this be a Forge issue or a TodoWrite". Index layer only — hand off
+  the doing: rank/pick the next ready issue → `triage-ready`; current stage / "where am I" /
+  active or stale work → `status`; create/update/close/search one issue → `issue-basics`;
+  claim-then-prove ownership before mutating → `claim-safety`; drive one issue from plan to a
+  merged PR under gates → `smith`; token-bounded state for the Hermes harness →
+  `hermes-forge`.
 allowed-tools: Read, Bash(forge:*)
 ---
 

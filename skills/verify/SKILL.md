@@ -1,18 +1,16 @@
 ---
 name: verify
 description: >
-  Runs the Forge verify stage — the post-merge health check performed AFTER a PR has been
-  merged. Switches to master and pulls, confirms the merge actually landed (`gh pr list
-  --state merged`), checks CI is green on master after the merge, confirms any deployments are
-  up, removes the merged worktree and safe-deletes the local branch, and closes the
-  kernel/Beads issues the PR resolved (`forge close --reason=...`). Use when asked to verify a
-  merge went cleanly, confirm post-merge CI health on master, check deployments after merging,
-  clean up a merged branch or worktree, or close the issue now that its PR is merged — and
-  whenever `/verify` is invoked. This is strictly the POST-merge stage: reach for shepherd
-  instead to monitor a still-open PR toward merge, review to fix and resolve PR feedback
-  before merge, ship to push the branch and open the PR, rollback to undo an already-shipped
-  change, status to merely report the current stage without acting, and issue-basics to close
-  an issue that is unrelated to a just-merged PR.
+  Runs the Forge verify stage — the post-merge health check performed AFTER a PR is merged:
+  switch to master and pull, confirm the merge landed, check CI is green on master, confirm
+  deployments are up, remove the merged worktree, safe-delete the branch, and close the
+  kernel/Beads issues the PR resolved. Use when asked to verify a merge went cleanly, confirm
+  post-merge CI health on master, check deployments after merging, clean up a merged branch or
+  worktree, or close the issue now that its PR is merged — and whenever `/verify` is invoked.
+  Strictly the POST-merge stage: use shepherd instead to monitor a still-open PR toward merge,
+  review to fix and resolve PR feedback before merge, ship to push the branch and open the PR,
+  rollback to undo an already-shipped change, status to merely report the current stage
+  without acting, and issue-basics to close an issue unrelated to a just-merged PR.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 

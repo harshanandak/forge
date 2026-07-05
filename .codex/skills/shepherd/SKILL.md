@@ -1,20 +1,17 @@
 ---
 name: shepherd
 description: >
-  Run ONE bounded, hand-off monitor pass over an already-reviewed OPEN pull request: read the
-  CI/check rollup and the branch-protection required-check set, take at most one idempotent
-  action (re-run a flaky required check, or post a status reply to a thread), then declare
-  merge-readiness — MERGE_READY, still PENDING, or escalate — and exit. There is no in-process
-  loop; a scheduler re-invokes the pass. Use this when the user says things like "is PR #123
-  ready to merge yet?", "poll/watch the checks on my PR", "the required CI job is flaky — kick
-  off a re-run", "keep an eye on this PR until it's green", "babysit the checks after
-  /review", "shepherd PR 45", or "monitor the PR toward merge (and rebase it if it's behind,
-  with --auto-rebase)". It NEVER merges (the human merges in the GitHub UI), NEVER edits code,
-  and NEVER resolves review threads. Do NOT use it to fix or reply-and-resolve PR review
-  feedback from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR in
-  the first place — that is `ship`; nor for the post-merge "CI green on master + close issues"
-  health check — that is `verify`; nor for a general "where am I in the workflow / what's in
-  flight" report — that is `status`.
+  Monitor an already-reviewed OPEN pull request toward merge: read the CI/check rollup and the
+  branch-protection required-check set, take at most one idempotent action (re-run a flaky
+  required check, or post a status reply to a thread), then declare MERGE_READY, PENDING, or
+  escalate. Use when the user says "is PR #123 ready to merge yet?", "poll/watch the checks on
+  my PR", "the required CI job is flaky — kick off a re-run", "keep an eye on this PR until
+  it's green", "babysit the checks after /review", "shepherd PR 45", or "monitor the PR toward
+  merge (rebase if behind, --auto-rebase)". NEVER merges (the human merges in the GitHub UI),
+  edits code, or resolves review threads. Do NOT use to fix or reply-and-resolve PR feedback
+  from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR — that is
+  `ship`; nor for the post-merge "CI green on master + close issues" check — that is `verify`;
+  nor for a general "where am I / what's in flight" report — that is `status`.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 

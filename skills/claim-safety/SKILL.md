@@ -1,20 +1,18 @@
 ---
 name: claim-safety
 description: >
-  Claim a Forge issue and then PROVE you hold the live lease before you touch it — the
-  ownership-verification procedure built on `forge issue owns <id>`. Use this whenever
-  actually winning the claim matters: right after `forge claim`, before you
-  `dev`/edit/`close`/`release` a claimed issue, when two agents or a subagent fan-out might
-  contend for the same work, or when you need to re-check ownership before an irreversible
-  step. Why it exists: a claim returning `ok:true` does NOT prove you won — a same-actor
-  duplicate replay also returns `ok:true`, and a live lease can be reclaimed once it expires —
-  so `forge issue owns` (exit 0 iff you hold the single, unexpired active lease) is the only
-  real proof, and you re-verify before close/release. Trigger on "claim this issue safely",
-  "did I actually win the lease", "verify/prove ownership", "claim conflict", "two agents
-  grabbed the same issue", "check I still own it before closing", or before ANY mutation of a
-  claimed issue. NOT for plain single-issue create/update/close/comment when there is no
-  ownership question (that is issue-basics), and NOT for read-only selecting or ranking the
-  next ready issue without claiming (that is triage-ready).
+  Claim a Forge issue and then PROVE you hold the live lease before you touch it, using `forge
+  issue owns <id>` (exit 0 iff you hold the single unexpired lease). Use this whenever winning
+  the claim matters: right after `forge claim`, before you `dev`/edit/`close`/`release` a
+  claimed issue, when two agents or a subagent fan-out contend for the same work, or before
+  any irreversible step. A claim's `ok:true` does NOT prove you won — duplicate replays return
+  it and expired leases get reclaimed; only `owns` proves it, so re-verify before
+  close/release. Trigger on "claim this issue safely", "did I actually win the lease",
+  "verify/prove ownership", "claim conflict", "two agents grabbed the same issue", "check I
+  still own it before closing", or before ANY mutation of a claimed issue. NOT for plain
+  single-issue create/update/close/comment with no ownership question (that is issue-basics),
+  and NOT for read-only selecting or ranking the next ready issue without claiming (that is
+  triage-ready).
 allowed-tools: Read, Bash(forge:*)
 ---
 

@@ -1,25 +1,17 @@
 ---
 name: research
 description: >
-  Runs the Forge RESEARCH stage — the technical-investigation phase now embedded as /plan
-  Phase 2. Use it when the user wants JUST the research work for a specific feature (not the
-  whole plan flow): deep web research on best practices and known gotchas for the chosen
-  approach, an OWASP Top 10 risk pass documenting which categories apply and how they'll be
-  mitigated, DRY / blast-radius codebase exploration for existing patterns to reuse, and
-  identification of at least three TDD test scenarios — all appended under `## Technical
-  Research` in that feature's `docs/work/YYYY-MM-DD-<slug>/design.md`. Trigger on phrasings
-  like "run the research phase", "do the technical research for this feature", "run an OWASP
-  analysis on this", "explore the codebase for reusable patterns before we build", "check
-  we're not duplicating an existing helper (DRY)", "add the security + best-practices research
-  to the design doc", or "find TDD scenarios for X". If the design doc doesn't exist yet,
-  create it first, then research into it. Pick this skill over its siblings: choose `plan`
-  instead when the user is starting a feature from scratch and wants the FULL stage —
-  one-question-at-a-time design brainstorm plus branch/worktree/task-list setup — not only the
-  research; choose `parallel-deep-research` instead when the ask is an external market,
-  competitive, or industry report via Parallel AI (business analysis, vendor comparison,
-  funding/landscape), not code-level technical/OWASP/DRY research; choose `dev` or `validate`
-  instead when the user wants to implement tasks or run security scans/lint/tests against code
-  rather than research it.
+  Runs the Forge RESEARCH stage (technical investigation, /plan Phase 2). Use when the user
+  wants JUST the research for a feature, not the full plan flow: deep web research on best
+  practices/gotchas, an OWASP Top 10 risk pass, DRY/blast-radius codebase exploration for
+  reusable patterns, and 3+ TDD test scenarios — appended under `## Technical Research` in the
+  feature's design.md. Trigger on "run the research phase", "run an OWASP analysis on this",
+  "explore the codebase for reusable patterns (DRY) before we build", or "find TDD scenarios
+  for X". Pick over siblings: `plan` when starting a feature from scratch and wanting the FULL
+  stage (design brainstorm + branch/worktree/task-list setup), not just research;
+  `parallel-deep-research` for an external market/competitive/industry report via Parallel AI
+  (business/vendor/funding landscape), not code-level technical/OWASP/DRY research; `dev` or
+  `validate` to implement tasks or run security scans/lint/tests rather than research them.
 allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
 ---
 

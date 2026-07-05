@@ -1,21 +1,18 @@
 ---
 name: triage-ready
 description: >
-  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
-  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
-  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
-  stats`, and justifies the pick from the full record via `forge issue show` — always against
-  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
-  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
-  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
-  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
-  my next task", "top of the ready queue", "which issue should I start", "why is this issue
-  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
-  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
+  Surfaces, ranks, and EXPLAINS the single best next issue in a Forge project — strictly
+  read-only. Recomputes the live ready queue and explains what is blocked via `forge issue
+  ready`/`blocked`/`stats`/`show`, always against the live kernel, never `forge board`.
+  Recommends ONE issue with a one-line reason, then hands off; never claims, comments, closes,
+  or mutates. Use when the user asks "what should I work on", "what's next", "what's ready",
+  "pick/triage my next task", "top of the ready queue", "which issue should I start", "why is
+  this issue blocked", or "what's blocking the most work". NOT for claiming or taking
+  ownership of the pick (use claim-safety), not for everyday issue
   create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
   current workflow stage or "where am I / what's in flight" (use status), not for orienting a
-  whole session or routing to stage skills (use kernel), and not for driving an issue through
-  to a merged PR (use smith).
+  whole session or routing to stage skills (use kernel), not for driving an issue to a merged
+  PR (use smith).
 allowed-tools: Read, Bash(forge:*)
 ---
 

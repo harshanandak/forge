@@ -1,23 +1,18 @@
 ---
 name: parallel-deep-research
 description: >
-  Heavyweight EXTERNAL research reports — market, industry, competitive, and strategic —
-  delegated to Parallel AI's paid pro/ultra processors, which autonomously crawl, read, and
-  synthesize dozens of sources over 3-25 minutes and return one long structured report with
-  citations, far beyond what a handful of WebSearch calls can produce. Reach for this whenever
-  the user wants a comprehensive market analysis, competitive landscape, industry deep-dive,
-  multi-vendor/technology comparison across many sources, strategic recommendations, market
-  sizing/growth outlook, or any multi-source synthesis that would take more than 3-4 web
-  searches to answer well. Typical phrasings: "market analysis of X", "competitive landscape
-  comparing A/B/C", "industry deep-dive on...", "deep research report on...", "compare these
-  vendors at our scale", "strategic report with predictions for 2027". Requires
-  PARALLEL_API_KEY in .env.local; each run costs money and takes minutes, so it is the WRONG
-  tool for quick facts, a single-page fetch, one-URL scraping, or a small structured-field
-  extraction — use built-in WebSearch/WebFetch for those. It is also NOT the Forge RESEARCH or
-  PLAN stage itself: "run the research stage", "do Phase 2 for this feature", or
-  codebase/OWASP/DRY investigation that gets written into a design doc route to `research` and
-  `plan` — those stages may INVOKE this skill as their external research engine when a topic
-  genuinely needs dozens of sources, but a bare "run the stage" request is not this skill.
+  Heavyweight EXTERNAL research reports — market, industry, competitive, strategic — via
+  Parallel AI's paid pro/ultra processors that crawl and synthesize dozens of sources into one
+  long cited report. Use when the user wants a market analysis, competitive landscape,
+  industry deep-dive, multi-vendor/technology comparison, strategic recommendations, or market
+  sizing/growth outlook — any multi-source synthesis needing more than 3-4 web searches.
+  Typical phrasings: "market analysis of X", "competitive landscape comparing A/B/C",
+  "industry deep-dive on...", "deep research report on...", "strategic report with predictions
+  for 2027". WRONG tool for quick facts, a single-page fetch, one-URL scraping, or small
+  structured-field extraction — use built-in WebSearch/WebFetch. Also NOT the Forge RESEARCH
+  or PLAN stage: "run the research stage", "do Phase 2", or codebase/OWASP/DRY investigation
+  into a design doc route to `research` and `plan` (they may INVOKE this skill). Requires
+  PARALLEL_API_KEY.
 compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
 metadata:
   author: harshanandak
