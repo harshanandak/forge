@@ -20,7 +20,7 @@
 - Rollback PR merge commit
 
 **Recovery Scenarios**:
-- Accidentally committed sensitive data (rollback + force push)
+- Accidentally committed sensitive data (follow the secret-removal runbook; rollback alone does not purge history)
 - Merge conflict resolution went wrong
 - Refactor broke existing functionality
 
@@ -250,7 +250,8 @@ if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
 **File paths**:
 ```javascript
 const resolved = path.resolve(projectRoot, file);
-if (!resolved.startsWith(projectRoot)) {
+const rel = path.relative(projectRoot, resolved);
+if (rel.startsWith('..') || path.isAbsolute(rel)) {
   return { valid: false, error: 'Path outside project' };
 }
 ```

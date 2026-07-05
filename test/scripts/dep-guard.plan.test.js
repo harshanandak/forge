@@ -5,18 +5,16 @@ const { describe, test, expect } = require('bun:test');
 describe('plan.md integration', () => {
   const planDir = path.join(__dirname, '..', '..', 'skills', 'plan');
 
-  // The plan skill uses progressive disclosure: SKILL.md is a table-of-contents and
-  // the per-phase detail lives in references/. These tests assert the skill DOCUMENTS
-  // each step, so they read the combined content (SKILL.md + the phase references, in
-  // phase order) rather than SKILL.md alone.
+  // The plan skill body is kept whole (its HARD-GATEs and stage-transition contracts
+  // must load on every trigger), so all documented steps live in SKILL.md. These tests
+  // assert the skill DOCUMENTS each dep-guard step by reading SKILL.md directly — asserted
+  // to exist so a missing/renamed skill file fails fast instead of reading empty content.
   function readPlanSkill() {
-    const files = [
-      path.join(planDir, 'SKILL.md'),
-      path.join(planDir, 'references', 'phase1-design.md'),
-      path.join(planDir, 'references', 'phase2-research.md'),
-      path.join(planDir, 'references', 'phase3-setup.md'),
-    ];
-    return files.filter((f) => fs.existsSync(f)).map((f) => fs.readFileSync(f, 'utf-8')).join('\n');
+    const skillFile = path.join(planDir, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) {
+      throw new Error(`Missing plan skill file: ${skillFile}`);
+    }
+    return fs.readFileSync(skillFile, 'utf-8');
   }
 
   test('Phase 1 includes dep-guard ripple check step', () => {
