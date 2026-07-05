@@ -97,7 +97,7 @@ The lifecycle has `blocked` as a status that must remember the previous status �
 
 ## Naming / artifact-contract notes (the "text tags")
 
-- **`plan.md` vs `design.md` (D12):** the rename is fine, but the legacy support tail ("index legacy design.md", dual wording in skills/fixtures/drift tests) appears in 6+ places in the plan. Make migration one-shot: a script that renames work-folder `design.md → plan.md` in old folders (or adds a frontmatter alias), then *remove* all dual-handling language. Eternal dual support costs more than the migration.
+- **`plan.md` vs `plan.md` (D12):** the rename is fine, but the legacy support tail ("index legacy design.md", dual wording in skills/fixtures/drift tests) appears in 6+ places in the plan. Make migration one-shot: a script that renames work-folder `design.md → plan.md` in old folders (or adds a frontmatter alias), then *remove* all dual-handling language. Eternal dual support costs more than the migration.
 - **Stage-exit context blocks** inside planning docs are agent ceremony embedded in human documents. If the Kernel will own stage runs (it should), stage-exit data belongs in Kernel events/`evidence` files, not appended to plan prose.
 - **Scope fields list** (plan.md §3) is good but long (10 dimensions). Mark the indexed-from-day-one subset (project, issue, artifact type, source path) vs later (sprint, actor/session) so the first schema doesn't carry dead columns.
 

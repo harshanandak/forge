@@ -10,6 +10,6 @@
 ## Files in this work item
 
 - [decisions.md](decisions.md)
-- [design.md](design.md)
+- [plan.md](plan.md)
 - [owasp-analysis.md](owasp-analysis.md)
 - [tasks.md](tasks.md)

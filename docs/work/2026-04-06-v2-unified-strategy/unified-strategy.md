@@ -1410,7 +1410,7 @@ Ship-agent reads detection output and writes the updates:
 ```
 docs/
   plans/
-    YYYY-MM-DD-<slug>-design.md       # Design intent + decisions
+    YYYY-MM-DD-<slug>-plan.md       # Design intent + decisions
     YYYY-MM-DD-<slug>-tasks.md        # Task list with waves
     YYYY-MM-DD-<slug>-decisions.md    # Decision log
     YYYY-MM-DD-<slug>-results.md      # Evaluation scores (NEW)
@@ -1448,7 +1448,7 @@ status: draft | approved | implemented | superseded
 #### Guardrails per stage
 
 **plan-agent guardrails**:
-- Design doc exists at `docs/plans/<slug>-design.md` with required sections
+- Design doc exists at `docs/plans/<slug>-plan.md` with required sections
 - Research doc exists at `docs/research/<slug>-research.md` (if research needed)
 - `.forge/handoff/plan.json` has `waves` field with valid structure
 - Each task has `files[]` and `depends_on[]`

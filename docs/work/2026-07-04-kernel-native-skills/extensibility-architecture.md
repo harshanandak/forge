@@ -1,7 +1,7 @@
 # Forge Extensibility — Toggle-Driven Workflow Assembly
 
 Status: design (no code). Date: 2026-07-04.
-Companion to `super-skill-orchestrator.md` (the flagship) and `design.md` (the sub-skill catalog).
+Companion to `super-skill-orchestrator.md` (the flagship) and `plan.md` (the sub-skill catalog).
 
 ## 0. The one idea
 

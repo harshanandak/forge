@@ -10,6 +10,6 @@
 ## Files in this work item
 
 - [decisions.md](decisions.md)
-- [design.md](design.md)
+- [plan.md](plan.md)
 - [results.md](results.md)
 - [tasks.md](tasks.md)

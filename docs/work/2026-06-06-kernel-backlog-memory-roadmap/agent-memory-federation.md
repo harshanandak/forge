@@ -48,7 +48,7 @@ Sources:
 - `docs/work/**/plan.md`
 - `docs/work/**/tasks.md`
 - `docs/work/**/decisions.md`
-- legacy `design.md`
+- legacy `plan.md`
 - issue bodies/comments
 - validation logs
 - evidence files

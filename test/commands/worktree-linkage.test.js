@@ -58,7 +58,7 @@ async function setup() {
   writeFile(root, 'docs/work/2026-07-04-decoy/plan.md', '# Plan\n');
   writeFile(root, 'docs/work/2026-07-04-decoy/tasks.md', '# Tasks\n');
   writeFile(root, 'docs/work/2026-07-04-decoy/decisions.md', '# Decisions\n');
-  writeFile(root, 'docs/work/2026-07-04-linked/design.md', '# Linked design\n');
+  writeFile(root, 'docs/work/2026-07-04-linked/plan.md', '# Linked design\n');
 
   const deps = await buildMigratedKernelIssueDeps({
     projectRoot: root,

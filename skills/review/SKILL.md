@@ -133,7 +133,7 @@ This shows:
      - Alternative considered: [what Greptile suggested]
      - Why rejected: [specific reason]
 
-     See: docs/work/YYYY-MM-DD-<slug>/design.md (Decision #X)"
+     See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
    ```
 
 **Step 3: Verify all resolved**
@@ -246,7 +246,7 @@ bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-
   - Alternative considered: [what Greptile suggested]
   - Why rejected: [specific reason]
 
-  See: docs/work/YYYY-MM-DD-<slug>/design.md (Decision #X)"
+  See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
 
 # Verify all threads resolved:
 bash .claude/scripts/greptile-resolve.sh stats <pr-number>

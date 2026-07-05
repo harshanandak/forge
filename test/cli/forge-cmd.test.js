@@ -192,17 +192,17 @@ describe('CLI Command Dispatcher', () => {
 
 		test('matches docs/work plans by whole directory slug', () => {
 			withTempCwd({
-				'docs/work/2026-05-05-oauth/design.md': '# oauth\n',
-				'docs/work/2026-05-05-auth/design.md': '# auth\n',
+				'docs/work/2026-05-05-oauth/plan.md': '# oauth\n',
+				'docs/work/2026-05-05-auth/plan.md': '# auth\n',
 			}, () => {
-				expect(findPlanDocForBranch('feat/auth')).toBe('docs/work/2026-05-05-auth/design.md');
+				expect(findPlanDocForBranch('feat/auth')).toBe('docs/work/2026-05-05-auth/plan.md');
 			});
 		});
 
 		test('does not match partial docs/work slug substrings', () => {
 			withTempCwd({
-				'docs/work/2026-05-05-oauth/design.md': '# oauth\n',
-				'docs/work/2026-05-05-user-auth/design.md': '# user auth\n',
+				'docs/work/2026-05-05-oauth/plan.md': '# oauth\n',
+				'docs/work/2026-05-05-user-auth/plan.md': '# user auth\n',
 			}, () => {
 				expect(findPlanDocForBranch('feat/auth')).toBeNull();
 			});
@@ -210,18 +210,18 @@ describe('CLI Command Dispatcher', () => {
 
 		test('matches legacy docs/plans files by whole slug segment', () => {
 			withTempCwd({
-				'docs/plans/2026-05-05-oauth-design.md': '# oauth\n',
-				'docs/plans/2026-05-05-user-auth-design.md': '# user auth\n',
-				'docs/plans/2026-05-05-auth-design.md': '# auth\n',
+				'docs/plans/2026-05-05-oauth-plan.md': '# oauth\n',
+				'docs/plans/2026-05-05-user-auth-plan.md': '# user auth\n',
+				'docs/plans/2026-05-05-auth-plan.md': '# auth\n',
 			}, () => {
-				expect(findPlanDocForBranch('feat/auth')).toBe('docs/plans/2026-05-05-auth-design.md');
+				expect(findPlanDocForBranch('feat/auth')).toBe('docs/plans/2026-05-05-auth-plan.md');
 			});
 		});
 
 		test('does not match partial legacy docs/plans slug substrings', () => {
 			withTempCwd({
-				'docs/plans/2026-05-05-oauth-design.md': '# oauth\n',
-				'docs/plans/2026-05-05-user-auth-design.md': '# user auth\n',
+				'docs/plans/2026-05-05-oauth-plan.md': '# oauth\n',
+				'docs/plans/2026-05-05-user-auth-plan.md': '# user auth\n',
 			}, () => {
 				expect(findPlanDocForBranch('feat/auth')).toBeNull();
 			});

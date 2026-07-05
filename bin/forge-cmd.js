@@ -40,7 +40,7 @@ function findWorkPlanDoc(dir, slug) {
 			const found = findWorkPlanDoc(entryPath, slug);
 			if (found) return found;
 		}
-		if (entry.isFile() && (entry.name === 'design.md' || entry.name === 'tasks.md')) {
+		if (entry.isFile() && (entry.name === 'plan.md' || entry.name === 'tasks.md')) {
 			const workDirName = dir.split(/[\\/]/).pop() || '';
 			const workSlug = workDirName.replace(/^\d{4}-\d{2}-\d{2}-/, '');
 			if (workSlug === slug) {

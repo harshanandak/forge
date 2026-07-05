@@ -49,10 +49,10 @@ describe('Contract: /plan design doc output -> /ship design doc reference', () =
   const shipContent = readCommand('ship.md');
 
   /**
-   * /plan produces a design doc at docs/work/YYYY-MM-DD-<slug>/design.md
+   * /plan produces a design doc at docs/work/YYYY-MM-DD-<slug>/plan.md
    * /ship must reference the same pattern in its PR body.
    */
-  const designDocPattern = /docs\/work\/YYYY-MM-DD-<slug>\/design\.md/;
+  const designDocPattern = /docs\/work\/YYYY-MM-DD-<slug>\/plan\.md/;
 
   test('/plan references the design doc file pattern', () => {
     expect(designDocPattern.test(planContent)).toBeTruthy();

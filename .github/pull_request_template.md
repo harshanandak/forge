@@ -26,7 +26,7 @@ Closes <forge-issue-id>
 - Automated scan: <!-- result -->
 
 ### Design Doc
-<!-- See: docs/work/YYYY-MM-DD-<slug>/design.md -->
+<!-- See: docs/work/YYYY-MM-DD-<slug>/plan.md -->
 
 ### Key Decisions
 <!-- From design doc — 3-5 key decisions with reasoning -->

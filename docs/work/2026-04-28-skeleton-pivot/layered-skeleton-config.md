@@ -57,7 +57,7 @@ workflow:
 artifacts:
   design_doc:
     kind: markdown
-    path: docs/work/{date}-{slug}/design.md
+    path: docs/work/{date}-{slug}/plan.md
   patch:
     kind: git_diff
 

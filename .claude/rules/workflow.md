@@ -20,7 +20,7 @@ TDD-first development workflow for any project: plan → dev → validate → sh
 
 ### Design-First Planning
 - All features start with Phase 1: one-question-at-a-time Q&A to capture design intent
-- Design doc saved to `docs/work/YYYY-MM-DD-<slug>/design.md`
+- Design doc saved to `docs/work/YYYY-MM-DD-<slug>/plan.md`
 - Research (Phase 2) and task list (Phase 3) follow design approval
 - Phase 1 quality directly determines /dev autonomy — resolve ambiguity upfront
 

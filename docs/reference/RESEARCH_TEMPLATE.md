@@ -257,7 +257,7 @@
 
 1. **If Strategic**: Create OpenSpec proposal
    - `openspec proposal create <feature-slug>`
-   - Write proposal.md, tasks.md, design.md
+   - Write proposal.md, tasks.md, plan.md
    - Reference this research doc for evidence
 
 2. **Create Beads issue**:

@@ -27,23 +27,23 @@ When Forge is added to a new project, generated instructions/skills/templates ma
 - `tasks.md` for executable task breakdown.
 - `decisions.md` for decision log.
 - `evidence.md` or validation notes for proof.
-- `design.md` only for durable product/architecture design or as a legacy compatibility alias.
+- `plan.md` only for durable product/architecture design or as a legacy compatibility alias.
 
 Required direction:
 
 - Update setup templates, skills, command prompts, and generated agent guidance so new projects follow this structure by default.
 - Add fixtures proving a fresh Forge install creates/mentions the correct folder and document names.
-- Keep legacy `design.md` readable, but stop teaching it as the default work-item planning artifact.
+- Keep legacy `plan.md` readable, but stop teaching it as the default work-item planning artifact.
 
-### 3. `design.md` to `plan.md` migration is incomplete
+### 3. `plan.md` to `plan.md` migration is incomplete
 
-Forge has shifted work-item planning from `design.md` to `plan.md`, but commands, skills, tests, docs, and generated instructions may still mention `design.md` as the ordinary planning output.
+Forge has shifted work-item planning from `plan.md` to `plan.md`, but commands, skills, tests, docs, and generated instructions may still mention `plan.md` as the ordinary planning output.
 
 Required direction:
 
 - Audit every command, skill, fixture, and doc reference.
 - Replace default work-item planning references with `plan.md`.
-- Keep `design.md` for true architecture/product design docs and backward-compatible reads.
+- Keep `plan.md` for true architecture/product design docs and backward-compatible reads.
 - Add drift tests so the old default wording cannot come back.
 
 ### 4. Hooks and lint checks are not reliably installed in worktrees
@@ -116,7 +116,7 @@ The amendments created from this addendum should be linked into existing roadmap
 | --- | --- | --- |
 | Generated docs/harness churn | `forge-2agy.9.7` plus hook/state dependencies | Agent/harness workflow reliability |
 | New project work-folder structure | `forge-2agy.9.7` and `forge-2agy.9.3` | Skills/templates must feed Project Knowledge |
-| `design.md` -> `plan.md` migration | `forge-2agy.9.3` | Knowledge indexing and work artifact naming |
+| `plan.md` -> `plan.md` migration | `forge-2agy.9.3` | Knowledge indexing and work artifact naming |
 | Worktree hook/lint install | `forge-2agy.9.3` / `.9.3.32` | Hook doctor and architecture capture enforcement |
 | Worktree Forge state bootstrap | `forge-2agy.9.5` | Local multi-worktree state safety |
 | Pre-merge as embedded gate | `forge-2agy.9.2` | Workflow taxonomy and stage model |

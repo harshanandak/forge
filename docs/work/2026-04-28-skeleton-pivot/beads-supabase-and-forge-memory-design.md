@@ -3,7 +3,7 @@
 - **Date**: 2026-04-29
 - **Status**: Research + Design Proposal
 - **Owners**: skeleton-pivot
-- **Companions**: [`locked-decisions.md`](./locked-decisions.md), [`n1-moat-technical-deep-dive.md`](./n1-moat-technical-deep-dive.md), [`../2026-04-26-project-memory/design.md`](../2026-04-26-project-memory/design.md)
+- **Companions**: [`locked-decisions.md`](./locked-decisions.md), [`n1-moat-technical-deep-dive.md`](./n1-moat-technical-deep-dive.md), [`../2026-04-26-project-memory/plan.md`](../2026-04-26-project-memory/plan.md)
 
 ---
 
@@ -11,7 +11,7 @@
 
 1. **The "Supabase migration" premise is incorrect.** Beads has never migrated to Supabase. The repository moved namespace (`steveyegge/beads` → `gastownhall/beads`, see CHANGELOG `[1.0.2]` 2026-04-15), and the storage backend went **SQLite → Dolt**, not Postgres/Supabase. Searching the canonical repo for `supabase` returns zero relevant issues.
 2. **The actual recent breaking change** is the v0.51 Dolt-native cleanup ([CHANGELOG `[0.51.0]` 2026-02-16](https://github.com/gastownhall/beads/blob/main/CHANGELOG.md)) plus v0.55-era removals: SQLite backend deleted, JSONL sync pipeline deleted, embedded Dolt mode removed (now requires running `dolt sql-server`). Forge already runs in `dolt_mode: server` per `.beads/metadata.json`, so we are on the supported path.
-3. **Forge Memory already exists** as a *complement* to Beads (see [`docs/work/2026-04-26-project-memory/design.md`](../2026-04-26-project-memory/design.md), status: Implemented at `lib/project-memory.js`). It is not a Beads replacement — it stores agent-agnostic durable context, keyed and upserted in `.forge/memory/entries.jsonl`.
+3. **Forge Memory already exists** as a *complement* to Beads (see [`docs/work/2026-04-26-project-memory/plan.md`](../2026-04-26-project-memory/plan.md), status: Implemented at `lib/project-memory.js`). It is not a Beads replacement — it stores agent-agnostic durable context, keyed and upserted in `.forge/memory/entries.jsonl`.
 4. **Recommendation**: **Coexist**, not replace. Harden the Beads/Dolt adapter (already a locked Wave-1 deliverable in `n1-moat-technical-deep-dive.md`) and extend Forge Memory to optionally adapt issue ops behind a thin interface for users who refuse the Dolt dependency.
 
 ---
@@ -61,7 +61,7 @@ These are real but small-surface bugs in the Dolt server lifecycle, init safety,
 
 ### What Forge Memory is, per the implemented design
 
-Source: `docs/work/2026-04-26-project-memory/design.md` (status: **Implemented**), `lib/project-memory.js`.
+Source: `docs/work/2026-04-26-project-memory/plan.md` (status: **Implemented**), `lib/project-memory.js`.
 
 - Storage: `.forge/memory/entries.jsonl` (one upsertable entry per line, keyed by `key`).
 - Schema: `{ key, value, source-agent, timestamp, tags, scope?, confidence?, supersedes?, beads-refs? }`.
