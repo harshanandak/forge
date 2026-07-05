@@ -12,7 +12,7 @@
     "should_trigger": true
   },
   {
-    "query": "Build out the task list from the design doc using red-green-refactor",
+    "query": "Implement the already-planned tasks one at a time, red-green-refactor each",
     "should_trigger": true
   },
   {

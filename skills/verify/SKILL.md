@@ -41,10 +41,11 @@ Confirm the merge actually landed on master. If the PR isn't merged yet, stop an
 
 ### Step 2: Confirm PR Is Merged
 
-Detect the most recently merged PR from the current HEAD commit:
+Detect the PR that produced the current HEAD commit — scope the lookup to that
+commit's SHA so you don't pick up an unrelated newer merge:
 
 ```bash
-gh pr list --state merged --base master --limit 1 --json number,state,mergedAt,mergedBy
+gh pr list --state merged --base master --search "$(git rev-parse HEAD)" --limit 1 --json number,state,mergedAt,mergedBy
 ```
 
 - `state` should be `MERGED`
