@@ -48,8 +48,9 @@ Forge stage parity should become skills-first across Claude, Cursor, and Codex:
 | `validate` | super skill with check subskills | `.claude/skills/validate/SKILL.md` plus command shim | `.cursor/skills/validate/SKILL.md` (unproven) | `.codex/skills/validate/SKILL.md` |
 | `ship` | super skill with PR subskills | `.claude/skills/ship/SKILL.md` plus command shim | `.cursor/skills/ship/SKILL.md` (unproven) | `.codex/skills/ship/SKILL.md` |
 | `review` | super skill with feedback subskills | `.claude/skills/review/SKILL.md` plus command shim | `.cursor/skills/review/SKILL.md` (unproven) | `.codex/skills/review/SKILL.md` |
-| `premerge` | super skill with readiness subskills | `.claude/skills/premerge/SKILL.md` plus command shim | `.cursor/skills/premerge/SKILL.md` (unproven) | `.codex/skills/premerge/SKILL.md` |
 | `verify` | super skill with post-merge subskills | `.claude/skills/verify/SKILL.md` plus command shim | `.cursor/skills/verify/SKILL.md` (unproven) | `.codex/skills/verify/SKILL.md` |
+
+Pre-merge is not a skill or a workflow stage — it is a documentation-and-handoff gate embedded in the `ship` and `review` skills, so it has no parity row.
 
 `status` remains a utility skill, not a workflow stage. The stage graph exposes it in `utilitySkills[]` so renderers can still generate status affordances without adding invalid workflow transitions.
 
