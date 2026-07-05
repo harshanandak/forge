@@ -7,7 +7,7 @@ This guide covers supported Forge adoption paths. Use [Quickstart](../../QUICKST
 - Git
 - Node.js and Bun
 - GitHub CLI if using PR or sync workflows
-- Optional: Beads (`bd`) for durable issue state
+- Optional: Beads (`bd`) as an opt-out issue backend (issue commands use the built-in kernel backend by default)
 
 ## Install
 
@@ -70,11 +70,15 @@ Forge currently supports Claude Code, Codex, and Cursor. Hermes support is plann
 
 Exact generated files depend on selected agents and existing repository files. Use `--dry-run` before applying setup to a mature repo.
 
-## Beads
+## Issue Backend
 
-Beads is optional but recommended for durable issue state. Prefer the current Beads installer documented by Beads itself and this repo's toolchain docs. On Windows, avoid stale global install examples if they hit EPERM or shim issues; use the PowerShell installer path described in [Toolchain](../reference/TOOLCHAIN.md).
+Forge issue commands (`forge ready`, `forge show`, `forge claim`, `forge create`, `forge close`) use the built-in **kernel** backend by default. No install or initialization is required — a fresh clone can track issues immediately.
 
-Basic health checks:
+## Beads (Opt-Out Backend)
+
+Beads (`bd`) is an optional opt-out backend for teams that prefer Dolt-backed sync internals. Select it (precedence, highest first) with `--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`; only then is `bd` required. Prefer the current Beads installer documented by Beads itself and this repo's toolchain docs. On Windows, avoid stale global install examples if they hit EPERM or shim issues; use the PowerShell installer path described in [Toolchain](../reference/TOOLCHAIN.md).
+
+When Beads is selected, health checks:
 
 ```bash
 bd doctor
@@ -82,7 +86,7 @@ bd dolt status
 forge sync
 ```
 
-If a feature worktree reports `database "forge" not found on Dolt server`, diagnose in the root checkout before changing issue state.
+If a feature worktree reports `database "forge" not found on Dolt server`, diagnose in the root checkout before changing issue state. This applies only to the Beads backend.
 
 ## Deprecated GitHub Sync Cleanup
 
