@@ -3,8 +3,7 @@ name: status
 description: >
   Report where the project stands and what work is in flight -- the Forge status snapshot.
   Reach for this at session start or whenever the user says "/status", "where am I", "what's
-  in progress", "catch me up", "resume work", "what changed recently", or "what should I pick
-  up next". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
+  in progress", "catch me up", "resume work", or "what changed recently". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
   composite score with conflict-risk flags, stale already-merged issues (which it closes), and
   recent commits. Use it to ORIENT and decide the next move -- it reports state; it does not
   plan, develop, or claim issues. Not for: routing to a stage skill or documenting the full
