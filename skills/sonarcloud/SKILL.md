@@ -1,6 +1,23 @@
 ---
 name: sonarcloud
-description: Pulls issues, metrics, quality gates, security hotspots, and analysis history from SonarCloud via its API. Use for the Forge sonarcloud stage when querying code quality data for a project, branch, or PR — triggers on sonarcloud, code quality, issues, metrics, quality gate, hotspots, coverage.
+description: >
+  Query SonarCloud code-quality data through the `/sonarcloud` slash command — the fast,
+  in-context lookup surface for a project, branch, or (above all) a pull request. Handles the
+  named queries `issues`, `metrics`, `gate` (quality-gate pass/fail with failed conditions),
+  `health` (full report), `pr <number>`, `hotspots` (security), and `history`, plus
+  `--branch`, `--severity`, `--type`, and `--new-code` filters. Reach for this the moment the
+  user types `/sonarcloud ...`, or asks in plain language: "what does SonarCloud say about
+  this PR", "check the SonarCloud quality gate before I ship", "show SonarCloud
+  blocker/critical bugs on the develop branch", "any new-code SonarCloud issues on PR 214",
+  "SonarCloud coverage for my-project". Requires a `SONARCLOUD_TOKEN` (and organization key).
+  This skill only READS and reports SonarCloud results — it does NOT fix findings or
+  reply-to/resolve PR review threads (that is the `review` stage), and it is the lightweight
+  command surface, NOT the isolated deep-analysis session that correlates findings with local
+  source, walks analysis-history trends, or runs duplication deep-dives across many endpoints
+  (that is `sonarcloud-analysis` — send heavyweight or correlation work there). Not for local
+  SAST/security scans of your own code, and not for the Forge issue tracker ("open/ready
+  issues", `forge issue ...`) — here those bare words always mean SonarCloud, not the tracker
+  or validate stage.
 allowed-tools: Bash, Read, Grep, Glob, WebFetch
 ---
 
@@ -41,7 +58,7 @@ Pull code quality data from SonarCloud. Requires `SONARCLOUD_TOKEN` environment 
    - Optional filters (branch, severity, type, new-code, etc.)
 2. Check for `SONARCLOUD_TOKEN` environment variable. If not set, inform user.
 3. Check for `SONARCLOUD_ORG` environment variable or ask user for organization key.
-4. Execute the appropriate API call using curl or the TypeScript client at `next-app/src/lib/integrations/sonarcloud.ts`
+4. Execute the appropriate API call against the SonarCloud REST API (see the API Reference section below for endpoints)
 5. Format and present results clearly:
    - For issues: Group by severity/type, show file, line, message
    - For metrics: Show as table with metric name and value

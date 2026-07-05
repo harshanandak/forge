@@ -1,13 +1,24 @@
 ---
 name: validate
-description: Runs comprehensive pre-pull-request validation for the Forge validate stage — rebases onto the base branch, then runs type checking, linting, code review, security review (OWASP Top 10), and tests, requiring fresh passing output before shipping. Use for the Forge validate stage or when asked to validate changes, run quality gates, type-check, lint, security-scan, or run the full test suite before opening a PR.
+description: >
+  Forge VALIDATE stage — the pre-pull-request quality gate. Rebases the branch onto the
+  current base branch, then runs type-checking, linting, code review, an OWASP Top 10 security
+  review plus dependency scan, and the full test suite, demanding fresh passing output in THIS
+  session before anything ships. Reach for this whenever a branch is code-complete and someone
+  says: validate my changes, run the quality gates, run the pre-PR checks, type-check and lint
+  before the PR, run the security scan, or run the full test suite before opening a PR — and
+  for the literal `/validate` command or `bun run check`. This is the gate that runs AFTER
+  code is written but BEFORE a PR exists, so discriminate carefully: it does not implement
+  features or write tests (that is `/dev`), it does not push the branch or open the PR (that
+  is `/ship`), it does not answer PR review feedback from Greptile / SonarCloud / CodeRabbit
+  (that is `/review`), and it is not the post-merge CI health check (that is `/verify`).
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
 > - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
 > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
-> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
+> - `bun run check` (scripts/validate.js): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
 
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
@@ -69,7 +80,7 @@ reflect the true state of what will be merged.
 
 ## What This Skill Does
 
-**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
+**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.js`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
 
 ### Step 1: Type Check
 ```bash
@@ -210,7 +221,8 @@ If any check fails:
 forge create "Fix <issue-description>"
 
 # Mark current issue as blocked
-forge update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
+forge update <current-id> --status blocked
+forge comment <current-id> "Blocked by <new-issue-id>"
 
 # Output what needs fixing
 ```

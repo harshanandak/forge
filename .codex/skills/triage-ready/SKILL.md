@@ -1,13 +1,21 @@
 ---
 name: triage-ready
 description: >
-  Surfaces and EXPLAINS the right next work in a Forge project — read-only. Ranks
-  the ready queue with `forge issue ready`, shows what is blocked and why with
-  `forge issue blocked`, and summarizes the backlog with `forge issue stats`. Never
-  uses `board` (which reads a legacy snapshot store, not the live kernel). Use when
-  deciding what to pick up next, or to justify why an item is workable. Trigger on
-  "what should I work on", "what's ready", "triage", "next task", "ready queue",
-  "why is this blocked", or "pick my next issue".
+  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
+  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
+  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
+  stats`, and justifies the pick from the full record via `forge issue show` — always against
+  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
+  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
+  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
+  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
+  my next task", "top of the ready queue", "which issue should I start", "why is this issue
+  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
+  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
+  create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
+  current workflow stage or "where am I / what's in flight" (use status), not for orienting a
+  whole session or routing to stage skills (use kernel), and not for driving an issue through
+  to a merged PR (use smith).
 allowed-tools: Read, Bash(forge:*)
 ---
 
@@ -37,8 +45,10 @@ and `forge issue stats` exclusively.
 forge issue stats --json
 ```
 
-Returns `data.counts` (open/in_progress/done/cancelled), `ready_count`,
-`blocked_count`, and `active_claims`. A high `blocked_count` relative to
+Returns `data.counts` (`open`/`done`/`cancelled` — keys are present only when
+non-zero, and there is no `in_progress` bucket: claimed work stays in status
+`open` and is surfaced via `active_claims`), `ready_count`, `blocked_count`, and
+`active_claims`. A high `blocked_count` relative to
 `ready_count` is your signal that dependency repair (not new work) is the real
 bottleneck — hand off to `dependency-planning` / `backlog-hygiene`.
 
@@ -91,8 +101,10 @@ or close — it is strictly read-only.
 
 - **Recompute, never cache.** Readiness is derived; re-run `forge issue ready`
   every session rather than remembering a prior "ready" verdict.
-- **Respect non-claimable types.** Epics and decisions are `claimable:false` and
-  will not appear in `ready`; do not hand them off as work.
+- **Respect non-claimable types.** Epics and decisions never appear in `ready`
+  (the queue surfaces only claimable types — `task`/`bug`), so do not hand them
+  off as work. There is no `claimable` field in the CLI JSON; this is behavioral,
+  not a flag you can read.
 - **Check the envelope.** Every `--json` reply carries `ok`; on `ok:false` read
   `error.message` and retry the query rather than guessing at state.
 - **Read-only.** This skill runs only `stats`/`ready`/`blocked`/`show`. If a fix is

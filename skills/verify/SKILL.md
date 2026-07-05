@@ -1,6 +1,18 @@
 ---
 name: verify
-description: Post-merge health check for the Forge verify stage — confirms the merge landed on master, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
+description: >
+  Runs the Forge verify stage — the post-merge health check performed AFTER a PR has been
+  merged. Switches to master and pulls, confirms the merge actually landed (`gh pr list
+  --state merged`), checks CI is green on master after the merge, confirms any deployments are
+  up, removes the merged worktree and safe-deletes the local branch, and closes the
+  kernel/Beads issues the PR resolved (`forge close --reason=...`). Use when asked to verify a
+  merge went cleanly, confirm post-merge CI health on master, check deployments after merging,
+  clean up a merged branch or worktree, or close the issue now that its PR is merged — and
+  whenever `/verify` is invoked. This is strictly the POST-merge stage: reach for shepherd
+  instead to monitor a still-open PR toward merge, review to fix and resolve PR feedback
+  before merge, ship to push the branch and open the PR, rollback to undo an already-shipped
+  change, status to merely report the current stage without acting, and issue-basics to close
+  an issue that is unrelated to a just-merged PR.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
@@ -29,10 +41,11 @@ Confirm the merge actually landed on master. If the PR isn't merged yet, stop an
 
 ### Step 2: Confirm PR Is Merged
 
-Detect the most recently merged PR from the current HEAD commit:
+Detect the PR that produced the current HEAD commit — scope the lookup to that
+commit's SHA so you don't pick up an unrelated newer merge:
 
 ```bash
-gh pr list --state merged --base master --limit 1 --json number,state,mergedAt,mergedBy
+gh pr list --state merged --base master --search "$(git rev-parse HEAD)" --limit 1 --json number,state,mergedAt,mergedBy
 ```
 
 - `state` should be `MERGED`
@@ -59,7 +72,7 @@ Check if the project has a deployment target:
 gh run list --branch master --limit 1
 
 # Check Vercel deployments for the merged PR (use number from Step 2)
-gh pr view <number> --json deployments
+gh pr view <number> --json statusCheckRollup
 ```
 
 If deployments exist:

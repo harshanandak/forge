@@ -1,12 +1,26 @@
 ---
 name: hermes-forge
 description: >
-  Consumption contract for the Hermes harness on a Forge project. Treat
-  `forge orient` and `forge recap` as the authoritative, token-bounded source
-  of project state, cite every surfaced fact by its provenance, honor the
-  deterministic truncation policy, and write evidence or decisions back ONLY
-  through Forge CLI commands. Hermes-native profile memory never leaks into
-  Forge Kernel state.
+  Consumption contract for how the Hermes harness reads, cites, and writes back Forge project
+  state — Hermes is a CONSUMER of Forge, never a second source of truth. Load this whenever a
+  Hermes session runs on a Forge repo: at session start to orient, before acting on a specific
+  issue, or any time you need CURRENT project state. Always obtain state through `forge
+  orient` / `forge recap <issue-id>` — the deterministic, token-bounded JSON envelope — and
+  never reconstruct it by reading raw issue stores, design files, or kernel internals. This
+  skill governs the envelope discipline: honor the token budget (raise depth with `--budget
+  N`, don't retry blindly), treat any `truncated` section as incomplete, attribute every
+  surfaced fact to its source `path`/`authority`, and surface conflicts instead of silently
+  picking a winner. It also governs writeback: record evidence, decisions, and follow-up work
+  into the Forge Kernel ONLY through Forge CLI commands (`forge comment` / `forge update` /
+  `forge create`), and NEVER leak Hermes profile or session memory into Forge state. Trigger
+  phrases: "orient me / what's the current project state", "where did this fact come from,
+  cite it", "the orient output came back truncated", "how do I persist this decision back into
+  Forge", "is it safe to store this in kernel state". This is the Hermes⇄Forge boundary
+  contract — NOT the general Forge session router that navigates stage skills (kernel), NOT
+  the human-facing "what stage am I in / where am I" report (status), NOT everyday issue
+  create/update/close/search CRUD (issue-basics), NOT surfacing or ranking the next ready
+  issue (triage-ready), and NOT live PR monitoring (shepherd, which runs OUTSIDE Hermes and is
+  not visible through orient).
 compatibility: >
   Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
   path — like every Forge skill pack (e.g. parallel-deep-research,
@@ -49,18 +63,16 @@ reading raw issue stores, design files, or kernel internals directly:
 forge orient --json                # bounded project orientation (envelope)
 forge orient --budget 4000 --json
 forge recap <issue-id> --json      # bounded per-issue recap (envelope)
-forge recap --json                 # legacy activity summary (NOT the envelope)
 ```
 
 `forge orient` and `forge recap <issue-id>` emit the deterministic JSON envelope
 described below (assembly `deterministic-file-assembly-v1`). Parse the JSON; do
 not screen-scrape the human text form.
 
-> Note: bare `forge recap --json` (no issue id) returns the legacy activity
-> summary (`generatedAt`, `issueSummary`, `reviewOutcomes`, `recentIssues`,
-> `insights`) — it does **not** carry `schema_version`, `sections`,
-> `token_budget`, or `assembly`. For the envelope contract, use `forge orient`
-> or `forge recap <issue-id>`.
+> Note: `forge recap` always requires an issue id — bare `forge recap --json`
+> (no id) prints its usage and exits non-zero rather than returning a summary.
+> Use `forge orient` for project-level orientation, or `forge recap <issue-id>`
+> for a single issue; both emit the deterministic envelope.
 
 ### Envelope shape
 
@@ -110,14 +122,13 @@ whole payload.
 
 Truncation is deterministic, never random:
 
-- Non-preserved sections are allocated budget in ascending numeric `priority`
-  order (lower `priority` first); when the budget is exhausted, the
-  later/higher-`priority` sections are the ones trimmed. Preserved sections are
-  kept whole and trimmed only as a last resort if the payload is still over
-  budget. The authoritative per-section signal is each section's `truncated`
-  flag plus its `priority`/`estimated_tokens` — not the nominal
-  `token_budget.truncation_order` list, which is a static hint and may not match
-  the priority-driven trim order.
+- Non-preserved sections are trimmed in the order given by
+  `token_budget.truncation_order`; when the budget is exhausted, sections later
+  in that order are trimmed first. Preserved sections are kept whole and trimmed
+  only as a last resort if the payload is still over budget. The authoritative
+  per-section signal is each section's `truncated` flag and `estimated_tokens` —
+  there is no per-section `priority` field; the overall trim order is
+  `token_budget.truncation_order`.
 - A trimmed section ends with the literal marker
   `[truncated deterministically by token budget]` and has `truncated: true`.
 - `token_budget.truncated === true` means the payload as a whole was trimmed.

@@ -1,16 +1,22 @@
 ---
 name: kernel
 description: >
-  Forge kernel surface — the umbrella index for working in a Forge project. Use
-  at the start of any session and whenever you need to orient: it routes to the
-  `smith` orchestrator super-skill, the per-stage workflow skills (plan, dev,
-  validate, ship, review, verify, plus status, research, rollback, sonarcloud,
-  shepherd) and the kernel-native skills (triage-ready, issue-basics), and
-  documents the day-to-day issue, board, and orientation verbs of the `forge`
-  CLI. Trigger on
-  "what's the workflow", "what should I work on", "forge issues", "claim an
-  issue", "project status", "orient", or when deciding between Forge issues and
-  an ad-hoc TodoWrite list.
+  Forge kernel surface — the umbrella index and router for a Forge project. Reach for this
+  FIRST when you are orienting rather than executing: at the very start of a Forge session,
+  when you need the map of how the whole system fits together, or when you are unsure WHICH
+  skill or `forge` verb a task belongs to. It routes to the `smith` end-to-end orchestrator,
+  the per-stage ladder skills (plan, dev, validate, ship, review, verify), the utility skills
+  (status, research, rollback, sonarcloud, shepherd), and the kernel-native issue skills
+  (triage-ready, claim-safety, issue-basics) — and it is the reference for the day-to-day
+  `forge` CLI issue, board, gate, and orientation verbs. Trigger on "how does the Forge
+  workflow work", "walk me through the stage ladder", "which forge command or skill do I use
+  for X", "what are the forge issue verbs", "I'm new to this repo, how is Forge set up", "map
+  the Forge skills for me", or "should this be a Forge issue or a TodoWrite". This is the
+  meta/index layer, so hand off the actual doing: ranking or picking the next ready issue →
+  `triage-ready`; the current stage, "where am I", or active/stale work → `status`;
+  create/update/close/search a single issue → `issue-basics`; claim-then-prove-ownership
+  before mutating → `claim-safety`; drive one issue from plan to a merged PR under human gates
+  → `smith`; token-bounded project state for the Hermes harness → `hermes-forge`.
 allowed-tools: Read, Bash(forge:*)
 ---
 
@@ -103,11 +109,12 @@ families. Run them through Bash; never hand-edit the issue store.
 | Search / stats | `forge issue search "…"` · `forge issue stats` |
 | Blocked work | `forge blocked` |
 
-### B — Memory / knowledge (planned)
+### B — Memory / knowledge
 
-`forge remember` / `forge recall` / `forge knowledge search` are roadmap items —
-they are **not on the CLI yet**. Do not invoke them; record durable decisions as
-issue comments (`forge comment`) until the memory verbs land.
+`forge remember <note> [--tag <label>]... [--json]` and `forge recall` are live —
+they persist and retrieve project-memory notes from a file-backed store. Only
+`forge knowledge search` is not on the CLI yet; until it lands, capture durable
+decisions as `forge remember` notes or issue comments (`forge comment`).
 
 ### C — Board / planning / admin
 

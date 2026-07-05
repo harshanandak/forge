@@ -1,0 +1,50 @@
+[
+  {
+    "query": "I just cloned this Forge repo and I'm not sure how any of it works — give me the lay of the land: what's the workflow, what skills exist, and where do I even start?",
+    "should_trigger": true
+  },
+  {
+    "query": "There are a bunch of forge skills and I can't tell which one to use for what — lay out how they fit together and when I'd reach for each.",
+    "should_trigger": true
+  },
+  {
+    "query": "Which forge CLI command adds a dependency between two issues, and what's the verb for proving I hold a claim? Just the reference, don't run anything.",
+    "should_trigger": true
+  },
+  {
+    "query": "Is this small cleanup worth filing as a Forge issue, or should I just throw it on a TodoWrite checklist for this session?",
+    "should_trigger": true
+  },
+  {
+    "query": "Walk me through the Forge stage ladder from planning to post-merge verify and what each stage owns.",
+    "should_trigger": true
+  },
+  {
+    "query": "Give me the reference of all the day-to-day forge issue and board verbs — I want the index, not to execute a command yet.",
+    "should_trigger": true
+  },
+  {
+    "query": "What should I pick up next? Rank the ready queue and tell me the top unblocked issue and why.",
+    "should_trigger": false
+  },
+  {
+    "query": "Where am I in the workflow right now, what's my active work, and has anything gone stale?",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a bug issue titled 'login times out after 30s', priority 1, and link it under the auth epic.",
+    "should_trigger": false
+  },
+  {
+    "query": "Claim forge-4h9 for me and confirm I actually hold the lease before I start editing.",
+    "should_trigger": false
+  },
+  {
+    "query": "Take forge-7c2 all the way from planning through a merged PR, pausing for my approval at the plan and the merge.",
+    "should_trigger": false
+  },
+  {
+    "query": "In the Hermes harness, give me the token-bounded project state to work from — treat forge orient as the source of truth.",
+    "should_trigger": false
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "query": "The PR just merged — make sure master is still healthy",
+    "should_trigger": true
+  },
+  {
+    "query": "Confirm the auth-refresh change actually landed on master and CI passed after merge",
+    "should_trigger": true
+  },
+  {
+    "query": "/verify",
+    "should_trigger": true
+  },
+  {
+    "query": "Now that #89 is merged, close the issue it resolved and delete the feature branch",
+    "should_trigger": true
+  },
+  {
+    "query": "Did the deployment go out okay after we merged this?",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the post-merge checks and clean up the merged worktree",
+    "should_trigger": true
+  },
+  {
+    "query": "Watch my open PR and re-run the flaky required check until it can merge",
+    "should_trigger": false
+  },
+  {
+    "query": "Fix and resolve all the Greptile and SonarCloud threads on the PR",
+    "should_trigger": false
+  },
+  {
+    "query": "Push this validated branch and open a pull request",
+    "should_trigger": false
+  },
+  {
+    "query": "This merge broke production — revert the PR",
+    "should_trigger": false
+  },
+  {
+    "query": "Where am I in the workflow and what's in progress right now?",
+    "should_trigger": false
+  },
+  {
+    "query": "Close forge-abc, we've decided not to do it",
+    "should_trigger": false
+  }
+]
