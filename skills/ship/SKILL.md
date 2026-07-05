@@ -1,21 +1,18 @@
 ---
 name: ship
 description: >
-  Forge SHIP stage: push the already-validated feature branch and open a pull request
-  populated from the project's OWN PR template (design-doc link, Forge issue IDs, real
-  test/commit data), then hand the PR off for MANUAL merge — this skill never merges or
-  auto-merges. Reach for it the moment /validate has passed and you want a PR on the board.
-  Triggers on phrasings like "ship it", "ship this branch", "create/open the PR", "open a pull
-  request", "push and open a PR", "gh pr create", "make/raise a PR from my current branch",
-  "checks passed, now cut the PR". It runs the branch-freshness and parallel-PR
-  merge-simulation checks, force-with-lease pushes, records the ship->review handoff, then
-  stops. This is ONE stage — route elsewhere when the ask is broader or different: the whole
-  plan->dev->validate->ship->review pipeline or "drive it to done" (smith); running
-  type-check/lint/tests/security first (validate); addressing PR review comments or resolving
-  Greptile/SonarCloud/CodeRabbit threads on an existing PR (review); babysitting an
-  already-open PR's checks toward merge (shepherd); the post-merge CI health check and closing
-  issues (verify); or reverting an already-shipped change (rollback). If the PR already
-  exists, this is not the skill.
+  Forge SHIP stage: push the validated feature branch and open a PR populated from the
+  project's OWN PR template (design-doc link, Forge issue IDs, real test/commit data), then
+  hand off for MANUAL merge; never merges or auto-merges. Use once /validate passes and you
+  want a PR on the board. Triggers: "ship it", "ship this branch", "open the PR", "push and
+  open a PR", "gh pr create", "checks passed, now cut the PR". Runs branch-freshness +
+  parallel-PR merge-sim checks, force-with-lease push, records the ship->review handoff, then
+  stops. One stage only; not for: the whole plan->dev->validate->ship->review pipeline or
+  drive-to-done (smith); type-check/lint/tests/security first (validate); addressing PR
+  comments or resolving Greptile/SonarCloud/CodeRabbit threads on an existing PR (review);
+  babysitting an open PR toward merge (shepherd); post-merge CI health check + closing issues
+  (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
+  not the skill.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 

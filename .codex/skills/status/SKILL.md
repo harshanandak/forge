@@ -1,21 +1,16 @@
 ---
 name: status
 description: >
-  Report where the project stands right now and what work is in flight -- the Forge status
-  snapshot. Reach for this at session start or whenever the user says "/status", "where am I",
-  "what's in progress", "catch me up", "resume work", "what changed recently", or "what should
-  I pick up next". It runs forge sync, then surfaces the detected workflow stage, the user's
-  active/claimed issues, all issues ranked by composite score (priority, dependency impact,
-  type, staleness) with conflict-risk annotations, stale in-progress issues that were already
-  merged (which it reconciles by closing them), the last ~10 commits, and a forge team
-  workload/dashboard overview. Use it to ORIENT and decide the next move: it reports state and
-  points ahead -- it does not plan, run development, or claim an issue to work it (its only
-  write is closing already-merged stale issues during reconciliation). Not for: routing to a
-  specific stage skill or documenting the full issue-verb surface (that's kernel); deeply
-  ranking and EXPLAINING a single next-ready or blocked issue to hand off (triage-ready);
-  everyday create/update/list/close/comment/search issue operations (issue-basics); the Hermes
-  harness's token-bounded orient/recap state contract (hermes-forge); or the post-merge CI
-  health check that closes issues after a merge lands (verify).
+  Report where the project stands and what work is in flight -- the Forge status snapshot.
+  Reach for this at session start or whenever the user says "/status", "where am I", "what's
+  in progress", "catch me up", "resume work", or "what changed recently". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
+  composite score with conflict-risk flags, stale already-merged issues (which it closes), and
+  recent commits. Use it to ORIENT and decide the next move -- it reports state; it does not
+  plan, develop, or claim issues. Not for: routing to a stage skill or documenting the full
+  issue-verb surface (kernel); ranking and EXPLAINING a single next-ready or blocked issue to
+  hand off (triage-ready); everyday create/update/list/close/comment/search issue ops
+  (issue-basics); the Hermes harness's token-bounded orient/recap contract (hermes-forge); or
+  the post-merge CI health check that closes issues after a merge lands (verify).
 allowed-tools: Bash, Read, Grep, Glob
 ---
 

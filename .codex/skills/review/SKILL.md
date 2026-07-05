@@ -1,22 +1,17 @@
 ---
 name: review
 description: >
-  Forge REVIEW stage — the one skill that drives an already-open pull request to all-green by
-  resolving EVERY piece of feedback on it: failing GitHub Actions / CI checks, Greptile and
-  CodeRabbit inline comments and summaries, and the SonarCloud quality gate. It actively fixes
-  the code, replies to each thread, and marks it resolved until the checks pass, then runs the
-  pre-merge doc gate (CHANGELOG / README / API / AGENTS docs) and hands the PR off for MANUAL
-  merge — it never runs `gh pr merge`. Reach for it whenever a PR already has review feedback
-  or red checks to work through: "address the review comments on PR #123", "the bots flagged
-  issues / my Greptile score is low", "fix the failing checks and resolve the threads",
-  "CodeRabbit and SonarCloud left comments — sort them out", "get my PR merge-ready". This is
-  the MUTATING feedback-resolution stage — distinct from shepherd (only WATCHES an open PR's
-  checks and settle window, changes nothing), verify (POST-merge CI-on-master health check +
-  closing issues), ship (pushing the branch and opening the PR in the first place), validate
-  (PRE-PR local type/lint/test/security on your branch), and the sonarcloud /
-  sonarcloud-analysis skills (which only QUERY SonarCloud data that this stage consumes). Use
-  those for a single tool or a passive watch; use this to work a PR's whole feedback set to
-  done.
+  Forge REVIEW stage — drives an already-open PR to all-green by resolving EVERY piece of
+  feedback: failing GitHub Actions / CI checks, Greptile and CodeRabbit inline comments and
+  summaries, and the SonarCloud quality gate. It fixes the code, replies to each thread and
+  marks it resolved until checks pass, then runs the pre-merge doc gate and hands the PR off
+  for MANUAL merge — never runs `gh pr merge`. Use whenever a PR has review feedback or red
+  checks: "address the review comments on PR #123", "the bots flagged issues / Greptile score
+  is low", "fix the failing checks and resolve the threads", "CodeRabbit and SonarCloud left
+  comments", "get my PR merge-ready". This MUTATING feedback-resolution stage is distinct from
+  shepherd (only WATCHES an open PR, changes nothing), verify (POST-merge CI health check +
+  closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
+  type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 

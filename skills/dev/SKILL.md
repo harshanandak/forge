@@ -1,20 +1,17 @@
 ---
 name: dev
 description: >
-  Forge DEV stage — the build engine that turns an already-approved /plan task list into
-  committed, test-backed code. Reads docs/work/<date>-<slug>/tasks.md and design.md, then
-  drives each task through a subagent loop (implementer → spec-compliance reviewer →
-  code-quality reviewer) using RED-GREEN-REFACTOR TDD, HARD-GATE evidence checks, a spec-gap
-  decision score, and per-task progress recorded on the Forge issue via `forge comment`. Use
-  when a plan and task list already exist and it is time to implement them — triggers: "/dev",
-  "start the dev stage", "build the tasks", "implement tasks.md test-first", "run the
-  implementer/reviewer TDD loop", "write the code for the planned tasks one by one", "work
-  through the task list with subagents". This is the per-task coding stage ONLY. Do NOT use it
-  for creating the design doc or task list (that is plan), for the post-build
-  type-check/lint/security/test gate (validate), for pushing the branch or opening the PR
-  (ship), for addressing PR review feedback (review), or for orchestrating several stages /
-  taking an issue end-to-end to a merged PR (smith). Reach for dev specifically when the ask
-  is to author code for tasks that are already planned.
+  Forge DEV stage — implement an already-planned /plan task list into committed, test-backed
+  code. Reads tasks.md + design.md, then drives each task through a subagent TDD loop
+  (implementer → spec-compliance reviewer → code-quality reviewer) with RED-GREEN-REFACTOR,
+  HARD-GATE evidence checks, and a spec-gap decision score. Use when a plan and task list
+  already exist and it is time to implement — triggers: "/dev", "start the dev stage", "build
+  the tasks", "implement tasks.md test-first", "run the implementer/reviewer TDD loop", "write
+  the code for the planned tasks one by one", "work through the task list with subagents".
+  Per-task coding ONLY. Do NOT use for creating the design doc or task list (that is plan),
+  for the post-build type-check/lint/security/test gate (validate), for pushing the branch or
+  opening the PR (ship), for addressing PR review feedback (review), or for orchestrating
+  several stages / taking an issue end-to-end to a merged PR (smith).
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 

@@ -1,26 +1,18 @@
 ---
 name: hermes-forge
 description: >
-  Consumption contract for how the Hermes harness reads, cites, and writes back Forge project
-  state — Hermes is a CONSUMER of Forge, never a second source of truth. Load this whenever a
-  Hermes session runs on a Forge repo: at session start to orient, before acting on a specific
-  issue, or any time you need CURRENT project state. Always obtain state through `forge
-  orient` / `forge recap <issue-id>` — the deterministic, token-bounded JSON envelope — and
-  never reconstruct it by reading raw issue stores, design files, or kernel internals. This
-  skill governs the envelope discipline: honor the token budget (raise depth with `--budget
-  N`, don't retry blindly), treat any `truncated` section as incomplete, attribute every
-  surfaced fact to its source `path`/`authority`, and surface conflicts instead of silently
-  picking a winner. It also governs writeback: record evidence, decisions, and follow-up work
-  into the Forge Kernel ONLY through Forge CLI commands (`forge comment` / `forge update` /
-  `forge create`), and NEVER leak Hermes profile or session memory into Forge state. Trigger
-  phrases: "orient me / what's the current project state", "where did this fact come from,
-  cite it", "the orient output came back truncated", "how do I persist this decision back into
-  Forge", "is it safe to store this in kernel state". This is the Hermes⇄Forge boundary
-  contract — NOT the general Forge session router that navigates stage skills (kernel), NOT
-  the human-facing "what stage am I in / where am I" report (status), NOT everyday issue
-  create/update/close/search CRUD (issue-basics), NOT surfacing or ranking the next ready
-  issue (triage-ready), and NOT live PR monitoring (shepherd, which runs OUTSIDE Hermes and is
-  not visible through orient).
+  Hermes⇄Forge boundary: Hermes CONSUMES Forge state, never a second source of truth. Use
+  whenever a Hermes session runs on a Forge repo: at session start, before acting on an issue,
+  or when you need CURRENT state. Read state ONLY via `forge orient` / `forge recap
+  <issue-id>` (bounded JSON envelope), citing each source's `path`/`authority`; never
+  reconstruct it from raw stores or kernel internals. Writeback ONLY via `forge
+  comment`/`update`/`create`; NEVER leak Hermes profile or session memory into Forge state.
+  Triggers: "orient me / current project state", "where did this fact come from, cite it",
+  "orient came back truncated", "persist a decision into Forge", "safe to store in kernel
+  state?". NOT the Forge session router over stage skills (kernel), NOT the human "what stage
+  am I in" report (status), NOT everyday issue create/update/close/search CRUD (issue-basics),
+  NOT ranking the next ready issue (triage-ready), NOT live PR monitoring (shepherd—outside
+  Hermes, unseen by orient).
 compatibility: >
   Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
   path — like every Forge skill pack (e.g. parallel-deep-research,

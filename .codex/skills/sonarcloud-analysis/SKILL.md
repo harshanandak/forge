@@ -1,24 +1,18 @@
 ---
 name: sonarcloud-analysis
 description: >
-  Deep-dive SonarCloud analysis through the SonarCloud REST API, run in an isolated context so
-  the raw JSON does not flood the main conversation. Pull open issues (bugs, vulnerabilities,
-  code smells), coverage and duplication metrics, quality-gate pass/fail status with the exact
-  failed thresholds, security hotspots, quality profiles, and analysis/measure history for a
-  whole project, a branch, or a specific pull request, then hand back a ranked, actionable
-  summary. Reach for this whenever the user names SonarCloud or asks about code-quality
-  metrics, technical debt, coverage numbers, a red or failing quality gate, or security
-  vulnerabilities and hotspots from static analysis — for example "what's our technical debt
-  and which files have the worst maintainability", "why is the SonarCloud gate failing on this
-  PR", "pull every BLOCKER vulnerability from the last scan with file and line", "show
-  coverage by module", or "how have our reliability and security ratings trended this month".
-  Route ELSEWHERE when: the user explicitly types the thin `/sonarcloud <query> <project>`
-  slash command for a quick single lookup (that is the sibling 'sonarcloud' command surface);
-  they want to reply to and resolve PR review threads across Greptile, CodeRabbit, or GitHub
-  Actions (that is 'review'); they want to run the local lint, type-check, test, or security
-  scanner before shipping (that is 'validate'); they want to actually implement or patch a
-  flagged issue (that is 'dev'); or they want an external market or competitor report on
-  SonarSource or DevSecOps vendors (that is 'parallel-deep-research').
+  SonarCloud deep-dive via its REST API: pull open issues (bugs, vulnerabilities, code
+  smells), coverage/duplication metrics, quality-gate pass/fail with failed thresholds,
+  security hotspots, and measure/analysis history for a whole project, branch, or PR, then
+  return a ranked summary. Use whenever the user names SonarCloud or asks about code-quality
+  metrics, technical debt, a red/failing quality gate, or static-analysis
+  vulnerabilities/hotspots — e.g. 'why is the SonarCloud gate failing on this PR' or 'pull
+  every BLOCKER vulnerability with file and line'. NOT for: the thin `/sonarcloud <query>
+  <project>` slash command for a quick lookup (sibling 'sonarcloud'); replying to/resolving PR
+  review threads across Greptile, CodeRabbit, or GitHub Actions ('review'); running local
+  lint/type-check/test/security scans pre-ship ('validate'); implementing or patching a
+  flagged issue ('dev'); or an external market/competitor report on SonarSource or DevSecOps
+  vendors ('parallel-deep-research').
 category: Code Quality
 tags: [sonarcloud, code-quality, issues, metrics, security]
 context: fork

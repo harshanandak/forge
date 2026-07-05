@@ -1,20 +1,18 @@
 ---
 name: issue-basics
 description: >
-  Everyday single-issue CRUD over the `forge issue` verbs — create, update, show, list,
-  search, close, reopen, comment, set priority/labels/assignee, claim or release one issue,
-  and add/remove dependency edges, plus backlog `stats`. Reach for this on ANY routine one-off
-  issue operation: "create an issue/bug/task for X", "update or edit issue <id>", "close (or
-  reopen) this issue", "comment a handoff note on <id>", "list open bugs" or "filter issues by
-  label/priority/status", "search issues for …", "bump this to P1", "reassign to alice", "mark
-  <id> blocked by <id>", "add a label". This is also the parity floor when migrating off a
-  Beads-style tracker (label/reopen/delete map onto their forge equivalents). Scope is
-  single-operation issue plumbing only. It does NOT choose, rank, or explain the next issue to
-  work on or why one is blocked (use triage-ready); it does NOT run the
-  claim-then-prove-lease-ownership safety procedure before mutating shared work (use
-  claim-safety); it does NOT drive an issue through the plan->dev->validate->ship pipeline or
-  open a PR (use smith or the individual stage skills); and it does NOT report the current
-  workflow stage or what is in flight (use status).
+  Everyday single-issue CRUD over the `forge issue` verbs:
+  create/update/show/list/search/close/reopen/comment, set priority/labels/assignee, claim or
+  release one issue, add/remove dependency edges, plus backlog `stats`. Use for ANY routine
+  one-off issue op: "create an issue/bug/task for X", "update/edit issue <id>", "close or
+  reopen this issue", "comment a handoff note on <id>", "list/filter open bugs by
+  status/label/priority", "bump this to P1", "reassign to alice", "mark <id> blocked by <id>".
+  Also the parity floor migrating off a Beads-style tracker (label/reopen/delete map to forge
+  equivalents). Single-operation plumbing only. Does NOT choose, rank, or explain the next
+  issue to work on or why it's blocked (use triage-ready); does NOT run
+  claim-then-prove-lease-ownership safety (use claim-safety); does NOT drive an issue through
+  the plan->dev->validate->ship pipeline or open a PR (use smith or stage skills); does NOT
+  report the current stage or what's in flight (use status).
 allowed-tools: Read, Bash(forge:*)
 ---
 
