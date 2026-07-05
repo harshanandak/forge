@@ -34,8 +34,8 @@ Expected output: targeted Bun test passes and exercises the fixture safety and m
 
 ## Task 3: Document evidence and D38 decision boundary
 
-File(s): `docs/work/2026-05-05-w0-harness-parity/decisions.md`, `docs/work/2026-05-05-w0-harness-parity/design.md`, `docs/work/2026-05-05-w0-harness-parity/tasks.md`
-OWNS: `docs/work/2026-05-05-w0-harness-parity/decisions.md`, `docs/work/2026-05-05-w0-harness-parity/design.md`, `docs/work/2026-05-05-w0-harness-parity/tasks.md`
+File(s): `docs/work/2026-05-05-w0-harness-parity/decisions.md`, `docs/work/2026-05-05-w0-harness-parity/plan.md`, `docs/work/2026-05-05-w0-harness-parity/tasks.md`
+OWNS: `docs/work/2026-05-05-w0-harness-parity/decisions.md`, `docs/work/2026-05-05-w0-harness-parity/plan.md`, `docs/work/2026-05-05-w0-harness-parity/tasks.md`
 What to implement: Record the source-backed decision that Codex parity uses Forge-packaged repository skills at `.codex/skills/<name>/SKILL.md`, not undocumented slash prompt files. If validation proves any harness infeasible, document the known issue and tie it to D38 kill criteria.
 TDD steps:
 1. Write test: add assertions that the script result includes evidence/source labels for each harness.

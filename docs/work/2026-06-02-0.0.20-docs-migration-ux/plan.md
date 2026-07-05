@@ -20,9 +20,9 @@ Document the user-facing migration path from Beads-backed issue state to Forge K
 
 ## Inputs Verified
 
-- `docs/work/2026-06-01-0.0.20-kernel-schema/design.md` documents PR A schema and migration boundaries.
-- `docs/work/2026-06-01-0.0.20-local-broker/design.md` documents PR B local broker authority and command API contract.
-- `docs/work/2026-06-01-0.0.20-beads-import-export/design.md` documents PR C import/export, fidelity, dry-run, and rollback behavior.
+- `docs/work/2026-06-01-0.0.20-kernel-schema/plan.md` documents PR A schema and migration boundaries.
+- `docs/work/2026-06-01-0.0.20-local-broker/plan.md` documents PR B local broker authority and command API contract.
+- `docs/work/2026-06-01-0.0.20-beads-import-export/plan.md` documents PR C import/export, fidelity, dry-run, and rollback behavior.
 - `.beads/issues.jsonl` parses as JSONL and currently has 286 issue records.
 - GitHub PR #195 and PR #196 are merged.
 

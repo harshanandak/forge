@@ -1,6 +1,6 @@
 # The Forge Super-Skill Orchestrator — deep design
 
-Status: design exploration (no code). Companion to `design.md` (the sub-skill catalog).
+Status: design exploration (no code). Companion to `plan.md` (the sub-skill catalog).
 Prompted by the decision that the flagship should not be a "worker" but a **super-skill**:
 a main agent that independently understands and orchestrates the sub-skills, loops the
 human in (brainstorming-style) at the right moments, and never leaks "kernel" to users.

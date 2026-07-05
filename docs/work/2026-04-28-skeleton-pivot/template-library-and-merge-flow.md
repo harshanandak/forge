@@ -59,7 +59,7 @@ overrides:
 
 artifacts:
   - .forge/config.yaml
-  - docs/work/{date}-{slug}/design.md
+  - docs/work/{date}-{slug}/plan.md
 ```
 
 ## `forge new <template>` Flow

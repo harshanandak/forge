@@ -1,7 +1,7 @@
 # Embedded Dolt Worktree Contention Tasks
 
 Issue: `forge-besw.18`
-Design: `docs/work/2026-05-04-embedded-dolt-worktree-contention/design.md`
+Design: `docs/work/2026-05-04-embedded-dolt-worktree-contention/plan.md`
 
 ## Task 1 - Baseline Current Beads State
 

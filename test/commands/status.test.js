@@ -406,18 +406,18 @@ describe('Status Command - Stage Detection', () => {
 
 	describe('extractDesignSlugs', () => {
 		test('extracts slugs from legacy docs/plans paths', () => {
-			const slugs = extractDesignSlugs('Design: docs/plans/2026-05-05-user-auth-design.md');
+			const slugs = extractDesignSlugs('Design: docs/plans/2026-05-05-user-auth-plan.md');
 			expect(slugs).toEqual(['user-auth']);
 		});
 
 		test('extracts slugs from docs/work paths', () => {
-			const slugs = extractDesignSlugs('Design: docs/work/2026-05-05-user-auth/design.md');
+			const slugs = extractDesignSlugs('Design: docs/work/2026-05-05-user-auth/plan.md');
 			expect(slugs).toEqual(['user-auth']);
 		});
 
 		test('extracts slugs from markdown-wrapped docs/work paths', () => {
 			const slugs = extractDesignSlugs([
-				'Design: `docs/work/2026-05-05-user-auth/design.md`',
+				'Design: `docs/work/2026-05-05-user-auth/plan.md`',
 				'Tasks: [tasks](docs/work/2026-05-05-user-auth/tasks.md)',
 			].join('\n'));
 			expect(slugs).toEqual(['user-auth']);
@@ -425,14 +425,14 @@ describe('Status Command - Stage Detection', () => {
 
 		test('extracts slugs from adjacent punctuation-delimited paths', () => {
 			const slugs = extractDesignSlugs(
-				'docs/work/2026-05-05-user-auth/design.md,docs/work/2026-05-06-billing/tasks.md',
+				'docs/work/2026-05-05-user-auth/plan.md,docs/work/2026-05-06-billing/tasks.md',
 			);
 			expect(slugs).toEqual(['user-auth', 'billing']);
 		});
 
 		test('deduplicates slugs across design, tasks, and decisions paths', () => {
 			const slugs = extractDesignSlugs([
-				'docs/work/2026-05-05-user-auth/design.md',
+				'docs/work/2026-05-05-user-auth/plan.md',
 				'docs/work/2026-05-05-user-auth/tasks.md',
 				'docs/plans/2026-05-05-api-v2-decisions.md',
 			].join('\n'));

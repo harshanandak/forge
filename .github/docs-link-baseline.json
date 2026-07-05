@@ -206,19 +206,19 @@
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-03-10-command-creator-and-eval/design.md",
+      "file": "docs/work/2026-03-10-command-creator-and-eval/plan.md",
       "line": 329,
       "target": "docs/plans/2026-03-04-agent-command-parity-design.md",
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-03-10-command-creator-and-eval/design.md",
+      "file": "docs/work/2026-03-10-command-creator-and-eval/plan.md",
       "line": 330,
       "target": "docs/research/agent-instructions-sync.md",
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-03-10-command-creator-and-eval/design.md",
+      "file": "docs/work/2026-03-10-command-creator-and-eval/plan.md",
       "line": 331,
       "target": "skills/",
       "reason": "Target file does not exist"
@@ -242,7 +242,7 @@
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-03-22-multi-dev-awareness/design.md",
+      "file": "docs/work/2026-03-22-multi-dev-awareness/plan.md",
       "line": 163,
       "target": "2026-03-22-multi-dev-awareness-owasp-analysis.md",
       "reason": "Target file does not exist"
@@ -254,7 +254,7 @@
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-03-22-smart-setup-ux/design.md",
+      "file": "docs/work/2026-03-22-smart-setup-ux/plan.md",
       "line": 65,
       "target": "2026-03-22-agent-detection-research.md",
       "reason": "Target file does not exist"
@@ -410,25 +410,25 @@
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/plan.md",
       "line": 150,
       "target": "../../../.claude/commands/plan.md",
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/plan.md",
       "line": 150,
       "target": "../../../.claude/commands/dev.md",
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/plan.md",
       "line": 150,
       "target": "../../../.claude/commands/validate.md",
       "reason": "Target file does not exist"
     },
     {
-      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/design.md",
+      "file": "docs/work/2026-04-03-setup-hardening-codex-parity/plan.md",
       "line": 378,
       "target": "../../../scripts/sync-commands.js",
       "reason": "Target file does not exist"

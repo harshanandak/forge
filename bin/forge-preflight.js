@@ -28,7 +28,7 @@ function hasDesignDocUnder(dir) {
     if (entry.isDirectory() && hasDesignDocUnder(entryPath)) {
       return true;
     }
-    if (entry.isFile() && entry.name === "design.md") {
+    if (entry.isFile() && entry.name === "plan.md") {
       return true;
     }
   }
@@ -39,7 +39,7 @@ function hasDesignDocUnder(dir) {
 function hasPlanDesignDoc() {
   const legacyPlansDir = "docs/plans";
   const hasLegacyDesign = fs.existsSync(legacyPlansDir)
-    && fs.readdirSync(legacyPlansDir).some((f) => f.endsWith("-design.md"));
+    && fs.readdirSync(legacyPlansDir).some((f) => f.endsWith("-plan.md"));
 
   return hasLegacyDesign || hasDesignDocUnder("docs/work");
 }

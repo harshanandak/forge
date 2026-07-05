@@ -6,7 +6,7 @@ Issue: forge-2agy.2.5
 
 - [x] RED: Confirm the worktree starts clean enough to isolate PR E changes.
 - [x] GREEN: Read existing 0.0.20 schema, broker, Beads import/export docs, docs index, and `.beads/issues.jsonl`.
-- [x] REFACTOR: Record verified inputs in `design.md`.
+- [x] REFACTOR: Record verified inputs in `plan.md`.
 
 ## Task 2: Add Migration UX Reference
 

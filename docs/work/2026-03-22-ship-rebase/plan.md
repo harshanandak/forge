@@ -79,7 +79,7 @@ Closes: <issue-id>
 - OWASP analysis: [summary]
 
 ### Design Doc
-See: docs/plans/YYYY-MM-DD-<slug>-design.md
+See: docs/plans/YYYY-MM-DD-<slug>-plan.md
 
 ### Key Decisions
 [From design doc]

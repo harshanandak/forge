@@ -182,7 +182,7 @@ Keep it simple — reuse the existing sync infrastructure rather than reimplemen
 3. Run `node scripts/check-agents.js` — all clean
 4. Grep entire codebase for dropped agent names — zero hits in active code/docs
 5. Update design doc status: "Active" → "Complete"
-6. Update original design doc (2026-03-04) status: "Draft" → "Superseded by 2026-03-15-agent-command-parity-v2-design.md"
+6. Update original design doc (2026-03-04) status: "Draft" → "Superseded by 2026-03-15-agent-command-parity-v2-plan.md"
 
 **TDD steps**:
 1. Run all checks listed above

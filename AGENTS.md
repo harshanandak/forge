@@ -166,7 +166,7 @@ Task 2: Validation logic
 - [skills/verify/SKILL.md](skills/verify/SKILL.md) - How to verify post-merge health
 
 **Planning documents** (created by `/plan`, consumed by `/dev`):
-- `docs/work/YYYY-MM-DD-<slug>/design.md` - Design intent + technical research
+- `docs/work/YYYY-MM-DD-<slug>/plan.md` - Design intent + technical research
 - `docs/work/YYYY-MM-DD-<slug>/tasks.md` - Task list with TDD steps
 - `docs/work/YYYY-MM-DD-<slug>/decisions.md` - Decisions log from /dev
 
@@ -212,7 +212,7 @@ This checks: (1) issue has a description, (2) at least one stage transition exis
 
 - **Summary**: 1-2 sentence recap of what was accomplished in this stage. Example: `--summary "All 5 tasks done, 1 decision gate fired"`
 - **Decisions**: Key choices made during this stage that affect downstream work. Example: `--decisions "Used streaming parser over DOM for memory efficiency"`
-- **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/work/2026-03-26-parser/design.md"`
+- **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/work/2026-03-26-parser/plan.md"`
 - **Next**: Guidance for the next stage on what to focus on. Example: `--next "Run lint first — streaming approach may trigger no-await rule"`
 
 ### Usage in Stage Transitions

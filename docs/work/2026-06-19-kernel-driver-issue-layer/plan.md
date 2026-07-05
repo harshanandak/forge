@@ -68,7 +68,7 @@ Implement the 16 missing methods on the existing `lib/kernel/sqlite-driver.js` (
 
 ## Artifacts
 
-**This design phase:** `docs/work/2026-06-19-kernel-driver-issue-layer/design.md`, `tasks.md`.
+**This design phase:** `docs/work/2026-06-19-kernel-driver-issue-layer/plan.md`, `tasks.md`.
 
 **Produced during `/dev` (now complete):**
 - Implementation: `lib/kernel/sqlite-driver.js` (16 driver methods), `lib/kernel/broker.js` (mutation routing + revision-conflict recovery), `lib/kernel/evaluators.js` (`buildConflict` export).
