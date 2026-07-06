@@ -32,6 +32,14 @@ function createTempBeadsRepo(entries, options = {}) {
     'utf8'
   );
 
+  // This fixture seeds the retired Beads store (.beads/issues.jsonl), so pin the repo
+  // to the Beads backend. Status now reads the Kernel by default (bug 40f35797), so
+  // without this pin these Beads fixtures would be ignored and every bucket empty.
+  // The kernel-default status path is covered separately in test/status/snapshot.test.js.
+  const forgeDir = path.join(repoRoot, '.forge');
+  fs.mkdirSync(forgeDir, { recursive: true });
+  fs.writeFileSync(path.join(forgeDir, 'config.yaml'), 'issueBackend: beads\n', 'utf8');
+
   execFileSync('git', ['init'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
   execFileSync('git', ['config', 'user.email', options.email || 'harshanandak@users.noreply.github.com'], {
     cwd: repoRoot,
