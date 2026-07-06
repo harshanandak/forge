@@ -23,28 +23,33 @@ describe('/plan phase tracking', () => {
     expect(entrySection).toMatch(/forge create\b.*--type=epic/);
   });
 
-  test('stage-transition with "none plan" appears at Phase 1 entry', () => {
+  // Stage transitions are recorded kernel-natively via `forge comment "Stage: X → Y"`
+  // (the legacy beads-context.sh stage-transition helper was removed from this skill).
+  test('none→plan transition recorded via forge comment at Phase 1 entry', () => {
     const phase1Index = planContent.indexOf('## Phase 1: Design Intent');
     const entrySection = planContent.slice(0, phase1Index);
 
-    expect(entrySection).toMatch(/stage-transition\s+<id>\s+none\s+plan/);
+    expect(entrySection).toMatch(/forge comment[^\n]*none[^\n]*plan/i);
+    expect(entrySection).not.toContain('beads-context.sh');
   });
 
-  test('stage-transition with "plan research" appears at Phase 2 entry', () => {
+  test('plan→research transition recorded via forge comment at Phase 2 entry', () => {
     const phase2Index = planContent.indexOf('## Phase 2: Technical Research');
     const phase2End = planContent.indexOf('<HARD-GATE: Phase 2 exit>');
     const phase2Section = planContent.slice(phase2Index, phase2End);
 
     // Should appear near the start of Phase 2, before research begins
-    expect(phase2Section).toMatch(/stage-transition\s+<id>\s+plan\s+research/);
+    expect(phase2Section).toMatch(/forge comment[^\n]*plan[^\n]*research/i);
+    expect(phase2Section).not.toContain('beads-context.sh');
   });
 
-  test('stage-transition with "research setup" appears at Phase 3 entry', () => {
+  test('research→setup transition recorded via forge comment at Phase 3 entry', () => {
     const phase3Index = planContent.indexOf('## Phase 3: Setup + Task List');
     const phase3Step1Index = planContent.indexOf('### Step 1:', phase3Index);
     const phase3EntrySection = planContent.slice(phase3Index, phase3Step1Index);
 
-    expect(phase3EntrySection).toMatch(/stage-transition\s+<id>\s+research\s+setup/);
+    expect(phase3EntrySection).toMatch(/forge comment[^\n]*research[^\n]*setup/i);
+    expect(phase3EntrySection).not.toContain('beads-context.sh');
   });
 
   test('Phase 3 Step 1 references linking to epic, not creating a new issue', () => {
