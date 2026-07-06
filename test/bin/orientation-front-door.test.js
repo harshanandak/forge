@@ -47,6 +47,20 @@ describe('orientation front door', () => {
     expect(out).toContain('npx forge setup');
   });
 
+  test('`forge setup --help` cross-references forge init for adoption profiles + .forge/config.yaml', () => {
+    const result = runForge(['setup', '--help'], REPO_ROOT);
+    const out = `${result.stdout || ''}`;
+    // The profile flags belong to `forge init` — documented there, not as setup flags.
+    expect(out).toContain('forge init --minimal | --standard | --full');
+    expect(out).toContain('--classification critical|standard|refactor');
+    expect(out).toContain('.forge/config.yaml');
+    // Real, still-handled setup flags stay documented.
+    expect(out).toContain('--type');
+    expect(out).toContain('--merge');
+    expect(out).toContain('--interview');
+    expect(out).toContain('--budget');
+  });
+
   test('bare `forge` in an initialized project renders the orientation view (no mutation)', () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-orient-'));
     try {

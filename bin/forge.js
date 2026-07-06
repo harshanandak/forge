@@ -2631,6 +2631,16 @@ function showHelp() {
   console.log('Also works with bun:');
   console.log('  bunx forge setup --quick');
   console.log('');
+  // Adoption profile + gate/classification config is owned by `forge init`, not
+  // `forge setup`. The --minimal/--standard/--full profile flags are `forge init`
+  // shortcuts (setup only reads them for `--dry-run` preview), so point there.
+  console.log('Adoption profile, gates & classification (configured by `forge init`, not setup):');
+  console.log('  forge init --minimal | --standard | --full   # adoption-profile shortcut');
+  console.log('                                               # (or: --profile minimal|standard|full)');
+  console.log('  forge init --classification critical|standard|refactor');
+  console.log('  `forge init` writes `.forge/config.yaml` (gate + classification config).');
+  console.log('  Run `forge init --help` for all profile/classification/harness flags.');
+  console.log('');
 
   // Append auto-discovered registry commands
   const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
@@ -3968,10 +3978,12 @@ async function main() {
   }
 
   // Show help. `--help` after a known registry subcommand (e.g. `forge status
-  // --help`) renders that command's usage; bare `forge --help` keeps the global banner.
+  // --help`) renders that command's usage; bare `forge --help` keeps the global
+  // banner. `setup` is special-cased OUT: the global banner IS setup's detailed
+  // help, so `forge setup --help` must keep showing it (not the terse registry line).
   if (flags.help) {
     const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
-    if (command && helpRegistry.commands.has(command)) {
+    if (command && command !== 'setup' && helpRegistry.commands.has(command)) {
       printCommandHelp(helpRegistry.commands.get(command));
     } else {
       showHelp();
