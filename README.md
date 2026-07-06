@@ -8,144 +8,179 @@
 [![Package Size](https://github.com/harshanandak/forge/actions/workflows/size-check.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/size-check.yml)
 [![CodeQL](https://github.com/harshanandak/forge/actions/workflows/codeql.yml/badge.svg)](https://github.com/harshanandak/forge/actions/workflows/codeql.yml)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](https://github.com/harshanandak/forge/blob/master/SECURITY.md)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/harshanandak/forge)
 
-Forge is a local runtime control plane for AI-assisted engineering. It gives coding agents and humans a shared command surface for project state, workflow stages, issue tracking, validation evidence, adapters, worktrees, and recovery.
+## Never lose the thread of AI-assisted work.
 
-The default Forge workflow is TDD-first, but Forge is not just a fixed prompt pack. The stages are adoption scaffolding over local runtime primitives: state, gates, artifacts, adapters, Beads issue metadata, GitHub sync, validation, and handoff context.
+Coding agents are fast — and forgetful. Sessions break. Context resets. The
+agent forgets what it was doing, issues pile up untracked, and three months
+later you can't reconstruct why a change was made or what's still unfinished.
+Every new agent needs its own setup, and none of them share what the last one
+knew.
 
-In plain terms: Forge helps keep AI-assisted repository work recoverable, reviewable, and grounded in local evidence. The workflow template is a core feature, and the ability to inspect, customize, and eventually swap workflow stages is part of the product direction.
+**Forge fixes that.** It's an agent-agnostic control plane that gives your
+coding agent — and you — a shared, durable memory of the work: issues,
+dependencies, workflow state, decisions, and validation evidence, all kept in
+your repo. Hand work to any agent, walk away mid-task, come back on another
+machine, and pick up exactly where you left off.
 
-## Why It Matters
+```bash
+npx forge setup     # install for your agent (Claude Code, Codex, Cursor, Hermes)
+npx forge init      # configure your workflow gates + change classification
+npx forge status    # one-glance: where you are, what's next, what's ready
+```
 
-AI coding sessions fail most often at the project boundary: lost state, unclear ownership, stale TODOs, unverified claims, broken worktrees, and PRs that cannot be recovered after context changes. Forge is designed to make that boundary explicit.
+## Why Forge
 
-Forge helps you:
+### 🧵 Break anywhere, continue anywhere
+Your project state lives in the repo, not in a chat window. Workflow stage,
+claimed work, issues, memory, and handoff context survive session resets,
+context compaction, and machine switches. Any agent reads the same source of
+truth through `forge status`, `forge prime`, and `forge orient` — so a session
+that dies at 2am resumes cleanly the next morning, on any device, with any
+agent.
 
-- Protect project state while agents work.
-- Give agents a runtime control plane instead of only prose instructions.
-- Keep work recoverable across agents, PRs, Beads, GitHub, local worktrees, validation, and release flow.
-- Separate ready-now behavior from experimental roadmap work.
-- Leave evidence in the repository so generated tools such as DeepWiki can index the right source of truth.
+### 🔎 Never lose track — down to the smallest thing
+Forge ships a local issue **kernel** plus a project **memory** system. Capture
+work the moment you spot it, wire up real dependencies, and everything stays
+tracked: what's ready, what's blocked, what's stale, what's done. Searchable and
+recoverable — find work from *months* ago in seconds instead of digging through
+old branches and chat logs.
 
-## Who It Is For
+```bash
+forge create --title "Fix flaky auth test" --type bug
+forge issue dep add <blocker-id> <blocked-id>   # model real dependencies
+forge ready                                     # what can I pick up right now?
+forge remember "auth uses rotating JWT — see lib/auth.js"   # write memory
+forge recall auth                               # read it back, later, anywhere
+```
 
-- Solo builders using AI coding agents who want fewer lost handoffs.
-- Teams coordinating multiple AI or developer sessions in the same repository.
-- Technical users who need local state, auditability, validation, recovery paths, and command examples grounded in code.
-- Maintainers responsible for keeping agent-authored work safe enough to review, resume, and release.
+### 🤝 Works with your agent, not against it
+Claude Code, OpenAI Codex, Cursor, and Hermes today — more to come. Forge is
+agent-agnostic: one `forge` command surface and one shared project state that
+every agent understands. No lock-in, no per-agent reinvention.
 
-## Ready Now
+### 🛠️ A workflow you own
+Forge installs a proven **TDD-first** workflow —
+`/plan → /dev → /validate → /ship → /review` by default, with `/verify` added in
+the profiles that need it — but it is *not* a fixed
+prompt pack. Every stage and quality gate is configurable: turn gates on or off,
+change your change-classification, adapt the stages to how your team actually
+works, and update it as you grow. The default makes you productive on day one;
+the controls are yours from day two.
 
-- `forge init` for day-one `.forge/` adoption config in a fresh repository.
-- `forge setup` for installing agent instructions, skills, local Beads compatibility, and optional workflow files.
-- Kernel-backed issue wrappers such as `forge ready`, `forge show`, `forge claim`, `forge create`, `forge update`, and `forge close` (Beads available via `--issue-backend beads` / `FORGE_ISSUE_BACKEND=beads`).
-- Local state views with `forge status --json` and `forge board --json`.
-- Worktree helpers with `forge worktree create <slug>` and `forge worktree remove <slug>`.
-- Review adapter scaffolding and fixture replay for review adapters.
-- Validation via `bun run check`, which runs typecheck, lint, security audit, and tests through the repository validation script.
-- Documentation and stage skills for `/plan`, `/dev`, `/validate`, `/ship`, `/review`, and `/verify`. The pre-merge documentation gate is embedded in `/ship` and `/review`, not a separate stage skill.
+## Who it's for
 
-## Experimental Or Configuration-Dependent
-
-- Protected-state enforcement depends on the protected-state checker being wired into hooks or CI.
-- Greptile, SonarCloud, branch protection, and GitHub sync depend on repository configuration and credentials.
-- `forge migrate` is a dry-run proof of concept, not a migration executor.
-- Future roadmap labels such as `0.0.19` describe internal planning targets, not the current public package version.
-- DeepWiki is generated from this repository. It is useful for navigation, but the repository docs remain authoritative.
-
-v0.0.11 is a documentation and positioning package release: canonical docs, corrected command boundaries, clearer setup paths, and DeepWiki-ready source material.
-
-## Terms
-
-- Runtime control plane: local commands, files, and checks that give agents a shared operating surface.
-- Workflow template: the default stage path Forge installs for agents, such as `/plan -> /dev -> /validate -> /ship -> /review -> /verify`.
-- Harness: an agent-specific instruction surface. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
-- Beads: an opt-out local issue-state backend for Forge issue wrappers; the kernel backend is used by default. Selection precedence (highest first): `--issue-backend beads`, then `FORGE_ISSUE_BACKEND=beads`, then `.forge/config.yaml` `issueBackend: beads`.
-- Adapter: an integration boundary for review or issue tools.
-- Protected state: files that should be changed through their owning command or API, not by casual edits.
+- **Solo builders** using AI agents who are tired of lost handoffs and
+  half-remembered context.
+- **Teams** coordinating multiple agent or developer sessions in one repo.
+- **Quality-conscious engineers** who want agent output they can review, trust,
+  and release — grounded in local evidence, not vibes.
+- **Maintainers** keeping agent-authored work safe enough to resume and ship.
 
 ## Quickstart
 
-For a clean first run, use the full guide:
+```bash
+# Add to your project
+bun add -D forge-workflow          # or: npm install --save-dev forge-workflow
 
-- [Quickstart](QUICKSTART.md)
+# Install for your agent(s) and configure the workflow
+bunx forge setup --agents claude --yes
+bunx forge init --profile minimal --classification standard --yes
+
+# Orient — for you and your agent
+bunx forge status                  # human one-glance view
+bunx forge prime                   # session-entry orientation for agents
+```
+
+Full guides:
+
+- [Quickstart](QUICKSTART.md) — clean first run, step by step
 - [Setup guide](docs/guides/SETUP.md)
 - [Support and troubleshooting](docs/guides/SUPPORT.md)
 - [Command reference](docs/reference/COMMANDS.md)
-- [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md)
-- [Skills and command projections](docs/reference/SKILLS.md)
+- [Workflow templates & customization](docs/guides/WORKFLOW_TEMPLATES.md)
 
-Basic adoption:
+Use `forge init` for the `.forge/` runtime config (gates + classification). Use
+`forge setup` to install agent instructions, skills, and agent-specific files.
+Use `bunx forge ...` (or `npx forge ...`) until the `forge` bin is on your PATH.
 
-```bash
-bun add -D forge-workflow
-bunx forge init --profile minimal --classification standard --harness codex --yes
-bunx forge setup --agents codex --yes
-bunx forge status --json
-```
-
-Use `forge init` when you want the `.forge/` runtime skeleton first. Use `forge setup` when you want Forge to install agent instructions, skills, local Beads compatibility, or agent-specific files.
-
-Use `bunx forge ...` in first-run examples. Bare `forge ...` works once the package bin is available on PATH, for example through your package manager or local script environment.
-
-Setup flags used in existing repositories:
+### Setup flags
 
 | Flag | Use |
 | --- | --- |
-| `--agents claude,cursor` | Select agents explicitly. |
-| `--all` | Install all available agent harnesses. |
-| `--quick` | Use defaults with minimal prompts. |
+| `--agents claude,cursor` | Install for specific agents (or `--all` for every harness). |
+| `--quick` | Use sensible defaults with minimal prompts. |
 | `--yes` / `--non-interactive` | Run without prompts; `CI=true` also enables non-interactive behavior. |
-| `--dry-run` | Preview planned writes. |
-| `--sync` | Deprecated. Removes old generated Beads/GitHub sync files; future GitHub issue sync belongs to Forge Kernel/server authority. |
-| `--symlink` | Create supported instruction links instead of copies where available. |
+| `--dry-run` | Preview planned writes without touching the repo. |
+| `--symlink` | Link instruction files instead of copying, where supported. |
 | `--merge smart\|preserve\|replace` | Choose how setup handles existing instruction files. |
+| `--sync` | Deprecated. Removes old generated Beads/GitHub sync files; future issue sync belongs to Kernel/server authority. |
 
-## Common Commands
+## What you get
+
+- **Issue kernel** — `forge create`, `forge ready`, `forge show`, `forge claim`,
+  `forge close`, `forge issue dep`, `forge blocked`, `forge stale`. The Kernel is
+  the default backend; a Beads store can be imported (below) or selected as an
+  opt-out backend with `--issue-backend beads`.
+- **Project memory** — `forge remember` / `forge recall` for durable, searchable
+  notes that outlive the session (no scattered `MEMORY.md` files).
+- **One-glance state** — `forge status`, `forge board`, `forge orient`,
+  `forge prime`, `forge recap` for humans and agents.
+- **Safe, isolated work** — `forge worktree create <slug>`, `forge clean`.
+- **Configurable quality gates** — `forge validate`, `forge push` (branch
+  protection + lint + tests), tuned per project via `forge gate` and
+  `forge init`.
+- **Ship & recover** — `forge ship`, `forge review`, `forge shepherd` (bounded PR
+  monitor), `forge merge` (opt-in conditional auto-merge, off by default),
+  `forge upgrade` (safe self-heal).
+- **Coming from Beads?** `forge migrate --from beads` imports your existing issue
+  store into the Kernel in one command (`--dry-run` to preview first); the first
+  kernel use also auto-imports a detected Beads store, so nothing is lost.
+
+## Common commands
 
 ```bash
 forge --help
-forge setup --help
-forge status --json
-forge board --json
-forge ready
+forge status                 # where am I, what's next
+forge ready                  # available work
 forge show <issue-id>
 forge claim <issue-id>
-forge worktree create <slug> --branch <branch-name>
-forge adapter list
-bun run check
-npm pack --dry-run
+forge remember "<note>"      # write project memory
+forge recall <query>         # read it back
+forge worktree create <slug>
+forge board --json
+forge validate
 ```
 
-Stage commands such as `/review` and `/verify` are agent workflow stages, not currently standalone `forge review` or `forge verify` CLI commands. Pre-merge is neither a numbered stage nor a `/premerge` command; it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages.
+Stage commands such as `/plan`, `/dev`, `/review`, and `/verify` are agent
+workflow stages installed by `forge setup`. Pre-merge is a documentation-and-
+handoff gate embedded in `/ship` and `/review`, not a separate stage.
 
-## Documentation Map
+## Documentation map
 
-- [Docs index](docs/INDEX.md) - canonical reading order.
-- [Migration guide](docs/guides/MIGRATION.md) - moving from older Forge versions and old workflow framing.
-- [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) - the default workflow, customization model, and live feature rollout path.
-- [Skills and command projections](docs/reference/SKILLS.md) - current stage packaging across commands and skills.
-- [Beads/GitHub sync deprecation](docs/guides/BEADS_GITHUB_SYNC.md) - cleanup notes and the Kernel/server replacement direction.
-- [Adapters](docs/reference/ADAPTERS.md) - review adapter contract.
-- [Templates](docs/reference/TEMPLATES.md) - adoption profiles and workflow templates.
-- [Status and board](docs/reference/STATUS_BOARD.md) - local state surfaces.
-- [Protected state surfaces](docs/reference/protected-state-surfaces.md) - protected path model and limits.
-- [Release reference](docs/reference/RELEASE.md) - release validation and DeepWiki refresh checklist.
+- [Docs index](docs/INDEX.md) — canonical reading order
+- [Migration guide](docs/guides/MIGRATION.md) — moving to the Kernel and current workflow framing
+- [Workflow templates & customization](docs/guides/WORKFLOW_TEMPLATES.md) — the default workflow and how to change it
+- [Skills and command projections](docs/reference/SKILLS.md)
+- [Adapters](docs/reference/ADAPTERS.md) — review adapter contract
+- [Protected state surfaces](docs/reference/protected-state-surfaces.md)
+- [Release reference](docs/reference/RELEASE.md)
 
-## DeepWiki
+## Terms
 
-DeepWiki reads repository files such as `README.md`, `CHANGELOG.md`, `QUICKSTART.md`, `AGENTS.md`, `docs/**/*.md`, CLI files, and tests. Do not treat generated DeepWiki text as source of truth. After the v0.0.11 release lands on `master`, refresh DeepWiki and compare the generated Overview, Getting Started, and Core Concepts pages against these repository docs.
+- **Control plane** — local commands, files, and checks that give agents a shared operating surface.
+- **Kernel** — the default local issue-state store, backing `forge` issue commands.
+- **Workflow template** — the default stage path Forge installs (`/plan → /dev → /validate → /ship → /review`, with `/verify` in the profiles that need it), fully configurable.
+- **Harness** — an agent-specific instruction surface. Forge supports Claude Code, Codex, Cursor, and Hermes.
+- **Memory** — durable, searchable project notes written with `forge remember` and read with `forge recall`.
+- **Adapter** — an integration boundary for review or issue tools.
+- **Protected state** — files that should be changed through their owning command or API, not by casual edits.
 
 ## Package
 
 Package name: `forge-workflow`
 
-Binary names:
-
-- `forge`
-- `forge-workflow`
-- `forge-preflight`
+Binary names: `forge`, `forge-workflow`, `forge-preflight`
 
 ## License
 
