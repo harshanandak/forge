@@ -45,6 +45,35 @@ function runForge(cliArgs, envOverrides = {}) {
   }
 }
 
+/**
+ * Parse the command names listed under the "Additional commands:" section of
+ * `forge --help`. Each registry entry is rendered as `  <name>  <description>`
+ * (two-space indent, two-or-more spaces before the description), so we match that
+ * shape rather than substring-scanning the whole banner — command names like
+ * `list` also appear in prose (e.g. `--agents <list>`).
+ *
+ * @param {string} stdout - Full `forge --help` output
+ * @returns {string[]} Command names enumerated in the section
+ */
+function parseAdditionalCommands(stdout) {
+  const idx = stdout.indexOf('Additional commands:');
+  if (idx === -1) return [];
+  return stdout
+    .slice(idx)
+    .split('\n')
+    .map(line => /^ {2}(\S+) {2,}\S/.exec(line))
+    .filter(Boolean)
+    .map(match => match[1]);
+}
+
+// Bare issue passthroughs that duplicate `forge issue <sub>`. They stay routable
+// as undocumented back-compat aliases but must NOT appear in `forge --help`, so the
+// canonical `forge issue` surface is unambiguous (kernel issue 450c6e34).
+const HIDDEN_ISSUE_ALIASES = [
+  'create', 'update', 'claim', 'close', 'show', 'list',
+  'ready', 'blocked', 'stale', 'orphans', 'lint', 'issues',
+];
+
 describe('CLI Registry Integration', () => {
   describe('registry command dispatch', () => {
     test('real stage commands load into the registry', () => {
@@ -156,6 +185,59 @@ describe('CLI Registry Integration', () => {
     test('forge --help includes "Additional commands" section', () => {
       const { stdout } = runForge(['--help']);
       expect(stdout).toContain('Additional commands');
+    });
+
+    test('forge --help documents the canonical `issue` surface', () => {
+      const { stdout } = runForge(['--help']);
+      const names = parseAdditionalCommands(stdout);
+      expect(names).toContain('issue');
+    });
+
+    test('forge --help hides the plural `issues` back-compat alias', () => {
+      const { stdout } = runForge(['--help']);
+      const names = parseAdditionalCommands(stdout);
+      expect(names).not.toContain('issues');
+    });
+
+    test('forge --help hides the bare issue passthrough aliases', () => {
+      const { stdout } = runForge(['--help']);
+      const names = parseAdditionalCommands(stdout);
+      for (const alias of HIDDEN_ISSUE_ALIASES) {
+        expect(names).not.toContain(alias);
+      }
+    });
+  });
+
+  describe('hidden issue aliases stay executable (back-compat)', () => {
+    test('hidden aliases remain routable in the registry', () => {
+      const { commands } = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+      // Canonical surface is present AND documented; the aliases keep routing even
+      // though `forge --help` no longer enumerates them.
+      expect(commands.has('issue')).toBe(true);
+      for (const alias of HIDDEN_ISSUE_ALIASES) {
+        expect(commands.has(alias)).toBe(true);
+      }
+    });
+
+    test('the plural `issues` alias still executes', () => {
+      // No subcommand: the issues handler returns its own usage. Proves the alias
+      // dispatches rather than falling through to setup/minimal-install.
+      const { stdout, status } = runForge(['issues']);
+      expect(status).toBe(0);
+      expect(stdout).toContain('forge issues');
+      expect(stdout).not.toContain('FORGE_SETUP_REQUIRED');
+    });
+
+    test('a bare passthrough alias still executes (forge list --help)', () => {
+      // `--help` short-circuits to the subcommand usage before any backend dispatch,
+      // so this asserts routing without minting an issue. If the alias were removed
+      // from the registry it would fall through to the setup/minimal-install path.
+      const { stdout, stderr, status } = runForge(['list', '--help']);
+      const combined = stdout + stderr;
+      expect(status).toBe(0);
+      expect(combined).toContain('forge list');
+      expect(combined).not.toContain('FORGE_SETUP_REQUIRED');
+      expect(combined).not.toContain('npx forge setup');
     });
   });
 

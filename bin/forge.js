@@ -2358,6 +2358,16 @@ async function _interactiveSetup() {
 }
 
 // Parse CLI flags
+// Issue command aliases hidden from `forge --help`: the bare passthroughs that
+// duplicate `forge issue <sub>` plus the plural `issues`. They stay registered and
+// routable (back-compat), but are omitted from help so `forge issue` reads as the
+// single canonical issue surface (kernel issue 450c6e34). The canonical `issue` is
+// deliberately NOT listed here — it stays documented.
+const ISSUE_ALIAS_COMMANDS = [
+  'create', 'update', 'claim', 'close', 'show', 'list',
+  'ready', 'blocked', 'stale', 'orphans', 'lint', 'issues',
+];
+
 function parseFlags() {
   const flags = {
     quick: false,
@@ -2382,7 +2392,8 @@ function parseFlags() {
 
   // Issue passthrough commands delegate all flags to bd.
   // Skip global parsing so flags like --type, -p, --help reach the handler intact.
-  const issuePassthroughCommands = ['create', 'update', 'claim', 'close', 'show', 'list', 'ready', 'blocked', 'stale', 'orphans', 'lint', 'issue', 'issues'];
+  // Canonical `issue` plus the hidden back-compat aliases (single source of truth).
+  const issuePassthroughCommands = [...ISSUE_ALIAS_COMMANDS, 'issue'];
   if (issuePassthroughCommands.includes(args[0])) {
     return flags;
   }
@@ -2642,8 +2653,18 @@ function showHelp() {
   console.log('  Run `forge init --help` for all profile/classification/harness flags.');
   console.log('');
 
-  // Append auto-discovered registry commands
+  // Append auto-discovered registry commands. Hidden issue aliases (the bare
+  // passthroughs + plural `issues`, plus any command self-declaring `hidden: true`)
+  // still route and execute, but are trimmed from this enumeration so `forge issue`
+  // reads as the single canonical issue surface. This registry instance is loaded
+  // solely to render help, so deleting from its Map only affects the printed list —
+  // command dispatch (main) uses a separate registry and is unaffected.
   const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+  for (const [name, cmd] of [...helpRegistry.commands]) {
+    if (ISSUE_ALIAS_COMMANDS.includes(name) || cmd.hidden === true) {
+      helpRegistry.commands.delete(name);
+    }
+  }
   const registryHelp = helpRegistry.getHelp();
   if (registryHelp) {
     console.log('Additional commands:');
