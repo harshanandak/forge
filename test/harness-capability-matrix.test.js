@@ -59,6 +59,36 @@ describe('harness capability matrix', () => {
     expect(matrix.harnesses.cursor.capabilities.extensionPacks.primarySurface).toContain('.cursor/mcp.json');
   });
 
+  test('models native safety surfaces honestly (Tier-2 parity)', () => {
+    const matrix = getHarnessCapabilityMatrix();
+    const { claude, cursor, codex, hermes } = matrix.harnesses;
+
+    // Claude tool-permission allowlist is a real project-local render (.claude/settings.json).
+    expect(claude.capabilities.permissions.status).toBe('native');
+    expect(claude.capabilities.permissions.primarySurface).toContain('.claude/settings.json');
+    expect(claude.capabilities.permissions.evidence).toContain('S11');
+    // Cursor has no project-local permission allowlist (IDE/global only).
+    expect(cursor.capabilities.permissions.status).toBe('unsupported');
+    // Codex approvals/sandbox are config.toml surfaces honored only under GLOBAL trust — deferred.
+    expect(codex.capabilities.permissions.status).toBe('not-delivered');
+    expect(codex.capabilities.sandbox.status).toBe('not-delivered');
+    expect(codex.capabilities.sandbox.knownIssue).toContain('trust');
+    expect(codex.capabilities.sandbox.evidence).toContain('S13');
+
+    // Cursor .cursorignore IS a native project-local read/index boundary.
+    expect(cursor.capabilities.ignore.status).toBe('native');
+    expect(cursor.capabilities.ignore.primarySurface).toBe('.cursorignore');
+    expect(cursor.capabilities.ignore.evidence).toContain('S12');
+    // Claude read boundary is projected into permission deny rules (no .claudeignore).
+    expect(claude.capabilities.ignore.status).toBe('projection');
+
+    // Claude has no config-file sandbox; execution safety is the permissions allowlist.
+    expect(claude.capabilities.sandbox.status).toBe('unsupported');
+    // Hermes is CLI-consumed: no native safety surfaces.
+    expect(hermes.capabilities.permissions.status).toBe('unsupported');
+    expect(hermes.capabilities.sandbox.status).toBe('unsupported');
+  });
+
   test('every capability status is in the STATUS_VOCABULARY enum (no off-vocab/dishonest labels)', () => {
     const { STATUS_VOCABULARY } = require('../lib/harness-capability-matrix');
     const vocab = new Set(STATUS_VOCABULARY);
@@ -192,6 +222,7 @@ describe('renderer contract', () => {
       'stage-graph',
       'state-and-memory',
       'distribution',
+      'safety',
     ]);
     expect(contract.rendererFamilies.every(renderer => renderer.canonicalInput && renderer.requiredEvidence.length > 0)).toBe(true);
   });
