@@ -299,11 +299,23 @@ forge claim <id>      # Claim work
 forge close <id>      # Complete work
 ```
 
+**More commands worth knowing** (run `forge <command> --help` for full usage):
+
+```bash
+forge remember <note>          # Persist a project-memory note to a file-backed store
+forge recall [query]           # Retrieve project-memory notes back (the read half of remember)
+forge insights                 # Detect recurring evidence patterns, suggest conservative follow-ups
+forge upgrade                  # Preview and self-heal safe Forge upgrade readiness
+forge gate <verb> <gate-id>    # Toggle a workflow gate, or record/query human-gate approval events
+forge role <role> --use <skill> # Bind a role to a skill/ideology in .forge/config.yaml
+forge merge --auto <pr>        # Opt-in conditional auto-merge — merges only when configured rules pass (OFF by default)
+```
+
 ### Rules
 
 - Use `forge` as the routine command surface for issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. New issue-authority work routes through the Forge Kernel design. Use `forge issue` subcommands (e.g. `forge issue dep`, `forge issue comment`) for operations beyond the shortcuts above. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to the issue store.
 - Run `forge prime` for detailed command reference and session close protocol
-- Use `forge remember` for persistent knowledge — do NOT use MEMORY.md files
+- Use `forge remember` for persistent knowledge and `forge recall` to retrieve it back — do NOT use MEMORY.md files
 
 ## Project Learnings
 
