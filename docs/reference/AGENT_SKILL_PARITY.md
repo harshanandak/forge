@@ -24,7 +24,7 @@ for Claude Code, Cursor, and Codex; Hermes is modeled in the capability matrix
 
 The shared rule is: keep the skill name, description, and task body canonical, then generate the smallest native wrapper each harness needs.
 
-For Codex, this W0 fixture validates Forge's current repository packaging surface (`.codex/skills`) plus the metadata needed for installed Codex skills. Current Codex docs use `.agents/skills` for direct repo discovery; Forge should migrate the generator before treating that as the renderer target.
+For Codex, this W0 fixture validates Forge's repository packaging surface (`.codex/skills`) plus the metadata needed for installed Codex skills. Codex's documented repo-scope discovery path is `.agents/skills` (scanned cwd → repo root); Forge now generates that mirror at setup and commits it, so a teammate who clones the repo WITHOUT running `forge setup` still gets Forge skills/stages auto-discovered.
 
 Cursor rules are included here because `forge-2si5` explicitly asked for `.cursor/rules/*.mdc` evidence. They are not the final Cursor skill target. The broader parity model must treat Cursor Agent Skills as the primary on-demand workflow surface and Cursor rules as the always-on or scoped-policy surface.
 
@@ -86,7 +86,7 @@ The full Forge extension parity model must cover more than skills:
 | Capability | Canonical Forge source | Claude | Cursor | Codex | Required evidence |
 | --- | --- | --- | --- | --- | --- |
 | Project instructions | structured `AGENTS.md` sections | `CLAUDE.md` shim or generated file | `AGENTS.md` (native) + `.cursor/rules/*.mdc` for scoped policy | `AGENTS.md` | semantic section comparison |
-| Skills/playbooks | agentskills.io-compatible `SKILL.md` | `.claude/skills` | `.cursor/skills` | `.codex/skills` packaging source; `.agents/skills` after generator migration | generated file and trigger metadata |
+| Skills/playbooks | agentskills.io-compatible `SKILL.md` | `.claude/skills` | `.cursor/skills` | `.codex/skills` packaging source (global `$CODEX_HOME` install) + committed `.agents/skills` repo-local discovery | generated file and trigger metadata |
 | Rules/policies | Forge rule manifest (`rules/<name>.md`) | `AGENTS.md` instruction projection (no always-on `.claude/rules/*` policy bloat) | `.cursor/rules/*.mdc` (rendered from `rules/`) | `AGENTS.md` section | rule target and unsupported-surface notes |
 | MCP tools/resources | Forge MCP manifest | Claude MCP config | `.cursor/mcp.json` | Codex MCP config | config render and server probe |
 | Hooks | Forge hook manifest | Claude hook adapter if supported | unsupported unless verified | Codex hook adapter if supported | supported/unsupported matrix |
@@ -96,7 +96,7 @@ The full Forge extension parity model must cover more than skills:
 
 The machine-readable matrix intentionally separates similar-looking surfaces:
 
-- Skills are on-demand workflows: `.claude/skills/<skill>/SKILL.md`, `.cursor/skills/<skill>/SKILL.md`, and Forge's current `.codex/skills/<skill>/SKILL.md` packaging source for Codex. Direct Codex repo discovery should use `.agents/skills/<skill>/SKILL.md` after the Forge generator migrates.
+- Skills are on-demand workflows: `.claude/skills/<skill>/SKILL.md`, `.cursor/skills/<skill>/SKILL.md`, and for Codex both the `.codex/skills/<skill>/SKILL.md` packaging source (global `$CODEX_HOME/skills` install) and the committed `.agents/skills/<skill>/SKILL.md` repo-local discovery mirror (Codex scans it cwd → repo root). Forge now generates `.agents/skills` at setup and commits it.
 - Rules are policy/context projections rendered from one canonical `rules/<name>.md` source: only Cursor has a first-class native rule surface (`.cursor/rules/<rule>.mdc`); Claude, Codex, and Hermes receive the same policy through their `AGENTS.md` instruction projection (adding always-on `.claude/rules/*` policy files would triple-deliver the same context as token bloat).
 - Commands are removed, not shims: the legacy `.claude/commands/` and `.cursor/commands/` surfaces were removed in A0d. The canonical workflow lives in stage skills (`.claude/skills/<stage>`, `.codex/skills/<stage>`); Codex/Hermes fall back to the stage skill, not a command file.
 - MCP is config plumbing: each harness gets native MCP config only when the matrix records a target path and probe evidence.
@@ -111,7 +111,7 @@ The current ecosystem pattern is a canonical payload with native harness rendere
 
 - Claude Code documents skills as `SKILL.md` files whose `description` controls automatic loading, and notes that commands and skills can both expose slash affordances.
 - Cursor documents `.cursor/rules/*.mdc` as persistent scoped context with `description`, `globs`, and `alwaysApply`; Cursor skills are treated by Forge as the on-demand workflow target, while rules remain the policy target.
-- Codex documents skills as reusable workflow packages under `.agents/skills` for repository scope, uses description-based implicit invocation, and uses plugins/marketplaces to distribute reusable skills, MCP servers, hooks, and apps. Forge's current generator still emits `.codex/skills` packages for installation.
+- Codex documents skills as reusable workflow packages under `.agents/skills` for repository scope (checked in for the team, scanned cwd → repo root), uses description-based implicit invocation, and uses plugins/marketplaces to distribute reusable skills, MCP servers, hooks, and apps. Forge emits `.codex/skills` packages for the global `$CODEX_HOME` install and now also generates + commits the repo-local `.agents/skills` mirror at setup.
 - AGENTS.md remains the shared instruction projection for agents that read repository instructions directly.
 
 Forge adopts that pattern by keeping one canonical Forge capability and rendering the smallest verified native wrapper per harness. It does not duplicate every feature blindly into every directory.
@@ -155,7 +155,7 @@ The JSON output includes:
 
 ## Proof Boundary
 
-This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime. For Codex specifically, it validates the current Forge packaging source and metadata, not live auto-invocation or direct `.agents/skills` repo discovery.
+This fixture proves deterministic metadata-surface parity. It does not launch closed-source agent sessions or claim that a live model selected a skill in a proprietary runtime. For Codex specifically, it validates the Forge packaging source and metadata (and the committed `.agents/skills` repo-local discovery mirror), not live auto-invocation inside the Codex runtime.
 
 If a future release needs live invocation proof, add a separate transcript-producing eval for Claude Code, Cursor, and Codex and keep this fixture as the fast CI gate.
 
@@ -170,6 +170,6 @@ Known gaps intentionally left for follow-up. Tier-2 work is tracked under kernel
 - **Hooks (`988ae187`)**: NO harness-native hook file is rendered for ANY harness — all lifecycle enforcement is delivered via Lefthook git hooks. The matrix marks Claude/Codex hooks `contract-only` and Cursor hooks `not-delivered` (Cursor 1.7+ exposes `.cursor/hooks.json`, not yet rendered). Native hook renderers are the deliverable.
 - **Agents/subagents (`802aa4d8`)**: the whole domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. The matrix marks every harness `not-delivered`/`unsupported`. A subagent renderer is the deliverable.
 - **Typed memory (`dce9da46`)**: typed memory is WRITE-ONLY (`insights.js`); no generator projects a memory section into any instruction/rule file. All four typedMemory rows are marked `not-delivered`. A memory-projection renderer is the deliverable.
-- **Codex paths (`55dfeccf`)**: `.codex/skills` is the committed staging mirror; skills install to `$CODEX_HOME/skills`. Direct Codex repo discovery uses `.agents/skills`, which Forge does not yet generate. Codex MCP is global-config-only (`$CODEX_HOME/config.toml`), so `(mcp, codex)` is `not-delivered` at project setup.
+- **Codex paths (`55dfeccf`)**: `.codex/skills` is the committed packaging staging mirror; skills install to the global `$CODEX_HOME/skills`. Codex's repo-local discovery path `.agents/skills` is NOW generated at setup and committed for teammate-clone discovery (this closes the skills/stages half of `55dfeccf`). Codex MCP remains global-config-only (`$CODEX_HOME/config.toml`), so `(mcp, codex)` is still `not-delivered` at project setup.
 - **Safety domains (`1e68255c`)**: Claude permissions, `.cursorignore`, and Codex sandbox/approvals are not yet modeled in the matrix.
 - MCP is now auto-wired project-local for both Claude (`.mcp.json`) and Cursor (`.cursor/mcp.json`) via the tested `lib/mcp-config-renderer.js`. Beads/patch-override state, marketplace trust, and extension packs remain as the matrix records them.

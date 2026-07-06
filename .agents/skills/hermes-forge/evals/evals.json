@@ -1,0 +1,46 @@
+[
+  {
+    "query": "I just started a Hermes session on this Forge repo — get me oriented on where the project stands before I touch anything.",
+    "should_trigger": true
+  },
+  {
+    "query": "The forge orient envelope came back with the active-work section flagged truncated. Can I treat that as the full list, or do I need to pull more?",
+    "should_trigger": true
+  },
+  {
+    "query": "Before I tell the user which approach we settled on, I need to point at the exact source file and how authoritative it is — where does that decision come from?",
+    "should_trigger": true
+  },
+  {
+    "query": "I uncovered a design decision in this session that the team needs to keep. What's the correct way to write it back into Forge without dragging my Hermes notes into kernel state?",
+    "should_trigger": true
+  },
+  {
+    "query": "Default orientation is clipping the decisions section at 2000 tokens — give me more headroom.",
+    "should_trigger": true
+  },
+  {
+    "query": "Don't rebuild the project picture by grepping the design docs yourself — go through the proper bounded orient/recap surface instead.",
+    "should_trigger": true
+  },
+  {
+    "query": "Which workflow stage am I sitting in right now, and has any of my work gone stale?",
+    "should_trigger": false
+  },
+  {
+    "query": "I'm kicking off a Forge session in Claude — which stage skill do I run to start planning a new feature?",
+    "should_trigger": false
+  },
+  {
+    "query": "Watch PR #418, rerun the flaky required check if it trips, and ping me when it's ready to merge.",
+    "should_trigger": false
+  },
+  {
+    "query": "Open a bug issue for the checkout timeout, set priority 1, and add a note about the repro steps.",
+    "should_trigger": false
+  },
+  {
+    "query": "What's the highest-priority ready issue I should pick up next?",
+    "should_trigger": false
+  }
+]

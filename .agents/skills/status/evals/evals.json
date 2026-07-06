@@ -1,0 +1,50 @@
+[
+  {
+    "query": "/status",
+    "should_trigger": true
+  },
+  {
+    "query": "where am I on this project right now?",
+    "should_trigger": true
+  },
+  {
+    "query": "catch me up -- what's in progress and what got merged recently?",
+    "should_trigger": true
+  },
+  {
+    "query": "I stepped away for a few days, give me the current state of the work before I dive back in",
+    "should_trigger": true
+  },
+  {
+    "query": "show me my active issues and which stage we're at",
+    "should_trigger": true
+  },
+  {
+    "query": "are there any in-progress issues that were already merged and should be closed?",
+    "should_trigger": true
+  },
+  {
+    "query": "what's the single best next issue to start, and explain why that one?",
+    "should_trigger": false
+  },
+  {
+    "query": "why is issue forge-456 blocked -- what's it waiting on?",
+    "should_trigger": false
+  },
+  {
+    "query": "route me to the correct Forge stage skill for opening a PR",
+    "should_trigger": false
+  },
+  {
+    "query": "create an issue titled 'fix flaky login test' and tag it a bug",
+    "should_trigger": false
+  },
+  {
+    "query": "the PR just merged to master -- confirm CI is green and close the linked issues",
+    "should_trigger": false
+  },
+  {
+    "query": "keep an eye on PR #88 until its checks and review threads settle",
+    "should_trigger": false
+  }
+]

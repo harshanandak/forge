@@ -1,0 +1,46 @@
+[
+  {
+    "query": "Grab the next ready issue off the board and take it all the way through to a PR for me — plan it, build it TDD, validate, and open the PR, but stop and check with me before it actually merges.",
+    "should_trigger": true
+  },
+  {
+    "query": "I want you to orchestrate the whole workflow for the payments-webhook feature end to end: design the plan, do the dev, run validation, ship it, handle the review comments — just keep me in the loop at the plan-approval and merge points.",
+    "should_trigger": true
+  },
+  {
+    "query": "What should I pick up next? Whatever's highest-priority and ready, claim it and drive it to done with the usual human checkpoints — I don't want to babysit every step but I do want to approve the design and the merge.",
+    "should_trigger": true
+  },
+  {
+    "query": "Take issue forge-9k2 from planning through a merged PR. It's a big risky refactor so keep me involved — I want to sign off at intent, at the plan, and per milestone before you push.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the full plan through ship flow on the login-rate-limit bug, but it's a tiny fix so don't over-gate it — just let me approve the merge and go.",
+    "should_trigger": true
+  },
+  {
+    "query": "Autonomously work through the ready queue and get each task to a PR, pausing for my approval before any merge.",
+    "should_trigger": true
+  },
+  {
+    "query": "Just open the PR for my current branch, it's already validated and I've written the description.",
+    "should_trigger": false
+  },
+  {
+    "query": "What stage am I in and what's my active work right now? Anything gone stale?",
+    "should_trigger": false
+  },
+  {
+    "query": "Go through the CodeRabbit and SonarCloud comments on PR #288 and address them, then re-request review.",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a feature issue for adding dark mode to the settings page, priority 2, and link it under the theming epic.",
+    "should_trigger": false
+  },
+  {
+    "query": "Just claim forge-abc for me so nobody else picks it up while I look at it.",
+    "should_trigger": false
+  }
+]
