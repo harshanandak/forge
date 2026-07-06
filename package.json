@@ -80,6 +80,7 @@
   "files": [
     "bin/",
     "lib/",
+    "rules/",
     "skills/",
     ".claude/rules/",
     ".claude/scripts/",
@@ -109,8 +110,7 @@
     "lefthook.yml",
     "AGENTS.md",
     "CLAUDE.md",
-    ".mcp.json.example",
-    ".cursorrules"
+    ".mcp.json.example"
   ],
   "dependencies": {
     "@babel/parser": "^8.0.0",

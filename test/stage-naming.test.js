@@ -81,32 +81,9 @@ describe('Stage naming consistency', () => {
     }
   });
 
-  describe('.cursorrules file', () => {
-    const cursorrules = fs.readFileSync(path.join(ROOT, '.cursorrules'), 'utf8');
-
-    test('does not contain backtick-quoted /check as stage name', () => {
-      const staleRefs = cursorrules.match(/`\/check`/g);
-      expect(staleRefs).toBeNull();
-    });
-
-    test('does not contain /check in stage table row', () => {
-      const tableRef = cursorrules.match(/\|\s*`\/check`\s*\|/g);
-      expect(tableRef).toBeNull();
-    });
-
-    test('does not contain /check in flow diagram', () => {
-      const flowRef = cursorrules.match(/\/check\s*→/g);
-      expect(flowRef).toBeNull();
-    });
-
-    test('does not contain "Check (`/check`)" heading', () => {
-      expect(cursorrules).not.toContain('Check (`/check`)');
-    });
-
-    test('contains /validate where /check was replaced', () => {
-      expect(cursorrules).toMatch(/\|\s*`\/validate`\s*\|/);
-      expect(cursorrules).toMatch(/\/validate\s*→/);
-      expect(cursorrules).toContain('Validate (`/validate`)');
-    });
-  });
+  // The legacy `.cursorrules` root file was removed (deprecated in favor of the
+  // generated `.cursor/rules/*.mdc` surface + the canonical AGENTS.md projection).
+  // Stage-name correctness (/validate, not /check) is enforced on AGENTS.md by
+  // validate.test.js and on the canonical `rules/` source, so no `.cursorrules`
+  // assertions remain here.
 });
