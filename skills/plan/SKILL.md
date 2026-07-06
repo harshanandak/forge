@@ -426,7 +426,7 @@ Save to `docs/work/YYYY-MM-DD-<slug>/tasks.md`.
 
 ### Step 5b: Issue context (design + acceptance)
 
-After saving the task list, attach design context and acceptance criteria to the Forge issue so downstream stages (`/dev`, `/validate`, `/review`) can retrieve it without re-reading the design doc. These are native Kernel issue fields — no Beads required.
+After saving the task list, attach design context and acceptance criteria to the Forge issue so downstream stages (`/dev`, `/validate`, `/review`) can retrieve it without re-reading the design doc. These are native Kernel issue fields — no separate tracker required.
 
 ```bash
 # Link design metadata (task count + task file path) to the Forge issue

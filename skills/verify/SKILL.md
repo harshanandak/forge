@@ -4,7 +4,7 @@ description: >
   Runs the Forge verify stage — the post-merge health check performed AFTER a PR is merged:
   switch to master and pull, confirm the merge landed, check CI is green on master, confirm
   deployments are up, remove the merged worktree, safe-delete the branch, and close the
-  kernel/Beads issues the PR resolved. Use when asked to verify a merge went cleanly, confirm
+  kernel issues the PR resolved. Use when asked to verify a merge went cleanly, confirm
   post-merge CI health on master, check deployments after merging, clean up a merged branch or
   worktree, or close the issue now that its PR is merged — and whenever `/verify` is invoked.
   Strictly the POST-merge stage: use shepherd instead to monitor a still-open PR toward merge,
@@ -150,7 +150,7 @@ Worktree: removed ✓
 Branch: <branch-name> deleted ✓
 ```
 
-### Step 7: If Issues Found — Create Beads Issue
+### Step 7: If Issues Found — Create Issue
 
 **Never commit inline.** If something is wrong, create a tracking issue:
 
@@ -241,7 +241,7 @@ Do NOT declare /verify complete until:
 
 ## Rules
 
-- **Never commits code** — this skill may update Beads issue state after post-merge health is verified
+- **Never commits code** — this skill may update issue state after post-merge health is verified
 - **Never creates PRs** — if fixes are needed, that's a new /dev cycle
 - **Runs after user confirms merge** — not before
 - **Reports honestly** — if CI is broken on master, say so clearly
@@ -276,7 +276,7 @@ Do NOT declare /verify complete until:
       - 2 new code smells introduced
       - Action: investigate or create hotfix
 
-  Created Beads issue: forge-xyz
+  Created issue: forge-xyz
   "Post-merge: SonarCloud quality gate failing on master after PR #89"
 
   Run /status to assess next steps

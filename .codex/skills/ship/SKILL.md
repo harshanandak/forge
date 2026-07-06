@@ -148,7 +148,7 @@ If no PR template exists, use this minimal fallback:
 ## Testing
 [How it was tested, test results]
 
-## Beads
+## Issue
 Closes forge-xxx
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -164,7 +164,7 @@ Rules for the PR body:
 - **Use the project's template structure** — never substitute your own format
 - **Fill in concrete data** — commit counts, test results, actual file paths, real Forge IDs
 - **Check applicable checkboxes** — `[x]` for items that apply, `[ ]` for items that don't
-- **Include "Closes forge-xxx"** in the Beads section (required for auto-close in /verify)
+- **Include "Closes forge-xxx"** in the Issue section (required for auto-close in /verify)
 
 ### Step 6: Confirm Context and Record Stage Transition
 ```bash
