@@ -136,4 +136,18 @@ describe('safety renderer — .cursorignore defaults', () => {
     const twice = mergeCursorIgnore(once);
     expect(twice).toBe(once);
   });
+
+  test('does NOT duplicate the header when re-adding a missing default', () => {
+    // Simulate the file a future CURSORIGNORE_DEFAULTS addition creates: header
+    // already present, but one default missing. The header must not be re-added.
+    const full = mergeCursorIgnore('');
+    const headerLine = full.split('\n').find(l => l.startsWith('#'));
+    const removed = CURSORIGNORE_DEFAULTS[CURSORIGNORE_DEFAULTS.length - 1];
+    const stale = full.split('\n').filter(l => l.trim() !== removed).join('\n');
+    const merged = mergeCursorIgnore(stale);
+    // the missing default is re-added ...
+    expect(merged.split('\n').map(l => l.trim())).toContain(removed);
+    // ... but the header block appears exactly once (no duplicate).
+    expect(merged.split('\n').filter(l => l === headerLine).length).toBe(1);
+  });
 });
