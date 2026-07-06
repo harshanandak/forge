@@ -308,7 +308,7 @@ forge close <id>      # Complete work
 ## Project Learnings
 
 - **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
-- **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
+- **Stage names**: The validation stage command is `/validate` — renamed in PR #50; do not use the old name.
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
 - **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. Never hand-edit generated agent skill copies — edit the canonical `skills/` source.
