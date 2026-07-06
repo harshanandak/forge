@@ -94,14 +94,25 @@ describe('skills-first stage graph', () => {
     }));
   });
 
-  test('keeps Claude commands as shims instead of canonical workflow authority', () => {
+  test('renders Claude stages skill-first with NO command shim (commands removed in A0d)', () => {
     const graph = getSkillsFirstStageGraph();
 
     for (const stage of graph.stages) {
-      expect(stage.renderTargets.claude.commandShim).toEqual({
-        path: `.claude/commands/${stage.id}.md`,
-        pointsTo: `.claude/skills/${stage.id}/SKILL.md`,
-        shimOnly: true,
+      // The legacy `.claude/commands/` surface was removed; the stage SKILL is
+      // the authority. Emitting a command shim contradicted the commands
+      // capability row (which records Claude commands as `removed`).
+      expect(stage.renderTargets.claude.skill).toBe(`.claude/skills/${stage.id}/SKILL.md`);
+      expect(stage.renderTargets.claude.commandShim).toBeUndefined();
+    }
+  });
+
+  test('models Hermes stages as CLI-consumed (no per-stage skill file)', () => {
+    const graph = getSkillsFirstStageGraph();
+
+    for (const stage of graph.stages) {
+      expect(stage.renderTargets.hermes).toEqual({
+        cliConsumed: true,
+        via: 'forge orient / forge recap',
       });
     }
   });

@@ -55,7 +55,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/forge-issues.js (15)
   - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 105 (bd), 106 (bd), 109 (bd), 143 (bd), 167 (bd), 169 (bd), 173 (bd), 273 (bd), 298 (bd)
 - [ ] lib/harness-capability-matrix.js (1)
-  - lines: 121 (bd)
+  - lines: 130 (bd)
 - [ ] lib/insights.js (7)
   - lines: 112 (.beads), 123 (.beads), 131 (.beads), 157 (.beads), 176 (.beads), 338 (.beads), 341 (.beads)
 - [ ] lib/migrate-dry-run.js (8)

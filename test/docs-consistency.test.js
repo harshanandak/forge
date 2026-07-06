@@ -101,8 +101,9 @@ describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {
   it('documents the skills-first stage graph follow-up', () => {
     expect(parity).toContain('Required Follow-Up: Skills-First Stage Graph');
     expect(parity).toContain('Tracked as `forge-wj36`');
-    expect(parity).toContain('Claude commands should become compatibility shims');
-    expect(parity).toContain('Cursor Agent Skills are not proven in the W0 fixture');
+    // Commands were REMOVED in A0d (not "shims") — the stage skill is the authority.
+    expect(parity).toContain('the stage skill — not a command shim — is the workflow authority');
+    expect(parity).toContain('Cursor Agent Skill files are generated');
   });
 
   it('documents the machine-readable capability matrix evidence command', () => {

@@ -122,9 +122,13 @@ describe('agent-validator', () => {
       expect(Array.isArray(files)).toBeTruthy();
       expect(files.length > 0).toBeTruthy();
 
-      // Should include .cursorrules (not CURSOR.md)
-      const hasCursorRules = files.some(f => f.path && f.path.includes('.cursorrules'));
-      expect(hasCursorRules).toBeTruthy();
+      // .cursorrules was dropped as a Forge-managed surface: Cursor reads AGENTS.md
+      // natively and rules render to .cursor/rules/*.mdc. The expected files now come
+      // from the plugin's directories (.cursor/rules, .cursor/skills), not a rootConfig.
+      const hasCursorRulesDir = files.some(f => f.path && f.path.includes('.cursor/rules'));
+      expect(hasCursorRulesDir).toBeTruthy();
+      const hasLegacyRootConfig = files.some(f => f.path === '.cursorrules');
+      expect(hasLegacyRootConfig).toBe(false);
     });
 
     test('should return expected files for all supported agents', () => {
