@@ -136,6 +136,7 @@ describe('skills/ directory structure', () => {
       'triage-ready',
       'issue-basics',
       'smith',
+      'memory',
     ];
 
     test('skills/ contains exactly the expected skill directories', () => {

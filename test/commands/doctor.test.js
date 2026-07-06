@@ -38,9 +38,11 @@ describe('forge doctor — buildDoctorReport', () => {
 		expect(report.schemaVersion).toBe(1);
 		expect(report.ok).toBe(true);
 		expect(Array.isArray(report.checks)).toBe(true);
-		expect(report.checks.length).toBe(1);
+		// filesystem-class (enforcer) + memory-backend (non-fatal reporter).
+		expect(report.checks.length).toBe(2);
 		const check = report.checks[0];
 		expect(check.id).toBe('filesystem-class');
+		expect(report.checks[1].id).toBe('memory-backend');
 		expect(check.ok).toBe(true);
 		expect(check.class).toBe('local-ok');
 		expect(check.riskTier).toBe('safe');
