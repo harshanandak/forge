@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const {
   validateDescriptor,
+  toJsonServerEntry,
   mergeJsonMcp,
   mergeCodexToml,
   renderMcpConfig,
@@ -110,5 +111,56 @@ describe('mcp config renderer — generic descriptor contract', () => {
     expect(Object.keys(JSON.parse(json).mcpServers)).toEqual(['demo-memory']);
     const toml = mergeCodexToml(mergeCodexToml('', [descriptor]), [descriptor]);
     expect((toml.match(/\[mcp_servers\.demo-memory\]/g) || []).length).toBe(1);
+  });
+
+  // ── C2: never clobber an unparseable-but-populated config (data loss) ────────
+  test('C2: malformed JSONC with custom servers is NOT wiped — backed up + skipped', () => {
+    const root = tmp();
+    try {
+      // JSONC that Cursor tolerates but JSON.parse rejects (trailing comma + comment)
+      const original =
+        '{\n  // my servers\n  "mcpServers": {\n    "my-server": { "command": "node", "args": ["x.js"] },\n  }\n}\n';
+      const p = path.join(root, '.mcp.json');
+      fs.writeFileSync(p, original);
+
+      const result = renderMcpConfig({ harness: 'claude', targetRoot: root, descriptors: [descriptor] });
+
+      // Original file must be untouched (custom server preserved, context7 NOT force-added)
+      expect(fs.readFileSync(p, 'utf-8')).toBe(original);
+      expect(result.skipped).toBe(true);
+      // A backup copy exists
+      expect(fs.existsSync(path.join(root, '.mcp.json.bak'))).toBe(true);
+      expect(fs.readFileSync(path.join(root, '.mcp.json.bak'), 'utf-8')).toBe(original);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('C2: mergeJsonMcp throws (does not silently discard) on unparseable non-empty input', () => {
+    expect(() => mergeJsonMcp('{ "mcpServers": { "a": {} }, }', [descriptor])).toThrow();
+    // empty/whitespace still starts fresh (no throw)
+    expect(() => mergeJsonMcp('   ', [descriptor])).not.toThrow();
+  });
+
+  // ── P1: http transport must carry a url ──────────────────────────────────────
+  test('P1: http descriptor renders {type:http, url} in JSON and url in Codex TOML', () => {
+    const http = { name: 'remote', transport: 'http', url: 'https://mcp.example.com/sse', envRefs: {} };
+    const entry = toJsonServerEntry(http);
+    expect(entry.type).toBe('http');
+    expect(entry.url).toBe('https://mcp.example.com/sse');
+    expect(entry.command).toBeUndefined();
+
+    const root = tmp();
+    try {
+      renderMcpConfig({ harness: 'codex', targetRoot: root, descriptors: [http] });
+      const toml = fs.readFileSync(path.join(root, '.codex/config.toml'), 'utf-8');
+      expect(toml).toContain('url = "https://mcp.example.com/sse"');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('P1: http descriptor without url is rejected', () => {
+    expect(() => validateDescriptor({ name: 'x', transport: 'http', envRefs: {} })).toThrow(/url/i);
   });
 });
