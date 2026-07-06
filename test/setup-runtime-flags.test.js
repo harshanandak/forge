@@ -298,18 +298,21 @@ describe('setup runtime flags', () => {
     expect(result.warnings).toContain('gh (GitHub CLI) - Install from https://cli.github.com (required later for GitHub-integrated workflow steps)');
   });
 
-  serialTest('checkPrerequisites requires jq when setup is preparing workflow-capable installs', () => {
+  serialTest('checkPrerequisites treats missing jq as a soft warning, not a fatal exit', () => {
     const originalExit = process.exit;
     const originalLog = console.log;
     const logLines = [];
+    let exited = false;
 
-    process.exit = (code) => {
-      throw new Error(`process.exit:${code}`);
+    process.exit = () => {
+      exited = true;
+      throw new Error('process.exit should not be called on the jq path');
     };
     console.log = (...parts) => logLines.push(parts.join(' '));
 
+    let result;
     try {
-      expect(() => setupCommand.checkPrerequisites({
+      result = setupCommand.checkPrerequisites({
         requireGithubCli: false,
         requireJq: true,
         commandRunner: (command) => {
@@ -318,13 +321,16 @@ describe('setup runtime flags', () => {
           }
           return '';
         },
-      })).toThrow(/process\.exit:1/);
+      });
     } finally {
       process.exit = originalExit;
       console.log = originalLog;
     }
 
-    expect(logLines.join('\n')).toContain('jq - Install from https://jqlang.org/download/');
+    expect(exited).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(result.errors.some(err => /jq/i.test(err))).toBe(false);
+    expect(result.warnings.some(warn => /jq/i.test(warn))).toBe(true);
   });
 
   serialTest('checkPrerequisites reports the kernel issue store without requiring a bd CLI', () => {
