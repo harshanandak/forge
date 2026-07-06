@@ -1079,3 +1079,94 @@ describe('resolveIssueActor precedence', () => {
     expect(resolveIssueActor()).toBeUndefined();
   });
 });
+
+describe('Beads-not-initialized graceful fallback to the kernel (7f09ae93)', () => {
+  test('resolveBeadsFallbackToKernel routes to the kernel when Beads is uninitialized but a kernel store exists', () => {
+    const { resolveBeadsFallbackToKernel } = require('../lib/forge-issues');
+
+    // Derive expectations from the same resolution the broker uses (path.resolve
+    // adds a drive letter on Windows), so the assertion is cross-platform.
+    const expectedGitCommonDir = path.resolve('/repo/.git');
+    const expectedDbPath = path.join(expectedGitCommonDir, 'forge', 'kernel.sqlite');
+
+    const checked = [];
+    const result = resolveBeadsFallbackToKernel('/repo', {
+      isBeadsInitialized: () => false,
+      gitCommonDir: '/repo/.git',
+      existsSync: (p) => {
+        checked.push(p);
+        return true;
+      },
+    });
+
+    expect(result).toEqual({
+      kernelDatabasePath: expectedDbPath,
+      gitCommonDir: expectedGitCommonDir,
+    });
+    // It probed exactly the documented kernel store location.
+    expect(checked).toEqual([expectedDbPath]);
+  });
+
+  test('resolveBeadsFallbackToKernel returns null when Beads IS initialized (honor the explicit selection)', () => {
+    const { resolveBeadsFallbackToKernel } = require('../lib/forge-issues');
+
+    const result = resolveBeadsFallbackToKernel('/repo', {
+      isBeadsInitialized: () => true,
+      gitCommonDir: '/repo/.git',
+      existsSync: () => true,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  test('resolveBeadsFallbackToKernel returns null when neither Beads nor a kernel store exists', () => {
+    const { resolveBeadsFallbackToKernel } = require('../lib/forge-issues');
+
+    const result = resolveBeadsFallbackToKernel('/repo', {
+      isBeadsInitialized: () => false,
+      gitCommonDir: '/repo/.git',
+      existsSync: () => false,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  test('runIssueOperation falls back to the kernel (with a one-line notice) instead of dead-ending', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+
+    const notices = [];
+    const calls = [];
+    const result = await runIssueOperation('list', [], '/repo', {
+      isBeadsInitialized: () => false,
+      gitCommonDir: '/repo/.git',
+      existsSync: () => true,
+      warn: (msg) => notices.push(msg),
+      createKernelBroker: () => ({
+        async runIssueOperation(operation, args) {
+          calls.push({ operation, args });
+          return { ok: true, data: { items: [] } };
+        },
+      }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([{ operation: 'list', args: [] }]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('kernel');
+  });
+
+  test('runIssueOperation still returns the Beads not-initialized error when no kernel store exists', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+
+    const result = await runIssueOperation('list', [], '/repo', {
+      isBeadsInitialized: () => false,
+      gitCommonDir: '/repo/.git',
+      existsSync: () => false,
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Beads is not initialized in this project. Run forge setup before using forge issues.',
+    });
+  });
+});
