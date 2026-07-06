@@ -407,7 +407,11 @@ describe.skipIf(!shouldRunBeadsIntegration())('scripts/beads-context.sh', () => 
 	});
 });
 
-describe('/plan command integration with beads-context.sh', () => {
+// The /plan and /dev skills are kernel-native: they record design/acceptance
+// context and stage transitions via `forge comment` / `forge update`, and MUST
+// NOT depend on the legacy `scripts/beads-context.sh` helper sub-commands
+// (set-design, set-acceptance, update-progress, stage-transition).
+describe('/plan command kernel-native stage recording', () => {
 	const PLAN_MD_PATH = path.join(
 		__dirname,
 		'..',
@@ -421,35 +425,25 @@ describe('/plan command integration with beads-context.sh', () => {
 		planContent = fs.readFileSync(PLAN_MD_PATH, 'utf-8');
 	});
 
-	test('plan.md should reference beads-context.sh set-design after task list creation', () => {
-		expect(planContent).toContain('beads-context.sh set-design');
+	test('plan.md does not depend on the legacy beads-context.sh helper', () => {
+		expect(planContent).not.toContain('scripts/beads-context.sh');
+		expect(planContent).not.toContain('beads-context.sh set-design');
+		expect(planContent).not.toContain('beads-context.sh set-acceptance');
+		expect(planContent).not.toContain('beads-context.sh stage-transition');
 	});
 
-	test('plan.md should reference beads-context.sh set-acceptance after task list creation', () => {
-		expect(planContent).toContain('beads-context.sh set-acceptance');
+	test('plan.md records design + acceptance context kernel-natively', () => {
+		// Acceptance criteria captured on the Forge issue, progress via forge comment.
+		expect(planContent).toContain('forge comment');
+		expect(planContent).toMatch(/forge update <id> --acceptance/);
 	});
 
-	test('plan.md should reference beads-context.sh stage-transition for plan to dev', () => {
-		expect(planContent).toContain('beads-context.sh stage-transition');
-		expect(planContent).toContain('plan dev');
-	});
-
-	test('plan.md HARD-GATE should include set-design success check', () => {
-		// The exit HARD-GATE should mention set-design ran successfully
-		expect(planContent).toMatch(
-			/HARD-GATE.*plan exit[\s\S]*?set-design.*ran successfully/i,
-		);
-	});
-
-	test('plan.md HARD-GATE should include set-acceptance success check', () => {
-		// The exit HARD-GATE should mention set-acceptance ran successfully
-		expect(planContent).toMatch(
-			/HARD-GATE.*plan exit[\s\S]*?set-acceptance.*ran successfully/i,
-		);
+	test('plan.md records the plan→dev stage transition via forge comment', () => {
+		expect(planContent).toMatch(/forge comment[\s\S]*?ready for dev/i);
 	});
 });
 
-describe('/dev command integration with beads-context.sh', () => {
+describe('/dev command kernel-native stage recording', () => {
 	const DEV_MD_PATH = path.join(
 		__dirname,
 		'..',
@@ -463,27 +457,22 @@ describe('/dev command integration with beads-context.sh', () => {
 		devContent = fs.readFileSync(DEV_MD_PATH, 'utf-8');
 	});
 
-	test('dev.md Step E HARD-GATE should reference beads-context.sh update-progress', () => {
-		expect(devContent).toContain('beads-context.sh update-progress');
+	test('dev.md does not depend on the legacy beads-context.sh helper', () => {
+		expect(devContent).not.toContain('scripts/beads-context.sh');
+		expect(devContent).not.toContain('beads-context.sh update-progress');
+		expect(devContent).not.toContain('beads-context.sh stage-transition');
 	});
 
-	test('dev.md should reference beads-context.sh stage-transition for dev to validate', () => {
-		expect(devContent).toContain('beads-context.sh stage-transition');
-		expect(devContent).toContain('dev validate');
-	});
-
-	test('dev.md Step E HARD-GATE should include update-progress as a gate item', () => {
-		// The task completion HARD-GATE should mention update-progress ran successfully
+	test('dev.md task-completion HARD-GATE records progress via forge comment', () => {
+		// The per-task progress record is a kernel-native forge comment that must
+		// have run successfully before advancing.
 		expect(devContent).toMatch(
-			/HARD-GATE.*task completion[\s\S]*?beads-context\.sh update-progress[\s\S]*?ran successfully/i,
+			/forge comment <id> "task[\s\S]*?ran successfully/i,
 		);
 	});
 
-	test('dev.md Beads update section should use stage-transition instead of bd update', () => {
-		// The Beads update section should use stage-transition, not bd update --comment
-		expect(devContent).toMatch(
-			/Beads update[\s\S]*?beads-context\.sh stage-transition/i,
-		);
+	test('dev.md records the dev→validate stage transition via forge comment', () => {
+		expect(devContent).toMatch(/forge comment[\s\S]*?ready for validate/i);
 	});
 });
 
