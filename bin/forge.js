@@ -2642,6 +2642,26 @@ function showHelp() {
   }
 }
 
+// Per-command help. When `--help` follows a known subcommand (e.g. `forge status
+// --help`), render THAT command's usage/description/flags instead of the global
+// setup banner — a newcomer asking for a command's help should not get the
+// installer's help.
+function printCommandHelp(cmd) {
+  console.log(`forge ${cmd.name} — ${cmd.description}`);
+  if (cmd.usage) {
+    console.log('');
+    console.log(/^(Usage:|forge )/.test(cmd.usage) ? cmd.usage : `Usage: ${cmd.usage}`);
+  }
+  const flagEntries = cmd.flags && typeof cmd.flags === 'object' ? Object.entries(cmd.flags) : [];
+  if (flagEntries.length > 0) {
+    console.log('');
+    console.log('Flags:');
+    for (const [flag, desc] of flagEntries) {
+      console.log(`  ${flag.padEnd(16)} ${desc}`);
+    }
+  }
+}
+
 // Detect Husky and offer migration to Lefthook
 // Called before installGitHooks() in setup flows
 async function handleHuskyMigration() {
@@ -3947,9 +3967,15 @@ async function main() {
     }
   }
 
-  // Show help
+  // Show help. `--help` after a known registry subcommand (e.g. `forge status
+  // --help`) renders that command's usage; bare `forge --help` keeps the global banner.
   if (flags.help) {
-    showHelp();
+    const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+    if (command && helpRegistry.commands.has(command)) {
+      printCommandHelp(helpRegistry.commands.get(command));
+    } else {
+      showHelp();
+    }
     return;
   }
 
@@ -4283,8 +4309,26 @@ async function main() {
     console.log('  To set up in your project:');
     console.log(`    ${runCmd} forge setup`);
     console.log('');
+  } else if (command === undefined && fs.existsSync(path.join(projectRoot, 'AGENTS.md'))) {
+    // Bare `forge` in an INITIALIZED project orients instead of mutating: render the
+    // same read-only one-glance view as `forge status`. Newcomers typing `forge` to
+    // get their bearings should never trigger the minimal install.
+    try {
+      const { commandOpts, args: dispatchArgs } = await resolveCommandOpts(
+        'status',
+        [],
+        { env: process.env, projectRoot },
+      );
+      const result = await executeCommand(registry.commands, 'status', dispatchArgs, flags, projectRoot, { commandOpts });
+      if (result && typeof result.output === 'string' && result.output.length > 0) {
+        process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);
+      }
+    } catch (err) {
+      console.error(`Error running 'status':`, err.message);
+      process.exit(1);
+    }
   } else {
-    // Explicit invocation with no command: run minimal install
+    // Explicit invocation with no command in an UNINITIALIZED project: run minimal install.
     minimalInstall();
   }
 }
