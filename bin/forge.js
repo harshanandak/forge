@@ -485,17 +485,6 @@ function writeFile(filePath, content) {
   }
 }
 
-function readFile(filePath) {
-  try {
-    return fs.readFileSync(filePath, 'utf8');
-  } catch (err) {
-    if (process.env.DEBUG) {
-      console.warn(`  ⚠ Could not read ${filePath}: ${err.message}`);
-    }
-    return null;
-  }
-}
-
 function copyFile(src, dest) {
   try {
     const destPath = path.resolve(projectRoot, dest);
@@ -1793,14 +1782,20 @@ function minimalInstall() {
   console.log('');
 }
 
+// ⚠️ LEGACY / DEAD SETUP PATH ⚠️
+// The functions below (setupClaudeAgent, setupCursorAgent, copyAgentRules,
+// setupClaudeMcpConfig, setupAgent, quickSetup, dryRunSetup, …) are the OLD
+// inline setup implementation. `forge setup` is now the registry command in
+// lib/commands/setup.js, which takes priority in the dispatcher and `return`s
+// before the inline `if (command === 'setup')` block is ever reached. This copy
+// is kept only until the inline setup subsystem is fully removed — the authority
+// is lib/commands/setup.js. Do not add behavior here; edit lib/commands/setup.js.
+
 // Helper: Setup Claude agent
 function setupClaudeAgent() {
   // Skills-only surface: per-skill SKILL.md dirs are populated by createAgentSkill.
-  // Copy rules
-  const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
-  copyFile(rulesSrc, '.claude/rules/workflow.md');
-
-  // Copy scripts
+  // Claude receives policy via CLAUDE.md → AGENTS.md, NOT an always-on
+  // `.claude/rules/workflow.md` (that canonical file was removed). Only scripts copy.
   const scriptSrc = path.join(packageDir, '.claude/scripts/load-env.sh');
   copyFile(scriptSrc, '.claude/scripts/load-env.sh');
 }
@@ -1809,22 +1804,6 @@ function setupClaudeAgent() {
 function setupCursorAgent() {
   writeFile('.cursor/rules/forge-workflow.mdc', CURSOR_RULE);
   console.log('  Created: .cursor/rules/forge-workflow.mdc');
-}
-
-// Helper: Copy rules for agent
-function copyAgentRules(agent) {
-  if (!agent.needsConversion) return;
-
-  const workflowMdPath = path.join(projectRoot, '.claude/rules/workflow.md');
-  if (!fs.existsSync(workflowMdPath)) return;
-
-  const rulesDir = agent.dirs.find(d => d.includes('/rules'));
-  if (!rulesDir) return;
-
-  const ruleContent = readFile(workflowMdPath);
-  if (ruleContent) {
-    writeFile(`${rulesDir}/workflow.md`, ruleContent);
-  }
 }
 
 // Helper: Create skill file for agent
@@ -1895,9 +1874,6 @@ function setupAgent(agentKey, skipFiles = {}) {
   if (agent.customSetup === 'cursor') {
     setupCursorAgent();
   }
-
-  // Copy rules if needed
-  copyAgentRules(agent);
 
   // Create SKILL.md
   createAgentSkill(agent, agentKey);

@@ -10,7 +10,6 @@
     "hooks": true
   },
   "directories": {
-    "rules": ".claude/rules",
     "skills": ".claude/skills",
     "scripts": ".claude/scripts"
   },
@@ -18,7 +17,6 @@
     "rootConfig": "CLAUDE.md"
   },
   "setup": {
-    "copyRules": true,
     "copyScripts": true,
     "createSkill": true
   }

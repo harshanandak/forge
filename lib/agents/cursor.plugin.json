@@ -13,9 +13,6 @@
     "rules": ".cursor/rules",
     "skills": ".cursor/skills"
   },
-  "files": {
-    "rootConfig": ".cursorrules"
-  },
   "setup": {
     "copyRules": true,
     "createSkill": true,
