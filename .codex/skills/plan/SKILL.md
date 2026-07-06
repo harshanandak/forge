@@ -50,9 +50,8 @@ Before ANY planning work begins:
    ```bash
    forge create --title="<feature-name>" --type=epic
    forge update <id> --status=in_progress
-   # Optional context logging: run the transition helper only when present (kernel-only setups skip it).
-   # Only skips when the helper is absent — a real logging failure from the helper stays visible.
-   if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> none plan; fi
+   # Record the none→plan stage transition kernel-natively on the Forge issue.
+   forge comment <id> "Stage: none → plan"
    ```
 6. ONLY THEN begin Phase 1.
 
@@ -280,9 +279,9 @@ Do NOT begin Phase 2 (web research) until:
 
 **Goal**: Find HOW to build it — best practices, known issues, security risks, TDD scenarios.
 
-Record the phase transition before starting research (optional context logging; kernel-only setups skip it — a real helper failure stays visible):
+Record the phase transition before starting research (kernel-native):
 ```bash
-if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> plan research; fi
+forge comment <id> "Stage: plan → research"
 ```
 
 Delegate the technical investigation to the **research** skill, which owns this bundle so it
@@ -332,9 +331,9 @@ Do NOT begin Phase 3 (setup) until:
 
 **Goal**: Create branch, worktree, and a complete task list ready for /dev.
 
-Record the phase transition before starting setup (optional context logging; kernel-only setups skip it — a real helper failure stays visible):
+Record the phase transition before starting setup (kernel-native):
 ```bash
-if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> research setup; fi
+forge comment <id> "Stage: research → setup"
 ```
 
 ### Step 1: Link child issues to the epic
@@ -497,32 +496,18 @@ If only a sub-skill was invoked, do not claim full `/plan` completion. Record th
 </HARD-GATE>
 ```
 
-After all HARD-GATE items pass, confirm issue context and record the stage transition. The structured transition helper is optional; on a kernel-only setup, log the handoff directly on the Forge issue:
+After all HARD-GATE items pass, confirm issue context and record the stage transition kernel-natively on the Forge issue:
 
 ```bash
-# Confirm the issue carries design + acceptance context (helper when present; otherwise inspect the issue).
-# Only falls back to `forge issue show` when the helper is absent — a real validate failure stays visible.
-if [ -f scripts/beads-context.sh ]; then
-  bash scripts/beads-context.sh validate <id>
-else
-  forge issue show <id>
-fi
+# Confirm the issue carries design + acceptance context.
+forge issue show <id>
 
-# Record the plan→dev transition (structured helper when present; kernel-native comment otherwise).
-# The fallback comment mirrors the same envelope the helper emits (Stage:/Summary:/Decisions:/Artifacts:/Next:).
-if [ -f scripts/beads-context.sh ]; then
-  bash scripts/beads-context.sh stage-transition <id> plan dev \
-    --summary "<design approach chosen, task count>" \
-    --decisions "<key trade-offs resolved during Q&A>" \
-    --artifacts "docs/work/YYYY-MM-DD-<slug>/plan.md docs/work/YYYY-MM-DD-<slug>/tasks.md" \
-    --next "<first dev task focus area>"
-else
-  forge comment <id> "Stage: plan complete → ready for dev
+# Record the plan→dev transition kernel-natively (Stage:/Summary:/Decisions:/Artifacts:/Next: envelope).
+forge comment <id> "Stage: plan complete → ready for dev
 Summary: <design approach chosen, task count>
 Decisions: <key trade-offs resolved during Q&A>
 Artifacts: docs/work/YYYY-MM-DD-<slug>/plan.md docs/work/YYYY-MM-DD-<slug>/tasks.md
 Next: <first dev task focus area>"
-fi
 ```
 
 ---
