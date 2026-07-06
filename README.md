@@ -60,7 +60,8 @@ every agent understands. No lock-in, no per-agent reinvention.
 
 ### 🛠️ A workflow you own
 Forge installs a proven **TDD-first** workflow —
-`/plan → /dev → /validate → /ship → /review → /verify` — but it is *not* a fixed
+`/plan → /dev → /validate → /ship → /review` by default, with `/verify` added in
+the profiles that need it — but it is *not* a fixed
 prompt pack. Every stage and quality gate is configurable: turn gates on or off,
 change your change-classification, adapt the stages to how your team actually
 works, and update it as you grow. The default makes you productive on day one;
@@ -168,7 +169,7 @@ handoff gate embedded in `/ship` and `/review`, not a separate stage.
 
 - **Control plane** — local commands, files, and checks that give agents a shared operating surface.
 - **Kernel** — the default local issue-state store, backing `forge` issue commands.
-- **Workflow template** — the default stage path Forge installs (`/plan → /dev → /validate → /ship → /review → /verify`), fully configurable.
+- **Workflow template** — the default stage path Forge installs (`/plan → /dev → /validate → /ship → /review`, with `/verify` in the profiles that need it), fully configurable.
 - **Harness** — an agent-specific instruction surface. Forge supports Claude Code, Codex, Cursor, and Hermes.
 - **Memory** — durable, searchable project notes written with `forge remember` and read with `forge recall`.
 - **Adapter** — an integration boundary for review or issue tools.
