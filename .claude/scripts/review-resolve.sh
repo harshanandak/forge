@@ -1,7 +1,12 @@
 #!/bin/bash
-# Greptile Review Thread Resolution Tool
-# Uses GitHub GraphQL API to systematically resolve review threads
-# Uses GitHub REST API to reply to review comments
+# Review Thread Resolution Tool
+# Resolves GitHub PR review threads from ANY review author — CodeRabbit, Qodo,
+# Greptile, or a human reviewer — the mechanism is author-agnostic.
+# Uses GitHub GraphQL API to systematically resolve review threads.
+# Uses GitHub REST API to reply to review comments.
+# Note: the `list-all`, `resolve-all`, and `stats` convenience commands additionally
+# recognize `greptile-apps`-authored threads (Greptile is one supported review tool);
+# the core list/reply/resolve/reply-and-resolve commands work for every author.
 
 set -e
 

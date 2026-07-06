@@ -21,7 +21,7 @@ const entrypointPaths = [
   'scripts/smart-status.sh',
   'scripts/sync-utils.sh',
   'scripts/validate.sh',
-  '.claude/scripts/greptile-resolve.sh',
+  '.claude/scripts/review-resolve.sh',
 ];
 
 function readsTool(content) {

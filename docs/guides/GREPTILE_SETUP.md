@@ -32,8 +32,8 @@ Forge does not guarantee that Greptile is installed or enforced. Treat Greptile 
 When the repo includes the helper script:
 
 ```bash
-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+bash .claude/scripts/review-resolve.sh stats <pr-number>
 ```
 
 Reply to each valid, invalid, conflicting, or out-of-scope thread before resolving it.

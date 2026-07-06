@@ -15,7 +15,7 @@ description: >
 allowed-tools: Bash, Read, Edit, Grep, Glob
 ---
 
-Process ALL pull request issues including GitHub Actions failures, Greptile inline comments, SonarCloud analysis, and other CI/CD checks.
+Process ALL pull request issues including GitHub Actions failures, review-agent inline comments (Greptile, CodeRabbit, Qodo, or human reviewers), SonarCloud analysis, and other CI/CD checks.
 
 # Review
 
@@ -75,22 +75,22 @@ gh run view <run-id> --log-failed
 - Type failures: TypeScript type errors
 - Deployment failures: Env vars, configuration issues
 
-### Step 3: Process Greptile Review
+### Step 3: Process Review-Agent Feedback
 
-Greptile provides TWO types of feedback:
+Review agents (Greptile, CodeRabbit, Qodo, or human reviewers) provide TWO types of feedback:
 1. **Inline comments** on specific code lines
 2. **Summary** with overall recommendations
 
-**IMPORTANT**: Use the **systematic Greptile resolution process** documented in `.claude/rules/greptile-review-process.md`. This process has been standardized to ensure:
+**IMPORTANT**: Use the **systematic review-thread resolution process** documented in `.claude/rules/review-process.md`. This process is author-agnostic — it works the same whichever tool or person left the comment — and has been standardized to ensure:
 - All threads are replied to directly (not as separate PR comments)
 - All threads are marked as resolved after fixing
 - No manual tracking overhead for maintainers
 
-#### 3A. Check Greptile Inline Comments (Use Systematic Process)
+#### 3A. Check Inline Review Comments (Use Systematic Process)
 
 **Step 1: List all unresolved threads**
 ```bash
-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
 ```
 
 This shows:
@@ -107,7 +107,7 @@ This shows:
 
 2. **Categorize the comment**:
    - **Valid**: Should be implemented (security issue, bug, clear improvement)
-   - **Invalid**: Greptile misunderstood context
+   - **Invalid**: the review agent misunderstood context
    - **Conflicting**: Contradicts research decisions with good reason
    - **Out of scope**: Valid but not for this PR
 
@@ -118,7 +118,7 @@ This shows:
 4. **Reply and resolve** (for ALL comments, even invalid ones)
    ```bash
    # For valid issues (fixed):
-   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+   bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
      "✅ Fixed: [description]
 
      Changed: [what was changed]
@@ -126,11 +126,11 @@ This shows:
      Commit: [commit-sha]"
 
    # For invalid/conflicting issues:
-   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+   bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
      "This approach is correct because:
      - Reasoning: [from design doc]
      - Evidence: [link to source]
-     - Alternative considered: [what Greptile suggested]
+     - Alternative considered: [what the review agent suggested]
      - Why rejected: [specific reason]
 
      See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
@@ -138,15 +138,15 @@ This shows:
 
 **Step 3: Verify all resolved**
 ```bash
-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+bash .claude/scripts/review-resolve.sh stats <pr-number>
 ```
-Should show: "✓ All Greptile threads resolved!"
+Should show: all review threads resolved.
 
-**See complete process**: `.claude/rules/greptile-review-process.md`
+**See complete process**: `.claude/rules/review-process.md`
 
-#### 3B. Check Greptile Summary
+#### 3B. Check the Review-Agent Summary
 ```bash
-# Greptile usually posts a summary comment on the PR
+# Review agents usually post a summary comment on the PR
 # Review the overall assessment and recommendations
 ```
 
@@ -197,8 +197,8 @@ Review any other automated checks:
 
 Create a master list of all issues from:
 - GitHub Actions failures
-- Greptile inline comments
-- Greptile summary recommendations
+- Review-agent inline comments
+- Review-agent summary recommendations
 - SonarCloud issues
 - Other CI/CD tool failures
 
@@ -225,13 +225,13 @@ git push
 # Actions will auto-rerun
 ```
 
-For **Greptile inline comments** (Use Systematic Script):
+For **inline review comments** (Use Systematic Script):
 ```bash
-# Use the standardized Greptile resolution script
-# See .claude/rules/greptile-review-process.md for complete process
+# Use the standardized review-thread resolution script
+# See .claude/rules/review-process.md for complete process
 
 # For valid comments (fixed):
-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
   "✅ Fixed: [description]
 
   Changed: [what was changed]
@@ -239,23 +239,23 @@ bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-
   Commit: [commit-sha]"
 
 # For invalid/conflicting comments:
-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
   "This approach is correct because:
   - Reasoning: [from design doc]
   - Evidence: [link to source]
-  - Alternative considered: [what Greptile suggested]
+  - Alternative considered: [what the review agent suggested]
   - Why rejected: [specific reason]
 
   See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
 
 # Verify all threads resolved:
-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+bash .claude/scripts/review-resolve.sh stats <pr-number>
 ```
 
-For **Greptile summary recommendations**:
+For **review-agent summary recommendations**:
 ```bash
 # Add a PR comment addressing the summary
-gh pr comment <pr-number> --body "## Greptile Summary Response
+gh pr comment <pr-number> --body "## Review Summary Response
 
 Addressed all key recommendations:
 - [Recommendation 1]: ✓ Fixed in commit <sha>
@@ -291,7 +291,7 @@ git commit -m "fix: address ALL PR review feedback
 GitHub Actions:
 - Fixed: [list of workflow failures resolved]
 
-Greptile:
+Review agents:
 - Fixed: [list of valid inline comments addressed]
 - Explained: [list of invalid comments with reasoning]
 - Summary: [key recommendations addressed]
@@ -319,7 +319,7 @@ gh pr checks <pr-number>
 #
 # Ensure all completed status checks are green:
 # ✓ GitHub Actions workflows
-# ✓ Greptile review (no unresolved critical comments)
+# ✓ Review agents (no unresolved critical comments)
 # ✓ SonarCloud quality gate
 # ✓ Other CI/CD checks
 ```
@@ -339,7 +339,7 @@ forge sync
   - Tests: ✓ Passing
   - Deploy Preview: ✓ Passing
 
-✓ Greptile Review:
+✓ Review-Agent Feedback:
   Inline Comments: 8 total
   - Valid: 5 → Fixed & replied inline
   - Invalid: 2 → Explained with research evidence & replied inline
@@ -377,7 +377,7 @@ Next: pre-merge gate — finish docs + confirm CI green, then hand off the PR fo
 ```
 <HARD-GATE: /review exit>
 Do NOT declare /review complete until:
-1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
+1. bash .claude/scripts/review-resolve.sh stats <pr-number> shows all review threads resolved
 2. ALL human reviewer comments are either resolved or have a reply with explanation
 3. gh pr checks <pr-number> shows all checks passing
 4. Context check: confirm design + acceptance on the Forge issue (`forge issue show <id>`); if the beads-context helper is present, run `bash scripts/beads-context.sh validate <id>` and address any warnings
@@ -477,10 +477,10 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review 
 
 ## Tips
 
-- **Address ALL issues**: Not just Greptile and SonarCloud
+- **Address ALL issues**: Not just one review agent and SonarCloud
 - **Prioritize critical**: Fix blockers first (GitHub Actions failures, security issues)
-- **Reply inline to Greptile**: Respond to each comment directly
-- **Post summary response**: Address Greptile's overall assessment
+- **Reply inline to review agents**: Respond to each comment directly
+- **Post summary response**: Address the review agent's overall assessment
 - **Use sonarcloud skill**: Don't just check the web UI
 - **Verify all checks**: Ensure everything is green before the pre-merge gate / merge
 - **Update the Forge issue**: Keep issue status current
