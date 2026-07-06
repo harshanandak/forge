@@ -2631,6 +2631,16 @@ function showHelp() {
   console.log('Also works with bun:');
   console.log('  bunx forge setup --quick');
   console.log('');
+  // Adoption profile + gate/classification config is owned by `forge init`, not
+  // `forge setup`. The --minimal/--standard/--full profile flags are `forge init`
+  // shortcuts (setup only reads them for `--dry-run` preview), so point there.
+  console.log('Adoption profile, gates & classification (configured by `forge init`, not setup):');
+  console.log('  forge init --minimal | --standard | --full   # adoption-profile shortcut');
+  console.log('                                               # (or: --profile minimal|standard|full)');
+  console.log('  forge init --classification critical|standard|refactor');
+  console.log('  `forge init` writes `.forge/config.yaml` (gate + classification config).');
+  console.log('  Run `forge init --help` for all profile/classification/harness flags.');
+  console.log('');
 
   // Append auto-discovered registry commands
   const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
@@ -2639,6 +2649,26 @@ function showHelp() {
     console.log('Additional commands:');
     console.log(registryHelp);
     console.log('');
+  }
+}
+
+// Per-command help. When `--help` follows a known subcommand (e.g. `forge status
+// --help`), render THAT command's usage/description/flags instead of the global
+// setup banner — a newcomer asking for a command's help should not get the
+// installer's help.
+function printCommandHelp(cmd) {
+  console.log(`forge ${cmd.name} — ${cmd.description}`);
+  if (cmd.usage) {
+    console.log('');
+    console.log(/^(Usage:|forge )/.test(cmd.usage) ? cmd.usage : `Usage: ${cmd.usage}`);
+  }
+  const flagEntries = cmd.flags && typeof cmd.flags === 'object' ? Object.entries(cmd.flags) : [];
+  if (flagEntries.length > 0) {
+    console.log('');
+    console.log('Flags:');
+    for (const [flag, desc] of flagEntries) {
+      console.log(`  ${flag.padEnd(16)} ${desc}`);
+    }
   }
 }
 
@@ -3947,9 +3977,17 @@ async function main() {
     }
   }
 
-  // Show help
+  // Show help. `--help` after a known registry subcommand (e.g. `forge status
+  // --help`) renders that command's usage; bare `forge --help` keeps the global
+  // banner. `setup` is special-cased OUT: the global banner IS setup's detailed
+  // help, so `forge setup --help` must keep showing it (not the terse registry line).
   if (flags.help) {
-    showHelp();
+    const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+    if (command && command !== 'setup' && helpRegistry.commands.has(command)) {
+      printCommandHelp(helpRegistry.commands.get(command));
+    } else {
+      showHelp();
+    }
     return;
   }
 
@@ -4283,8 +4321,26 @@ async function main() {
     console.log('  To set up in your project:');
     console.log(`    ${runCmd} forge setup`);
     console.log('');
+  } else if (command === undefined && fs.existsSync(path.join(projectRoot, 'AGENTS.md'))) {
+    // Bare `forge` in an INITIALIZED project orients instead of mutating: render the
+    // same read-only one-glance view as `forge status`. Newcomers typing `forge` to
+    // get their bearings should never trigger the minimal install.
+    try {
+      const { commandOpts, args: dispatchArgs } = await resolveCommandOpts(
+        'status',
+        [],
+        { env: process.env, projectRoot },
+      );
+      const result = await executeCommand(registry.commands, 'status', dispatchArgs, flags, projectRoot, { commandOpts });
+      if (result && typeof result.output === 'string' && result.output.length > 0) {
+        process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);
+      }
+    } catch (err) {
+      console.error(`Error running 'status':`, err.message);
+      process.exit(1);
+    }
   } else {
-    // Explicit invocation with no command: run minimal install
+    // Explicit invocation with no command in an UNINITIALIZED project: run minimal install.
     minimalInstall();
   }
 }
