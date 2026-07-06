@@ -23,6 +23,9 @@ describe('extractPath', () => {
   test('reads Cursor afterFileEdit top-level file_path', () => {
     expect(adapter.extractPath({ file_path: 'src/app.js' })).toBe('src/app.js');
   });
+  test('reads Hermes write_file/patch tool_input.path', () => {
+    expect(adapter.extractPath({ tool_input: { path: 'AGENTS.md' } })).toBe('AGENTS.md');
+  });
   test('returns null when no path present (e.g. a shell event)', () => {
     expect(adapter.extractPath({ command: 'ls -la' })).toBe(null);
   });
@@ -108,5 +111,15 @@ describe('formatOutput (harness-native decision contracts)', () => {
   test('Cursor allow -> { permission: allow }', () => {
     const out = JSON.parse(adapter.formatOutput('cursor', { decision: 'allow' }));
     expect(out.permission).toBe('allow');
+  });
+
+  test('Hermes deny -> { action: block, message } (shell-hook wire protocol)', () => {
+    const out = JSON.parse(adapter.formatOutput('hermes', { decision: 'deny', reason: 'Protected path' }));
+    expect(out.action).toBe('block');
+    expect(out.message).toBe('Protected path');
+  });
+
+  test('Hermes allow -> empty output (silent no-op)', () => {
+    expect(adapter.formatOutput('hermes', { decision: 'allow' })).toBe('');
   });
 });

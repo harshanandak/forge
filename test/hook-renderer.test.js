@@ -9,8 +9,10 @@ const {
   renderClaudeHooks,
   renderCursorHooks,
   renderCodexHooksToml,
+  renderHermesHooksYaml,
   mergeClaudeSettings,
   mergeCursorHooks,
+  renderHookConfig,
 } = require('../lib/hook-renderer');
 
 // The native hook renderer projects Forge's TDD-gate + protected-path enforcement
@@ -18,6 +20,7 @@ const {
 //   - Claude : .claude/settings.json  (a `hooks` block)
 //   - Cursor : .cursor/hooks.json     (Cursor 1.7+ agent hooks, { version: 1, hooks })
 //   - Codex  : .codex/config.toml     ([hooks]) — GLOBAL-config scope, rendered but NOT written
+//   - Hermes : ~/.hermes/config.yaml  (`hooks:` shell hooks) — GLOBAL-config scope, rendered but NOT written
 // The rendered commands invoke Forge's installed native-hook adapter
 // (.forge/hooks/forge-native-hook.js), which delegates the TDD gate to the real
 // installed check-tdd.js and enforces protected paths.
@@ -107,6 +110,31 @@ describe('renderCodexHooksToml (global-config only — rendered, never written b
     expect(toml).toContain(FORGE_MARK);
     expect(toml).toContain('--intent tdd-gate');
     expect(toml).toContain('--intent protected-path');
+  });
+});
+
+describe('renderHermesHooksYaml (global-config only — rendered, never written by setup)', () => {
+  test('produces a `hooks:` block with pre_tool_call matchers wired to the Forge adapter', () => {
+    const yaml = renderHermesHooksYaml(FORGE_HOOK_CONTRACT);
+    expect(typeof yaml).toBe('string');
+    expect(yaml).toContain('hooks:');
+    expect(yaml).toContain('pre_tool_call:');
+    // write tools (write_file|patch) → protected-path; shell (terminal) → tdd-gate
+    expect(yaml).toMatch(/matcher: "write_file\|patch"/);
+    expect(yaml).toMatch(/matcher: "terminal"/);
+    expect(yaml).toContain('--intent protected-path');
+    expect(yaml).toContain('--intent tdd-gate');
+    expect(yaml).toContain('--harness hermes');
+    expect(yaml).toContain(FORGE_MARK);
+  });
+});
+
+describe('renderHookConfig — global-config harnesses are honestly skipped, never written', () => {
+  test.each(['codex', 'hermes'])('%s returns a global-config skip without touching disk', (harness) => {
+    const res = renderHookConfig({ harness, targetRoot: '/nonexistent-should-not-be-written' });
+    expect(res.skipped).toBe(true);
+    expect(res.wrote).toBe(false);
+    expect(res.scope).toBe('global-config');
   });
 });
 

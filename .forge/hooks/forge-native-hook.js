@@ -66,7 +66,9 @@ function parseArgs(argv) {
 function extractPath(input) {
   if (!input || typeof input !== 'object') return null;
   const ti = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
-  const candidate = ti.file_path || ti.notebook_path || input.file_path || null;
+  // ti.path covers Hermes write_file/patch payloads ({ tool_input: { path } }); the
+  // others cover Claude (file_path/notebook_path) and flat Cursor payloads.
+  const candidate = ti.file_path || ti.notebook_path || ti.path || input.file_path || null;
   return typeof candidate === 'string' && candidate.length ? candidate : null;
 }
 
@@ -155,6 +157,11 @@ function formatOutput(harness, decision, _reason) {
       agentMessage: reason,
       userMessage: reason,
     });
+  }
+  if (harness === 'hermes') {
+    // Hermes shell-hook JSON wire protocol: block a pre_tool_call by writing
+    // { action: 'block', message } to stdout (empty output = silent allow).
+    return JSON.stringify({ action: 'block', message: reason });
   }
   // Claude (and any harness modeled on it).
   return JSON.stringify({
