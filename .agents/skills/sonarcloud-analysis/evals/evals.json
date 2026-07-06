@@ -1,0 +1,46 @@
+[
+  {
+    "query": "Why is our quality gate red on this pull request? Break down exactly which conditions failed and by how much.",
+    "should_trigger": true
+  },
+  {
+    "query": "How much technical debt has piled up in the codebase, and which files carry the worst maintainability rating?",
+    "should_trigger": true
+  },
+  {
+    "query": "Give me the coverage and duplication numbers for the develop branch and flag the modules that regressed.",
+    "should_trigger": true
+  },
+  {
+    "query": "List every unresolved BLOCKER and CRITICAL vulnerability SonarCloud found, with file and line, so I know what to fix first.",
+    "should_trigger": true
+  },
+  {
+    "query": "Pull the security hotspots that still need review and summarize the risk for each.",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me how our reliability and security ratings have trended over the last month of analyses.",
+    "should_trigger": true
+  },
+  {
+    "query": "/sonarcloud issues checkout-service --severity BLOCKER",
+    "should_trigger": false
+  },
+  {
+    "query": "Go through all the open PR review threads from Greptile and CodeRabbit, reply to each explaining the fix, and mark them resolved.",
+    "should_trigger": false
+  },
+  {
+    "query": "Run lint, type-check, the test suite, and the security scanner and give me fresh output before I ship this branch.",
+    "should_trigger": false
+  },
+  {
+    "query": "Fix the SQL-injection vulnerability SonarCloud flagged in login.ts and add a regression test.",
+    "should_trigger": false
+  },
+  {
+    "query": "Produce a competitive market report comparing SonarCloud, Snyk, and Codacy for our tooling decision.",
+    "should_trigger": false
+  }
+]

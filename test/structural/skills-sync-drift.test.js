@@ -45,16 +45,19 @@ describe('skills sync drift detection', () => {
 
 // ─── all four harnesses render correctly from source (regenerate-into-temp) ────
 //
-// Only `.codex/skills` is committed as the sentinel mirror. Rather than committing
+// `.codex/skills` and `.agents/skills` are committed as the sentinel mirrors
+// (`.agents/skills` is Codex's repo-local discovery path — checked in so teammates
+// who clone WITHOUT running setup still get discovery). Rather than also committing
 // `.claude/.cursor/.hermes` skill mirrors (which fights the gitignored,
 // setup-populated design and bloats the repo), we prove drift-freedom for ALL
-// FOUR harnesses by regenerating each into a temp dir from the canonical source
+// harness surfaces by regenerating each into a temp dir from the canonical source
 // and asserting a byte-identical render. This guards Claude/Cursor/Hermes from
 // silently rotting even though their dirs are not committed.
 
 describe('all harness skill dirs render from canonical source', () => {
-  test('AGENT_SKILL_DIRS covers all four supported harnesses', () => {
+  test('AGENT_SKILL_DIRS covers every harness surface (incl. Codex repo-local .agents/skills)', () => {
     expect(AGENT_SKILL_DIRS).toEqual([
+      '.agents/skills',
       '.claude/skills',
       '.codex/skills',
       '.cursor/skills',

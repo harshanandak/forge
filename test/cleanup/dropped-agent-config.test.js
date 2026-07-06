@@ -25,11 +25,20 @@ describe('dropped-agent refs in config files', () => {
 
   describe('.gitignore', () => {
     const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+    // Active ignore rules only — comment lines (which may legitimately MENTION a
+    // path, e.g. the note that `.agents/skills` is a committed mirror) are excluded.
+    const activeEntries = gitignore
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
 
-    test('does not contain dropped-agent gitignore entries', () => {
+    test('does not actively gitignore dropped-agent dirs (or the committed .agents/skills)', () => {
+      // `.agents/` is now a FORBIDDEN active ignore: `.agents/skills` is Codex's
+      // committed repo-local discovery mirror — gitignoring it would silently break
+      // teammate-clone discovery. The rest are dropped agents.
       const droppedEntries = ['.agents/', '.agent/', '.aider/', '.continue/skills', '.windsurf/skills'];
       for (const entry of droppedEntries) {
-        expect(gitignore).not.toContain(entry);
+        expect(activeEntries.some((line) => line.includes(entry))).toBe(false);
       }
     });
   });

@@ -1,0 +1,46 @@
+[
+  {
+    "query": "I just ran forge claim on forge-abc — how do I make sure the lease is really mine before I start editing?",
+    "should_trigger": true
+  },
+  {
+    "query": "Two of my agents may have grabbed the same issue at once — how do I tell which one actually holds it?",
+    "should_trigger": true
+  },
+  {
+    "query": "Before I close this ticket, confirm nobody reclaimed it while I was working.",
+    "should_trigger": true
+  },
+  {
+    "query": "My claim came back ok:true but I'm not convinced I won the race. Can I trust that?",
+    "should_trigger": true
+  },
+  {
+    "query": "Prove I own forge-42 before the subagent starts mutating it.",
+    "should_trigger": true
+  },
+  {
+    "query": "The lease might have expired mid-task — check I still own it before I release.",
+    "should_trigger": true
+  },
+  {
+    "query": "What's the next ready issue I should pick up?",
+    "should_trigger": false
+  },
+  {
+    "query": "Create a feature issue titled 'Add CSV export'.",
+    "should_trigger": false
+  },
+  {
+    "query": "Close forge-19 with reason 'shipped in PR 88'.",
+    "should_trigger": false
+  },
+  {
+    "query": "Take forge-30 all the way through to a PR.",
+    "should_trigger": false
+  },
+  {
+    "query": "Implement the failing auth tests for this task.",
+    "should_trigger": false
+  }
+]
