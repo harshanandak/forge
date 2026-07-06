@@ -7,8 +7,8 @@ description: >
   that...", "note for later", "save this"), or when you need to recall what was learned
   before ("what did we decide about X", "have we seen this"). It explains WHEN to use
   `forge remember` / `forge recall` versus a per-issue `forge issue comment`, how the
-  three backends work (local JSONL default, kernel, opt-in Graphiti), and -- when Graphiti
-  is enabled -- how to add episodes and search facts via the graphiti-memory MCP tools
+  two public backends work (local JSONL default, opt-in Graphiti; kernel is internal-only),
+  and -- when Graphiti is enabled -- how to add episodes and search facts via the graphiti-memory MCP tools
   (add_memory, search_memory_facts, search_nodes) with group_id scoping and provenance.
   The local backend is always the offline floor. Not for: issue create/list/close ops
   (issue-basics), workflow status (status), or transient scratch notes.

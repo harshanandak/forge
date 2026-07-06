@@ -46,8 +46,11 @@ was true in the world, and when the system learned it), and superseded facts are
 true at time T", with a pointer back to the source (provenance). It is served to
 any MCP agent through Graphiti's **MCP server**; Forge only wires it in.
 
-Forge does **not** bundle or reimplement Graphiti. It wires the MCP server into
-your `.mcp.json` and documents how to run it. Design rationale and trade-offs:
+Forge does **not** bundle or reimplement Graphiti. This PR ships the config +
+router seam and documents how to run Graphiti; **automatically writing the MCP
+server into your agent's config is a fast-follow** (a per-harness renderer that
+consumes the descriptor in `lib/memory/graphiti-mcp.js`). Until then you add the
+server entry yourself (template below). Design rationale and trade-offs:
 [`docs/work/2026-07-06-graphiti-memory/research.md`](../work/2026-07-06-graphiti-memory/research.md).
 
 ### 1. Turn it on (config)
@@ -58,15 +61,22 @@ Set the backend in `.forge/config.yaml` — additive and reversible:
 memory:
   backend: graphiti
   graphiti:
+    # --- active today (validated by the router / forge doctor) ---
     transport: stdio            # stdio | http
-    mcpServerPath: ./graphiti/mcp_server
+    mcpServerPath: ./graphiti/mcp_server   # required — path to the Graphiti checkout's mcp_server dir
     graphDb: falkordb           # falkordb | falkordb-lite | neo4j
+    apiKeyEnv: OPENAI_API_KEY    # referenced by NAME — never store the key here
+    # --- reserved: consumed by the fast-follow MCP renderer; NO EFFECT yet ---
     dbUri: redis://localhost:6379
     llmProvider: openai
     model: gpt-5.5
-    apiKeyEnv: OPENAI_API_KEY    # referenced by NAME — never store the key here
     groupId: <your-project>
 ```
+
+Only `mcpServerPath` is required today (it's what `forge doctor` checks and what
+the descriptor threads into the launch args). The keys under "reserved" have no
+effect until the per-harness MCP renderer lands — set them now only if you like,
+they are no-ops until then.
 
 Forge exposes the MCP server as a harness-agnostic **descriptor** (see
 `lib/memory/graphiti-mcp.js`, `buildGraphitiServerDescriptor`) so a per-harness
@@ -151,5 +161,5 @@ local JSONL store as a safety floor, so a note is never lost.
 
 Remove `memory.backend` (and the `memory.graphiti` block) from
 `.forge/config.yaml` — the router falls straight back to `local`. Your local
-JSONL notes were never touched. You may also delete the `graphiti-memory` entry
-from `.mcp.json`.
+JSONL notes were never touched. If you manually added a `graphiti-memory` entry
+to your agent's MCP config, delete it too (Forge did not write one).

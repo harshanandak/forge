@@ -63,6 +63,23 @@ describe('forge doctor: memory backend check', () => {
     // Non-fatal: the memory backend must never fail doctor overall.
     // (Overall ok is governed by the filesystem-class check only.)
     expect(report.checks[0].id).toBe('filesystem-class');
+    expect(report.ok).toBe(true);
+  });
+
+  test('report.ok stays true even when the memory check reports a problem (locks non-fatality)', () => {
+    const projectRoot = makeProjectRoot();
+    // Misconfigured graphiti → memory check ok:false, but filesystem is safe.
+    writeConfig(projectRoot, 'memory:\n  backend: graphiti\n');
+    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
+
+    const fsCheck = report.checks.find(c => c.id === 'filesystem-class');
+    const memCheck = memoryCheck(report);
+    // Precondition: filesystem is the healthy gate, memory is the unhealthy reporter.
+    expect(fsCheck.ok).toBe(true);
+    expect(memCheck.ok).toBe(false);
+    // The unhealthy memory check must NOT drag the overall report to failure.
+    expect(report.ok).toBe(true);
+    expect(report.ok).toBe(fsCheck.ok);
   });
 
   test('graphiti fully configured reports ok and the configured server path', () => {
