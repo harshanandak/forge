@@ -1,7 +1,15 @@
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
-const { checkSkillsSync } = require('../../lib/skills-sync');
+const {
+  checkSkillsSync,
+  populateAgentSkills,
+  listCanonicalSkills,
+  diffSkillDir,
+  AGENT_SKILL_DIRS,
+} = require('../../lib/skills-sync');
 
 const repoRoot = path.resolve(__dirname, '../..');
 
@@ -32,5 +40,44 @@ describe('skills sync drift detection', () => {
   test('the committed .codex/skills mirror is among the checked agents', () => {
     const result = checkSkillsSync({ repoRoot });
     expect(result.checkedAgents).toContain('.codex/skills');
+  });
+});
+
+// ─── all four harnesses render correctly from source (regenerate-into-temp) ────
+//
+// Only `.codex/skills` is committed as the sentinel mirror. Rather than committing
+// `.claude/.cursor/.hermes` skill mirrors (which fights the gitignored,
+// setup-populated design and bloats the repo), we prove drift-freedom for ALL
+// FOUR harnesses by regenerating each into a temp dir from the canonical source
+// and asserting a byte-identical render. This guards Claude/Cursor/Hermes from
+// silently rotting even though their dirs are not committed.
+
+describe('all harness skill dirs render from canonical source', () => {
+  test('AGENT_SKILL_DIRS covers all four supported harnesses', () => {
+    expect(AGENT_SKILL_DIRS).toEqual([
+      '.claude/skills',
+      '.codex/skills',
+      '.cursor/skills',
+      '.hermes/skills',
+    ]);
+  });
+
+  test('each harness dir regenerates byte-identically from skills/', () => {
+    const canonical = listCanonicalSkills(repoRoot);
+    expect(canonical.length).toBeGreaterThan(0);
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-'));
+    try {
+      for (const rel of AGENT_SKILL_DIRS) {
+        const targetSkillsDir = path.join(tmp, rel);
+        populateAgentSkills({ sourceRoot: repoRoot, targetSkillsDir, clean: true });
+        for (const skill of canonical) {
+          const drift = diffSkillDir(skill.sourcePath, path.join(targetSkillsDir, skill.name));
+          expect(drift).toEqual([]);
+        }
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

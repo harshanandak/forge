@@ -28,7 +28,9 @@ describe('shepherd in the harness capability matrix', () => {
     expect(shepherd.subskills.length).toBeGreaterThan(0);
     expect(shepherd.renderTargets.claude.skill).toBe('.claude/skills/shepherd/SKILL.md');
     expect(shepherd.renderTargets.cursor.skill).toBe('.cursor/skills/shepherd/SKILL.md');
-    expect(shepherd.renderTargets.codex.skill).toBe('.codex/skills/shepherd/SKILL.md');
+    // Codex render target is the install path $CODEX_HOME/skills; .codex/skills is the
+    // committed staging mirror (see harness-capability-matrix codex skill knownIssue).
+    expect(shepherd.renderTargets.codex.skill).toBe('$CODEX_HOME/skills/shepherd/SKILL.md');
   });
 
   test('shepherd is NOT a workflow stage in the stage graph', () => {
