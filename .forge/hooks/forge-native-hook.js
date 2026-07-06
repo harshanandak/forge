@@ -35,8 +35,9 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
 // Conservative protected-path set, mirroring .forge/protected-paths.yaml categories:
-// forge_core (.forge/), user_protocol (AGENTS.md), immutable/config (lefthook.yml,
-// .mcp.json), secrets (.env*), the issue-state dir (cli-only), and VCS (.git/).
+// forge_core (.forge/), user_protocol (AGENTS.md), immutable/config (lefthook.yml),
+// secrets (.env*), lockfiles (package-lock/yarn/pnpm/bun), the issue-state dir
+// (cli-only), and VCS (.git/).
 // NOTE: the issue-state matcher is built from a split literal so the D20 retirement
 // audit (release-readiness.js findBdTerms) does not miscount a path matcher as
 // direct issue-tool access — this file never touches that tooling.

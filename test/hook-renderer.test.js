@@ -60,6 +60,18 @@ describe('renderClaudeHooks (.claude/settings.json hooks block)', () => {
     expect(bashGroup.hooks[0].command).toContain('--intent tdd-gate');
     expect(bashGroup.hooks[0].command).toContain('--harness claude');
   });
+
+  test('Claude command references the adapter via $CLAUDE_PROJECT_DIR (cwd-independent)', () => {
+    // Claude runs hook commands from an arbitrary cwd; $CLAUDE_PROJECT_DIR is the
+    // documented, cwd-independent way to reach a project-local script. A bare relative
+    // path would break. See https://code.claude.com/docs/en/hooks.
+    const block = renderClaudeHooks(FORGE_HOOK_CONTRACT);
+    for (const group of block.PreToolUse) {
+      const cmd = group.hooks[0].command;
+      expect(cmd).toContain('$CLAUDE_PROJECT_DIR');
+      expect(cmd).toContain(FORGE_MARK); // still marked Forge-owned for idempotent re-merge
+    }
+  });
 });
 
 describe('renderCursorHooks (.cursor/hooks.json)', () => {
@@ -77,6 +89,13 @@ describe('renderCursorHooks (.cursor/hooks.json)', () => {
     const afterEdit = cfg.hooks.afterFileEdit.map(h => h.command).join('\n');
     expect(afterEdit).toContain('--intent protected-path');
     expect(afterEdit).toContain('--harness cursor');
+  });
+
+  test('Cursor command uses a repo-relative adapter path (Cursor has no $CLAUDE_PROJECT_DIR)', () => {
+    const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
+    const cmd = cfg.hooks.beforeShellExecution[0].command;
+    expect(cmd).not.toContain('CLAUDE_PROJECT_DIR');
+    expect(cmd).toContain('.forge/hooks/forge-native-hook.js');
   });
 });
 
