@@ -82,16 +82,39 @@ describe('forge doctor: memory backend check', () => {
     expect(report.ok).toBe(fsCheck.ok);
   });
 
-  test('graphiti fully configured reports ok and the configured server path', () => {
+  test('graphiti configured with an existing server path reports ok', () => {
     const projectRoot = makeProjectRoot();
+    // Point at a real, existing directory so the presence check passes.
+    const serverDir = path.join(projectRoot, 'mcp_server');
+    fs.mkdirSync(serverDir, { recursive: true });
+    const yamlPath = serverDir.replace(/\\/g, '/'); // forward-slash for clean YAML on Windows
     writeConfig(
       projectRoot,
-      'memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: /opt/graphiti/mcp_server\n',
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${yamlPath}\n`,
     );
     const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
     const check = memoryCheck(report);
     expect(check.backend).toBe('graphiti');
+    expect(check.serverPathExists).toBe(true);
     expect(check.ok).toBe(true);
-    expect(check.detail).toContain('/opt/graphiti/mcp_server');
+    expect(check.detail).toContain(yamlPath);
+  });
+
+  test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {
+    const projectRoot = makeProjectRoot();
+    // mcpServerPath is set (config is valid) but the directory does not exist on disk.
+    const missing = `${projectRoot.replace(/\\/g, '/')}/no-such-mcp-server`;
+    writeConfig(
+      projectRoot,
+      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${missing}\n`,
+    );
+    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
+    const check = memoryCheck(report);
+    expect(check.backend).toBe('graphiti');
+    expect(check.serverPathExists).toBe(false);
+    // A missing MCP server renders as a warning (ok:false), not a misleading ✓ …
+    expect(check.ok).toBe(false);
+    // … but must never drag the overall doctor report to failure (fs-class governs).
+    expect(report.ok).toBe(true);
   });
 });

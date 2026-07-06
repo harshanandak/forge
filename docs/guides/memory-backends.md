@@ -124,7 +124,8 @@ Set `memory.graphiti.mcpServerPath` in `.forge/config.yaml` to the checkout's
 
 - **Graph DB:** FalkorDB (Docker, default) · FalkorDB-lite (embedded, Python
   3.12+, no server) · Neo4j (production). Set `memory.graphiti.graphDb` +
-  `dbUri` accordingly (Neo4j uses `NEO4J_URI`).
+  `dbUri` accordingly (Neo4j uses `NEO4J_URI` plus `NEO4J_USER` and
+  `NEO4J_PASSWORD`).
 - **LLM/embedder:** OpenAI (best quality) · any OpenAI-compatible endpoint
   (OpenRouter, DeepSeek, Together) · **Ollama** for a fully local/offline stack
   (`ollama pull deepseek-r1:7b` + `ollama pull nomic-embed-text`). Set
