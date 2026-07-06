@@ -174,6 +174,24 @@ describe('ensureBackingIssue', () => {
     expect(row.branch).toBe('feat/add-widget');
   }, TIMEOUT);
 
+  test('reports linked:false when the branch->issue link fails to persist (idempotency honesty)', async () => {
+    const k = makeFakeKernel();
+    // Stub creation succeeds, but the link write throws transiently.
+    k.driver.registerWorktree = () => { throw new Error('transient link failure'); };
+    const result = await ensureBackingIssue({
+      ...BASE,
+      branch: 'feat/add-widget',
+      driver: k.driver,
+      broker: k.broker,
+      generateId: () => 'issue-4',
+    });
+    // Never throws; the stub was created + returned, but the failed link is reported
+    // honestly (linked:false) rather than a false success that hides a future duplicate.
+    expect(result).not.toBeNull();
+    expect(result.created).toBe(true);
+    expect(result.linked).toBe(false);
+  }, TIMEOUT);
+
   test('dedupes to an existing issue encoded in the branch name instead of creating a stub', async () => {
     const k = makeFakeKernel();
     k.issues.set('kap-7', { id: 'kap-7', labels: [] });
