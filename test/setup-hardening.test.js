@@ -156,4 +156,25 @@ describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
     expect(result).toBe(false);
     expect(fs.existsSync(path.join(root, 'AGENTS.md.bak'))).toBe(false);
   });
+
+  test('a repeated markerless overwrite preserves the original .bak (numbered fallback)', () => {
+    const root = makeTempDir();
+    const original = '# Original hand-written AGENTS\n';
+    const second = '# Second (still markerless) AGENTS\n';
+
+    // First overwrite: snapshots the original to AGENTS.md.bak.
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), original, 'utf8');
+    const first = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
+    expect(first.result).toBe(true);
+
+    // A later run against a still-markerless AGENTS.md must NOT clobber the
+    // original backup — it lands in AGENTS.md.bak.1 instead.
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), second, 'utf8');
+    const again = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
+    expect(again.result).toBe(true);
+
+    expect(fs.readFileSync(path.join(root, 'AGENTS.md.bak'), 'utf8')).toBe(original);
+    expect(fs.readFileSync(path.join(root, 'AGENTS.md.bak.1'), 'utf8')).toBe(second);
+    expect(again.output).toContain('AGENTS.md.bak.1');
+  });
 });
