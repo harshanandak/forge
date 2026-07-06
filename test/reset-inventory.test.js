@@ -41,7 +41,7 @@ describe('getForgeFiles', () => {
       '.forge/hooks/pre-commit',
       '.claude/skills/plan/SKILL.md',
       '.claude/rules/workflow.md',
-      '.claude/scripts/greptile-resolve.sh',
+      '.claude/scripts/review-resolve.sh',
       '.cursor/rules/forge-workflow.mdc',
       '.github/workflows/beads-to-github.yml',
       'scripts/github-beads-sync/config.mjs',

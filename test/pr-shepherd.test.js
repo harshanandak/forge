@@ -289,7 +289,7 @@ describe('runShepherdPass — bounded pass state machine', () => {
   });
 
   // 10
-  test('NEVER emits a greptile thread resolve (reply allowed)', async () => {
+  test('NEVER emits a review thread resolve (reply allowed)', async () => {
     const { adapter, actions } = makeAdapter({
       required: ['unit'],
       checks: [{ name: 'unit', conclusion: 'SUCCESS' }],

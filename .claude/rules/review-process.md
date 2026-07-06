@@ -1,17 +1,22 @@
-# Greptile Review Handling Process
+# Review Thread Handling Process
 
-**Purpose**: Standardized process for AI agents to systematically handle Greptile review comments.
+**Purpose**: Standardized process for AI agents to systematically handle PR
+review threads from **any review agent** — CodeRabbit, Qodo, Greptile, or a
+human reviewer. The mechanism (GitHub review threads via GraphQL/REST) is the
+same regardless of which tool or person authored the comment; the examples below
+name specific tools only as illustrations.
 
-**Critical**: This process has been problematic for days. AI agents MUST follow these exact steps for EVERY Greptile comment.
+**Critical**: Review threads left unresolved block merges. AI agents MUST follow
+these exact steps for EVERY review comment, whoever authored it.
 
 ---
 
 ## Problem Background
 
 **Previous Issues:**
-- ❌ AI agents replied to PR with general comments instead of replying directly to each Greptile review thread
+- ❌ AI agents replied to the PR with general comments instead of replying directly to each review thread
 - ❌ AI agents didn't mark conversation threads as "resolved" after fixing issues
-- ❌ No systematic process for tracking which Greptile comments are addressed vs pending
+- ❌ No systematic process for tracking which review comments are addressed vs pending
 - ❌ Caused confusion and manual tracking overhead for maintainers
 
 **Why This Matters:**
@@ -39,28 +44,31 @@
 - Reply explains what was fixed and why
 - Resolve marks the thread as addressed
 
+These two GitHub operations are author-agnostic: they work identically for a
+CodeRabbit thread, a Qodo thread, a Greptile thread, or a human reviewer's thread.
+
 ---
 
 ## For AI Agents: Mandatory Steps
 
-When Greptile Quality Gate fails (score < 4/5) or when review comments exist:
+When a review-agent quality gate fails or when review comments exist:
 
-### Step 1: List ALL Greptile Feedback (Inline + Direct Comments)
+### Step 1: List ALL Review Feedback (Inline + Direct Comments)
 
-Greptile posts feedback in **two places**:
+Review agents post feedback in **two places**:
 1. **Inline review threads** — attached to specific code lines (resolvable via GraphQL)
-2. **Direct PR issue comments** — "Additional Comments (N)" posted as regular PR comments (reply with `gh pr comment`)
+2. **Direct PR issue comments** — summaries or "Additional Comments (N)" posted as regular PR comments (reply with `gh pr comment`)
 
 Always run `list-all` to see both:
 
 ```bash
-bash .claude/scripts/greptile-resolve.sh list-all <pr-number>
+bash .claude/scripts/review-resolve.sh list-all <pr-number>
 ```
 
 Or just inline threads (unresolved only):
 
 ```bash
-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
 ```
 
 **Output shows:**
@@ -68,6 +76,7 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
 - Comment ID (for replying to inline threads)
 - File path and line number
 - Issue description
+- Author (so you can see whether it came from CodeRabbit, Greptile, Qodo, a human, etc.)
 - Direct PR comment IDs and previews (reply with `gh pr comment`)
 
 **Example:**
@@ -85,7 +94,7 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
 
 1. **Read the comment** and understand the issue
    - Use the file path and line number to locate the code
-   - Understand what Greptile is flagging
+   - Understand what the reviewer is flagging
 
 2. **Fix the issue** if the comment is valid
    - Make the necessary code changes
@@ -93,7 +102,7 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
 
 3. **Reply to the thread** with explanation
    ```bash
-   bash .claude/scripts/greptile-resolve.sh reply <pr-number> <comment-id> "✅ Fixed: [description]
+   bash .claude/scripts/review-resolve.sh reply <pr-number> <comment-id> "✅ Fixed: [description]
 
    Changed: [what was changed]
    Reason: [why this fixes the issue]
@@ -102,14 +111,14 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
 
 4. **Resolve the thread**
    ```bash
-   bash .claude/scripts/greptile-resolve.sh resolve <pr-number> <thread-id>
+   bash .claude/scripts/review-resolve.sh resolve <pr-number> <thread-id>
    ```
 
 5. **Track progress**: Mark comment as addressed in your notes
 
 **Alternative (all-in-one):**
 ```bash
-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "✅ Fixed: [description]
+bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "✅ Fixed: [description]
 
 Changed: [what was changed]
 Reason: [why this fixes the issue]
@@ -119,17 +128,17 @@ Commit: [commit-sha]"
 ### Step 3: Verify All Threads Resolved
 
 ```bash
-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
 ```
 
 **Should show**: "No unresolved comments" or empty list
 
 **Confirm with stats:**
 ```bash
-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+bash .claude/scripts/review-resolve.sh stats <pr-number>
 ```
 
-**Should show**: "✓ All Greptile threads resolved!"
+**Should show**: all tracked review threads resolved.
 
 ### Step 4: Push Changes & Poll Briefly for Re-review
 
@@ -137,10 +146,10 @@ bash .claude/scripts/greptile-resolve.sh stats <pr-number>
 git push
 ```
 
-**Greptile will automatically:**
+**The review agent will automatically:**
 - Re-analyze the PR
-- Update the confidence score
-- Re-run the Quality Gate check
+- Update any confidence/quality score
+- Re-run its quality gate check
 
 ---
 
@@ -148,7 +157,7 @@ git push
 
 ```bash
 # 1. List unresolved threads
-$ bash .claude/scripts/greptile-resolve.sh list 24 --unresolved
+$ bash .claude/scripts/review-resolve.sh list 24 --unresolved
 
 ✗ UNRESOLVED | docs/ROADMAP.md:280
   Thread ID: PRRT_kwDORErEU85tuh6I
@@ -160,7 +169,7 @@ $ git add docs/ROADMAP.md
 $ git commit -m "fix: replace Windows absolute paths with relative paths"
 
 # 3. Reply and resolve in one step
-$ bash .claude/scripts/greptile-resolve.sh reply-and-resolve 24 2787717459 PRRT_kwDORErEU85tuh6I \
+$ bash .claude/scripts/review-resolve.sh reply-and-resolve 24 2787717459 PRRT_kwDORErEU85tuh6I \
   "✅ Fixed: Replaced Windows absolute paths with repo-relative paths
 
 Changed: C:\\Users\\...\\plans\\... → .claude/plans/*.md
@@ -171,10 +180,10 @@ Commit: abc123"
 ✅ Thread resolved successfully
 
 # 4. Verify all resolved
-$ bash .claude/scripts/greptile-resolve.sh stats 24
+$ bash .claude/scripts/review-resolve.sh stats 24
 
-Greptile unresolved: 0
-✓ All Greptile threads resolved!
+Unresolved: 0
+✓ All review threads resolved!
 
 # 5. Push changes
 $ git push
@@ -188,7 +197,7 @@ $ git push
 - **Reply to EACH comment thread** using the script (not as separate PR comment)
 - **Mark EACH thread as resolved** after fixing using the script
 - **Track progress** (X of Y fixed) in your notes
-- **Poll for Greptile re-review for at most 60 seconds** after pushing fixes, then stop and hand off if it is still pending
+- **Poll for re-review for at most 60 seconds** after pushing fixes, then stop and hand off if it is still pending
 - **Use comment ID for replies**, thread ID for resolving
 - **Commit fixes BEFORE replying** so you can reference commit SHA
 
@@ -204,54 +213,60 @@ $ git push
 
 ## Script Commands Reference
 
+The `.claude/scripts/review-resolve.sh` helper works for review threads authored
+by any tool or person. The `list-all`, `resolve-all`, and `stats` commands
+additionally recognize `greptile-apps`-authored threads as a built-in convenience
+(Greptile is one supported review tool); the core commands below are fully
+author-agnostic.
+
 ### List Threads
 ```bash
 # All threads
-bash .claude/scripts/greptile-resolve.sh list <pr-number>
+bash .claude/scripts/review-resolve.sh list <pr-number>
 
 # Only unresolved
-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
 ```
 
 ### Reply to Thread
 ```bash
-bash .claude/scripts/greptile-resolve.sh reply <pr-number> <comment-id> "<message>"
+bash .claude/scripts/review-resolve.sh reply <pr-number> <comment-id> "<message>"
 ```
 
 ### Resolve Thread
 ```bash
-bash .claude/scripts/greptile-resolve.sh resolve <pr-number> <thread-id>
+bash .claude/scripts/review-resolve.sh resolve <pr-number> <thread-id>
 ```
 
 ### Reply and Resolve (Recommended)
 ```bash
-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "<message>"
+bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "<message>"
 ```
 
 ### Batch Resolve (After all issues fixed)
 ```bash
-bash .claude/scripts/greptile-resolve.sh resolve-all <pr-number>
+bash .claude/scripts/review-resolve.sh resolve-all <pr-number>
 ```
 **⚠️ Warning**: Only use after ALL issues are fixed and replied to
 
 ### Statistics
 ```bash
-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+bash .claude/scripts/review-resolve.sh stats <pr-number>
 ```
 
 ---
 
 ## Integration with `/review` Command
 
-The `/review` command should now include these steps:
+The `/review` command includes these steps:
 
 1. Run `/review` as usual to analyze PR feedback
-2. For Greptile comments, use the script to:
+2. For review-agent comments (CodeRabbit, Qodo, Greptile, human), use the script to:
    - List unresolved threads
    - Fix each issue
    - Reply and resolve systematically
 3. Verify all threads resolved before declaring review complete
-4. Push changes and poll briefly for Greptile re-review
+4. Push changes and poll briefly for re-review
 
 ---
 
@@ -269,17 +284,17 @@ The `/review` command should now include these steps:
 **Cause**: GitHub UI caching
 **Solution**: Refresh page, or check with GraphQL query
 
-### Greptile score not updating after fixes
+### Review score not updating after fixes
 **Cause**: Must push commits to trigger re-analysis
-**Solution**: `git push`, check once immediately, and poll for up to 60 seconds. If Greptile is still pending after that, stop and wait for the user to resume later.
+**Solution**: `git push`, check once immediately, and poll for up to 60 seconds. If the review agent is still pending after that, stop and wait for the user to resume later.
 
 ---
 
 ## Success Criteria
 
 **A review is complete when:**
-- ✅ All Greptile threads are resolved (verified with `stats` command)
+- ✅ All review threads are resolved (verified with the `stats` command)
 - ✅ All threads have replies explaining fixes
-- ✅ Greptile Quality Gate passes (≥4/5 score)
+- ✅ Any review-agent quality gate passes
 - ✅ Branch protection allows merge
 - ✅ No manual tracking needed by maintainers

@@ -37,10 +37,10 @@ Check all available inputs:
 
 ## Greptile
 
-If Greptile is configured for the repository, use the repo's Greptile resolution script when available:
+If Greptile is configured for the repository, use the repo's review-thread resolution script when available (it handles Greptile and any other review author):
 
 ```bash
-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
 ```
 
 Then reply to each thread with the fix, rejection reason, or follow-up issue.

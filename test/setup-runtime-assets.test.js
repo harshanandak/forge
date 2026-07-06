@@ -31,6 +31,6 @@ describe('setup runtime assets', () => {
       missing: [],
     });
     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(false);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'review-resolve.sh'))).toBe(false);
   });
 });

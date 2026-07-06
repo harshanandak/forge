@@ -39,7 +39,7 @@ A `--watch` affordance, if you want one, lives in an **external scheduler** (e.g
 ## What it never does
 
 - **Never merges.** There is no merge action and no server-side auto-merge latch. The shepherd terminates at `MERGE_READY` and hands off to the human, who merges in the GitHub UI (mirroring the pre-merge gate's merge handoff).
-- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/greptile-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
+- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/review-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
 
 ## Action ladder
 

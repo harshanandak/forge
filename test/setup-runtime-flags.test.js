@@ -209,7 +209,7 @@ describe('setup runtime flags', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('scripts/smart-status.sh');
     expect(result.stdout).toContain('scripts/forge-team/index.sh');
-    expect(result.stdout).toContain('.claude/scripts/greptile-resolve.sh');
+    expect(result.stdout).toContain('.claude/scripts/review-resolve.sh');
   });
 
   serialTest('setup scaffolds workflow runtime assets before reporting success', async () => {
@@ -221,7 +221,7 @@ describe('setup runtime flags', () => {
     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'lib', 'sanitize.sh'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'forge-team', 'index.sh'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'review-resolve.sh'))).toBe(true);
   });
 
   serialTest('bare setup --sync removes deprecated generated sync files', async () => {
