@@ -10,7 +10,7 @@ Forge is a local runtime control plane that coordinates several tool surfaces:
 Forge runtime control plane
   - workflow templates and stage skills
   - local project state and protected surfaces
-  - Beads-backed issue wrappers and sync
+  - kernel-backed issue wrappers and sync (Beads is an opt-out backend)
   - validation, packaging, and release evidence
   - review adapters and external service hooks
   - harness projections for agent-specific commands, prompts, workflows, and skills
@@ -37,15 +37,17 @@ Windows gotchas:
 
 ---
 
-## Beads - Dolt-Backed Issue Tracking
+## Beads - Opt-Out Dolt-Backed Issue Backend
 
 **Package**: `@beads/bd`  
 **Repository**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)  
 **Purpose**: Distributed issue tracking designed for AI coding agents
 
-### Current Forge Target
+> Forge issue wrappers use the built-in **kernel** backend by default — no `bd` install or `bd init` is required, and a fresh clone can track issues immediately. Beads is an **opt-out** backend selected (precedence, highest first) with `--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`. The rest of this section applies only when Beads is selected.
 
-- Forge now targets the stable Beads `v1.0.0` release for repo setup and CI.
+### When Beads Is Selected
+
+- Forge targets the stable Beads `v1.0.0` release for Beads-backed setup and CI.
 - Routine team sync still goes through `forge sync`.
 - Use `bd` directly for Beads features Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, `bd blocked`, `bd backup`, and `bd dolt *`.
 
@@ -134,21 +136,21 @@ bash scripts/beads-migrate-to-dolt.sh --help
 
 ### Project Memory
 
-Forge project memory uses Beads as the durable store. Compatibility helpers in `lib/project-memory.js` route writes to `bd remember --key <key>`, reads to `bd recall <key> --json`, and search/list operations to `bd memories --json`.
+Forge project memory is a **kernel-backed** read model. `lib/project-memory.js` persists memories in the per-repo Forge Kernel store (the `kernel_memories` table, via the built-in SQLite driver) — it does **not** call `bd`. No Beads install is required for `forge remember` / `forge recall`.
 
-Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions, but they do not create a new datastore. The supported categories are:
+Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions on top of the same kernel store; they do not create a new datastore. The supported categories are:
 
 | Category | Key prefix | Durable backend |
 | --- | --- | --- |
-| decisions | `decisions:` | Beads memory index for canonical docs/work decisions |
-| episodes | `episodes:` | Beads-backed memory/audit context |
-| skills | `skills:` | Beads memory index for skill references |
+| decisions | `decisions:` | Kernel memory index for canonical docs/work decisions |
+| episodes | `episodes:` | Kernel-backed memory/audit context |
+| skills | `skills:` | Kernel memory index for skill references |
 | state | `state:` | Forge-owned state references |
-| issues | `issues:` | Beads issue references |
-| audit | `audit:` | Beads-backed audit references |
-| preferences | `preferences:` | Beads memory preferences |
+| issues | `issues:` | Issue references (`beadsRefs` may cross-link Beads issues when that backend is selected) |
+| audit | `audit:` | Kernel-backed audit references |
+| preferences | `preferences:` | Kernel memory preferences |
 
-Every typed write must include provenance fields: `actor`, `reason`, and `source`. If `bd` is missing or returns malformed JSON, Forge surfaces the Beads command failure instead of falling back to local JSONL files.
+Every typed write must include provenance fields: `actor`, `reason`, and `source`.
 
 ### Post-Upgrade Smoke Verification
 
@@ -506,7 +508,7 @@ volumes:
 ### GitHub CLI - PR Workflow
 
 **Installation**: [cli.github.com](https://cli.github.com)
-**Used in**: `/ship`, `/review`, `/premerge` stages
+**Used in**: `/ship` and `/review` stages
 
 ```bash
 # Install
@@ -569,8 +571,9 @@ This table maps tools to the default workflow template. It is not the complete F
 | `/validate` | Type check, lint, tests, SonarCloud |
 | `/ship` | `forge close`, `gh pr create` |
 | `/review` | `gh pr view`, Greptile, SonarCloud |
-| `/premerge` | `forge sync`, doc updates, hand off PR |
 | `/verify` | Documentation cross-check |
+
+Pre-merge is not a stage. Its work (`forge sync`, doc updates, hand off PR) runs inside the `/ship` and `/review` stages as an embedded documentation-and-handoff gate.
 
 ---
 

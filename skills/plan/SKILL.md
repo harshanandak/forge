@@ -285,79 +285,34 @@ Record the phase transition before starting research (optional context logging; 
 if [ -f scripts/beads-context.sh ]; then bash scripts/beads-context.sh stage-transition <id> plan research; fi
 ```
 
-Run these in parallel:
-
-### Web research (parallel-deep-research skill)
-```
-Skill("parallel-deep-research")
-```
-Search for:
-- "[tech stack] [feature] best practices [year]"
-- "[library/framework] [feature] implementation patterns"
-- "Known issues / gotchas with [approach selected]"
-
-### OWASP Top 10 analysis
-
-For this feature's risk surface, document each relevant OWASP category:
-- What the risk is
-- Whether it applies to this feature
-- What mitigation will be implemented
-
-### Codebase exploration (Explore agent)
-- Similar existing patterns to reuse
-- Files this feature will affect
-- Existing test infrastructure to leverage
-
-### DRY check (mandatory — use actual search tools)
-
-Before finalizing the approach, run Grep/Glob/Read searches for existing implementations of the planned function or pattern. Do not rely on memory or assumptions — execute the searches.
+Delegate the technical investigation to the **research** skill, which owns this bundle so it
+can be invoked on its own and reused mid-flow by other stages:
 
 ```
-Grep(searchTerm)   # e.g., the function or concept name
-Glob("**/*.js")    # narrow to affected file types if needed
-Read(matchedFile)  # inspect any match in context
+Skill("research")   # run in "Plan bundle" mode for this feature's design doc
 ```
 
-If a match is found:
-- Update the design doc's "Approach selected" section to say "extend existing [file/function]" — not "create new".
-- Note the existing file path and line number in the design doc.
+Hand research the approved approach and the design doc path. It runs the following in parallel
+and appends the results under a `## Technical Research` section in the design doc (not a
+separate file):
 
-If no match is found: proceed. The DRY gate is cleared.
+- **Web research** — best practices, implementation patterns, and known gotchas for the chosen
+  approach. (For an external market/vendor landscape, research escalates to
+  `parallel-deep-research`; code-level questions use WebSearch/Context7.)
+- **OWASP Top 10 analysis** — for each relevant category: the risk, whether it applies, and the
+  mitigation to implement.
+- **DRY check** — Grep/Glob/Read for existing implementations; if found, switch "Approach
+  selected" to "extend existing <file>:<line>" instead of "create new".
+- **Blast-radius search** (mandatory for remove/rename/replace) — grep the ENTIRE repo (exact +
+  case-insensitive + filename glob) and record every hit (including `package.json`, setup
+  scripts, `.github/workflows/`, agent config, and docs), adding a cleanup task for each.
+- **Codebase exploration** (Explore agent) — similar patterns to reuse, affected files, and
+  test infrastructure to leverage.
+- **TDD test scenarios** — at least 3: happy path, error/failure path, and one Phase-1 edge case.
 
-### Blast-radius search (mandatory for remove/rename/replace features)
-
-If this feature involves **removing**, **renaming**, or **replacing** a concept, tool, or dependency:
-
-1. Grep the ENTIRE codebase for the thing being removed/renamed:
-   ```
-   Grep("<thing-being-removed>")     # exact name
-   Grep("<thing-being-removed>", -i)  # case-insensitive variant
-   Glob("**/*<thing>*")              # files named after it
-   ```
-
-2. For EVERY match found:
-   - Note the file path and line number in the design doc
-   - Add a cleanup task to the task list (Phase 3)
-   - Flag matches in unexpected packages or config files explicitly
-
-3. Common hiding spots to check:
-   - `package.json` (scripts, dependencies, description)
-   - `install.sh` / setup scripts
-   - CI/CD workflows (`.github/workflows/`)
-   - Agent config files (`lib/agents/`, `.cursorrules`, etc.)
-   - Documentation (`docs/`, `README.md`, `AGENTS.md`)
-   - Import statements and require() calls
-
-If no removal/rename is involved, this section is skipped.
-
-### TDD test scenarios
-
-Identify at minimum 3 test scenarios:
-- Happy path
-- Error / failure path
-- Edge case from Phase 1
-
-Append all research findings to the design doc under a `## Technical Research` section (not a separate file).
+If the research skill is not available in the active toolset, run the same bundle inline with
+WebSearch/WebFetch, Grep/Glob/Read, and the Explore agent — the Phase 2 exit gate below verifies
+the outputs regardless of who produced them.
 
 ---
 

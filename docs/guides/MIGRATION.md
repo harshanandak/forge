@@ -11,10 +11,10 @@ Forge is now documented as a local runtime control plane for AI-assisted enginee
 Old docs often describe Forge as a fixed seven-, eight-, or nine-stage workflow. Replace that with:
 
 ```text
-Default template: /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
+Default template: /plan -> /dev -> /validate -> /ship -> /review -> /verify
 ```
 
-Then add the boundary:
+These are the 6 workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in `/ship` and `/review`. A composable `research` skill runs as a phase of `/plan` or standalone. Then add the boundary:
 
 ```text
 These are agent workflow stages. Not every stage is a standalone forge CLI command.

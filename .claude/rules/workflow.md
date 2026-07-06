@@ -12,7 +12,7 @@ TDD-first development workflow for any project: plan → dev → validate → sh
 | 3 | `/validate` | Type check, lint, code review, security, tests — all fresh output |
 | 4 | `/ship` | Push and create PR with design doc reference |
 | 5 | `/review` | Handle ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
-| 6 | `/verify` | Post-merge health check (CI on main, close Beads) |
+| 6 | `/verify` | Post-merge health check (CI on main, close issues) |
 
 > **Pre-merge gate (not a numbered stage)**: finish docs on the feature branch, confirm CI is green, and hand off the PR — embedded in the `/ship` and `/review` stages, not a standalone command.
 

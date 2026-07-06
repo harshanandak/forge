@@ -9,8 +9,10 @@ Manual review remains required even when AI review tools are configured.
 Default stage context:
 
 ```text
-/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
+/plan -> /dev -> /validate -> /ship -> /review -> /verify
 ```
+
+These are the 6 workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in `/ship` and `/review`.
 
 ## Review Inputs
 

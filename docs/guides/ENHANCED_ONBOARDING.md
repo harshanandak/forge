@@ -1,5 +1,7 @@
 # Enhanced Onboarding Guide
 
+> **Historical — superseded by [Quickstart](../../QUICKSTART.md).** This guide predates the current onboarding flow and still references the old `/premerge` stage and some undocumented flags. Kept for historical reference only; do not follow it for a fresh install.
+
 Intelligent onboarding that adapts to your project and preserves existing content.
 
 ---
