@@ -69,8 +69,9 @@ describe('status command authoritative workflow state', () => {
     const result = await statusCommand.handler([], {}, projectRoot);
 
     expect(result.success).toBe(true);
+    expect(result.output).toContain('You are here');
     expect(result.output).toContain('Context');
-    expect(result.output).toContain('Branch:');
+    expect(result.output).toContain('—');
     expect(result.output).not.toContain('Provide --workflow-state or --issue-id');
   });
 
@@ -217,7 +218,8 @@ describe('status command authoritative workflow state', () => {
     const result = await statusCommand.handler([], {}, repoRoot);
     expect(result.missingWorkflowState).toBe(true);
     expect(result.output).toContain('Context');
-    expect(result.output).toContain('No active workflow state detected.');
+    expect(result.output).toContain('You are here');
+    expect(result.output).toContain('No active workflow and no ready issues');
   });
 
   test('handler falls back gracefully when --workflow-state is malformed JSON', async () => {
@@ -398,7 +400,7 @@ describe('status command workflow discovery', () => {
     const result = await statusCommand.handler([], {}, repoRoot);
 
     expect(result.stageId).toBe('validate');
-    expect(result.output).toContain('Validation (validate)');
+    expect(result.output).toContain('Stage 3 of 5 — Validate (standard workflow)');
   });
 
   test('zero-arg status discovers workflow from a slug-matched active issue', async () => {
@@ -428,7 +430,7 @@ describe('status command workflow discovery', () => {
     const result = await statusCommand.handler([], {}, repoRoot);
 
     expect(result.stageId).toBe('dev');
-    expect(result.output).toContain('Development (dev)');
+    expect(result.output).toContain('Stage 2 of 5 — Dev (standard workflow)');
   });
 
   test('zero-arg status matches branch slug against exact design-path slugs only', async () => {
@@ -458,8 +460,8 @@ describe('status command workflow discovery', () => {
     const result = await statusCommand.handler([], {}, repoRoot);
 
     expect(result.stageId).toBe('dev');
-    expect(result.output).toContain('Development (dev)');
-    expect(result.output).not.toContain('Validation (validate)');
+    expect(result.output).toContain('Stage 2 of 5 — Dev (standard workflow)');
+    expect(result.output).not.toContain('Validate (standard workflow)');
   });
 
   test('zero-arg status falls back to the single active assigned issue when no slug match exists', async () => {
@@ -479,7 +481,7 @@ describe('status command workflow discovery', () => {
     const result = await statusCommand.handler([], {}, repoRoot);
 
     expect(result.stageId).toBe('ship');
-    expect(result.output).toContain('Shipping (ship)');
+    expect(result.output).toContain('Stage 4 of 5 — Ship (standard workflow)');
   });
 
   test('zero-arg status leaves workflow unresolved when multiple active issues are ambiguous', async () => {
@@ -507,7 +509,7 @@ describe('status command workflow discovery', () => {
     const result = await statusCommand.handler([], {}, repoRoot);
 
     expect(result.missingWorkflowState).toBe(true);
-    expect(result.output).toContain('No active workflow state detected.');
+    expect(result.output).toContain('No active workflow and no ready issues');
     expect(result.stageId).toBeUndefined();
   });
 });
@@ -543,32 +545,35 @@ describe('status command zero-arg presentation', () => {
 
     const result = await statusCommand.handler([], {}, repoRoot);
 
-    const sections = ['Context', 'Active Issues', 'Ready', 'Recent Completions', 'Workflow'];
-    for (const section of sections) {
-      expect(result.output).toContain(section);
+    // One-glance order: You are here → Context → Your work → newcomer footer.
+    const blocks = ['You are here', 'Context', 'Your work', 'New here?'];
+    for (const block of blocks) {
+      expect(result.output).toContain(block);
     }
 
-    expect(result.output.indexOf('Context')).toBeLessThan(result.output.indexOf('Active Issues'));
-    expect(result.output.indexOf('Active Issues')).toBeLessThan(result.output.indexOf('Ready'));
-    expect(result.output.indexOf('Ready')).toBeLessThan(result.output.indexOf('Recent Completions'));
-    expect(result.output.indexOf('Recent Completions')).toBeLessThan(result.output.indexOf('Workflow'));
+    expect(result.output.indexOf('You are here')).toBeLessThan(result.output.indexOf('Context'));
+    expect(result.output.indexOf('Context')).toBeLessThan(result.output.indexOf('Your work'));
+    expect(result.output.indexOf('Your work')).toBeLessThan(result.output.indexOf('New here?'));
+    // Canonical per-classification stage heading (validate = stage 3 of 5 for standard).
+    expect(result.output).toContain('Stage 3 of 5 — Validate (standard workflow)');
+    expect(result.output).toContain('Run now: /validate');
     expect(result.output).toContain('forge-active');
-    expect(result.output).toContain('forge-ready');
-    expect(result.output).toContain('forge-done');
-    expect(result.output).toContain('Validation (validate)');
+    expect(result.output).toContain('Ready: 1 more');
+    // Ready ids and recent completions are detail — hidden unless --full.
+    expect(result.output).not.toContain('Recent Completions');
   });
 
-  test('zero-arg status prints explicit empty-state messages for issue sections', async () => {
+  test('zero-arg status prints explicit empty-state lines for your-work', async () => {
     const repoRoot = createTempBeadsRepo([], {
       branch: 'feat/empty-status',
     });
 
     const result = await statusCommand.handler([], {}, repoRoot);
 
-    expect(result.output).toContain('Active Issues');
-    expect(result.output).toContain('Ready');
-    expect(result.output).toContain('Recent Completions');
-    expect(result.output).toContain('none');
+    expect(result.output).toContain('You are here');
+    expect(result.output).toContain('Your work');
+    expect(result.output).toContain('Active: none');
+    expect(result.output).toContain('Ready: none');
   });
 
   test('zero-arg status includes blocked and stale personal focus sections', async () => {
@@ -593,15 +598,39 @@ describe('status command zero-arg presentation', () => {
       branch: 'feat/status-blocked-stale',
     });
 
+    const result = await statusCommand.handler(['--full'], {
+      now: new Date('2026-05-18T08:00:00Z'),
+      staleAfterDays: 14,
+    }, repoRoot);
+
+    // Blocked/Stale are detail sections, surfaced only under --full.
+    expect(result.output).toContain('Blocked');
+    expect(result.output).toContain('Stale');
+    expect(result.output).toContain('forge-blocked');
+    expect(result.output).toContain('forge-active-old');
+  });
+
+  test('zero-arg status hides blocked/stale detail sections without --full', async () => {
+    const repoRoot = createTempBeadsRepo([
+      {
+        id: 'forge-blocked',
+        title: 'Blocked issue',
+        status: 'open',
+        owner: 'harshanandak@users.noreply.github.com',
+        dependency_count: 1,
+        updated_at: '2026-04-17T08:00:00Z',
+      },
+    ], {
+      branch: 'feat/status-hidden-detail',
+    });
+
     const result = await statusCommand.handler([], {
       now: new Date('2026-05-18T08:00:00Z'),
       staleAfterDays: 14,
     }, repoRoot);
 
-    expect(result.output).toContain('Blocked');
-    expect(result.output).toContain('Stale');
-    expect(result.output).toContain('forge-blocked');
-    expect(result.output).toContain('forge-active-old');
+    expect(result.output).not.toContain('Blocked');
+    expect(result.output).not.toContain('Stale');
   });
 
   test('zero-arg status returns JSON for the same personal focus state', async () => {
@@ -651,20 +680,16 @@ describe('status command zero-arg presentation', () => {
       branch: 'feat/forge-status-personal-focus',
     });
 
+    // Default one-glance view: Ready is a count + hint, not a list of ids.
     const result = await statusCommand.handler([], {}, repoRoot);
+    expect(result.output).toContain('Ready: 6 more (forge issue ready)');
+    expect(result.output).not.toContain('forge-ready-1');
+    expect(result.output).not.toContain('Recent Completions');
 
-    expect(result.output).toContain('...and 1 more');
-    expect(result.output).toContain('forge-ready-5');
-    const readyStart = result.output.indexOf('Ready');
-    const blockedStart = result.output.indexOf('Blocked');
-    expect(readyStart).toBeGreaterThan(-1);
-    expect(blockedStart).toBeGreaterThan(-1);
-    expect(blockedStart).toBeGreaterThan(readyStart);
-    const readySection = result.output.slice(readyStart, blockedStart);
-    expect(readySection).not.toContain('forge-ready-6 Ready 6');
-    expect(result.output).toContain('forge-done-6');
-    expect(result.output).toContain('forge-done-2');
-    expect(result.output).not.toContain('forge-done-1 Done 1');
+    // --full surfaces Recent Completions, still capped at 5 with an overflow note.
+    const fullResult = await statusCommand.handler(['--full'], {}, repoRoot);
+    expect(fullResult.output).toContain('Recent Completions');
+    expect(fullResult.output).toContain('...and 1 more');
   });
 
   test('explicit workflow-state output preserves the authoritative stage-only format', async () => {

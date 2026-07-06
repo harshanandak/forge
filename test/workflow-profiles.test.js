@@ -21,20 +21,30 @@ describe('workflow-profiles', () => {
       expect(PROFILES.refactor).toBeTruthy();
     });
 
-    test('critical profile should have 7 stages', () => {
-      expect(PROFILES.critical.stages.length).toBe(7);
-      expect(PROFILES.critical.stages.includes('/status')).toBeTruthy();
+    test('critical profile should have the 6 canonical stages (no /status)', () => {
+      // /status is a utility, not a workflow stage — it lives under `utilities`.
+      expect(PROFILES.critical.stages.length).toBe(6);
+      expect(PROFILES.critical.stages.includes('/status')).toBeFalsy();
       expect(PROFILES.critical.stages.includes('/premerge')).toBeFalsy();
       expect(PROFILES.critical.stages.includes('/verify')).toBeTruthy();
+      expect(PROFILES.critical.utilities.includes('/status')).toBeTruthy();
       expect(PROFILES.critical.tdd).toBe('strict');
     });
 
     test('standard profile should include the default command template', () => {
-      expect(PROFILES.standard.stages.length).toBe(6);
-      expect(PROFILES.standard.stages.includes('/status')).toBeTruthy();
+      expect(PROFILES.standard.stages.length).toBe(5);
+      expect(PROFILES.standard.stages.includes('/status')).toBeFalsy();
       expect(PROFILES.standard.stages.includes('/plan')).toBeTruthy();
       expect(PROFILES.standard.stages.includes('/premerge')).toBeFalsy();
+      expect(PROFILES.standard.utilities.includes('/status')).toBeTruthy();
       expect(PROFILES.standard.tdd).toBe('required');
+    });
+
+    test('every profile exposes /status as a utility, never as a numbered stage', () => {
+      for (const profile of Object.values(PROFILES)) {
+        expect(profile.stages.includes('/status')).toBeFalsy();
+        expect(profile.utilities.includes('/status')).toBeTruthy();
+      }
     });
 
     test('simple profile should have 3 stages', () => {
