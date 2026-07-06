@@ -1,7 +1,7 @@
 ---
 description: "TDD patterns and enforcement"
 alwaysApply: false
-globs: ["**/*.ts", "**/*.js", "**/*.test.ts", "**/*.test.js"]
+globs: ["**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx"]
 ---
 
 # TDD Enforcement
