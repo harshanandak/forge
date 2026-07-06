@@ -69,7 +69,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/protected-path-manifest.js (2)
   - lines: 23 (bd), 33 (bd)
 - [ ] lib/protected-state-surfaces.js (4)
-  - lines: 43 (.beads), 50 (.beads), 51 (bd), 362 (bd)
+  - lines: 43 (.beads), 50 (.beads), 51 (bd), 363 (bd)
 - [ ] lib/runtime-health.js (13)
   - lines: 177 (bd), 218 (.beads), 277 (.beads), 335 (.beads), 507 (bd), 538 (bd), 540 (bd), 543 (bd), 544 (bd), 547 (bd), 552 (bd), 553 (bd), 596 (bd)
 - [ ] lib/status/beads-snapshot.js (1)
