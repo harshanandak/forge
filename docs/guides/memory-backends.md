@@ -46,11 +46,13 @@ was true in the world, and when the system learned it), and superseded facts are
 true at time T", with a pointer back to the source (provenance). It is served to
 any MCP agent through Graphiti's **MCP server**; Forge only wires it in.
 
-Forge does **not** bundle or reimplement Graphiti. This PR ships the config +
-router seam and documents how to run Graphiti; **automatically writing the MCP
-server into your agent's config is a fast-follow** (a per-harness renderer that
-consumes the descriptor in `lib/memory/graphiti-mcp.js`). Until then you add the
-server entry yourself (template below). Design rationale and trade-offs:
+Forge does **not** bundle or reimplement Graphiti. Forge ships the config +
+router seam and documents how to run Graphiti; when `memory.backend` resolves to
+`graphiti` (and the config passes the same validity check `forge doctor` uses),
+**`forge setup` automatically writes the MCP server entry** into `.mcp.json`
+(Claude) and `.cursor/mcp.json` (Cursor) from the descriptor in
+`lib/memory/graphiti-mcp.js`. For other harnesses (e.g. Codex `config.toml`) you
+add the server entry yourself (template below). Design rationale and trade-offs:
 [`docs/work/2026-07-06-graphiti-memory/research.md`](../work/2026-07-06-graphiti-memory/research.md).
 
 ### 1. Turn it on (config)
@@ -66,7 +68,7 @@ memory:
     mcpServerPath: ./graphiti/mcp_server   # required — path to the Graphiti checkout's mcp_server dir
     graphDb: falkordb           # falkordb | falkordb-lite | neo4j
     apiKeyEnv: OPENAI_API_KEY    # referenced by NAME — never store the key here
-    # --- reserved: consumed by the fast-follow MCP renderer; NO EFFECT yet ---
+    # --- reserved: NO EFFECT yet (the descriptor emits ${VAR} env references, not these values) ---
     dbUri: redis://localhost:6379
     llmProvider: openai
     model: gpt-5.5
@@ -74,16 +76,18 @@ memory:
 ```
 
 Only `mcpServerPath` is required today (it's what `forge doctor` checks and what
-the descriptor threads into the launch args). The keys under "reserved" have no
-effect until the per-harness MCP renderer lands — set them now only if you like,
-they are no-ops until then.
+the descriptor threads into the launch args). The keys under "reserved" still
+have no effect — the rendered entry references env vars (`${VAR}`), not these
+literal values — set them now only if you like, they are no-ops until a renderer
+consumes them.
 
 Forge exposes the MCP server as a harness-agnostic **descriptor** (see
-`lib/memory/graphiti-mcp.js`, `buildGraphitiServerDescriptor`) so a per-harness
-renderer can wire it into the right place for each agent (Claude `.mcp.json`,
-Cursor `.cursor/mcp.json`, Codex `config.toml`). That wiring lands as a
-fast-follow; the descriptor's env values are `${VAR}` references only — Forge
-never writes a secret into any committed config. The rendered entry looks like:
+`lib/memory/graphiti-mcp.js`, `buildGraphitiServerDescriptor`) and `forge setup`
+wires it into the right place for Claude (`.mcp.json`) and Cursor
+(`.cursor/mcp.json`), preserving any servers you already have there. Codex
+(`config.toml`) is not auto-wired yet. The descriptor's env values are `${VAR}`
+references only — Forge never writes a secret into any committed config. The
+rendered entry looks like:
 
 ```json
 "graphiti-memory": {
