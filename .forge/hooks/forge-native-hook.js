@@ -91,6 +91,31 @@ function isProtectedPath(p) {
   return PROTECTED_PATTERNS.some(re => re.test(n));
 }
 
+// Write-intent shell constructs: mutating commands and output redirection. Reads
+// (cat/ls/grep) of protected paths stay allowed — the protected-path intent guards
+// WRITES, mirroring the Claude wiring (PreToolUse matcher Write|Edit, not Read).
+const WRITE_INTENT_RE = /(^|[\s;|&(])(rm|mv|cp|tee|truncate|chmod|chown|ln|sed|perl|dd|install|rsync|unlink|shred)\b|>>?/;
+
+/**
+ * True when a SHELL COMMAND shows WRITE intent toward a Forge-protected path.
+ * Needed because Cursor's only deny-capable surface is `beforeShellExecution`,
+ * whose payload carries `command` (no file_path) — without this check the
+ * protected-path intent could never actually block anything on Cursor.
+ * Conservative two-step: (1) the command must contain a mutating construct
+ * (rm/mv/sed/tee/redirection/...), then (2) token-scan (split on whitespace +
+ * shell operators, strip quotes) for a protected path. Never throws.
+ */
+function commandTouchesProtectedPath(command) {
+  if (typeof command !== 'string' || !command) return false;
+  if (!WRITE_INTENT_RE.test(command)) return false;
+  const tokens = command.split(/[\s;|&<>()]+/);
+  for (const raw of tokens) {
+    const token = raw.replace(/^["']+|["']+$/g, '');
+    if (token && !token.startsWith('-') && isProtectedPath(token)) return true;
+  }
+  return false;
+}
+
 /** True when a shell command invokes `git commit`. */
 function isGitCommit(command) {
   return typeof command === 'string' && /\bgit\b[^\n&|;]*\bcommit\b/.test(command);
@@ -120,6 +145,18 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
         decision: 'deny',
         reason: `Forge-protected path '${normalize(target)}' — edit it through the owning Forge CLI/skill, not a raw write.`,
       };
+    }
+    // No file path in the payload (e.g. Cursor beforeShellExecution carries only
+    // `command`): inspect the shell command for write intent on a protected path,
+    // so the deny-capable shell surface actually protects instead of no-oping.
+    if (!target) {
+      const command = extractCommand(input);
+      if (commandTouchesProtectedPath(command)) {
+        return {
+          decision: 'deny',
+          reason: 'Shell command writes to a Forge-protected path — use the owning Forge CLI/skill instead.',
+        };
+      }
     }
     return { decision: 'allow' };
   }
@@ -199,6 +236,7 @@ module.exports = {
   extractPath,
   extractCommand,
   isProtectedPath,
+  commandTouchesProtectedPath,
   isGitCommit,
   decide,
   formatOutput,

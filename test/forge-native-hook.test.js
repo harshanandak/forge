@@ -26,6 +26,36 @@ describe('extractPath', () => {
   test('reads Hermes write_file/patch tool_input.path', () => {
     expect(adapter.extractPath({ tool_input: { path: 'AGENTS.md' } })).toBe('AGENTS.md');
   });
+});
+
+describe('commandTouchesProtectedPath (Cursor beforeShellExecution deny path)', () => {
+  test('denies WRITE-intent shell commands touching protected paths', () => {
+    expect(adapter.commandTouchesProtectedPath('rm -rf .forge')).toBe(true);
+    expect(adapter.commandTouchesProtectedPath('echo hacked > AGENTS.md')).toBe(true);
+    expect(adapter.commandTouchesProtectedPath('sed -i s/a/b/ lefthook.yml')).toBe(true);
+    expect(adapter.commandTouchesProtectedPath('mv .env.local /tmp/steal')).toBe(true);
+    expect(adapter.commandTouchesProtectedPath('cat secrets | tee .forge/config.yaml')).toBe(true);
+  });
+
+  test('allows READS of protected paths (protected-path guards writes, like Claude Write|Edit)', () => {
+    expect(adapter.commandTouchesProtectedPath('cat .forge/config.yaml')).toBe(false);
+    expect(adapter.commandTouchesProtectedPath('ls .forge')).toBe(false);
+    expect(adapter.commandTouchesProtectedPath('grep foo AGENTS.md')).toBe(false);
+  });
+
+  test('allows write commands on unprotected paths + non-write commands', () => {
+    expect(adapter.commandTouchesProtectedPath('rm -rf dist')).toBe(false);
+    expect(adapter.commandTouchesProtectedPath('git status')).toBe(false);
+    expect(adapter.commandTouchesProtectedPath('')).toBe(false);
+    expect(adapter.commandTouchesProtectedPath(null)).toBe(false);
+  });
+
+  test('decide() denies a protected-path intent via the shell command when no file path present', () => {
+    const denied = adapter.decide({ intent: 'protected-path', input: { command: 'rm -rf .forge' } });
+    expect(denied.decision).toBe('deny');
+    const readOk = adapter.decide({ intent: 'protected-path', input: { command: 'cat .forge/config.yaml' } });
+    expect(readOk.decision).toBe('allow');
+  });
   test('returns null when no path present (e.g. a shell event)', () => {
     expect(adapter.extractPath({ command: 'ls -la' })).toBe(null);
   });
