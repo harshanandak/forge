@@ -3963,7 +3963,12 @@ async function main() {
   SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
-  if (NON_INTERACTIVE && !suppressStructuredOutput) {
+  // The non-interactive agent-selection notice is DEBUG-ONLY (kernel issue
+  // a9bbd065): it used to print on stderr for EVERY command run by a non-TTY
+  // agent/CI, polluting otherwise-clean command output. It only matters when
+  // setup-style agent selection actually happens, so it now requires --verbose
+  // (or FORGE_DEBUG=1) to appear.
+  if (NON_INTERACTIVE && (VERBOSE_MODE || process.env.FORGE_DEBUG === '1') && !suppressStructuredOutput) {
     const agentFlag = flags.agents;
     if (agentFlag && agentFlag.length > 0) {
       // flags.agents is a comma-separated string (e.g. "claude,cursor")

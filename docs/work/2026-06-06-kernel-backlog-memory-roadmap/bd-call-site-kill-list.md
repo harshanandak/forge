@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 ## command
 
 - [ ] bin/forge.js (26)
-  - lines: 2211 (bd), 2213 (bd), 2369 (bd), 2812 (bd), 2821 (bd), 2834 (bd), 2847 (.beads), 2867 (bd), 2869 (bd), 2871 (bd), 2906 (bd), 2930 (bd), 3016 (bd), 3060 (bd), 3084 (bd), 3090 (bd), 3094 (bd), 3099 (bd), 3105 (bd), 3115 (bd), 3247 (bd), 3252 (bd), 3263 (bd), 3330 (bd), 4031 (bd), 4529 (bd)
+  - lines: 2211 (bd), 2213 (bd), 2369 (bd), 2812 (bd), 2821 (bd), 2834 (bd), 2847 (.beads), 2867 (bd), 2869 (bd), 2871 (bd), 2906 (bd), 2930 (bd), 3016 (bd), 3060 (bd), 3084 (bd), 3090 (bd), 3094 (bd), 3099 (bd), 3105 (bd), 3115 (bd), 3247 (bd), 3252 (bd), 3263 (bd), 3330 (bd), 4036 (bd), 4534 (bd)
 - [ ] lib/commands/_resolve-command-opts.js (2)
   - lines: 8 (bd), 10 (bd)
 - [ ] lib/commands/dev.js (1)
