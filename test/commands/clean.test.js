@@ -298,9 +298,10 @@ describe('forge clean — squash-merge aware detection', () => {
     const mod = require('../../lib/commands/clean');
     const removed = [];
     const mockExec = (cmd, args) => {
-      if (cmd === 'gh') return Buffer.from(JSON.stringify([{ headRefName: 'feat/pr' }]));
+      if (cmd === 'gh') return Buffer.from(JSON.stringify([{ headRefName: 'feat/pr', headRefOid: 'prsha' }]));
       if (cmd !== 'git') return Buffer.from('');
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'rev-parse' && args[1] === 'feat/pr') return Buffer.from('prsha\n'); // tip matches merged PR head
       if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n');
       if (args[0] === 'worktree' && args[1] === 'list') {
         return Buffer.from(`worktree ${wt('pr')}\nbranch refs/heads/feat/pr\n\n`);
@@ -312,6 +313,33 @@ describe('forge clean — squash-merge aware detection', () => {
     const result = await mod.handler([], {}, ROOT, { _exec: mockExec, _fs: fsWith(['pr']), _syncMaster: noopSync });
     expect(result.cleaned).toBe(1);
     expect(removed[0]).toBe(wt('pr'));
+  });
+
+  test('does NOT trust a gh-merged ref whose tip advanced past the merged OID', async () => {
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    const mockExec = (cmd, args) => {
+      // gh says feat/reuse was merged at oldsha, but the branch tip is now newsha.
+      if (cmd === 'gh') return Buffer.from(JSON.stringify([{ headRefName: 'feat/reuse', headRefOid: 'oldsha' }]));
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'rev-parse' && args[1] === 'feat/reuse') return Buffer.from('newsha\n'); // advanced
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('reuse')}\nbranch refs/heads/feat/reuse\n\n`);
+      }
+      // Squash tier finds NO patch-equivalent → must be kept.
+      if (args[0] === 'merge-base') return Buffer.from('basesha\n');
+      if (args[0] === 'rev-parse' && String(args[1]).endsWith('^{tree}')) return Buffer.from('treesha\n');
+      if (args[0] === 'commit-tree') return Buffer.from('synthsha\n');
+      if (args[0] === 'cherry') return Buffer.from('+ 89abcde new work\n'); // NOT merged
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+    const result = await mod.handler([], {}, ROOT, { _exec: mockExec, _fs: fsWith(['reuse']), _syncMaster: noopSync });
+    expect(result.cleaned).toBe(0);
+    expect(result.active).toBe(1);
+    expect(removed.length).toBe(0);
   });
 
   test('_internals.isSquashMerged returns true only when cherry emits a "-" line', () => {
@@ -405,6 +433,34 @@ describe('forge clean — Windows-robust removal', () => {
     expect(result.dirty.length).toBe(1);
     expect(result.output.toLowerCase()).toContain('dirty');
   });
+
+  test('treats an unknowable dirty state (git status throws) as UNSAFE — never removes', () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const throwingRun = (_cmd, args) => {
+      if (args[0] === '-C' && args[2] === 'status') throw new Error('fatal: not a git repository (transient)');
+      return Buffer.from('');
+    };
+    // Unknown → dirty (true) so the caller skips removal rather than force-deleting.
+    expect(_internals.isWorktreeDirty('/wt/x', throwingRun)).toBe(true);
+  });
+
+  test('dry-run reflects dirty-worktree protection (reports skip, not "Would remove")', async () => {
+    const mod = require('../../lib/commands/clean');
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  feat/dirty\n  main\n');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('dirty')}\nbranch refs/heads/feat/dirty\n\n`);
+      }
+      if (args[0] === '-C' && args[2] === 'status') return Buffer.from(' M lib/thing.js\n'); // dirty
+      return Buffer.from('');
+    };
+    const result = await mod.handler([], { '--dry-run': true }, ROOT, { _exec: mockExec, _fs: fsWith(['dirty']), _syncMaster: noopSync });
+    expect(result.cleaned).toBe(0);
+    expect(result.dirty.length).toBe(1);
+  });
 });
 
 describe('forge clean — master auto-update', () => {
@@ -435,7 +491,7 @@ describe('forge clean — master auto-update', () => {
     const mod = require('../../lib/commands/clean');
     let ffCalled = false;
     const exec = syncExec(3, 0, 'main', {
-      onExec: (cmd, args) => {
+      onExec: (_cmd, args) => {
         if (args[0] === '-C' && args[2] === 'merge' && args[3] === '--ff-only') ffCalled = true;
       },
     });
@@ -450,7 +506,7 @@ describe('forge clean — master auto-update', () => {
     const mod = require('../../lib/commands/clean');
     let ffCalled = false;
     const exec = syncExec(3, 2, 'main', {
-      onExec: (cmd, args) => {
+      onExec: (_cmd, args) => {
         if (args[0] === '-C' && args[3] === 'merge') ffCalled = true;
       },
     });
@@ -464,7 +520,7 @@ describe('forge clean — master auto-update', () => {
     const mod = require('../../lib/commands/clean');
     let ffCalled = false;
     const exec = syncExec(3, 0, 'main', {
-      onExec: (cmd, args) => { if (args[0] === '-C' && args[2] === 'merge') ffCalled = true; },
+      onExec: (_cmd, args) => { if (args[0] === '-C' && args[2] === 'merge') ffCalled = true; },
     });
     const result = await mod.handler([], { '--no-master-sync': true }, ROOT, { _exec: exec, _fs: fsWith([]) });
     expect(ffCalled).toBe(false);
@@ -475,11 +531,28 @@ describe('forge clean — master auto-update', () => {
     const mod = require('../../lib/commands/clean');
     let ffCalled = false;
     const exec = syncExec(3, 0, 'main', {
-      onExec: (cmd, args) => { if (args[0] === '-C' && args[2] === 'merge') ffCalled = true; },
+      onExec: (_cmd, args) => { if (args[0] === '-C' && args[2] === 'merge') ffCalled = true; },
     });
     const result = await mod.handler([], { '--dry-run': true }, ROOT, { _exec: exec, _fs: fsWith([]) });
     expect(ffCalled).toBe(false);
     expect(result.masterSync).toBeNull();
+  });
+
+  test('surfaces a fetch failure instead of masquerading as up-to-date', async () => {
+    const mod = require('../../lib/commands/clean');
+    const exec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from('worktree /main\nHEAD abc\nbranch refs/heads/main\n\n');
+      }
+      if (args[0] === '-C' && args[2] === 'fetch') throw new Error('fatal: unable to access origin');
+      return Buffer.from('');
+    };
+    const result = await mod.handler([], {}, ROOT, { _exec: exec, _fs: fsWith([]) });
+    expect(result.masterSync.synced).toBe(false);
+    expect(result.masterSync.reason).toBe('fetch-failed');
   });
 
   test('_internals.parseUntrackedOverwrites extracts the blocked files', () => {
