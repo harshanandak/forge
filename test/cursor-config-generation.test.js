@@ -122,17 +122,31 @@ describe('Cursor config generation', () => {
     expect(fs.existsSync(rulesDir)).toBeTruthy();
   });
 
-  test('should create all 4 rule files', async () => {
+  test('should create all 5 rule files', async () => {
     await generateCursorConfig(tempDir);
 
     const rulesDir = path.join(tempDir, '.cursor', 'rules');
     const files = await fs.promises.readdir(rulesDir);
 
-    expect(files.length).toBe(4);
+    expect(files.length).toBe(5);
     expect(files.includes('forge-workflow.mdc')).toBeTruthy();
     expect(files.includes('tdd-enforcement.mdc')).toBeTruthy();
     expect(files.includes('security-scanning.mdc')).toBeTruthy();
     expect(files.includes('documentation.mdc')).toBeTruthy();
+    // Always-on kernel-tracking rule: "nothing discussed goes missing — file it".
+    expect(files.includes('kernel-tracking.mdc')).toBeTruthy();
+  });
+
+  test('should create .cursor/rules/kernel-tracking.mdc (always-on, file-it-to-kernel)', async () => {
+    await generateCursorConfig(tempDir);
+
+    const ktPath = path.join(tempDir, '.cursor', 'rules', 'kernel-tracking.mdc');
+    const content = await fs.promises.readFile(ktPath, 'utf-8');
+
+    expect(content.startsWith('---')).toBeTruthy();
+    expect(content.includes('alwaysApply: true')).toBeTruthy();
+    expect(content.includes('forge issue create')).toBeTruthy();
+    expect(/kernel/i.test(content)).toBeTruthy();
   });
 
   test('should not overwrite existing files by default', async () => {
