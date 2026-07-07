@@ -15,6 +15,7 @@ gives you guardrails, not a cage.
 
 | Status | Meaning |
 | --- | --- |
+| **✅ Shipped** | Done and on master — kept here briefly so you can see momentum |
 | **Now** | Actively being built or in final review |
 | **Next** | Queued — design settled, work not started |
 | **Later** | Planned — direction committed, details open |
@@ -28,7 +29,7 @@ agent said it did.
 
 | What you get | Status |
 | --- | --- |
-| **Verified issue writes** — every kernel mutation is re-read and confirmed after writing (`verified: true` in the response); it caught a real projection bug on its very first run | Now |
+| **Verified issue writes** — every kernel mutation is re-read and confirmed after writing (`verified: true` in the response); it caught a real projection bug on its very first run | ✅ Shipped |
 | **Short issue ids** — refer to issues by a short prefix instead of pasting a full UUID | Next |
 | **One canonical issue command surface** — a single, predictable `issue` noun before the 0.1.0 API freeze | Next |
 | **Board hygiene + 0.1.0 release** — a groomed, deduplicated public board and a stable release line | Next |
@@ -88,7 +89,7 @@ The default path should be the easy path — on every platform.
 | What you get | Status |
 | --- | --- |
 | **Human-first CLI output** — readable text by default for `forge ready` and issue listings, `--json` when a machine is reading | Next |
-| **Windows path robustness** — worktree cleanup that detects merged work correctly across path-separator styles | Now |
+| **Windows path robustness** — worktree cleanup that detects merged work correctly across path-separator styles | ✅ Shipped |
 | **Unified Windows shell resolution** — one reliable Git Bash discovery path instead of per-command guesses | Next |
 | **Onboarding wizard** — `forge new`: one guided setup from zero to a working, agent-ready project | Later |
 | **Rollback with snapshots** — `forge rollback` restores from automatic pre-change backups when an upgrade or setup goes wrong | Later |

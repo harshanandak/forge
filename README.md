@@ -143,6 +143,7 @@ so a claim can't quietly outrun the code. What's not delivered yet says
 | Lifecycle hygiene | Squash-merge-aware `forge clean`, automatic master fast-forward |
 | Safety defaults | Claude permission allowlist + Cursor secrets ignore, merge-preserving |
 | Quality-gated pushes | `forge push`: branch protection + lint + tests before anything leaves your machine |
+| Verified issue writes | Every kernel write is re-read and confirmed (`verified: true` in the response) — it caught a real bug on its very first run. Opt out with `forge gate disable gate.issue_verify` |
 
 **Experimental / opt-in** — real, shipped, and clearly labeled:
 
@@ -151,7 +152,6 @@ so a claim can't quietly outrun the code. What's not delivered yet says
 | Knowledge-graph memory (Graphiti) | `memory.backend: graphiti` in `.forge/config.yaml` — temporal, relational recall ([guide](docs/guides/memory-backends.md)) |
 | Global hooks for Codex/Hermes | `forge hooks install --global` (consent-guarded, `--dry-run` first) |
 | Conditional auto-merge | `forge merge --auto <pr>` — off by default, merges only when configured rules pass |
-| Verified issue writes | Check-after-write read-back on kernel mutations (`gate.issue_verify`) — landing now; it caught a real projection bug on its first run. See [ROADMAP.md](ROADMAP.md) |
 
 ## A workflow you own
 
