@@ -128,7 +128,7 @@ describe('Cursor config generation', () => {
     const rulesDir = path.join(tempDir, '.cursor', 'rules');
     const files = await fs.promises.readdir(rulesDir);
 
-    expect(files.length).toBe(5);
+    expect(files).toHaveLength(5);
     expect(files.includes('forge-workflow.mdc')).toBeTruthy();
     expect(files.includes('tdd-enforcement.mdc')).toBeTruthy();
     expect(files.includes('security-scanning.mdc')).toBeTruthy();
