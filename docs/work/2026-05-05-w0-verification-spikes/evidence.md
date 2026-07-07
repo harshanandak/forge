@@ -9,7 +9,7 @@ Date: 2026-05-05
 | S1 | https://docs.cursor.com/en/context/rules | Cursor project rules, `.cursor/rules`, `.mdc` metadata, `alwaysApply`, `globs`, `description`, AGENTS.md limitations. |
 | S2 | https://docs.cursor.com/en/cli/reference/output-format | Cursor Agent CLI JSON and `stream-json` event schema. |
 | S3 | https://developers.openai.com/codex/cli/slash-commands | Codex CLI built-in slash commands. |
-| S4 | OpenAI Codex source clone at `C:\Users\harsha_befach\AppData\Local\Temp\codex-source-w0-spikes`, HEAD `9d579813bbcafde0abd4010f57ac93eea0b1be2b` | Local primary source search for custom prompt/slash command discovery. |
+| S4 | OpenAI Codex source clone at `<local-path>`, HEAD `9d579813bbcafde0abd4010f57ac93eea0b1be2b` | Local primary source search for custom prompt/slash command discovery. |
 | S5 | `docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md` and `n1-moat-technical-deep-dive.md` | Local v3 gate requirements, D10/D11, anchor alias risk and performance budget. |
 
 ## Spike Results

@@ -25,9 +25,7 @@ Report vulnerabilities privately using [GitHub Security Advisories](https://gith
 - Coordinate disclosure timing
 - Request a CVE if needed
 
-### Email
-
-Alternatively, send details to: **harsha.befach@gmail.com**
+### What to include
 
 Please include:
 - Description of the vulnerability
