@@ -197,6 +197,38 @@ describe('Kernel SQLite driver — acceptance smoke through the public entry poi
 		expect(closed.data.revision).toBe(2);
 	});
 
+	test('close persists close metadata COLUMNS on the issue row (9197b0c8)', async () => {
+		// Regression: a native `close --reason` carried the text only in the close
+		// EVENT payload — the closed_at/close_reason COLUMNS stayed NULL, so every
+		// real close failed gate.issue_verify's read-back. The close write must
+		// stamp both columns (importer-supplied explicit values still win).
+		const created = await op('create', ['--id', 'meta-1', '--title', 'Close metadata', '--type', 'task'], { now, actor: 'tester' });
+		expect(created.ok).toBe(true);
+
+		const closedAt = '2026-06-20T00:09:00.000Z';
+		const closed = await op('close', ['meta-1', '--reason', 'shipped in PR 999'], { now: closedAt, actor: 'tester' });
+		expect(closed.ok).toBe(true);
+
+		const shown = await op('show', ['meta-1'], { now: closedAt });
+		expect(shown.ok).toBe(true);
+		expect(shown.data.status).toBe('done');
+		expect(shown.data.close_reason).toBe('shipped in PR 999');
+		// closed_at is stamped from the close EVENT's created_at (real clock, not the
+		// injected context now) — assert presence + a valid ISO timestamp.
+		expect(typeof shown.data.closed_at).toBe('string');
+		expect(Number.isNaN(Date.parse(shown.data.closed_at))).toBe(false);
+
+		// A reason-less close still stamps the timestamp.
+		const other = await op('create', ['--id', 'meta-2', '--title', 'No reason', '--type', 'task'], { now, actor: 'tester' });
+		expect(other.ok).toBe(true);
+		const closedPlain = await op('close', ['meta-2'], { now: closedAt, actor: 'tester' });
+		expect(closedPlain.ok).toBe(true);
+		const shownPlain = await op('show', ['meta-2'], { now: closedAt });
+		expect(shownPlain.data.status).toBe('done');
+		expect(typeof shownPlain.data.closed_at).toBe('string');
+		expect(Number.isNaN(Date.parse(shownPlain.data.closed_at))).toBe(false);
+	});
+
 	test('projection-outbox primitives drain pending rows through the real driver', async () => {
 		// Each accepted mutation enqueues a pending kernel_outbox row. Run the JSONL
 		// consumer against a broker built from the SAME shared driver: it lists pending
