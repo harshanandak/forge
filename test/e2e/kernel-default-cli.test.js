@@ -114,9 +114,16 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
       const id = extractId(created.stdout);
       expect(id).toBeTruthy();
 
-      // list / show — derived + single reads
-      expectKernelContract(runForgeDefault(repo, ['list']).stdout, 'list');
-      expectKernelContract(runForgeDefault(repo, ['show', id]).stdout, 'show');
+      // list / show — derived + single reads. Human-first (a9bbd065): the DEFAULT
+      // output is a text rendering; the forge.issue.v1 contract is behind --json.
+      expectKernelContract(runForgeDefault(repo, ['list', '--json']).stdout, 'list');
+      expectKernelContract(runForgeDefault(repo, ['show', id, '--json']).stdout, 'show');
+      const humanList = runForgeDefault(repo, ['list']).stdout;
+      expect(humanList).toContain('seed issue');
+      expect(humanList).not.toContain('"schema_version"');
+      const humanShow = runForgeDefault(repo, ['show', id]).stdout;
+      expect(humanShow).toContain(id); // the FULL id stays accessible in the show view
+      expect(humanShow).not.toContain('"schema_version"');
 
       // update / comment — guarded mutations
       expectKernelContract(runForgeDefault(repo, ['update', id, '--priority', '1']).stdout, 'update');
@@ -125,7 +132,9 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
       // derived read queries — these were the routing gap fixed alongside the flip
       // (blocked/stale/orphans/lint were missing from ISSUE_COMMANDS and fell
       // through to the Beads passthrough). Assert they now hit the kernel.
-      expectKernelContract(runForgeDefault(repo, ['ready']).stdout, 'ready');
+      // ready is human-first like list/show, so its contract check needs --json.
+      expectKernelContract(runForgeDefault(repo, ['ready', '--json']).stdout, 'ready');
+      expect(runForgeDefault(repo, ['ready']).stdout).not.toContain('"schema_version"');
       expectKernelContract(runForgeDefault(repo, ['blocked']).stdout, 'blocked');
       expectKernelContract(runForgeDefault(repo, ['stale']).stdout, 'stale');
       expectKernelContract(runForgeDefault(repo, ['orphans']).stdout, 'orphans');
@@ -242,7 +251,7 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
       // silently minted a junk issue here). The broker may lazily create an empty
       // kernel.sqlite during opts resolution, so assert an empty store — not file
       // absence.
-      const list = runForgeDefault(repo, ['issue', 'list']);
+      const list = runForgeDefault(repo, ['issue', 'list', '--json']);
       expect(list.stdout).toContain('"count": 0');
     },
     TIMEOUT,
@@ -261,7 +270,7 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
         expect(res.stdout).toMatch(/not found/i);
       }
       // None of the three failed mutations minted a phantom row.
-      const after = runForgeDefault(repo, ['issue', 'list']);
+      const after = runForgeDefault(repo, ['issue', 'list', '--json']);
       expect(after.stdout).toContain('"count": 0');
     },
     TIMEOUT,
