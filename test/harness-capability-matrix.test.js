@@ -43,13 +43,20 @@ describe('harness capability matrix', () => {
 
     // Hooks: Claude + Cursor native hook configs ARE now rendered by setup
     // (lib/hook-renderer.js), projecting Forge's TDD-gate + protected-path
-    // enforcement onto native surfaces. Codex stays honest (global-config scope).
+    // enforcement onto native surfaces. Codex + Hermes hooks live in GLOBAL
+    // (home-dir) config that project setup never writes; they are `packaged`
+    // for the opt-in, consent-guarded `forge hooks install --global` path
+    // (lib/hook-global-installer.js), keeping the global-scope caveat honest.
     expect(matrix.harnesses.claude.capabilities.hooks.status).toBe('native');
     expect(matrix.harnesses.claude.capabilities.hooks.primarySurface).toBe('.claude/settings.json');
     expect(matrix.harnesses.cursor.capabilities.hooks.status).toBe('native');
     expect(matrix.harnesses.cursor.capabilities.hooks.primarySurface).toBe('.cursor/hooks.json');
-    expect(matrix.harnesses.codex.capabilities.hooks.status).toBe('not-delivered');
+    expect(matrix.harnesses.codex.capabilities.hooks.status).toBe('packaged');
     expect(matrix.harnesses.codex.capabilities.hooks.knownIssue).toContain('global');
+    expect(matrix.harnesses.codex.capabilities.hooks.knownIssue).toContain('forge hooks install --global');
+    expect(matrix.harnesses.hermes.capabilities.hooks.status).toBe('packaged');
+    expect(matrix.harnesses.hermes.capabilities.hooks.knownIssue).toContain('global');
+    expect(matrix.harnesses.hermes.capabilities.hooks.knownIssue).toContain('forge hooks install --global');
     // Agents domain is unimplemented for every harness.
     expect(matrix.harnesses.claude.capabilities.agents.status).toBe('not-delivered');
     expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('not-delivered');
