@@ -41,10 +41,15 @@ describe('harness capability matrix', () => {
   test('records unsupported/not-yet-delivered harness surfaces honestly', () => {
     const matrix = getHarnessCapabilityMatrix();
 
-    // Hooks: no harness-native hook is rendered — enforcement is git-hook-delivered.
-    expect(matrix.harnesses.claude.capabilities.hooks.status).toBe('contract-only');
-    expect(matrix.harnesses.cursor.capabilities.hooks.status).toBe('not-delivered');
-    expect(matrix.harnesses.cursor.capabilities.hooks.knownIssue).toContain('.cursor/hooks.json');
+    // Hooks: Claude + Cursor native hook configs ARE now rendered by setup
+    // (lib/hook-renderer.js), projecting Forge's TDD-gate + protected-path
+    // enforcement onto native surfaces. Codex stays honest (global-config scope).
+    expect(matrix.harnesses.claude.capabilities.hooks.status).toBe('native');
+    expect(matrix.harnesses.claude.capabilities.hooks.primarySurface).toBe('.claude/settings.json');
+    expect(matrix.harnesses.cursor.capabilities.hooks.status).toBe('native');
+    expect(matrix.harnesses.cursor.capabilities.hooks.primarySurface).toBe('.cursor/hooks.json');
+    expect(matrix.harnesses.codex.capabilities.hooks.status).toBe('not-delivered');
+    expect(matrix.harnesses.codex.capabilities.hooks.knownIssue).toContain('global');
     // Agents domain is unimplemented for every harness.
     expect(matrix.harnesses.claude.capabilities.agents.status).toBe('not-delivered');
     expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('not-delivered');

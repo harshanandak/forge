@@ -124,6 +124,7 @@ Designed via grounded workflow (existing hooks + per-harness mechanisms) with an
 - **Codex** ⚠️ events confirmed (PascalCase `[hooks]`, `commandWindows`); no `SessionEnd` → map to `Stop`; handler field names beyond `command` unverified.
 - **Cursor** ⚠️ `.cursor/hooks.json` `{version,hooks}`, camelCase; **no Bash-matcher PreToolUse** → H4 splits to `beforeShellExecution` + `afterFileEdit`. Re-confirm schema before building the writer.
 - **Hermes** ❓ **no documented hook mechanism; do not wire — explicit gap, never fabricated.**
+  - **CORRECTION (2026-07-07):** this was wrong. Hermes (NousResearch Hermes Agent) DOES have a native hook surface — shell hooks in the `hooks:` block of the GLOBAL `~/.hermes/config.yaml`, where a `pre_tool_call` hook can DENY a tool call (it even accepts Claude's `{decision:block}` shape). See capability-matrix source **S16** and `renderHermesHooksYaml` (lib/hook-renderer.js). It is `not-delivered` (not `unsupported`): the surface is real but global-config-scoped, so `forge setup` cannot write it project-locally — same constraint as Codex. Rendered + tested for a global-config follow-up (epic `90f2f631`).
 
 ### 9.3 Neutral source + sync (parallel to skills sync)
 Neutral source = **`.skills/hooks.json`** (canonical PascalCase, includes both `Stop` and `SessionEnd` keys so H3 maps correctly). New CLI subcommand **`skills sync-hooks`** with **format-aware writers, NOT `cpSync`** (cpSync whole-dir copy is wrong for merged config files):
