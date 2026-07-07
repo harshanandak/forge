@@ -4,6 +4,14 @@ const { describe, test, expect } = require('bun:test');
 
 const { createIssueSubcommand } = require('../../lib/commands/_issue');
 
+// These tests pin routing/normalization, not the check-after-write loop —
+// gate.issue_verify would add a read-back runner call after each kernel
+// mutation, so it is stubbed OFF here. Verification behavior has its own
+// dedicated suite: test/commands/issue-verify.test.js.
+const VERIFY_OFF = {
+  resolveRuntimeGraph: () => ({ gates: [{ id: 'gate.issue_verify', enabled: false }] }),
+};
+
 // The issue command surface is de-beaded: every subcommand routes through the shared
 // runIssueOperation seam with the subcommand name as the operation (dep fans out to
 // dep.<action>). The backend abstraction (lib/forge-issues.js + the issue adapters)
@@ -165,6 +173,7 @@ describe('issue backend resolution from env/config', () => {
 
     const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
       env: { FORGE_ISSUE_BACKEND: 'kernel' },
+      ...VERIFY_OFF,
       runIssueOperation: async (operation, args, projectRoot, deps) => {
         calls.push({ operation, args, projectRoot, deps });
         return { ok: true, command: operation, data: { id: 'k1' } };
@@ -375,6 +384,7 @@ describe('kernel batch close (KAP-9)', () => {
 
     const result = await close.handler(['k1', 'k2'], {}, '/repo', {
       issueBackend: 'kernel',
+      ...VERIFY_OFF,
       runIssueOperation: async (operation, args) => {
         calls.push({ operation, args });
         return { ok: true, command: operation, data: { id: args[0], revision: 1 } };
@@ -408,6 +418,7 @@ describe('kernel batch close (KAP-9)', () => {
 
     await close.handler(['k1', 'k2', '--reason', 'done'], {}, '/repo', {
       issueBackend: 'kernel',
+      ...VERIFY_OFF,
       runIssueOperation: async (operation, args) => {
         calls.push({ operation, args });
         return { ok: true, command: operation, data: { id: args[0] } };
@@ -424,6 +435,7 @@ describe('kernel batch close (KAP-9)', () => {
 
     const result = await close.handler(['k1', 'k2'], {}, '/repo', {
       issueBackend: 'kernel',
+      ...VERIFY_OFF,
       runIssueOperation: async (operation, args) => {
         if (args[0] === 'k2') {
           return { ok: false, command: operation, error: { message: 'Issue k2 not found' } };
@@ -451,6 +463,7 @@ describe('kernel batch close (KAP-9)', () => {
 
     const result = await close.handler(['k1'], {}, '/repo', {
       issueBackend: 'kernel',
+      ...VERIFY_OFF,
       runIssueOperation: async (operation, args) => {
         calls.push({ operation, args });
         return {
