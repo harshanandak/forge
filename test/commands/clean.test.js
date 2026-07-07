@@ -371,6 +371,12 @@ describe('forge clean — squash-merge aware detection', () => {
       .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
     expect(_internals.normalizeWorktreeKey('c:/repo/.worktrees/x'))
       .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
+    // Windows filesystems are case-insensitive beyond the drive letter too:
+    // segment-case differences must fold on win32 but stay significant on POSIX.
+    expect(_internals.normalizeWorktreeKey('C:/Repo/.Worktrees/X', 'win32'))
+      .toBe(_internals.normalizeWorktreeKey('c:/repo/.worktrees/x', 'win32'));
+    expect(_internals.normalizeWorktreeKey('/a/Branch', 'linux'))
+      .not.toBe(_internals.normalizeWorktreeKey('/a/branch', 'linux'));
 
     const mod = require('../../lib/commands/clean');
     const removed = [];
