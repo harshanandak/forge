@@ -49,6 +49,18 @@ describe('runtime graph contract', () => {
       .toBe('bun run typecheck; bun run lint; bun test; bun audit');
   });
 
+  // rail.kernel_tracking ingrains "file every issue/idea/bug/decision to the
+  // kernel" as a structural, default-ON rail. Unlike the L1 safety rails it is
+  // NOT locked — a maintainer may opt out via `forge gate disable rail.kernel_tracking`.
+  test('registers the default-ON, unlocked kernel_tracking rail', () => {
+    const graph = getResolvedRuntimeGraph();
+    const rail = graph.rails.find(candidate => candidate.id === 'rail.kernel_tracking');
+    expect(rail).toBeDefined();
+    expect(rail.key).toBe('kernel_tracking');
+    expect(rail.enabled).toBe(true);
+    expect(rail.locked).toBe(false);
+  });
+
   test('represents the current plan to ship command flow as a resolved graph', () => {
     const graph = getResolvedRuntimeGraph();
     const phaseIds = graph.phases.map(phase => phase.id);

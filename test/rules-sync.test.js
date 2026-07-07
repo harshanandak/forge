@@ -34,12 +34,37 @@ describe('rules sync drift detection', () => {
     expect(result.issues).toHaveLength(0);
   });
 
-  test('canonical source defines the four policy rules', () => {
-    expect(CANONICAL_RULE_NAMES).toEqual(['workflow', 'tdd', 'security', 'documentation']);
+  test('canonical source defines the five policy rules', () => {
+    expect(CANONICAL_RULE_NAMES).toEqual([
+      'workflow', 'tdd', 'security', 'documentation', 'kernel-tracking',
+    ]);
     const rules = listCanonicalRules(repoRoot);
     expect(rules.map((r) => r.name).sort()).toEqual(
-      ['documentation', 'security', 'tdd', 'workflow'],
+      ['documentation', 'kernel-tracking', 'security', 'tdd', 'workflow'],
     );
+  });
+
+  // The always-on kernel-tracking rule must render to EVERY port: a native
+  // `.cursor/rules/kernel-tracking.mdc` for Cursor, and the AGENTS.md projection
+  // for Claude/Codex/Hermes. It ingrains "nothing discussed goes missing —
+  // file it to the kernel immediately" as a structural, default-on rule.
+  test('kernel-tracking renders to the Cursor native surface (always-on, file-it pointer)', () => {
+    expect(CURSOR_RULE_FILES['kernel-tracking']).toBe('kernel-tracking.mdc');
+    const [rule] = listCanonicalRules(repoRoot, { only: ['kernel-tracking'] });
+    expect(rule.alwaysApply).toBe('true');
+    const cursor = renderCursorRule(rule);
+    expect(cursor.includes('alwaysApply: true')).toBe(true);
+    expect(/forge issue create/.test(cursor)).toBe(true);
+    expect(/kernel/i.test(cursor)).toBe(true);
+    // Thin pointer: defers to the authoritative AGENTS.md / skill source.
+    expect(/AGENTS\.md|skill/i.test(cursor)).toBe(true);
+  });
+
+  test('kernel-tracking policy is projected into AGENTS.md for Claude/Codex/Hermes', () => {
+    const agents = fs.readFileSync(path.join(repoRoot, 'AGENTS.md'), 'utf-8');
+    expect(/kernel[- ]tracking/i.test(agents)).toBe(true);
+    expect(/nothing discussed goes missing/i.test(agents)).toBe(true);
+    expect(agents.includes('rail.kernel_tracking')).toBe(true);
   });
 
   test('regenerate-into-temp is byte-identical across runs (drift-free)', () => {
@@ -84,7 +109,7 @@ describe('rules sync drift detection', () => {
   });
 
   test('Claude does NOT get always-on policy rule files (no token bloat)', () => {
-    for (const name of ['workflow', 'tdd', 'security', 'documentation']) {
+    for (const name of ['workflow', 'tdd', 'security', 'documentation', 'kernel-tracking']) {
       expect(fs.existsSync(path.join(repoRoot, '.claude/rules', `${name}.md`))).toBe(false);
     }
   });

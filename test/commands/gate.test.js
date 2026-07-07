@@ -9,6 +9,7 @@ const YAML = require('yaml');
 
 const gateCommand = require('../../lib/commands/gate');
 const optionsCommand = require('../../lib/commands/options');
+const { getResolvedRuntimeGraph } = require('../../lib/core/runtime-graph');
 
 const tempRoots = [];
 
@@ -68,5 +69,39 @@ describe('forge gate verb', () => {
     expect((await gateCommand.handler([], {}, root)).success).toBe(false);
     expect((await gateCommand.handler(['toggle', 'gate.plan-exit'], {}, root)).success).toBe(false);
     expect((await gateCommand.handler(['disable'], {}, root)).success).toBe(false);
+  });
+
+  // rail.kernel_tracking is a default-ON, UNLOCKED rail toggled through the same
+  // `forge gate enable|disable` surface as gates (zero new toggle code): the id is
+  // known (validate against knownGates), disable writes workflow.gates.<id>.enabled,
+  // and the shipped resolver flips the rail in the resolved graph.
+  test('disable rail.kernel_tracking is accepted and flips the resolved rail off', async () => {
+    const root = makeProject();
+
+    const result = await gateCommand.handler(['disable', 'rail.kernel_tracking'], {}, root);
+    expect(result.success).toBe(true);
+    expect(readConfig(root).workflow.gates['rail.kernel_tracking'].enabled).toBe(false);
+
+    const rail = getResolvedRuntimeGraph({ projectRoot: root })
+      .rails.find(r => r.id === 'rail.kernel_tracking');
+    expect(rail.enabled).toBe(false);
+  });
+
+  test('enable flips rail.kernel_tracking back on', async () => {
+    const root = makeProject();
+    await gateCommand.handler(['disable', 'rail.kernel_tracking'], {}, root);
+    await gateCommand.handler(['enable', 'rail.kernel_tracking'], {}, root);
+    const rail = getResolvedRuntimeGraph({ projectRoot: root })
+      .rails.find(r => r.id === 'rail.kernel_tracking');
+    expect(rail.enabled).toBe(true);
+  });
+
+  test('forge gate check reflects a disabled rail.kernel_tracking (satisfied)', async () => {
+    const root = makeProject();
+    await gateCommand.handler(['disable', 'rail.kernel_tracking'], {}, root);
+    // A disabled rail is satisfied without any approval event — no kernel needed.
+    const check = await gateCommand.handler(['check', 'issue-1', 'rail.kernel_tracking'], {}, root);
+    expect(check.success).toBe(true);
+    expect(check.output).toMatch(/disabled/);
   });
 });

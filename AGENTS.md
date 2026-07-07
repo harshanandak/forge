@@ -317,6 +317,21 @@ forge merge --auto <pr>        # Opt-in conditional auto-merge — merges only w
 - Run `forge prime` for detailed command reference and session close protocol
 - Use `forge remember` for persistent knowledge and `forge recall` to retrieve it back — do NOT use MEMORY.md files
 
+### Kernel Tracking (nothing discussed goes missing)
+
+**NON-NEGOTIABLE, default-on.** Anything raised in a session — a bug, an idea, a
+design decision, a follow-up, a TODO, a risk noticed in passing — MUST become a
+Forge Kernel issue **immediately** via `forge issue create`, before it can be
+forgotten. Triage it (set a type, link its epic/parent) so it is discoverable.
+When you defer scope, file the follow-up issue and reference it — never leave
+work unfiled. The Kernel is the single source of truth; do NOT substitute
+TodoWrite, markdown TODO lists, or memory notes for a filed issue.
+
+This policy is canonicalized in `rules/kernel-tracking.md` (rendered to every
+port: `.cursor/rules/kernel-tracking.mdc` for Cursor, this projection for
+Claude/Codex/Hermes) and governed by the default-on `rail.kernel_tracking`
+runtime rail. Turn it off only deliberately: `forge gate disable rail.kernel_tracking`.
+
 ## Project Learnings
 
 - **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
