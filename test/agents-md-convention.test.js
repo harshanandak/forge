@@ -14,8 +14,13 @@ describe('AGENTS.md Descriptive Context Convention section', () => {
     expect(content).toContain('## Descriptive Context Convention');
   });
 
-  test('references beads-context.sh validate command', () => {
-    expect(content).toContain('beads-context.sh validate');
+  test('records stage context through the kernel-native issue comment flow', () => {
+    // #325 replaced the retired stage-transition shell script with the
+    // kernel-native flow: context is recorded as an issue comment and the
+    // check-after-write gate confirms it landed.
+    expect(content).toContain('forge issue comment');
+    expect(content).toContain('gate.issue_verify');
+    expect(content).not.toContain('beads-context.sh');
   });
 
   test('contains Summary field definition', () => {
