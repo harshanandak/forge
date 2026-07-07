@@ -342,6 +342,26 @@ describe('forge clean — squash-merge aware detection', () => {
     expect(removed.length).toBe(0);
   });
 
+  test('detects a merged branch that git prefixes with "+" (checked out in a linked worktree)', async () => {
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      // git prefixes a branch checked out in a linked worktree with "+".
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('+ feat/wt\n  main\n');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('wt')}\nbranch refs/heads/feat/wt\n\n`);
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+    const result = await mod.handler([], {}, ROOT, { _exec: mockExec, _fs: fsWith(['wt']), _syncMaster: noopSync });
+    expect(result.cleaned).toBe(1); // matched via ancestry fast path after stripping "+"
+    expect(removed[0]).toBe(wt('wt'));
+  });
+
   test('_internals.isSquashMerged returns true only when cherry emits a "-" line', () => {
     const { _internals } = require('../../lib/commands/clean');
     const runMerged = (cmd, args) => {
