@@ -90,8 +90,9 @@ describe('forge JSONL portability — export → fresh clone → import round-tr
 		expect(imported.status).toBe(0);
 		expect(imported.stdout.toLowerCase()).toMatch(/imported kernel projection.*1 issues/);
 
-		// 4) The issue is restored.
-		const restored = runForge(repo, ['list']);
+		// 4) The issue is restored. Full-UUID identity is a machine-contract check,
+		//    so read the JSON view (the human default shows an id prefix).
+		const restored = runForge(repo, ['list', '--json']);
 		expect(restored.stdout).toContain(id);
 		expect(restored.stdout).toContain('Round trip issue');
 
@@ -99,7 +100,7 @@ describe('forge JSONL portability — export → fresh clone → import round-tr
 		const again = runForge(repo, ['export', '--import']);
 		expect(again.status).toBe(0);
 		expect(again.stdout.toLowerCase()).toMatch(/already hydrated|nothing new/);
-		const afterSecond = runForge(repo, ['list']);
+		const afterSecond = runForge(repo, ['list', '--json']);
 		expect((afterSecond.stdout.match(new RegExp(id, 'g')) || []).length).toBe(1); // still one, not duplicated
 	}, 45000);
 });
