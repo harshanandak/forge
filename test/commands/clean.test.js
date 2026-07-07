@@ -362,6 +362,37 @@ describe('forge clean — squash-merge aware detection', () => {
     expect(removed[0]).toBe(wt('wt'));
   });
 
+  test('matches worktree paths across Windows separator styles (git C:/ vs resolve C:\\)', async () => {
+    // Regression for 86b04c20: git worktree list --porcelain emits forward-slash
+    // paths on Windows while path.resolve emits backslashes — the branch lookup
+    // must match regardless, or every merged worktree reads "active".
+    const { _internals } = require('../../lib/commands/clean');
+    expect(_internals.normalizeWorktreeKey('C:\\repo\\.worktrees\\x'))
+      .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
+    expect(_internals.normalizeWorktreeKey('c:/repo/.worktrees/x'))
+      .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
+
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    // Porcelain reports the worktree with FORWARD slashes even when the lookup
+    // side computes the path natively (backslashes on win32).
+    const porcelainPath = wt('sep').replace(/\\/g, '/');
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  feat/sep\n  main\n');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${porcelainPath}\nbranch refs/heads/feat/sep\n\n`);
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+    const result = await mod.handler([], {}, ROOT, { _exec: mockExec, _fs: fsWith(['sep']), _syncMaster: noopSync });
+    expect(result.cleaned).toBe(1);
+    expect(result.active).toBe(0);
+  });
+
   test('_internals.isSquashMerged returns true only when cherry emits a "-" line', () => {
     const { _internals } = require('../../lib/commands/clean');
     const runMerged = (cmd, args) => {
