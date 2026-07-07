@@ -82,7 +82,7 @@ describe('forge JSONL portability — export → fresh clone → import round-tr
 		// 2) Simulate a fresh clone: the kernel DB lives under .git (never cloned);
 		//    delete it while the committed .forge/kernel JSONL survives.
 		rmrfWithRetry(path.join(repo, '.git', 'forge'));
-		const emptyList = runForge(repo, ['list']);
+		const emptyList = runForge(repo, ['list', '--json']);
 		expect(emptyList.stdout).toContain('"issues": []'); // the bug: zero issues before hydration
 
 		// 3) Hydrate the fresh clone from the committed JSONL.
