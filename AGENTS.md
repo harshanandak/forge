@@ -121,7 +121,7 @@ Task 2: Validation logic
 
 ```json
 {
-  "id": "forge-x7y2",
+  "id": "9f2c41d7-3a8e-4b6f-9c21-5e7d0a184c3b",
   "type": "critical",
   "currentStage": "dev",
   "completedStages": ["plan"],
@@ -251,15 +251,22 @@ Every stage transition should carry structured context so the next stage (or a n
 | /review    | All feedback addressed | Comment resolutions | Fixed files, commit SHAs | Doc update needs |
 | pre-merge gate | Docs updated, CI green | N/A | Updated doc files | Merge instructions |
 
-### Validation Command
+### Recording Stage Context
 
-Run at each stage exit to check for missing context:
+Record the stage-exit context as a kernel issue comment so the next stage (or a
+fresh session) can resume from the issue record itself:
 
 ```bash
-bash scripts/beads-context.sh validate <beads-issue-id>
+forge issue comment <issue-id> "stage: dev -> validate
+summary: All 5 tasks done, 1 decision gate fired
+decisions: Used streaming parser over DOM for memory efficiency
+artifacts: lib/parser.js test/parser.test.js
+next: Run lint first — streaming approach may trigger no-await rule"
 ```
 
-This checks: (1) issue has a description, (2) at least one stage transition exists, (3) most recent transition has a summary, (4) design metadata is set if past the plan stage. Exits 0 when context checks run (even if warnings are found); exits 1 only if the issue cannot be retrieved.
+Check-after-write verification (`gate.issue_verify`, default-on) confirms the
+comment actually landed. Read context back with `forge show <issue-id>` (or
+`forge recap <issue-id>` for the bounded orientation envelope).
 
 ### Field Definitions
 
@@ -268,23 +275,10 @@ This checks: (1) issue has a description, (2) at least one stage transition exis
 - **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/work/2026-03-26-parser/plan.md"`
 - **Next**: Guidance for the next stage on what to focus on. Example: `--next "Run lint first — streaming approach may trigger no-await rule"`
 
-### Usage in Stage Transitions
-
-```bash
-# Basic (backward compatible)
-bash scripts/beads-context.sh stage-transition <id> dev validate
-
-# With context fields (recommended)
-bash scripts/beads-context.sh stage-transition <id> dev validate \
-  --summary "All 5 tasks done, 0 gates fired" \
-  --decisions "Used approach A per design doc" \
-  --artifacts "lib/foo.js test/foo.test.js" \
-  --next "Run type check and lint"
-```
-
 ### Enforcement Level
 
-This convention is **advisory only**. The `validate` subcommand prints warnings but always exits 0. It does not block any stage transition. The goal is to build good habits, not to create friction.
+This convention is **advisory only** — missing fields never block a stage
+transition. The goal is to build good habits, not to create friction.
 
 ## Forge Issue Tracker
 
