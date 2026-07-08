@@ -2,7 +2,7 @@
 
 - **Feature:** `wave1-worktree-beads-fixes`
 - **Branch:** `feat/wave1-worktree-beads-fixes`
-- **Worktree:** `C:\Users\harsha_befach\Downloads\forge\.worktrees\wave1-worktree-beads-fixes`
+- **Worktree:** `<repo>\.worktrees\wave1-worktree-beads-fixes`
 - **Execution model:** one feature branch, three sequential bug-fix commits
 - **YAGNI check:** no tasks were flagged as scope creep; each task maps directly to one requested bug and the verified current code paths.
 

@@ -101,3 +101,4 @@ test-env/fixtures/*
 
 # Forge push nonce token (ephemeral one-time lefthook skip)
 .forge-push-token
+.forge/*-body.md

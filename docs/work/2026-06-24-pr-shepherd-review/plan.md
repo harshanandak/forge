@@ -1,7 +1,7 @@
 # Monitor-Driven PR Shepherd — FINAL Implementation Plan
 
 Status: implementation-ready. Hand to agents working in isolated worktrees off `origin/master`.
-All claims below were re-verified against the main worktree at `C:/Users/harsha_befach/Downloads/forge`. File:line citations are load-bearing.
+All claims below were re-verified against the main worktree at `<repo>`. File:line citations are load-bearing.
 
 ---
 

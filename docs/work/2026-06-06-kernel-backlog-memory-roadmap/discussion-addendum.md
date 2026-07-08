@@ -15,7 +15,7 @@ The previous `decision-options.md` listed options. This addendum turns the discu
 Related workspace inspected:
 
 ```text
-C:\Users\harsha_befach\Downloads\Product-Suite
+<local-path>
 ```
 
 Important Product-Suite references included:

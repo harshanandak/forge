@@ -78,4 +78,30 @@ describe('forge remember command', () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.note).toBe('json note');
   });
+
+  test('does not store the -p global flag and its value in the note (kernel c1e090ff)', async () => {
+    const projectRoot = makeProjectRoot();
+    const result = await remember.handler(
+      ['ship the fix', '-p', 'C:\\some\\project'],
+      { path: 'C:\\some\\project' },
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+    const [entry] = memoryStore.list(projectRoot);
+    expect(entry.note).toBe('ship the fix');
+  });
+
+  test('strips --path= and other global flags from the note content', async () => {
+    const projectRoot = makeProjectRoot();
+    const result = await remember.handler(
+      ['multi', 'word', 'note', '--path=/tmp/project', '--verbose'],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+    const [entry] = memoryStore.list(projectRoot);
+    expect(entry.note).toBe('multi word note');
+  });
 });
