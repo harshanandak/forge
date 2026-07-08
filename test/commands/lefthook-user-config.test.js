@@ -46,6 +46,27 @@ describe('forgeShouldWriteLefthookConfig', () => {
     }
   });
 
+  test('never writes THROUGH a symlinked lefthook.yml (no escape outside the project)', () => {
+    // CodeRabbit hardening: readFileSync/writeFileSync follow symlinks, so a checked-out
+    // lefthook.yml -> ../outside could let setup create/overwrite a file outside the repo.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-lefthook-symlink-'));
+    const outside = path.join(dir, 'outside.txt');
+    const link = path.join(dir, 'lefthook.yml');
+    fs.writeFileSync(outside, '# fully commented stub\n');
+    try {
+      fs.symlinkSync(outside, link);
+    } catch {
+      // Symlink creation needs privileges on Windows — skip if unavailable.
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    }
+    try {
+      expect(forgeShouldWriteLefthookConfig(link)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('never clobbers a config that already has active jobs', () => {
     const { dir, file } = writeTemp(FORGE_USER_LEFTHOOK_YML);
     try {
