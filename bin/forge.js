@@ -4313,9 +4313,16 @@ async function main() {
       console.error(`Error running 'status':`, err.message);
       process.exit(1);
     }
-  } else {
+  } else if (command === undefined) {
     // Explicit invocation with no command in an UNINITIALIZED project: run minimal install.
     minimalInstall();
+  } else {
+    // Defined but unrecognized command → fail honestly instead of printing the
+    // installer banner with exit 0 (kernel b3bae4f3). A typo like `forge bogusxyz`
+    // must be detectable by scripts (non-zero exit) and humans (a real error).
+    console.error(`Error: Unknown command '${command}'`);
+    console.error("Run 'forge --help' to see the available commands.");
+    process.exit(1);
   }
 }
 

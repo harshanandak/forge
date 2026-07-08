@@ -13,15 +13,19 @@ This guide gets Forge installed and visible to an AI coding agent without assumi
 ## 1. Install The Package
 
 ```bash
+# Bun
 bun add -D forge-workflow
+
+# npm
+npm install --save-dev forge-workflow
 ```
 
-You can also run one-off commands with `bunx forge ...`.
+You can also run one-off commands with `bunx forge ...` (or `npx forge ...`).
 
 Terms used below:
 
 - Runtime config means local `.forge/` files that describe adoption choices.
-- Harness means an agent-specific install target. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
+- Harness means an agent-specific install target. Forge currently supports Claude Code, Codex, Cursor, and Hermes.
 - Beads means the opt-out `bd` issue backend. By default `forge ready`, `forge show`, and related wrappers use the built-in kernel backend; select Beads as described in section 5.
 
 ## 2. Initialize Runtime Config
@@ -97,14 +101,15 @@ If Beads (when selected) reports a Dolt database or server error, use [Support a
 
 ## 6. Run Validation
 
-For this repository:
+Validate your own project's changes before shipping:
 
 ```bash
-bun run check
-npm pack --dry-run
+bunx forge validate
 ```
 
-`bun run check` runs typecheck, lint, security audit, and tests through `scripts/validate.js`.
+`forge validate` runs your configured checks (tests, lint) and drops into a guided
+debug flow on failure. (Contributors to Forge itself run `bun run check` — typecheck,
+lint, security audit, and tests via `scripts/validate.js`.)
 
 ## 7. Understand Stage Commands
 
