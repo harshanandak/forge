@@ -113,7 +113,7 @@ For Wave 1, this includes the existing shell recovery path in `scripts/smart-sta
 
 ## Baseline Before Implementation
 
-Verified from the isolated worktree `C:\Users\harsha_befach\Downloads\forge\.worktrees\wave1-worktree-beads-fixes`:
+Verified from the isolated worktree `<repo>\.worktrees\wave1-worktree-beads-fixes`:
 
 - `bun test test/beads-setup.test.js` — passed
 - `bun test test/beads-init-wrapper.test.js` — passed
