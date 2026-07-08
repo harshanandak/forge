@@ -28,15 +28,16 @@ describe('postinstall guard', () => {
   test('postinstall branch does not call minimalInstall()', () => {
     // Verify the postinstall block itself doesn't contain minimalInstall
     const postinstallBlock = source.match(
-      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
+      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else /
     );
     expect(postinstallBlock).not.toBeNull();
     expect(postinstallBlock[1]).not.toContain('minimalInstall');
   });
 
   test('minimalInstall() is in the explicit invocation branch (not postinstall)', () => {
-    // minimalInstall should be called in the else branch after the postinstall check
-    expect(source).toMatch(/\} else \{[\s\S]*?\/\/ Explicit invocation[\s\S]*?minimalInstall\(\)/);
+    // minimalInstall should be called only for a bare `forge` (command === undefined)
+    // in an uninitialized project — never in the postinstall branch.
+    expect(source).toMatch(/\} else if \(command === undefined\) \{[\s\S]*?\/\/ Explicit invocation[\s\S]*?minimalInstall\(\)/);
   });
 });
 
@@ -44,7 +45,7 @@ describe('postinstall setup instruction uses detected package manager', () => {
   test('detects bun lockfile for setup command', () => {
     // The postinstall branch should check for bun.lockb/bun.lock
     const postinstallBlock = source.match(
-      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
+      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else /
     );
     expect(postinstallBlock).not.toBeNull();
     expect(postinstallBlock[1]).toContain('bun.lockb');
@@ -53,7 +54,7 @@ describe('postinstall setup instruction uses detected package manager', () => {
 
   test('detects pnpm lockfile for setup command', () => {
     const postinstallBlock = source.match(
-      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
+      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else /
     );
     expect(postinstallBlock[1]).toContain('pnpm-lock.yaml');
     expect(postinstallBlock[1]).toContain('pnpm dlx');
@@ -61,7 +62,7 @@ describe('postinstall setup instruction uses detected package manager', () => {
 
   test('detects yarn lockfile for setup command', () => {
     const postinstallBlock = source.match(
-      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
+      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else /
     );
     expect(postinstallBlock[1]).toContain('yarn.lock');
     expect(postinstallBlock[1]).toContain('yarn dlx');
@@ -69,7 +70,7 @@ describe('postinstall setup instruction uses detected package manager', () => {
 
   test('defaults to npx when no lockfile found', () => {
     const postinstallBlock = source.match(
-      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
+      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else /
     );
     expect(postinstallBlock[1]).toContain("'npx'");
   });
@@ -77,7 +78,7 @@ describe('postinstall setup instruction uses detected package manager', () => {
   test('does not hardcode bunx as the only option', () => {
     // The setup instruction should use a variable, not a hardcoded string
     const postinstallBlock = source.match(
-      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else \{/
+      /npm_lifecycle_event === 'postinstall'\) \{([\s\S]*?)\} else /
     );
     // Should NOT contain a hardcoded 'bunx forge setup' string literal
     expect(postinstallBlock[1]).not.toMatch(/console\.log\(\s*['"].*bunx forge setup.*['"]\s*\)/);

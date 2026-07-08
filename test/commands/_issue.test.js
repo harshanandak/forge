@@ -502,3 +502,21 @@ describe('kernel batch close (KAP-9)', () => {
     expect(result).toEqual({ success: true, operation: 'close', output: 'closed' });
   });
 });
+
+describe('id-required subcommands reject a missing id with a clean usage error (842a8be7)', () => {
+  test('claim with no positional id fails with exit 6 (not a fabricated-UUID quarantine)', async () => {
+    const claim = createIssueSubcommand('claim');
+    // The guard returns before the backend is resolved, so no runner is needed.
+    const result = await claim.handler([], {}, '/repo', { issueBackend: 'kernel', env: {} });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing required argument');
+    expect(result.exitCode).toBe(6);
+  });
+
+  test('show with only flags (no id) is likewise rejected', async () => {
+    const show = createIssueSubcommand('show');
+    const result = await show.handler(['--json'], {}, '/repo', { issueBackend: 'kernel', env: {} });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing required argument');
+  });
+});

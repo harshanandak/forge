@@ -61,6 +61,25 @@ describe('orientation front door', () => {
     expect(out).toContain('--budget');
   });
 
+  test('an unknown command in an initialized project errors + exits 1 (not the installer banner)', () => {
+    // Regression (kernel b3bae4f3): `forge bogusxyz` used to fall through to the
+    // minimal-install banner with exit 0, so typos looked like success.
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-unknown-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: repo });
+      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# unknown-cmd test\n');
+
+      const result = runForge(['bogusxyz'], repo);
+      expect(result.status).toBe(1);
+      expect(`${result.stderr || ''}`).toContain("Unknown command 'bogusxyz'");
+      // Must NOT print the installer banner, and must not scaffold anything.
+      expect(`${result.stdout || ''}`).not.toContain('npx forge setup');
+      expect(fs.existsSync(path.join(repo, '.forge'))).toBe(false);
+    } finally {
+      rmrf(repo);
+    }
+  }, 30000);
+
   test('bare `forge` in an initialized project renders the orientation view (no mutation)', () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-orient-'));
     try {

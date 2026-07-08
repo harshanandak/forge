@@ -9,7 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The default issue backend changed from Beads to the built-in kernel store.
+## [0.1.0] - 2026-07-08
+
+First public release. The default issue backend changed from Beads to the built-in Kernel store, the Kernel's git-tracked JSONL portability loop now works end to end, and a pre-beta audit hardened the CLI surface, docs, and npm packaging.
+
+### Changed
+
+- **Default issue backend is now the built-in Kernel store (was Beads).** `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the Kernel issue store by default; no Beads install or initialization is required.
+- Pre-merge is presented as an embedded documentation gate inside the `/ship` and `/review` stages — not a numbered workflow stage, and not an invokable `/premerge` command. (#269)
+- Packaging: excluded a stray test file from the published npm tarball, added an `engines.node` requirement of `>=22.16.0`, and documented the `forge doc-gate` command. (#271)
+- **Packaging: stopped shipping internal `docs/work/**` planning docs in the npm tarball.** The published package no longer contains maintainer-local absolute paths or internal project names (843 → 425 files, 2.1 MB → 997 kB). (#334)
+- **`forge <unknown-command>` now fails honestly.** A mistyped or unrecognized command prints `Error: Unknown command '<x>'` to stderr and exits `1`, instead of printing the setup banner and exiting `0`. (#334)
+
+### Fixed
+
+- **The core workflow is now reachable out of the box after `forge init` / `forge setup`.** Previously, lefthook's own postinstall dropped a fully-commented stub `lefthook.yml` that blocked Forge from writing a real config, so `forge plan` / `dev` / `ship` all dead-ended on `HOOKS_NOT_ACTIVE: missing required hooks: pre-commit, pre-push`. Forge now writes a minimal user-facing lefthook config wiring the self-contained TDD gate (`.forge/hooks/check-tdd.js`) on pre-commit and the project's own tests on pre-push — referencing only files a user project actually has (never Forge's repo-internal `scripts/`) — and overwrites the disposable stub while never clobbering a real config. (#334)
+- End-to-end new-user UX polish (all surfaced by a fresh-project journey audit): `forge claim`/`show`/etc. with no id now return a clean "Missing required argument <id>" and a non-zero exit instead of fabricating a random UUID and quarantining it; issue writes (`forge create`/`claim`/`close`/…) print a concise human confirmation (`✓ Created <id>`) at an interactive terminal while keeping the machine-parseable JSON envelope when piped or scripted (so automation is unchanged); `forge prime`/`orient` no longer show internal "D21 placeholder" text; the kernel filesystem note dropped its alarming "database corruption" wording on the fail-open path; and `forge init` no longer emits a Node `DEP0190` deprecation warning. (#334)
+- `forge export` now actually projects Kernel issues to git-tracked JSONL. The command dispatcher injects a Kernel broker for `export`, and Kernel mutations enqueue the projection-outbox marker under the `jsonl` target the export consumer drains — so the Kernel git-persistence/portability loop works end to end. (#270)
+- First-run hint from `forge status` pointed at a nonexistent docs topic (`forge docs workflow`); it now points at `forge docs setup`. (#334)
+- Removed stale "Beads" wording from live `forge --help` output — the `board` and `test` command descriptions now reference the kernel. (#334)
+- QUICKSTART: added an npm install path beside bun, listed Hermes as a supported harness (was "planned"), and pointed the section 6 validation example at the user's own project (`forge validate`) rather than this repository. (#334)
 
 ### Added
 
@@ -46,7 +65,6 @@ The default issue backend changed from Beads to the built-in kernel store.
 
 #### Migration notes
 
-- `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the kernel issue store by default; no Beads install or initialization is required.
 - Existing `.beads` data is no longer read unless Beads is explicitly selected.
 - Opt back in to Beads (precedence: highest first) with the CLI flag `--issue-backend beads`, the environment variable `FORGE_ISSUE_BACKEND=beads`, or the `.forge/config.yaml` key `issueBackend: beads`.
 
