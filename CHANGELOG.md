@@ -9,19 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-02
+## [0.1.0] - 2026-07-08
 
-The default issue backend changed from Beads to the built-in Kernel store, and the Kernel's git-tracked JSONL portability loop now works end to end.
+First public release. The default issue backend changed from Beads to the built-in Kernel store, the Kernel's git-tracked JSONL portability loop now works end to end, and a pre-beta audit hardened the CLI surface, docs, and npm packaging.
 
 ### Changed
 
 - **Default issue backend is now the built-in Kernel store (was Beads).** `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the Kernel issue store by default; no Beads install or initialization is required.
 - Pre-merge is presented as an embedded documentation gate inside the `/ship` and `/review` stages — not a numbered workflow stage, and not an invokable `/premerge` command. (#269)
 - Packaging: excluded a stray test file from the published npm tarball, added an `engines.node` requirement of `>=22.16.0`, and documented the `forge doc-gate` command. (#271)
+- **Packaging: stopped shipping internal `docs/work/**` planning docs in the npm tarball.** The published package no longer contains maintainer-local absolute paths or internal project names (843 → 425 files, 2.1 MB → 997 kB). (#334)
+- **`forge <unknown-command>` now fails honestly.** A mistyped or unrecognized command prints `Error: Unknown command '<x>'` to stderr and exits `1`, instead of printing the setup banner and exiting `0`. (#334)
 
 ### Fixed
 
 - `forge export` now actually projects Kernel issues to git-tracked JSONL. The command dispatcher injects a Kernel broker for `export`, and Kernel mutations enqueue the projection-outbox marker under the `jsonl` target the export consumer drains — so the Kernel git-persistence/portability loop works end to end. (#270)
+- First-run hint from `forge status` pointed at a nonexistent docs topic (`forge docs workflow`); it now points at `forge docs setup`. (#334)
+- Removed stale "Beads" wording from live `forge --help` output — the `board` and `test` command descriptions now reference the kernel. (#334)
+- QUICKSTART: added an npm install path beside bun, listed Hermes as a supported harness (was "planned"), and pointed the section 6 validation example at the user's own project (`forge validate`) rather than this repository. (#334)
 
 ### Added
 
