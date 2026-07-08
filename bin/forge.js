@@ -4019,7 +4019,9 @@ async function main() {
         flags,
         projectRoot,
         {
-          commandOpts,
+          // Pass interactivity so issue writes render a human confirmation at a real
+          // terminal but stay machine-parseable JSON when piped/scripted (842a8be7).
+          commandOpts: { ...(commandOpts || {}), isInteractive: Boolean(process.stdout.isTTY) },
           enforceStage: (context) => enforceStageEntry({
             commandName: context.commandName,
             args: context.args,

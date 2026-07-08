@@ -120,11 +120,12 @@ describe('human-first default output (ready/list/show)', () => {
     expect(result.output).toContain('read back "B"');
   });
 
-  test('mutations keep the JSON envelope default (only reads went human-first)', async () => {
+  test('mutations keep the JSON envelope when NON-interactive (scripts/pipes get the contract)', async () => {
     const create = createIssueSubcommand('create');
     const result = await create.handler(['--title', 'X'], {}, '/repo', {
       issueBackend: 'kernel',
       env: {},
+      isInteractive: false, // piped / CI → machine-parseable envelope (842a8be7)
       resolveRuntimeGraph: () => ({ gates: [{ id: 'gate.issue_verify', enabled: false }] }),
       runIssueOperation: async () => ({
         ok: true,
@@ -137,6 +138,27 @@ describe('human-first default output (ready/list/show)', () => {
 
     const parsed = JSON.parse(result.output);
     expect(parsed.command).toBe('issue.create');
+  });
+
+  test('mutations render a human confirmation when INTERACTIVE (TTY)', async () => {
+    const create = createIssueSubcommand('create');
+    const result = await create.handler(['--title', 'X'], {}, '/repo', {
+      issueBackend: 'kernel',
+      env: {},
+      isInteractive: true, // interactive terminal → clean confirmation, not raw JSON
+      resolveRuntimeGraph: () => ({ gates: [{ id: 'gate.issue_verify', enabled: false }] }),
+      runIssueOperation: async () => ({
+        ok: true,
+        schema_version: 'forge.issue.v1',
+        command: 'issue.create',
+        data: { id: UUID, title: 'X' },
+        next_commands: [],
+      }),
+    });
+
+    expect(result.output).toContain('✓ Created');
+    expect(result.output).toContain(UUID);
+    expect(() => JSON.parse(result.output)).toThrow(); // not JSON in interactive mode
   });
 
   test('a Beads-shaped {success,output} read result still passes through unchanged', async () => {
