@@ -90,4 +90,19 @@ describe('forge recall command', () => {
     const parsed = JSON.parse(result.output);
     expect(parsed).toHaveLength(2);
   });
+
+  test('does not treat the -p global flag as part of the query (kernel c1e090ff)', async () => {
+    const projectRoot = makeProjectRoot();
+    memoryStore.append(projectRoot, 'ship the fix');
+
+    const result = await recall.handler(
+      ['ship the fix', '-p', 'C:\\some\\project'],
+      { path: 'C:\\some\\project' },
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('ship the fix');
+    expect(result.output).not.toContain('No notes match');
+  });
 });

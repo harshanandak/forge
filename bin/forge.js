@@ -38,7 +38,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
-const { execSync, execFileSync, spawnSync } = require('node:child_process');
+const { execSync } = require('node:child_process');
 
 // Get version from package.json (single source of truth)
 const packageDir = path.dirname(__dirname);
@@ -100,37 +100,10 @@ let actionLog = new SetupActionLog();
 // Detected package manager
 let PKG_MANAGER = 'npm';
 
-/**
- * Securely execute a command with PATH validation
- * Mitigates SonarCloud S4036: Ensures executables are from trusted locations
- * @param {string} command - The command to execute
- * @param {string[]} args - Command arguments
- * @param {object} options - execFileSync options
- */
-function secureExecFileSync(command, args = [], options = {}) {
-  try {
-    // Resolve command's full path to validate it's in a trusted location
-    const isWindows = process.platform === 'win32';
-    const pathResolver = isWindows ? 'where.exe' : 'which';
-
-    const result = spawnSync(pathResolver, [command], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-
-    if (result.status === 0 && result.stdout) {
-      // Command found - use resolved path for execution
-      // Handle both CRLF (Windows) and LF (Unix) line endings
-      const resolvedPath = result.stdout.trim().split(/\r?\n/)[0].trim();
-      return execFileSync(resolvedPath, args, options);
-    }
-  } catch (_err) { // NOSONAR - S2486: Intentionally ignored; falls back to direct command execution below
-  }
-
-  // Fallback: execute with command name (maintains compatibility)
-  // This is safe for our use case as we only execute known, hardcoded commands
-  return execFileSync(command, args, options);
-}
+// Securely execute a command with PATH validation (SonarCloud S4036).
+// Delegates to the shared helper, which also handles Windows npm/npx/lefthook
+// cmd shims that cannot be spawned directly (kernel issue 9997d516).
+const { secureExecFileSync } = require('../lib/shell-utils');
 
 /**
  * Load agent definitions from plugin architecture
@@ -2775,8 +2748,8 @@ function installGitHooks() {
       } catch (error_) {
         // Fallback to global lefthook
         console.warn('npx lefthook failed, trying global:', error_.message);
-        execFileSync('lefthook', ['version'], { stdio: 'ignore' });
-        execFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
+        secureExecFileSync('lefthook', ['version'], { stdio: 'ignore' });
+        secureExecFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (global)');
       }
     } catch (err) {
@@ -3336,11 +3309,10 @@ function autoSetupToolsInQuickMode() {
     console.log('📦 Initializing Skills...');
     initializeSkills(skillsStatus);
     console.log('');
-  } else if (!skillsStatus) {
-    const installCmd = PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g';
-    console.log(`  ℹ Skills not found — install with: ${installCmd} @forge/skills`);
-    console.log('');
   }
+  // No hint when the optional Skills CLI is absent: setup bundles and renders
+  // Forge's skills itself, and the previously advertised "@forge/skills"
+  // package does not exist on npm (kernel issue 6e554b41).
 }
 
 // Helper: Configure default external services in quick mode - extracted to reduce cognitive complexity
