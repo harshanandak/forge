@@ -64,9 +64,11 @@ describe('secureExecFileSync', () => {
         },
       });
 
+      // DEP0190: the shell path folds the allowlisted tokens into one command line and
+      // passes no args array (Node 22 deprecates args + shell:true together).
       expect(execCalls).toEqual([{
-        command: 'npm',
-        args: ['install', '--save-dev', 'lefthook'],
+        command: 'npm install --save-dev lefthook',
+        args: [],
         shell: true,
       }]);
     });
@@ -122,8 +124,8 @@ describe('secureExecFileSync', () => {
       });
 
       expect(execCalls).toEqual([{
-        command: 'npx',
-        args: ['lefthook', 'install'],
+        command: 'npx lefthook install',
+        args: [],
         shell: true,
       }]);
     });

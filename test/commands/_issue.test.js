@@ -171,8 +171,10 @@ describe('issue backend resolution from env/config', () => {
     const calls = [];
     const create = createIssueSubcommand('create');
 
+    // FORGE_JSON=1 requests the machine contract: mutations are human-first by default
+    // (842a8be7), so the FULL envelope is exposed via --json / FORGE_JSON.
     const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
-      env: { FORGE_ISSUE_BACKEND: 'kernel' },
+      env: { FORGE_ISSUE_BACKEND: 'kernel', FORGE_JSON: '1' },
       ...VERIFY_OFF,
       runIssueOperation: async (operation, args, projectRoot, deps) => {
         calls.push({ operation, args, projectRoot, deps });
@@ -275,7 +277,7 @@ describe('issue backend resolution from env/config', () => {
 
     const result = await create.handler(['--title', 'X'], {}, '/repo', {
       issueBackend: 'kernel',
-      env: {},
+      env: { FORGE_JSON: '1' }, // mutations are human-first by default; --json/FORGE_JSON exposes the envelope (842a8be7)
       runIssueOperation: async () => ({
         ok: true,
         schema_version: 'forge.issue.v1',
@@ -463,6 +465,7 @@ describe('kernel batch close (KAP-9)', () => {
 
     const result = await close.handler(['k1'], {}, '/repo', {
       issueBackend: 'kernel',
+      env: { FORGE_JSON: '1' }, // mutations are human-first by default; --json/FORGE_JSON exposes the envelope (842a8be7)
       ...VERIFY_OFF,
       runIssueOperation: async (operation, args) => {
         calls.push({ operation, args });
@@ -500,5 +503,23 @@ describe('kernel batch close (KAP-9)', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({ operation: 'close', args: ['k1', 'k2'] });
     expect(result).toEqual({ success: true, operation: 'close', output: 'closed' });
+  });
+});
+
+describe('id-required subcommands reject a missing id with a clean usage error (842a8be7)', () => {
+  test('claim with no positional id fails with exit 6 (not a fabricated-UUID quarantine)', async () => {
+    const claim = createIssueSubcommand('claim');
+    // The guard returns before the backend is resolved, so no runner is needed.
+    const result = await claim.handler([], {}, '/repo', { issueBackend: 'kernel', env: {} });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing required argument');
+    expect(result.exitCode).toBe(6);
+  });
+
+  test('show with only flags (no id) is likewise rejected', async () => {
+    const show = createIssueSubcommand('show');
+    const result = await show.handler(['--json'], {}, '/repo', { issueBackend: 'kernel', env: {} });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing required argument');
   });
 });

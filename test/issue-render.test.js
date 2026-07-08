@@ -11,6 +11,7 @@ const {
   shortId,
   renderIssueList,
   renderIssueShow,
+  renderIssueMutation,
   renderIssueEnvelope,
 } = require('../lib/issue-render');
 
@@ -192,5 +193,40 @@ describe('renderIssueEnvelope dispatch', () => {
     }));
     expect(out).toContain(UUID_A);
     expect(out).toContain('T');
+  });
+});
+
+describe('renderIssueMutation (842a8be7: writes are human-first, not raw JSON)', () => {
+  test('create renders a confirmation with the id (and title/status when present)', () => {
+    const out = renderIssueMutation('create', envelope('issue.create', {
+      id: UUID_A, title: 'Wire the thing', status: 'open',
+    }));
+    expect(out).toContain('✓ Created');
+    expect(out).toContain(UUID_A);
+    expect(out).toContain('Wire the thing');
+    expect(out).toContain('[open]');
+    expect(out).not.toContain('schema_version'); // no raw contract JSON
+  });
+
+  test('claim / close use their own past-tense verb', () => {
+    expect(renderIssueMutation('claim', envelope('issue.claim', { id: UUID_A })))
+      .toContain('✓ Claimed');
+    expect(renderIssueMutation('close', envelope('issue.close', { id: UUID_A, status: 'done' })))
+      .toContain('✓ Closed');
+  });
+
+  test('renderIssueEnvelope routes mutations to the mutation renderer', () => {
+    const out = renderIssueEnvelope('claim', envelope('issue.claim', { id: UUID_A }));
+    expect(out).toContain('✓ Claimed');
+    expect(out).toContain(UUID_A);
+  });
+
+  test('surfaces check-after-write verification lines when present', () => {
+    const out = renderIssueMutation('close', envelope('issue.close', { id: UUID_A }, {
+      verified: false,
+      mismatches: [{ field: 'status', expected: 'done', got: null }],
+    }));
+    expect(out).toContain('✓ Closed');
+    expect(out.toLowerCase()).toContain('verif'); // verification note rendered, not dropped
   });
 });
