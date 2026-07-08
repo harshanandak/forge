@@ -135,5 +135,29 @@ describe('secureExecFileSync', () => {
         _execFileSync: () => '',
       })).toThrow(/unsafe token/);
     });
+
+    test('spawns an absolute .exe command directly even when where.exe finds nothing', () => {
+      // Regression (kernel 9997d516): callers may pass an already-resolved
+      // absolute path (e.g. "C:\\Program Files\\Git\\bin\\git.exe"). where.exe
+      // may not re-enumerate it, leaving no candidates. It must still spawn
+      // directly (shell:false) — never fall to shell:true, where the space in
+      // "Program Files" trips the shell-safe token allowlist.
+      const execCalls = [];
+      const gitExe = 'C:\\Program Files\\Git\\bin\\git.exe';
+      secureExecFileSync(gitExe, ['rev-parse', 'HEAD'], {
+        _platform: 'win32',
+        _spawnSync: () => ({ status: 1, stdout: '' }),
+        _execFileSync: (command, args, options) => {
+          execCalls.push({ command, args, shell: options.shell });
+          return '';
+        },
+      });
+
+      expect(execCalls).toEqual([{
+        command: gitExe,
+        args: ['rev-parse', 'HEAD'],
+        shell: undefined,
+      }]);
+    });
   });
 });
