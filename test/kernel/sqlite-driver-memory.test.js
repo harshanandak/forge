@@ -137,3 +137,59 @@ describe('Kernel SQLite driver — project-memory read model', () => {
 		expect(driver.listMemories().map(entry => entry.key)).toEqual(['a', 'b']);
 	});
 });
+
+describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read layer)', () => {
+	test('searchMemoriesRanked matches all tokens via FTS BM25 (token-AND, any order)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm2', value: 'bug in the export command', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm3', value: 'auth token refresh', sourceAgent: 'Codex', tags: [] });
+
+		// token-AND, order-independent: only the note containing BOTH auth AND bug.
+		expect(driver.searchMemoriesRanked('bug auth', 10).map(entry => entry.key)).toEqual(['m1']);
+	});
+
+	test('searchMemoriesRanked honors the top-N limit', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: 'kernel note one', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'b', value: 'kernel note two', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'c', value: 'kernel note three', sourceAgent: 'Codex', tags: [] });
+
+		expect(driver.searchMemoriesRanked('kernel', 2)).toHaveLength(2);
+	});
+
+	test('searchMemoriesRanked reflects an upsert (FTS stays in sync with the row)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'k', value: 'original alpha text', sourceAgent: 'Codex', tags: [] });
+		expect(driver.searchMemoriesRanked('alpha', 10).map(entry => entry.key)).toEqual(['k']);
+
+		driver.recordMemory({ key: 'k', value: 'replaced beta text', sourceAgent: 'Codex', tags: [] });
+		// The stale token no longer matches; the fresh token does.
+		expect(driver.searchMemoriesRanked('alpha', 10)).toEqual([]);
+		expect(driver.searchMemoriesRanked('beta', 10).map(entry => entry.key)).toEqual(['k']);
+	});
+
+	test('searchMemoriesRanked with an empty query returns recent entries (never a bare dump)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: '1', sourceAgent: 'Codex', tags: [], timestamp: '2026-01-01T00:00:00.000Z' });
+		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [], timestamp: '2026-02-01T00:00:00.000Z' });
+		expect(driver.searchMemoriesRanked('', 1).map(entry => entry.key)).toEqual(['b']);
+	});
+
+	test('recentMemories returns entries newest-first and honors the limit', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: '1', sourceAgent: 'Codex', tags: [], timestamp: '2026-01-01T00:00:00.000Z' });
+		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [], timestamp: '2026-02-01T00:00:00.000Z' });
+		driver.recordMemory({ key: 'c', value: '3', sourceAgent: 'Codex', tags: [], timestamp: '2026-03-01T00:00:00.000Z' });
+
+		expect(driver.recentMemories(2).map(entry => entry.key)).toEqual(['c', 'b']);
+	});
+
+	test('countMemories returns the total row count', () => {
+		const driver = makeDriver();
+		expect(driver.countMemories()).toBe(0);
+		driver.recordMemory({ key: 'a', value: '1', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [] });
+		expect(driver.countMemories()).toBe(2);
+	});
+});
