@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-08
+## [0.1.0-beta.1] - 2026-07-09
 
-First public release. The default issue backend changed from Beads to the built-in Kernel store, the Kernel's git-tracked JSONL portability loop now works end to end, and a pre-beta audit hardened the CLI surface, docs, and npm packaging.
+First public release (beta). Published under the npm `beta` dist-tag. The default issue backend changed from Beads to the built-in Kernel store, the Kernel's git-tracked JSONL portability loop now works end to end, and a pre-beta audit hardened the CLI surface, docs, and npm packaging.
 
 ### Changed
 

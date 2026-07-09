@@ -2274,3 +2274,22 @@ test('fresh clone placeholder', async () => {
     expect(blocker.detail).toContain('missing acceptance coverage');
   });
 });
+
+describe('release readiness target — prerelease acceptance (3f83ca6c)', () => {
+  test('accepts a prerelease target (0.1.0-beta.1) against the base version profile', () => {
+    const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
+    const beta = buildReadinessReport(root, { target: '0.1.0-beta.1' });
+    const base = buildReadinessReport(root, { target: '0.1.0' });
+    expect(beta.blockers.find(blocker => blocker.id === 'unsupported-target')).toBeUndefined();
+    expect(beta.success).toBe(base.success); // identical readiness profile
+  });
+
+  test('still rejects an unrelated target version', () => {
+    const root = makeRepo();
+    writeRepoAgentPluginManifests(root);
+    const report = buildReadinessReport(root, { target: '9.9.9' });
+    expect(report.success).toBe(false);
+    expect(report.blockers.find(blocker => blocker.id === 'unsupported-target')).toBeDefined();
+  });
+});

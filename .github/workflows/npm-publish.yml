@@ -43,9 +43,33 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
       - run: bun install
+      # Guard 1 (kernel 3f83ca6c): the release tag MUST match package.json version, so a
+      # release created without bumping package.json can never publish the wrong version.
+      - name: Guard — release tag matches package.json version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "package.json=$PKG  release tag=$TAG"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::Release tag ($TAG) != package.json version ($PKG). Bump package.json before releasing."
+            exit 1
+          fi
+      # Guard 2: the release-readiness gate must pass before we publish.
+      - name: Release-readiness gate
+        run: node bin/forge.js release check --target "$(node -p "require('./package.json').version")"
       # Verify package contents before publishing (no build needed - pure JS package)
       - name: Verify package contents
         run: npm pack --dry-run
-      - run: npm publish --provenance
+      # Publish. A prerelease version (contains a hyphen, e.g. 0.1.0-beta.1) goes under the
+      # `beta` dist-tag so `npm install forge-workflow` keeps resolving the latest STABLE.
+      - name: Publish to npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if echo "$VERSION" | grep -q '-'; then
+            echo "Prerelease $VERSION → publishing under the 'beta' dist-tag"
+            npm publish --provenance --tag beta
+          else
+            npm publish --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}
