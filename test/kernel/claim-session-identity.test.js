@@ -106,4 +106,56 @@ describe('claim session identity — same actor, different sessions (d71a824b)',
     expect(owns.data.owned).toBe(true);
     expect(owns.data.claimed_by).toBe('forge-a');
   });
+
+  test('same actor + same session claiming the SAME issue twice: idempotent duplicate replay — one lease, no conflict', async () => {
+    // The central POSITIVE guarantee: identical (actor, session) on the same issue
+    // yields an IDENTICAL idempotency key, so the retry replays as a duplicate (ok:true)
+    // rather than minting a second lease or tripping claim_conflict. This guards against
+    // a regression that changed the key format for same-session retries (which would
+    // otherwise stay green — the distinct-sessions test alone would not catch it).
+    await createIssue('sess-4', 'Retry');
+
+    const first = await claim('sess-4', 'alice', 'sess-A', now);
+    const second = await claim('sess-4', 'alice', 'sess-A', '2026-06-20T00:00:01.000Z');
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    // ok:true means NOT a claim conflict (a conflict is ok:false with an error).
+    expect(second.error).toBeUndefined();
+
+    // Exactly ONE active lease exists — the retry did not create a second.
+    const stats = await driver.issueOperation('stats', [], { now }, config);
+    expect(stats.data.active_claims).toBe(1);
+
+    // And the single session still holds it.
+    const owns = await driver.issueOperation(
+      'owns', ['sess-4'], { now, actor: 'alice', sessionId: 'sess-A' }, config,
+    );
+    expect(owns.data.owned).toBe(true);
+  });
+
+  test('empty-string session-id is treated as session-LESS symmetrically (key + owns)', async () => {
+    // '' must behave identically at the write site (no trailing ':' appended to the key,
+    // session_id stored null) and the owns read (actor-only fallback), never as "present"
+    // at one and "absent" at the other.
+    await createIssue('sess-5', 'Blank');
+
+    // Claim with an EMPTY session, then re-claim with an actual session-less caller: both
+    // resolve to the SAME `claim.create:sess-5:alice` key, so the second is a duplicate
+    // replay (ok:true) — proving '' did not append to the key.
+    const empty = await claim('sess-5', 'alice', '', now);
+    const sessionless = await claim('sess-5', 'alice', undefined, '2026-06-20T00:00:01.000Z');
+    expect(empty.ok).toBe(true);
+    expect(sessionless.ok).toBe(true);
+
+    const stats = await driver.issueOperation('stats', [], { now }, config);
+    expect(stats.data.active_claims).toBe(1);
+
+    // owns with an empty session falls back to actor-only ownership (stored session is null).
+    const owns = await driver.issueOperation(
+      'owns', ['sess-5'], { now, actor: 'alice', sessionId: '' }, config,
+    );
+    expect(owns.data.owned).toBe(true);
+    expect(owns.data.claimed_by).toBe('alice');
+  });
 });
