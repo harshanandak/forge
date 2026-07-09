@@ -315,4 +315,18 @@ describe('issue-id resolver — human handles (1db53c60)', () => {
     expect(result).toEqual({ id: 'forge-2a3bc9' });
     expect(lookup.calls.length).toBe(0);
   });
+
+  test('resolves an all-hex-letter slug handle that also matches the hex-prefix pattern', async () => {
+    // "Facade decade fee add" → every slug word is valid hex, so the whole handle matches
+    // HEX_PREFIX_PATTERN; the trailing short id still resolves it (CodeRabbit, PR #335).
+    const lookup = fakeLookup([{ id: UUID_A, title: 'Facade decade fee add' }]);
+    const result = await resolveIssueId('facade-decade-fee-add-e79a1b2c', lookup);
+    expect(result).toEqual({ id: UUID_A });
+  });
+
+  test('a partial dashed UUID prefix (no 8-hex handle suffix) still resolves as a prefix', async () => {
+    const lookup = fakeLookup([{ id: UUID_A, title: 'target' }]);
+    const result = await resolveIssueId('e79a1b2c-0000', lookup);
+    expect(result).toEqual({ id: UUID_A });
+  });
 });
