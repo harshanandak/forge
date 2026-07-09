@@ -288,3 +288,31 @@ describe('issue-id resolver — broker boundary (kernel end-to-end)', () => {
     expect(closed.output).toContain(UUID_C);
   });
 });
+
+describe('issue-id resolver — human handles (1db53c60)', () => {
+  test('resolves a <slug>-<short-id> handle by its trailing 8-char short id', async () => {
+    const lookup = fakeLookup([{ id: UUID_A, title: 'Add OAuth login' }]);
+    const result = await resolveIssueId('add-oauth-login-e79a1b2c', lookup);
+    expect(result).toEqual({ id: UUID_A });
+  });
+
+  test('ignores a stale/wrong slug — only the trailing short id matters', async () => {
+    const lookup = fakeLookup([{ id: UUID_A, title: 'Renamed thing' }]);
+    const result = await resolveIssueId('whatever-old-name-e79a1b2c', lookup);
+    expect(result).toEqual({ id: UUID_A });
+  });
+
+  test('prefers an exact match on the whole token (imported handle-shaped ids)', async () => {
+    const imported = 'legacy-2a3bc9de';
+    const lookup = fakeLookup([{ id: imported, title: 'imported' }]);
+    const result = await resolveIssueId(imported, lookup);
+    expect(result).toEqual({ id: imported });
+  });
+
+  test('a short (<8) hex suffix is NOT treated as a handle (no lookup)', async () => {
+    const lookup = fakeLookup([]);
+    const result = await resolveIssueId('forge-2a3bc9', lookup);
+    expect(result).toEqual({ id: 'forge-2a3bc9' });
+    expect(lookup.calls.length).toBe(0);
+  });
+});

@@ -157,7 +157,9 @@ describe('human-first default output (ready/list/show)', () => {
     });
 
     expect(result.output).toContain('✓ Created');
-    expect(result.output).toContain(UUID);
+    // The confirmation uses the readable handle `<slug>-<short-id>` (kernel 1db53c60),
+    // so it carries the 8-char short id rather than the full UUID.
+    expect(result.output).toContain(`x-${UUID.slice(0, 8)}`);
     expect(() => JSON.parse(result.output)).toThrow(); // not JSON in interactive mode
   });
 
