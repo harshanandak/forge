@@ -1,24 +1,47 @@
 'use strict';
 
 const { afterEach, describe, test, expect } = require('bun:test');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const recall = require('../../lib/commands/recall');
-const memoryStore = require('../../lib/memory-store');
+const remember = require('../../lib/commands/remember');
+const projectMemory = require('../../lib/project-memory');
 
 const tempDirs = [];
 
+// recall reads the kernel store, whose default path resolves from the git common dir — so
+// each temp project is a throwaway git repo. Notes are seeded through the real remember path.
 function makeProjectRoot() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-recall-cmd-'));
+  execFileSync('git', ['init', '-q'], { cwd: dir });
   tempDirs.push(dir);
   return dir;
 }
 
+function rmrfWithRetry(dir) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
+      const until = Date.now() + 100;
+      while (Date.now() < until) { /* brief spin before retry */ }
+    }
+  }
+}
+
+async function seed(projectRoot, note) {
+  await remember.handler([note], {}, projectRoot);
+}
+
 afterEach(() => {
+  projectMemory.closeAll();
   while (tempDirs.length > 0) {
-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    rmrfWithRetry(tempDirs.pop());
   }
 });
 
@@ -34,8 +57,8 @@ describe('forge recall command', () => {
 
   test('lists all stored notes when no query is given', async () => {
     const projectRoot = makeProjectRoot();
-    memoryStore.append(projectRoot, 'first note');
-    memoryStore.append(projectRoot, 'second note');
+    await seed(projectRoot, 'first note');
+    await seed(projectRoot, 'second note');
 
     const result = await recall.handler([], {}, projectRoot);
     expect(result.success).toBe(true);
@@ -43,10 +66,10 @@ describe('forge recall command', () => {
     expect(result.output).toContain('second note');
   });
 
-  test('filters notes by query', async () => {
+  test('filters notes by query (FTS token-AND)', async () => {
     const projectRoot = makeProjectRoot();
-    memoryStore.append(projectRoot, 'Use Bun for tests');
-    memoryStore.append(projectRoot, 'Lint with eslint');
+    await seed(projectRoot, 'Use Bun for tests');
+    await seed(projectRoot, 'Lint with eslint');
 
     const result = await recall.handler(['bun'], {}, projectRoot);
     expect(result.success).toBe(true);
@@ -63,7 +86,7 @@ describe('forge recall command', () => {
 
   test('reports when a query matches nothing', async () => {
     const projectRoot = makeProjectRoot();
-    memoryStore.append(projectRoot, 'something');
+    await seed(projectRoot, 'something');
     const result = await recall.handler(['nonexistent'], {}, projectRoot);
     expect(result.success).toBe(true);
     expect(result.output.toLowerCase()).toContain('no');
@@ -71,7 +94,7 @@ describe('forge recall command', () => {
 
   test('emits JSON output with --json', async () => {
     const projectRoot = makeProjectRoot();
-    memoryStore.append(projectRoot, 'alpha note');
+    await seed(projectRoot, 'alpha note');
 
     const result = await recall.handler(['--json'], {}, projectRoot);
     expect(result.success).toBe(true);
@@ -82,9 +105,9 @@ describe('forge recall command', () => {
 
   test('honors --limit', async () => {
     const projectRoot = makeProjectRoot();
-    memoryStore.append(projectRoot, 'one');
-    memoryStore.append(projectRoot, 'two');
-    memoryStore.append(projectRoot, 'three');
+    await seed(projectRoot, 'one');
+    await seed(projectRoot, 'two');
+    await seed(projectRoot, 'three');
 
     const result = await recall.handler(['--json', '--limit', '2'], {}, projectRoot);
     const parsed = JSON.parse(result.output);
@@ -93,7 +116,7 @@ describe('forge recall command', () => {
 
   test('does not treat the -p global flag as part of the query (kernel c1e090ff)', async () => {
     const projectRoot = makeProjectRoot();
-    memoryStore.append(projectRoot, 'ship the fix');
+    await seed(projectRoot, 'ship the fix');
 
     const result = await recall.handler(
       ['ship the fix', '-p', 'C:\\some\\project'],

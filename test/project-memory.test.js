@@ -203,4 +203,9 @@ describe('project memory kernel adapter — token-efficient reads (recall backin
     expect(projectMemory.searchRanked(process.cwd(), 'auth', 5, { store }).map(entry => entry.key)).toEqual(['m1']);
     expect(store.searchCalls).toEqual([['auth', 5]]);
   });
+
+  test('closeAll is a no-op-safe lifecycle helper on an empty cache', () => {
+    expect(typeof projectMemory.closeAll).toBe('function');
+    expect(() => projectMemory.closeAll()).not.toThrow();
+  });
 });

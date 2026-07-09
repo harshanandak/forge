@@ -1,24 +1,51 @@
 'use strict';
 
 const { afterEach, describe, test, expect } = require('bun:test');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const remember = require('../../lib/commands/remember');
-const memoryStore = require('../../lib/memory-store');
+const recall = require('../../lib/commands/recall');
+const projectMemory = require('../../lib/project-memory');
 
 const tempDirs = [];
 
+// remember/recall now persist to the kernel store, whose default path resolves from the git
+// common dir — so each temp project is a throwaway git repo. Notes land in .git/forge.
 function makeProjectRoot() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-remember-cmd-'));
+  execFileSync('git', ['init', '-q'], { cwd: dir });
   tempDirs.push(dir);
   return dir;
 }
 
+// Windows can hold a transient WAL lock on the just-written kernel DB; close cached stores
+// first, then retry the rm.
+function rmrfWithRetry(dir) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
+      const until = Date.now() + 100;
+      while (Date.now() < until) { /* brief spin before retry */ }
+    }
+  }
+}
+
+// The persisted notes, newest-first, as recall renders them (JSON mode → the note array).
+async function recalledNotes(projectRoot) {
+  const result = await recall.handler(['--json'], {}, projectRoot);
+  return JSON.parse(result.output);
+}
+
 afterEach(() => {
+  projectMemory.closeAll();
   while (tempDirs.length > 0) {
-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    rmrfWithRetry(tempDirs.pop());
   }
 });
 
@@ -39,26 +66,26 @@ describe('forge remember command', () => {
     expect(result.success).toBe(true);
     expect(result.output).toContain('Run /plan before /dev');
 
-    const entries = memoryStore.list(projectRoot);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].note).toBe('Run /plan before /dev');
+    const notes = await recalledNotes(projectRoot);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].note).toBe('Run /plan before /dev');
   });
 
   test('joins multiple argument words into a single note', async () => {
     const projectRoot = makeProjectRoot();
     await remember.handler(['Prefer', 'Bun', 'over', 'npm'], {}, projectRoot);
 
-    const entries = memoryStore.list(projectRoot);
-    expect(entries[0].note).toBe('Prefer Bun over npm');
+    const notes = await recalledNotes(projectRoot);
+    expect(notes[0].note).toBe('Prefer Bun over npm');
   });
 
   test('captures --tag values as tags', async () => {
     const projectRoot = makeProjectRoot();
     await remember.handler(['note body', '--tag', 'policy', '--tag', 'workflow'], {}, projectRoot);
 
-    const entries = memoryStore.list(projectRoot);
-    expect(entries[0].note).toBe('note body');
-    expect(entries[0].tags).toEqual(['policy', 'workflow']);
+    const notes = await recalledNotes(projectRoot);
+    expect(notes[0].note).toBe('note body');
+    expect(notes[0].tags).toEqual(['policy', 'workflow']);
   });
 
   test('fails clearly when no note is provided', async () => {
@@ -67,7 +94,7 @@ describe('forge remember command', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('note');
-    expect(memoryStore.list(projectRoot)).toEqual([]);
+    expect(await recalledNotes(projectRoot)).toEqual([]);
   });
 
   test('emits JSON output with --json', async () => {
@@ -88,7 +115,7 @@ describe('forge remember command', () => {
     );
 
     expect(result.success).toBe(true);
-    const [entry] = memoryStore.list(projectRoot);
+    const [entry] = await recalledNotes(projectRoot);
     expect(entry.note).toBe('ship the fix');
   });
 
@@ -101,7 +128,7 @@ describe('forge remember command', () => {
     );
 
     expect(result.success).toBe(true);
-    const [entry] = memoryStore.list(projectRoot);
+    const [entry] = await recalledNotes(projectRoot);
     expect(entry.note).toBe('multi word note');
   });
 });
