@@ -9,6 +9,7 @@ const { describe, test, expect } = require('bun:test');
 
 const {
   shortId,
+  issueHandle,
   renderIssueList,
   renderIssueShow,
   renderIssueMutation,
@@ -197,13 +198,13 @@ describe('renderIssueEnvelope dispatch', () => {
 });
 
 describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gated in _issue.js)', () => {
-  test('create renders a confirmation with the id (and title/status when present)', () => {
+  test('create renders a confirmation with the readable handle + status', () => {
     const out = renderIssueMutation('create', envelope('issue.create', {
       id: UUID_A, title: 'Wire the thing', status: 'open',
     }));
     expect(out).toContain('✓ Created');
-    expect(out).toContain(UUID_A);
-    expect(out).toContain('Wire the thing');
+    // Readable handle: title-slug + 8-char short id (kernel 1db53c60).
+    expect(out).toContain('wire-the-thing-a9bbd065');
     expect(out).toContain('[open]');
     expect(out).not.toContain('schema_version'); // no raw contract JSON
   });
@@ -218,7 +219,8 @@ describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gate
   test('renderIssueEnvelope routes mutations to the mutation renderer', () => {
     const out = renderIssueEnvelope('claim', envelope('issue.claim', { id: UUID_A }));
     expect(out).toContain('✓ Claimed');
-    expect(out).toContain(UUID_A);
+    // No title in the envelope → handle degrades to the 8-char short id.
+    expect(out).toContain('a9bbd065');
   });
 
   test('surfaces check-after-write verification lines when present', () => {
@@ -228,5 +230,33 @@ describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gate
     }));
     expect(out).toContain('✓ Closed');
     expect(out.toLowerCase()).toContain('verif'); // verification note rendered, not dropped
+  });
+});
+
+describe('issueHandle (1db53c60: title-slug + short-id, e.g. add-oauth-login-56a3a16d)', () => {
+  test('builds <slug>-<8char> from title + id', () => {
+    expect(issueHandle({ id: UUID_A, title: 'Add OAuth login' })).toBe('add-oauth-login-a9bbd065');
+  });
+
+  test('caps the slug to the first four title words', () => {
+    expect(issueHandle({ id: UUID_A, title: 'One two three four five six' }))
+      .toBe('one-two-three-four-a9bbd065');
+  });
+
+  test('strips punctuation and collapses separators', () => {
+    expect(issueHandle({ id: UUID_A, title: '  Fix: the (weird)  thing!! ' }))
+      .toBe('fix-the-weird-thing-a9bbd065');
+  });
+
+  test('degrades to the bare short id when there is no usable title', () => {
+    expect(issueHandle({ id: UUID_A })).toBe('a9bbd065');
+    expect(issueHandle({ id: UUID_A, title: '!!! ***' })).toBe('a9bbd065');
+  });
+
+  test('renderIssueList shows the handle in the ID column', () => {
+    const out = renderIssueList(envelope('issue.list', {
+      issues: [{ id: UUID_A, title: 'Add OAuth login', type: 'feature', status: 'open', priority: 'P2' }],
+    }));
+    expect(out).toContain('add-oauth-login-a9bbd065');
   });
 });
