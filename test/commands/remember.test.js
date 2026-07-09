@@ -57,6 +57,8 @@ describe('forge remember command', () => {
     expect(typeof remember.handler).toBe('function');
     expect(remember.usage).toContain('remember');
     expect(remember.usage).toContain('<note>');
+    // The store is the kernel table now, not a flat file.
+    expect(remember.description).toContain('kernel');
   });
 
   test('persists a note and reports success', async () => {

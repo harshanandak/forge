@@ -53,6 +53,8 @@ describe('forge recall command', () => {
     expect(typeof recall.handler).toBe('function');
     expect(recall.usage).toContain('recall');
     expect(recall.usage).toContain('[query]');
+    // The store is the kernel table now, not a flat file.
+    expect(recall.description).toContain('kernel');
   });
 
   test('lists all stored notes when no query is given', async () => {
@@ -112,6 +114,28 @@ describe('forge recall command', () => {
     const result = await recall.handler(['--json', '--limit', '2'], {}, projectRoot);
     const parsed = JSON.parse(result.output);
     expect(parsed).toHaveLength(2);
+  });
+
+  test('surfaces an insights-written kernel_memories row (insights -> recall connection)', async () => {
+    const projectRoot = makeProjectRoot();
+    // Mimic `forge insights`: a skill record written straight to kernel_memories (object
+    // value + insights tags), NOT through `remember`. recall reads the same table.
+    projectMemory.write(projectRoot, {
+      key: 'insights:skill.cand-42',
+      value: { candidateId: 'cand-42', status: 'accepted', note: 'recurring lint gate' },
+      sourceAgent: 'forge insights',
+      tags: ['insights', 'accepted'],
+    });
+
+    // Discoverable by its tokens via FTS...
+    const byToken = await recall.handler(['accepted'], {}, projectRoot);
+    expect(byToken.success).toBe(true);
+    expect(byToken.output).toContain('cand-42');
+
+    // ...and present in the default (no-query) newest-first listing.
+    const listing = await recall.handler(['--json'], {}, projectRoot);
+    const notes = JSON.parse(listing.output);
+    expect(notes.some(note => note.note.includes('cand-42'))).toBe(true);
   });
 
   test('does not treat the -p global flag as part of the query (kernel c1e090ff)', async () => {
