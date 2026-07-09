@@ -192,4 +192,28 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [] });
 		expect(driver.countMemories()).toBe(2);
 	});
+
+	test('backfills the FTS index for rows written before it existed (upgrade path)', async () => {
+		const driver = makeDriver();
+		// Simulate a pre-FTS DB: create kernel_memories (migration 005) and insert rows
+		// DIRECTLY, with NO FTS table/triggers yet — exactly a DB upgraded from before this
+		// feature, or one whose rows were written by the insights engine. These rows never
+		// pass through the live AFTER-INSERT trigger.
+		const { buildMemoryProjectionMigration } = require('../../lib/kernel/migrations');
+		for (const statement of buildMemoryProjectionMigration().apply) {
+			await driver.exec(statement);
+		}
+		await driver.exec(
+			"INSERT INTO kernel_memories (key, value_json, source_agent, tags_json, created_at, updated_at) "
+			+ "VALUES ('pre1', '\"auth bug in login\"', 'forge insights', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+		);
+		await driver.exec(
+			"INSERT INTO kernel_memories (key, value_json, source_agent, tags_json, created_at, updated_at) "
+			+ "VALUES ('pre2', '\"unrelated note\"', 'forge insights', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+		);
+
+		// The first memory read triggers ensureMemorySchema, which must CREATE and BACKFILL
+		// the index — otherwise these pre-existing rows are invisible to FTS recall.
+		expect(driver.searchMemoriesRanked('auth', 10).map(entry => entry.key)).toEqual(['pre1']);
+	});
 });
