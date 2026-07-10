@@ -1,38 +1,15 @@
 'use strict';
 
 const { afterEach, describe, test, expect } = require('bun:test');
-const { execFileSync } = require('node:child_process');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 
 const recall = require('../../lib/commands/recall');
 const remember = require('../../lib/commands/remember');
 const projectMemory = require('../../lib/project-memory');
-
-const tempDirs = [];
+const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
 
 // recall reads the kernel store, whose default path resolves from the git common dir — so
 // each temp project is a throwaway git repo. Notes are seeded through the real remember path.
-function makeProjectRoot() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-recall-cmd-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir });
-  tempDirs.push(dir);
-  return dir;
-}
-
-function rmrfWithRetry(dir) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
-      const until = Date.now() + 100;
-      while (Date.now() < until) { /* brief spin before retry */ }
-    }
-  }
-}
+const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-recall-cmd-');
 
 async function seed(projectRoot, note) {
   await remember.handler([note], {}, projectRoot);
@@ -40,9 +17,7 @@ async function seed(projectRoot, note) {
 
 afterEach(() => {
   projectMemory.closeAll();
-  while (tempDirs.length > 0) {
-    rmrfWithRetry(tempDirs.pop());
-  }
+  cleanup();
 });
 
 describe('forge recall command', () => {

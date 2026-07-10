@@ -1,40 +1,15 @@
 'use strict';
 
 const { afterEach, describe, test, expect } = require('bun:test');
-const { execFileSync } = require('node:child_process');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 
 const remember = require('../../lib/commands/remember');
 const recall = require('../../lib/commands/recall');
 const projectMemory = require('../../lib/project-memory');
-
-const tempDirs = [];
+const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
 
 // remember/recall now persist to the kernel store, whose default path resolves from the git
 // common dir — so each temp project is a throwaway git repo. Notes land in .git/forge.
-function makeProjectRoot() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-remember-cmd-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir });
-  tempDirs.push(dir);
-  return dir;
-}
-
-// Windows can hold a transient WAL lock on the just-written kernel DB; close cached stores
-// first, then retry the rm.
-function rmrfWithRetry(dir) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
-      const until = Date.now() + 100;
-      while (Date.now() < until) { /* brief spin before retry */ }
-    }
-  }
-}
+const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-remember-cmd-');
 
 // The persisted notes, newest-first, as recall renders them (JSON mode → { notes, ... }).
 async function recalledNotes(projectRoot) {
@@ -44,9 +19,7 @@ async function recalledNotes(projectRoot) {
 
 afterEach(() => {
   projectMemory.closeAll();
-  while (tempDirs.length > 0) {
-    rmrfWithRetry(tempDirs.pop());
-  }
+  cleanup();
 });
 
 describe('forge remember command', () => {

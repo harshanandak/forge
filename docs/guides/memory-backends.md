@@ -43,8 +43,9 @@ SQLite store under `.git/forge/`), indexed by **FTS5** for token-AND BM25 recall
 No services, no network, no keys. This is what ships and what most projects
 should use. `recall` with no query returns the newest notes plus a total count;
 a query does full-text BM25 matching (every token must appear, in any order). The
-same kernel table also holds what `forge insights` learns, so those records are
-recallable too. (An older flat `.forge/memory/notes.jsonl` is imported once on
+same kernel table also holds what `forge insights` learns; those records are
+recallable with a query or `--all` (the default no-query listing shows only your
+`remember` notes). (An older flat `.forge/memory/notes.jsonl` is imported once on
 first use, then retired.)
 
 ## Opt into Graphiti (knowledge-graph memory)
@@ -177,5 +178,6 @@ local kernel store as a safety floor, so a note is never lost.
 
 Remove `memory.backend` (and the `memory.graphiti` block) from
 `.forge/config.yaml` — the router falls straight back to `local`. Your local
-kernel notes were never touched. If you manually added a `graphiti-memory` entry
-to your agent's MCP config, delete it too (Forge did not write one).
+kernel notes were never touched. If a `graphiti-memory` entry is in your agent's
+MCP config — whether `forge setup` wrote it when you enabled Graphiti, or you
+added it by hand — delete it too.
