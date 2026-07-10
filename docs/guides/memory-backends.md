@@ -12,14 +12,20 @@ backend is chosen by `memory.backend` in `.forge/config.yaml`:
 
 | Backend | Storage | Needs | When |
 |---|---|---|---|
-| **`local`** (default) | flat JSONL at `.forge/memory/notes.jsonl` | nothing — offline, instant | always the floor |
-| **`graphiti`** | temporal **knowledge graph** over MCP | graph DB + LLM | evolving, relational, temporal recall |
+| **`local`** (default) | kernel `kernel_memories` table, FTS5-indexed | nothing — offline, instant | always the floor |
+| **`graphiti`** _(experimental)_ | temporal **knowledge graph** over MCP | graph DB + LLM | evolving, relational, temporal recall |
 
 `local` and `graphiti` are the only public `memory.backend` values.
 
 > **The local backend is the default and the guaranteed offline floor.** You do
 > not need to configure anything to use `forge remember` / `forge recall`. The
 > Graphiti backend is strictly **opt-in** and never changes the default path.
+>
+> **`graphiti` is experimental — its runtime emitter is not yet shipped.**
+> Selecting it today still writes the local kernel floor (the graph emit is a
+> best-effort no-op), so `recall` always reads back from the kernel. The config
+> and `forge doctor` reachability checks work; the write-through emit is a
+> fast-follow.
 
 Precedence for selecting the backend:
 `FORGE_MEMORY_BACKEND` env → `memory.backend` in config → `local`.
@@ -32,9 +38,15 @@ forge doctor            # reports the memory backend (+ graphiti reachability, n
 
 ## Local (default) — nothing to set up
 
-Notes are appended to `.forge/memory/notes.jsonl`, committed with your repo, and
-searched by case-insensitive substring across note text and tags. No services,
-no network, no keys. This is what ships and what most projects should use.
+Notes persist to the kernel `kernel_memories` table (the per-repo Forge Kernel
+SQLite store under `.git/forge/`), indexed by **FTS5** for token-AND BM25 recall.
+No services, no network, no keys. This is what ships and what most projects
+should use. `recall` with no query returns the newest notes plus a total count;
+a query does full-text BM25 matching (every token must appear, in any order). The
+same kernel table also holds what `forge insights` learns; those records are
+recallable with a query or `--all` (the default no-query listing shows only your
+`remember` notes). (An older flat `.forge/memory/notes.jsonl` is imported once on
+first use, then retired.)
 
 ## Opt into Graphiti (knowledge-graph memory)
 
@@ -148,7 +160,7 @@ Once wired, **agents** call the graph directly over MCP:
 The **`memory` skill** ([`skills/memory/SKILL.md`](../../skills/memory/SKILL.md))
 teaches agents when and how to use these. `forge remember` / `forge recall` keep
 working from the CLI — when the graph backend is selected they still write to the
-local JSONL store as a safety floor, so a note is never lost.
+local kernel store as a safety floor, so a note is never lost.
 
 ## Privacy & cost (read before enabling)
 
@@ -159,12 +171,13 @@ local JSONL store as a safety floor, so a note is never lost.
   writes are billable and take from sub-second to a couple of seconds. Prefer
   async ingest; retrieval is cheap.
 - **Ops:** you run and maintain a graph DB + the (experimental) Graphiti MCP
-  server. This is a real jump from "append a line to a JSONL file" — which is
-  exactly why it is opt-in and the local backend stays the default.
+  server. This is a real jump from "write a note to the local kernel store" —
+  which is exactly why it is opt-in and the local backend stays the default.
 
 ## Turning it off
 
 Remove `memory.backend` (and the `memory.graphiti` block) from
 `.forge/config.yaml` — the router falls straight back to `local`. Your local
-JSONL notes were never touched. If you manually added a `graphiti-memory` entry
-to your agent's MCP config, delete it too (Forge did not write one).
+kernel notes were never touched. If a `graphiti-memory` entry is in your agent's
+MCP config — whether `forge setup` wrote it when you enabled Graphiti, or you
+added it by hand — delete it too.
