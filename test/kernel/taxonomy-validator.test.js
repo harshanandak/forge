@@ -73,10 +73,12 @@ describe('D18 issue schema taxonomy extensions', () => {
 });
 
 describe('canonical issue enums', () => {
-	test('exposes the 4-type and 5-status taxonomy from the contract', () => {
+	test('exposes the 4-type and 6-status taxonomy from the contract', () => {
 		expect(ISSUE_TYPES).toEqual(['epic', 'task', 'bug', 'decision']);
-		expect(ISSUE_STATUSES).toEqual(['open', 'in_progress', 'review', 'done', 'cancelled']);
+		expect(ISSUE_STATUSES).toEqual(['open', 'in_progress', 'review', 'done', 'cancelled', 'backlog']);
+		// backlog is a parked lifecycle state, not terminal — done/cancelled stay the only terminals.
 		expect(TERMINAL_STATUSES).toEqual(['done', 'cancelled']);
+		expect(TERMINAL_STATUSES).not.toContain('backlog');
 	});
 
 	test('validates membership without DB constraints', () => {
@@ -84,6 +86,7 @@ describe('canonical issue enums', () => {
 		expect(isValidIssueType('feature')).toBe(false); // feature is a label, not a type
 		expect(isValidIssueType('story')).toBe(false);
 		expect(isValidIssueStatus('review')).toBe(true);
+		expect(isValidIssueStatus('backlog')).toBe(true); // parked ideas are a first-class status
 		expect(isValidIssueStatus('ready')).toBe(false); // ready is derived, not a status
 		expect(isValidIssueStatus('blocked')).toBe(false);
 	});
@@ -128,6 +131,18 @@ describe('status lifecycle rules', () => {
 		expect(isValidStatusTransition('cancelled', 'open')).toBe(false);
 		expect(STATUS_TRANSITIONS.done).toEqual([]);
 		expect(STATUS_TRANSITIONS.cancelled).toEqual([]);
+	});
+
+	test('supports the backlog park/promote lifecycle', () => {
+		// Park an open idea, promote a parked idea back to scheduled, or drop it.
+		expect(isValidStatusTransition('open', 'backlog')).toBe(true); // park
+		expect(isValidStatusTransition('backlog', 'open')).toBe(true); // promote / schedule
+		expect(isValidStatusTransition('backlog', 'cancelled')).toBe(true); // drop the idea
+		expect(STATUS_TRANSITIONS.backlog).toContain('open');
+		// backlog is reachable and leaveable — never a dead-end like the terminals.
+		expect(STATUS_TRANSITIONS.backlog).not.toEqual([]);
+		// You cannot jump straight from a parked idea into active work.
+		expect(isValidStatusTransition('backlog', 'in_progress')).toBe(false);
 	});
 
 	test('treats a same-status transition as an idempotent no-op', () => {
