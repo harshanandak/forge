@@ -318,6 +318,71 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
 .fade-in { animation: fade .2s ease both; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
+/* ===================== v4 additions (same brutalist grammar) ===================== */
+
+/* Needs-Attention lane */
+.attention { border: 1px solid var(--line-2); margin-bottom: 18px; }
+.attention__head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.attention__head .ttl { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.attention__head .ct { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.attn-row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.attn-row:last-child { border-bottom: none; }
+.attn-row:hover { background: var(--hover); }
+.attn-row .subj { font-family: var(--mono); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.attn-row .why { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.attn-row .det { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.attn-row .go { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); padding: 2px 8px; color: var(--muted); white-space: nowrap; }
+.attn-row a.go:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+.attn-row .seamtag { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; border: 1px dashed var(--line-2); padding: 1px 5px; color: var(--faint); }
+
+/* generic card grid (workspaces, memory, epic children) */
+.cardgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 1100px) { .cardgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .cardgrid { grid-template-columns: 1fr; } }
+.minicard { border: 1px solid var(--line); background: var(--surface); padding: 11px; display: flex; flex-direction: column; gap: 7px; cursor: pointer; }
+.minicard:hover { border-color: var(--text); }
+.minicard__top { display: flex; align-items: center; gap: 6px; }
+.minicard__title { font-size: 12px; line-height: 1.4; }
+.minicard__meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: auto; }
+.minicard__id { font-family: var(--mono); font-size: 9px; color: var(--faint); margin-left: auto; }
+
+/* workspace card */
+.wt-card { border: 1px solid var(--line); background: var(--surface); padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+.wt-card.arch { opacity: .62; }
+.wt-card__top { display: flex; align-items: center; gap: 8px; }
+.wt-card__branch { font-family: var(--mono); font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; border: 1px solid var(--line-2); padding: 1px 6px; color: var(--muted); white-space: nowrap; }
+.chip.hard { background: var(--text); color: var(--bg); border-color: var(--text); }
+.wt-row { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.wt-row .k { color: var(--faint); }
+.gitstat { display: inline-flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 11px; }
+.gitstat b { color: var(--text); font-weight: 700; }
+.wt-path { font-family: var(--mono); font-size: 9.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seam-inline { font-family: var(--mono); font-size: 9.5px; color: var(--faint); border-top: 1px dashed var(--line); padding-top: 7px; }
+
+/* detail overlay */
+.detail { position: fixed; inset: 0; z-index: 80; display: none; }
+.detail.on { display: block; }
+.detail__scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+:root[data-theme="light"] .detail__scrim { background: rgba(255,255,255,.6); }
+.detail__panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(680px, 92vw); background: var(--bg); border-left: 1px solid var(--text); overflow-y: auto; padding: 20px 22px 40px; }
+.detail__close { position: absolute; top: 14px; right: 16px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font-family: var(--mono); font-size: 12px; cursor: pointer; padding: 4px 9px; }
+.detail__close:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+.detail__eyebrow { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.detail__title { font-size: 19px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; margin: 0 40px 12px 0; }
+.detail__body { font-size: 13px; line-height: 1.65; color: var(--muted); white-space: pre-wrap; border-top: 1px solid var(--line); padding-top: 12px; }
+.detail__grid { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; margin: 14px 0; font-size: 12px; }
+.detail__grid dt { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+.detail__grid dd { margin: 0; }
+
+/* graphiti / seam placeholder */
+.graph-seam { border: 1px dashed var(--line-2); padding: 22px; text-align: center; font-family: var(--mono); }
+.graph-seam .nodes { display: flex; justify-content: center; align-items: center; gap: 0; margin-bottom: 14px; opacity: .5; }
+.graph-seam .node { width: 34px; height: 34px; border: 1px solid var(--text); display: grid; place-items: center; font-size: 11px; }
+.graph-seam .edge { width: 34px; height: 1px; background: var(--text); }
+.graph-seam h4 { margin: 0 0 5px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.graph-seam p { margin: 0; font-size: 11px; color: var(--muted); }
+
 .topbar .menu { display: none; background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; }
 @media (max-width: 720px) {
   .app { grid-template-columns: 1fr; }

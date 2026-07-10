@@ -183,3 +183,39 @@ PRs) + per-actor breakdown of what each agent is on + worktrees-by-surface + PRs
 (10 tests, all pass). In-browser verified: 15 pulse dots, 88 phase steppers,
 priority swatches grayscale, no `--accent`, independent column scroll intact,
 body has no horizontal scroll.
+
+---
+
+## v4 — control surface + first-class objects (2026-07-10)
+
+Authority: `docs/work/2026-07-10-forge-dashboard/v4-brief.md` (main repo). Keeps the
+v3 mono/brutalist skin verbatim; everything additive; unavailable data = SEAM.
+
+### Data (generator)
+- **Enriched PRs**: `mergeable`, `statusCheckRollup` → derived `ci{ok,fail,pend,skip,state}`,
+  `minutesSince`, `ready` (mergeable + CI pass + ≥10m + not draft). Plus **merged PRs**
+  (archive detection) and **reviewThreads** unresolved counts via `gh api graphql`.
+- **Worktrees**: real `ahead`/`behind` (`git rev-list --left-right --count origin/master...HEAD`)
+  + `dirty` (porcelain) + `pr`/`mergedPr`/`archived` link by branch.
+- **needsAttention**: ranked (ready-to-merge · CI-fail · conflict · unresolved-threads).
+- **seams** map: staleClaims `7dc229d4`, workflowStage `a2279f65`, workFolderGraph
+  `56461780`, graphiti `c7971150`, backlogState `b2f856b1`, harnessRegion `7dc229d4`.
+- `backlog: null` — deliberately NOT the mislabeled `backlog` label (102 done issues).
+
+### Views / features
+1. **Needs-Attention lane** (Overview top) — real control surface from PR CI/mergeable
+   + deep-links; stale-claims row is a SEAM.
+2. **Board archive toggle** — Active hides Done (3 clean columns); Archived = Done+Cancelled.
+3. **Epics collapse-by-default; expand → children as ~1/3-width cards, 3/row, by priority.**
+4. **Click-through detail panel** — epic OR any child/task opens a slide-over: summary-first
+   meta grid + body + children-as-cards; linked PRs/decisions/plan = SEAM (56461780).
+5. **Workspaces** (new view) — worktree = card: branch · surface chip · real ahead/behind/dirty ·
+   linked PR + CI · Active/Archived filter; linked-task/phase/harness = SEAM.
+6. **Memory** (new view) — activity + work-folder **card grid** (not sidebar) w/ filter;
+   Graphiti temporal-graph placeholder = SEAM (c7971150).
+7. **Backlog** (new view) — honest SEAM (b2f856b1).
+
+### Tests
+`app.test.js` +`wtSummary` coverage (11 tests, all pass). In-browser verified across
+dark+light: needs-attention lane, workspaces real git/PR, detail panel with child cards,
+memory card grid, backlog seam, board archive toggle; no JS errors; route closes detail.

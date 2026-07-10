@@ -37,6 +37,20 @@ test('epicRollup includes a live count', () => {
   expect(app.epicRollup({ id: 'e' }, kids).live).toBe(2);
 });
 
+test('wtSummary normalizes real git + PR state for the Workspaces view', () => {
+  expect(typeof app.wtSummary).toBe('function');
+  const w = app.wtSummary({ ahead: 3, behind: 4, dirty: 1, archived: false, pr: { number: 341, ci: 'fail' } });
+  expect(w.ahead).toBe(3);
+  expect(w.behind).toBe(4);
+  expect(w.hasGit).toBe(true);
+  expect(w.clean).toBe(false);
+  expect(w.pr.number).toBe(341);
+  // clean when dirty === 0; SEAM (no git) when counts absent
+  expect(app.wtSummary({ dirty: 0 }).clean).toBe(true);
+  expect(app.wtSummary({}).hasGit).toBe(false);
+  expect(app.wtSummary({ archived: true }).archived).toBe(true);
+});
+
 test('epicRollup counts children by state', () => {
   const kids = [
     { status: 'done' }, { status: 'done' },

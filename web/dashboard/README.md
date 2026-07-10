@@ -44,7 +44,17 @@ cd web/dashboard && python -m http.server 8080   # → http://localhost:8080
 | `#/epics` | **Epics / Initiatives** | epics + `parent_id` children | Linear-style table, expandable hierarchy, Health (on/at-risk/off-track), `done/total`, Active/Planned/Completed/All tabs |
 | `#/decisions` | **Decisions & Architecture** | kernel `type=decision` + `forge prime` headline PDs + `docs/adr` + `docs/architecture` | ADR board with status/component/rationale |
 | `#/plans` | **Plans & History** | `docs/work/*` | timeline of work folders grouped by month, plan/tasks/decisions tags |
+| `#/workspaces` | **Workspaces** | `git worktree list` (+ahead/behind/dirty) + PR/CI match | worktree = card: branch · surface chip · real git ahead/behind/dirty · linked PR + CI · Active/Archived filter; linked-task/phase/harness = SEAM |
+| `#/memory` | **Memory** | recent issues + `docs/work/*` + recall | activity + work-folder **card grid** (not sidebar) with filter; Graphiti temporal-graph = SEAM |
+| `#/backlog` | **Backlog** | kernel backlog state (pending) | honest SEAM — parked ideas render once `b2f856b1` lands |
 | `#/ops` | **Live Ops (multi-harness)** | kernel `claimed_by` + `git worktree list` + `gh pr list` | top-line counts (actors · live claims · worktrees · PRs); per-actor breakdown of what each agent is working on (with live pulse); worktrees grouped by inferred **surface** (Claude Code / worktree / t3code / ephemeral / main); open PRs |
+
+**Overview → Needs-Attention lane** (v4): a ranked control-surface at the top —
+ready-to-merge PRs, failing CI, merge conflicts, unresolved review threads (from
+`gh` CI/mergeable + GraphQL threads), each with a deep-link; stale-claims is a SEAM
+until the lease-read (`7dc229d4`). **Click-through detail** (v4): clicking any epic /
+task / child card opens a summary-first slide-over (meta + body + children-as-cards);
+per-issue PR/decision/plan links are a SEAM (`56461780`).
 
 ### Live indicators & seams
 

@@ -49,6 +49,10 @@ function icon(name) {
     plans: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     ops: '<path d="M3 12h4l2 6 4-14 2 8h6"/>',
     doc: '<path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/>',
+    workspaces: '<rect x="3" y="4" width="18" height="14"/><path d="M3 9h18M8 4v5"/>',
+    memory: '<circle cx="6" cy="6" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><path d="M8 6h8M7 8l1.5 7M16 9l-6 7"/>',
+    backlog: '<path d="M3 4h18v6H3zM3 14h18v6H3"/><path d="M7 7h4M7 17h4"/>',
+    attn: '<path d="M12 3 2 20h20zM12 9v5M12 17v.5"/>',
   }[name] || '';
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="miter">${p}</svg>`;
 }
@@ -57,8 +61,9 @@ function icon(name) {
 const State = {
   snapshot: null, issues: [], epics: [], byId: {}, kids: {},
   filters: { q: '', type: null, prio: null },
-  board: { level: 'tasks', epicFocus: null, limits: {} },
+  board: { level: 'tasks', epicFocus: null, limits: {}, archived: false },
   epicsTab: 'active', epicsExpanded: new Set(),
+  wsArchived: false, memFilter: '',
   route: 'overview',
 };
 function rebuild(snap) {
@@ -119,11 +124,21 @@ function epicHealth(epic, kids) {
   if (r.ratio >= 0.2 || r.inprog > 0) return 'warn';
   return r.blocked > 0 ? 'risk' : 'warn';
 }
+// Normalize a worktree's real git/PR state for the Workspaces view (exported for tests).
+function wtSummary(w) {
+  return {
+    ahead: w.ahead ?? null, behind: w.behind ?? null, dirty: w.dirty ?? null,
+    hasGit: w.ahead != null || w.behind != null,
+    clean: w.dirty === 0, archived: !!w.archived, pr: w.pr || null,
+  };
+}
+const rankByPrio = (a, b) => (({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[a.priority] ?? 9) - ({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[b.priority] ?? 9));
 
 /* ---------- grayscale encodings ---------- */
 const prioTag = (p) => `<span class="prio" title="priority ${esc(p)}"><i style="background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></i>${esc(p || '—')}</span>`;
 const typeBadge = (t) => `<span class="badge">${esc(TYPE_LABEL[t] || t)}</span>`;
 const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○' };
+const ATTN_GLYPH = { ready: '●', fail: '✕', open: '○', warn: '◐' };
 const HEALTH_GLYPH = { ok: '●', warn: '◐', risk: '○', done: '●', neutral: '–' };
 const HEALTH_LABEL = { ok: 'On track', warn: 'At risk', risk: 'Off track', done: 'Completed', neutral: '—' };
 const pulse = (on) => (on ? '<span class="pulse" title="active claim — being worked on now"></span>' : '');
@@ -140,7 +155,7 @@ const epicRef = (i) => {
 
 function taskCard(i) {
   const owner = i.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(i.claimed_by.slice(0, 2))}</span>${esc(i.claimed_by)}</span>` : '';
-  return `<div class="kcard">
+  return `<div class="kcard" data-act="open" data-id="${esc(i.id)}">
     <div class="kcard__top">${pulse(isLive(i))}${typeBadge(i.type)}${prioTag(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
     <div class="kcard__title">${esc(clamp(i.title, 116))}</div>
     <div class="kcard__meta">${phaseTag(i)}${owner}${epicRef(i)}</div>
@@ -163,8 +178,11 @@ const VIEWS = [
   { id: 'overview', title: 'Overview', flush: false, render: renderOverview },
   { id: 'board', title: 'Work Board', flush: true, render: renderBoard },
   { id: 'epics', title: 'Epics', flush: false, render: renderEpics },
+  { id: 'workspaces', title: 'Workspaces', flush: false, render: renderWorkspaces },
+  { id: 'backlog', title: 'Backlog', flush: false, render: renderBacklog },
   { id: 'decisions', title: 'Decisions', flush: false, render: renderDecisions },
   { id: 'plans', title: 'Plans', flush: false, render: renderPlans },
+  { id: 'memory', title: 'Memory', flush: false, render: renderMemory },
   { id: 'ops', title: 'Live Ops', flush: false, render: renderOps },
 ];
 
@@ -199,6 +217,7 @@ function renderOverview() {
     .map((i) => `<div class="rowline">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 68))}</span><span class="when">${esc(relTime(i.updated_at))}</span></div>`).join('');
 
   return `<div class="fade-in">
+    ${renderAttention()}
     <div class="stats">${tiles.map((t) => `<div class="stat"><div class="stat__num">${esc(t.n)}</div><div class="stat__label">${esc(t.l)}</div><div class="stat__sub">${esc(t.s)}</div></div>`).join('')}</div>
     <div class="overview-grid">
       <div class="panel"><h3>Priority distribution</h3><div class="bar">${bar}</div><div class="legend">${legend}</div></div>
@@ -215,10 +234,6 @@ function renderOverview() {
 }
 
 /* ---- Work Board ---- */
-const TASK_COLS = [
-  { key: 'ready', title: 'Ready' }, { key: 'progress', title: 'In progress' },
-  { key: 'blocked', title: 'Blocked' }, { key: 'done', title: 'Done' },
-];
 const EPIC_COLS = [
   { key: 'ok', title: 'On track' }, { key: 'warn', title: 'At risk' },
   { key: 'risk', title: 'Off track' }, { key: 'done', title: 'Completed' },
@@ -230,6 +245,7 @@ function renderBoard() {
     <button data-act="board-level" data-level="tasks" class="${B.level === 'tasks' ? 'on' : ''}">Tasks</button>
     <button data-act="board-level" data-level="epics" class="${B.level === 'epics' ? 'on' : ''}">Epics</button></div>`;
   const focusChip = focus ? `<span class="chipfilter">EPIC: ${esc(clamp(focus.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 32))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
+  const archSeg = B.level === 'tasks' ? `<div class="seg"><button data-act="board-arch" data-v="0" class="${!B.archived ? 'on' : ''}">Active</button><button data-act="board-arch" data-v="1" class="${B.archived ? 'on' : ''}">Archived</button></div>` : '';
   let chips = '';
   if (B.level === 'tasks') {
     const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
@@ -239,7 +255,7 @@ function renderBoard() {
   const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     <input id="boardSearch" type="search" placeholder="filter cards…" value="${esc(State.filters.q)}"></div>`;
   const cols = B.level === 'epics' ? renderEpicColumns() : renderTaskColumns(focus);
-  return `<div class="boardbar">${levelSeg}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
+  return `<div class="boardbar">${levelSeg}${archSeg}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
 }
 function column(col, cards, count, key) {
   const lim = State.board.limits[key] ?? 25;
@@ -252,12 +268,19 @@ function column(col, cards, count, key) {
 function renderTaskColumns(focus) {
   let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
   if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
-  const buckets = { ready: [], progress: [], blocked: [], done: [] };
-  pool.forEach((i) => { const c = columnOf(i); if (c) buckets[c].push(i); });
-  const rank = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
-  ['ready', 'progress', 'blocked'].forEach((k) => buckets[k].sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || new Date(b.updated_at) - new Date(a.updated_at)));
-  buckets.done.sort((a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at));
-  return TASK_COLS.map((c) => column(c, buckets[c.key].map(taskCard), buckets[c.key].length, c.key)).join('');
+  const byRecent = (a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at);
+  if (State.board.archived) {
+    // Archived = closed set (done + cancelled) — keeps the live board clean.
+    const done = pool.filter((i) => i.status === 'done').sort(byRecent);
+    const cancelled = pool.filter((i) => i.status === 'cancelled').sort(byRecent);
+    return [{ key: 'done', title: 'Done' }, { key: 'cancelled', title: 'Cancelled' }]
+      .map((c) => column(c, (c.key === 'done' ? done : cancelled).map(taskCard), (c.key === 'done' ? done : cancelled).length, 'a_' + c.key)).join('');
+  }
+  const buckets = { ready: [], progress: [], blocked: [] };
+  pool.forEach((i) => { if (i.status === 'done' || i.status === 'cancelled') return; const c = columnOf(i); if (c && buckets[c]) buckets[c].push(i); });
+  ['ready', 'progress', 'blocked'].forEach((k) => buckets[k].sort(rankByPrio));
+  return [{ key: 'ready', title: 'Ready' }, { key: 'progress', title: 'In progress' }, { key: 'blocked', title: 'Blocked' }]
+    .map((c) => column(c, buckets[c.key].map(taskCard), buckets[c.key].length, c.key)).join('');
 }
 function renderEpicColumns() {
   const buckets = { ok: [], warn: [], risk: [], done: [] };
@@ -290,7 +313,7 @@ function renderEpics() {
     const parent = `<tr>
       <td><div class="rowname">
         <span class="chev ${kids.length ? '' : 'leaf'}" data-act="toggle-epic" data-id="${esc(e.id)}">${kids.length ? (open ? '▾' : '▸') : ''}</span>
-        <span><span class="tt" data-act="focus-epic" data-id="${esc(e.id)}" style="cursor:pointer">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 66))}</span>${sub}</span>
+        <span><span class="tt" data-act="open" data-id="${esc(e.id)}" style="cursor:pointer">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 66))}</span>${sub}</span>
       </div></td>
       <td class="num" style="color:var(--faint)">—</td>
       <td><span class="health"><span class="glyph">${HEALTH_GLYPH[h]}</span><span class="slabel">${HEALTH_LABEL[h]}</span></span></td>
@@ -299,13 +322,12 @@ function renderEpics() {
       <td><span class="trend">${esc(relTime(e.updated_at))}</span></td></tr>`;
     let children = '';
     if (open) {
-      children = kids.slice().sort((a, b) => (a.status === 'done') - (b.status === 'done')).map((k) => `<tr class="child">
-        <td><div class="rowname"><span class="chev leaf"></span>${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}<span class="tt">${esc(clamp(k.title, 58))}</span></div></td>
-        <td>${phaseTag(k, true)}</td>
-        <td><span class="slabel">${esc(k.blocked ? 'blocked' : k.status)}</span></td>
-        <td>${prioTag(k.priority)}</td>
-        <td>${k.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(k.claimed_by.slice(0, 2))}</span>${esc(k.claimed_by)}</span>` : ''}</td>
-        <td><span class="trend">${esc(relTime(k.updated_at))}</span></td></tr>`).join('');
+      // Density fix: children as ~1/3-width cards, 3 per row, ordered by priority.
+      const cards = kids.slice().sort(rankByPrio).map((k) => `<div class="minicard" data-act="open" data-id="${esc(k.id)}">
+        <div class="minicard__top">${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}${typeBadge(k.type)}${prioTag(k.priority)}<span class="minicard__id">${esc(String(k.id).slice(0, 8))}</span></div>
+        <div class="minicard__title">${esc(clamp(k.title, 74))}</div>
+        <div class="minicard__meta">${phaseTag(k, true)}${k.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(k.claimed_by.slice(0, 2))}</span></span>` : ''}</div></div>`).join('');
+      children = `<tr class="childwrap"><td colspan="6" style="padding:12px 12px 14px"><div class="cardgrid">${cards}</div></td></tr>`;
     }
     return parent + children;
   }).join('');
@@ -405,11 +427,131 @@ function renderOps() {
   </div>`;
 }
 
+/* ---- Needs Attention lane (Overview top) ---- */
+function renderAttention() {
+  const items = State.snapshot.needsAttention || [];
+  const seam = State.snapshot.seams || {};
+  const rows = items.map((it) => `<div class="attn-row">
+    <span class="glyph">${ATTN_GLYPH[it.glyph] || '○'}</span>
+    <span class="subj">${esc(it.subject)}</span>
+    <span class="det">${esc(clamp(it.detail, 78))}</span>
+    <span class="why">${esc(it.why)}</span>
+    ${it.link ? `<a class="go" href="${esc(it.link)}" target="_blank" rel="noopener">open ↗</a>` : ''}
+  </div>`).join('');
+  const empty = !items.length ? `<div class="attn-row"><span class="glyph">●</span><span class="det">Nothing needs you — all open PRs are clean or in flight.</span></div>` : '';
+  const staleSeam = `<div class="attn-row"><span class="glyph">◐</span><span class="subj">Stale claims</span>
+    <span class="det">lease near expiry / heartbeat gone — not derivable from the CLI yet</span>
+    <span class="seamtag">SEAM ${esc((seam.staleClaims || '7dc229d4').split(' ')[0])}</span></div>`;
+  return `<div class="attention">
+    <div class="attention__head"><span class="glyph">△</span><span class="ttl">Needs Attention</span><span class="ct">${items.length} now</span></div>
+    ${rows}${empty}${staleSeam}</div>`;
+}
+
+/* ---- Workspaces (worktree = first-class card) ---- */
+function renderWorkspaces() {
+  const trees = (State.snapshot.ops && State.snapshot.ops.worktrees) || [];
+  const showArch = !!State.wsArchived;
+  const list = trees.filter((w) => (showArch ? w.archived : !w.archived));
+  const nActive = trees.filter((w) => !w.archived).length, nArch = trees.length - nActive;
+  const toggle = `<div class="seg">
+    <button data-act="ws-arch" data-v="0" class="${!showArch ? 'on' : ''}">Active ${nActive}</button>
+    <button data-act="ws-arch" data-v="1" class="${showArch ? 'on' : ''}">Archived ${nArch}</button></div>`;
+  const card = (w) => {
+    const s = wtSummary(w);
+    const git = s.hasGit
+      ? `<span class="gitstat"><span title="ahead">↑<b>${s.ahead}</b></span><span title="behind">↓<b>${s.behind}</b></span><span>${s.clean ? 'clean' : `●<b>${s.dirty}</b> dirty`}</span></span>`
+      : `<span class="seam-inline">git ahead/behind — SEAM</span>`;
+    const pr = w.pr
+      ? `<span class="chip hard">PR #${w.pr.number}</span><span class="slabel">CI ${w.pr.ci === 'pass' ? '●' : w.pr.ci === 'fail' ? '✕' : '◐'}</span>${w.pr.ready ? '<span class="chip">READY</span>' : ''}`
+      : (w.mergedPr ? `<span class="chip">merged #${w.mergedPr}</span>` : `<span class="chip">no PR</span>`);
+    return `<div class="wt-card ${w.archived ? 'arch' : ''}">
+      <div class="wt-card__top"><span class="wt-card__branch">${esc(w.branch || '(detached)')}</span><span class="chip">${esc(w.surface)}</span></div>
+      <div class="wt-row">${git}<span class="k">${esc(w.head || '')}</span></div>
+      <div class="wt-row">${pr}</div>
+      <div class="wt-path">${esc(w.path)}</div>
+      <div class="seam-inline">linked task · status · phase · harness/region — SEAM (worktree↔issue + real harness: ${esc((State.snapshot.seams && State.snapshot.seams.harnessRegion || '7dc229d4').split(' ')[0])})</div>
+    </div>`;
+  };
+  const grid = list.length ? `<div class="cardgrid">${list.map(card).join('')}</div>` : `<div class="empty-state"><h4>No ${showArch ? 'archived' : 'active'} worktrees</h4></div>`;
+  return `<div class="fade-in"><div class="viewhead">${toggle}<div class="topbar__spacer"></div><span class="crumb">real git ahead/behind/dirty · PR + CI · surface inferred</span></div>${grid}</div>`;
+}
+
+/* ---- Backlog (SEAM until kernel backlog state lands) ---- */
+function renderBacklog() {
+  const seam = (State.snapshot.seams && State.snapshot.seams.backlogState) || 'b2f856b1';
+  return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled</span></div>
+    <div class="empty-state"><h4>Backlog — SEAM</h4>
+      <p>A real kernel <b>backlog lifecycle state</b> is pending (<span class="mono">${esc(seam.split(' ')[0])}</span>). Once it lands, parked ideas render here and promote → task / epic.</p>
+      <p style="margin-top:10px;color:var(--faint)">The existing <span class="mono">backlog</span> label tags 102 <em>completed</em> release-train issues — a different thing — so it is deliberately not shown here rather than fake the backlog.</p>
+    </div></div>`;
+}
+
+/* ---- Memory (activity + folder cards + graph SEAM) ---- */
+function renderMemory() {
+  const q = (State.memFilter || '').toLowerCase();
+  const all = State.issues.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  const acts = all.filter((i) => !q || (i.title + ' ' + i.type + ' ' + (i.claimed_by || '')).toLowerCase().includes(q)).slice(0, 18);
+  const actCards = acts.map((i) => `<div class="minicard" data-act="open" data-id="${esc(i.id)}">
+    <div class="minicard__top">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}${typeBadge(i.type)}<span class="minicard__id">${esc(String(i.id).slice(0, 8))}</span></div>
+    <div class="minicard__title">${esc(clamp(i.title, 70))}</div>
+    <div class="minicard__meta">${i.parent_id ? epicRef(i) : ''}<span class="slabel">${esc(relTime(i.updated_at))}</span></div></div>`).join('');
+  const folders = (State.snapshot.plans || []).slice(0, 12).map((p) => `<div class="minicard" style="cursor:default">
+    <div class="minicard__top"><span class="glyph">▦</span><span class="slabel">${esc(p.date || '—')}</span></div>
+    <div class="minicard__title">${esc(clamp(p.title, 62))}</div>
+    <div class="minicard__meta">${p.hasPlan ? '<span class="badge">plan</span>' : ''}${p.hasTasks ? '<span class="badge">tasks</span>' : ''}${p.hasDecisions ? '<span class="badge">decisions</span>' : ''}<span class="minicard__id">${p.docCount} docs</span></div></div>`).join('');
+  const filt = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="memFilter" type="search" placeholder="filter activity…" value="${esc(State.memFilter || '')}"></div>`;
+  const memN = Array.isArray(State.snapshot.memory) ? State.snapshot.memory.length : 0;
+  return `<div class="fade-in">
+    <div class="viewhead"><span class="crumb">activity + folder memory as cards</span><div class="topbar__spacer"></div>${filt}</div>
+    <div class="section-title" style="margin-top:0">Recent activity · ${acts.length}</div>
+    <div class="cardgrid">${actCards}</div>
+    <div class="section-title">Work-folder memory · ${(State.snapshot.plans || []).length}</div>
+    <div class="cardgrid">${folders}</div>
+    <div class="section-title">Temporal memory graph</div>
+    <div class="graph-seam"><div class="nodes"><span class="node">idea</span><span class="edge"></span><span class="node">issue</span><span class="edge"></span><span class="node">PR</span></div>
+      <h4>Graphiti graph — SEAM</h4>
+      <p>${esc((State.snapshot.seams && State.snapshot.seams.graphiti) || 'c7971150')}.<br>Activity↔PR/issue/work-folder connections pending ${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])} · forge recall returns ${memN} entries.</p></div>
+  </div>`;
+}
+
+/* ---- Click-through detail panel ---- */
+function issueDetailHtml(i) {
+  const kids = State.kids[i.id] || [];
+  const parent = i.parent_id ? State.byId[i.parent_id] : null;
+  const childCards = kids.slice().sort(rankByPrio).map((k) => `<div class="minicard" data-act="open" data-id="${esc(k.id)}">
+    <div class="minicard__top">${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}${typeBadge(k.type)}${prioTag(k.priority)}<span class="minicard__id">${esc(String(k.id).slice(0, 8))}</span></div>
+    <div class="minicard__title">${esc(clamp(k.title, 78))}</div>
+    <div class="minicard__meta">${phaseTag(k, true)}</div></div>`).join('');
+  return `<button class="detail__close" data-act="detail-close">✕ esc</button>
+    <div class="detail__eyebrow">${typeBadge(i.type)}${prioTag(i.priority)}<span class="slabel">${esc(i.blocked ? 'blocked' : i.status)}</span>${isLive(i) ? pulse(true) : ''}${phaseTag(i)}</div>
+    <h2 class="detail__title">${esc(i.title)}</h2>
+    <dl class="detail__grid">
+      <dt>ID</dt><dd class="mono">${esc(i.id)}</dd>
+      <dt>Status</dt><dd>${esc(i.status)}${i.blocked ? ' · blocked' : ''}</dd>
+      <dt>Owner</dt><dd>${i.claimed_by ? esc(i.claimed_by) : '—'}</dd>
+      <dt>Epic</dt><dd>${parent ? `<span class="epicref" data-act="open" data-id="${esc(parent.id)}" style="cursor:pointer">${esc(clamp(parent.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 40))}</span>` : '—'}</dd>
+      <dt>Labels</dt><dd>${(i.labels || []).map((l) => `<span class="badge">${esc(l)}</span>`).join(' ') || '—'}</dd>
+      <dt>Deps</dt><dd>${(i.dependencies || []).length} dep · ${(i.dependents || []).length} dependents</dd>
+      <dt>Updated</dt><dd class="mono">${esc(relTime(i.updated_at))} ago</dd>
+    </dl>
+    ${i.body ? `<div class="detail__body">${esc(clamp(i.body, 1400))}</div>` : ''}
+    ${kids.length ? `<div class="section-title">Tasks · ${kids.length} (by priority)</div><div class="cardgrid">${childCards}</div>` : ''}
+    <div class="section-title">Linked PRs · decisions · plan</div>
+    <div class="seam"><b>SEAM.</b> Per-issue links to PRs / decisions / work-folder plan need the work-folder↔PR/issue graph (${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}). Kernel issues don't carry PR/branch back-refs yet.</div>`;
+}
+function openDetail(id) {
+  const i = State.byId[id]; if (!i) return;
+  $('#detailPanel').innerHTML = issueDetailHtml(i);
+  const el = $('#detail'); el.hidden = false; el.classList.add('on');
+}
+function closeDetail() { const el = $('#detail'); el.classList.remove('on'); el.hidden = true; }
+
 /* ============================================================================
  * Router + chrome
  * ========================================================================== */
 function currentView() { return VIEWS.find((v) => v.id === State.route) || VIEWS[0]; }
 function route() {
+  closeDetail();
   const id = (location.hash.replace(/^#\/?/, '') || 'overview').split('?')[0];
   State.route = VIEWS.some((v) => v.id === id) ? id : 'overview';
   const v = currentView();
@@ -424,11 +566,23 @@ function route() {
 function afterRender() {
   const bs = $('#boardSearch');
   if (bs) bs.addEventListener('input', (e) => { State.filters.q = e.target.value.trim(); rerender(); });
+  const mf = $('#memFilter');
+  if (mf) mf.addEventListener('input', (e) => { State.memFilter = e.target.value.trim(); rerender(); });
 }
-function rerender() { const v = currentView(); const view = $('#view'); const focus = document.activeElement?.id; view.innerHTML = v.render(); afterRender(); if (focus === 'boardSearch') { const el = $('#boardSearch'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } }
+function rerender() {
+  const v = currentView(); const view = $('#view'); const focus = document.activeElement?.id;
+  view.innerHTML = v.render(); afterRender();
+  if (focus === 'boardSearch' || focus === 'memFilter') { const el = $('#' + focus); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+}
 
 function buildNav() {
-  const counts = { board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length, decisions: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.activeClaims || []).length };
+  const wts = State.snapshot.ops?.worktrees || [];
+  const counts = {
+    board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length,
+    workspaces: wts.filter((w) => !w.archived).length,
+    decisions: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length,
+    memory: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.activeClaims || []).length,
+  };
   $('#nav').innerHTML = `<div class="nav__label">Views</div>` + VIEWS.map((v) =>
     `<a href="#/${v.id}" data-view="${v.id}">${icon(v.id)}<span>${esc(v.title)}</span>${counts[v.id] != null ? `<span class="n">${counts[v.id]}</span>` : ''}</a>`).join('');
 }
@@ -444,6 +598,9 @@ function onViewClick(e) {
   else if (act === 'chip-prio') { State.filters.prio = State.filters.prio === t.dataset.val ? null : t.dataset.val; rerender(); }
   else if (act === 'epics-tab') { State.epicsTab = t.dataset.tab; rerender(); }
   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
+  else if (act === 'open') { openDetail(t.dataset.id); }
+  else if (act === 'ws-arch') { State.wsArchived = t.dataset.v === '1'; rerender(); }
+  else if (act === 'board-arch') { State.board.archived = t.dataset.v === '1'; State.board.limits = {}; rerender(); }
 }
 
 function wireGlobalSearch() {
@@ -508,6 +665,11 @@ async function boot() {
     buildNav(); wireTheme(); wireGlobalSearch();
     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
     $('#view').addEventListener('click', onViewClick);
+    $('#detail').addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="detail-close"]')) return closeDetail();
+      const o = e.target.closest('[data-act="open"]'); if (o) openDetail(o.dataset.id);
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
     $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
     window.addEventListener('hashchange', route);
     if (!location.hash) location.hash = '#/overview';
@@ -520,5 +682,5 @@ async function boot() {
 }
 if (typeof document !== 'undefined') boot();
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, State };
+  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, State };
 }
