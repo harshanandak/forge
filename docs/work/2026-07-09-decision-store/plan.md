@@ -212,9 +212,59 @@ stay cheap to read and both port unchanged from laptop to server.
   BM25 is the semantic tier; escalation covers the rest.
 
 **One file, both indexes:** a single SQLite(+FTS5) file holds the B-tree indexes
-and the FTS5 index for decisions and issues alike. Because that file *is* the
-kernel authority the broker already parses, the same retrieval code ports
-unchanged from the local file to a libSQL server (Section C).
+and the FTS5 index for decisions, issues, and memory alike. Because that file
+*is* the kernel authority the broker already parses, the same retrieval code
+ports unchanged from the local file to a libSQL server (Section C).
+
+### B.1 Memory consolidation onto the kernel (beta)
+
+`forge remember` / `forge recall` are the **third consumer** of this layer — and
+today they bypass it. Assessment 2026-07-09 (read-only, file-grounded) found
+**three disconnected stores**:
+
+- **JSONL (the live CLI path):** `remember`/`recall` append to / scan
+  `.forge/memory/notes.jsonl` (`lib/memory-store.js`) — whole-string substring
+  match, **re-reads the entire file every call**, `--limit` applied only *after*
+  full load, and **no default output cap** (context-flood as notes grow).
+- **`kernel_memories` (orphaned):** the kernel table exists (`schema.js:267`,
+  migration 005) and `insights.js:309` is its *only* writer — **nothing reads it
+  back**, so everything the insights engine learns is invisible to `recall`.
+- **Graphiti:** config + doctor + MCP-descriptor scaffolding only, **no runtime
+  emit path** (`router.js:150` "lands in a fast-follow"); the local floor always
+  writes, so it is a no-op today.
+- Docs lie: `TOOLCHAIN.md:139` claims recall is "kernel-backed"; it is JSONL.
+
+**DECISION — consolidate onto the kernel + FTS5 (one knowledge layer with
+decisions and issues).** Route `remember`/`recall` through `kernel_memories`,
+indexed by the **same Section B FTS5 layer**; retire the JSONL `memory-store.js`.
+Chosen over keeping JSONL because it **connects insights → recall** (learnings
+become recallable), makes recall **token-efficient** (FTS5 BM25 replaces both the
+substring bug *and* the full-file scan), and **rides the Phase-2 server** for
+online cross-machine memory later (`bb8c6508`) with zero extra plumbing — memory,
+decisions, and issues then share one substrate, one retrieval router, one sync.
+
+**BETA (build now):**
+
+- Route `remember` write + `recall` read through `kernel_memories`
+  (`recordMemory` / a read path over `searchMemoryRows`, `sqlite-driver.js:1707`),
+  retiring `lib/memory-store.js`; migrate any existing `.forge/memory/notes.jsonl`
+  on first run.
+- **FTS5 index over `kernel_memories`** (the shared foundation, §B) → token-AND
+  BM25 recall. Same index work decisions need — **built once, consumed by both**
+  (and issues, `44643ac0`).
+- **Cap default `recall`** to newest-N + total count (no bare full dump).
+- **Connect `insights`** — its skill candidates already land in `kernel_memories`,
+  so recall surfaces them the moment it reads that table.
+- Fix `TOOLCHAIN.md:139`; mark the Graphiti backend **experimental** in help/docs
+  until its emitter ships.
+
+**DEFER (past beta):** the Graphiti emitter (`router.js:150`); the typed/category
+memory API (`typed-api.js`) beyond what recall needs; online/server memory sync
+(`bb8c6508`, Phase-2).
+
+This finally lands the never-completed "drop `project-memory.js` / route to
+remember-recall" migration (`forge-be`) — done properly by unifying on
+`kernel_memories` instead of adding a fourth store.
 
 ---
 
@@ -261,11 +311,19 @@ the heaviest lock-in. See ADR-0002.
   (GitHub), maps `org → project → namespace → shard`, provisions namespaces on
   first use, mints scoped JWTs, routes clients, and orchestrates
   health/failover.
-- **Phasing:**
-  - **2a** — single `sqld` + namespaces + bottomless + embedded replicas.
-  - **2b** — shard across `sqld` instances + control-plane router as org count
-    grows.
-  - **2c** — dedicated per-org instances (enterprise).
+- **Committed topology (NOT a throwaway phase):** **one `sqld` + namespaces +
+  bottomless + embedded replicas + platform crash-restart + the control-plane
+  routing seam** is the target. One well-provisioned box holds hundreds of
+  projects across dozens of orgs — a long runway. Steady-state ops is *light*
+  (a single stateful container + S3 backup + monitoring); the only real cost is
+  the no-auto-failover cliff, and even that is soft because embedded replicas
+  keep **reads** up during a primary outage (only **writes** pause, briefly).
+  The following are **ADDITIVE bolt-ons IF demand requires — not a rework**,
+  because the routing seam + same-protocol on-ramp are designed in from day one:
+  - **Shard** (a second `sqld`) — capacity only; the control-plane router
+    already indirects, so it slots in without touching the app.
+  - **Zero-touch HA** — a **config-swap to managed Turso** (same protocol), or a
+    dedicated per-org instance. A toggle, not a migration.
 - **Hosting:** Fly.io Machines (regional + volumes + fast restart) / k8s
   StatefulSet + PVC / VPS + volume.
 
@@ -321,6 +379,129 @@ an **existing** kernel issue rather than duplicating scope:
 | Plans sync | `9f6ffb42` |
 | Skill-sharing | `55dfeccf` / `a0776e61` |
 | Online memory | `bb8c6508` |
+
+### C.7 Concurrency + scale + agent coordination (verified 2026-07-09)
+
+A 4-agent adversarial probe (edge-cases + scale red-team + comm-bus design →
+synthesis) tested the CAS single-writer model against "many agents write at
+once" and "teams/orgs grow", and evaluated the agent-communication
+pass-through. Grounded in `lib/kernel/broker.js`,
+`lib/kernel/lease-enforcer.js`, `lib/kernel/readiness-model.js`.
+
+**Verdict: correctness holds at ANY scale — throughput/latency/UX do not.** The
+CAS triad at the single per-namespace primary (row-CAS `expected_revision` →
+`stale_revision`; partial-UNIQUE `kernel_claims.issue_id` → `claim_conflict`;
+UNIQUE `idempotency_key` → duplicate-replay), all inside `BEGIN IMMEDIATE`, means
+no double-claim / no lost write however many agents connect. Serialization at the
+primary IS the guarantee — never delegated to any other plane.
+
+**Two conditional holes — both deployment/wiring, not engine:**
+- **C2 — identity-key collision (`d71a824b`, THE prereq).** The claim idempotency
+  key is `claim.create:${issueId}:${actor}` with `actor` defaulting to `'forge'`.
+  Until `actor` carries the **agent session-id**, two concurrent agents collide
+  on the same key, dedupe to `ok:true`, and *both* pass `owns()` → silent
+  double-work. It is a **correctness** hole, not just provenance. Fix = session-id
+  in the claim key AND lease actor. Must land **first** — it also yields the
+  stable per-session **address** presence + messaging later need. (Beta.)
+- **C1 — multi-primary topology.** Any path where writes don't all reach the one
+  primary (silent local fallback, mis-pointed clone, two namespaces mistaken for
+  one) breaks the guarantee *silently*. Fix = **fail-closed** if the primary is
+  unreachable (never a silent local write) + assert namespace identity at
+  connect. (Server-plane; matters once Phase-2 lands.)
+
+Everything else that "degrades" is NOT correctness: **throughput** (one
+serialized writer per namespace is a hard per-project ceiling), **latency of
+conflict awareness** (races surface only at write-time or next replica sync,
+never pushed), **wasted work** (queue-top thundering herd, stale-replica
+reasoning, merge collisions on related files the row engine is blind to).
+
+**The four planes** (each fails safe DOWN to the plane below; none weakens it):
+1. **Correctness — CAS single-writer primary.** The floor, authoritative,
+   per-row/per-namespace. Never delegated.
+2. **Work-distribution — lease dispatch.** A per-project coordinator hands
+   *different* ready issues to *different* idle agents as a ~30s **advisory
+   reservation**; the agent then does the **real `forge claim`** (CAS decides
+   ownership). Kills the herd by construction — scheduling OVER the authority,
+   never replacing it.
+3. **Throughput — namespace/shard spread.** One primary per project = the unit of
+   write parallelism AND of coordination. Many teams/orgs = many independent
+   primaries + coordinators; no global bottleneck. The ONLY answer to the
+   single-writer ceiling.
+4. **Coordination — the advisory real-time bus.** Fan-out of events *already in
+   the projection outbox* (`issue.claimed/released/updated`, `claim.conflict`,
+   `decision.proposed/superseded`, `work_folder.touched`, `ready.changed`).
+   Agents react by **re-reading / re-validating — never by trusting the event.**
+
+| Edge case | Correctness | Mitigation | When |
+|---|---|---|---|
+| Identity-key collision (C2) | AT RISK | session-id in claim key + lease actor | **Beta (prereq)** `d71a824b` |
+| Multi-primary topology (C1) | AT RISK | fail-closed on unreachable primary | Phase-2 |
+| Thundering herd on rank-0 ready | safe | randomized top-K pick → lease dispatch | Beta (top-K) / Phase-2 |
+| Retry storm / livelock (no backoff today) | safe | bounded exp-backoff + jitter in adapter | **Beta** |
+| Stale-replica premise | safe (CAS retry) | read-your-writes; presence/bus | Phase-2 / Phase-3 |
+| Cross-work overlap (same file/decision) | safe but blind | work-scope in the coordination layer | Phase-3 |
+| Presence gap | n/a | live `forge who` from leases | Phase-2 |
+| Single-writer ceiling | safe | namespace = shard; dispatch cuts doomed writes | inherent |
+| Org fan-out | safe within ns | per-project shards scale independently | Phase-3+ |
+
+**Agent-communication pass-through: YES — but not first, never for correctness.**
+The three cheapest, highest-value fixes are NOT the bus and land first
+(session-id identity, top-K/lease dispatch, backoff+jitter) — they retire the
+herd, C2, and retry collapse with no new transport. The bus earns its keep on the
+two axes those cannot touch: **latency of conflict awareness** and **cross-work
+overlap the row engine is structurally blind to**. Firm yes at **Phase-3,
+measurement-gated** on high-density hot namespaces.
+
+**Transport = a swappable `CoordinationBus` interface** (mirroring the
+`KnowledgeStore` boundary): **Cloudflare Durable Object + WebSocket Hibernation**
+hosted (one DO per project = the coordination boundary 1:1; hibernation parks
+thousands of idle agent sockets at ~zero cost), **NATS JetStream** self-hosted,
+Redis a substitute. This is where CF DO legitimately re-enters — **coordination
+plane ONLY; authority stays self-hosted libSQL.** That split (cloud coordination
++ self-hosted authority) is the one philosophical tension to accept consciously;
+the NATS impl behind the same interface is the self-hosted-purist escape hatch.
+
+**HARD rule (non-negotiable):** the bus is **advisory only; CAS at the primary is
+the sole source of truth.** It is fed FROM the authoritative commit (outbox CDC)
+so it cannot become a second truth; it MUST NOT gate or block a write (lease
+acquired at the primary, bus notified *after*); no exactly-once logic may make
+correctness depend on it; presence/reservations hold no durable state not
+reconstructible from the leases. **Bus down ⇒ agents fall back to pull `forge
+ready` → CAS claim → discover conflicts at write-time** — correctness identical to
+today; the only loss is earliness.
+
+**Rollout:**
+- **Beta — close the two holes + stop the cheap bleeds** (all local, no infra, no
+  bus): (a) session-id in claim key + lease actor (`d71a824b`); (b) bounded
+  backoff+jitter on `stale_revision`/`BUSY` in the adapter (a policy was designed
+  under `forge-2a` but no backoff is implemented in `lib/` today — new); (c)
+  randomized top-K ready pick as the stop-gap herd fix (new); (d) fail-closed C1
+  guard captured for Phase-2.
+- **Phase-2 — lease dispatch + presence (read-only bus).** Per-project
+  coordinator (advisory reservation → real CAS claim); presence v1 `forge who` as
+  a live projection of leases (rides `b7334f51`); emit advisory outbox events,
+  agents re-read before continuing.
+- **Phase-3 — full real-time bus + agent↔agent negotiation + self-hosted
+  parity.** Pub/sub incl. `work_folder.touched`/subsystem scope (the cross-work
+  fix); direct request/reply (supersede-my-decision, sequence-this-refactor —
+  resolutions still land as kernel events); NATS behind `CoordinationBus`.
+  Extends prior coordination design (`forge-og`, `cc25a59a`, the `forge-2a` DO
+  mutation contract).
+
+**The ONE seam to reserve now (so none of the above is a rewrite):** the
+**`CoordinationBus` interface as a first-class boundary with the projection
+outbox as its sole feed**, plus threading `session_id`/`worktree_id` (already on
+claim events, `broker.js:617-618`) as the stable presence/message **address** the
+moment identity lands in Beta. Reserve those two and Phases 2–3 are additive
+implementations behind a stable seam — never a re-plumb of the authority path.
+
+**Already tracked (cross-checked — NOT re-filed):** C2 `d71a824b`; typed
+conflict-signal `89bf8930` / `d4ce47bb`; busy-timeout policy + concurrency tests +
+lease engine + DO mutation contract + serialized-authority gate (`forge-2a`
+epic); presence/live read model `b7334f51`; CF DO spike `cc25a59a`; identity
+`13b80fb1` / `dab834e2`; real-time coordination service `forge-og`; team-server
+epic `926d772a`. **New this pass (filed):** backoff+jitter impl; top-K herd
+stop-gap.
 
 ---
 

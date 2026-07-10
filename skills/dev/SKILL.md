@@ -2,7 +2,7 @@
 name: dev
 description: >
   Forge DEV stage — implement an already-planned /plan task list into committed, test-backed
-  code. Reads tasks.md + design.md, then drives each task through a subagent TDD loop
+  code. Reads tasks.md + plan.md, then drives each task through a subagent TDD loop
   (implementer → spec-compliance reviewer → code-quality reviewer) with RED-GREEN-REFACTOR,
   HARD-GATE evidence checks, and a spec-gap decision score. Use when a plan and task list
   already exist and it is time to implement — triggers: "/dev", "start the dev stage", "build
