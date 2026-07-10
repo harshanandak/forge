@@ -193,6 +193,28 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		expect(driver.countMemories()).toBe(2);
 	});
 
+	test('recentMemories and countMemories scope to a source_agent allow-list', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'h1', value: 'human one', sourceAgent: 'forge remember', tags: [] });
+		driver.recordMemory({ key: 'm1', value: 'machine one', sourceAgent: 'forge insights', tags: [] });
+		driver.recordMemory({ key: 'h2', value: 'human two', sourceAgent: 'forge remember', tags: [] });
+
+		// Unfiltered sees every row.
+		expect(driver.countMemories()).toBe(3);
+		expect(driver.recentMemories(10).length).toBe(3);
+		// Filtered to the human `remember` agent only.
+		expect(driver.countMemories({ agents: ['forge remember'] })).toBe(2);
+		expect(driver.recentMemories(10, { agents: ['forge remember'] }).map(entry => entry.key).sort()).toEqual(['h1', 'h2']);
+	});
+
+	test('searchMemoriesRanked finds a row by its tag (tags_json is indexed)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 's1', value: 'rotate the signing key', sourceAgent: 'forge remember', tags: ['security'] });
+		driver.recordMemory({ key: 's2', value: 'unrelated note', sourceAgent: 'forge remember', tags: ['chore'] });
+
+		expect(driver.searchMemoriesRanked('security', 10).map(entry => entry.key)).toEqual(['s1']);
+	});
+
 	test('backfills the FTS index for rows written before it existed (upgrade path)', async () => {
 		const driver = makeDriver();
 		// Simulate a pre-FTS DB: create kernel_memories (migration 005) and insert rows

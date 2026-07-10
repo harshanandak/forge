@@ -266,4 +266,41 @@ describe('memory-router: one-time JSONL import onto the kernel', () => {
 
     expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
   });
+
+  test('tolerates malformed and empty JSONL lines (skips them, imports the good ones)', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    const dir = path.join(projectRoot, '.forge', 'memory');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'notes.jsonl'),
+      [
+        '',
+        '{ not valid json',
+        JSON.stringify({ id: 'good-1', note: 'a good note', timestamp: '2026-01-01T00:00:00.000Z', tags: [] }),
+        '   ',
+        '{"note": ""}',
+        JSON.stringify({ id: 'good-2', note: 'another good note', timestamp: '2026-01-02T00:00:00.000Z', tags: [] }),
+      ].join('\n'),
+      'utf8',
+    );
+
+    const { notes, total } = router.recall(projectRoot, {}, { store });
+    expect(total).toBe(2);
+    expect(notes.map(note => note.note).sort()).toEqual(['a good note', 'another good note']);
+  });
+
+  test('an id-less legacy record dedupes by content across re-imports (no double-insert)', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    // No `id` field — a re-run must key off content, not a fresh random UUID.
+    const record = { note: 'note without an id', timestamp: '2026-01-01T00:00:00.000Z', tags: ['x'] };
+
+    writeLegacyJsonl(projectRoot, [record]);
+    router.migrateJsonlNotesOnce(projectRoot, { store });
+    writeLegacyJsonl(projectRoot, [record]);
+    router.migrateJsonlNotesOnce(projectRoot, { store });
+
+    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+  });
 });
