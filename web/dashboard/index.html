@@ -64,8 +64,10 @@
     <div class="detail__panel" id="detailPanel"></div>
   </div>
 
-  <!-- Baked kernel snapshot (window.FORGE_SNAPSHOT). Regenerate: node generate-snapshot.mjs -->
+  <!-- Baked kernel snapshot (window.FORGE_SNAPSHOT) + work-folder markdown
+       (window.FORGE_DOCS, for the in-render reader). Regenerate: node generate-snapshot.mjs -->
   <script src="snapshot.js"></script>
+  <script src="docs.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -391,3 +391,87 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
   .topbar .menu { display: inline-flex; }
   .minisearch input { width: 140px; }
 }
+
+/* ===================== v5 additions ===================== */
+
+/* selected-state for filter chips / toggles (was missing — invisible selection) */
+.btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn.on:hover { background: var(--text); color: var(--bg); }
+
+/* Overview — single deduped composition (type + priority bars) */
+.dist { display: flex; flex-direction: column; gap: 7px; }
+.distrow { display: grid; grid-template-columns: 74px 1fr 34px; gap: 10px; align-items: center; }
+.distlbl { font-family: var(--mono); font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.distbar { height: 10px; border: 1px solid var(--line); }
+.distbar span { display: block; height: 100%; background: var(--text); }
+.distrow b { font-family: var(--mono); font-size: 11px; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* board column note + phase-unknown cells + epic focus button */
+.kcol__note { font-family: var(--mono); font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
+.phase .steps i.unk { border-style: dashed; background: transparent; opacity: .55; }
+.phase.dim .steps i.unk { border-color: var(--faint); }
+.epicfocus { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; cursor: pointer; margin-left: auto; }
+.epicfocus:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+.kcard--epic .kcard__id { margin-left: 0; }
+
+/* Decisions — status board (graphical, replaces flat list) */
+.decboard { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1000px) { .decboard { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .decboard { grid-template-columns: 1fr; } }
+.deccol { border: 1px solid var(--line); display: flex; flex-direction: column; }
+.deccol__head { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.deccol__head .kcol__count { margin-left: auto; }
+.deccol__body { padding: 10px; display: flex; flex-direction: column; gap: 9px; }
+.decboard .deccard { border: 1px solid var(--line); padding: 11px; cursor: pointer; gap: 8px; }
+.decboard .deccard:hover { border-color: var(--text); }
+
+/* Rich detail — linked-work structure rows */
+.detail__actions { margin: 4px 0 12px; }
+.linkgraph { border: 1px solid var(--line); }
+.linkrow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.linkrow:last-child { border-bottom: none; }
+.linkrow__k { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 150px; }
+.linkrow__v { margin-left: auto; }
+.seamtag { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; border: 1px dashed var(--line-2); padding: 1px 6px; color: var(--faint); }
+
+/* In-render Markdown reader */
+.doctabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.doctab { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font-family: var(--mono); font-size: 10.5px; padding: 4px 9px; cursor: pointer; }
+.doctab:hover { color: var(--text); border-color: var(--text); }
+.doctab.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.md { font-size: 13px; line-height: 1.7; color: var(--text); }
+.md .md-h1, .md .md-h2, .md .md-h3, .md .md-h4, .md .md-h5, .md .md-h6 { font-family: var(--mono); font-weight: 700; letter-spacing: .01em; line-height: 1.3; margin: 22px 0 10px; }
+.md .md-h1 { font-size: 19px; padding-bottom: 8px; border-bottom: 1px solid var(--line-2); }
+.md .md-h2 { font-size: 15.5px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.md .md-h3 { font-size: 13.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.md .md-h4, .md .md-h5, .md .md-h6 { font-size: 12.5px; color: var(--muted); }
+.md p { margin: 0 0 12px; }
+.md ul, .md ol { margin: 0 0 12px; padding-left: 22px; }
+.md li { margin: 3px 0; }
+.md code { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); border: 1px solid var(--line); padding: 0 4px; }
+.md pre { background: var(--surface-2); border: 1px solid var(--line); padding: 12px; overflow-x: auto; margin: 0 0 14px; }
+.md pre code { background: none; border: none; padding: 0; font-size: 11.5px; line-height: 1.6; }
+.md blockquote { border-left: 2px solid var(--line-2); margin: 0 0 12px; padding: 2px 0 2px 14px; color: var(--muted); }
+.md hr { border: none; border-top: 1px solid var(--line); margin: 18px 0; }
+.md a { text-decoration: underline; text-underline-offset: 2px; }
+.md .mdlink { color: var(--muted); text-decoration: underline; text-decoration-style: dotted; }
+.md table { border-collapse: collapse; }
+
+/* Plans / Memory — read affordance */
+.tl-row.readable { cursor: pointer; }
+.readmark, .minicard__id.readmark { font-family: var(--mono); font-size: 9px; color: var(--faint); border: 1px solid var(--line); padding: 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+.minicard.nonread { opacity: .58; }
+
+/* Workspaces — simplified card */
+.wt-working { font-family: var(--mono); font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wt-working b { color: var(--text); }
+.gitstat .dirty { color: var(--text); font-weight: 700; }
+
+/* Live Ops — dialled-back brutalism: more air, softer rules */
+.ops--soft .section-title { border-bottom-color: var(--line); }
+.ops--soft .ops-top { border-color: var(--line); }
+.ops--soft .actorcard, .ops--soft .opsline { border-color: var(--line); }
+.ops--soft .actorcard__head { background: transparent; }
+.ops--soft .opsline { padding: 10px 12px; }
+.opsfoot { display: flex; align-items: center; gap: 8px; margin-top: 18px; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.opsfoot a { text-decoration: underline; text-underline-offset: 2px; }

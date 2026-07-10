@@ -1,5 +1,6 @@
-/* Forge Dashboard v3 — read-only multi-view app, MONO/BRUTALIST skin.
-   Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT). No framework, no build.
+/* Forge Dashboard v5 — read-only multi-view app, MONO/BRUTALIST skin (dark-default).
+   Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT) + baked work-folder
+   markdown (window.FORGE_DOCS) for the in-render doc reader. No framework, no build.
    Grayscale-only encodings: fill density (priority), glyphs (status/health),
    a pulsing square (live claim), and a 6-cell stepper (lifecycle phase). */
 
@@ -27,7 +28,8 @@ const clamp = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || ''
 
 const PRIO_ORDER = ['P0', 'P1', 'P2', 'P3', 'P4'];
 const PRIO_ALPHA = { P0: 1, P1: 0.66, P2: 0.42, P3: 0.2, P4: 0 };
-const TYPE_LABEL = { feature: 'feat', task: 'task', bug: 'bug', epic: 'epic', decision: 'dec', chore: 'chore' };
+// Real kernel issue types, spelled out (no confusing abbreviations).
+const TYPE_LABEL = { epic: 'epic', task: 'task', bug: 'bug', feature: 'feature', decision: 'decision', chore: 'chore' };
 const PHASES = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
 
 function relTime(iso) {
@@ -60,8 +62,9 @@ function icon(name) {
 /* ---------- state ---------- */
 const State = {
   snapshot: null, issues: [], epics: [], byId: {}, kids: {},
-  filters: { q: '', type: null, prio: null },
-  board: { level: 'tasks', epicFocus: null, limits: {}, archived: false },
+  // Multi-select filters: OR within a facet (types / prios), AND across facets.
+  filters: { q: '', types: new Set(), prios: new Set() },
+  board: { level: 'tasks', epicFocus: null, limits: {}, showClosed: false },
   epicsTab: 'active', epicsExpanded: new Set(),
   wsArchived: false, memFilter: '',
   route: 'overview',
@@ -85,8 +88,9 @@ function columnOf(i) {
 }
 function matchesFilter(i) {
   const f = State.filters;
-  if (f.type && i.type !== f.type) return false;
-  if (f.prio && i.priority !== f.prio) return false;
+  // OR within a facet: an item matches if its type is any selected type.
+  if (f.types && f.types.size && !f.types.has(i.type)) return false;
+  if (f.prios && f.prios.size && !f.prios.has(i.priority)) return false;
   if (f.q) {
     const hay = (i.title + ' ' + i.id + ' ' + (i.claimed_by || '') + ' ' + (i.labels || []).join(' ')).toLowerCase();
     if (!hay.includes(f.q.toLowerCase())) return false;
@@ -97,13 +101,16 @@ function matchesFilter(i) {
 // (session_id + expires_at) — not yet exposed by the CLI; see the Live Ops seam.
 function isLive(i) { return i.status === 'open' && !!i.claimed_by; }
 
-// Best-effort lifecycle phase. Real stage (currentStage) is not yet on the kernel
-// issue record — derived here from status/claim; seam noted in Live Ops + README.
+// Lifecycle phase derived from the ONLY real signals the kernel exposes today:
+// status (open/done/cancelled) + claim flag. The kernel has no `currentStage`
+// field (SEAM a2279f65), so for a claimed-but-open issue the exact stage
+// (dev vs validate vs ship vs review) is genuinely UNKNOWN — we flag it rather
+// than assert "dev". A done issue is past ship → "shipped".
 function lifecyclePhase(i) {
-  if (i.status === 'done') return { idx: 6, label: 'done' };
+  if (i.status === 'done') return { idx: 6, label: 'shipped' };
   if (i.status === 'cancelled') return { idx: 0, label: 'cancelled' };
-  if (i.claimed_by) return { idx: 2, label: 'dev' };
-  return { idx: 1, label: 'plan' };
+  if (i.claimed_by) return { idx: 2, label: 'in progress', unknown: true };
+  return { idx: 1, label: 'planned' };
 }
 function epicRollup(epic, kids) {
   kids = kids || State.kids[epic.id] || [];
@@ -144,8 +151,13 @@ const HEALTH_LABEL = { ok: 'On track', warn: 'At risk', risk: 'Off track', done:
 const pulse = (on) => (on ? '<span class="pulse" title="active claim — being worked on now"></span>' : '');
 function phaseTag(i, dim) {
   const ph = lifecyclePhase(i);
-  const cells = PHASES.map((_, n) => `<i class="${n < ph.idx ? 'on' : ''}"></i>`).join('');
-  return `<span class="phase ${dim ? 'dim' : ''}" title="lifecycle: ${esc(ph.label)} (best-effort — no kernel stage field yet)"><span class="steps">${cells}</span><span class="lbl">${esc(ph.label)}</span></span>`;
+  const cells = PHASES.map((_, n) => {
+    if (n < ph.idx) return '<i class="on"></i>';
+    if (ph.unknown) return '<i class="unk"></i>'; // could be here — stage not known (SEAM)
+    return '<i></i>';
+  }).join('');
+  const t = ph.unknown ? `${ph.label} · exact stage unknown (SEAM a2279f65)` : ph.label;
+  return `<span class="phase ${dim ? 'dim' : ''}" title="lifecycle: ${esc(t)}"><span class="steps">${cells}</span><span class="lbl">${esc(ph.label)}</span></span>`;
 }
 const epicRef = (i) => {
   if (!i.parent_id) return '';
@@ -155,16 +167,18 @@ const epicRef = (i) => {
 
 function taskCard(i) {
   const owner = i.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(i.claimed_by.slice(0, 2))}</span>${esc(i.claimed_by)}</span>` : '';
+  const blk = i.blocked && i.status === 'open' ? '<span class="glyph" title="blocked">✕</span>' : '';
   return `<div class="kcard" data-act="open" data-id="${esc(i.id)}">
-    <div class="kcard__top">${pulse(isLive(i))}${typeBadge(i.type)}${prioTag(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
+    <div class="kcard__top">${pulse(isLive(i))}${blk}${typeBadge(i.type)}${prioTag(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
     <div class="kcard__title">${esc(clamp(i.title, 116))}</div>
     <div class="kcard__meta">${phaseTag(i)}${owner}${epicRef(i)}</div>
   </div>`;
 }
 function epicCard(e) {
   const r = epicRollup(e); const hg = HEALTH_GLYPH[epicHealth(e)];
-  return `<div class="kcard kcard--epic" data-act="focus-epic" data-id="${esc(e.id)}">
-    <div class="kcard__top"><span class="glyph">${hg}</span>${prioTag(e.priority)}<span class="kcard__id">${r.total} tasks</span></div>
+  // Click opens the epic detail; the inner "filter" button focuses the board on it.
+  return `<div class="kcard kcard--epic" data-act="open" data-id="${esc(e.id)}">
+    <div class="kcard__top"><span class="glyph">${hg}</span>${prioTag(e.priority)}<button class="epicfocus" data-act="focus-epic" data-id="${esc(e.id)}" title="Filter board to this epic's tasks">filter ↳</button><span class="kcard__id">${r.total} tasks</span></div>
     <div class="kcard__title">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 108))}</div>
     <div class="kcard__roll"><div class="kcard__prog"><span style="width:${Math.round(r.ratio * 100)}%"></span></div>
       <span class="kcard__rolltext">${r.done}/${r.total || '·'}</span>${r.live ? `<span class="livecount">${pulse(true)}${r.live}</span>` : ''}</div>
@@ -186,7 +200,7 @@ const VIEWS = [
   { id: 'ops', title: 'Live Ops', flush: false, render: renderOps },
 ];
 
-/* ---- Overview ---- */
+/* ---- Overview ---- (stats on top, Needs-Attention below, deduped composition) */
 function renderOverview() {
   const all = State.issues;
   const st = (k) => all.filter((i) => i.status === k).length;
@@ -194,94 +208,111 @@ function renderOverview() {
   const donePct = total ? Math.round((done / total) * 100) : 0;
   const blocked = all.filter((i) => i.blocked && i.status !== 'done').length;
   const live = all.filter(isLive).length;
-  const ready = all.filter((i) => columnOf(i) === 'ready').length;
   const c = State.snapshot.counts || {};
 
+  // Lean, non-overlapping stat row: the four headline scalars.
   const tiles = [
-    { n: total, l: 'Total issues', s: State.snapshot.schema_version || '' },
+    { n: total, l: 'Total issues', s: (State.epics.length) + ' epics' },
     { n: donePct + '%', l: 'Complete', s: done + ' done' },
-    { n: open, l: 'Open', s: ready + ' ready' },
-    { n: live, l: 'Live now', s: c.actors + ' actors' },
-    { n: blocked, l: 'Blocked', s: 'need unblocking' },
-    { n: State.epics.length, l: 'Epics', s: (c.decisions || 0) + ' decisions' },
+    { n: open, l: 'Open', s: live + ' live · ' + blocked + ' blocked' },
+    { n: c.prs || 0, l: 'Open PRs', s: (c.worktrees || 0) + ' worktrees' },
   ];
+
+  // Single deduped composition panel: by type + by priority as legible bars.
+  const types = {}; all.forEach((i) => (types[i.type] = (types[i.type] || 0) + 1));
+  const typeRows = Object.entries(types).sort((a, b) => b[1] - a[1]).map(([t, n]) =>
+    `<div class="distrow"><span class="distlbl">${esc(TYPE_LABEL[t] || t)}</span><div class="distbar"><span style="width:${(n / (total || 1)) * 100}%"></span></div><b>${n}</b></div>`).join('');
   const prio = {}; PRIO_ORDER.forEach((p) => (prio[p] = 0));
   all.forEach((i) => { if (prio[i.priority] != null) prio[i.priority]++; });
-  const types = {}; all.forEach((i) => (types[i.type] = (types[i.type] || 0) + 1));
-
-  const bar = PRIO_ORDER.map((p) => `<span title="${p}: ${prio[p]}" style="width:${(prio[p] / (total || 1)) * 100}%;background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></span>`).join('');
-  const legend = PRIO_ORDER.map((p) => `<span class="item"><span class="sw" style="background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></span>${p} <b>${prio[p]}</b></span>`).join('');
-  const chips = Object.entries(types).sort((a, b) => b[1] - a[1]).map(([t, n]) => `<span class="item"><span class="sw"></span>${esc(TYPE_LABEL[t] || t)} <b>${n}</b></span>`).join('');
+  const prioRows = PRIO_ORDER.map((p) =>
+    `<div class="distrow"><span class="distlbl">${p}</span><div class="distbar"><span style="width:${(prio[p] / (total || 1)) * 100}%;background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></span></div><b>${prio[p]}</b></div>`).join('');
 
   const recent = all.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 8)
-    .map((i) => `<div class="rowline">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 68))}</span><span class="when">${esc(relTime(i.updated_at))}</span></div>`).join('');
+    .map((i) => `<div class="rowline" data-act="open" data-id="${esc(i.id)}" style="cursor:pointer">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 66))}</span><span class="when">${esc(relTime(i.updated_at))}</span></div>`).join('');
 
   return `<div class="fade-in">
-    ${renderAttention()}
     <div class="stats">${tiles.map((t) => `<div class="stat"><div class="stat__num">${esc(t.n)}</div><div class="stat__label">${esc(t.l)}</div><div class="stat__sub">${esc(t.s)}</div></div>`).join('')}</div>
+    ${renderAttention()}
     <div class="overview-grid">
-      <div class="panel"><h3>Priority distribution</h3><div class="bar">${bar}</div><div class="legend">${legend}</div></div>
-      <div class="panel"><h3>Issue types</h3><div class="legend">${chips}</div></div>
+      <div class="panel"><h3>Issues by type</h3><div class="dist">${typeRows}</div></div>
+      <div class="panel"><h3>Issues by priority</h3><div class="dist">${prioRows}</div></div>
     </div>
     <div class="overview-grid">
       <div class="panel"><h3>Recent activity</h3>${recent}</div>
       <div class="panel"><h3>Runtime</h3><div class="legend">
         <span class="item">Live claims <b>${live}</b></span><span class="item">Actors <b>${c.actors || 0}</b></span>
         <span class="item">Worktrees <b>${c.worktrees || 0}</b></span><span class="item">Open PRs <b>${c.prs || 0}</b></span>
-      </div><div class="rowline" style="border:none;margin-top:12px"><a href="#/ops" class="slabel">→ Live Ops</a></div></div>
+      </div><div class="rowline" style="border:none;margin-top:12px"><a href="#/ops" class="slabel">→ Live Ops</a> · <a href="#/workspaces" class="slabel">→ Workspaces</a></div></div>
     </div>
   </div>`;
 }
 
-/* ---- Work Board ---- */
-const EPIC_COLS = [
-  { key: 'ok', title: 'On track' }, { key: 'warn', title: 'At risk' },
-  { key: 'risk', title: 'Off track' }, { key: 'done', title: 'Completed' },
-];
+/* ---- Work Board ---- (Backlog → Ready → In Progress → Done → Cancelled) */
 function renderBoard() {
   const B = State.board;
   const focus = B.epicFocus ? State.byId[B.epicFocus] : null;
+  // Epics first in the level toggle (epics are first-class).
   const levelSeg = `<div class="seg">
-    <button data-act="board-level" data-level="tasks" class="${B.level === 'tasks' ? 'on' : ''}">Tasks</button>
-    <button data-act="board-level" data-level="epics" class="${B.level === 'epics' ? 'on' : ''}">Epics</button></div>`;
+    <button data-act="board-level" data-level="epics" class="${B.level === 'epics' ? 'on' : ''}">Epics</button>
+    <button data-act="board-level" data-level="tasks" class="${B.level === 'tasks' ? 'on' : ''}">Tasks</button></div>`;
   const focusChip = focus ? `<span class="chipfilter">EPIC: ${esc(clamp(focus.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 32))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
-  const archSeg = B.level === 'tasks' ? `<div class="seg"><button data-act="board-arch" data-v="0" class="${!B.archived ? 'on' : ''}">Active</button><button data-act="board-arch" data-v="1" class="${B.archived ? 'on' : ''}">Archived</button></div>` : '';
+  const closedToggle = B.level === 'tasks'
+    ? `<button class="btn ${B.showClosed ? 'on' : ''}" data-act="board-closed">${B.showClosed ? 'Hide' : 'Show'} done / cancelled</button>` : '';
   let chips = '';
   if (B.level === 'tasks') {
     const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
-    chips = `<div class="controls">${types.map((t) => `<button class="btn ${State.filters.type === t ? 'on' : ''}" data-act="chip-type" data-val="${t}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
-      ${PRIO_ORDER.map((p) => `<button class="btn ${State.filters.prio === p ? 'on' : ''}" data-act="chip-prio" data-val="${p}">${p}</button>`).join('')}</div>`;
+    chips = `<div class="controls">${types.map((t) => `<button class="btn ${State.filters.types.has(t) ? 'on' : ''}" data-act="chip-type" data-val="${t}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
+      ${PRIO_ORDER.map((p) => `<button class="btn ${State.filters.prios.has(p) ? 'on' : ''}" data-act="chip-prio" data-val="${p}">${p}</button>`).join('')}
+      ${(State.filters.types.size || State.filters.prios.size) ? '<button class="btn" data-act="chip-clear">clear</button>' : ''}</div>`;
   }
   const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     <input id="boardSearch" type="search" placeholder="filter cards…" value="${esc(State.filters.q)}"></div>`;
   const cols = B.level === 'epics' ? renderEpicColumns() : renderTaskColumns(focus);
-  return `<div class="boardbar">${levelSeg}${archSeg}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
+  return `<div class="boardbar">${levelSeg}${closedToggle}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
 }
 function column(col, cards, count, key) {
   const lim = State.board.limits[key] ?? 25;
   const shown = cards.slice(0, lim);
   const more = cards.length > lim ? `<button class="kmore" data-act="more" data-col="${key}">+${cards.length - lim} more</button>` : '';
   const body = shown.length ? shown.join('') + more : `<div class="kempty">— empty —</div>`;
-  return `<div class="kcol"><div class="kcol__head"><span class="kcol__title">${esc(col.title)}</span><span class="kcol__count">${count}</span></div>
+  const note = col.note ? `<span class="kcol__note">${esc(col.note)}</span>` : '';
+  return `<div class="kcol"><div class="kcol__head"><span class="kcol__title">${esc(col.title)}</span>${note}<span class="kcol__count">${count}</span></div>
     <div class="kcol__body">${body}</div></div>`;
 }
 function renderTaskColumns(focus) {
   let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
   if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
   const byRecent = (a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at);
-  if (State.board.archived) {
-    // Archived = closed set (done + cancelled) — keeps the live board clean.
-    const done = pool.filter((i) => i.status === 'done').sort(byRecent);
-    const cancelled = pool.filter((i) => i.status === 'cancelled').sort(byRecent);
-    return [{ key: 'done', title: 'Done' }, { key: 'cancelled', title: 'Cancelled' }]
-      .map((c) => column(c, (c.key === 'done' ? done : cancelled).map(taskCard), (c.key === 'done' ? done : cancelled).length, 'a_' + c.key)).join('');
+  // Honest mapping onto the target vocabulary. Kernel status = open/done/cancelled
+  // plus blocked/claim flags — there is no distinct "backlog" state yet (SEAM
+  // b2f856b1), so the Backlog column holds open+unclaimed+blocked work (parked
+  // until a blocker clears). This also keeps blocked items visible without a
+  // dedicated Blocked column.
+  const backlog = [], ready = [], progress = [];
+  pool.forEach((i) => {
+    if (i.status === 'done' || i.status === 'cancelled') return;
+    if (i.claimed_by) progress.push(i);
+    else if (i.blocked) backlog.push(i);
+    else ready.push(i);
+  });
+  [backlog, ready, progress].forEach((b) => b.sort(rankByPrio));
+  const cols = [
+    { def: { key: 'backlog', title: 'Backlog', note: 'blocked · parked' }, items: backlog },
+    { def: { key: 'ready', title: 'Ready' }, items: ready },
+    { def: { key: 'progress', title: 'In progress' }, items: progress },
+  ];
+  if (State.board.showClosed) {
+    cols.push(
+      { def: { key: 'done', title: 'Done' }, items: pool.filter((i) => i.status === 'done').sort(byRecent) },
+      { def: { key: 'cancelled', title: 'Cancelled' }, items: pool.filter((i) => i.status === 'cancelled').sort(byRecent) },
+    );
   }
-  const buckets = { ready: [], progress: [], blocked: [] };
-  pool.forEach((i) => { if (i.status === 'done' || i.status === 'cancelled') return; const c = columnOf(i); if (c && buckets[c]) buckets[c].push(i); });
-  ['ready', 'progress', 'blocked'].forEach((k) => buckets[k].sort(rankByPrio));
-  return [{ key: 'ready', title: 'Ready' }, { key: 'progress', title: 'In progress' }, { key: 'blocked', title: 'Blocked' }]
-    .map((c) => column(c, buckets[c.key].map(taskCard), buckets[c.key].length, c.key)).join('');
+  return cols.map((c) => column(c.def, c.items.map(taskCard), c.items.length, c.def.key)).join('');
 }
+const EPIC_COLS = [
+  { key: 'ok', title: 'On track' }, { key: 'warn', title: 'At risk' },
+  { key: 'risk', title: 'Off track' }, { key: 'done', title: 'Completed' },
+];
 function renderEpicColumns() {
   const buckets = { ok: [], warn: [], risk: [], done: [] };
   State.epics.filter((e) => !State.filters.q || e.title.toLowerCase().includes(State.filters.q.toLowerCase()))
@@ -322,7 +353,6 @@ function renderEpics() {
       <td><span class="trend">${esc(relTime(e.updated_at))}</span></td></tr>`;
     let children = '';
     if (open) {
-      // Density fix: children as ~1/3-width cards, 3 per row, ordered by priority.
       const cards = kids.slice().sort(rankByPrio).map((k) => `<div class="minicard" data-act="open" data-id="${esc(k.id)}">
         <div class="minicard__top">${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}${typeBadge(k.type)}${prioTag(k.priority)}<span class="minicard__id">${esc(String(k.id).slice(0, 8))}</span></div>
         <div class="minicard__title">${esc(clamp(k.title, 74))}</div>
@@ -334,34 +364,55 @@ function renderEpics() {
   const body = eps.length ? `<div class="tblwrap"><table class="tbl">
     <thead><tr><th>Name</th><th>Target</th><th>Health</th><th>Progress</th><th>Active</th><th>Activity</th></tr></thead>
     <tbody>${rows}</tbody></table></div>` : `<div class="empty-state"><h4>No epics in this tab</h4><p>Try “All”.</p></div>`;
-  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · row title → open in board</span></div>${body}</div>`;
+  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · click a name to open detail</span></div>${body}</div>`;
 }
 
-/* ---- Decisions ---- */
+/* ---- Decisions (graphical: status board + relationships + architecture index) */
+function decStatusKey(s) {
+  const l = (s || '').toLowerCase();
+  if (l.startsWith('accept') || l === 'done') return 'accepted';
+  if (l.startsWith('propos') || l === 'open') return 'proposed';
+  if (l.startsWith('supersed')) return 'superseded';
+  if (l.startsWith('deprecat')) return 'deprecated';
+  return 'proposed';
+}
+const DEC_COLS = [
+  { key: 'proposed', title: 'Proposed' }, { key: 'accepted', title: 'Accepted' },
+  { key: 'superseded', title: 'Superseded' }, { key: 'deprecated', title: 'Deprecated' },
+];
+const SOURCE_LABEL = { kernel: 'kernel', headline: 'headline PD', adr: 'ADR' };
 function renderDecisions() {
   const decs = State.snapshot.decisions || [];
-  const groups = [{ key: 'kernel', label: 'Kernel decisions' }, { key: 'headline', label: 'Architecture decisions (headline)' }, { key: 'adr', label: 'ADRs' }];
-  const statusClass = (s) => { const l = (s || '').toLowerCase(); if (l.startsWith('accept')) return 'accepted'; if (l.startsWith('propos')) return 'proposed'; if (l.startsWith('supersed')) return 'superseded'; if (l.startsWith('deprecat')) return 'deprecated'; if (l === 'done') return 'done'; return ''; };
-  const card = (d) => `<div class="deccard">
-    <div class="deccard__top"><span class="stbadge ${statusClass(d.status)}">${esc(d.status || 'open')}</span>${d.component ? `<span class="badge">${esc(clamp(d.component, 26))}</span>` : ''}</div>
-    <div class="deccard__title">${esc(d.title)}</div>
-    <div class="deccard__body">${esc(clamp(d.rationale || '', 320))}</div>
-    <div class="deccard__foot"><span class="deccard__id">${esc(String(d.id))}</span></div></div>`;
-  let html = '<div class="fade-in">';
-  groups.forEach((g) => {
-    const items = decs.filter((d) => d.source === g.key);
-    if (!items.length) return;
-    html += `<div class="section-title">${esc(g.label)} · ${items.length}</div><div class="deckgrid">${items.map(card).join('')}</div>`;
-  });
   const arch = State.snapshot.architecture || [];
-  html += `<div class="section-title">Architecture docs · ${arch.length}</div>`;
-  html += arch.length ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="glyph">▦</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
+  const buckets = {}; DEC_COLS.forEach((c) => (buckets[c.key] = []));
+  decs.forEach((d) => { const k = decStatusKey(d.status); (buckets[k] || buckets.proposed).push(d); });
+  const card = (d) => `<div class="deccard" data-act="open-dec" data-id="${esc(String(d.id))}">
+    <div class="deccard__top"><span class="badge">${esc(SOURCE_LABEL[d.source] || d.source || '')}</span>${d.component ? `<span class="badge badge--soft">${esc(clamp(d.component, 22))}</span>` : ''}</div>
+    <div class="deccard__title">${esc(clamp(d.title, 120))}</div>
+    <div class="deccard__foot"><span class="deccard__id">${esc(clamp(String(d.id), 22))}</span></div></div>`;
+  const boardCols = DEC_COLS.map((c) => {
+    const items = buckets[c.key];
+    const body = items.length ? items.map(card).join('') : '<div class="kempty">— none —</div>';
+    return `<div class="deccol"><div class="deccol__head"><span class="kcol__title">${esc(c.title)}</span><span class="kcol__count">${items.length}</span></div><div class="deccol__body">${body}</div></div>`;
+  }).join('');
+
+  const bySource = {}; decs.forEach((d) => (bySource[d.source] = (bySource[d.source] || 0) + 1));
+  const sourceLegend = Object.entries(bySource).map(([s, n]) => `<span class="item"><span class="sw"></span>${esc(SOURCE_LABEL[s] || s)} <b>${n}</b></span>`).join('');
+
+  const archList = arch.length
+    ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="glyph">▦</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
     : `<div class="empty-state"><h4>No architecture docs</h4><p>Add records under docs/architecture/ or docs/adr/.</p></div>`;
-  if (!decs.length) html += `<div class="empty-state"><h4>No decisions</h4><p>Kernel type=decision issues + headline PDs appear here.</p></div>`;
-  return html + '</div>';
+
+  return `<div class="fade-in">
+    <div class="viewhead"><span class="crumb">${decs.length} decisions across kernel · headline PDs · ADRs</span><div class="topbar__spacer"></div><div class="legend">${sourceLegend}</div></div>
+    <div class="decboard">${boardCols}</div>
+    <div class="seam"><b>SEAM — relationships.</b> Supersede / depends-on / decided-in-work-folder edges between decisions and ADRs are not carried on the kernel record yet (${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}). Columns above are grouped by lifecycle status; directed relationships render once the graph lands.</div>
+    <div class="section-title">Architecture index · ${arch.length}</div>${archList}
+    ${!decs.length ? '<div class="empty-state"><h4>No decisions</h4><p>Kernel type=decision issues + headline PDs + ADRs appear here.</p></div>' : ''}
+  </div>`;
 }
 
-/* ---- Plans ---- */
+/* ---- Plans ---- (rows open the in-render markdown reader) */
 function renderPlans() {
   const plans = (State.snapshot.plans || []).slice();
   const monthLabel = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Undated';
@@ -369,19 +420,22 @@ function renderPlans() {
   plans.forEach((p) => { const m = p.date ? p.date.slice(0, 7) : 'zzzz'; (groups[m] = groups[m] || []).push(p); });
   const months = Object.keys(groups).sort((a, b) => b.localeCompare(a));
   const tag = (on, label) => on ? `<span class="badge">${label}</span>` : '';
-  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first</span></div>`;
+  const docs = window.FORGE_DOCS || {};
+  const readable = (slug) => Object.keys(docs).some((k) => k.startsWith(slug + '/'));
+  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first · click to read in-render</span></div>`;
   months.forEach((m) => {
     html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div>`;
     groups[m].forEach((p) => {
-      html += `<div class="tl-row"><span class="tl-date">${esc(p.date || '—')}</span>
-        <div><div class="tl-title">${esc(clamp(p.title, 84))}</div><div class="tl-slug">${esc(p.slug)}</div></div>
+      const canRead = readable(p.slug);
+      html += `<div class="tl-row ${canRead ? 'readable' : ''}" ${canRead ? `data-act="open-folder" data-slug="${esc(p.slug)}"` : ''}><span class="tl-date">${esc(p.date || '—')}</span>
+        <div><div class="tl-title">${esc(clamp(p.title, 84))}${canRead ? ' <span class="readmark">read ↗</span>' : ''}</div><div class="tl-slug">${esc(p.slug)}</div></div>
         <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="badge">${p.docCount} docs</span></div></div>`;
     });
   });
   return html + '</div>';
 }
 
-/* ---- Live Ops (multi-harness / multi-region) ---- */
+/* ---- Live Ops ---- (simplified, softer — worktree detail lives in Workspaces) */
 function renderOps() {
   const ops = State.snapshot.ops || { worktrees: [], prs: [], activeClaims: [] };
   const claims = ops.activeClaims || [];
@@ -394,7 +448,7 @@ function renderOps() {
   const actorNames = Object.keys(actors).sort((a, b) => actors[b].length - actors[a].length);
 
   const top = `<div class="ops-top">
-    <div class="cell"><div class="n">${actorNames.length}</div><div class="l">Active actors</div></div>
+    <div class="cell"><div class="n">${actorNames.length}</div><div class="l">Active agents</div></div>
     <div class="cell"><div class="n">${claims.length}</div><div class="l">Live claims</div></div>
     <div class="cell"><div class="n">${trees.length}</div><div class="l">Worktrees</div></div>
     <div class="cell"><div class="n">${prs.length}</div><div class="l">Open PRs</div></div>
@@ -402,33 +456,27 @@ function renderOps() {
 
   const actorCards = actorNames.length ? actorNames.map((name) => {
     const items = actors[name];
-    const lines = items.map((c) => `<div class="opsline">${pulse(true)}<span class="t">${esc(clamp(c.title, 52))}</span>${prioTag(c.priority)}<span class="when">${esc(relTime(c.updated_at))}</span></div>`).join('');
+    const lines = items.map((c) => `<div class="opsline" data-act="open" data-id="${esc(c.id)}" style="cursor:pointer">${pulse(true)}<span class="t">${esc(clamp(c.title, 60))}</span><span class="when">${esc(relTime(c.updated_at))}</span></div>`).join('');
     return `<div class="actorcard"><div class="actorcard__head"><span class="kcard__owner"><span class="av">${esc(name.slice(0, 2))}</span></span><span class="actorcard__name">${esc(name)}</span><span class="actorcard__meta">${items.length} live</span></div>${lines}</div>`;
-  }).join('') : `<div class="empty-state"><h4>No active actors</h4><p>Claimed-and-open issues (actor = claimed_by) appear here.</p></div>`;
+  }).join('') : `<div class="empty-state"><h4>No active agents</h4><p>Claimed-and-open issues (agent = claimed_by) appear here.</p></div>`;
 
-  const prList = prs.length ? prs.map((p) => `<div class="opsline"><span class="pr-num">#${esc(p.number)}</span><span class="t">${esc(clamp(p.title, 54))}</span>${p.isDraft ? '<span class="badge">draft</span>' : ''}<span class="slabel">${esc((p.state || '').toLowerCase())}</span></div>`).join('')
-    : `<div class="empty-state"><h4>No open PRs</h4><p>gh pr list returned none.</p></div>`;
+  const prList = prs.length ? prs.map((p) => {
+    const ci = p.ci ? p.ci.state : '';
+    const ciGlyph = ci === 'pass' ? '●' : ci === 'fail' ? '✕' : ci ? '◐' : '';
+    return `<div class="opsline"><span class="pr-num">#${esc(p.number)}</span><span class="t">${esc(clamp(p.title, 56))}</span>${p.isDraft ? '<span class="badge">draft</span>' : ''}${ciGlyph ? `<span class="glyph" title="CI ${esc(ci)}">${ciGlyph}</span>` : ''}${p.ready ? '<span class="badge">ready</span>' : ''}</div>`;
+  }).join('') : `<div class="empty-state"><h4>No open PRs</h4><p>gh pr list returned none.</p></div>`;
 
-  const bySurface = {};
-  trees.forEach((w) => { (bySurface[w.surface || 'other'] = bySurface[w.surface || 'other'] || []).push(w); });
-  // Harnesses are peers — labels are neutral; unknown → a generic local surface.
-  const SURFACE_LABEL = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', t3code: 't3code', cloud: 'Cloud / ephemeral', worktree: 'Local worktree', main: 'Main checkout', other: 'Unknown harness' };
-  const surfaceHtml = Object.keys(bySurface).sort((a, b) => bySurface[b].length - bySurface[a].length).map((s) => {
-    const lines = bySurface[s].map((w) => `<div class="opsline"><span class="pr-num mono" style="min-width:0">${esc(w.branch || '(detached)')}</span><span class="surface-tag">${esc(s)}</span><span class="t mono-path">${esc(w.path)}</span><span class="when">${esc(w.head || '')}</span></div>`).join('');
-    return `<div class="actorcard"><div class="actorcard__head"><span class="actorcard__name">${esc(SURFACE_LABEL[s] || s)}</span><span class="actorcard__meta">${bySurface[s].length}</span></div>${lines}</div>`;
-  }).join('');
-
-  return `<div class="fade-in">${top}
+  return `<div class="fade-in ops--soft">${top}
     <div class="ops-grid">
       <div><div class="section-title" style="margin-top:0">Active agents · what each is working on</div>${actorCards}</div>
       <div><div class="section-title" style="margin-top:0">Open pull requests · ${prs.length}</div>${prList}</div>
     </div>
-    <div class="section-title">Worktrees by surface · ${trees.length}</div>${surfaceHtml}
-    <div class="seam"><b>SEAM — multi-harness/region.</b> Exposed by the CLI today: ${esc(seam.exposed.join(', '))}. Pending (present in the kernel lease table, not yet in the read surface): ${esc(seam.pending.join(', '))}. Harness/surface here is <b>inferred from the worktree path</b>; the real harness + region tag arrives with the sync-rail / Phase-2 lease read.</div>
+    <div class="opsfoot"><span>Full worktree / branch / git state →</span> <a href="#/workspaces" class="slabel">Workspaces</a></div>
+    <div class="seam"><b>SEAM.</b> Real per-agent session_id, worktree_id, harness and region come from the kernel lease-read (${esc((seam.pending || []).join(', '))}); today the CLI exposes ${esc((seam.exposed || []).join(', '))}. Harness/surface is inferred from the worktree path until then.</div>
   </div>`;
 }
 
-/* ---- Needs Attention lane (Overview top) ---- */
+/* ---- Needs Attention lane ---- */
 function renderAttention() {
   const items = State.snapshot.needsAttention || [];
   const seam = State.snapshot.seams || {};
@@ -448,7 +496,7 @@ function renderAttention() {
     ${rows}${empty}${staleSeam}</div>`;
 }
 
-/* ---- Workspaces (worktree = first-class card) ---- */
+/* ---- Workspaces ---- (worktree = first-class card; simplified) */
 function renderWorkspaces() {
   const trees = (State.snapshot.ops && State.snapshot.ops.worktrees) || [];
   const showArch = !!State.wsArchived;
@@ -456,25 +504,26 @@ function renderWorkspaces() {
   const nActive = trees.filter((w) => !w.archived).length, nArch = trees.length - nActive;
   const toggle = `<div class="seg">
     <button data-act="ws-arch" data-v="0" class="${!showArch ? 'on' : ''}">Active ${nActive}</button>
-    <button data-act="ws-arch" data-v="1" class="${showArch ? 'on' : ''}">Archived ${nArch}</button></div>`;
+    <button data-act="ws-arch" data-v="1" class="${showArch ? 'on' : ''}">Merged ${nArch}</button></div>`;
+  const SURFACE_LABEL = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', t3code: 't3code', cloud: 'Cloud', worktree: 'Local', main: 'Main', other: 'Unknown' };
   const card = (w) => {
     const s = wtSummary(w);
+    // "Working on" = the branch / PR this workspace relates to (the clearest signal today).
+    const working = w.pr ? `PR #${w.pr.number}` : (w.mergedPr ? `merged #${w.mergedPr}` : (w.branch || '(detached)'));
     const git = s.hasGit
-      ? `<span class="gitstat"><span title="ahead">↑<b>${s.ahead}</b></span><span title="behind">↓<b>${s.behind}</b></span><span>${s.clean ? 'clean' : `●<b>${s.dirty}</b> dirty`}</span></span>`
+      ? `<span class="gitstat"><span title="ahead of origin/master">↑${s.ahead}</span><span title="behind origin/master">↓${s.behind}</span><span class="${s.clean ? '' : 'dirty'}">${s.clean ? 'clean' : s.dirty + ' dirty'}</span></span>`
       : `<span class="seam-inline">git ahead/behind — SEAM</span>`;
-    const pr = w.pr
-      ? `<span class="chip hard">PR #${w.pr.number}</span><span class="slabel">CI ${w.pr.ci === 'pass' ? '●' : w.pr.ci === 'fail' ? '✕' : '◐'}</span>${w.pr.ready ? '<span class="chip">READY</span>' : ''}`
-      : (w.mergedPr ? `<span class="chip">merged #${w.mergedPr}</span>` : `<span class="chip">no PR</span>`);
+    const ci = w.pr ? `<span class="slabel">CI ${w.pr.ci === 'pass' ? '●' : w.pr.ci === 'fail' ? '✕' : '◐'}</span>${w.pr.ready ? '<span class="chip hard">ready</span>' : ''}` : '';
     return `<div class="wt-card ${w.archived ? 'arch' : ''}">
-      <div class="wt-card__top"><span class="wt-card__branch">${esc(w.branch || '(detached)')}</span><span class="chip">${esc(w.surface)}</span></div>
+      <div class="wt-card__top"><span class="wt-card__branch">${esc(w.branch || '(detached)')}</span><span class="chip">${esc(SURFACE_LABEL[w.surface] || w.surface)}</span></div>
+      <div class="wt-working">working on · <b>${esc(working)}</b> ${ci}</div>
       <div class="wt-row">${git}<span class="k">${esc(w.head || '')}</span></div>
-      <div class="wt-row">${pr}</div>
       <div class="wt-path">${esc(w.path)}</div>
-      <div class="seam-inline">linked task · status · phase · harness/region — SEAM (worktree↔issue + real harness: ${esc((State.snapshot.seams && State.snapshot.seams.harnessRegion || '7dc229d4').split(' ')[0])})</div>
     </div>`;
   };
-  const grid = list.length ? `<div class="cardgrid">${list.map(card).join('')}</div>` : `<div class="empty-state"><h4>No ${showArch ? 'archived' : 'active'} worktrees</h4></div>`;
-  return `<div class="fade-in"><div class="viewhead">${toggle}<div class="topbar__spacer"></div><span class="crumb">real git ahead/behind/dirty · PR + CI · surface inferred</span></div>${grid}</div>`;
+  const grid = list.length ? `<div class="cardgrid">${list.map(card).join('')}</div>` : `<div class="empty-state"><h4>No ${showArch ? 'merged' : 'active'} worktrees</h4></div>`;
+  return `<div class="fade-in"><div class="viewhead">${toggle}<div class="topbar__spacer"></div><span class="crumb">each card = one git worktree · real ahead/behind/dirty + its PR</span></div>${grid}
+    <div class="seam-inline" style="margin-top:14px;border-top:1px dashed var(--line)">Linked kernel issue · lifecycle phase · real harness/region — SEAM (worktree↔issue + lease-read ${esc((State.snapshot.seams && State.snapshot.seams.harnessRegion || '7dc229d4').split(' ')[0])})</div></div>`;
 }
 
 /* ---- Backlog (SEAM until kernel backlog state lands) ---- */
@@ -483,39 +532,99 @@ function renderBacklog() {
   return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled</span></div>
     <div class="empty-state"><h4>Backlog — SEAM</h4>
       <p>A real kernel <b>backlog lifecycle state</b> is pending (<span class="mono">${esc(seam.split(' ')[0])}</span>). Once it lands, parked ideas render here and promote → task / epic.</p>
-      <p style="margin-top:10px;color:var(--faint)">The existing <span class="mono">backlog</span> label tags 102 <em>completed</em> release-train issues — a different thing — so it is deliberately not shown here rather than fake the backlog.</p>
+      <p style="margin-top:10px;color:var(--faint)">Today, open + blocked work appears as the <b>Backlog column</b> on the Work Board (parked until unblocked). The <span class="mono">backlog</span> label tags 102 <em>completed</em> release-train issues — a different thing — so it is deliberately not shown here rather than fake the backlog.</p>
     </div></div>`;
 }
 
-/* ---- Memory (activity + folder cards + graph SEAM) ---- */
+/* ---- Memory ---- (work-folder memory + recall SEAM + Graphiti graph SEAM) */
 function renderMemory() {
   const q = (State.memFilter || '').toLowerCase();
-  const all = State.issues.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  const acts = all.filter((i) => !q || (i.title + ' ' + i.type + ' ' + (i.claimed_by || '')).toLowerCase().includes(q)).slice(0, 18);
-  const actCards = acts.map((i) => `<div class="minicard" data-act="open" data-id="${esc(i.id)}">
-    <div class="minicard__top">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}${typeBadge(i.type)}<span class="minicard__id">${esc(String(i.id).slice(0, 8))}</span></div>
-    <div class="minicard__title">${esc(clamp(i.title, 70))}</div>
-    <div class="minicard__meta">${i.parent_id ? epicRef(i) : ''}<span class="slabel">${esc(relTime(i.updated_at))}</span></div></div>`).join('');
-  const folders = (State.snapshot.plans || []).slice(0, 12).map((p) => `<div class="minicard" style="cursor:default">
-    <div class="minicard__top"><span class="glyph">▦</span><span class="slabel">${esc(p.date || '—')}</span></div>
+  const docs = window.FORGE_DOCS || {};
+  const readable = (slug) => Object.keys(docs).some((k) => k.startsWith(slug + '/'));
+  const plans = (State.snapshot.plans || []).filter((p) => !q || (p.title + ' ' + p.slug).toLowerCase().includes(q));
+  const folders = plans.slice(0, 30).map((p) => {
+    const canRead = readable(p.slug);
+    return `<div class="minicard ${canRead ? '' : 'nonread'}" ${canRead ? `data-act="open-folder" data-slug="${esc(p.slug)}"` : 'style="cursor:default"'}>
+    <div class="minicard__top"><span class="glyph">▦</span><span class="slabel">${esc(p.date || '—')}</span>${canRead ? '<span class="minicard__id">read ↗</span>' : ''}</div>
     <div class="minicard__title">${esc(clamp(p.title, 62))}</div>
-    <div class="minicard__meta">${p.hasPlan ? '<span class="badge">plan</span>' : ''}${p.hasTasks ? '<span class="badge">tasks</span>' : ''}${p.hasDecisions ? '<span class="badge">decisions</span>' : ''}<span class="minicard__id">${p.docCount} docs</span></div></div>`).join('');
-  const filt = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="memFilter" type="search" placeholder="filter activity…" value="${esc(State.memFilter || '')}"></div>`;
+    <div class="minicard__meta">${p.hasPlan ? '<span class="badge">plan</span>' : ''}${p.hasTasks ? '<span class="badge">tasks</span>' : ''}${p.hasDecisions ? '<span class="badge">decisions</span>' : ''}<span class="minicard__id">${p.docCount} docs</span></div></div>`;
+  }).join('');
+  const filt = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="memFilter" type="search" placeholder="filter work folders…" value="${esc(State.memFilter || '')}"></div>`;
   const memN = Array.isArray(State.snapshot.memory) ? State.snapshot.memory.length : 0;
+  const recallBlock = memN
+    ? `<div class="cardgrid">${State.snapshot.memory.slice(0, 18).map((e) => `<div class="minicard" style="cursor:default"><div class="minicard__title">${esc(clamp(typeof e === 'string' ? e : (e.text || e.note || e.content || JSON.stringify(e)), 140))}</div></div>`).join('')}</div>`
+    : `<div class="seam"><b>SEAM — recall / .remember.</b> <span class="mono">forge recall</span> returned ${memN} entries in this snapshot. The <span class="mono">.remember</span> rotation buffers (now / today / recent / archive) are user-global and not yet slug-scoped into the project snapshot (${esc((State.snapshot.seams && State.snapshot.seams.graphiti || 'c7971150').split(' ')[0])}).</div>`;
   return `<div class="fade-in">
-    <div class="viewhead"><span class="crumb">activity + folder memory as cards</span><div class="topbar__spacer"></div>${filt}</div>
-    <div class="section-title" style="margin-top:0">Recent activity · ${acts.length}</div>
-    <div class="cardgrid">${actCards}</div>
-    <div class="section-title">Work-folder memory · ${(State.snapshot.plans || []).length}</div>
+    <div class="viewhead"><span class="crumb">work-folder memory · recall · temporal graph</span><div class="topbar__spacer"></div>${filt}</div>
+    <div class="section-title" style="margin-top:0">Work-folder memory · ${plans.length} folders</div>
     <div class="cardgrid">${folders}</div>
+    <div class="section-title">Recall buffer</div>
+    ${recallBlock}
     <div class="section-title">Temporal memory graph</div>
     <div class="graph-seam"><div class="nodes"><span class="node">idea</span><span class="edge"></span><span class="node">issue</span><span class="edge"></span><span class="node">PR</span></div>
       <h4>Graphiti graph — SEAM</h4>
-      <p>${esc((State.snapshot.seams && State.snapshot.seams.graphiti) || 'c7971150')}.<br>Activity↔PR/issue/work-folder connections pending ${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])} · forge recall returns ${memN} entries.</p></div>
+      <p>${esc((State.snapshot.seams && State.snapshot.seams.graphiti) || 'c7971150')}.<br>Activity↔PR/issue/work-folder connections pending ${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}.</p></div>
   </div>`;
 }
 
-/* ---- Click-through detail panel ---- */
+/* ============================================================================
+ * Minimal Markdown → HTML (safe: escape first, then structure). In-render reader.
+ * ========================================================================== */
+function renderMarkdown(md) {
+  const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
+  let html = '', inCode = false, codeBuf = [], listType = null, para = [];
+  const inline = (t) => esc(t)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$1_URL_" target="_blank" rel="noopener">$1</a>'.replace('$1_URL_', '$2'))
+    .replace(/\[([^\]]+)\]\((?!https?:)([^)]+)\)/g, '<span class="mdlink">$1</span>');
+  const flushPara = () => { if (para.length) { html += `<p>${para.map(inline).join('<br>')}</p>`; para = []; } };
+  const flushList = () => { if (listType) { html += `</${listType}>`; listType = null; } };
+  for (const raw of lines) {
+    const line = raw;
+    if (/^```/.test(line.trim())) {
+      if (inCode) { html += `<pre><code>${esc(codeBuf.join('\n'))}</code></pre>`; codeBuf = []; inCode = false; }
+      else { flushPara(); flushList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { codeBuf.push(line); continue; }
+    const h = line.match(/^(#{1,6})\s+(.+)$/);
+    if (h) { flushPara(); flushList(); const lv = h[1].length; html += `<h${lv} class="md-h${lv}">${inline(h[2])}</h${lv}>`; continue; }
+    if (/^\s*([-*])\s+/.test(line)) { flushPara(); if (listType !== 'ul') { flushList(); html += '<ul>'; listType = 'ul'; } html += `<li>${inline(line.replace(/^\s*[-*]\s+/, ''))}</li>`; continue; }
+    if (/^\s*\d+\.\s+/.test(line)) { flushPara(); if (listType !== 'ol') { flushList(); html += '<ol>'; listType = 'ol'; } html += `<li>${inline(line.replace(/^\s*\d+\.\s+/, ''))}</li>`; continue; }
+    if (/^\s*>\s?/.test(line)) { flushPara(); flushList(); html += `<blockquote>${inline(line.replace(/^\s*>\s?/, ''))}</blockquote>`; continue; }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { flushPara(); flushList(); html += '<hr>'; continue; }
+    if (line.trim() === '') { flushPara(); flushList(); continue; }
+    para.push(line.trim());
+  }
+  if (inCode) html += `<pre><code>${esc(codeBuf.join('\n'))}</code></pre>`;
+  flushPara(); flushList();
+  return html;
+}
+const DocState = { slug: null, file: null };
+function docsFor(slug) { const d = window.FORGE_DOCS || {}; return Object.keys(d).filter((k) => k.startsWith(slug + '/')).sort(); }
+function fileLabel(key) { return key.split('/').slice(1).join('/'); }
+function openFolder(slug, file) {
+  const keys = docsFor(slug);
+  const el = $('#detail');
+  if (!keys.length) {
+    $('#detailPanel').innerHTML = `<button class="detail__close" data-act="detail-close">✕ esc</button><h2 class="detail__title">${esc(slug)}</h2><div class="seam"><b>SEAM.</b> No markdown baked for this folder (over the per-file cap, or empty). Regenerate the snapshot to include it.</div>`;
+    el.hidden = false; el.classList.add('on'); return;
+  }
+  DocState.slug = slug;
+  DocState.file = keys.includes(file) ? file : (keys.find((k) => k.endsWith('/plan.md')) || keys.find((k) => k.endsWith('/README.md')) || keys[0]);
+  const tabs = keys.map((k) => `<button class="doctab ${k === DocState.file ? 'on' : ''}" data-act="doc-file" data-slug="${esc(slug)}" data-file="${esc(k)}">${esc(fileLabel(k))}</button>`).join('');
+  const content = renderMarkdown((window.FORGE_DOCS || {})[DocState.file]);
+  $('#detailPanel').innerHTML = `<button class="detail__close" data-act="detail-close">✕ esc</button>
+    <div class="detail__eyebrow"><span class="badge">work folder</span><span class="slabel">${esc(slug)}</span></div>
+    <div class="doctabs">${tabs}</div>
+    <article class="md">${content}</article>`;
+  el.hidden = false; el.classList.add('on');
+  $('#detailPanel').scrollTop = 0;
+}
+
+/* ---- Click-through detail panel (issue / epic / decision) ---- */
 function issueDetailHtml(i) {
   const kids = State.kids[i.id] || [];
   const parent = i.parent_id ? State.byId[i.parent_id] : null;
@@ -523,6 +632,11 @@ function issueDetailHtml(i) {
     <div class="minicard__top">${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}${typeBadge(k.type)}${prioTag(k.priority)}<span class="minicard__id">${esc(String(k.id).slice(0, 8))}</span></div>
     <div class="minicard__title">${esc(clamp(k.title, 78))}</div>
     <div class="minicard__meta">${phaseTag(k, true)}</div></div>`).join('');
+  const focusBtn = i.type === 'epic' ? `<button class="btn" data-act="focus-epic" data-id="${esc(i.id)}">Filter board to this epic ↳</button>` : '';
+  // Rich-detail STRUCTURE (fills as the work-folder↔PR/issue graph 56461780 lands).
+  const linkRow = (label, val) => `<div class="linkrow"><span class="linkrow__k">${esc(label)}</span><span class="linkrow__v">${val}</span></div>`;
+  const seamId = (State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0];
+  const seamTag = `<span class="seamtag">SEAM ${esc(seamId)}</span>`;
   return `<button class="detail__close" data-act="detail-close">✕ esc</button>
     <div class="detail__eyebrow">${typeBadge(i.type)}${prioTag(i.priority)}<span class="slabel">${esc(i.blocked ? 'blocked' : i.status)}</span>${isLive(i) ? pulse(true) : ''}${phaseTag(i)}</div>
     <h2 class="detail__title">${esc(i.title)}</h2>
@@ -535,15 +649,36 @@ function issueDetailHtml(i) {
       <dt>Deps</dt><dd>${(i.dependencies || []).length} dep · ${(i.dependents || []).length} dependents</dd>
       <dt>Updated</dt><dd class="mono">${esc(relTime(i.updated_at))} ago</dd>
     </dl>
+    ${focusBtn ? `<div class="detail__actions">${focusBtn}</div>` : ''}
     ${i.body ? `<div class="detail__body">${esc(clamp(i.body, 1400))}</div>` : ''}
     ${kids.length ? `<div class="section-title">Tasks · ${kids.length} (by priority)</div><div class="cardgrid">${childCards}</div>` : ''}
-    <div class="section-title">Linked PRs · decisions · plan</div>
-    <div class="seam"><b>SEAM.</b> Per-issue links to PRs / decisions / work-folder plan need the work-folder↔PR/issue graph (${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}). Kernel issues don't carry PR/branch back-refs yet.</div>`;
+    <div class="section-title">Linked work</div>
+    <div class="linkgraph">
+      ${linkRow('Files changed', seamTag)}
+      ${linkRow('Pull request', seamTag)}
+      ${linkRow('Commits', seamTag)}
+      ${linkRow('Activity / comments', seamTag)}
+    </div>
+    <div class="seam"><b>SEAM.</b> Per-issue links to files / PR / commits / activity need the work-folder↔PR/issue graph (${esc(seamId)}). Kernel issues don't carry PR/branch back-refs yet — the structure above fills in as that lands.</div>`;
+}
+function decDetailHtml(d) {
+  return `<button class="detail__close" data-act="detail-close">✕ esc</button>
+    <div class="detail__eyebrow"><span class="badge">${esc(SOURCE_LABEL[d.source] || d.source || 'decision')}</span><span class="slabel">${esc(d.status || 'open')}</span>${d.component ? `<span class="badge badge--soft">${esc(d.component)}</span>` : ''}</div>
+    <h2 class="detail__title">${esc(d.title)}</h2>
+    <dl class="detail__grid"><dt>ID</dt><dd class="mono">${esc(String(d.id))}</dd><dt>Source</dt><dd>${esc(SOURCE_LABEL[d.source] || d.source || '—')}</dd><dt>Status</dt><dd>${esc(d.status || '—')}</dd></dl>
+    ${d.rationale ? `<div class="detail__body">${esc(d.rationale)}</div>` : ''}
+    <div class="section-title">Relationships</div>
+    <div class="seam"><b>SEAM.</b> Supersede / depends-on edges (${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}) are not on the kernel record yet.</div>`;
 }
 function openDetail(id) {
   const i = State.byId[id]; if (!i) return;
   $('#detailPanel').innerHTML = issueDetailHtml(i);
-  const el = $('#detail'); el.hidden = false; el.classList.add('on');
+  const el = $('#detail'); el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
+}
+function openDecision(id) {
+  const d = (State.snapshot.decisions || []).find((x) => String(x.id) === String(id)); if (!d) return;
+  $('#detailPanel').innerHTML = decDetailHtml(d);
+  const el = $('#detail'); el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
 }
 function closeDetail() { const el = $('#detail'); el.classList.remove('on'); el.hidden = true; }
 
@@ -588,20 +723,28 @@ function buildNav() {
     `<a href="#/${v.id}" data-view="${v.id}">${icon(v.id)}<span>${esc(v.title)}</span>${counts[v.id] != null ? `<span class="n">${counts[v.id]}</span>` : ''}</a>`).join('');
 }
 
-function onViewClick(e) {
-  const t = e.target.closest('[data-act]'); if (!t) return;
+// Shared action handler for clicks in both #view and the #detail overlay.
+function handleAct(t) {
   const act = t.dataset.act;
   if (act === 'board-level') { State.board.level = t.dataset.level; State.board.limits = {}; rerender(); }
-  else if (act === 'focus-epic') { State.board.epicFocus = t.dataset.id; State.board.level = 'tasks'; State.board.limits = {}; location.hash = '#/board'; }
+  else if (act === 'focus-epic') { State.board.epicFocus = t.dataset.id; State.board.level = 'tasks'; State.board.limits = {}; closeDetail(); if (State.route === 'board') rerender(); else location.hash = '#/board'; }
   else if (act === 'clear-focus') { State.board.epicFocus = null; rerender(); }
   else if (act === 'more') { const k = t.dataset.col; State.board.limits[k] = (State.board.limits[k] ?? 25) + 25; rerender(); }
-  else if (act === 'chip-type') { State.filters.type = State.filters.type === t.dataset.val ? null : t.dataset.val; rerender(); }
-  else if (act === 'chip-prio') { State.filters.prio = State.filters.prio === t.dataset.val ? null : t.dataset.val; rerender(); }
+  else if (act === 'chip-type') { const v = t.dataset.val; State.filters.types.has(v) ? State.filters.types.delete(v) : State.filters.types.add(v); rerender(); }
+  else if (act === 'chip-prio') { const v = t.dataset.val; State.filters.prios.has(v) ? State.filters.prios.delete(v) : State.filters.prios.add(v); rerender(); }
+  else if (act === 'chip-clear') { State.filters.types.clear(); State.filters.prios.clear(); rerender(); }
   else if (act === 'epics-tab') { State.epicsTab = t.dataset.tab; rerender(); }
   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
   else if (act === 'open') { openDetail(t.dataset.id); }
+  else if (act === 'open-dec') { openDecision(t.dataset.id); }
+  else if (act === 'open-folder') { openFolder(t.dataset.slug); }
+  else if (act === 'doc-file') { openFolder(t.dataset.slug, t.dataset.file); }
   else if (act === 'ws-arch') { State.wsArchived = t.dataset.v === '1'; rerender(); }
-  else if (act === 'board-arch') { State.board.archived = t.dataset.v === '1'; State.board.limits = {}; rerender(); }
+  else if (act === 'board-closed') { State.board.showClosed = !State.board.showClosed; State.board.limits = {}; rerender(); }
+}
+function onViewClick(e) {
+  const t = e.target.closest('[data-act]'); if (!t) return;
+  handleAct(t);
 }
 
 function wireGlobalSearch() {
@@ -614,8 +757,8 @@ function wireGlobalSearch() {
     const dec = (State.snapshot.decisions || []).filter((d) => (d.title + ' ' + d.id).toLowerCase().includes(q)).slice(0, 5);
     const grp = (label, items, html) => items.length ? `<div class="sr-group">${label}</div>${items.map(html).join('')}` : '';
     box.innerHTML =
-      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="board" data-q="${esc(i.title)}">${isLive(i) ? pulse(true) : typeBadge(i.type)}<span class="t">${esc(clamp(i.title, 50))}</span></div>`) +
-      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="epic" data-id="${esc(e.id)}"><span class="glyph">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="t">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 48))}</span></div>`) +
+      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="issue" data-id="${esc(i.id)}">${isLive(i) ? pulse(true) : typeBadge(i.type)}<span class="t">${esc(clamp(i.title, 50))}</span></div>`) +
+      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="issue" data-id="${esc(e.id)}"><span class="glyph">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="t">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 48))}</span></div>`) +
       grp('Decisions', dec, (d) => `<div class="sr-item" data-nav="decisions"><span class="badge">${esc(clamp(d.status, 8))}</span><span class="t">${esc(clamp(d.title, 44))}</span></div>`) ||
       `<div class="sr-empty">No matches for “${esc(q)}”.</div>`;
     box.classList.add('on');
@@ -626,8 +769,7 @@ function wireGlobalSearch() {
     const it = e.target.closest('[data-nav]'); if (!it) return;
     box.classList.remove('on'); input.value = '';
     const nav = it.dataset.nav;
-    if (nav === 'board') { State.board.epicFocus = null; State.board.level = 'tasks'; State.filters.q = it.dataset.q || ''; location.hash = '#/board'; }
-    else if (nav === 'epic') { State.epicsExpanded.add(it.dataset.id); location.hash = '#/epics'; }
+    if (nav === 'issue') { openDetail(it.dataset.id); }
     else if (nav === 'decisions') { location.hash = '#/decisions'; }
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('.search')) box.classList.remove('on'); });
@@ -639,10 +781,20 @@ function wireGlobalSearch() {
 
 function wireTheme() {
   const root = document.documentElement;
-  const saved = localStorage.getItem('forge-theme'); if (saved) root.setAttribute('data-theme', saved);
+  // Dark is the DEFAULT (index.html ships data-theme="dark"). The storage key is
+  // versioned so stale pre-v5 "light" preferences don't override the new default —
+  // users land on dark, and the toggle persists an explicit choice from here on.
+  const KEY = 'forge-theme-v5';
+  const saved = localStorage.getItem(KEY);
+  if (saved === 'light' || saved === 'dark') root.setAttribute('data-theme', saved);
+  else root.setAttribute('data-theme', 'dark');
   const paint = () => { const dark = root.getAttribute('data-theme') !== 'light'; $('#themeLabel').textContent = dark ? 'Light' : 'Dark'; };
   paint();
-  $('#themeToggle').addEventListener('click', () => { const dark = root.getAttribute('data-theme') !== 'light'; root.setAttribute('data-theme', dark ? 'light' : 'dark'); localStorage.setItem('forge-theme', dark ? 'light' : 'dark'); paint(); });
+  $('#themeToggle').addEventListener('click', () => {
+    const dark = root.getAttribute('data-theme') !== 'light';
+    const next = dark ? 'light' : 'dark';
+    root.setAttribute('data-theme', next); localStorage.setItem(KEY, next); paint();
+  });
 }
 function updateStamp() {
   const g = State.snapshot.generated_at;
@@ -668,7 +820,7 @@ async function boot() {
     $('#view').addEventListener('click', onViewClick);
     $('#detail').addEventListener('click', (e) => {
       if (e.target.closest('[data-act="detail-close"]')) return closeDetail();
-      const o = e.target.closest('[data-act="open"]'); if (o) openDetail(o.dataset.id);
+      const t = e.target.closest('[data-act]'); if (t) handleAct(t);
     });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
     $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
@@ -683,5 +835,5 @@ async function boot() {
 }
 if (typeof document !== 'undefined') boot();
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, State };
+  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, State };
 }

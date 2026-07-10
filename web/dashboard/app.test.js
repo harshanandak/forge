@@ -26,10 +26,18 @@ test('isLive flags open + claimed issues (best-effort liveness)', () => {
   expect(app.isLive({ status: 'done', claimed_by: 'forge' })).toBe(false);
 });
 
-test('lifecyclePhase maps status/claim to a 1..6 stage', () => {
-  expect(app.lifecyclePhase({ status: 'done' })).toEqual({ idx: 6, label: 'done' });
-  expect(app.lifecyclePhase({ status: 'open', claimed_by: 'a' })).toEqual({ idx: 2, label: 'dev' });
-  expect(app.lifecyclePhase({ status: 'open' })).toEqual({ idx: 1, label: 'plan' });
+test('lifecyclePhase derives phase from real signals; claimed-open is UNKNOWN, not asserted dev', () => {
+  // done issue = past ship
+  expect(app.lifecyclePhase({ status: 'done' })).toEqual({ idx: 6, label: 'shipped' });
+  // cancelled
+  expect(app.lifecyclePhase({ status: 'cancelled' })).toEqual({ idx: 0, label: 'cancelled' });
+  // claimed + open: exact stage is unknown (no kernel currentStage) — flagged, not "dev"
+  const p = app.lifecyclePhase({ status: 'open', claimed_by: 'a' });
+  expect(p.idx).toBe(2);
+  expect(p.label).toBe('in progress');
+  expect(p.unknown).toBe(true);
+  // unclaimed open = planned
+  expect(app.lifecyclePhase({ status: 'open' })).toEqual({ idx: 1, label: 'planned' });
 });
 
 test('epicRollup includes a live count', () => {
@@ -86,27 +94,59 @@ test('columnOf routes each issue to exactly one board column', () => {
   expect(app.columnOf({ status: 'open', blocked: true, claimed_by: 'a' })).toBe('blocked');
 });
 
-test('matchesFilter honours type, priority and text query', () => {
-  const issue = { title: 'Fix broker conflict', id: 'abc123', type: 'bug', priority: 'P0', claimed_by: 'forge', labels: ['kernel'] };
-  app.State.filters = { q: '', type: null, prio: null };
-  expect(app.matchesFilter(issue)).toBe(true);
+test('matchesFilter: multi-select (OR within a facet, AND across facets) + text query', () => {
+  const bug = { title: 'Fix broker conflict', id: 'abc123', type: 'bug', priority: 'P0', claimed_by: 'forge', labels: ['kernel'] };
+  const feat = { title: 'Add profile page', id: 'def456', type: 'feature', priority: 'P2', labels: [] };
+  const reset = () => (app.State.filters = { q: '', types: new Set(), prios: new Set() });
 
-  app.State.filters = { q: '', type: 'feature', prio: null };
-  expect(app.matchesFilter(issue)).toBe(false); // wrong type
+  reset();
+  expect(app.matchesFilter(bug)).toBe(true); // no filters → everything matches
 
-  app.State.filters = { q: '', type: 'bug', prio: 'P0' };
-  expect(app.matchesFilter(issue)).toBe(true);
+  // single type selected → visible-state facet, only that type passes
+  app.State.filters = { q: '', types: new Set(['bug']), prios: new Set() };
+  expect(app.matchesFilter(bug)).toBe(true);
+  expect(app.matchesFilter(feat)).toBe(false);
 
-  app.State.filters = { q: 'broker', type: null, prio: null };
-  expect(app.matchesFilter(issue)).toBe(true); // title match
+  // OR within the type facet: selecting bug AND feature admits both (never empties)
+  app.State.filters = { q: '', types: new Set(['bug', 'feature']), prios: new Set() };
+  expect(app.matchesFilter(bug)).toBe(true);
+  expect(app.matchesFilter(feat)).toBe(true);
 
-  app.State.filters = { q: 'kernel', type: null, prio: null };
-  expect(app.matchesFilter(issue)).toBe(true); // label match
+  // AND across facets: type∈{bug} AND prio∈{P0}
+  app.State.filters = { q: '', types: new Set(['bug']), prios: new Set(['P0']) };
+  expect(app.matchesFilter(bug)).toBe(true);
+  app.State.filters = { q: '', types: new Set(['bug']), prios: new Set(['P2']) };
+  expect(app.matchesFilter(bug)).toBe(false); // right type, wrong priority
 
-  app.State.filters = { q: 'nonexistent-xyz', type: null, prio: null };
-  expect(app.matchesFilter(issue)).toBe(false);
+  // OR within priority facet
+  app.State.filters = { q: '', types: new Set(), prios: new Set(['P0', 'P2']) };
+  expect(app.matchesFilter(bug)).toBe(true);
+  expect(app.matchesFilter(feat)).toBe(true);
 
-  app.State.filters = { q: '', type: null, prio: null }; // reset shared state
+  reset();
+  app.State.filters.q = 'broker';
+  expect(app.matchesFilter(bug)).toBe(true); // title match
+  app.State.filters.q = 'kernel';
+  expect(app.matchesFilter(bug)).toBe(true); // label match
+  app.State.filters.q = 'nonexistent-xyz';
+  expect(app.matchesFilter(bug)).toBe(false);
+
+  reset(); // restore shared state for other tests
+});
+
+test('renderMarkdown converts headings, lists, code and links to safe HTML', () => {
+  expect(typeof app.renderMarkdown).toBe('function');
+  const html = app.renderMarkdown('# Title\n\nSome **bold** and `code`.\n\n- one\n- two\n');
+  expect(html).toContain('<h1');
+  expect(html).toContain('<strong>bold</strong>');
+  expect(html).toContain('<code>code</code>');
+  expect(html).toContain('<li>one</li>');
+  // fenced code block preserved and escaped
+  const fenced = app.renderMarkdown('```\n<script>x</script>\n```');
+  expect(fenced).toContain('<pre><code>');
+  expect(fenced).toContain('&lt;script&gt;');
+  // raw HTML in prose is escaped, never injected
+  expect(app.renderMarkdown('a <img src=x onerror=y> b')).not.toContain('<img');
 });
 
 test('relTime produces human-readable deltas', () => {

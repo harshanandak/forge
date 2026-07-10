@@ -1,3 +1,4 @@
 # Generated kernel snapshot — rebuild with: node web/dashboard/generate-snapshot.mjs
 snapshot.js
 data.json
+docs.js
