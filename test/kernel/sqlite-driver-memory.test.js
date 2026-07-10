@@ -137,3 +137,105 @@ describe('Kernel SQLite driver — project-memory read model', () => {
 		expect(driver.listMemories().map(entry => entry.key)).toEqual(['a', 'b']);
 	});
 });
+
+describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read layer)', () => {
+	test('searchMemoriesRanked matches all tokens via FTS BM25 (token-AND, any order)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm2', value: 'bug in the export command', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm3', value: 'auth token refresh', sourceAgent: 'Codex', tags: [] });
+
+		// token-AND, order-independent: only the note containing BOTH auth AND bug.
+		expect(driver.searchMemoriesRanked('bug auth', 10).map(entry => entry.key)).toEqual(['m1']);
+	});
+
+	test('searchMemoriesRanked honors the top-N limit', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: 'kernel note one', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'b', value: 'kernel note two', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'c', value: 'kernel note three', sourceAgent: 'Codex', tags: [] });
+
+		expect(driver.searchMemoriesRanked('kernel', 2)).toHaveLength(2);
+	});
+
+	test('searchMemoriesRanked reflects an upsert (FTS stays in sync with the row)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'k', value: 'original alpha text', sourceAgent: 'Codex', tags: [] });
+		expect(driver.searchMemoriesRanked('alpha', 10).map(entry => entry.key)).toEqual(['k']);
+
+		driver.recordMemory({ key: 'k', value: 'replaced beta text', sourceAgent: 'Codex', tags: [] });
+		// The stale token no longer matches; the fresh token does.
+		expect(driver.searchMemoriesRanked('alpha', 10)).toEqual([]);
+		expect(driver.searchMemoriesRanked('beta', 10).map(entry => entry.key)).toEqual(['k']);
+	});
+
+	test('searchMemoriesRanked with an empty query returns recent entries (never a bare dump)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: '1', sourceAgent: 'Codex', tags: [], timestamp: '2026-01-01T00:00:00.000Z' });
+		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [], timestamp: '2026-02-01T00:00:00.000Z' });
+		expect(driver.searchMemoriesRanked('', 1).map(entry => entry.key)).toEqual(['b']);
+	});
+
+	test('recentMemories returns entries newest-first and honors the limit', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: '1', sourceAgent: 'Codex', tags: [], timestamp: '2026-01-01T00:00:00.000Z' });
+		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [], timestamp: '2026-02-01T00:00:00.000Z' });
+		driver.recordMemory({ key: 'c', value: '3', sourceAgent: 'Codex', tags: [], timestamp: '2026-03-01T00:00:00.000Z' });
+
+		expect(driver.recentMemories(2).map(entry => entry.key)).toEqual(['c', 'b']);
+	});
+
+	test('countMemories returns the total row count', () => {
+		const driver = makeDriver();
+		expect(driver.countMemories()).toBe(0);
+		driver.recordMemory({ key: 'a', value: '1', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [] });
+		expect(driver.countMemories()).toBe(2);
+	});
+
+	test('recentMemories and countMemories scope to a source_agent allow-list', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'h1', value: 'human one', sourceAgent: 'forge remember', tags: [] });
+		driver.recordMemory({ key: 'm1', value: 'machine one', sourceAgent: 'forge insights', tags: [] });
+		driver.recordMemory({ key: 'h2', value: 'human two', sourceAgent: 'forge remember', tags: [] });
+
+		// Unfiltered sees every row.
+		expect(driver.countMemories()).toBe(3);
+		expect(driver.recentMemories(10).length).toBe(3);
+		// Filtered to the human `remember` agent only.
+		expect(driver.countMemories({ agents: ['forge remember'] })).toBe(2);
+		expect(driver.recentMemories(10, { agents: ['forge remember'] }).map(entry => entry.key).sort()).toEqual(['h1', 'h2']);
+	});
+
+	test('searchMemoriesRanked finds a row by its tag (tags_json is indexed)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 's1', value: 'rotate the signing key', sourceAgent: 'forge remember', tags: ['security'] });
+		driver.recordMemory({ key: 's2', value: 'unrelated note', sourceAgent: 'forge remember', tags: ['chore'] });
+
+		expect(driver.searchMemoriesRanked('security', 10).map(entry => entry.key)).toEqual(['s1']);
+	});
+
+	test('backfills the FTS index for rows written before it existed (upgrade path)', async () => {
+		const driver = makeDriver();
+		// Simulate a pre-FTS DB: create kernel_memories (migration 005) and insert rows
+		// DIRECTLY, with NO FTS table/triggers yet — exactly a DB upgraded from before this
+		// feature, or one whose rows were written by the insights engine. These rows never
+		// pass through the live AFTER-INSERT trigger.
+		const { buildMemoryProjectionMigration } = require('../../lib/kernel/migrations');
+		for (const statement of buildMemoryProjectionMigration().apply) {
+			await driver.exec(statement);
+		}
+		await driver.exec(
+			"INSERT INTO kernel_memories (key, value_json, source_agent, tags_json, created_at, updated_at) "
+			+ "VALUES ('pre1', '\"auth bug in login\"', 'forge insights', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+		);
+		await driver.exec(
+			"INSERT INTO kernel_memories (key, value_json, source_agent, tags_json, created_at, updated_at) "
+			+ "VALUES ('pre2', '\"unrelated note\"', 'forge insights', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+		);
+
+		// The first memory read triggers ensureMemorySchema, which must CREATE and BACKFILL
+		// the index — otherwise these pre-existing rows are invisible to FTS recall.
+		expect(driver.searchMemoriesRanked('auth', 10).map(entry => entry.key)).toEqual(['pre1']);
+	});
+});

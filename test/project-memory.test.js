@@ -168,3 +168,44 @@ describe('project memory kernel adapter', () => {
     expect(store.records).toHaveLength(0);
   });
 });
+
+describe('project memory kernel adapter — token-efficient reads (recall backing)', () => {
+  function readStore() {
+    const entries = [
+      { key: 'm1', value: 'auth bug login', sourceAgent: 'Codex', tags: [], timestamp: '2026-03-01T00:00:00.000Z' },
+      { key: 'm2', value: 'export command', sourceAgent: 'Codex', tags: [], timestamp: '2026-02-01T00:00:00.000Z' },
+    ];
+    return {
+      recentCalls: [],
+      searchCalls: [],
+      recentMemories(limit) { this.recentCalls.push(limit); return entries.slice(0, limit); },
+      countMemories() { return entries.length; },
+      searchMemoriesRanked(query, limit) {
+        this.searchCalls.push([query, limit]);
+        return entries.filter(entry => entry.value.includes(query)).slice(0, limit);
+      },
+    };
+  }
+
+  test('recent delegates the limit to the store and returns newest-first entries', () => {
+    const store = readStore();
+    expect(projectMemory.recent(process.cwd(), 1, { store }).map(entry => entry.key)).toEqual(['m1']);
+    expect(store.recentCalls).toEqual([1]);
+  });
+
+  test('count returns the store total', () => {
+    const store = readStore();
+    expect(projectMemory.count(process.cwd(), { store })).toBe(2);
+  });
+
+  test('searchRanked passes the query and limit through to the FTS store', () => {
+    const store = readStore();
+    expect(projectMemory.searchRanked(process.cwd(), 'auth', 5, { store }).map(entry => entry.key)).toEqual(['m1']);
+    expect(store.searchCalls).toEqual([['auth', 5]]);
+  });
+
+  test('closeAll is a no-op-safe lifecycle helper on an empty cache', () => {
+    expect(typeof projectMemory.closeAll).toBe('function');
+    expect(() => projectMemory.closeAll()).not.toThrow();
+  });
+});
