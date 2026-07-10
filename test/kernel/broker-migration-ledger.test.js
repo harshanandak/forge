@@ -121,13 +121,15 @@ describe('Kernel broker — migration ledger', () => {
 			expect(beforeCols).not.toContain(column);
 		}
 
-		// The full plan adds migrations 006 (kernel_issues fidelity columns) and 007
-		// (kernel_worktrees linkage columns), which ALTER their columns in without error.
+		// The full plan adds migrations 006 (kernel_issues fidelity columns), 007
+		// (kernel_worktrees linkage columns) and 008 (kernel_memories FTS index), which
+		// apply without error on the prior-schema DB.
 		const result = await makeBroker(buildKernelMigrationPlan()).initialize();
 		expect(result.success).toBe(true);
 		expect(result.migrationsNewlyApplied).toEqual([
 			'006_kernel_issue_fidelity_columns',
 			'007_kernel_worktrees_linkage_columns',
+			'008_kernel_memories_fts',
 		]);
 
 		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);

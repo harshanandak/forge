@@ -138,6 +138,8 @@ bash scripts/beads-migrate-to-dolt.sh --help
 
 Forge project memory is a **kernel-backed** read model. `lib/project-memory.js` persists memories in the per-repo Forge Kernel store (the `kernel_memories` table, via the built-in SQLite driver) — it does **not** call `bd`. No Beads install is required for `forge remember` / `forge recall`.
 
+`forge remember` / `forge recall` route through this same `kernel_memories` table (via `lib/memory/router.js`), indexed by **FTS5** for token-AND BM25 recall: a `recall` query does full-text matching, and a no-query `recall` returns the newest notes plus a total count (never a full dump). Because the insights engine also writes `kernel_memories`, what it learns is recallable. Any legacy `.forge/memory/notes.jsonl` is imported once on first use, then retired. The opt-in **`graphiti`** backend is **experimental** — its config/doctor checks ship but the runtime write-through emitter is a fast-follow, so selecting it today still writes the local kernel floor. See [docs/guides/memory-backends.md](../guides/memory-backends.md).
+
 Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions on top of the same kernel store; they do not create a new datastore. The supported categories are:
 
 | Category | Key prefix | Durable backend |

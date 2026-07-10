@@ -21,9 +21,9 @@ describe('kernel migration plans', () => {
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
-		// Rollback runs migrations in reverse, so 007 (the latest migration) rolls back
-		// first: its last-added linkage column (work_folder) drops before everything else.
-		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_worktrees DROP COLUMN work_folder;');
+		// Rollback runs migrations in reverse, so 008 (the latest migration) rolls back
+		// first: its last-created FTS trigger drops before everything else.
+		expect(plan.rollback[0]).toBe('DROP TRIGGER IF EXISTS kernel_memories_au;');
 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
 		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN assignee;');
@@ -40,7 +40,38 @@ describe('kernel migration plans', () => {
 			'005_kernel_memories',
 			'006_kernel_issue_fidelity_columns',
 			'007_kernel_worktrees_linkage_columns',
+			'008_kernel_memories_fts',
 		]);
+	});
+
+	test('migration 008 builds an FTS5 index over kernel_memories kept in sync by triggers', () => {
+		const { buildMemoryFtsMigration } = require('../../lib/kernel/migrations');
+		const migration = buildMemoryFtsMigration();
+
+		expect(migration.id).toBe('008_kernel_memories_fts');
+		// An external-content FTS5 virtual table over the memory text columns, so the
+		// index never stores a second copy of the row — it reads kernel_memories by rowid.
+		expect(migration.apply[0]).toContain('CREATE VIRTUAL TABLE IF NOT EXISTS kernel_memories_fts USING fts5');
+		expect(migration.apply[0]).toContain("content='kernel_memories'");
+		expect(migration.apply[0]).toContain("content_rowid='rowid'");
+		// Insert/delete/update triggers keep the FTS index synchronized with the table.
+		const applied = migration.apply.join('\n');
+		expect(applied).toContain('CREATE TRIGGER IF NOT EXISTS kernel_memories_ai AFTER INSERT ON kernel_memories');
+		expect(applied).toContain('CREATE TRIGGER IF NOT EXISTS kernel_memories_ad AFTER DELETE ON kernel_memories');
+		expect(applied).toContain('CREATE TRIGGER IF NOT EXISTS kernel_memories_au AFTER UPDATE ON kernel_memories');
+		// A one-time backfill (rebuild) indexes any rows written before the FTS existed.
+		expect(applied).toContain("INSERT INTO kernel_memories_fts(kernel_memories_fts) VALUES('rebuild');");
+		// Rollback drops the triggers (reverse order) and the virtual table.
+		expect(migration.rollback).toEqual([
+			'DROP TRIGGER IF EXISTS kernel_memories_au;',
+			'DROP TRIGGER IF EXISTS kernel_memories_ad;',
+			'DROP TRIGGER IF EXISTS kernel_memories_ai;',
+			'DROP TABLE IF EXISTS kernel_memories_fts;',
+		]);
+
+		// Registered in the default plan so the broker's initialize() creates the index.
+		const plan = buildKernelMigrationPlan();
+		expect(plan.apply).toContain("INSERT INTO kernel_memories_fts(kernel_memories_fts) VALUES('rebuild');");
 	});
 
 	test('migration 005 creates the kernel_memories read-model table and drops it on rollback', () => {
