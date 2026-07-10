@@ -475,3 +475,75 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
 .ops--soft .opsline { padding: 10px 12px; }
 .opsfoot { display: flex; align-items: center; gap: 8px; margin-top: 18px; font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .opsfoot a { text-decoration: underline; text-underline-offset: 2px; }
+
+/* ===================== v6 (Fable pass): quieter type, one card, joined Now ===================== */
+
+/* Two-tier type — sans for titles/chrome, mono reserved for data. One caps tier
+   survives (section labels / nav): de-cap the shouting chrome titles. */
+.topbar h1 { font-family: var(--sans); text-transform: none; letter-spacing: 0; font-weight: 700; font-size: 15px; }
+.kcol__title { font-family: var(--sans); text-transform: none; letter-spacing: .01em; font-weight: 600; font-size: 13px; }
+.topbar .crumb { text-transform: none; }
+#viewCrumb a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+#viewCrumb a:hover { color: var(--text); }
+
+/* THE unified card — status/pulse · title · owner (3-item budget) */
+.card { border: 1px solid var(--line); background: var(--surface); padding: 12px 13px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; }
+.card:hover { border-color: var(--text); }
+.card__line { display: flex; align-items: flex-start; gap: 8px; }
+.card__line > .glyph, .card__line > .pulse, .card__line > .pmark { margin-top: 1px; flex: 0 0 auto; }
+.card__title { font-family: var(--sans); font-size: 13px; line-height: 1.42; flex: 1; min-width: 0; }
+.card__foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card__owner { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.card--epic .card__title { font-weight: 600; }
+.cardgrid .card, .kcol__body .card { width: 100%; }
+
+/* priority = a small mono label (the fill-density square is retired on cards) */
+.pmark { font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--muted); }
+
+/* progress — the ONE bar (board · epics · detail) */
+.prog { display: inline-flex; align-items: center; gap: 8px; }
+.prog__bar { width: 78px; height: 6px; border: 1px solid var(--line); display: flex; flex: 0 0 auto; }
+.prog__bar span { display: block; background: var(--text); }
+.prog__frac { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+.prog__live { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 10px; color: var(--text); }
+
+/* epic grouping headers inside board columns (epics-first = grouping, not a mode) */
+.epicgroup { display: flex; align-items: center; gap: 7px; padding: 7px 2px 5px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.epicgroup__t { font-family: var(--sans); font-size: 11px; font-weight: 600; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.epicgroup:hover .epicgroup__t { color: var(--text); }
+.epicgroup .n { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.epicgroup--none { cursor: default; }
+.epicgroup--none .epicgroup__t { color: var(--faint); font-weight: 400; font-style: italic; }
+.kcol__body .card + .epicgroup { margin-top: 8px; }
+
+/* tags (small data labels) — replaces per-card badges */
+.tag { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--line); padding: 1px 5px; color: var(--muted); white-space: nowrap; }
+.tag--soft { color: var(--faint); }
+.tag--hard { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+/* borders → whitespace on row lists (one frame deep, spacing inside) */
+.rowline { border: none; padding: 7px 0; cursor: pointer; }
+.rowline:hover .t { color: var(--text); }
+.attention { padding-bottom: 6px; }
+.attn-row { border: none; padding: 8px 14px; }
+.linkgraph { border: 1px solid var(--line); }
+.linkrow { border: none; padding: 9px 12px; }
+.linkrow + .linkrow { border-top: 1px solid var(--line); }
+.link { color: var(--text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+/* Now — one joined list of active threads */
+.now .nowline { font-family: var(--sans); font-size: 15.5px; padding: 2px 0 0; color: var(--text); }
+.now .nowline b { font-family: var(--mono); }
+.needslink { text-decoration: underline; text-underline-offset: 3px; }
+.nowlist { border: 1px solid var(--line); }
+.nowrow { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; }
+.nowrow + .nowrow { border-top: 1px solid var(--line); }
+.nowrow:hover { background: var(--hover); }
+.nowrow__t { font-family: var(--sans); font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrow__link { font-family: var(--mono); font-size: 10px; color: var(--faint); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.quietrow { display: flex; align-items: center; gap: 9px; padding: 7px 0; font-size: 12px; }
+.quietrow + .quietrow { border-top: 1px solid var(--line); }
+.quietrow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quietrow[data-act] { cursor: pointer; }
+.seamnote { font-family: var(--mono); font-size: 10px; color: var(--faint); line-height: 1.65; margin-top: 16px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.detail__prog { display: flex; align-items: center; gap: 14px; margin: 8px 0 12px; }

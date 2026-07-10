@@ -1,8 +1,11 @@
-/* Forge Dashboard v5 — read-only multi-view app, MONO/BRUTALIST skin (dark-default).
+/* Forge Dashboard v6 — read-only multi-view app, MONO/BRUTALIST skin (dark-default).
    Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT) + baked work-folder
-   markdown (window.FORGE_DOCS) for the in-render doc reader. No framework, no build.
-   Grayscale-only encodings: fill density (priority), glyphs (status/health),
-   a pulsing square (live claim), and a 6-cell stepper (lifecycle phase). */
+   markdown (window.FORGE_DOCS). No framework, no build.
+
+   v6 (Fable design pass): every entity is a URL (route-driven detail, Back closes);
+   ONE unified card (status/pulse · title · owner — 3-item budget; phase/badge/id
+   live in the detail hub); status is the only board axis, epics are grouping headers;
+   Live Ops → one joined "Now" list. Two-tier type: sans titles, mono for data. */
 
 /* ============================================================================
  * DataSource — the LIVE-VIEW SEAM.
@@ -25,10 +28,10 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => (s == null ? '' : String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
 const clamp = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
+const deEpic = (t) => String(t || '').replace(/^\[?EPIC\]?:?\s*/i, '');
 
 const PRIO_ORDER = ['P0', 'P1', 'P2', 'P3', 'P4'];
 const PRIO_ALPHA = { P0: 1, P1: 0.66, P2: 0.42, P3: 0.2, P4: 0 };
-// Real kernel issue types, spelled out (no confusing abbreviations).
 const TYPE_LABEL = { epic: 'epic', task: 'task', bug: 'bug', feature: 'feature', decision: 'decision', chore: 'chore' };
 const PHASES = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
 
@@ -49,12 +52,11 @@ function icon(name) {
     epics: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
     decisions: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.5 6H14a2 2 0 0 1 2 2v2"/>',
     plans: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-    ops: '<path d="M3 12h4l2 6 4-14 2 8h6"/>',
+    ops: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>',
     doc: '<path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/>',
     workspaces: '<rect x="3" y="4" width="18" height="14"/><path d="M3 9h18M8 4v5"/>',
     memory: '<circle cx="6" cy="6" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><path d="M8 6h8M7 8l1.5 7M16 9l-6 7"/>',
     backlog: '<path d="M3 4h18v6H3zM3 14h18v6H3"/><path d="M7 7h4M7 17h4"/>',
-    attn: '<path d="M12 3 2 20h20zM12 9v5M12 17v.5"/>',
   }[name] || '';
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="miter">${p}</svg>`;
 }
@@ -62,12 +64,11 @@ function icon(name) {
 /* ---------- state ---------- */
 const State = {
   snapshot: null, issues: [], epics: [], byId: {}, kids: {},
-  // Multi-select filters: OR within a facet (types / prios), AND across facets.
   filters: { q: '', types: new Set(), prios: new Set() },
-  board: { level: 'tasks', epicFocus: null, limits: {}, showClosed: false },
+  board: { epicFocus: null, limits: {}, showClosed: false },
   epicsTab: 'active', epicsExpanded: new Set(),
   wsArchived: false, memFilter: '',
-  route: 'overview',
+  route: 'overview', rendered: null,
 };
 function rebuild(snap) {
   State.snapshot = snap;
@@ -88,7 +89,6 @@ function columnOf(i) {
 }
 function matchesFilter(i) {
   const f = State.filters;
-  // OR within a facet: an item matches if its type is any selected type.
   if (f.types && f.types.size && !f.types.has(i.type)) return false;
   if (f.prios && f.prios.size && !f.prios.has(i.priority)) return false;
   if (f.q) {
@@ -97,15 +97,9 @@ function matchesFilter(i) {
   }
   return true;
 }
-// Best-effort "being worked on right now". Real liveness = kernel lease not expired
-// (session_id + expires_at) — not yet exposed by the CLI; see the Live Ops seam.
 function isLive(i) { return i.status === 'open' && !!i.claimed_by; }
-
-// Lifecycle phase derived from the ONLY real signals the kernel exposes today:
-// status (open/done/cancelled) + claim flag. The kernel has no `currentStage`
-// field (SEAM a2279f65), so for a claimed-but-open issue the exact stage
-// (dev vs validate vs ship vs review) is genuinely UNKNOWN — we flag it rather
-// than assert "dev". A done issue is past ship → "shipped".
+// Phase from real signals only (kernel has no currentStage — SEAM a2279f65). A done
+// issue is shipped; a claimed-open issue is in progress with the remaining stage UNKNOWN.
 function lifecyclePhase(i) {
   if (i.status === 'done') return { idx: 6, label: 'shipped' };
   if (i.status === 'cancelled') return { idx: 0, label: 'cancelled' };
@@ -131,7 +125,6 @@ function epicHealth(epic, kids) {
   if (r.ratio >= 0.2 || r.inprog > 0) return 'warn';
   return r.blocked > 0 ? 'risk' : 'warn';
 }
-// Normalize a worktree's real git/PR state for the Workspaces view (exported for tests).
 function wtSummary(w) {
   return {
     ahead: w.ahead ?? null, behind: w.behind ?? null, dirty: w.dirty ?? null,
@@ -142,46 +135,42 @@ function wtSummary(w) {
 const rankByPrio = (a, b) => (({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[a.priority] ?? 9) - ({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[b.priority] ?? 9));
 
 /* ---------- grayscale encodings ---------- */
-const prioTag = (p) => `<span class="prio" title="priority ${esc(p)}"><i style="background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></i>${esc(p || '—')}</span>`;
-const typeBadge = (t) => `<span class="badge">${esc(TYPE_LABEL[t] || t)}</span>`;
 const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○' };
 const ATTN_GLYPH = { ready: '●', fail: '✕', open: '○', warn: '◐' };
 const HEALTH_GLYPH = { ok: '●', warn: '◐', risk: '○', done: '●', neutral: '–' };
 const HEALTH_LABEL = { ok: 'On track', warn: 'At risk', risk: 'Off track', done: 'Completed', neutral: '—' };
 const pulse = (on) => (on ? '<span class="pulse" title="active claim — being worked on now"></span>' : '');
-function phaseTag(i, dim) {
+const pmark = (p) => (p ? `<span class="pmark" title="priority ${esc(p)}">${esc(p)}</span>` : '');
+// progress bar + n/m fraction — the SAME everywhere (board, epics, detail).
+function progress(r) {
+  return `<span class="prog"><span class="prog__bar"><span style="width:${Math.round(r.ratio * 100)}%"></span></span><span class="prog__frac">${r.done}/${r.total || '·'}</span>${r.live ? `<span class="prog__live">${pulse(true)}${r.live}</span>` : ''}</span>`;
+}
+// 6-cell stepper — DETAIL ONLY now (removed from cards per the diet).
+function phaseTag(i) {
   const ph = lifecyclePhase(i);
-  const cells = PHASES.map((_, n) => {
-    if (n < ph.idx) return '<i class="on"></i>';
-    if (ph.unknown) return '<i class="unk"></i>'; // could be here — stage not known (SEAM)
-    return '<i></i>';
-  }).join('');
+  const cells = PHASES.map((_, n) => n < ph.idx ? '<i class="on"></i>' : (ph.unknown ? '<i class="unk"></i>' : '<i></i>')).join('');
   const t = ph.unknown ? `${ph.label} · exact stage unknown (SEAM a2279f65)` : ph.label;
-  return `<span class="phase ${dim ? 'dim' : ''}" title="lifecycle: ${esc(t)}"><span class="steps">${cells}</span><span class="lbl">${esc(ph.label)}</span></span>`;
+  return `<span class="phase" title="lifecycle: ${esc(t)}"><span class="steps">${cells}</span><span class="lbl">${esc(ph.label)}</span></span>`;
 }
-const epicRef = (i) => {
-  if (!i.parent_id) return '';
-  const e = State.byId[i.parent_id]; if (!e) return '';
-  return `<span class="epicref">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 24))}</span>`;
-};
 
-function taskCard(i) {
-  const owner = i.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(i.claimed_by.slice(0, 2))}</span>${esc(i.claimed_by)}</span>` : '';
-  const blk = i.blocked && i.status === 'open' ? '<span class="glyph" title="blocked">✕</span>' : '';
-  return `<div class="kcard" data-act="open" data-id="${esc(i.id)}">
-    <div class="kcard__top">${pulse(isLive(i))}${blk}${typeBadge(i.type)}${prioTag(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
-    <div class="kcard__title">${esc(clamp(i.title, 116))}</div>
-    <div class="kcard__meta">${phaseTag(i)}${owner}${epicRef(i)}</div>
-  </div>`;
-}
-function epicCard(e) {
-  const r = epicRollup(e); const hg = HEALTH_GLYPH[epicHealth(e)];
-  // Click opens the epic detail; the inner "filter" button focuses the board on it.
-  return `<div class="kcard kcard--epic" data-act="open" data-id="${esc(e.id)}">
-    <div class="kcard__top"><span class="glyph">${hg}</span>${prioTag(e.priority)}<button class="epicfocus" data-act="focus-epic" data-id="${esc(e.id)}" title="Filter board to this epic's tasks">filter ↳</button><span class="kcard__id">${r.total} tasks</span></div>
-    <div class="kcard__title">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 108))}</div>
-    <div class="kcard__roll"><div class="kcard__prog"><span style="width:${Math.round(r.ratio * 100)}%"></span></div>
-      <span class="kcard__rolltext">${r.done}/${r.total || '·'}</span>${r.live ? `<span class="livecount">${pulse(true)}${r.live}</span>` : ''}</div>
+/* ---------- THE unified card (budget = 3: status/pulse · title · owner) ---------- */
+// One component for board, epic grid, memory, search, detail children. Epics add a
+// progress bar + fraction (the same one used everywhere). No per-card phase/badge/id.
+function card(i) {
+  const live = isLive(i);
+  const lead = live ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`;
+  const owner = i.claimed_by ? `<span class="card__owner">${esc(i.claimed_by)}</span>` : '';
+  const kind = i.type === 'epic' ? 'epic' : 'issue';
+  if (i.type === 'epic') {
+    const r = epicRollup(i);
+    return `<div class="card card--epic" data-act="open" data-kind="epic" data-id="${esc(i.id)}">
+      <div class="card__line"><span class="glyph" title="${esc(HEALTH_LABEL[epicHealth(i)])}">${HEALTH_GLYPH[epicHealth(i)]}</span>${pmark(i.priority)}<span class="card__title">${esc(clamp(deEpic(i.title), 116))}</span></div>
+      <div class="card__foot">${progress(r)}</div>
+    </div>`;
+  }
+  return `<div class="card" data-act="open" data-kind="${kind}" data-id="${esc(i.id)}">
+    <div class="card__line">${lead}${pmark(i.priority)}<span class="card__title">${esc(clamp(i.title, 116))}</span></div>
+    ${owner ? `<div class="card__foot">${owner}</div>` : ''}
   </div>`;
 }
 
@@ -197,10 +186,10 @@ const VIEWS = [
   { id: 'decisions', title: 'Decisions', flush: false, render: renderDecisions },
   { id: 'plans', title: 'Plans', flush: false, render: renderPlans },
   { id: 'memory', title: 'Memory', flush: false, render: renderMemory },
-  { id: 'ops', title: 'Live Ops', flush: false, render: renderOps },
+  { id: 'ops', title: 'Now', flush: false, render: renderNow },
 ];
 
-/* ---- Overview ---- (stats on top, Needs-Attention below, deduped composition) */
+/* ---- Overview ---- */
 function renderOverview() {
   const all = State.issues;
   const st = (k) => all.filter((i) => i.status === k).length;
@@ -210,15 +199,12 @@ function renderOverview() {
   const live = all.filter(isLive).length;
   const c = State.snapshot.counts || {};
 
-  // Lean, non-overlapping stat row: the four headline scalars.
   const tiles = [
-    { n: total, l: 'Total issues', s: (State.epics.length) + ' epics' },
+    { n: total, l: 'Total issues', s: State.epics.length + ' epics' },
     { n: donePct + '%', l: 'Complete', s: done + ' done' },
     { n: open, l: 'Open', s: live + ' live · ' + blocked + ' blocked' },
     { n: c.prs || 0, l: 'Open PRs', s: (c.worktrees || 0) + ' worktrees' },
   ];
-
-  // Single deduped composition panel: by type + by priority as legible bars.
   const types = {}; all.forEach((i) => (types[i.type] = (types[i.type] || 0) + 1));
   const typeRows = Object.entries(types).sort((a, b) => b[1] - a[1]).map(([t, n]) =>
     `<div class="distrow"><span class="distlbl">${esc(TYPE_LABEL[t] || t)}</span><div class="distbar"><span style="width:${(n / (total || 1)) * 100}%"></span></div><b>${n}</b></div>`).join('');
@@ -228,7 +214,7 @@ function renderOverview() {
     `<div class="distrow"><span class="distlbl">${p}</span><div class="distbar"><span style="width:${(prio[p] / (total || 1)) * 100}%;background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></span></div><b>${prio[p]}</b></div>`).join('');
 
   const recent = all.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 8)
-    .map((i) => `<div class="rowline" data-act="open" data-id="${esc(i.id)}" style="cursor:pointer">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 66))}</span><span class="when">${esc(relTime(i.updated_at))}</span></div>`).join('');
+    .map((i) => `<div class="rowline" data-act="open" data-kind="${i.type === 'epic' ? 'epic' : 'issue'}" data-id="${esc(i.id)}">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 66))}</span><span class="when">${esc(relTime(i.updated_at))}</span></div>`).join('');
 
   return `<div class="fade-in">
     <div class="stats">${tiles.map((t) => `<div class="stat"><div class="stat__num">${esc(t.n)}</div><div class="stat__label">${esc(t.l)}</div><div class="stat__sub">${esc(t.s)}</div></div>`).join('')}</div>
@@ -242,83 +228,73 @@ function renderOverview() {
       <div class="panel"><h3>Runtime</h3><div class="legend">
         <span class="item">Live claims <b>${live}</b></span><span class="item">Actors <b>${c.actors || 0}</b></span>
         <span class="item">Worktrees <b>${c.worktrees || 0}</b></span><span class="item">Open PRs <b>${c.prs || 0}</b></span>
-      </div><div class="rowline" style="border:none;margin-top:12px"><a href="#/ops" class="slabel">→ Live Ops</a> · <a href="#/workspaces" class="slabel">→ Workspaces</a></div></div>
+      </div><div class="rowline" style="margin-top:12px"><a href="#/ops" class="slabel">→ Now</a> · <a href="#/workspaces" class="slabel">→ Workspaces</a></div></div>
     </div>
   </div>`;
 }
 
-/* ---- Work Board ---- (Backlog → Ready → In Progress → Done → Cancelled) */
+/* ---- Work Board ---- (status = the only axis; epics = grouping headers) */
 function renderBoard() {
   const B = State.board;
   const focus = B.epicFocus ? State.byId[B.epicFocus] : null;
-  // Epics first in the level toggle (epics are first-class).
-  const levelSeg = `<div class="seg">
-    <button data-act="board-level" data-level="epics" class="${B.level === 'epics' ? 'on' : ''}">Epics</button>
-    <button data-act="board-level" data-level="tasks" class="${B.level === 'tasks' ? 'on' : ''}">Tasks</button></div>`;
-  const focusChip = focus ? `<span class="chipfilter">EPIC: ${esc(clamp(focus.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 32))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
-  const closedToggle = B.level === 'tasks'
-    ? `<button class="btn ${B.showClosed ? 'on' : ''}" data-act="board-closed">${B.showClosed ? 'Hide' : 'Show'} done / cancelled</button>` : '';
-  let chips = '';
-  if (B.level === 'tasks') {
-    const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
-    chips = `<div class="controls">${types.map((t) => `<button class="btn ${State.filters.types.has(t) ? 'on' : ''}" data-act="chip-type" data-val="${t}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
-      ${PRIO_ORDER.map((p) => `<button class="btn ${State.filters.prios.has(p) ? 'on' : ''}" data-act="chip-prio" data-val="${p}">${p}</button>`).join('')}
-      ${(State.filters.types.size || State.filters.prios.size) ? '<button class="btn" data-act="chip-clear">clear</button>' : ''}</div>`;
-  }
+  const focusChip = focus ? `<span class="chipfilter"><span class="glyph">${HEALTH_GLYPH[epicHealth(focus)]}</span>${esc(clamp(deEpic(focus.title), 34))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
+  const closedToggle = `<button class="btn ${B.showClosed ? 'on' : ''}" data-act="board-closed">${B.showClosed ? 'Hide' : 'Show'} done / cancelled</button>`;
+  const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
+  const chips = `<div class="controls">${types.map((t) => `<button class="btn ${State.filters.types.has(t) ? 'on' : ''}" data-act="chip-type" data-val="${t}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
+    ${PRIO_ORDER.map((p) => `<button class="btn ${State.filters.prios.has(p) ? 'on' : ''}" data-act="chip-prio" data-val="${p}">${p}</button>`).join('')}
+    ${(State.filters.types.size || State.filters.prios.size) ? '<button class="btn" data-act="chip-clear">clear</button>' : ''}</div>`;
   const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     <input id="boardSearch" type="search" placeholder="filter cards…" value="${esc(State.filters.q)}"></div>`;
-  const cols = B.level === 'epics' ? renderEpicColumns() : renderTaskColumns(focus);
-  return `<div class="boardbar">${levelSeg}${closedToggle}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
-}
-function column(col, cards, count, key) {
-  const lim = State.board.limits[key] ?? 25;
-  const shown = cards.slice(0, lim);
-  const more = cards.length > lim ? `<button class="kmore" data-act="more" data-col="${key}">+${cards.length - lim} more</button>` : '';
-  const body = shown.length ? shown.join('') + more : `<div class="kempty">— empty —</div>`;
-  const note = col.note ? `<span class="kcol__note">${esc(col.note)}</span>` : '';
-  return `<div class="kcol"><div class="kcol__head"><span class="kcol__title">${esc(col.title)}</span>${note}<span class="kcol__count">${count}</span></div>
-    <div class="kcol__body">${body}</div></div>`;
+  return `<div class="boardbar">${closedToggle}${focusChip}${chips}${miniSearch}</div><div class="board">${renderTaskColumns(focus)}</div>`;
 }
 function renderTaskColumns(focus) {
   let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
   if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
   const byRecent = (a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at);
-  // Honest mapping onto the target vocabulary. Kernel status = open/done/cancelled
-  // plus blocked/claim flags — there is no distinct "backlog" state yet (SEAM
-  // b2f856b1), so the Backlog column holds open+unclaimed+blocked work (parked
-  // until a blocker clears). This also keeps blocked items visible without a
-  // dedicated Blocked column.
-  const backlog = [], ready = [], progress = [];
+  const g = { backlog: [], ready: [], progress: [] };
   pool.forEach((i) => {
     if (i.status === 'done' || i.status === 'cancelled') return;
-    if (i.claimed_by) progress.push(i);
-    else if (i.blocked) backlog.push(i);
-    else ready.push(i);
+    if (i.claimed_by) g.progress.push(i);
+    else if (i.blocked) g.backlog.push(i);
+    else g.ready.push(i);
   });
-  [backlog, ready, progress].forEach((b) => b.sort(rankByPrio));
-  const cols = [
-    { def: { key: 'backlog', title: 'Backlog', note: 'blocked · parked' }, items: backlog },
-    { def: { key: 'ready', title: 'Ready' }, items: ready },
-    { def: { key: 'progress', title: 'In progress' }, items: progress },
+  const defs = [
+    { key: 'backlog', title: 'Backlog', note: 'blocked · parked', items: g.backlog },
+    { key: 'ready', title: 'Ready', items: g.ready },
+    { key: 'progress', title: 'In progress', items: g.progress },
   ];
   if (State.board.showClosed) {
-    cols.push(
-      { def: { key: 'done', title: 'Done' }, items: pool.filter((i) => i.status === 'done').sort(byRecent) },
-      { def: { key: 'cancelled', title: 'Cancelled' }, items: pool.filter((i) => i.status === 'cancelled').sort(byRecent) },
+    defs.push(
+      { key: 'done', title: 'Done', items: pool.filter((i) => i.status === 'done').sort(byRecent) },
+      { key: 'cancelled', title: 'Cancelled', items: pool.filter((i) => i.status === 'cancelled').sort(byRecent) },
     );
   }
-  return cols.map((c) => column(c.def, c.items.map(taskCard), c.items.length, c.def.key)).join('');
+  // Epics-first = grouping, not a mode: outside an epic focus, tasks are grouped
+  // under their epic header inside each status column.
+  const grouped = !focus;
+  return defs.map((d) => boardColumn(d, grouped)).join('');
 }
-const EPIC_COLS = [
-  { key: 'ok', title: 'On track' }, { key: 'warn', title: 'At risk' },
-  { key: 'risk', title: 'Off track' }, { key: 'done', title: 'Completed' },
-];
-function renderEpicColumns() {
-  const buckets = { ok: [], warn: [], risk: [], done: [] };
-  State.epics.filter((e) => !State.filters.q || e.title.toLowerCase().includes(State.filters.q.toLowerCase()))
-    .forEach((e) => { const h = epicHealth(e); const key = h === 'neutral' ? 'warn' : h; (buckets[key] || buckets.warn).push(e); });
-  Object.keys(buckets).forEach((k) => buckets[k].sort((a, b) => epicRollup(b).total - epicRollup(a).total));
-  return EPIC_COLS.map((c) => column(c, buckets[c.key].map(epicCard), buckets[c.key].length, 'e_' + c.key)).join('');
+function boardColumn(def, grouped) {
+  const items = def.items.slice().sort(rankByPrio);
+  const lim = State.board.limits[def.key] ?? 30;
+  const shown = items.slice(0, lim);
+  const more = items.length > lim ? `<button class="kmore" data-act="more" data-col="${def.key}">+${items.length - lim} more</button>` : '';
+  let body;
+  if (!shown.length) body = `<div class="kempty">— empty —</div>`;
+  else if (grouped) {
+    const byEpic = new Map();
+    shown.forEach((i) => { const e = i.parent_id || '__none'; if (!byEpic.has(e)) byEpic.set(e, []); byEpic.get(e).push(i); });
+    body = [...byEpic.entries()].map(([eid, list]) => {
+      const e = eid !== '__none' ? State.byId[eid] : null;
+      const hdr = e
+        ? `<div class="epicgroup" data-act="open" data-kind="epic" data-id="${esc(e.id)}"><span class="glyph" title="${esc(HEALTH_LABEL[epicHealth(e)])}">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="epicgroup__t">${esc(clamp(deEpic(e.title), 40))}</span><span class="n">${list.length}</span></div>`
+        : `<div class="epicgroup epicgroup--none"><span class="epicgroup__t">No epic</span><span class="n">${list.length}</span></div>`;
+      return hdr + list.map(card).join('');
+    }).join('') + more;
+  } else body = shown.map(card).join('') + more;
+  const note = def.note ? `<span class="kcol__note">${esc(def.note)}</span>` : '';
+  return `<div class="kcol"><div class="kcol__head"><span class="kcol__title">${esc(def.title)}</span>${note}<span class="kcol__count">${def.items.length}</span></div>
+    <div class="kcol__body">${body}</div></div>`;
 }
 
 /* ---- Epics table ---- */
@@ -344,30 +320,26 @@ function renderEpics() {
     const parent = `<tr>
       <td><div class="rowname">
         <span class="chev ${kids.length ? '' : 'leaf'}" data-act="toggle-epic" data-id="${esc(e.id)}">${kids.length ? (open ? '▾' : '▸') : ''}</span>
-        <span><span class="tt" data-act="open" data-id="${esc(e.id)}" style="cursor:pointer">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 66))}</span>${sub}</span>
+        <span><span class="tt" data-act="open" data-kind="epic" data-id="${esc(e.id)}">${esc(clamp(deEpic(e.title), 66))}</span>${sub}</span>
       </div></td>
-      <td class="num" style="color:var(--faint)">—</td>
       <td><span class="health"><span class="glyph">${HEALTH_GLYPH[h]}</span><span class="slabel">${HEALTH_LABEL[h]}</span></span></td>
-      <td><div class="progresscell"><div class="mini"><span style="width:${Math.round(r.ratio * 100)}%"></span></div><span class="frac">${r.done}/${r.total || '·'}</span></div></td>
+      <td>${progress(r)}</td>
       <td>${active}</td>
       <td><span class="trend">${esc(relTime(e.updated_at))}</span></td></tr>`;
     let children = '';
     if (open) {
-      const cards = kids.slice().sort(rankByPrio).map((k) => `<div class="minicard" data-act="open" data-id="${esc(k.id)}">
-        <div class="minicard__top">${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}${typeBadge(k.type)}${prioTag(k.priority)}<span class="minicard__id">${esc(String(k.id).slice(0, 8))}</span></div>
-        <div class="minicard__title">${esc(clamp(k.title, 74))}</div>
-        <div class="minicard__meta">${phaseTag(k, true)}${k.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(k.claimed_by.slice(0, 2))}</span></span>` : ''}</div></div>`).join('');
-      children = `<tr class="childwrap"><td colspan="6" style="padding:12px 12px 14px"><div class="cardgrid">${cards}</div></td></tr>`;
+      const cards = kids.slice().sort(rankByPrio).map(card).join('');
+      children = `<tr class="childwrap"><td colspan="5" style="padding:12px"><div class="cardgrid">${cards}</div></td></tr>`;
     }
     return parent + children;
   }).join('');
   const body = eps.length ? `<div class="tblwrap"><table class="tbl">
-    <thead><tr><th>Name</th><th>Target</th><th>Health</th><th>Progress</th><th>Active</th><th>Activity</th></tr></thead>
+    <thead><tr><th>Name</th><th>Health</th><th>Progress</th><th>Active</th><th>Activity</th></tr></thead>
     <tbody>${rows}</tbody></table></div>` : `<div class="empty-state"><h4>No epics in this tab</h4><p>Try “All”.</p></div>`;
-  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · click a name to open detail</span></div>${body}</div>`;
+  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · a name opens its detail hub</span></div>${body}</div>`;
 }
 
-/* ---- Decisions (graphical: status board + relationships + architecture index) */
+/* ---- Decisions (graphical status board) ---- */
 function decStatusKey(s) {
   const l = (s || '').toLowerCase();
   if (l.startsWith('accept') || l === 'done') return 'accepted';
@@ -386,100 +358,92 @@ function renderDecisions() {
   const arch = State.snapshot.architecture || [];
   const buckets = {}; DEC_COLS.forEach((c) => (buckets[c.key] = []));
   decs.forEach((d) => { const k = decStatusKey(d.status); (buckets[k] || buckets.proposed).push(d); });
-  const card = (d) => `<div class="deccard" data-act="open-dec" data-id="${esc(String(d.id))}">
-    <div class="deccard__top"><span class="badge">${esc(SOURCE_LABEL[d.source] || d.source || '')}</span>${d.component ? `<span class="badge badge--soft">${esc(clamp(d.component, 22))}</span>` : ''}</div>
-    <div class="deccard__title">${esc(clamp(d.title, 120))}</div>
-    <div class="deccard__foot"><span class="deccard__id">${esc(clamp(String(d.id), 22))}</span></div></div>`;
+  const decCard = (d) => `<div class="card" data-act="open" data-kind="decision" data-id="${esc(String(d.id))}">
+    <div class="card__line"><span class="card__title">${esc(clamp(d.title, 118))}</span></div>
+    <div class="card__foot"><span class="tag">${esc(SOURCE_LABEL[d.source] || d.source || '')}</span>${d.component ? `<span class="tag tag--soft">${esc(clamp(d.component, 20))}</span>` : ''}</div></div>`;
   const boardCols = DEC_COLS.map((c) => {
     const items = buckets[c.key];
-    const body = items.length ? items.map(card).join('') : '<div class="kempty">— none —</div>';
-    return `<div class="deccol"><div class="deccol__head"><span class="kcol__title">${esc(c.title)}</span><span class="kcol__count">${items.length}</span></div><div class="deccol__body">${body}</div></div>`;
+    const b = items.length ? items.map(decCard).join('') : '<div class="kempty">— none —</div>';
+    return `<div class="deccol"><div class="deccol__head"><span class="kcol__title">${esc(c.title)}</span><span class="kcol__count">${items.length}</span></div><div class="deccol__body">${b}</div></div>`;
   }).join('');
-
   const bySource = {}; decs.forEach((d) => (bySource[d.source] = (bySource[d.source] || 0) + 1));
   const sourceLegend = Object.entries(bySource).map(([s, n]) => `<span class="item"><span class="sw"></span>${esc(SOURCE_LABEL[s] || s)} <b>${n}</b></span>`).join('');
-
   const archList = arch.length
     ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="glyph">▦</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
-    : `<div class="empty-state"><h4>No architecture docs</h4><p>Add records under docs/architecture/ or docs/adr/.</p></div>`;
-
+    : `<div class="empty-state"><h4>No architecture docs</h4></div>`;
   return `<div class="fade-in">
-    <div class="viewhead"><span class="crumb">${decs.length} decisions across kernel · headline PDs · ADRs</span><div class="topbar__spacer"></div><div class="legend">${sourceLegend}</div></div>
+    <div class="viewhead"><span class="crumb">${decs.length} decisions · kernel · headline PDs · ADRs</span><div class="topbar__spacer"></div><div class="legend">${sourceLegend}</div></div>
     <div class="decboard">${boardCols}</div>
-    <div class="seam"><b>SEAM — relationships.</b> Supersede / depends-on / decided-in-work-folder edges between decisions and ADRs are not carried on the kernel record yet (${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}). Columns above are grouped by lifecycle status; directed relationships render once the graph lands.</div>
+    <div class="seam"><b>Relationships — SEAM.</b> Supersede / depends-on edges between decisions live in the work-folder↔graph (${esc(seamId('workFolderGraph', '56461780'))}); columns group by lifecycle status until then.</div>
     <div class="section-title">Architecture index · ${arch.length}</div>${archList}
-    ${!decs.length ? '<div class="empty-state"><h4>No decisions</h4><p>Kernel type=decision issues + headline PDs + ADRs appear here.</p></div>' : ''}
+    ${!decs.length ? '<div class="empty-state"><h4>No decisions</h4></div>' : ''}
   </div>`;
 }
 
-/* ---- Plans ---- (rows open the in-render markdown reader) */
+/* ---- Plans ---- (rows open the in-render markdown reader via #/work/:slug) */
 function renderPlans() {
   const plans = (State.snapshot.plans || []).slice();
   const monthLabel = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Undated';
   const groups = {};
   plans.forEach((p) => { const m = p.date ? p.date.slice(0, 7) : 'zzzz'; (groups[m] = groups[m] || []).push(p); });
   const months = Object.keys(groups).sort((a, b) => b.localeCompare(a));
-  const tag = (on, label) => on ? `<span class="badge">${label}</span>` : '';
-  const docs = window.FORGE_DOCS || {};
-  const readable = (slug) => Object.keys(docs).some((k) => k.startsWith(slug + '/'));
-  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first · click to read in-render</span></div>`;
+  const tag = (on, label) => on ? `<span class="tag">${label}</span>` : '';
+  const readable = (slug) => docsFor(slug).length > 0;
+  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first · a folder opens its markdown in-render</span></div>`;
   months.forEach((m) => {
     html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div>`;
     groups[m].forEach((p) => {
       const canRead = readable(p.slug);
-      html += `<div class="tl-row ${canRead ? 'readable' : ''}" ${canRead ? `data-act="open-folder" data-slug="${esc(p.slug)}"` : ''}><span class="tl-date">${esc(p.date || '—')}</span>
+      html += `<div class="tl-row ${canRead ? 'readable' : ''}" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}><span class="tl-date">${esc(p.date || '—')}</span>
         <div><div class="tl-title">${esc(clamp(p.title, 84))}${canRead ? ' <span class="readmark">read ↗</span>' : ''}</div><div class="tl-slug">${esc(p.slug)}</div></div>
-        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="badge">${p.docCount} docs</span></div></div>`;
+        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="tag">${p.docCount} docs</span></div></div>`;
     });
   });
   return html + '</div>';
 }
 
-/* ---- Live Ops ---- (simplified, softer — worktree detail lives in Workspaces) */
-function renderOps() {
+/* ---- Now ---- (ONE joined list: the active threads of work) */
+function renderNow() {
   const ops = State.snapshot.ops || { worktrees: [], prs: [], activeClaims: [] };
   const claims = ops.activeClaims || [];
   const trees = ops.worktrees || [];
   const prs = ops.prs || [];
-  const seam = State.snapshot.liveSeam || { exposed: [], pending: [] };
+  const needs = (State.snapshot.needsAttention || []).length;
+  const agents = new Set(claims.map((c) => c.owner)).size;
 
-  const actors = {};
-  claims.forEach((c) => { (actors[c.owner || '—'] = actors[c.owner || '—'] || []).push(c); });
-  const actorNames = Object.keys(actors).sort((a, b) => actors[b].length - actors[a].length);
+  const sentence = `<div class="nowline"><b>${agents}</b> agent${agents !== 1 ? 's' : ''} active · <b>${prs.length}</b> open PR${prs.length !== 1 ? 's' : ''} · <a href="#/overview" class="needslink"><b>${needs}</b> need${needs === 1 ? 's' : ''} you</a></div>`;
 
-  const top = `<div class="ops-top">
-    <div class="cell"><div class="n">${actorNames.length}</div><div class="l">Active agents</div></div>
-    <div class="cell"><div class="n">${claims.length}</div><div class="l">Live claims</div></div>
-    <div class="cell"><div class="n">${trees.length}</div><div class="l">Worktrees</div></div>
-    <div class="cell"><div class="n">${prs.length}</div><div class="l">Open PRs</div></div>
-  </div>`;
+  // Each live claim = one active thread. The branch/PR join is a SEAM (issue↔worktree
+  // linkage 56461780) — rendered as a slot so the shape is always visible.
+  const seam = seamId('workFolderGraph', '56461780');
+  const rows = claims.length ? claims.slice().sort(rankByPrio).map((c) => `<div class="nowrow" data-act="open" data-kind="issue" data-id="${esc(c.id)}">
+    ${pulse(true)}<span class="card__owner">${esc(c.owner)}</span><span class="nowrow__t">${esc(clamp(c.title, 66))}</span>${pmark(c.priority)}<span class="nowrow__link">→ branch · PR <span class="seamtag">SEAM ${esc(seam)}</span></span><span class="when">${esc(relTime(c.updated_at))}</span>
+  </div>`).join('') : `<div class="empty-state"><h4>Nothing running</h4><p>No open, claimed issues right now.</p></div>`;
 
-  const actorCards = actorNames.length ? actorNames.map((name) => {
-    const items = actors[name];
-    const lines = items.map((c) => `<div class="opsline" data-act="open" data-id="${esc(c.id)}" style="cursor:pointer">${pulse(true)}<span class="t">${esc(clamp(c.title, 60))}</span><span class="when">${esc(relTime(c.updated_at))}</span></div>`).join('');
-    return `<div class="actorcard"><div class="actorcard__head"><span class="kcard__owner"><span class="av">${esc(name.slice(0, 2))}</span></span><span class="actorcard__name">${esc(name)}</span><span class="actorcard__meta">${items.length} live</span></div>${lines}</div>`;
-  }).join('') : `<div class="empty-state"><h4>No active agents</h4><p>Claimed-and-open issues (agent = claimed_by) appear here.</p></div>`;
-
-  const prList = prs.length ? prs.map((p) => {
+  const prRows = prs.length ? prs.map((p) => {
     const ci = p.ci ? p.ci.state : '';
-    const ciGlyph = ci === 'pass' ? '●' : ci === 'fail' ? '✕' : ci ? '◐' : '';
-    return `<div class="opsline"><span class="pr-num">#${esc(p.number)}</span><span class="t">${esc(clamp(p.title, 56))}</span>${p.isDraft ? '<span class="badge">draft</span>' : ''}${ciGlyph ? `<span class="glyph" title="CI ${esc(ci)}">${ciGlyph}</span>` : ''}${p.ready ? '<span class="badge">ready</span>' : ''}</div>`;
-  }).join('') : `<div class="empty-state"><h4>No open PRs</h4><p>gh pr list returned none.</p></div>`;
+    const g = ci === 'pass' ? '●' : ci === 'fail' ? '✕' : ci ? '◐' : '';
+    return `<div class="quietrow"><a href="${esc(p.url || '#')}" target="_blank" rel="noopener" class="pr-num">#${esc(p.number)}</a><span class="t">${esc(clamp(p.title, 60))}</span>${p.isDraft ? '<span class="tag">draft</span>' : ''}${g ? `<span class="glyph" title="CI ${esc(ci)}">${g}</span>` : ''}${p.ready ? '<span class="tag">ready</span>' : ''}</div>`;
+  }).join('') : '<div class="kempty">— none —</div>';
 
-  return `<div class="fade-in ops--soft">${top}
-    <div class="ops-grid">
-      <div><div class="section-title" style="margin-top:0">Active agents · what each is working on</div>${actorCards}</div>
-      <div><div class="section-title" style="margin-top:0">Open pull requests · ${prs.length}</div>${prList}</div>
+  const wtRows = trees.filter((w) => !w.archived).slice(0, 12).map((w) =>
+    `<div class="quietrow" data-act="goto" data-hash="#/workspaces"><span class="mono">${esc(w.branch || '(detached)')}</span><span class="t slabel">${esc(w.pr ? 'PR #' + w.pr.number : (w.mergedPr ? 'merged' : 'no PR'))}</span></div>`).join('') || '<div class="kempty">— none —</div>';
+
+  return `<div class="fade-in now">
+    ${sentence}
+    <div class="section-title" style="margin-top:20px">Active now · ${claims.length}</div>
+    <div class="nowlist">${rows}</div>
+    <div class="overview-grid" style="margin-top:22px">
+      <div class="panel"><h3>Open pull requests · ${prs.length}</h3>${prRows}</div>
+      <div class="panel"><h3>Worktrees · ${trees.filter((w) => !w.archived).length} <a href="#/workspaces" class="slabel" style="float:right">all →</a></h3>${wtRows}</div>
     </div>
-    <div class="opsfoot"><span>Full worktree / branch / git state →</span> <a href="#/workspaces" class="slabel">Workspaces</a></div>
-    <div class="seam"><b>SEAM.</b> Real per-agent session_id, worktree_id, harness and region come from the kernel lease-read (${esc((seam.pending || []).join(', '))}); today the CLI exposes ${esc((seam.exposed || []).join(', '))}. Harness/surface is inferred from the worktree path until then.</div>
+    <div class="seamnote">Real per-agent session · worktree · harness · region come from the kernel lease-read (${esc(seamId('harnessRegion', '7dc229d4'))}); today only <span class="mono">claimed_by</span> + git + PRs are exposed, so branch/PR↔issue joins above are SEAMs.</div>
   </div>`;
 }
 
 /* ---- Needs Attention lane ---- */
 function renderAttention() {
   const items = State.snapshot.needsAttention || [];
-  const seam = State.snapshot.seams || {};
   const rows = items.map((it) => `<div class="attn-row">
     <span class="glyph">${ATTN_GLYPH[it.glyph] || '○'}</span>
     <span class="subj">${esc(it.subject)}</span>
@@ -490,13 +454,14 @@ function renderAttention() {
   const empty = !items.length ? `<div class="attn-row"><span class="glyph">●</span><span class="det">Nothing needs you — all open PRs are clean or in flight.</span></div>` : '';
   const staleSeam = `<div class="attn-row"><span class="glyph">◐</span><span class="subj">Stale claims</span>
     <span class="det">lease near expiry / heartbeat gone — not derivable from the CLI yet</span>
-    <span class="seamtag">SEAM ${esc((seam.staleClaims || '7dc229d4').split(' ')[0])}</span></div>`;
+    <span class="seamtag">SEAM ${esc(seamId('staleClaims', '7dc229d4'))}</span></div>`;
   return `<div class="attention">
     <div class="attention__head"><span class="glyph">△</span><span class="ttl">Needs Attention</span><span class="ct">${items.length} now</span></div>
     ${rows}${empty}${staleSeam}</div>`;
 }
 
-/* ---- Workspaces ---- (worktree = first-class card; simplified) */
+/* ---- Workspaces ---- (worktree = card; "working on" makes the relation explicit) */
+const SURFACE_LABEL = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', t3code: 't3code', cloud: 'Cloud', worktree: 'Local', main: 'Main', other: 'Unknown' };
 function renderWorkspaces() {
   const trees = (State.snapshot.ops && State.snapshot.ops.worktrees) || [];
   const showArch = !!State.wsArchived;
@@ -505,55 +470,50 @@ function renderWorkspaces() {
   const toggle = `<div class="seg">
     <button data-act="ws-arch" data-v="0" class="${!showArch ? 'on' : ''}">Active ${nActive}</button>
     <button data-act="ws-arch" data-v="1" class="${showArch ? 'on' : ''}">Merged ${nArch}</button></div>`;
-  const SURFACE_LABEL = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', t3code: 't3code', cloud: 'Cloud', worktree: 'Local', main: 'Main', other: 'Unknown' };
-  const card = (w) => {
+  const wcard = (w) => {
     const s = wtSummary(w);
-    // "Working on" = the branch / PR this workspace relates to (the clearest signal today).
     const working = w.pr ? `PR #${w.pr.number}` : (w.mergedPr ? `merged #${w.mergedPr}` : (w.branch || '(detached)'));
     const git = s.hasGit
-      ? `<span class="gitstat"><span title="ahead of origin/master">↑${s.ahead}</span><span title="behind origin/master">↓${s.behind}</span><span class="${s.clean ? '' : 'dirty'}">${s.clean ? 'clean' : s.dirty + ' dirty'}</span></span>`
-      : `<span class="seam-inline">git ahead/behind — SEAM</span>`;
-    const ci = w.pr ? `<span class="slabel">CI ${w.pr.ci === 'pass' ? '●' : w.pr.ci === 'fail' ? '✕' : '◐'}</span>${w.pr.ready ? '<span class="chip hard">ready</span>' : ''}` : '';
+      ? `<span class="gitstat">↑${s.ahead} ↓${s.behind} <span class="${s.clean ? '' : 'dirty'}">${s.clean ? 'clean' : s.dirty + ' dirty'}</span></span>`
+      : `<span class="seam-inline">git — SEAM</span>`;
+    const ci = w.pr ? `<span class="slabel">CI ${w.pr.ci === 'pass' ? '●' : w.pr.ci === 'fail' ? '✕' : '◐'}</span>${w.pr.ready ? '<span class="tag tag--hard">ready</span>' : ''}` : '';
     return `<div class="wt-card ${w.archived ? 'arch' : ''}">
-      <div class="wt-card__top"><span class="wt-card__branch">${esc(w.branch || '(detached)')}</span><span class="chip">${esc(SURFACE_LABEL[w.surface] || w.surface)}</span></div>
-      <div class="wt-working">working on · <b>${esc(working)}</b> ${ci}</div>
-      <div class="wt-row">${git}<span class="k">${esc(w.head || '')}</span></div>
-      <div class="wt-path">${esc(w.path)}</div>
+      <div class="wt-card__top"><span class="wt-card__branch">${esc(w.branch || '(detached)')}</span><span class="tag">${esc(SURFACE_LABEL[w.surface] || w.surface)}</span></div>
+      <div class="wt-working">on <b>${esc(working)}</b> ${ci}</div>
+      <div class="wt-row">${git}<span class="mono k">${esc(w.head || '')}</span></div>
     </div>`;
   };
-  const grid = list.length ? `<div class="cardgrid">${list.map(card).join('')}</div>` : `<div class="empty-state"><h4>No ${showArch ? 'merged' : 'active'} worktrees</h4></div>`;
+  const grid = list.length ? `<div class="cardgrid">${list.map(wcard).join('')}</div>` : `<div class="empty-state"><h4>No ${showArch ? 'merged' : 'active'} worktrees</h4></div>`;
   return `<div class="fade-in"><div class="viewhead">${toggle}<div class="topbar__spacer"></div><span class="crumb">each card = one git worktree · real ahead/behind/dirty + its PR</span></div>${grid}
-    <div class="seam-inline" style="margin-top:14px;border-top:1px dashed var(--line)">Linked kernel issue · lifecycle phase · real harness/region — SEAM (worktree↔issue + lease-read ${esc((State.snapshot.seams && State.snapshot.seams.harnessRegion || '7dc229d4').split(' ')[0])})</div></div>`;
+    <div class="seamnote">Linked kernel issue · lifecycle phase · real harness/region — SEAM (worktree↔issue + lease-read ${esc(seamId('harnessRegion', '7dc229d4'))}).</div></div>`;
 }
 
 /* ---- Backlog (SEAM until kernel backlog state lands) ---- */
 function renderBacklog() {
-  const seam = (State.snapshot.seams && State.snapshot.seams.backlogState) || 'b2f856b1';
+  const seam = seamId('backlogState', 'b2f856b1');
   return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled</span></div>
     <div class="empty-state"><h4>Backlog — SEAM</h4>
-      <p>A real kernel <b>backlog lifecycle state</b> is pending (<span class="mono">${esc(seam.split(' ')[0])}</span>). Once it lands, parked ideas render here and promote → task / epic.</p>
-      <p style="margin-top:10px;color:var(--faint)">Today, open + blocked work appears as the <b>Backlog column</b> on the Work Board (parked until unblocked). The <span class="mono">backlog</span> label tags 102 <em>completed</em> release-train issues — a different thing — so it is deliberately not shown here rather than fake the backlog.</p>
+      <p>A real kernel <b>backlog lifecycle state</b> is pending (<span class="mono">${esc(seam)}</span>). Once it lands, parked ideas render here and promote → task / epic.</p>
+      <p style="margin-top:10px;color:var(--faint)">Today, open + blocked work appears as the <b>Backlog column</b> on the Work Board (parked until unblocked).</p>
     </div></div>`;
 }
 
-/* ---- Memory ---- (work-folder memory + recall SEAM + Graphiti graph SEAM) */
+/* ---- Memory ---- (work-folder memory + recall SEAM + Graphiti SEAM) */
 function renderMemory() {
   const q = (State.memFilter || '').toLowerCase();
-  const docs = window.FORGE_DOCS || {};
-  const readable = (slug) => Object.keys(docs).some((k) => k.startsWith(slug + '/'));
   const plans = (State.snapshot.plans || []).filter((p) => !q || (p.title + ' ' + p.slug).toLowerCase().includes(q));
+  const readable = (slug) => docsFor(slug).length > 0;
   const folders = plans.slice(0, 30).map((p) => {
     const canRead = readable(p.slug);
-    return `<div class="minicard ${canRead ? '' : 'nonread'}" ${canRead ? `data-act="open-folder" data-slug="${esc(p.slug)}"` : 'style="cursor:default"'}>
-    <div class="minicard__top"><span class="glyph">▦</span><span class="slabel">${esc(p.date || '—')}</span>${canRead ? '<span class="minicard__id">read ↗</span>' : ''}</div>
-    <div class="minicard__title">${esc(clamp(p.title, 62))}</div>
-    <div class="minicard__meta">${p.hasPlan ? '<span class="badge">plan</span>' : ''}${p.hasTasks ? '<span class="badge">tasks</span>' : ''}${p.hasDecisions ? '<span class="badge">decisions</span>' : ''}<span class="minicard__id">${p.docCount} docs</span></div></div>`;
+    return `<div class="card ${canRead ? '' : 'nonread'}" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}>
+      <div class="card__line"><span class="glyph">▦</span><span class="card__title">${esc(clamp(p.title, 62))}</span></div>
+      <div class="card__foot"><span class="slabel">${esc(p.date || '—')}</span>${p.hasPlan ? '<span class="tag">plan</span>' : ''}${p.hasDecisions ? '<span class="tag">decisions</span>' : ''}${canRead ? '<span class="readmark">read ↗</span>' : ''}</div></div>`;
   }).join('');
   const filt = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="memFilter" type="search" placeholder="filter work folders…" value="${esc(State.memFilter || '')}"></div>`;
   const memN = Array.isArray(State.snapshot.memory) ? State.snapshot.memory.length : 0;
   const recallBlock = memN
-    ? `<div class="cardgrid">${State.snapshot.memory.slice(0, 18).map((e) => `<div class="minicard" style="cursor:default"><div class="minicard__title">${esc(clamp(typeof e === 'string' ? e : (e.text || e.note || e.content || JSON.stringify(e)), 140))}</div></div>`).join('')}</div>`
-    : `<div class="seam"><b>SEAM — recall / .remember.</b> <span class="mono">forge recall</span> returned ${memN} entries in this snapshot. The <span class="mono">.remember</span> rotation buffers (now / today / recent / archive) are user-global and not yet slug-scoped into the project snapshot (${esc((State.snapshot.seams && State.snapshot.seams.graphiti || 'c7971150').split(' ')[0])}).</div>`;
+    ? `<div class="cardgrid">${State.snapshot.memory.slice(0, 18).map((e) => `<div class="card"><div class="card__line"><span class="card__title">${esc(clamp(typeof e === 'string' ? e : (e.text || e.note || e.content || JSON.stringify(e)), 140))}</span></div></div>`).join('')}</div>`
+    : `<div class="seam"><b>recall / .remember — SEAM.</b> <span class="mono">forge recall</span> returned ${memN} entries. The <span class="mono">.remember</span> buffers are user-global, not yet slug-scoped into the project snapshot (${esc(seamId('graphiti', 'c7971150'))}).</div>`;
   return `<div class="fade-in">
     <div class="viewhead"><span class="crumb">work-folder memory · recall · temporal graph</span><div class="topbar__spacer"></div>${filt}</div>
     <div class="section-title" style="margin-top:0">Work-folder memory · ${plans.length} folders</div>
@@ -563,12 +523,12 @@ function renderMemory() {
     <div class="section-title">Temporal memory graph</div>
     <div class="graph-seam"><div class="nodes"><span class="node">idea</span><span class="edge"></span><span class="node">issue</span><span class="edge"></span><span class="node">PR</span></div>
       <h4>Graphiti graph — SEAM</h4>
-      <p>${esc((State.snapshot.seams && State.snapshot.seams.graphiti) || 'c7971150')}.<br>Activity↔PR/issue/work-folder connections pending ${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}.</p></div>
+      <p>${esc((State.snapshot.seams && State.snapshot.seams.graphiti) || 'c7971150')}.<br>Activity↔PR/issue/work-folder connections pending ${esc(seamId('workFolderGraph', '56461780'))}.</p></div>
   </div>`;
 }
 
 /* ============================================================================
- * Minimal Markdown → HTML (safe: escape first, then structure). In-render reader.
+ * Minimal Markdown → HTML (safe: escape first, then structure).
  * ========================================================================== */
 function renderMarkdown(md) {
   const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
@@ -577,12 +537,11 @@ function renderMarkdown(md) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$1_URL_" target="_blank" rel="noopener">$1</a>'.replace('$1_URL_', '$2'))
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, (m, txt, url) => `<a href="${url}" target="_blank" rel="noopener">${txt}</a>`)
     .replace(/\[([^\]]+)\]\((?!https?:)([^)]+)\)/g, '<span class="mdlink">$1</span>');
   const flushPara = () => { if (para.length) { html += `<p>${para.map(inline).join('<br>')}</p>`; para = []; } };
   const flushList = () => { if (listType) { html += `</${listType}>`; listType = null; } };
-  for (const raw of lines) {
-    const line = raw;
+  for (const line of lines) {
     if (/^```/.test(line.trim())) {
       if (inCode) { html += `<pre><code>${esc(codeBuf.join('\n'))}</code></pre>`; codeBuf = []; inCode = false; }
       else { flushPara(); flushList(); inCode = true; }
@@ -602,95 +561,108 @@ function renderMarkdown(md) {
   flushPara(); flushList();
   return html;
 }
-const DocState = { slug: null, file: null };
 function docsFor(slug) { const d = window.FORGE_DOCS || {}; return Object.keys(d).filter((k) => k.startsWith(slug + '/')).sort(); }
 function fileLabel(key) { return key.split('/').slice(1).join('/'); }
-function openFolder(slug, file) {
-  const keys = docsFor(slug);
-  const el = $('#detail');
-  if (!keys.length) {
-    $('#detailPanel').innerHTML = `<button class="detail__close" data-act="detail-close">✕ esc</button><h2 class="detail__title">${esc(slug)}</h2><div class="seam"><b>SEAM.</b> No markdown baked for this folder (over the per-file cap, or empty). Regenerate the snapshot to include it.</div>`;
-    el.hidden = false; el.classList.add('on'); return;
-  }
-  DocState.slug = slug;
-  DocState.file = keys.includes(file) ? file : (keys.find((k) => k.endsWith('/plan.md')) || keys.find((k) => k.endsWith('/README.md')) || keys[0]);
-  const tabs = keys.map((k) => `<button class="doctab ${k === DocState.file ? 'on' : ''}" data-act="doc-file" data-slug="${esc(slug)}" data-file="${esc(k)}">${esc(fileLabel(k))}</button>`).join('');
-  const content = renderMarkdown((window.FORGE_DOCS || {})[DocState.file]);
-  $('#detailPanel').innerHTML = `<button class="detail__close" data-act="detail-close">✕ esc</button>
-    <div class="detail__eyebrow"><span class="badge">work folder</span><span class="slabel">${esc(slug)}</span></div>
-    <div class="doctabs">${tabs}</div>
-    <article class="md">${content}</article>`;
-  el.hidden = false; el.classList.add('on');
-  $('#detailPanel').scrollTop = 0;
-}
 
-/* ---- Click-through detail panel (issue / epic / decision) ---- */
+/* ============================================================================
+ * Detail hub + doc reader — ROUTE-DRIVEN overlays.
+ * ========================================================================== */
+const seamId = (k, fb) => (String((State.snapshot.seams && State.snapshot.seams[k]) || fb).split(' ')[0]);
+function showOverlay(html, crumb) {
+  $('#detailPanel').innerHTML = html;
+  const el = $('#detail'); el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
+  if (crumb != null) $('#viewCrumb').innerHTML = crumb;
+}
 function issueDetailHtml(i) {
   const kids = State.kids[i.id] || [];
   const parent = i.parent_id ? State.byId[i.parent_id] : null;
-  const childCards = kids.slice().sort(rankByPrio).map((k) => `<div class="minicard" data-act="open" data-id="${esc(k.id)}">
-    <div class="minicard__top">${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}${typeBadge(k.type)}${prioTag(k.priority)}<span class="minicard__id">${esc(String(k.id).slice(0, 8))}</span></div>
-    <div class="minicard__title">${esc(clamp(k.title, 78))}</div>
-    <div class="minicard__meta">${phaseTag(k, true)}</div></div>`).join('');
-  const focusBtn = i.type === 'epic' ? `<button class="btn" data-act="focus-epic" data-id="${esc(i.id)}">Filter board to this epic ↳</button>` : '';
-  // Rich-detail STRUCTURE (fills as the work-folder↔PR/issue graph 56461780 lands).
-  const linkRow = (label, val) => `<div class="linkrow"><span class="linkrow__k">${esc(label)}</span><span class="linkrow__v">${val}</span></div>`;
-  const seamId = (State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0];
-  const seamTag = `<span class="seamtag">SEAM ${esc(seamId)}</span>`;
+  const childCards = kids.slice().sort(rankByPrio).map(card).join('');
+  const seam = seamId('workFolderGraph', '56461780');
+  const slot = (label, val, on) => `<div class="linkrow"><span class="linkrow__k">${esc(label)}</span><span class="linkrow__v">${on ? val : `<span class="seamtag">SEAM ${esc(seam)}</span>`}</span></div>`;
+  const parentSlot = parent ? `<span class="link" data-act="open" data-kind="epic" data-id="${esc(parent.id)}">${esc(clamp(deEpic(parent.title), 44))}</span>` : '—';
+  const r = i.type === 'epic' ? epicRollup(i) : null;
   return `<button class="detail__close" data-act="detail-close">✕ esc</button>
-    <div class="detail__eyebrow">${typeBadge(i.type)}${prioTag(i.priority)}<span class="slabel">${esc(i.blocked ? 'blocked' : i.status)}</span>${isLive(i) ? pulse(true) : ''}${phaseTag(i)}</div>
-    <h2 class="detail__title">${esc(i.title)}</h2>
+    <div class="detail__eyebrow"><span class="tag">${esc(TYPE_LABEL[i.type] || i.type)}</span>${pmark(i.priority)}<span class="slabel">${esc(i.blocked ? 'blocked' : i.status)}</span>${isLive(i) ? pulse(true) : ''}${phaseTag(i)}</div>
+    <h2 class="detail__title">${esc(deEpic(i.title))}</h2>
+    ${r ? `<div class="detail__prog">${progress(r)}<a class="link" href="#/board?epic=${esc(i.id)}">see on board →</a></div>` : ''}
     <dl class="detail__grid">
       <dt>ID</dt><dd class="mono">${esc(i.id)}</dd>
       <dt>Status</dt><dd>${esc(i.status)}${i.blocked ? ' · blocked' : ''}</dd>
       <dt>Owner</dt><dd>${i.claimed_by ? esc(i.claimed_by) : '—'}</dd>
-      <dt>Epic</dt><dd>${parent ? `<span class="epicref" data-act="open" data-id="${esc(parent.id)}" style="cursor:pointer">${esc(clamp(parent.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 40))}</span>` : '—'}</dd>
-      <dt>Labels</dt><dd>${(i.labels || []).map((l) => `<span class="badge">${esc(l)}</span>`).join(' ') || '—'}</dd>
+      <dt>Parent epic</dt><dd>${parentSlot}</dd>
+      <dt>Labels</dt><dd>${(i.labels || []).map((l) => `<span class="tag">${esc(l)}</span>`).join(' ') || '—'}</dd>
       <dt>Deps</dt><dd>${(i.dependencies || []).length} dep · ${(i.dependents || []).length} dependents</dd>
       <dt>Updated</dt><dd class="mono">${esc(relTime(i.updated_at))} ago</dd>
     </dl>
-    ${focusBtn ? `<div class="detail__actions">${focusBtn}</div>` : ''}
     ${i.body ? `<div class="detail__body">${esc(clamp(i.body, 1400))}</div>` : ''}
-    ${kids.length ? `<div class="section-title">Tasks · ${kids.length} (by priority)</div><div class="cardgrid">${childCards}</div>` : ''}
+    ${kids.length ? `<div class="section-title">Children · ${kids.length}</div><div class="cardgrid">${childCards}</div>` : ''}
     <div class="section-title">Linked work</div>
     <div class="linkgraph">
-      ${linkRow('Files changed', seamTag)}
-      ${linkRow('Pull request', seamTag)}
-      ${linkRow('Commits', seamTag)}
-      ${linkRow('Activity / comments', seamTag)}
+      ${slot('Parent epic', parentSlot, !!parent)}
+      ${slot('Pull request', '', false)}
+      ${slot('Worktree', '', false)}
+      ${slot('Work folder', '', false)}
+      ${slot('Files changed', '', false)}
+      ${slot('Comments', '', false)}
     </div>
-    <div class="seam"><b>SEAM.</b> Per-issue links to files / PR / commits / activity need the work-folder↔PR/issue graph (${esc(seamId)}). Kernel issues don't carry PR/branch back-refs yet — the structure above fills in as that lands.</div>`;
+    <div class="seamnote">This is the entity hub — every link slot is shown even when empty. PR / worktree / work-folder / files / comments fill in as the work-folder↔PR/issue graph (${esc(seam)}) lands.</div>`;
 }
 function decDetailHtml(d) {
   return `<button class="detail__close" data-act="detail-close">✕ esc</button>
-    <div class="detail__eyebrow"><span class="badge">${esc(SOURCE_LABEL[d.source] || d.source || 'decision')}</span><span class="slabel">${esc(d.status || 'open')}</span>${d.component ? `<span class="badge badge--soft">${esc(d.component)}</span>` : ''}</div>
+    <div class="detail__eyebrow"><span class="tag">${esc(SOURCE_LABEL[d.source] || d.source || 'decision')}</span><span class="slabel">${esc(d.status || 'open')}</span>${d.component ? `<span class="tag tag--soft">${esc(d.component)}</span>` : ''}</div>
     <h2 class="detail__title">${esc(d.title)}</h2>
     <dl class="detail__grid"><dt>ID</dt><dd class="mono">${esc(String(d.id))}</dd><dt>Source</dt><dd>${esc(SOURCE_LABEL[d.source] || d.source || '—')}</dd><dt>Status</dt><dd>${esc(d.status || '—')}</dd></dl>
     ${d.rationale ? `<div class="detail__body">${esc(d.rationale)}</div>` : ''}
     <div class="section-title">Relationships</div>
-    <div class="seam"><b>SEAM.</b> Supersede / depends-on edges (${esc((State.snapshot.seams && State.snapshot.seams.workFolderGraph || '56461780').split(' ')[0])}) are not on the kernel record yet.</div>`;
+    <div class="seamnote">Supersede / depends-on edges (${esc(seamId('workFolderGraph', '56461780'))}) are not on the kernel record yet.</div>`;
 }
-function openDetail(id) {
-  const i = State.byId[id]; if (!i) return;
-  $('#detailPanel').innerHTML = issueDetailHtml(i);
-  const el = $('#detail'); el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
+function docReaderHtml(slug, keys, file) {
+  const tabs = keys.map((k) => `<button class="doctab ${k === file ? 'on' : ''}" data-act="doc-file" data-slug="${esc(slug)}" data-file="${esc(k)}">${esc(fileLabel(k))}</button>`).join('');
+  const content = renderMarkdown((window.FORGE_DOCS || {})[file]);
+  return `<button class="detail__close" data-act="detail-close">✕ esc</button>
+    <div class="detail__eyebrow"><span class="tag">work folder</span><span class="slabel">${esc(slug)}</span></div>
+    <div class="doctabs">${tabs}</div>
+    <article class="md">${content}</article>`;
 }
-function openDecision(id) {
-  const d = (State.snapshot.decisions || []).find((x) => String(x.id) === String(id)); if (!d) return;
-  $('#detailPanel').innerHTML = decDetailHtml(d);
-  const el = $('#detail'); el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
+// State for the reader (which file within the folder)
+const DocState = { slug: null, file: null };
+
+// Route-driven openers (called BY the router). Clicks navigate the hash; the router
+// then renders the overlay. Back returns to the underlying view (closes overlay).
+function showIssue(id) {
+  const i = State.byId[id]; if (!i) return false;
+  const parent = i.parent_id ? State.byId[i.parent_id] : null;
+  const crumb = parent ? `<a href="#/epic/${esc(parent.id)}">${esc(clamp(deEpic(parent.title), 26))}</a> › ${esc(clamp(deEpic(i.title), 30))}` : `${esc(currentViewTitle())} › ${esc(clamp(deEpic(i.title), 34))}`;
+  showOverlay(issueDetailHtml(i), crumb); return true;
 }
-function closeDetail() { const el = $('#detail'); el.classList.remove('on'); el.hidden = true; }
+function showDecision(id) {
+  const d = (State.snapshot.decisions || []).find((x) => String(x.id) === String(id)); if (!d) return false;
+  showOverlay(decDetailHtml(d), `Decisions › ${esc(clamp(d.title, 34))}`); return true;
+}
+function showWork(slug, file) {
+  const keys = docsFor(slug);
+  if (!keys.length) { showOverlay(`<button class="detail__close" data-act="detail-close">✕ esc</button><h2 class="detail__title">${esc(slug)}</h2><div class="seam"><b>SEAM.</b> No markdown baked for this folder.</div>`, `Plans › ${esc(slug)}`); return true; }
+  DocState.slug = slug;
+  DocState.file = keys.includes(file) ? file : (keys.find((k) => k.endsWith('/plan.md')) || keys.find((k) => k.endsWith('/README.md')) || keys[0]);
+  showOverlay(docReaderHtml(slug, keys, DocState.file), `Plans › ${esc(slug)}`); return true;
+}
+function closeDetail() { const el = $('#detail'); el.classList.remove('on'); el.hidden = true; $('#viewCrumb').innerHTML = ''; }
 
 /* ============================================================================
- * Router + chrome
+ * Router — every entity is a URL; the detail overlay is route-driven.
  * ========================================================================== */
-function currentView() { return VIEWS.find((v) => v.id === State.route) || VIEWS[0]; }
-function route() {
-  closeDetail();
-  const id = (location.hash.replace(/^#\/?/, '') || 'overview').split('?')[0];
-  State.route = VIEWS.some((v) => v.id === id) ? id : 'overview';
-  const v = currentView();
+const VIEW_IDS = new Set(VIEWS.map((v) => v.id));
+const ENTITY_KINDS = new Set(['issue', 'epic', 'decision', 'work']);
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, '');
+  const [path, qs] = raw.split('?');
+  const seg = path.split('/').filter(Boolean);
+  return { kind: seg[0] || 'overview', arg: decodeURIComponent(seg.slice(1).join('/')), query: new URLSearchParams(qs || '') };
+}
+function currentViewTitle() { const v = VIEWS.find((x) => x.id === State.route); return v ? v.title : 'Overview'; }
+function renderView(id) {
+  const v = VIEWS.find((x) => x.id === id) || VIEWS[0];
+  State.route = v.id; State.rendered = v.id;
   $('#viewTitle').textContent = v.title;
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === v.id));
   const view = $('#view');
@@ -699,6 +671,23 @@ function route() {
   view.scrollTop = 0;
   afterRender();
 }
+function route() {
+  const { kind, arg, query } = parseHash();
+  if (ENTITY_KINDS.has(kind) && arg) {
+    if (State.rendered == null) renderView(State.route || 'overview'); // base under the overlay
+    let ok = true;
+    if (kind === 'issue' || kind === 'epic') ok = showIssue(arg);
+    else if (kind === 'decision') ok = showDecision(arg);
+    else if (kind === 'work') ok = showWork(arg);
+    if (!ok) { closeDetail(); } // unknown entity → just show the base view
+    return;
+  }
+  // view route
+  closeDetail();
+  const id = VIEW_IDS.has(kind) ? kind : 'overview';
+  if (id === 'board') State.board.epicFocus = query.get('epic') || null; // #/board?epic=:id focuses one epic
+  renderView(id);
+}
 function afterRender() {
   const bs = $('#boardSearch');
   if (bs) bs.addEventListener('input', (e) => { State.filters.q = e.target.value.trim(); rerender(); });
@@ -706,7 +695,8 @@ function afterRender() {
   if (mf) mf.addEventListener('input', (e) => { State.memFilter = e.target.value.trim(); rerender(); });
 }
 function rerender() {
-  const v = currentView(); const view = $('#view'); const focus = document.activeElement?.id;
+  const v = VIEWS.find((x) => x.id === State.route) || VIEWS[0];
+  const view = $('#view'); const focus = document.activeElement?.id;
   view.innerHTML = v.render(); afterRender();
   if (focus === 'boardSearch' || focus === 'memFilter') { const el = $('#' + focus); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
 }
@@ -726,19 +716,16 @@ function buildNav() {
 // Shared action handler for clicks in both #view and the #detail overlay.
 function handleAct(t) {
   const act = t.dataset.act;
-  if (act === 'board-level') { State.board.level = t.dataset.level; State.board.limits = {}; rerender(); }
-  else if (act === 'focus-epic') { State.board.epicFocus = t.dataset.id; State.board.level = 'tasks'; State.board.limits = {}; closeDetail(); if (State.route === 'board') rerender(); else location.hash = '#/board'; }
-  else if (act === 'clear-focus') { State.board.epicFocus = null; rerender(); }
-  else if (act === 'more') { const k = t.dataset.col; State.board.limits[k] = (State.board.limits[k] ?? 25) + 25; rerender(); }
+  if (act === 'open') { const k = t.dataset.kind || 'issue'; location.hash = `#/${k}/${encodeURIComponent(t.dataset.id)}`; }
+  else if (act === 'goto') { location.hash = t.dataset.hash; }
+  else if (act === 'doc-file') { showWork(t.dataset.slug, t.dataset.file); }
+  else if (act === 'clear-focus') { State.board.epicFocus = null; location.hash = '#/board'; if (State.route === 'board') rerender(); }
+  else if (act === 'more') { const k = t.dataset.col; State.board.limits[k] = (State.board.limits[k] ?? 30) + 30; rerender(); }
   else if (act === 'chip-type') { const v = t.dataset.val; State.filters.types.has(v) ? State.filters.types.delete(v) : State.filters.types.add(v); rerender(); }
   else if (act === 'chip-prio') { const v = t.dataset.val; State.filters.prios.has(v) ? State.filters.prios.delete(v) : State.filters.prios.add(v); rerender(); }
   else if (act === 'chip-clear') { State.filters.types.clear(); State.filters.prios.clear(); rerender(); }
   else if (act === 'epics-tab') { State.epicsTab = t.dataset.tab; rerender(); }
   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
-  else if (act === 'open') { openDetail(t.dataset.id); }
-  else if (act === 'open-dec') { openDecision(t.dataset.id); }
-  else if (act === 'open-folder') { openFolder(t.dataset.slug); }
-  else if (act === 'doc-file') { openFolder(t.dataset.slug, t.dataset.file); }
   else if (act === 'ws-arch') { State.wsArchived = t.dataset.v === '1'; rerender(); }
   else if (act === 'board-closed') { State.board.showClosed = !State.board.showClosed; State.board.limits = {}; rerender(); }
 }
@@ -757,9 +744,9 @@ function wireGlobalSearch() {
     const dec = (State.snapshot.decisions || []).filter((d) => (d.title + ' ' + d.id).toLowerCase().includes(q)).slice(0, 5);
     const grp = (label, items, html) => items.length ? `<div class="sr-group">${label}</div>${items.map(html).join('')}` : '';
     box.innerHTML =
-      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="issue" data-id="${esc(i.id)}">${isLive(i) ? pulse(true) : typeBadge(i.type)}<span class="t">${esc(clamp(i.title, 50))}</span></div>`) +
-      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="issue" data-id="${esc(e.id)}"><span class="glyph">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="t">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 48))}</span></div>`) +
-      grp('Decisions', dec, (d) => `<div class="sr-item" data-nav="decisions"><span class="badge">${esc(clamp(d.status, 8))}</span><span class="t">${esc(clamp(d.title, 44))}</span></div>`) ||
+      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="issue" data-id="${esc(i.id)}">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 50))}</span></div>`) +
+      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="epic" data-id="${esc(e.id)}"><span class="glyph">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="t">${esc(clamp(deEpic(e.title), 48))}</span></div>`) +
+      grp('Decisions', dec, (d) => `<div class="sr-item" data-nav="decision" data-id="${esc(String(d.id))}"><span class="tag">${esc(clamp(d.status, 8))}</span><span class="t">${esc(clamp(d.title, 44))}</span></div>`) ||
       `<div class="sr-empty">No matches for “${esc(q)}”.</div>`;
     box.classList.add('on');
   };
@@ -768,9 +755,7 @@ function wireGlobalSearch() {
   box.addEventListener('click', (e) => {
     const it = e.target.closest('[data-nav]'); if (!it) return;
     box.classList.remove('on'); input.value = '';
-    const nav = it.dataset.nav;
-    if (nav === 'issue') { openDetail(it.dataset.id); }
-    else if (nav === 'decisions') { location.hash = '#/decisions'; }
+    location.hash = `#/${it.dataset.nav}/${encodeURIComponent(it.dataset.id)}`;
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('.search')) box.classList.remove('on'); });
   document.addEventListener('keydown', (e) => {
@@ -781,13 +766,9 @@ function wireGlobalSearch() {
 
 function wireTheme() {
   const root = document.documentElement;
-  // Dark is the DEFAULT (index.html ships data-theme="dark"). The storage key is
-  // versioned so stale pre-v5 "light" preferences don't override the new default —
-  // users land on dark, and the toggle persists an explicit choice from here on.
   const KEY = 'forge-theme-v5';
   const saved = localStorage.getItem(KEY);
-  if (saved === 'light' || saved === 'dark') root.setAttribute('data-theme', saved);
-  else root.setAttribute('data-theme', 'dark');
+  root.setAttribute('data-theme', (saved === 'light' || saved === 'dark') ? saved : 'dark');
   const paint = () => { const dark = root.getAttribute('data-theme') !== 'light'; $('#themeLabel').textContent = dark ? 'Light' : 'Dark'; };
   paint();
   $('#themeToggle').addEventListener('click', () => {
@@ -806,7 +787,7 @@ function updateStamp() {
 async function doRefresh(silent) {
   const btn = $('#refreshBtn');
   if (!silent) btn.classList.add('spin');
-  try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); route(); updateStamp(); }
+  try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); State.rendered = null; route(); updateStamp(); }
   catch (err) { if (!silent) { location.reload(); return; } }
   finally { btn.classList.remove('spin'); }
 }
@@ -819,10 +800,10 @@ async function boot() {
     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
     $('#view').addEventListener('click', onViewClick);
     $('#detail').addEventListener('click', (e) => {
-      if (e.target.closest('[data-act="detail-close"]')) return closeDetail();
+      if (e.target.closest('[data-act="detail-close"]')) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); return; }
       const t = e.target.closest('[data-act]'); if (t) handleAct(t);
     });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#detail').hidden) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); } });
     $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
     window.addEventListener('hashchange', route);
     if (!location.hash) location.hash = '#/overview';
