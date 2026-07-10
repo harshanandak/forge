@@ -36,10 +36,10 @@ function rmrfWithRetry(dir) {
   }
 }
 
-// The persisted notes, newest-first, as recall renders them (JSON mode → the note array).
+// The persisted notes, newest-first, as recall renders them (JSON mode → { notes, ... }).
 async function recalledNotes(projectRoot) {
   const result = await recall.handler(['--json'], {}, projectRoot);
-  return JSON.parse(result.output);
+  return JSON.parse(result.output).notes;
 }
 
 afterEach(() => {
