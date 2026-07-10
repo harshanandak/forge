@@ -277,6 +277,35 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     expect(ghCalls.some((c) => c.includes('111'))).toBe(true);
   });
 
+  test('is STRICTLY read-only: the real decision pass never fires a Tier-A rerun mutation', async () => {
+    // Use the REAL runShepherdPass (no injected runPass) with a FAILING required
+    // check — the path that would normally rerun. --pull must NOT mutate.
+    let rerunCalls = 0;
+    const checks = [
+      { name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/1/job/111' },
+    ];
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readRequiredChecks() { return ['unit']; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async readComments() { return []; },
+      async rerunFailedChecks() { rerunCalls += 1; }, // MUST never be called
+    };
+    const ghCalls = [];
+    const runGh = (args) => { ghCalls.push(args.join(' ')); return '2026-07-10T12:00:01.2Z (fail) unit > x\nerror: boom'; };
+
+    const payload = await gatherPullSignal({
+      pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh, self: 'me', // note: NO runPass injected → real runShepherdPass
+    });
+
+    expect(rerunCalls).toBe(0); // no CI mutation
+    expect(ghCalls.some((c) => c.includes('rerun'))).toBe(false); // runGh never asked to rerun
+    expect(payload.state).toBeDefined(); // state still computed
+    expect(payload.failures.length).toBe(1); // and the failure excerpt still extracted
+  });
+
   test('a failing log fetch degrades to an empty excerpt without sinking the payload', async () => {
     const { adapter, runPass } = makeCtx({
       checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/1/job/999' }],
