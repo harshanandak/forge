@@ -1,0 +1,76 @@
+// Tests for the dashboard's pure, DOM-free logic (board derivation, filtering,
+// relative time) plus the baked snapshot's integrity. Runs under `bun test`.
+import { test, expect } from 'bun:test';
+import { createRequire } from 'node:module';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const app = require(join(here, 'app.js'));
+
+test('module exports the pure helpers without touching the DOM', () => {
+  expect(typeof app.columnOf).toBe('function');
+  expect(typeof app.matchesFilter).toBe('function');
+  expect(typeof app.relTime).toBe('function');
+});
+
+test('columnOf routes each issue to exactly one board column', () => {
+  expect(app.columnOf({ status: 'done' })).toBe('done');
+  expect(app.columnOf({ status: 'cancelled' })).toBe(null); // excluded
+  expect(app.columnOf({ status: 'open', blocked: true })).toBe('blocked');
+  expect(app.columnOf({ status: 'open', claimed_by: 'agent' })).toBe('progress');
+  expect(app.columnOf({ status: 'open' })).toBe('ready');
+  // blocked takes precedence over a claim
+  expect(app.columnOf({ status: 'open', blocked: true, claimed_by: 'a' })).toBe('blocked');
+});
+
+test('matchesFilter honours type, priority and text query', () => {
+  const issue = { title: 'Fix broker conflict', id: 'abc123', type: 'bug', priority: 'P0', claimed_by: 'forge', labels: ['kernel'] };
+  app.State.filters = { q: '', type: null, prio: null };
+  expect(app.matchesFilter(issue)).toBe(true);
+
+  app.State.filters = { q: '', type: 'feature', prio: null };
+  expect(app.matchesFilter(issue)).toBe(false); // wrong type
+
+  app.State.filters = { q: '', type: 'bug', prio: 'P0' };
+  expect(app.matchesFilter(issue)).toBe(true);
+
+  app.State.filters = { q: 'broker', type: null, prio: null };
+  expect(app.matchesFilter(issue)).toBe(true); // title match
+
+  app.State.filters = { q: 'kernel', type: null, prio: null };
+  expect(app.matchesFilter(issue)).toBe(true); // label match
+
+  app.State.filters = { q: 'nonexistent-xyz', type: null, prio: null };
+  expect(app.matchesFilter(issue)).toBe(false);
+
+  app.State.filters = { q: '', type: null, prio: null }; // reset shared state
+});
+
+test('relTime produces human-readable deltas', () => {
+  const now = Date.now();
+  expect(app.relTime(new Date(now - 30 * 1000).toISOString())).toMatch(/s ago$/);
+  expect(app.relTime(new Date(now - 5 * 60 * 1000).toISOString())).toMatch(/m ago$/);
+  expect(app.relTime(new Date(now - 3 * 3600 * 1000).toISOString())).toMatch(/h ago$/);
+  expect(app.relTime('')).toBe('');
+});
+
+test('baked snapshot, when generated, is well-formed', () => {
+  const path = join(here, 'data.json');
+  if (!existsSync(path)) return; // generated artifact; absent on a fresh clone / CI
+  const snap = JSON.parse(readFileSync(path, 'utf8'));
+  expect(Array.isArray(snap.issues)).toBe(true);
+  expect(snap.issues.length).toBeGreaterThan(0);
+  expect(typeof snap.generated_at).toBe('string');
+  const first = snap.issues[0];
+  ['id', 'title', 'type', 'status', 'priority'].forEach((k) => expect(first).toHaveProperty(k));
+
+  // Every non-cancelled issue lands in exactly one column.
+  const buckets = { ready: 0, progress: 0, blocked: 0, done: 0, none: 0 };
+  snap.issues.forEach((i) => { const c = app.columnOf(i); buckets[c || 'none']++; });
+  const placed = buckets.ready + buckets.progress + buckets.blocked + buckets.done;
+  const cancelled = snap.issues.filter((i) => i.status === 'cancelled').length;
+  expect(placed + cancelled).toBe(snap.issues.length);
+});

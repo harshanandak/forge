@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forge — Kernel Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Left rail -->
+    <aside class="rail">
+      <div class="brand">
+        <div class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 20h6M7 20V9M4 9l6-5 6 4-1 4M14 12l6 2-1 6-6-1z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand__name">Forge</div>
+          <div class="brand__tag" id="brandTag">kernel dashboard</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <a href="#health" class="active"><span class="dot" style="background:var(--accent)"></span> Health</a>
+        <a href="#board"><span class="dot" style="background:var(--ready)"></span> Work board</a>
+        <a href="#epics"><span class="dot" style="background:var(--progress)"></span> Epics</a>
+        <a href="#decisions"><span class="dot" style="background:var(--accent-2)"></span> Decisions</a>
+        <a href="#activity"><span class="dot" style="background:var(--done)"></span> Activity</a>
+      </nav>
+
+      <div class="rail__foot">
+        <button class="themetoggle" id="themeToggle" type="button" aria-label="Toggle theme">
+          <span id="themeIcon">◐</span> <span id="themeLabel">Light</span>
+        </button>
+        <div class="snapmeta" id="snapmeta">loading snapshot…</div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <header class="masthead">
+        <h1>Kernel <span class="accent">dashboard</span></h1>
+        <p id="masthead-sub">A read-only view of the live Forge kernel — work board,
+          epics, decisions and recent activity from a baked snapshot.</p>
+      </header>
+
+      <!-- 1. Health -->
+      <section id="health">
+        <div class="section-head">
+          <h2>Health</h2><span class="count" id="healthCount"></span><span class="rule"></span>
+        </div>
+        <div class="stats" id="stats"></div>
+        <div class="meters">
+          <div class="meter">
+            <h3>Priority distribution</h3>
+            <div class="bar" id="prioBar"></div>
+            <div class="legend" id="prioLegend"></div>
+          </div>
+          <div class="meter">
+            <h3>Issue types</h3>
+            <div class="typechips" id="typeChips"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Work board -->
+      <section id="board">
+        <div class="section-head">
+          <h2>Work board</h2><span class="count" id="boardCount"></span><span class="rule"></span>
+        </div>
+        <div class="toolbar">
+          <label class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="search" type="search" placeholder="Search 611 issues by title, id, owner…" autocomplete="off" />
+          </label>
+          <div class="filters" id="typeFilters"></div>
+          <div class="filters" id="prioFilters"></div>
+        </div>
+        <div class="board" id="boardCols"></div>
+      </section>
+
+      <!-- 3. Epics -->
+      <section id="epics">
+        <div class="section-head">
+          <h2>Epics</h2><span class="count" id="epicCount"></span><span class="rule"></span>
+        </div>
+        <div class="cards-grid" id="epicGrid"></div>
+      </section>
+
+      <!-- 4. Decisions -->
+      <section id="decisions">
+        <div class="section-head">
+          <h2>Decisions</h2><span class="count" id="decCount"></span><span class="rule"></span>
+        </div>
+        <div class="cards-grid" id="decGrid"></div>
+      </section>
+
+      <!-- 5. Activity + memory -->
+      <section id="activity">
+        <div class="section-head">
+          <h2>Recent activity &amp; memory</h2><span class="rule"></span>
+        </div>
+        <div class="split">
+          <div class="timeline" id="timeline"></div>
+          <div class="mempanel" id="memPanel"></div>
+        </div>
+        <div class="footer" id="footer"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Baked kernel snapshot (window.FORGE_SNAPSHOT). Regenerate: node generate-snapshot.mjs -->
+  <script src="snapshot.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
