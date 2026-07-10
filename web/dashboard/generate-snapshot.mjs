@@ -164,6 +164,17 @@ const worktrees = tryRun(() => {
     else if (line.trim() === '' && cur.path) { trees.push(cur); cur = {}; }
   });
   if (cur.path) trees.push(cur);
+  // Best-effort harness/surface inference from the worktree path. The REAL
+  // harness/region tag will come from the kernel session record (see seam note).
+  const inferSurface = (p) => {
+    const s = String(p).replace(/\\/g, '/');
+    if (/\.claude\/worktrees\/agent-/.test(s)) return 'claude-code';
+    if (/[/]\.t3[/]/.test(s)) return 't3code';
+    if (/temp|scratchpad|appdata\/local\/temp/i.test(s)) return 'ephemeral';
+    if (/\.worktrees\//.test(s)) return 'worktree';
+    return 'main';
+  };
+  trees.forEach((t) => { t.surface = inferSurface(t.path); });
   return trees;
 }, [], 'git worktree list');
 
@@ -187,6 +198,16 @@ const snapshot = {
     issues: issues.length, decisions: decisions.length,
     architecture: architecture.length, plans: plans.length,
     worktrees: worktrees.length, prs: prs.length,
+    actors: [...new Set(activeClaims.map((c) => c.owner))].length,
+  },
+  // SEAM: session_id / worktree_id / harness / region live in the kernel lease
+  // table (lib/kernel/lease-enforcer.js) but are not yet exposed by the CLI read
+  // surface — only `claimed_by` (actor) is. The sync-rail / Phase-2 read API will
+  // surface full leases; until then Live Ops renders actor + worktree + PRs and
+  // infers `surface` from the worktree path.
+  liveSeam: {
+    exposed: ['claimed_by (actor)', 'git worktree list', 'gh pr list'],
+    pending: ['session_id', 'worktree_id', 'harness', 'region', 'lease expires_at'],
   },
   status: statusRes,
   memory,

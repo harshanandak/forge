@@ -1,10 +1,17 @@
 # Forge Dashboard (read-only)
 
 A self-contained, zero-build **multi-view** app that renders a **live kernel
-snapshot** — a Linear-style work board, epic hierarchy, decisions, plans, and
-live ops — from the real kernel (610 issues at time of writing). No framework,
+snapshot** — a work board, epic hierarchy, decisions, plans, and multi-harness
+live ops — from the real kernel (611 issues at time of writing). No framework,
 no build step, no external assets. This is the **rail-independent read layer**;
 real-time push is deferred to the sync rail (see the seam below).
+
+**Aesthetic:** mono / Swiss-brutalist. A strict three-value palette — black,
+white, gray, no hue. Flat (no shadows/gradients/glows), sharp corners, hard 1px
+rules, mono-forward type. Everything normally carried by color is encoded in
+**grayscale**: priority = fill density, status/health = glyphs (●/◐/○/✕),
+a **live claim** = a pulsing filled square, lifecycle phase = a 6-cell stepper.
+Light + dark, both strictly black/white/gray.
 
 ## Run it (two steps)
 
@@ -37,7 +44,21 @@ cd web/dashboard && python -m http.server 8080   # → http://localhost:8080
 | `#/epics` | **Epics / Initiatives** | epics + `parent_id` children | Linear-style table, expandable hierarchy, Health (on/at-risk/off-track), `done/total`, Active/Planned/Completed/All tabs |
 | `#/decisions` | **Decisions & Architecture** | kernel `type=decision` + `forge prime` headline PDs + `docs/adr` + `docs/architecture` | ADR board with status/component/rationale |
 | `#/plans` | **Plans & History** | `docs/work/*` | timeline of work folders grouped by month, plan/tasks/decisions tags |
-| `#/ops` | **Live Ops** | `git worktree list` + `gh pr list` + active claims | running agents (claims), open PRs, worktrees |
+| `#/ops` | **Live Ops (multi-harness)** | kernel `claimed_by` + `git worktree list` + `gh pr list` | top-line counts (actors · live claims · worktrees · PRs); per-actor breakdown of what each agent is working on (with live pulse); worktrees grouped by inferred **surface** (Claude Code / worktree / t3code / ephemeral / main); open PRs |
+
+### Live indicators & seams
+
+- **Live pulse** — a pulsing filled square marks any open+claimed issue (an agent
+  working it now). Shown on board cards, epic rows (rolled up as "N live"), the
+  overview, and Live Ops. Best-effort: real liveness needs the lease `expires_at`.
+- **Lifecycle phase** — a 6-cell stepper (plan → dev → validate → ship → review →
+  verify) per task, derived best-effort from status/claim. **Seam:** the kernel
+  issue record has no `currentStage` field yet.
+- **Multi-harness seam** — the kernel lease table holds `session_id`,
+  `worktree_id`, `actor`, `expires_at`, but the CLI read surface exposes only
+  `claimed_by` (actor). So Live Ops renders actor + worktree + PRs and **infers**
+  the harness/surface from the worktree path. The real harness + region tag
+  arrives with the sync-rail / Phase-2 lease read.
 
 Global **search** (top of sidebar, `/` to focus) spans issues + epics + decisions.
 Every view has a **Refresh** button and an "updated <time>" stamp; a 60s

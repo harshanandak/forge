@@ -140,3 +140,46 @@ Extended `generate-snapshot.mjs` to also emit `decisions`, `architecture`,
 
 ### Tests
 `app.test.js` extended to cover `epicRollup` + `epicHealth` (7 tests, all pass).
+
+---
+
+## v3 — mono/brutalist reskin + multi-harness Live Ops + live/phase (2026-07-10)
+
+Same v2 structure (multi-view shell, Kanban + toggle, Linear epics, decisions,
+plans, refresh). Three refinements:
+
+### 1. Aesthetic → mono / Swiss-brutalist
+Full `styles.css` rewrite. Strict black/white/gray (no `--accent` var exists —
+verified). Flat: no shadows/gradients/glows, sharp corners, hard 1px rules,
+mono-forward type. Grayscale encodings replace all color: priority = fill density
+(`rgba(var(--ink), α)`), status/health = glyphs (●/◐/○/✕ + label), selected =
+inverted (ink/bg swap). Light + dark both strictly grayscale.
+
+### 2. Live Ops → multi-harness / multi-region
+**Data reality:** the kernel lease table (`lib/kernel/lease-enforcer.js`) holds
+`session_id`, `worktree_id`, `actor`, `expires_at`, `agent`, but the CLI read
+surface exposes only `claimed_by` (actor) — no `forge claims/leases` command,
+and `forge board --json` reads the empty Beads projection. So Live Ops renders
+what IS real: actor (`claimed_by`) + `git worktree list` + `gh pr list`, and
+**infers** a harness `surface` from each worktree path (claude-code / worktree /
+t3code / ephemeral / main). Top-line counts (actors · live claims · worktrees ·
+PRs) + per-actor breakdown of what each agent is on + worktrees-by-surface + PRs
++ an explicit **seam banner** for session_id/worktree_id/harness/region.
+
+### 3. Live pulse + lifecycle phase
+- `isLive(i)` = open + claimed → a pulsing filled square on board cards, epic
+  rows ("N live" rollup), overview, Live Ops. Real liveness (lease not expired)
+  is the documented seam.
+- `lifecyclePhase(i)` = best-effort plan→dev→validate→ship→review→verify from
+  status/claim → a 6-cell mono stepper on task cards + epic child rows. Seam:
+  no `currentStage` on the kernel issue record yet.
+
+### Data (generator)
+`generate-snapshot.mjs` adds `worktrees[].surface` (inferred harness),
+`counts.actors`, and a `liveSeam` (exposed vs pending fields).
+
+### Tests
+`app.test.js` extended for `isLive` + `lifecyclePhase` + `epicRollup.live`
+(10 tests, all pass). In-browser verified: 15 pulse dots, 88 phase steppers,
+priority swatches grayscale, no `--accent`, independent column scroll intact,
+body has no horizontal scroll.

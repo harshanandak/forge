@@ -16,6 +16,25 @@ test('module exports the pure helpers without touching the DOM', () => {
   expect(typeof app.relTime).toBe('function');
   expect(typeof app.epicRollup).toBe('function');
   expect(typeof app.epicHealth).toBe('function');
+  expect(typeof app.isLive).toBe('function');
+  expect(typeof app.lifecyclePhase).toBe('function');
+});
+
+test('isLive flags open + claimed issues (best-effort liveness)', () => {
+  expect(app.isLive({ status: 'open', claimed_by: 'forge' })).toBe(true);
+  expect(app.isLive({ status: 'open', claimed_by: null })).toBe(false);
+  expect(app.isLive({ status: 'done', claimed_by: 'forge' })).toBe(false);
+});
+
+test('lifecyclePhase maps status/claim to a 1..6 stage', () => {
+  expect(app.lifecyclePhase({ status: 'done' })).toEqual({ idx: 6, label: 'done' });
+  expect(app.lifecyclePhase({ status: 'open', claimed_by: 'a' })).toEqual({ idx: 2, label: 'dev' });
+  expect(app.lifecyclePhase({ status: 'open' })).toEqual({ idx: 1, label: 'plan' });
+});
+
+test('epicRollup includes a live count', () => {
+  const kids = [{ status: 'open', claimed_by: 'a' }, { status: 'open', claimed_by: 'b' }, { status: 'open' }, { status: 'done' }];
+  expect(app.epicRollup({ id: 'e' }, kids).live).toBe(2);
 });
 
 test('epicRollup counts children by state', () => {
@@ -78,9 +97,9 @@ test('matchesFilter honours type, priority and text query', () => {
 
 test('relTime produces human-readable deltas', () => {
   const now = Date.now();
-  expect(app.relTime(new Date(now - 30 * 1000).toISOString())).toMatch(/s ago$/);
-  expect(app.relTime(new Date(now - 5 * 60 * 1000).toISOString())).toMatch(/m ago$/);
-  expect(app.relTime(new Date(now - 3 * 3600 * 1000).toISOString())).toMatch(/h ago$/);
+  expect(app.relTime(new Date(now - 30 * 1000).toISOString())).toMatch(/^\d+s$/);
+  expect(app.relTime(new Date(now - 5 * 60 * 1000).toISOString())).toMatch(/^\d+m$/);
+  expect(app.relTime(new Date(now - 3 * 3600 * 1000).toISOString())).toMatch(/^\d+h$/);
   expect(app.relTime('')).toBe('');
 });
 
