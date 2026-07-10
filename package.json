@@ -87,8 +87,6 @@
     ".claude/skills/",
     ".cursor/",
     "!.cursor/node_modules/",
-    ".codex/",
-    "!.codex/node_modules/",
     "scripts/",
     "!scripts/github-beads-sync/",
     "!scripts/github-beads-sync.config.json",

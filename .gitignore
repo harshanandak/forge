@@ -57,14 +57,16 @@ test-results/*
 skills-lock.json
 
 # Agent skill dirs populated at setup time as real file copies (forge setup /
-# skills-sync populateAgentSkills), not symlinks. Gitignored because they are
-# regenerated locally from canonical skills/. The committed mirrors are NOT
-# gitignored: .codex/skills (packaging staging mirror) and .agents/skills (Codex's
-# repo-local discovery path — checked in so teammates who clone WITHOUT running
-# `forge setup` still get Forge skills/stages auto-discovered).
+# skills-sync populateAgentSkills), not symlinks. ALL of them are gitignored
+# because they are generated locally from the canonical skills/ source — skills/
+# is the ONLY committed skill source. Contributors run `forge setup` after clone
+# to regenerate these mirrors (.agents/skills is Codex's repo-local discovery
+# path; .codex/skills feeds nothing at runtime but is kept in drift parity).
 .goose/
 .augment/
+.agents/skills/
 .claude/skills/
+.codex/skills/
 .cursor/skills/
 .github/skills/
 
