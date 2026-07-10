@@ -67,6 +67,12 @@ describe('forge-cmd shepherd dispatch', () => {
     expect(v.valid).toBe(true);
   });
 
+  test('validateArgs rejects --bundle and --pull together (mutually exclusive output modes)', () => {
+    const v = validateArgs('shepherd', ['123', '--bundle', '--pull']);
+    expect(v.valid).toBe(false);
+    expect(v.error).toContain('not both');
+  });
+
   test('forge shepherd with an unknown flag exits non-zero before running a pass', () => {
     const res = spawnSync('node', [CLI, 'shepherd', '123', '--auto-reabse'], { encoding: 'utf8', timeout: 20000 });
     const combined = `${res.stdout || ''}${res.stderr || ''}`;

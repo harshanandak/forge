@@ -189,6 +189,15 @@ function validateArgs(command, args) {
 		};
 	}
 
+	// `--bundle` and `--pull` are mutually exclusive output modes — shepherd.js returns on
+	// `--pull` first, so accepting both would silently drop the bundle. Fail fast.
+	if (command === 'shepherd' && args.includes('--bundle') && args.includes('--pull')) {
+		return {
+			valid: false,
+			error: "Error: 'forge shepherd <pr>' accepts '--bundle' OR '--pull', not both",
+		};
+	}
+
 	if (required.length > 0 && positionalArgs.length < required.length) {
 		const missing = required.slice(positionalArgs.length);
 		return {
