@@ -224,6 +224,25 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(q).toContain('path line');
   });
 
+  test('readComments surfaces the REST commentId (fullDatabaseId) for replies', async () => {
+    const graphqlJson = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: { nodes: [
+        {
+          id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+          comments: { nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
+        },
+      ] } } } },
+    });
+    const { run, calls } = makeRunner([['api graphql', graphqlJson]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const threads = await adapter.readComments({ owner: 'o', repo: 'r', pr: '7' });
+
+    expect(threads[0].comments[0].commentId).toBe('987654321');
+    // the GraphQL query must actually request the comment database id
+    const q = calls.find((c) => c.args.join(' ').includes('graphql')).args.join(' ');
+    expect(q).toContain('fullDatabaseId');
+  });
+
   test('readComments coerces a missing line to null', async () => {
     const graphqlJson = JSON.stringify({
       data: { repository: { pullRequest: { reviewThreads: { nodes: [
