@@ -547,3 +547,26 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
 .quietrow[data-act] { cursor: pointer; }
 .seamnote { font-family: var(--mono); font-size: 10px; color: var(--faint); line-height: 1.65; margin-top: 16px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .detail__prog { display: flex; align-items: center; gap: 14px; margin: 8px 0 12px; }
+
+/* Work Board — Table mode (Kanban ⇄ Table toggle, d1d7aedc) */
+.worklist { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.worktbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.worktbl thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); font-weight: 700; padding: 10px 16px; border-bottom: 1px solid var(--line-2); white-space: nowrap; }
+.worktbl td { padding: 9px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.worktbl .taskrow { cursor: pointer; }
+.worktbl .taskrow:hover { background: var(--hover); }
+.worktbl .wt-title { font-family: var(--sans); }
+.worktbl .wt-status { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.worktbl .wt-status .glyph { font-size: 11px; }
+.worktbl .wt-owner { font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.worktbl .wt-live, .worktbl .wt-pr { text-align: center; }
+.worktbl .seam-dash { color: var(--faint); }
+.worktbl .grouprow td { background: var(--surface-2); padding: 9px 16px; border-bottom: 1px solid var(--line); }
+.worktbl .grouprow .chev { display: inline-block; width: 14px; color: var(--muted); cursor: pointer; user-select: none; font-family: var(--mono); }
+.worktbl .grouprow .glyph { margin: 0 4px 0 2px; }
+.worktbl .grouprow__t { font-family: var(--sans); font-weight: 600; margin: 0 12px 0 4px; }
+.worktbl .grouprow[class*="grouprow"] .grouprow__t[data-act] { cursor: pointer; }
+.worktbl .grouprow__t[data-act]:hover { text-decoration: underline; text-underline-offset: 2px; }
+.worktbl .grouprow__n { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-left: 12px; }
+.worktbl .grouprow .prog { margin-left: 6px; vertical-align: middle; }
+.worktbl .grouprow--none .grouprow__t { color: var(--faint); font-weight: 400; font-style: italic; }

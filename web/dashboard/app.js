@@ -65,7 +65,7 @@ function icon(name) {
 const State = {
   snapshot: null, issues: [], epics: [], byId: {}, kids: {},
   filters: { q: '', types: new Set(), prios: new Set() },
-  board: { epicFocus: null, limits: {}, showClosed: false },
+  board: { epicFocus: null, limits: {}, showClosed: false, mode: 'kanban', tableCollapsed: new Set() },
   epicsTab: 'active', epicsExpanded: new Set(),
   wsArchived: false, memFilter: '',
   route: 'overview', rendered: null,
@@ -239,14 +239,22 @@ function renderBoard() {
   const B = State.board;
   const focus = B.epicFocus ? State.byId[B.epicFocus] : null;
   const focusChip = focus ? `<span class="chipfilter"><span class="glyph">${HEALTH_GLYPH[epicHealth(focus)]}</span>${esc(clamp(deEpic(focus.title), 34))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
+  // Persisted Kanban ⇄ Table toggle — same items, same filter bar; status stays the
+  // sort geometry in both (columns in Kanban, sort order in Table).
+  const modeSeg = `<div class="seg">
+    <button data-act="board-mode" data-mode="kanban" class="${B.mode !== 'table' ? 'on' : ''}">Kanban</button>
+    <button data-act="board-mode" data-mode="table" class="${B.mode === 'table' ? 'on' : ''}">Table</button></div>`;
   const closedToggle = `<button class="btn ${B.showClosed ? 'on' : ''}" data-act="board-closed">${B.showClosed ? 'Hide' : 'Show'} done / cancelled</button>`;
   const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
   const chips = `<div class="controls">${types.map((t) => `<button class="btn ${State.filters.types.has(t) ? 'on' : ''}" data-act="chip-type" data-val="${t}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
     ${PRIO_ORDER.map((p) => `<button class="btn ${State.filters.prios.has(p) ? 'on' : ''}" data-act="chip-prio" data-val="${p}">${p}</button>`).join('')}
     ${(State.filters.types.size || State.filters.prios.size) ? '<button class="btn" data-act="chip-clear">clear</button>' : ''}</div>`;
   const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-    <input id="boardSearch" type="search" placeholder="filter cards…" value="${esc(State.filters.q)}"></div>`;
-  return `<div class="boardbar">${closedToggle}${focusChip}${chips}${miniSearch}</div><div class="board">${renderTaskColumns(focus)}</div>`;
+    <input id="boardSearch" type="search" placeholder="filter…" value="${esc(State.filters.q)}"></div>`;
+  const body = B.mode === 'table'
+    ? `<div class="worklist">${renderTaskTable(focus)}</div>`
+    : `<div class="board">${renderTaskColumns(focus)}</div>`;
+  return `<div class="boardbar">${modeSeg}${closedToggle}${focusChip}${chips}${miniSearch}</div>${body}`;
 }
 function renderTaskColumns(focus) {
   let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
@@ -299,6 +307,50 @@ function boardColumn(def, grouped) {
   const note = def.note ? `<span class="kcol__note">${esc(def.note)}</span>` : '';
   return `<div class="kcol"><div class="kcol__head"><span class="kcol__title">${esc(def.title)}</span>${note}<span class="kcol__count">${def.items.length}</span></div>
     <div class="kcol__body">${body}</div></div>`;
+}
+
+/* ---- Work Board · Table mode ---- (same items/filters; status = sort geometry) */
+const STATUS_ORDER = { backlog: 0, ready: 1, blocked: 1, progress: 2, done: 3, cancelled: 4 };
+const STATUS_WORD = { backlog: 'Backlog', ready: 'Ready', blocked: 'Blocked', progress: 'In progress', done: 'Done', cancelled: 'Cancelled' };
+const CANCEL_GLYPH = '–';
+const statusKey = (i) => (i.status === 'cancelled' ? 'cancelled' : columnOf(i));
+// Shared row atom (the Table counterpart of card() — same encodings, tabular).
+function taskRow(i) {
+  const col = statusKey(i);
+  const g = STATUS_GLYPH[col] || (col === 'cancelled' ? CANCEL_GLYPH : '○');
+  return `<tr class="taskrow" data-act="open" data-kind="issue" data-id="${esc(i.id)}">
+    <td class="wt-title">${esc(clamp(i.title, 96))}</td>
+    <td class="wt-status"><span class="glyph">${g}</span> ${esc(STATUS_WORD[col] || col)}</td>
+    <td>${pmark(i.priority)}</td>
+    <td class="wt-owner">${i.claimed_by ? esc(i.claimed_by) : '—'}</td>
+    <td class="wt-live">${isLive(i) ? pulse(true) : ''}</td>
+    <td class="wt-pr"><span class="seam-dash" title="issue↔PR link — SEAM ${esc(seamId('workFolderGraph', '56461780'))}">—</span></td>
+  </tr>`;
+}
+function renderTaskTable(focus) {
+  let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
+  if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
+  if (!State.board.showClosed) pool = pool.filter((i) => i.status !== 'done' && i.status !== 'cancelled');
+  // Group by epic (collapsible group rows); tasks with no epic go last.
+  const groups = new Map();
+  pool.forEach((i) => { const e = (i.parent_id && State.byId[i.parent_id]) ? i.parent_id : '__none'; if (!groups.has(e)) groups.set(e, []); groups.get(e).push(i); });
+  const order = [...groups.keys()].sort((a, b) => {
+    if (a === '__none') return 1; if (b === '__none') return -1;
+    return rankByPrio(State.byId[a], State.byId[b]) || deEpic(State.byId[a].title).localeCompare(deEpic(State.byId[b].title));
+  });
+  const sortRows = (list) => list.sort((a, b) => (STATUS_ORDER[statusKey(a)] - STATUS_ORDER[statusKey(b)]) || rankByPrio(a, b));
+  const rowsHtml = order.map((eid) => {
+    const list = sortRows(groups.get(eid));
+    const collapsed = State.board.tableCollapsed.has(eid);
+    const chev = `<span class="chev" data-act="toggle-workgroup" data-id="${esc(eid)}">${collapsed ? '▸' : '▾'}</span>`;
+    const e = eid !== '__none' ? State.byId[eid] : null;
+    const head = e
+      ? `<tr class="grouprow"><td colspan="6">${chev}<span class="glyph" title="${esc(HEALTH_LABEL[epicHealth(e)])}">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="grouprow__t" data-act="open" data-kind="epic" data-id="${esc(e.id)}">${esc(clamp(deEpic(e.title), 64))}</span>${progress(epicRollup(e))}<span class="grouprow__n">${list.length}</span></td></tr>`
+      : `<tr class="grouprow grouprow--none"><td colspan="6">${chev}<span class="grouprow__t">No epic</span><span class="grouprow__n">${list.length}</span></td></tr>`;
+    return head + (collapsed ? '' : list.map(taskRow).join(''));
+  }).join('');
+  const body = pool.length ? rowsHtml : '<tr><td colspan="6"><div class="kempty">— no matching work —</div></td></tr>';
+  return `<table class="worktbl"><thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Owner</th><th>Live</th><th>PR</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 /* ---- Epics table ---- */
@@ -733,6 +785,8 @@ function handleAct(t) {
   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
   else if (act === 'ws-arch') { State.wsArchived = t.dataset.v === '1'; rerender(); }
   else if (act === 'board-closed') { State.board.showClosed = !State.board.showClosed; State.board.limits = {}; rerender(); }
+  else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (e) { /* private mode */ } rerender(); }
+  else if (act === 'toggle-workgroup') { const id = t.dataset.id; State.board.tableCollapsed.has(id) ? State.board.tableCollapsed.delete(id) : State.board.tableCollapsed.add(id); rerender(); }
 }
 function onViewClick(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
@@ -801,6 +855,7 @@ async function boot() {
   try {
     const snap = await DataSource.load();
     rebuild(snap);
+    try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (e) { /* private mode */ }
     buildNav(); wireTheme(); wireGlobalSearch();
     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
     $('#view').addEventListener('click', onViewClick);
