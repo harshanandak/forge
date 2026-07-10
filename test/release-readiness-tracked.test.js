@@ -53,4 +53,14 @@ describe('auditBdCallSites is deterministic under working-tree pollution (1d4077
     expect(polluted.totalCount).toBe(clean.totalCount);
     expect(polluted.totalFiles).toBe(clean.totalFiles);
   });
+
+  test('falls back to the raw walk in a non-git tree (no tracked set)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-nogit-'));
+    tempDirs.push(dir);
+    fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'docs', 'note.md'), 'run `bd list`\n');
+    // Not a git repo -> trackedRepoFiles() returns null -> auditBdCallSites still scans.
+    const audit = auditBdCallSites(dir, { scanRoots: ['docs'] });
+    expect(audit.totalCount).toBeGreaterThan(0);
+  });
 });
