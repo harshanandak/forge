@@ -411,7 +411,8 @@ function renderOps() {
 
   const bySurface = {};
   trees.forEach((w) => { (bySurface[w.surface || 'other'] = bySurface[w.surface || 'other'] || []).push(w); });
-  const SURFACE_LABEL = { 'claude-code': 'Claude Code agents', worktree: 'Local worktrees', t3code: 't3code', ephemeral: 'Ephemeral / cloud', main: 'Main checkout', other: 'Other' };
+  // Harnesses are peers — labels are neutral; unknown → a generic local surface.
+  const SURFACE_LABEL = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', t3code: 't3code', cloud: 'Cloud / ephemeral', worktree: 'Local worktree', main: 'Main checkout', other: 'Unknown harness' };
   const surfaceHtml = Object.keys(bySurface).sort((a, b) => bySurface[b].length - bySurface[a].length).map((s) => {
     const lines = bySurface[s].map((w) => `<div class="opsline"><span class="pr-num mono" style="min-width:0">${esc(w.branch || '(detached)')}</span><span class="surface-tag">${esc(s)}</span><span class="t mono-path">${esc(w.path)}</span><span class="when">${esc(w.head || '')}</span></div>`).join('');
     return `<div class="actorcard"><div class="actorcard__head"><span class="actorcard__name">${esc(SURFACE_LABEL[s] || s)}</span><span class="actorcard__meta">${bySurface[s].length}</span></div>${lines}</div>`;

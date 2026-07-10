@@ -164,13 +164,18 @@ const worktrees = tryRun(() => {
     else if (line.trim() === '' && cur.path) { trees.push(cur); cur = {}; }
   });
   if (cur.path) trees.push(cur);
-  // Best-effort harness/surface inference from the worktree path. The REAL
-  // harness/region tag will come from the kernel session record (see seam note).
+  // Best-effort harness inference from the worktree path. ALL harnesses are PEERS —
+  // none is the default or the "real" one. Unknown → a neutral local surface, never
+  // assumed to be any specific agent. The real harness + region tag (for ANY agent)
+  // arrives from the kernel lease-read (7dc229d4). Path checks are OS-neutral
+  // (backslashes normalized, case-insensitive).
   const inferSurface = (p) => {
-    const s = String(p).replace(/\\/g, '/');
-    if (/\.claude\/worktrees\/agent-/.test(s)) return 'claude-code';
-    if (/[/]\.t3[/]/.test(s)) return 't3code';
-    if (/temp|scratchpad|appdata\/local\/temp/i.test(s)) return 'ephemeral';
+    const s = String(p).replace(/\\/g, '/').toLowerCase();
+    if (/\.claude\/worktrees\//.test(s)) return 'claude-code';
+    if (/\.codex\/worktrees\/|\/\.codex\//.test(s)) return 'codex';
+    if (/\.cursor\/worktrees\/|\/\.cursor\//.test(s)) return 'cursor';
+    if (/\/\.t3\//.test(s)) return 't3code';
+    if (/temp|scratchpad|appdata\/local\/temp/.test(s)) return 'cloud';
     if (/\.worktrees\//.test(s)) return 'worktree';
     return 'main';
   };
