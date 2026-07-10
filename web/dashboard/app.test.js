@@ -14,6 +14,33 @@ test('module exports the pure helpers without touching the DOM', () => {
   expect(typeof app.columnOf).toBe('function');
   expect(typeof app.matchesFilter).toBe('function');
   expect(typeof app.relTime).toBe('function');
+  expect(typeof app.epicRollup).toBe('function');
+  expect(typeof app.epicHealth).toBe('function');
+});
+
+test('epicRollup counts children by state', () => {
+  const kids = [
+    { status: 'done' }, { status: 'done' },
+    { status: 'open', blocked: true }, { status: 'open', claimed_by: 'a' }, { status: 'open' },
+  ];
+  const r = app.epicRollup({ id: 'e1' }, kids);
+  expect(r.total).toBe(5);
+  expect(r.done).toBe(2);
+  expect(r.blocked).toBe(1);
+  expect(r.inprog).toBe(1);
+  expect(r.ratio).toBeCloseTo(0.4);
+});
+
+test('epicHealth derives on-track / at-risk / off-track / completed', () => {
+  expect(app.epicHealth({ status: 'done' }, [])).toBe('done');
+  // >=25% blocked → off-track
+  expect(app.epicHealth({ status: 'open' }, [{ status: 'open', blocked: true }, { status: 'done' }, { status: 'open' }, { status: 'open' }])).toBe('risk');
+  // >=50% done, no blocking → on-track
+  expect(app.epicHealth({ status: 'open' }, [{ status: 'done' }, { status: 'done' }, { status: 'open' }])).toBe('ok');
+  // some progress but low → at-risk
+  expect(app.epicHealth({ status: 'open' }, [{ status: 'done' }, { status: 'open' }, { status: 'open' }, { status: 'open' }, { status: 'open' }])).toBe('warn');
+  // childless leaf, not blocked → on-track
+  expect(app.epicHealth({ status: 'open' }, [])).toBe('ok');
 });
 
 test('columnOf routes each issue to exactly one board column', () => {

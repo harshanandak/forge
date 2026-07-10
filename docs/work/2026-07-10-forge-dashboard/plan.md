@@ -91,3 +91,52 @@ Proposed live stack (for orchestrator to confirm):
 
 Recommendation: ship A behind the same `DataSource` interface now-ish; graduate to
 B when the Phase-2 kernel server lands. No dashboard rewrite either way.
+
+---
+
+## v2 — Linear-quality multi-view app (2026-07-10, same branch)
+
+Rebuilt the single page into a routed **app shell** after user feedback ("no
+single page", "cuts badly", Kanban must scroll independently, epics/tasks were
+disconnected).
+
+### Structure
+- **App shell**: fixed left sidebar (brand + global search + per-view nav) +
+  main area that owns its own scroll. `body { overflow: hidden }` — the page body
+  never scrolls horizontally (verified: `scrollWidth <= clientWidth`).
+- **Hash router** (dependency-light): `#/overview`, `#/board`, `#/epics`,
+  `#/decisions`, `#/plans`, `#/ops`.
+- **Refresh**: every view has a Refresh button + "updated <time>" stamp;
+  `DataSource.refetch()` re-reads `data.json` (cache-busted) over HTTP, else a
+  full reload picks up the regenerated `snapshot.js`. 60s auto-refresh when the
+  tab is visible. Real-time push deferred to the sync rail via `subscribe()`.
+
+### Kanban (centerpiece, mandatory)
+- Fixed-height board; each column is a flex child with its own `overflow-y:auto`
+  (verified: scrolling a column leaves `window.scrollY === 0`).
+- **Level toggle**: Tasks (grouped by status Ready/In-progress/Blocked/Done) ⇄
+  Epics (grouped by derived health On-track/At-risk/Off-track/Completed). Same
+  independent-scroll columns either way.
+- Epic↔task tie-in: clicking an epic card focuses the task board to that epic's
+  children (filter chip, clearable). Epics also link from the Epics table + search.
+
+### Epics / Initiatives (Linear model)
+- Table: Name (icon + title + subtitle, expandable parent→child), Target, Health
+  (colored dot from closed/blocked ratio), `done/total` + progress bar, Active
+  (in-progress amber / blocked red dots), Activity (recency). Tabs Active /
+  Planned / Completed / All. Hierarchy uses kernel `parent_id`.
+
+### New views
+- **Decisions & Architecture**: kernel `type=decision` + `forge prime` headline
+  PD records + `docs/adr/*.md` + `docs/architecture` list, with status/component/
+  rationale.
+- **Plans & History**: `docs/work/*` folders on a month-grouped timeline.
+- **Live Ops**: `git worktree list`, `gh pr list --json`, and active claims.
+
+### Data (snapshot generator v2)
+Extended `generate-snapshot.mjs` to also emit `decisions`, `architecture`,
+`plans`, and `ops` (worktrees + PRs + activeClaims). Verified counts: 610 issues,
+27 decisions, 3 arch docs, 93 plans, 23 worktrees, 2 PRs, 15 active claims.
+
+### Tests
+`app.test.js` extended to cover `epicRollup` + `epicHealth` (7 tests, all pass).
