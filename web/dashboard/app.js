@@ -83,7 +83,8 @@ function rebuild(snap) {
 function columnOf(i) {
   if (i.status === 'done') return 'done';
   if (i.status === 'cancelled') return null;
-  if (i.blocked) return 'blocked';
+  if (i.status === 'backlog') return 'backlog'; // real kernel backlog state (b2f856b1)
+  if (i.blocked) return 'blocked'; // blocked = a card glyph, not a column (stays visible in Ready)
   if (i.claimed_by) return 'progress';
   return 'ready';
 }
@@ -135,7 +136,7 @@ function wtSummary(w) {
 const rankByPrio = (a, b) => (({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[a.priority] ?? 9) - ({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[b.priority] ?? 9));
 
 /* ---------- grayscale encodings ---------- */
-const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○' };
+const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○', backlog: '◇' };
 const ATTN_GLYPH = { ready: '●', fail: '✕', open: '○', warn: '◐' };
 const HEALTH_GLYPH = { ok: '●', warn: '◐', risk: '○', done: '●', neutral: '–' };
 const HEALTH_LABEL = { ok: 'On track', warn: 'At risk', risk: 'Off track', done: 'Completed', neutral: '—' };
@@ -251,15 +252,18 @@ function renderTaskColumns(focus) {
   let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
   if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
   const byRecent = (a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at);
+  // Real kernel statuses now (backlog state b2f856b1 merged). Backlog = status
+  // 'backlog' (parked; honest if empty). Blocked is NOT a column — blocked items
+  // stay in Ready with a ✕ glyph (columnOf), so they're visible, not mislabeled.
   const g = { backlog: [], ready: [], progress: [] };
   pool.forEach((i) => {
     if (i.status === 'done' || i.status === 'cancelled') return;
-    if (i.claimed_by) g.progress.push(i);
-    else if (i.blocked) g.backlog.push(i);
+    if (i.status === 'backlog') g.backlog.push(i);
+    else if (i.claimed_by) g.progress.push(i);
     else g.ready.push(i);
   });
   const defs = [
-    { key: 'backlog', title: 'Backlog', note: 'blocked · parked', items: g.backlog },
+    { key: 'backlog', title: 'Backlog', note: 'parked · not scheduled', items: g.backlog },
     { key: 'ready', title: 'Ready', items: g.ready },
     { key: 'progress', title: 'In progress', items: g.progress },
   ];
@@ -488,14 +492,15 @@ function renderWorkspaces() {
     <div class="seamnote">Linked kernel issue · lifecycle phase · real harness/region — SEAM (worktree↔issue + lease-read ${esc(seamId('harnessRegion', '7dc229d4'))}).</div></div>`;
 }
 
-/* ---- Backlog (SEAM until kernel backlog state lands) ---- */
+/* ---- Backlog ---- (real kernel backlog state b2f856b1; honest if empty) */
 function renderBacklog() {
-  const seam = seamId('backlogState', 'b2f856b1');
-  return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled</span></div>
-    <div class="empty-state"><h4>Backlog — SEAM</h4>
-      <p>A real kernel <b>backlog lifecycle state</b> is pending (<span class="mono">${esc(seam)}</span>). Once it lands, parked ideas render here and promote → task / epic.</p>
-      <p style="margin-top:10px;color:var(--faint)">Today, open + blocked work appears as the <b>Backlog column</b> on the Work Board (parked until unblocked).</p>
-    </div></div>`;
+  const parked = State.issues.filter((i) => i.status === 'backlog').sort(rankByPrio);
+  const grid = parked.length
+    ? `<div class="cardgrid">${parked.map(card).join('')}</div>`
+    : `<div class="empty-state"><h4>Nothing parked</h4>
+        <p>No issues are in the kernel <span class="mono">backlog</span> state yet. Parked ideas / discussions land here and promote → task / epic.</p>
+        <p style="margin-top:10px;color:var(--faint)">Blocked-but-open work is not "parked" — it stays on the Work Board (Ready column, marked with a ✕ blocked glyph).</p></div>`;
+  return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled · ${parked.length}</span></div>${grid}</div>`;
 }
 
 /* ---- Memory ---- (work-folder memory + recall SEAM + Graphiti SEAM) */

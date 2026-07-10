@@ -87,11 +87,14 @@ test('epicHealth derives on-track / at-risk / off-track / completed', () => {
 test('columnOf routes each issue to exactly one board column', () => {
   expect(app.columnOf({ status: 'done' })).toBe('done');
   expect(app.columnOf({ status: 'cancelled' })).toBe(null); // excluded
+  expect(app.columnOf({ status: 'backlog' })).toBe('backlog'); // real kernel backlog state
   expect(app.columnOf({ status: 'open', blocked: true })).toBe('blocked');
   expect(app.columnOf({ status: 'open', claimed_by: 'agent' })).toBe('progress');
   expect(app.columnOf({ status: 'open' })).toBe('ready');
   // blocked takes precedence over a claim
   expect(app.columnOf({ status: 'open', blocked: true, claimed_by: 'a' })).toBe('blocked');
+  // backlog status wins over a blocked flag (parked, not "blocked in Ready")
+  expect(app.columnOf({ status: 'backlog', blocked: true })).toBe('backlog');
 });
 
 test('matchesFilter: multi-select (OR within a facet, AND across facets) + text query', () => {
@@ -168,9 +171,9 @@ test('baked snapshot, when generated, is well-formed', () => {
   ['id', 'title', 'type', 'status', 'priority'].forEach((k) => expect(first).toHaveProperty(k));
 
   // Every non-cancelled issue lands in exactly one column.
-  const buckets = { ready: 0, progress: 0, blocked: 0, done: 0, none: 0 };
+  const buckets = { ready: 0, progress: 0, blocked: 0, done: 0, backlog: 0, none: 0 };
   snap.issues.forEach((i) => { const c = app.columnOf(i); buckets[c || 'none']++; });
-  const placed = buckets.ready + buckets.progress + buckets.blocked + buckets.done;
+  const placed = buckets.ready + buckets.progress + buckets.blocked + buckets.done + buckets.backlog;
   const cancelled = snap.issues.filter((i) => i.status === 'cancelled').length;
   expect(placed + cancelled).toBe(snap.issues.length);
 });
