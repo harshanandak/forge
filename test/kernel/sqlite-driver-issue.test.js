@@ -451,14 +451,16 @@ describe('Kernel SQLite driver — stale query (KAP-7)', () => {
 
 		// s1: old + open → stale. s2: old + in_progress → stale. s3: fresh + open →
 		// not stale. s4: old + done → excluded (terminal status). s5: old + review →
-		// excluded (review is not open/in_progress).
+		// excluded (review is not open/in_progress). s6: old + backlog → excluded
+		// (parked ideas must NEVER flag stale, no matter how old).
 		await driver.exec(
 			`INSERT INTO kernel_issues (id,title,type,status,priority_rank,created_at,updated_at,entity_revision) VALUES
 				('s1','Old open','task','open',1,'${old}','${old}',0),
 				('s2','Old wip','task','in_progress',2,'${old}','${old}',0),
 				('s3','Fresh open','task','open',3,'${fresh}','${fresh}',0),
 				('s4','Old done','task','done',4,'${old}','${old}',0),
-				('s5','Old review','task','review',5,'${old}','${old}',0);`,
+				('s5','Old review','task','review',5,'${old}','${old}',0),
+				('s6','Old parked','task','backlog',6,'${old}','${old}',0);`,
 			config,
 		);
 	});
@@ -474,6 +476,8 @@ describe('Kernel SQLite driver — stale query (KAP-7)', () => {
 		expect(res.schema_version).toBe('forge.issue.v1');
 		expect(res.command).toBe('issue.stale');
 		expect(res.data.issues.map(issue => issue.id)).toEqual(['s1', 's2']);
+		// s6 is an old backlog issue — parked work is never stale.
+		expect(res.data.issues.map(issue => issue.id)).not.toContain('s6');
 		expect(res.data.count).toBe(2);
 		expect(res.data.threshold_days).toBe(14);
 	});
