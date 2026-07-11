@@ -5,10 +5,13 @@ const path = require('node:path');
 
 const {
   ALWAYS_RUN_RISK_TEST_TARGETS,
+  DEFAULT_TEST_COMMAND_TIMEOUT_MS,
   buildTestExecutionPlan,
   classifyPushTests,
+  resolveCommandTimeoutMs,
   runLocalValidationTests,
   runPrePushTests,
+  runTestExecutionPlan,
   stripGitHookEnv,
 } = require('../../scripts/test');
 
@@ -464,5 +467,71 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls).toHaveLength(1);
     expect(spawnSync.calls[0].command).toBe('node');
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+  });
+
+  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', () => {
+    const spawnSync = makeSpawnSync(0);
+    runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'lib/commands/ship.js\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(spawnSync.calls.length).toBeGreaterThan(0);
+    for (const call of spawnSync.calls) {
+      expect(call.options.timeout).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+      expect(call.options.killSignal).toBe('SIGKILL');
+    }
+  });
+
+  test('FORGE_TEST_TIMEOUT_MS overrides the wall-clock lane timeout', () => {
+    const spawnSync = makeSpawnSync(0);
+    runPrePushTests(repoRoot, {
+      env: { FORGE_TEST_TIMEOUT_MS: '5000', PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({
+        changedFiles: 'lib/commands/ship.js\n',
+      }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(spawnSync.calls.length).toBeGreaterThan(0);
+    for (const call of spawnSync.calls) {
+      expect(call.options.timeout).toBe(5000);
+    }
+  });
+
+  test('resolveCommandTimeoutMs ignores invalid overrides and falls back to the default', () => {
+    expect(resolveCommandTimeoutMs({})).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+    expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: 'nonsense' })).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+    expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '-1' })).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+    expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '20000' })).toBe(20000);
+  });
+
+  test('a lane that times out fails fast with a non-zero status instead of hanging', () => {
+    const timedOutSpawnSync = () => ({
+      error: Object.assign(new Error('spawnSync bun ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      signal: 'SIGKILL',
+      status: null,
+    });
+
+    const status = runTestExecutionPlan({
+      changedFiles: ['lib/commands/ship.js'],
+      mode: 'targeted',
+      reason: 'known changes mapped to targeted tests',
+      runE2E: false,
+      runFullSuite: false,
+      runTestEnv: false,
+      testTargets: ['test/commands/ship.test.js'],
+    }, {
+      env: { PATH: process.env.PATH || '' },
+      pkgManager: 'bun',
+      spawnSync: timedOutSpawnSync,
+    });
+
+    expect(status).not.toBe(0);
   });
 });

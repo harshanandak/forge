@@ -16,6 +16,11 @@ const { validateEnvFile: _validateEnvFile } = require('../validation/env-validat
 
 const SETUP_SCRIPT = path.join(__dirname, 'setup-fixtures.sh');
 
+// Bound the synchronous setup spawn: bun's per-test `--timeout` cannot preempt a
+// blocking execFileSync, so a hung git/bash would hang the whole push (issue
+// 8aef79e8). A timeout makes it throw ETIMEDOUT and fail fast instead.
+const SETUP_SPAWN_TIMEOUT_MS = 60000;
+
 const EXPECTED_FIXTURES = [
   'fresh-project', 'existing-forge-v1', 'partial-install', 'conflicting-configs',
   'read-only-dirs', 'no-git', 'dirty-git', 'detached-head', 'merge-conflict',
@@ -91,7 +96,8 @@ describe('setup-fixtures.sh', () => {
 
   test('Idempotency: should be safe to run multiple times', () => {
     const result = execFileSync(resolveBashCommand(), [SETUP_SCRIPT], {
-      cwd: __dirname, stdio: 'pipe', encoding: 'utf8'
+      cwd: __dirname, stdio: 'pipe', encoding: 'utf8',
+      timeout: SETUP_SPAWN_TIMEOUT_MS, killSignal: 'SIGKILL'
     });
     expect(result).toMatch(/Fixture already exists|Skipped/i);
   });

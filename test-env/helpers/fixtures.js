@@ -8,6 +8,10 @@ const TEST_ENV_DIR = path.join(__dirname, '..');
 const FIXTURES_DIR = path.join(TEST_ENV_DIR, 'fixtures');
 const SETUP_SCRIPT = path.join(TEST_ENV_DIR, 'automation', 'setup-fixtures.sh');
 
+// Wall-clock ceiling for the synchronous fixture-setup spawn. Generous enough
+// for a cold Windows checkout, but bounded so a hung git/bash aborts fast.
+const SETUP_SPAWN_TIMEOUT_MS = 60000;
+
 function sleep(ms) {
 	const end = Date.now() + ms;
 	while (Date.now() < end) {
@@ -34,6 +38,11 @@ function repairFixtures(setupScript) {
 	execFileSync(resolveBashCommand(), [setupScript, '--force', '--no-validate'], {
 		cwd: path.dirname(setupScript),
 		stdio: 'pipe',
+		// Bound this synchronous spawn: bun's per-test `--timeout` cannot preempt a
+		// blocking execFileSync, so a hung git/bash here would hang the whole push
+		// (issue 8aef79e8). A timeout makes it throw ETIMEDOUT and fail fast instead.
+		timeout: SETUP_SPAWN_TIMEOUT_MS,
+		killSignal: 'SIGKILL',
 	});
 }
 
