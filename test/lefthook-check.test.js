@@ -49,6 +49,40 @@ describe('checkLefthookStatus', () => {
     const result = checkLefthookStatus(tmpDir);
     expect(result.installed).toBe(true);
     expect(result.binaryAvailable).toBe(false);
+    expect(result.message).toContain('npm install');
+  });
+
+  it('recommends the detected lockfile package manager for a missing binary (pnpm)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ devDependencies: { lefthook: '^1.0.0' } })
+    );
+    fs.writeFileSync(path.join(tmpDir, 'pnpm-lock.yaml'), '');
+
+    const result = checkLefthookStatus(tmpDir);
+    expect(result.message).toContain('pnpm install');
+    expect(result.message).not.toContain('bun install');
+  });
+
+  it('recommends the detected lockfile package manager for a missing binary (yarn)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ devDependencies: { lefthook: '^1.0.0' } })
+    );
+    fs.writeFileSync(path.join(tmpDir, 'yarn.lock'), '');
+
+    const result = checkLefthookStatus(tmpDir);
+    expect(result.message).toContain('yarn install');
+  });
+
+  it('recommends bun install for a missing binary when a bun lockfile is present', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ devDependencies: { lefthook: '^1.0.0' } })
+    );
+    fs.writeFileSync(path.join(tmpDir, 'bun.lockb'), '');
+
+    const result = checkLefthookStatus(tmpDir);
     expect(result.message).toContain('bun install');
   });
 
@@ -77,7 +111,29 @@ describe('checkLefthookStatus', () => {
     const result = checkLefthookStatus(tmpDir);
     expect(result.installed).toBe(false);
     expect(result.binaryAvailable).toBe(false);
-    expect(result.message).toContain('bun add');
+    expect(result.message).toContain('npm install -D lefthook');
+  });
+
+  it('recommends the detected lockfile package manager for a missing dependency (yarn)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ devDependencies: { jest: '^29.0.0' } })
+    );
+    fs.writeFileSync(path.join(tmpDir, 'yarn.lock'), '');
+
+    const result = checkLefthookStatus(tmpDir);
+    expect(result.message).toContain('yarn add -D lefthook');
+  });
+
+  it('recommends bun add for a missing dependency when a bun lockfile is present', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ devDependencies: { jest: '^29.0.0' } })
+    );
+    fs.writeFileSync(path.join(tmpDir, 'bun.lockb'), '');
+
+    const result = checkLefthookStatus(tmpDir);
+    expect(result.message).toContain('bun add -D lefthook');
   });
 
   it('returns installed=false and binaryAvailable=false when no package.json exists', () => {
