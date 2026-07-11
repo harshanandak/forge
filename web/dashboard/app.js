@@ -16,9 +16,17 @@ const DataSource = {
     return (await fetch('data.json')).json();
   },
   async refetch() {
-    const res = await fetch('data.json?ts=' + Date.now(), { cache: 'no-store' });
+    const ts = '?ts=' + Date.now();
+    const res = await fetch('data.json' + ts, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
+    const snap = await res.json();
+    // Refresh the baked markdown too, so edited/new work-folder docs aren't stale
+    // until a full reload. Best-effort: an old snapshot.js bundle may predate docs.json.
+    try {
+      const dres = await fetch('docs.json' + ts, { cache: 'no-store' });
+      if (dres.ok) window.FORGE_DOCS = await dres.json();
+    } catch (_err) { /* keep the bootstrap docs if the twin is unavailable */ }
+    return snap;
   },
   subscribe() { /* TODO(sync-rail): new EventSource('/events') → onDelta(patch) */ },
 };
@@ -149,6 +157,15 @@ function wtSummary(w) {
   };
 }
 const rankByPrio = (a, b) => (({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[a.priority] ?? 9) - ({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[b.priority] ?? 9));
+
+/* ---------- keyboard a11y (pure, exported for tests) ---------- */
+// Cards / rows / area-nodes are click-driven [data-act] divs. To make them
+// keyboard-operable we give the non-native ones button semantics and treat
+// Enter / Space as activation. Elements that are already operable (a, button,
+// input, or an explicit tabindex) are left untouched — the browser handles them.
+const NATIVE_INTERACTIVE = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA']);
+function isActivationKey(key) { return key === 'Enter' || key === ' ' || key === 'Spacebar'; }
+function needsButtonSemantics(tagName) { return !NATIVE_INTERACTIVE.has(String(tagName || '').toUpperCase()); }
 
 /* ---------- grayscale encodings ---------- */
 const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○', backlog: '◇' };
@@ -282,6 +299,7 @@ function renderTaskColumns(focus) {
   pool.forEach((i) => {
     if (i.status === 'done' || i.status === 'cancelled') return;
     if (i.status === 'backlog') g.backlog.push(i);
+    else if (i.blocked) g.ready.push(i); // blocked (even if claimed) stays in Ready with a ✕ glyph — matches columnOf()
     else if (i.claimed_by) g.progress.push(i);
     else g.ready.push(i);
   });
@@ -675,10 +693,30 @@ function fileLabel(key) { return key.split('/').slice(1).join('/'); }
  * Detail hub + doc reader — ROUTE-DRIVEN overlays.
  * ========================================================================== */
 const seamId = (k, fb) => (String((State.snapshot.seams && State.snapshot.seams[k]) || fb).split(' ')[0]);
+// The detail overlay is a modal dialog (role/aria-modal set in index.html). Track the
+// element focused before it opened so focus can be restored when it closes.
+let lastFocus = null;
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function overlayFocusables() {
+  return $$(FOCUSABLE, $('#detailPanel')).filter((el) => el.offsetParent !== null || el === document.activeElement);
+}
 function showOverlay(html, crumb) {
+  const el = $('#detail');
+  if (!el.classList.contains('on')) lastFocus = document.activeElement; // remember opener (once)
   $('#detailPanel').innerHTML = html;
-  const el = $('#detail'); el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
+  el.hidden = false; el.classList.add('on'); $('#detailPanel').scrollTop = 0;
   if (crumb != null) $('#viewCrumb').innerHTML = crumb;
+  enhanceA11y($('#detailPanel'));
+  // Move keyboard focus into the dialog (close button first, panel as fallback).
+  ($('#detailPanel .detail__close') || $('#detailPanel')).focus();
+}
+// Keep Tab focus inside the open dialog.
+function trapOverlayFocus(e) {
+  if (e.key !== 'Tab' || $('#detail').hidden) return;
+  const f = overlayFocusables(); if (!f.length) return;
+  const first = f[0], last = f[f.length - 1], a = document.activeElement;
+  if (e.shiftKey && (a === first || !$('#detailPanel').contains(a))) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
 }
 function issueDetailHtml(i) {
   const kids = State.kids[i.id] || [];
@@ -766,7 +804,21 @@ function showWork(slug, file) {
   DocState.file = keys.includes(file) ? file : (keys.find((k) => k.endsWith('/plan.md')) || keys.find((k) => k.endsWith('/README.md')) || keys[0]);
   showOverlay(docReaderHtml(slug, keys, DocState.file), `Plans › ${esc(slug)}`); return true;
 }
-function closeDetail() { const el = $('#detail'); el.classList.remove('on'); el.hidden = true; $('#viewCrumb').innerHTML = ''; }
+function closeDetail() {
+  const el = $('#detail'); const wasOpen = el.classList.contains('on');
+  el.classList.remove('on'); el.hidden = true; $('#viewCrumb').innerHTML = '';
+  if (!wasOpen) lastFocus = null; // nothing to restore if it wasn't open
+}
+// Return focus to whatever opened the dialog. Call AFTER the base view has
+// (re)rendered: closing often re-renders #view, detaching the opener node, so fall
+// back to its re-rendered twin (same data-id) before giving up.
+function restoreOverlayFocus() {
+  const t = lastFocus; lastFocus = null;
+  if (!t) return;
+  if (t.isConnected && typeof t.focus === 'function') { t.focus(); return; }
+  const id = t.dataset && t.dataset.id;
+  if (id) { const twin = $(`#view [data-id="${CSS.escape(id)}"]`); if (twin) twin.focus(); }
+}
 
 /* ============================================================================
  * Router — every entity is a URL; the detail overlay is route-driven.
@@ -788,6 +840,7 @@ function renderView(id) {
   const view = $('#view');
   view.classList.toggle('view--flush', !!v.flush);
   view.innerHTML = v.render();
+  enhanceA11y(view);
   view.scrollTop = 0;
   afterRender();
 }
@@ -799,14 +852,15 @@ function route() {
     if (kind === 'issue' || kind === 'epic') ok = showIssue(arg);
     else if (kind === 'decision') ok = showDecision(arg);
     else if (kind === 'work') ok = showWork(arg);
-    if (!ok) { closeDetail(); } // unknown entity → just show the base view
+    if (!ok) { closeDetail(); restoreOverlayFocus(); } // unknown entity → just show the base view
     return;
   }
-  // view route
+  // view route — closing the overlay re-renders the base view, so restore focus after.
   closeDetail();
   const id = VIEW_IDS.has(kind) ? kind : 'overview';
   if (id === 'board') State.board.epicFocus = query.get('epic') || null; // #/board?epic=:id focuses one epic
   renderView(id);
+  restoreOverlayFocus();
 }
 function afterRender() {
   const bs = $('#boardSearch');
@@ -817,7 +871,7 @@ function afterRender() {
 function rerender() {
   const v = VIEWS.find((x) => x.id === State.route) || VIEWS[0];
   const view = $('#view'); const focus = document.activeElement?.id;
-  view.innerHTML = v.render(); afterRender();
+  view.innerHTML = v.render(); enhanceA11y(view); afterRender();
   if (focus === 'boardSearch' || focus === 'memFilter') { const el = $('#' + focus); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
 }
 
@@ -827,7 +881,7 @@ function buildNav() {
     board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length,
     workspaces: wts.filter((w) => !w.archived).length,
     architecture: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length,
-    memory: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.activeClaims || []).length,
+    memory: (State.snapshot.decisions || []).length, ops: (State.snapshot.ops?.activeClaims || []).length,
   };
   $('#nav').innerHTML = `<div class="nav__label">Views</div>` + VIEWS.map((v) =>
     `<a href="#/${v.id}" data-view="${v.id}">${icon(v.id)}<span>${esc(v.title)}</span>${counts[v.id] != null ? `<span class="n">${counts[v.id]}</span>` : ''}</a>`).join('');
@@ -854,6 +908,25 @@ function handleAct(t) {
 }
 function onViewClick(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
+  handleAct(t);
+}
+// Give every non-native [data-act] element button semantics so keyboard users can
+// reach and activate cards / rows / area-nodes. Called after each innerHTML render.
+function enhanceA11y(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-act]').forEach((el) => {
+    if (!needsButtonSemantics(el.tagName)) return; // a / button / input already operable
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+    if (!el.hasAttribute('role')) el.setAttribute('role', 'button');
+  });
+}
+// Enter / Space activates a focused [data-act] element (native controls handle
+// their own keys, so we skip them to avoid double-firing).
+function onActKeydown(e) {
+  if (!isActivationKey(e.key)) return;
+  const t = e.target.closest('[data-act]'); if (!t) return;
+  if (!needsButtonSemantics(t.tagName)) return;
+  e.preventDefault(); // Space would otherwise scroll
   handleAct(t);
 }
 
@@ -890,14 +963,18 @@ function wireGlobalSearch() {
 function wireTheme() {
   const root = document.documentElement;
   const KEY = 'forge-theme-v5';
-  const saved = localStorage.getItem(KEY);
+  // Storage can be unavailable/throwing under file:// or private mode — never let it block boot.
+  let saved = null;
+  try { saved = localStorage.getItem(KEY); } catch (_err) { /* storage unavailable */ }
   root.setAttribute('data-theme', (saved === 'light' || saved === 'dark') ? saved : 'dark');
   const paint = () => { const dark = root.getAttribute('data-theme') !== 'light'; $('#themeLabel').textContent = dark ? 'Light' : 'Dark'; };
   paint();
   $('#themeToggle').addEventListener('click', () => {
     const dark = root.getAttribute('data-theme') !== 'light';
     const next = dark ? 'light' : 'dark';
-    root.setAttribute('data-theme', next); localStorage.setItem(KEY, next); paint();
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem(KEY, next); } catch (_err) { /* storage unavailable */ }
+    paint();
   });
 }
 function updateStamp() {
@@ -923,10 +1000,13 @@ async function boot() {
     buildNav(); wireTheme(); wireGlobalSearch();
     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
     $('#view').addEventListener('click', onViewClick);
+    $('#view').addEventListener('keydown', onActKeydown);
     $('#detail').addEventListener('click', (e) => {
       if (e.target.closest('[data-act="detail-close"]')) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); return; }
       const t = e.target.closest('[data-act]'); if (t) handleAct(t);
     });
+    $('#detail').addEventListener('keydown', onActKeydown);
+    $('#detail').addEventListener('keydown', trapOverlayFocus);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#detail').hidden) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); } });
     $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
     window.addEventListener('hashchange', route);
@@ -940,5 +1020,5 @@ async function boot() {
 }
 if (typeof document !== 'undefined') boot();
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, State };
+  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State };
 }

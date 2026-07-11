@@ -58,10 +58,10 @@
     </main>
   </div>
 
-  <!-- Click-through detail overlay (epic / issue) -->
-  <div class="detail" id="detail" hidden>
+  <!-- Click-through detail overlay (epic / issue) — an accessible modal dialog -->
+  <div class="detail" id="detail" hidden role="dialog" aria-modal="true" aria-label="Entity detail">
     <div class="detail__scrim" data-act="detail-close"></div>
-    <div class="detail__panel" id="detailPanel"></div>
+    <div class="detail__panel" id="detailPanel" tabindex="-1"></div>
   </div>
 
   <!-- Baked kernel snapshot (window.FORGE_SNAPSHOT) + work-folder markdown

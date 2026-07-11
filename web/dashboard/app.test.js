@@ -137,6 +137,26 @@ test('matchesFilter: multi-select (OR within a facet, AND across facets) + text 
   reset(); // restore shared state for other tests
 });
 
+test('keyboard a11y: Enter/Space activate; native controls keep their own key handling', () => {
+  expect(typeof app.isActivationKey).toBe('function');
+  expect(typeof app.needsButtonSemantics).toBe('function');
+  // Enter and Space (both spellings) activate a focused card/row/area-node.
+  expect(app.isActivationKey('Enter')).toBe(true);
+  expect(app.isActivationKey(' ')).toBe(true);
+  expect(app.isActivationKey('Spacebar')).toBe(true);
+  expect(app.isActivationKey('Tab')).toBe(false);
+  expect(app.isActivationKey('a')).toBe(false);
+  // Non-native elements (div/span/tr) need button semantics + our key handling…
+  expect(app.needsButtonSemantics('div')).toBe(true);
+  expect(app.needsButtonSemantics('SPAN')).toBe(true);
+  expect(app.needsButtonSemantics('tr')).toBe(true);
+  // …while natively-operable controls are left alone (browser handles keys/focus).
+  expect(app.needsButtonSemantics('a')).toBe(false);
+  expect(app.needsButtonSemantics('BUTTON')).toBe(false);
+  expect(app.needsButtonSemantics('input')).toBe(false);
+  expect(app.needsButtonSemantics(null)).toBe(true); // unknown → treat as non-native
+});
+
 test('renderMarkdown converts headings, lists, code and links to safe HTML', () => {
   expect(typeof app.renderMarkdown).toBe('function');
   const html = app.renderMarkdown('# Title\n\nSome **bold** and `code`.\n\n- one\n- two\n');

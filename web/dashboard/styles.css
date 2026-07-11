@@ -622,3 +622,11 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
 .wf-linked__k { font-family: var(--mono); font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
 .wf-issue { font-family: var(--mono); font-size: 11px; }
 .wf-more { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+/* Keyboard focus ring — cards / rows / area-nodes get button semantics + tabindex
+   in app.js (enhanceA11y); this makes the focused one visible for keyboard users.
+   :focus-visible so mouse clicks don't paint a ring. */
+[data-act]:focus-visible,
+.detail__panel:focus-visible,
+a:focus-visible,
+button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
