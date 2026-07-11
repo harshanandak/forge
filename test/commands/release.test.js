@@ -8,6 +8,7 @@ const path = require('node:path');
 const releaseCommand = require('../../lib/commands/release');
 const {
   buildReadinessReport,
+  canonicalizeAuditArtifact,
   renderBdCallSiteAuditMarkdown,
   renderReadinessReport,
 } = require('../../lib/release-readiness');
@@ -110,4 +111,24 @@ describe('0.1.0 readiness report', () => {
     expect(auditMarkdown).toContain('## hooks');
     expect(fs.existsSync(artifactPath)).toBe(true);
   }, FULL_REPO_READINESS_TIMEOUT_MS);
+
+  test('artifact-currency comparison ignores line-number shifts but not count changes', () => {
+    const base = [
+      '# D20 bd Call-Site Kill List',
+      '',
+      '## command',
+      '',
+      '- [ ] bin/forge.js (26)',
+      '  - lines: 10 (bd), 12 (bd)',
+    ].join('\n');
+
+    // Same file + same COUNT, only the recorded line numbers differ (what a PR
+    // editing an unrelated part of a scanned file produces). Must canonicalize equal.
+    const lineShifted = base.replace('  - lines: 10 (bd), 12 (bd)', '  - lines: 40 (bd), 42 (bd)');
+    expect(canonicalizeAuditArtifact(lineShifted)).toBe(canonicalizeAuditArtifact(base));
+
+    // A real change in the per-file COUNT must still be detected as stale.
+    const countChanged = base.replace('- [ ] bin/forge.js (26)', '- [ ] bin/forge.js (27)');
+    expect(canonicalizeAuditArtifact(countChanged)).not.toBe(canonicalizeAuditArtifact(base));
+  });
 });
