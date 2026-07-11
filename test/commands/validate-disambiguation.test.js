@@ -26,12 +26,18 @@ describe("/validate disambiguation note", () => {
     expect(existsSync(legacyPath)).toBe(false);
   });
 
-  it("is synced to .codex agent directory", () => {
-    const codexPath = join(ROOT, ".codex", "skills", "validate", "SKILL.md");
-    if (!existsSync(codexPath)) {
-      throw new Error(".codex/skills/validate/SKILL.md does not exist — run sync-commands.js");
+  it("is synced to the committed .agents/skills agent directory", () => {
+    // Hybrid single-source (#342): .codex/skills is gitignored + setup-generated,
+    // so the committed agent mirror is .agents/skills (Codex's repo-local discovery
+    // path — checked in for teammate-clone discovery, kept byte-identical to skills/
+    // by scripts/sync-agent-skills.js + the drift gate).
+    const agentsPath = join(ROOT, ".agents", "skills", "validate", "SKILL.md");
+    if (!existsSync(agentsPath)) {
+      throw new Error(
+        ".agents/skills/validate/SKILL.md does not exist — run `forge setup` (or node scripts/sync-agent-skills.js)"
+      );
     }
-    const codexContent = readFileSync(codexPath, "utf-8");
-    expect(codexContent).toContain("forge-preflight");
+    const agentsContent = readFileSync(agentsPath, "utf-8");
+    expect(agentsContent).toContain("forge-preflight");
   });
 });
