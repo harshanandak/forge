@@ -114,7 +114,51 @@ describe('runtime health checks', () => {
       })
     );
     expect(result.checks.lefthook.state).toBe('missing-binary');
-    expect(result.checks.lefthook.message).toContain('bun install');
+    expect(result.checks.lefthook.message).toContain('npm install');
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'LEFTHOOK_MISSING',
+        repair: 'npm install'
+      })
+    );
+  });
+
+  test('missing lefthook binary recommends the detected lockfile package manager instead of bun', () => {
+    const projectRoot = createProjectRoot({ lefthookDependency: true, lefthookBinary: false });
+    fs.writeFileSync(path.join(projectRoot, 'pnpm-lock.yaml'), '');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.git/hooks-empty', resolvedHooksDir: path.join(projectRoot, '.git', 'hooks-empty') }),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.checks.lefthook.message).toContain('pnpm install');
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'LEFTHOOK_MISSING',
+        repair: 'pnpm install'
+      })
+    );
+  });
+
+  test('missing lefthook dependency recommends the detected lockfile package manager instead of bun', () => {
+    const projectRoot = createProjectRoot({ lefthookDependency: false, lefthookBinary: false });
+    fs.writeFileSync(path.join(projectRoot, 'yarn.lock'), '');
+
+    const result = checkRuntimeHealth(projectRoot, {
+      _exec: createExecStub({ hooksPath: '.git/hooks-empty' }),
+      platform: 'linux',
+      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+    });
+
+    expect(result.checks.lefthook.message).toContain('yarn add -D lefthook');
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'LEFTHOOK_MISSING',
+        repair: 'yarn add -D lefthook'
+      })
+    );
   });
 
   test('bun-created lefthook exe and bunx shims count as an installed binary', () => {

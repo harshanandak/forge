@@ -24,6 +24,7 @@ describe('readiness reason and state vocabularies', () => {
 		expect(READINESS_STATES).toContain('ready');
 		expect(READINESS_STATES).toContain('blocked');
 		expect(READINESS_STATES).toContain('closed');
+		expect(READINESS_STATES).toContain('backlog');
 	});
 
 	test('classifies workable statuses', () => {
@@ -31,6 +32,8 @@ describe('readiness reason and state vocabularies', () => {
 		expect(isWorkableStatus('in_progress')).toBe(true);
 		expect(isWorkableStatus('done')).toBe(false);
 		expect(isWorkableStatus('cancelled')).toBe(false);
+		// parked ideas are NOT pickable work.
+		expect(isWorkableStatus('backlog')).toBe(false);
 	});
 });
 
@@ -43,6 +46,25 @@ describe('deriveReadiness — derived facts, never stored', () => {
 		expect(result.state).toBe('ready');
 		// derived output must not leak back as a stored status field
 		expect(result.status).toBe('open');
+	});
+
+	test('a backlog issue is parked — not ready, not blocked, state backlog', () => {
+		const result = deriveReadiness({ id: 'a', status: 'backlog' }, { now: NOW });
+		expect(result.ready).toBe(false);
+		expect(result.blocked).toBe(false);
+		expect(result.blocked_by).toEqual([]);
+		expect(result.state).toBe('backlog');
+		expect(result.status).toBe('backlog');
+	});
+
+	test('a backlog issue stays parked even with an unmet dependency (never blocked/stale)', () => {
+		const result = deriveReadiness(
+			{ id: 'a', status: 'backlog' },
+			{ now: NOW, dependencyStatuses: [{ id: 'b', status: 'open' }] },
+		);
+		expect(result.ready).toBe(false);
+		expect(result.blocked).toBe(false);
+		expect(result.state).toBe('backlog');
 	});
 
 	test('an unmet dependency blocks the issue', () => {
@@ -258,6 +280,76 @@ describe('buildReadinessIndex — board read model', () => {
 		expect(index.readinessById.ok.ready).toBe(true);
 		expect(index.readyQueue).toEqual(['ok']);
 		expect(index.blocked).toEqual(['q']);
+	});
+});
+
+describe('buildReadinessIndex — top-K randomized ready pick (thundering-herd stop-gap)', () => {
+	test('never returns a lower-priority issue ahead of a ready higher-priority one, regardless of rng', () => {
+		const issues = [
+			{ id: 'p1-a', status: 'open', priority_rank: 1 },
+			{ id: 'p1-b', status: 'open', priority_rank: 1 },
+			{ id: 'p1-c', status: 'open', priority_rank: 1 },
+			{ id: 'p3-a', status: 'open', priority_rank: 3 },
+		];
+		// An rng that maximizes shuffle churn must still never move the P3 issue ahead
+		// of any ready P1 issue — priority tier ordering is the primary sort and is
+		// never disturbed by randomization within a lower-ranked tier's neighbors.
+		const rng = () => 0.999999;
+		const index = buildReadinessIndex({ now: NOW, issues, topK: 5, rng });
+		expect(index.readyQueue).toHaveLength(4);
+		expect(index.readyQueue.indexOf('p3-a')).toBe(3);
+		expect(new Set(index.readyQueue.slice(0, 3))).toEqual(new Set(['p1-a', 'p1-b', 'p1-c']));
+	});
+
+	test('randomizes within the top-K of the highest-priority tier across different rng seeds', () => {
+		const issues = [
+			{ id: 'a', status: 'open', priority_rank: 0 },
+			{ id: 'b', status: 'open', priority_rank: 0 },
+			{ id: 'c', status: 'open', priority_rank: 0 },
+		];
+		const rngLow = () => 0; // forces Fisher-Yates swaps every step
+		const rngHigh = () => 0.999999; // forces (near) no-op swaps
+		const low = buildReadinessIndex({ now: NOW, issues, topK: 3, rng: rngLow }).readyQueue;
+		const high = buildReadinessIndex({ now: NOW, issues, topK: 3, rng: rngHigh }).readyQueue;
+		expect(low).not.toEqual(high);
+		// Both are still permutations of the same ready set — no issue is dropped or invented.
+		expect(new Set(low)).toEqual(new Set(['a', 'b', 'c']));
+		expect(new Set(high)).toEqual(new Set(['a', 'b', 'c']));
+	});
+
+	test('K=1 preserves the old fully-deterministic top pick regardless of rng', () => {
+		const issues = [
+			{ id: 'z', status: 'open', priority_rank: 0 },
+			{ id: 'a', status: 'open', priority_rank: 0 },
+			{ id: 'm', status: 'open', priority_rank: 0 },
+		];
+		const rng = () => 0; // would force a swap at the top slot if topK were > 1
+		const index = buildReadinessIndex({ now: NOW, issues, topK: 1, rng });
+		// Deterministic tie-break is rank asc then id asc, matching the pre-randomization behavior.
+		expect(index.readyQueue).toEqual(['a', 'm', 'z']);
+	});
+
+	test('only the top tier is randomized; a same-priority run longer than K keeps its tail order', () => {
+		const issues = [
+			{ id: 'a', status: 'open', priority_rank: 0 },
+			{ id: 'b', status: 'open', priority_rank: 0 },
+			{ id: 'c', status: 'open', priority_rank: 0 },
+			{ id: 'd', status: 'open', priority_rank: 0 },
+		];
+		const rng = () => 0.999999; // near-identity shuffle within the head slice
+		const index = buildReadinessIndex({ now: NOW, issues, topK: 2, rng });
+		// Only the first 2 (topK) may have been touched; positions 3-4 (c, d) are untouched.
+		expect(index.readyQueue.slice(2)).toEqual(['c', 'd']);
+		expect(new Set(index.readyQueue)).toEqual(new Set(['a', 'b', 'c', 'd']));
+	});
+
+	test('defaults (no topK/rng passed) still produce a valid ready queue without throwing', () => {
+		const issues = [
+			{ id: 'a', status: 'open', priority_rank: 0 },
+			{ id: 'b', status: 'open', priority_rank: 1 },
+		];
+		const index = buildReadinessIndex({ now: NOW, issues });
+		expect(new Set(index.readyQueue)).toEqual(new Set(['a', 'b']));
 	});
 });
 

@@ -125,11 +125,13 @@ describe('migrate dry-run', () => {
     expect(output).toContain('Result: PASS');
   });
 
-  test('command refuses non-dry-run migration for this Wave 0 PoC', async () => {
+  test('command refuses non-dry-run migration for the preview-only v2→v3 path', async () => {
     const result = await migrateCommand.handler([], {}, process.cwd());
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Only forge migrate --dry-run is implemented');
+    expect(result.error).toContain('forge migrate currently supports preview only');
+    expect(result.error).toContain('forge migrate --dry-run');
+    expect(result.error).not.toContain('Wave 0 PoC');
   });
 
   test('command emits the dry-run report for a target repo', async () => {

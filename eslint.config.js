@@ -11,6 +11,7 @@ export default [
       'build/',
       '*.min.js',
       '.worktrees/',
+      '.claude/worktrees/',
       'test-env/fixtures/**',
       'packages/skills/test/fixtures/**',
       'test/e2e/fixtures/**',

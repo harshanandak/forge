@@ -50,6 +50,9 @@ describe('forge doctor: memory backend check', () => {
     expect(check).toBeDefined();
     expect(check.backend).toBe('local');
     expect(check.ok).toBe(true);
+    // The default local store is the kernel table, not the retired flat JSONL file.
+    expect(check.detail).toContain('kernel');
+    expect(check.detail).not.toContain('JSONL');
   });
 
   test('graphiti selected but unconfigured is reported (ok:false) but does not fail the overall report', () => {
