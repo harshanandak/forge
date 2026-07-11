@@ -71,7 +71,7 @@ function parseAdditionalCommands(stdout) {
 // canonical `forge issue` surface is unambiguous (kernel issue 450c6e34).
 const HIDDEN_ISSUE_ALIASES = [
   'create', 'update', 'claim', 'close', 'show', 'list',
-  'ready', 'blocked', 'stale', 'orphans', 'lint', 'issues',
+  'ready', 'blocked', 'stale', 'orphans', 'lint', 'claims', 'issues',
 ];
 
 describe('CLI Registry Integration', () => {

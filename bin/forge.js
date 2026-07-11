@@ -2314,7 +2314,7 @@ async function _interactiveSetup() {
 // deliberately NOT listed here — it stays documented.
 const ISSUE_ALIAS_COMMANDS = [
   'create', 'update', 'claim', 'close', 'show', 'list',
-  'ready', 'blocked', 'stale', 'orphans', 'lint', 'issues',
+  'ready', 'blocked', 'stale', 'orphans', 'lint', 'claims', 'issues',
 ];
 
 function parseFlags() {
