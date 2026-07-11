@@ -289,11 +289,11 @@ function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
 
   if (result.error) {
     if (result.error.code === 'ETIMEDOUT') {
-      const seconds = Math.round((options.timeout ?? 0) / 1000);
       console.error('');
-      console.error(`Test lane timed out after ${seconds}s and was terminated: ${command} ${args.join(' ')}`);
+      console.error('Test lane exceeded its wall-clock ceiling and was terminated.');
       console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
-      console.error('Failing the run instead of blocking the push. See issue 8aef79e8.');
+      console.error('Adjust the ceiling with FORGE_TEST_TIMEOUT_MS. Failing the run instead of');
+      console.error('blocking the push. See issue 8aef79e8.');
       console.error('');
       return TIMEOUT_EXIT_CODE;
     }
