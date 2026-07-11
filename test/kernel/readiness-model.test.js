@@ -24,6 +24,7 @@ describe('readiness reason and state vocabularies', () => {
 		expect(READINESS_STATES).toContain('ready');
 		expect(READINESS_STATES).toContain('blocked');
 		expect(READINESS_STATES).toContain('closed');
+		expect(READINESS_STATES).toContain('backlog');
 	});
 
 	test('classifies workable statuses', () => {
@@ -31,6 +32,8 @@ describe('readiness reason and state vocabularies', () => {
 		expect(isWorkableStatus('in_progress')).toBe(true);
 		expect(isWorkableStatus('done')).toBe(false);
 		expect(isWorkableStatus('cancelled')).toBe(false);
+		// parked ideas are NOT pickable work.
+		expect(isWorkableStatus('backlog')).toBe(false);
 	});
 });
 
@@ -43,6 +46,25 @@ describe('deriveReadiness — derived facts, never stored', () => {
 		expect(result.state).toBe('ready');
 		// derived output must not leak back as a stored status field
 		expect(result.status).toBe('open');
+	});
+
+	test('a backlog issue is parked — not ready, not blocked, state backlog', () => {
+		const result = deriveReadiness({ id: 'a', status: 'backlog' }, { now: NOW });
+		expect(result.ready).toBe(false);
+		expect(result.blocked).toBe(false);
+		expect(result.blocked_by).toEqual([]);
+		expect(result.state).toBe('backlog');
+		expect(result.status).toBe('backlog');
+	});
+
+	test('a backlog issue stays parked even with an unmet dependency (never blocked/stale)', () => {
+		const result = deriveReadiness(
+			{ id: 'a', status: 'backlog' },
+			{ now: NOW, dependencyStatuses: [{ id: 'b', status: 'open' }] },
+		);
+		expect(result.ready).toBe(false);
+		expect(result.blocked).toBe(false);
+		expect(result.state).toBe('backlog');
 	});
 
 	test('an unmet dependency blocks the issue', () => {
