@@ -144,6 +144,52 @@ describe('Kernel stage_runs registry (f61601ab)', () => {
 		expect(rows.map(r => r.stage)).toEqual(['dev', 'ship']);
 	}, TIMEOUT);
 
+	test('recordStageTransition atomically completes from + starts to in one transaction', () => {
+		driver.recordStageRun(
+			{ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' },
+			config,
+		);
+		const result = driver.recordStageTransition(
+			{ issue_id: issueId, from: 'dev', to: 'validate', now: '2026-07-11T02:00:00.000Z' },
+			config,
+		);
+		expect(result.from.status).toBe('done');
+		expect(result.from.completed_at).toBe('2026-07-11T02:00:00.000Z');
+		expect(result.to.status).toBe('active');
+
+		const current = driver.getCurrentStage({ issue_id: issueId }, config);
+		expect(current.stage).toBe('validate');
+		expect(current.status).toBe('active');
+	}, TIMEOUT);
+
+	test('recordStageTransition rolls back the completed from-stage when the to-write fails', () => {
+		// Start `dev` so a successful complete(dev) would flip it to done. The `to`
+		// write is forced to fail mid-transaction by passing an unbindable stage value
+		// (simulating a driver-level write error on the second stage_run). The whole
+		// transition MUST roll back: `dev` stays active, and no `to` row is persisted.
+		driver.recordStageRun(
+			{ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' },
+			config,
+		);
+		expect(() => {
+			driver.recordStageTransition(
+				{ issue_id: issueId, from: 'dev', to: {}, now: '2026-07-11T02:00:00.000Z' },
+				config,
+			);
+		}).toThrow();
+
+		// No half-transition: dev was NOT flipped to done, and only the one dev row exists.
+		const rows = driver.listStageRuns({ issue_id: issueId }, config);
+		expect(rows.length).toBe(1);
+		expect(rows[0].stage).toBe('dev');
+		expect(rows[0].status).toBe('active');
+		expect(rows[0].completed_at).toBeNull();
+
+		const current = driver.getCurrentStage({ issue_id: issueId }, config);
+		expect(current.stage).toBe('dev');
+		expect(current.status).toBe('active');
+	}, TIMEOUT);
+
 	test('show attaches current_stage + current_stage_status from stage_runs', async () => {
 		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' }, config);
 		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'complete', now: '2026-07-11T02:00:00.000Z' }, config);

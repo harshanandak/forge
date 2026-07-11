@@ -1,0 +1,178 @@
+'use strict';
+
+// 5a5ba3a6: auto-wire stage_runs. The Descriptive Context Convention already has
+// agents record a stage boundary as a kernel comment shaped `stage: <from> -> <to>`.
+// This module parses that line and, best-effort, records the structured stage_run
+// ALONGSIDE the comment (complete the from-stage, start the to-stage) so
+// current_stage becomes real without a manual `forge stage` verb call.
+//
+// parseStageTransition is a pure parser (unit-tested directly). recordStageTransition
+// is the best-effort recorder: it must NEVER throw, so a stage_run write failure can
+// never break the comment that triggered it.
+
+const { describe, test, expect } = require('bun:test');
+const {
+  parseStageTransition,
+  recordStageTransition,
+} = require('../../lib/workflow/stage-transition');
+
+describe('parseStageTransition', () => {
+  test('extracts from/to from a canonical stage line', () => {
+    expect(parseStageTransition('stage: dev -> validate\nsummary: done')).toEqual({
+      from: 'dev',
+      to: 'validate',
+    });
+  });
+
+  test('is case-insensitive and tolerates extra whitespace', () => {
+    expect(parseStageTransition('  STAGE:   plan  ->  dev  ')).toEqual({
+      from: 'plan',
+      to: 'dev',
+    });
+  });
+
+  test('normalizes uppercase stage tokens (case-insensitive match must not reject)', () => {
+    // STAGE_LINE matches case-insensitively, so an uppercase token reaches
+    // normalizeStageId — which only knows lowercase canonical ids. Both captures
+    // must be lowercased first or a valid transition is wrongly rejected.
+    expect(parseStageTransition('stage: DEV -> VALIDATE')).toEqual({
+      from: 'dev',
+      to: 'validate',
+    });
+    expect(parseStageTransition('STAGE: Ship -> Review')).toEqual({
+      from: 'ship',
+      to: 'review',
+    });
+  });
+
+  test('accepts an arrow without surrounding spaces', () => {
+    expect(parseStageTransition('stage: ship->review')).toEqual({
+      from: 'ship',
+      to: 'review',
+    });
+  });
+
+  test('finds the stage line among other lines', () => {
+    const body = 'handoff note\nstage: validate -> ship\nnext: open PR';
+    expect(parseStageTransition(body)).toEqual({ from: 'validate', to: 'ship' });
+  });
+
+  test('returns null when there is no stage line', () => {
+    expect(parseStageTransition('just a normal comment')).toBeNull();
+  });
+
+  test('returns null when a token is not a canonical stage', () => {
+    expect(parseStageTransition('stage: dev -> bogus')).toBeNull();
+    expect(parseStageTransition('stage: nope -> dev')).toBeNull();
+  });
+
+  test('returns null for empty / non-string input', () => {
+    expect(parseStageTransition('')).toBeNull();
+    expect(parseStageTransition(null)).toBeNull();
+    expect(parseStageTransition(undefined)).toBeNull();
+    expect(parseStageTransition(42)).toBeNull();
+  });
+});
+
+describe('recordStageTransition (best-effort)', () => {
+  function fakeDriver() {
+    const calls = [];
+    return {
+      calls,
+      recordStageRun(input) {
+        calls.push(input);
+        return { id: `row-${calls.length}`, ...input };
+      },
+    };
+  }
+
+  test('fallback: completes the from-stage and starts the to-stage via recordStageRun', () => {
+    const driver = fakeDriver();
+    const result = recordStageTransition({
+      driver,
+      issueId: 'forge-1',
+      body: 'stage: dev -> validate',
+    });
+
+    expect(driver.calls).toEqual([
+      { issue_id: 'forge-1', stage: 'dev', action: 'complete' },
+      { issue_id: 'forge-1', stage: 'validate', action: 'start' },
+    ]);
+    expect(result).toEqual({ from: 'dev', to: 'validate', recorded: true });
+  });
+
+  test('prefers the atomic driver.recordStageTransition op when available', () => {
+    const calls = [];
+    const driver = {
+      recordStageTransition(input) {
+        calls.push(input);
+        return { from: { stage: input.from }, to: { stage: input.to } };
+      },
+      recordStageRun() {
+        throw new Error('should not use the non-atomic path when atomic op exists');
+      },
+    };
+    const result = recordStageTransition({
+      driver,
+      issueId: 'forge-1',
+      body: 'stage: dev -> validate',
+      config: { databasePath: '/tmp/x' },
+    });
+
+    expect(calls).toEqual([{ issue_id: 'forge-1', from: 'dev', to: 'validate' }]);
+    expect(result).toEqual({ from: 'dev', to: 'validate', recorded: true });
+  });
+
+  test('never throws when the atomic driver op throws — returns recorded:false', () => {
+    const driver = {
+      recordStageTransition() {
+        throw new Error('rolled back');
+      },
+    };
+    let result;
+    expect(() => {
+      result = recordStageTransition({
+        driver,
+        issueId: 'forge-1',
+        body: 'stage: dev -> validate',
+      });
+    }).not.toThrow();
+    expect(result.recorded).toBe(false);
+  });
+
+  test('does nothing (recorded:false) when the body has no stage line', () => {
+    const driver = fakeDriver();
+    const result = recordStageTransition({
+      driver,
+      issueId: 'forge-1',
+      body: 'plain comment',
+    });
+    expect(driver.calls).toEqual([]);
+    expect(result).toEqual({ recorded: false });
+  });
+
+  test('never throws when the driver throws — returns recorded:false', () => {
+    const throwingDriver = {
+      recordStageRun() {
+        throw new Error('db locked');
+      },
+    };
+    let result;
+    expect(() => {
+      result = recordStageTransition({
+        driver: throwingDriver,
+        issueId: 'forge-1',
+        body: 'stage: dev -> validate',
+      });
+    }).not.toThrow();
+    expect(result.recorded).toBe(false);
+  });
+
+  test('never throws when driver is missing', () => {
+    let result;
+    expect(() => {
+      result = recordStageTransition({ issueId: 'forge-1', body: 'stage: dev -> ship' });
+    }).not.toThrow();
+    expect(result.recorded).toBe(false);
+  });
+});
