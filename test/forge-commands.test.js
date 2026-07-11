@@ -104,6 +104,9 @@ describe('Codex plugin metadata', () => {
   });
 
   test('keeps the packaged Codex skill source and global install target aligned', () => {
+    // directories.skills is Codex's per-agent generated mirror dir (gitignored,
+    // like .claude/skills); the GLOBAL install target is $CODEX_HOME/skills. Both
+    // are generated at setup from the canonical skills/ source.
     expect(codexPlugin.directories.skills).toBe('.codex/skills');
     expect(codexPlugin.installTargets.skills).toBe('$CODEX_HOME/skills');
   });
@@ -118,7 +121,7 @@ describe('Codex skill entry generation', () => {
 
   test('builds per-stage Codex skills from packaged skill sources', () => {
     const tmpDir = makeTempDir();
-    const skillsDir = path.join(tmpDir, '.codex', 'skills', 'plan');
+    const skillsDir = path.join(tmpDir, 'skills', 'plan');
     fs.mkdirSync(skillsDir, { recursive: true });
     fs.writeFileSync(
       path.join(skillsDir, 'SKILL.md'),
@@ -138,7 +141,7 @@ describe('Codex skill entry generation', () => {
   test('builds a global Codex install plan under CODEX_HOME/skills', () => {
     const tmpDir = makeTempDir();
     const codexHome = path.join(tmpDir, '.codex-home');
-    const skillsDir = path.join(tmpDir, '.codex', 'skills', 'status');
+    const skillsDir = path.join(tmpDir, 'skills', 'status');
     fs.mkdirSync(skillsDir, { recursive: true });
     fs.writeFileSync(
       path.join(skillsDir, 'SKILL.md'),

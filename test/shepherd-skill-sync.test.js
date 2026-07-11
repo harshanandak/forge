@@ -34,10 +34,17 @@ describe('shepherd skill sync', () => {
     expect(/never resolves/i.test(src) || /resolution[^.]*stays with/i.test(src)).toBe(true);
   });
 
-  test('codex mirror .codex/skills/shepherd/SKILL.md matches canonical', () => {
+  test('canonical skills/shepherd/SKILL.md is the single committed source (mirror generated at setup)', () => {
+    // Mirrors are generated at `forge setup` and gitignored; skills/ is the only
+    // committed source. When a generated .codex/skills mirror is present locally it
+    // must match canonical, but on a clean checkout its absence is not a failure.
     const canonical = read('skills/shepherd/SKILL.md').replace(/\r\n/g, '\n');
-    const codex = read('.codex/skills/shepherd/SKILL.md').replace(/\r\n/g, '\n');
-    expect(codex).toBe(canonical);
+    expect(canonical.length).toBeGreaterThan(0);
+
+    const codexMirror = path.join(ROOT, '.codex', 'skills', 'shepherd', 'SKILL.md');
+    if (fs.existsSync(codexMirror)) {
+      expect(fs.readFileSync(codexMirror, 'utf8').replace(/\r\n/g, '\n')).toBe(canonical);
+    }
   });
 
   test('no Hermes shepherd skill file exists (Hermes dir is absent / not committed)', () => {

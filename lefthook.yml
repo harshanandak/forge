@@ -13,6 +13,14 @@ commit-msg:
 
 pre-commit:
   commands:
+    # Keep the committed .agents/skills mirror byte-identical to canonical skills/.
+    # Runs only when skills/** is staged; regenerates + re-stages the mirror so the
+    # drift gate never fails on a stale checked-in mirror (single-source, #342).
+    sync-agent-skills:
+      run: node scripts/sync-agent-skills.js
+      stage_fixed: false
+      tags: skills
+      glob: "skills/**"
     protected-state:
       run: node scripts/protected-state-check.js
       stage_fixed: false

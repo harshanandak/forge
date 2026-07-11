@@ -25,11 +25,33 @@ afterEach(() => {
 });
 
 describe('codex-skills helpers', () => {
-  test('returns no packaged skill entries when .codex/skills is missing', () => {
+  test('returns no packaged skill entries when canonical skills/ is missing', () => {
     const tmpDir = makeTempDir();
 
     expect(listCodexSkillEntries(tmpDir)).toEqual([]);
     expect(buildCodexSkillInstallPlan(tmpDir)).toEqual([]);
+  });
+
+  test('reads packaged skill entries from the canonical skills/ source (not a .codex/skills mirror)', () => {
+    const tmpDir = makeTempDir();
+    // Canonical source lives under skills/ — the single source of truth.
+    const canonicalDir = path.join(tmpDir, 'skills', 'plan');
+    fs.mkdirSync(canonicalDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(canonicalDir, 'SKILL.md'),
+      '---\ndescription: Plan workflow\nmode: code\n---\n# Plan\nUse Forge runtime.\n'
+    );
+    // A stale .codex/skills mirror must be ignored — only skills/ is read.
+    const staleMirror = path.join(tmpDir, '.codex', 'skills', 'ignored');
+    fs.mkdirSync(staleMirror, { recursive: true });
+    fs.writeFileSync(path.join(staleMirror, 'SKILL.md'), '---\ndescription: stale\n---\n# stale\n');
+
+    const entries = listCodexSkillEntries(tmpDir);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].commandName).toBe('plan');
+    expect(entries[0].content).toContain('> Forge stage adapter');
+    expect(entries[0].content).toContain('invoke `forge plan`');
   });
 
   test('resolveCodexHome normalizes a relative CODEX_HOME override', () => {

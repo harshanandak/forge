@@ -169,10 +169,12 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
   // -- Agent directories ----------------------------------------------
 
   describe('agent directories', () => {
+    // .codex/ is intentionally NOT packaged: the global $CODEX_HOME/skills install
+    // now generates from canonical skills/, and .codex/skills is a setup-generated
+    // gitignored mirror. Claude/Cursor dirs remain packaged.
     const agentPrefixes = [
       '.claude/',
       '.cursor/',
-      '.codex/',
     ];
 
     for (const prefix of agentPrefixes) {

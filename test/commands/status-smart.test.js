@@ -1,5 +1,5 @@
 const { describe, it, expect } = require("bun:test");
-const { readFileSync, existsSync } = require("node:fs");
+const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
 const ROOT = join(__dirname, "../..");
@@ -26,12 +26,14 @@ describe("/status command - smart-status integration", () => {
     expect(content).toContain("git log");
   });
 
-  it("codex skill copy also references smart-status.sh", () => {
-    // .cursor/commands/ was removed in A0d; check codex skill (generated from canonical)
-    const codexPath = join(ROOT, ".codex", "skills/status/SKILL.md");
-    expect(existsSync(codexPath)).toBe(true);
-    const codexContent = readFileSync(codexPath, "utf-8");
-    expect(codexContent).toContain("bash scripts/smart-status.sh");
+  it("codex installs from the canonical skill, which references smart-status.sh", () => {
+    // #342 single-source: skills/ is the ONLY committed skill source. The
+    // per-agent `.codex/skills` mirror is not committed (it is gitignored, and
+    // Codex stage skills install globally into $CODEX_HOME/skills at `forge
+    // setup`). Codex is installed from the canonical skills/status/SKILL.md
+    // verbatim, so that is where smart-status.sh must live — asserting on an
+    // ephemeral generated mirror would be environment-dependent and flaky.
+    expect(content).toContain("bash scripts/smart-status.sh");
   });
 
   it("does not instruct users to pass --workflow-state or --issue-id for status discovery", () => {
