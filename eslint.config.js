@@ -14,6 +14,9 @@ export default [
       'test-env/fixtures/**',
       'packages/skills/test/fixtures/**',
       'test/e2e/fixtures/**',
+      // Generated dashboard artifacts (baked kernel snapshot + work-folder docs)
+      'web/dashboard/snapshot.js',
+      'web/dashboard/docs.js',
     ],
   },
   // ES Modules — .mjs files (Node scripts using ESM)
@@ -70,6 +73,38 @@ export default [
       'no-empty': 'off',
       'no-useless-escape': 'off',
       'preserve-caught-error': 'off',
+      'no-undef': 'warn',
+    },
+  },
+  // Browser — read-only dashboard app (baked-snapshot consumer; runs in the browser,
+  // also require()-able under Node for its unit tests via module.exports).
+  {
+    files: ['web/dashboard/app.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-undef': 'warn',
+    },
+  },
+  // Dashboard unit tests — ESM (bun test), Node env.
+  {
+    files: ['web/dashboard/**/*.test.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
       'no-undef': 'warn',
     },
   },

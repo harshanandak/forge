@@ -785,7 +785,7 @@ function handleAct(t) {
   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
   else if (act === 'ws-arch') { State.wsArchived = t.dataset.v === '1'; rerender(); }
   else if (act === 'board-closed') { State.board.showClosed = !State.board.showClosed; State.board.limits = {}; rerender(); }
-  else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (e) { /* private mode */ } rerender(); }
+  else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (_e) { /* private mode */ } rerender(); }
   else if (act === 'toggle-workgroup') { const id = t.dataset.id; State.board.tableCollapsed.has(id) ? State.board.tableCollapsed.delete(id) : State.board.tableCollapsed.add(id); rerender(); }
 }
 function onViewClick(e) {
@@ -847,7 +847,7 @@ async function doRefresh(silent) {
   const btn = $('#refreshBtn');
   if (!silent) btn.classList.add('spin');
   try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); State.rendered = null; route(); updateStamp(); }
-  catch (err) { if (!silent) { location.reload(); return; } }
+  catch (_err) { if (!silent) { location.reload(); return; } }
   finally { btn.classList.remove('spin'); }
 }
 
@@ -855,7 +855,7 @@ async function boot() {
   try {
     const snap = await DataSource.load();
     rebuild(snap);
-    try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (e) { /* private mode */ }
+    try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (_e) { /* private mode */ }
     buildNav(); wireTheme(); wireGlobalSearch();
     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
     $('#view').addEventListener('click', onViewClick);
