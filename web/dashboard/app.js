@@ -77,6 +77,21 @@ function rebuild(snap) {
   State.byId = {}; State.kids = {};
   issues.forEach((i) => { State.byId[i.id] = i; if (i.parent_id) (State.kids[i.parent_id] = State.kids[i.parent_id] || []).push(i); });
   State.epics = issues.filter((i) => i.type === 'epic');
+  // Grounded work-folder ↔ issue links: issues that reference docs/work/<slug> in
+  // their body/design/notes (real citation, not fuzzy title matching). The rest is
+  // a SEAM (the work-graph 56461780) — no back-ref field on the kernel record yet.
+  State.workLinks = { bySlug: {}, byIssue: {} };
+  const slugSet = new Set((snap.plans || []).map((p) => p.slug));
+  const RE = /docs\/work\/(\d{4}-\d{2}-\d{2}-[a-z0-9._-]+)/gi;
+  issues.forEach((i) => {
+    const hay = `${i.body || ''}\n${i.design || ''}\n${i.notes || ''}\n${i.acceptance_criteria || ''}`;
+    const found = new Set();
+    for (const m of hay.matchAll(RE)) { if (slugSet.has(m[1])) found.add(m[1]); }
+    if (found.size) {
+      State.workLinks.byIssue[i.id] = [...found];
+      found.forEach((s) => { (State.workLinks.bySlug[s] = State.workLinks.bySlug[s] || []).push(i.id); });
+    }
+  });
 }
 
 /* ---------- pure derivation (exported for tests) ---------- */
@@ -185,7 +200,7 @@ const VIEWS = [
   { id: 'workspaces', title: 'Workspaces', flush: false, render: renderWorkspaces },
   { id: 'backlog', title: 'Backlog', flush: false, render: renderBacklog },
   { id: 'architecture', title: 'Architecture', flush: false, render: renderArchitecture },
-  { id: 'plans', title: 'Plans', flush: false, render: renderPlans },
+  { id: 'plans', title: 'Work folders', flush: false, render: renderPlans },
   { id: 'memory', title: 'Memory', flush: false, render: renderMemory },
   { id: 'ops', title: 'Now', flush: false, render: renderNow },
 ];
@@ -442,24 +457,34 @@ function renderArchitecture() {
   </div>`;
 }
 
-/* ---- Plans ---- (rows open the in-render markdown reader via #/work/:slug) */
+/* ---- Work folders ---- (each bundles plan+tasks+decisions+docs; linked to issues) */
 function renderPlans() {
   const plans = (State.snapshot.plans || []).slice();
   const monthLabel = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Undated';
   const groups = {};
   plans.forEach((p) => { const m = p.date ? p.date.slice(0, 7) : 'zzzz'; (groups[m] = groups[m] || []).push(p); });
   const months = Object.keys(groups).sort((a, b) => b.localeCompare(a));
-  const tag = (on, label) => on ? `<span class="tag">${label}</span>` : '';
-  const readable = (slug) => docsFor(slug).length > 0;
-  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first · a folder opens its markdown in-render</span></div>`;
+  const wfSeam = seamId('workFolderGraph', '56461780');
+  const linkedIssues = (slug) => {
+    const ids = State.workLinks.bySlug[slug] || [];
+    if (!ids.length) return `<span class="seam-inline">linked epic / tasks — SEAM ${esc(wfSeam)}</span>`;
+    const chips = ids.slice(0, 4).map((id) => { const it = State.byId[id]; return it ? `<span class="link wf-issue" data-act="open" data-kind="${it.type === 'epic' ? 'epic' : 'issue'}" data-id="${esc(id)}">${it.type === 'epic' ? '▲ ' : ''}${esc(clamp(deEpic(it.title), 32))}</span>` : ''; }).join('');
+    return `<span class="wf-linked"><span class="wf-linked__k">${ids.length} linked</span>${chips}${ids.length > 4 ? `<span class="wf-more">+${ids.length - 4}</span>` : ''}</span>`;
+  };
+  const bundle = (p) => {
+    const keys = docsFor(p.slug);
+    const canRead = keys.length > 0;
+    const files = keys.slice(0, 6).map((k) => `<span class="wf-file" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}>${esc(fileLabel(k))}</span>`).join('') || '<span class="seam-inline">no baked docs</span>';
+    return `<div class="wf-card ${canRead ? '' : 'nonread'}">
+      <div class="wf-card__top"><span class="wf-card__title" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}>${esc(clamp(p.title, 74))}${canRead ? ' <span class="readmark">read ↗</span>' : ''}</span><span class="wf-card__date">${esc(p.date || '—')}</span></div>
+      <div class="wf-card__slug">${esc(p.slug)}</div>
+      <div class="wf-files">${files}</div>
+      <div class="wf-card__foot">${linkedIssues(p.slug)}</div>
+    </div>`;
+  };
+  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · each bundles plan · tasks · decisions · docs · newest first</span></div>`;
   months.forEach((m) => {
-    html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div>`;
-    groups[m].forEach((p) => {
-      const canRead = readable(p.slug);
-      html += `<div class="tl-row ${canRead ? 'readable' : ''}" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}><span class="tl-date">${esc(p.date || '—')}</span>
-        <div><div class="tl-title">${esc(clamp(p.title, 84))}${canRead ? ' <span class="readmark">read ↗</span>' : ''}</div><div class="tl-slug">${esc(p.slug)}</div></div>
-        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="tag">${p.docCount} docs</span></div></div>`;
-    });
+    html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div><div class="wf-grid">${groups[m].map(bundle).join('')}</div>`;
   });
   return html + '</div>';
 }
@@ -663,6 +688,9 @@ function issueDetailHtml(i) {
   const slot = (label, val, on) => `<div class="linkrow"><span class="linkrow__k">${esc(label)}</span><span class="linkrow__v">${on ? val : `<span class="seamtag">SEAM ${esc(seam)}</span>`}</span></div>`;
   const parentSlot = parent ? `<span class="link" data-act="open" data-kind="epic" data-id="${esc(parent.id)}">${esc(clamp(deEpic(parent.title), 44))}</span>` : '—';
   const r = i.type === 'epic' ? epicRollup(i) : null;
+  // Grounded work-folder link (issue cites docs/work/<slug>); opens the in-render reader.
+  const wfSlugs = State.workLinks.byIssue[i.id] || [];
+  const wfVal = wfSlugs.map((s) => `<span class="link" data-act="open" data-kind="work" data-id="${esc(s)}">${esc(s)}</span>`).join(' · ');
   return `<button class="detail__close" data-act="detail-close">✕ esc</button>
     <div class="detail__eyebrow"><span class="tag">${esc(TYPE_LABEL[i.type] || i.type)}</span>${pmark(i.priority)}<span class="slabel">${esc(i.blocked ? 'blocked' : i.status)}</span>${isLive(i) ? pulse(true) : ''}${phaseTag(i)}</div>
     <h2 class="detail__title">${esc(deEpic(i.title))}</h2>
@@ -683,7 +711,7 @@ function issueDetailHtml(i) {
       ${slot('Parent epic', parentSlot, !!parent)}
       ${slot('Pull request', '', false)}
       ${slot('Worktree', '', false)}
-      ${slot('Work folder', '', false)}
+      ${slot('Work folder', wfVal, wfSlugs.length > 0)}
       ${slot('Files changed', '', false)}
       ${slot('Comments', '', false)}
     </div>
