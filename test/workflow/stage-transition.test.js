@@ -31,6 +31,20 @@ describe('parseStageTransition', () => {
     });
   });
 
+  test('normalizes uppercase stage tokens (case-insensitive match must not reject)', () => {
+    // STAGE_LINE matches case-insensitively, so an uppercase token reaches
+    // normalizeStageId — which only knows lowercase canonical ids. Both captures
+    // must be lowercased first or a valid transition is wrongly rejected.
+    expect(parseStageTransition('stage: DEV -> VALIDATE')).toEqual({
+      from: 'dev',
+      to: 'validate',
+    });
+    expect(parseStageTransition('STAGE: Ship -> Review')).toEqual({
+      from: 'ship',
+      to: 'review',
+    });
+  });
+
   test('accepts an arrow without surrounding spaces', () => {
     expect(parseStageTransition('stage: ship->review')).toEqual({
       from: 'ship',
@@ -72,7 +86,7 @@ describe('recordStageTransition (best-effort)', () => {
     };
   }
 
-  test('completes the from-stage and starts the to-stage', () => {
+  test('fallback: completes the from-stage and starts the to-stage via recordStageRun', () => {
     const driver = fakeDriver();
     const result = recordStageTransition({
       driver,
@@ -85,6 +99,45 @@ describe('recordStageTransition (best-effort)', () => {
       { issue_id: 'forge-1', stage: 'validate', action: 'start' },
     ]);
     expect(result).toEqual({ from: 'dev', to: 'validate', recorded: true });
+  });
+
+  test('prefers the atomic driver.recordStageTransition op when available', () => {
+    const calls = [];
+    const driver = {
+      recordStageTransition(input) {
+        calls.push(input);
+        return { from: { stage: input.from }, to: { stage: input.to } };
+      },
+      recordStageRun() {
+        throw new Error('should not use the non-atomic path when atomic op exists');
+      },
+    };
+    const result = recordStageTransition({
+      driver,
+      issueId: 'forge-1',
+      body: 'stage: dev -> validate',
+      config: { databasePath: '/tmp/x' },
+    });
+
+    expect(calls).toEqual([{ issue_id: 'forge-1', from: 'dev', to: 'validate' }]);
+    expect(result).toEqual({ from: 'dev', to: 'validate', recorded: true });
+  });
+
+  test('never throws when the atomic driver op throws — returns recorded:false', () => {
+    const driver = {
+      recordStageTransition() {
+        throw new Error('rolled back');
+      },
+    };
+    let result;
+    expect(() => {
+      result = recordStageTransition({
+        driver,
+        issueId: 'forge-1',
+        body: 'stage: dev -> validate',
+      });
+    }).not.toThrow();
+    expect(result.recorded).toBe(false);
   });
 
   test('does nothing (recorded:false) when the body has no stage line', () => {
