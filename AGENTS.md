@@ -332,7 +332,7 @@ runtime rail. Turn it off only deliberately: `forge gate disable rail.kernel_tra
 - **Stage names**: The validation stage command is `/validate` — renamed in PR #50; do not use the old name.
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
-- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md` — the ONLY committed skill source. Every per-agent mirror (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, `.hermes/skills`) is gitignored and generated from `skills/` at `forge setup`; contributors run `forge setup` after clone to regenerate them. Never hand-edit a generated mirror — edit the canonical `skills/` source.
+- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. `.agents/skills` (Codex's repo-local discovery path) is committed so a fresh clone gets discovery without `forge setup` — a pre-commit hook keeps it byte-identical to `skills/` and the drift gate enforces it. The other mirrors (`.claude/skills`, `.codex/skills`, `.cursor/skills`, `.hermes/skills`) are gitignored and regenerated at `forge setup`. Never hand-edit a generated mirror — edit the canonical `skills/` source.
 
 ## Session Completion
 

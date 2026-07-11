@@ -7,7 +7,6 @@ const {
   AGENT_SKILL_DIRS,
   listCanonicalSkills,
   diffSkillDir,
-  populateAgentSkills,
 } = require('../lib/skills-sync');
 const {
   CODEX_REPO_SKILLS_DIR,
@@ -26,8 +25,7 @@ const repoRoot = path.resolve(__dirname, '..');
 // are "checked into .agents/skills, for your team"). Forge previously installed
 // only to the GLOBAL $CODEX_HOME/skills, leaving a teammate who clones the repo
 // WITHOUT running `forge setup` with zero auto-discovered Forge skills/stages.
-// The mirror is now generated at `forge setup` from the canonical skills/ source
-// (gitignored, not committed); these tests prove that generation is byte-faithful.
+// These tests prove Forge now generates the committed repo-local mirror.
 
 describe('codex repo-local .agents/skills discovery', () => {
   test('.agents/skills is a drift-enforced agent skill dir', () => {
@@ -81,45 +79,11 @@ describe('codex repo-local .agents/skills discovery', () => {
     }
   });
 
-  test('setup generates BOTH .codex/skills and .agents/skills from skills/ alone (no committed mirror needed)', () => {
-    // Simulate a fresh clone: a source root that has ONLY the canonical skills/
-    // dir — no committed .codex/skills or .agents/skills mirror to copy from.
-    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-src-only-skills-'));
-    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-generated-mirrors-'));
-    try {
-      const canonicalDir = path.join(source, 'skills', 'plan');
-      fs.mkdirSync(canonicalDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(canonicalDir, 'SKILL.md'),
-        '---\ndescription: Plan workflow\n---\n# Plan\nCanonical body.\n'
-      );
-      // No committed mirrors exist in the source.
-      expect(fs.existsSync(path.join(source, '.codex', 'skills'))).toBe(false);
-      expect(fs.existsSync(path.join(source, '.agents', 'skills'))).toBe(false);
-
-      // `forge setup` generates each harness mirror from skills/ via populateAgentSkills.
-      for (const rel of ['.codex/skills', '.agents/skills']) {
-        const targetSkillsDir = path.join(target, rel);
-        const { written } = populateAgentSkills({ sourceRoot: source, targetSkillsDir, clean: false });
-        expect(written).toContain('plan');
-        const generated = path.join(targetSkillsDir, 'plan', 'SKILL.md');
-        expect(fs.existsSync(generated)).toBe(true);
-        const drift = diffSkillDir(canonicalDir, path.join(targetSkillsDir, 'plan'));
-        expect(drift).toEqual([]);
-      }
-    } finally {
-      fs.rmSync(source, { recursive: true, force: true });
-      fs.rmSync(target, { recursive: true, force: true });
-    }
-  });
-
-  test('.agents/skills, when present, is drift-free vs canonical (setup-generated, gitignored — absence ≠ drift)', () => {
-    const mirror = resolveCodexRepoSkillsDir(repoRoot);
-    // Generated at `forge setup` and gitignored, so it is absent on a clean
-    // checkout; when present it must be a byte-faithful render of canonical skills/.
-    if (!fs.existsSync(mirror)) return;
+  test('the committed repo .agents/skills mirror is drift-free vs canonical', () => {
+    const committed = resolveCodexRepoSkillsDir(repoRoot);
+    expect(fs.existsSync(committed)).toBe(true);
     for (const skill of listCanonicalSkills(repoRoot)) {
-      const drift = diffSkillDir(skill.sourcePath, path.join(mirror, skill.name));
+      const drift = diffSkillDir(skill.sourcePath, path.join(committed, skill.name));
       expect(drift).toEqual([]);
     }
   });
