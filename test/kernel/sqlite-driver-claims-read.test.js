@@ -74,13 +74,17 @@ describe('Kernel SQLite driver — claims read op (active leases)', () => {
 		expect(claim.issue_id).toBe('clm-a');
 		expect(claim.actor).toBe('alice');
 		expect(claim.claimed_at).toBe(now);
-		// session_id / worktree_id / expires_at are surfaced (may be null when the
-		// claim carried none) — the KEYS must always be present so consumers can rely
-		// on the shape.
-		expect(claim).toHaveProperty('session_id');
-		expect(claim).toHaveProperty('worktree_id');
-		expect(claim).toHaveProperty('expires_at');
-		expect(claim).toHaveProperty('id');
+		// session_id / worktree_id echo the claim's context exactly (not just present —
+		// mapped to the RIGHT value). expires_at is null because no --expires was passed
+		// (buildClaimRow / insertKernelClaimRow default it to null).
+		expect(claim.session_id).toBe('sess-a');
+		expect(claim.worktree_id).toBe('wt-a');
+		expect(claim.expires_at).toBeNull();
+		// `id` is the claim lease row id (a fresh randomUUID minted per claim in
+		// buildClaimMutationEvent — never the issue id), so its exact value isn't
+		// predictable here; assert its shape instead of just its presence.
+		expect(typeof claim.id).toBe('string');
+		expect(claim.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 	});
 
 	test('excludes released leases (state != active)', async () => {
