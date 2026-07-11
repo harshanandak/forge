@@ -50,7 +50,7 @@ function icon(name) {
     overview: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
     board: '<rect x="3" y="3" width="5" height="18"/><rect x="10" y="3" width="5" height="12"/><rect x="17" y="3" width="5" height="15"/>',
     epics: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
-    decisions: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.5 6H14a2 2 0 0 1 2 2v2"/>',
+    architecture: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.5 6H14a2 2 0 0 1 2 2v2"/>',
     plans: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     ops: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>',
     doc: '<path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/>',
@@ -66,7 +66,7 @@ const State = {
   snapshot: null, issues: [], epics: [], byId: {}, kids: {},
   filters: { q: '', types: new Set(), prios: new Set() },
   board: { epicFocus: null, limits: {}, showClosed: false, mode: 'kanban', tableCollapsed: new Set() },
-  epicsTab: 'active', epicsExpanded: new Set(),
+  epicsTab: 'active', epicsExpanded: new Set(), archExpanded: new Set(),
   wsArchived: false, memFilter: '',
   route: 'overview', rendered: null,
 };
@@ -184,7 +184,7 @@ const VIEWS = [
   { id: 'epics', title: 'Epics', flush: false, render: renderEpics },
   { id: 'workspaces', title: 'Workspaces', flush: false, render: renderWorkspaces },
   { id: 'backlog', title: 'Backlog', flush: false, render: renderBacklog },
-  { id: 'decisions', title: 'Decisions', flush: false, render: renderDecisions },
+  { id: 'architecture', title: 'Architecture', flush: false, render: renderArchitecture },
   { id: 'plans', title: 'Plans', flush: false, render: renderPlans },
   { id: 'memory', title: 'Memory', flush: false, render: renderMemory },
   { id: 'ops', title: 'Now', flush: false, render: renderNow },
@@ -395,7 +395,7 @@ function renderEpics() {
   return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · a name opens its detail hub</span></div>${body}</div>`;
 }
 
-/* ---- Decisions (graphical status board) ---- */
+/* ---- Architecture (decisions grouped into areas as folder-nodes) ---- */
 function decStatusKey(s) {
   const l = (s || '').toLowerCase();
   if (l.startsWith('accept') || l === 'done') return 'accepted';
@@ -404,35 +404,41 @@ function decStatusKey(s) {
   if (l.startsWith('deprecat')) return 'deprecated';
   return 'proposed';
 }
-const DEC_COLS = [
-  { key: 'proposed', title: 'Proposed' }, { key: 'accepted', title: 'Accepted' },
-  { key: 'superseded', title: 'Superseded' }, { key: 'deprecated', title: 'Deprecated' },
-];
+const DEC_GLYPH = { accepted: '●', proposed: '○', superseded: '◐', deprecated: '✕' };
 const SOURCE_LABEL = { kernel: 'kernel', headline: 'headline PD', adr: 'ADR' };
-function renderDecisions() {
+// Architecture area = the top segment of a decision's dotted/dashed component
+// (authority.local.storage → authority; agent-interface.parity → agent).
+function areaOf(component) { return component ? (String(component).split(/[.\-]/)[0] || 'general') : 'general'; }
+function decCardHtml(d) {
+  return `<div class="card" data-act="open" data-kind="decision" data-id="${esc(String(d.id))}">
+    <div class="card__line"><span class="glyph" title="${esc(d.status || '')}">${DEC_GLYPH[decStatusKey(d.status)] || '○'}</span><span class="card__title">${esc(clamp(d.title, 110))}</span></div>
+    <div class="card__foot"><span class="tag">${esc(SOURCE_LABEL[d.source] || d.source || '')}</span>${d.component ? `<span class="tag tag--soft">${esc(clamp(d.component, 26))}</span>` : ''}</div></div>`;
+}
+function renderArchitecture() {
   const decs = State.snapshot.decisions || [];
   const arch = State.snapshot.architecture || [];
-  const buckets = {}; DEC_COLS.forEach((c) => (buckets[c.key] = []));
-  decs.forEach((d) => { const k = decStatusKey(d.status); (buckets[k] || buckets.proposed).push(d); });
-  const decCard = (d) => `<div class="card" data-act="open" data-kind="decision" data-id="${esc(String(d.id))}">
-    <div class="card__line"><span class="card__title">${esc(clamp(d.title, 118))}</span></div>
-    <div class="card__foot"><span class="tag">${esc(SOURCE_LABEL[d.source] || d.source || '')}</span>${d.component ? `<span class="tag tag--soft">${esc(clamp(d.component, 20))}</span>` : ''}</div></div>`;
-  const boardCols = DEC_COLS.map((c) => {
-    const items = buckets[c.key];
-    const b = items.length ? items.map(decCard).join('') : '<div class="kempty">— none —</div>';
-    return `<div class="deccol"><div class="deccol__head"><span class="kcol__title">${esc(c.title)}</span><span class="kcol__count">${items.length}</span></div><div class="deccol__body">${b}</div></div>`;
+  const areas = {};
+  decs.forEach((d) => { const a = areaOf(d.component); (areas[a] = areas[a] || []).push(d); });
+  const order = Object.keys(areas).sort((a, b) => areas[b].length - areas[a].length || a.localeCompare(b));
+  const nodes = order.map((a) => {
+    const list = areas[a].slice().sort((x, y) => (decStatusKey(x.status) === 'accepted' ? -1 : 1) - (decStatusKey(y.status) === 'accepted' ? -1 : 1));
+    const accepted = list.filter((d) => decStatusKey(d.status) === 'accepted').length;
+    const open = State.archExpanded.has(a);
+    return `<div class="areanode ${open ? 'open' : ''}">
+      <div class="areanode__head" data-act="toggle-area" data-id="${esc(a)}">
+        <span class="chev">${open ? '▾' : '▸'}</span><span class="glyph">▦</span><span class="areanode__name">${esc(a)}</span>
+        <span class="areanode__meta">${list.length} decision${list.length !== 1 ? 's' : ''} · ${accepted} accepted</span></div>
+      ${open ? `<div class="areanode__body"><div class="cardgrid">${list.map(decCardHtml).join('')}</div>
+        <div class="seamnote">How “${esc(a)}” evolved — supersede / relates / conflicts edges are a SEAM (${esc(seamId('workFolderGraph', '56461780'))}); decisions are grouped by area + status until the relation graph lands.</div></div>` : ''}
+    </div>`;
   }).join('');
-  const bySource = {}; decs.forEach((d) => (bySource[d.source] = (bySource[d.source] || 0) + 1));
-  const sourceLegend = Object.entries(bySource).map(([s, n]) => `<span class="item"><span class="sw"></span>${esc(SOURCE_LABEL[s] || s)} <b>${n}</b></span>`).join('');
   const archList = arch.length
     ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="glyph">▦</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
     : `<div class="empty-state"><h4>No architecture docs</h4></div>`;
   return `<div class="fade-in">
-    <div class="viewhead"><span class="crumb">${decs.length} decisions · kernel · headline PDs · ADRs</span><div class="topbar__spacer"></div><div class="legend">${sourceLegend}</div></div>
-    <div class="decboard">${boardCols}</div>
-    <div class="seam"><b>Relationships — SEAM.</b> Supersede / depends-on edges between decisions live in the work-folder↔graph (${esc(seamId('workFolderGraph', '56461780'))}); columns group by lifecycle status until then.</div>
-    <div class="section-title">Architecture index · ${arch.length}</div>${archList}
-    ${!decs.length ? '<div class="empty-state"><h4>No decisions</h4></div>' : ''}
+    <div class="viewhead"><span class="crumb">${decs.length} decisions across ${order.length} architecture areas · open an area to see its decisions</span></div>
+    <div class="arealist">${nodes || '<div class="empty-state"><h4>No decisions</h4><p>Kernel type=decision issues + headline PDs + ADRs appear here.</p></div>'}</div>
+    <div class="section-title">Architecture docs · ${arch.length}</div>${archList}
   </div>`;
 }
 
@@ -555,32 +561,51 @@ function renderBacklog() {
   return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled · ${parked.length}</span></div>${grid}</div>`;
 }
 
-/* ---- Memory ---- (work-folder memory + recall SEAM + Graphiti SEAM) */
+/* ---- Memory ---- (ONE reverse-chronological Memory Stream + Canon rail) */
 function renderMemory() {
   const q = (State.memFilter || '').toLowerCase();
-  const plans = (State.snapshot.plans || []).filter((p) => !q || (p.title + ' ' + p.slug).toLowerCase().includes(q));
-  const readable = (slug) => docsFor(slug).length > 0;
-  const folders = plans.slice(0, 30).map((p) => {
-    const canRead = readable(p.slug);
-    return `<div class="card ${canRead ? '' : 'nonread'}" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}>
-      <div class="card__line"><span class="glyph">▦</span><span class="card__title">${esc(clamp(p.title, 62))}</span></div>
-      <div class="card__foot"><span class="slabel">${esc(p.date || '—')}</span>${p.hasPlan ? '<span class="tag">plan</span>' : ''}${p.hasDecisions ? '<span class="tag">decisions</span>' : ''}${canRead ? '<span class="readmark">read ↗</span>' : ''}</div></div>`;
-  }).join('');
-  const filt = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="memFilter" type="search" placeholder="filter work folders…" value="${esc(State.memFilter || '')}"></div>`;
+  const all = State.snapshot.decisions || [];
+  const decs = all.filter((d) => !q || (d.title + ' ' + (d.component || '') + ' ' + (d.rationale || '')).toLowerCase().includes(q));
   const memN = Array.isArray(State.snapshot.memory) ? State.snapshot.memory.length : 0;
-  const recallBlock = memN
-    ? `<div class="cardgrid">${State.snapshot.memory.slice(0, 18).map((e) => `<div class="card"><div class="card__line"><span class="card__title">${esc(clamp(typeof e === 'string' ? e : (e.text || e.note || e.content || JSON.stringify(e)), 140))}</span></div></div>`).join('')}</div>`
-    : `<div class="seam"><b>recall / .remember — SEAM.</b> <span class="mono">forge recall</span> returned ${memN} entries. The <span class="mono">.remember</span> buffers are user-global, not yet slug-scoped into the project snapshot (${esc(seamId('graphiti', 'c7971150'))}).</div>`;
+  const arch = State.snapshot.architecture || [];
+  const acceptedN = all.filter((d) => decStatusKey(d.status) === 'accepted').length;
+
+  const dated = decs.filter((d) => d.updated_at).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  const undated = decs.filter((d) => !d.updated_at);
+  const entry = (d) => `<div class="mentry" data-act="open" data-kind="decision" data-id="${esc(String(d.id))}">
+    <span class="glyph mentry__g" title="decision">◇</span>
+    <div class="mentry__main"><div class="mentry__text">${esc(clamp(d.title, 118))}</div>
+      <div class="mentry__prov">${d.component ? `<span class="chip">${esc(areaOf(d.component))}</span>` : ''}<span class="chip">${esc(SOURCE_LABEL[d.source] || d.source || '')}</span><span class="chip">${esc(d.status || '')}</span></div></div>
+    <span class="mentry__when">${esc(d.updated_at ? relTime(d.updated_at) : '—')}</span></div>`;
+  const band = (label, list) => list.length ? `<div class="mband">${esc(label)} · ${list.length}</div>${list.map(entry).join('')}` : '';
+  const stream = (dated.length || undated.length)
+    ? band('Recent — dated decisions', dated) + band('Headline decisions — undated', undated)
+    : `<div class="empty-state"><h4>No memory yet</h4><p><span class="mono">forge remember &lt;note&gt;</span> feeds this stream; decisions land here automatically.</p></div>`;
+
+  const filt = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="memFilter" type="search" placeholder="filter memory…" value="${esc(State.memFilter || '')}"></div>`;
+
+  const canon = `<aside class="canon">
+    <div class="canon__ttl">Canon</div>
+    <div class="canon__row"><span>Accepted decisions</span><b>${acceptedN}</b></div>
+    <div class="canon__row"><span>Architecture docs</span><b>${arch.length}</b></div>
+    ${arch.map((a) => `<div class="canon__doc"><span class="glyph">▦</span>${esc(clamp(a.title, 30))}</div>`).join('')}
+    <div class="canon__seam">Core-memories buffer is user-global (cross-project); a project-scoped Canon needs the memory ingestor (${esc(seamId('graphiti', 'c7971150'))}).</div>
+  </aside>`;
+
   return `<div class="fade-in">
-    <div class="viewhead"><span class="crumb">work-folder memory · recall · temporal graph</span><div class="topbar__spacer"></div>${filt}</div>
-    <div class="section-title" style="margin-top:0">Work-folder memory · ${plans.length} folders</div>
-    <div class="cardgrid">${folders}</div>
-    <div class="section-title">Recall buffer</div>
-    ${recallBlock}
-    <div class="section-title">Temporal memory graph</div>
-    <div class="graph-seam"><div class="nodes"><span class="node">idea</span><span class="edge"></span><span class="node">issue</span><span class="edge"></span><span class="node">PR</span></div>
-      <h4>Graphiti graph — SEAM</h4>
-      <p>${esc((State.snapshot.seams && State.snapshot.seams.graphiti) || 'c7971150')}.<br>Activity↔PR/issue/work-folder connections pending ${esc(seamId('workFolderGraph', '56461780'))}.</p></div>
+    <div class="viewhead"><span class="crumb">one reverse-chronological memory stream — what the project has learned</span><div class="topbar__spacer"></div>${filt}</div>
+    <div class="mem-grid">
+      <div class="mstream">
+        ${stream}
+        <div class="mband">forge recall · notes</div>
+        <div class="seam"><b>${memN} recall entries.</b> The project remember-store is empty — entries land here as you <span class="mono">forge remember &lt;note&gt;</span>.</div>
+        <div class="mband">.remember rotation</div>
+        <div class="seam"><b>SEAM — user-global.</b> The <span class="mono">.remember</span> now / today / recent / archive buffers are user-global and mix projects, so they are deliberately <b>not</b> baked into this project stream (that would leak cross-project memory). A slug-scoped ingestor merges them here (${esc(seamId('graphiti', 'c7971150'))}).</div>
+        <div class="section-title">Temporal threads</div>
+        <div class="seamnote">Click any entry to open its thread — related decisions in the same architecture area. The full temporal graph (superseding / cross-links) is a SEAM until Graphiti (${esc(seamId('graphiti', 'c7971150'))}) is wired — no empty graph pane is shown.</div>
+      </div>
+      ${canon}
+    </div>
   </div>`;
 }
 
@@ -670,8 +695,18 @@ function decDetailHtml(d) {
     <h2 class="detail__title">${esc(d.title)}</h2>
     <dl class="detail__grid"><dt>ID</dt><dd class="mono">${esc(String(d.id))}</dd><dt>Source</dt><dd>${esc(SOURCE_LABEL[d.source] || d.source || '—')}</dd><dt>Status</dt><dd>${esc(d.status || '—')}</dd></dl>
     ${d.rationale ? `<div class="detail__body">${esc(d.rationale)}</div>` : ''}
-    <div class="section-title">Relationships</div>
-    <div class="seamnote">Supersede / depends-on edges (${esc(seamId('workFolderGraph', '56461780'))}) are not on the kernel record yet.</div>`;
+    ${decThreadHtml(d)}`;
+}
+// Click-through thread — related decisions in the same architecture area (degrades
+// from a real temporal graph to an area/text match until Graphiti c7971150 is wired).
+function decThreadHtml(d) {
+  const area = areaOf(d.component);
+  const related = (State.snapshot.decisions || []).filter((x) => String(x.id) !== String(d.id) && areaOf(x.component) === area).slice(0, 10);
+  const list = related.length
+    ? `<div class="cardgrid">${related.map(decCardHtml).join('')}</div>`
+    : '<div class="kempty">— no related decisions in this area —</div>';
+  return `<div class="section-title">Thread · “${esc(area)}” area</div>${list}
+    <div class="seamnote">This thread is an <b>area/text match</b>. Real supersede / depends-on / conflict edges (${esc(seamId('workFolderGraph', '56461780'))}) and the temporal graph (${esc(seamId('graphiti', 'c7971150'))}) are seams not yet on the kernel record.</div>`;
 }
 function docReaderHtml(slug, keys, file) {
   const tabs = keys.map((k) => `<button class="doctab ${k === file ? 'on' : ''}" data-act="doc-file" data-slug="${esc(slug)}" data-file="${esc(k)}">${esc(fileLabel(k))}</button>`).join('');
@@ -763,7 +798,7 @@ function buildNav() {
   const counts = {
     board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length,
     workspaces: wts.filter((w) => !w.archived).length,
-    decisions: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length,
+    architecture: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length,
     memory: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.activeClaims || []).length,
   };
   $('#nav').innerHTML = `<div class="nav__label">Views</div>` + VIEWS.map((v) =>
@@ -787,6 +822,7 @@ function handleAct(t) {
   else if (act === 'board-closed') { State.board.showClosed = !State.board.showClosed; State.board.limits = {}; rerender(); }
   else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (_e) { /* private mode */ } rerender(); }
   else if (act === 'toggle-workgroup') { const id = t.dataset.id; State.board.tableCollapsed.has(id) ? State.board.tableCollapsed.delete(id) : State.board.tableCollapsed.add(id); rerender(); }
+  else if (act === 'toggle-area') { const id = t.dataset.id; State.archExpanded.has(id) ? State.archExpanded.delete(id) : State.archExpanded.add(id); rerender(); }
 }
 function onViewClick(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
