@@ -73,11 +73,13 @@ describe('forge migrate command contract', () => {
 		expect(typeof migrateCommand.handler).toBe('function');
 	});
 
-	// The pre-existing v2 → v3 dry-run PoC contract must survive the beads path.
+	// The pre-existing v2 → v3 dry-run-only contract must survive the beads path.
 	test('still refuses the non-dry-run v2→v3 path when --from is absent', async () => {
 		const result = await migrateCommand.handler([], {}, process.cwd());
 		expect(result.success).toBe(false);
-		expect(result.error).toContain('Only forge migrate --dry-run is implemented');
+		expect(result.error).toContain('forge migrate currently supports preview only');
+		expect(result.error).toContain('forge migrate --dry-run');
+		expect(result.error).not.toContain('Wave 0 PoC');
 	});
 
 	// A flag supplied without a value must be rejected, not silently swallowed —
