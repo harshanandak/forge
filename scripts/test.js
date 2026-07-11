@@ -39,6 +39,31 @@ const ALWAYS_RUN_RISK_TEST_TARGETS = [
 
 const isWindows = process.platform === 'win32';
 
+// Wall-clock ceiling for a single spawned test lane. Bun's per-test `--timeout`
+// races a JS timer and CANNOT preempt a synchronous blocking spawn (e.g. an
+// `execFileSync` of git/bash that hangs during git mid-push state). Without this
+// ceiling such a hang blocks `forge push` indefinitely (observed ~50 min on
+// Windows, issue 8aef79e8). This kills the lane process so the push fails fast
+// instead of hanging forever. Override with FORGE_TEST_TIMEOUT_MS.
+const DEFAULT_TEST_COMMAND_TIMEOUT_MS = 15 * 60 * 1000;
+
+// Conventional shell exit code for a command terminated by a timeout.
+const TIMEOUT_EXIT_CODE = 124;
+
+/**
+ * Resolves the per-lane wall-clock timeout, honoring FORGE_TEST_TIMEOUT_MS.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env] Environment to read the override from.
+ * @returns {number} Timeout in milliseconds (defaults to DEFAULT_TEST_COMMAND_TIMEOUT_MS).
+ */
+function resolveCommandTimeoutMs(env = process.env) {
+  const parsed = Number.parseInt(env.FORGE_TEST_TIMEOUT_MS, 10);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return DEFAULT_TEST_COMMAND_TIMEOUT_MS;
+}
+
 /**
  * @typedef {Object} TestExecutionPlan
  * @property {string[]} changedFiles
@@ -263,6 +288,15 @@ function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
   });
 
   if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      const seconds = Math.round((options.timeout ?? 0) / 1000);
+      console.error('');
+      console.error(`Test lane timed out after ${seconds}s and was terminated: ${command} ${args.join(' ')}`);
+      console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
+      console.error('Failing the run instead of blocking the push. See issue 8aef79e8.');
+      console.error('');
+      return TIMEOUT_EXIT_CODE;
+    }
     throw result.error;
   }
 
@@ -282,30 +316,32 @@ function runTestExecutionPlan(plan, deps = {}) {
   const env = deps.env || stripGitHookEnv(process.env);
   const bunCommand = deps.bunCommand || env.BUN_EXE || process.env.BUN_EXE || 'bun';
   const label = deps.label || 'tests';
+  const timeout = resolveCommandTimeoutMs(env);
+  const laneOptions = { env, killSignal: 'SIGKILL', timeout };
 
   console.log(`Running ${label} (${pkgManager})...`);
 
   try {
     if (plan.runFullSuite) {
       console.log(`  Mode: full suite (${plan.reason})`);
-      const status = runCommand('node', ['scripts/test-full-suite.js'], { env }, spawnSync);
+      const status = runCommand('node', ['scripts/test-full-suite.js'], laneOptions, spawnSync);
       if (status !== 0) return status;
     } else if (plan.testTargets.length > 0) {
       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
       const command = pkgManager === 'bun' ? bunCommand : pkgManager;
-      const status = runCommand(command, ['run', 'test', ...plan.testTargets], { env }, spawnSync);
+      const status = runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawnSync);
       if (status !== 0) return status;
     }
 
     if (plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
-      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], { env }, spawnSync);
+      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawnSync);
       if (status !== 0) return status;
     }
 
     if (!plan.runFullSuite && plan.runTestEnv) {
       console.log('  Extra: running affected edge-case tests');
-      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], { env }, spawnSync);
+      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawnSync);
       if (status !== 0) return status;
     }
 
@@ -354,9 +390,11 @@ if (require.main === module) {
 
 module.exports = {
   ALWAYS_RUN_RISK_TEST_TARGETS,
+  DEFAULT_TEST_COMMAND_TIMEOUT_MS,
   buildTestExecutionPlan,
   classifyPushTests,
   detectPackageManager,
+  resolveCommandTimeoutMs,
   runLocalValidationTests,
   runPrePushTests,
   runTestExecutionPlan,
