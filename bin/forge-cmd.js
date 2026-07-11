@@ -102,7 +102,7 @@ const REQUIRED_ARGS = {
 // (e.g. a typo like `--auto-reabse` must not run shepherd with default
 // behaviour). Commands NOT listed here keep their permissive flag handling.
 const ALLOWED_FLAGS = {
-	shepherd: ['--auto-rebase', '--bundle', '--json'],
+	shepherd: ['--auto-rebase', '--bundle', '--pull', '--json'],
 };
 
 /**
@@ -179,12 +179,22 @@ function validateArgs(command, args) {
 	const positionalArgs = args.filter(a => !a.startsWith('--'));
 
 	// `--json` has no standalone meaning for shepherd — it only toggles the JSON
-	// rendering of the `--bundle` gather. Without `--bundle` it would silently fall
-	// back to the human-readable pass output, so reject it loudly instead.
-	if (command === 'shepherd' && args.includes('--json') && !args.includes('--bundle')) {
+	// rendering of the `--bundle` or `--pull` gather. Without one of those it would
+	// silently fall back to the human-readable pass output, so reject it loudly.
+	if (command === 'shepherd' && args.includes('--json')
+		&& !args.includes('--bundle') && !args.includes('--pull')) {
 		return {
 			valid: false,
-			error: "Error: '--json' is only supported with 'forge shepherd <pr> --bundle --json'",
+			error: "Error: '--json' is only supported with 'forge shepherd <pr> --bundle --json' or '--pull --json'",
+		};
+	}
+
+	// `--bundle` and `--pull` are mutually exclusive output modes — shepherd.js returns on
+	// `--pull` first, so accepting both would silently drop the bundle. Fail fast.
+	if (command === 'shepherd' && args.includes('--bundle') && args.includes('--pull')) {
+		return {
+			valid: false,
+			error: "Error: 'forge shepherd <pr>' accepts '--bundle' OR '--pull', not both",
 		};
 	}
 
@@ -282,10 +292,11 @@ async function main() { // NOSONAR S3776
 	// Execute command
 	try {
 		const quotedArgs = args.map(a => `"${a.replaceAll('"', '\\"')}"`);  // NOSONAR S7780 - intentional backslash escape for console quoting
-		// `forge shepherd <pr> --bundle` emits a machine-consumable JSON bundle on
-		// stdout (the monitor parses it). Suppress the human banner + blank line in
-		// that mode so stdout stays valid standalone JSON.
-		const quietJsonMode = command === 'shepherd' && args.includes('--bundle');
+		// `forge shepherd <pr> --bundle` / `--pull` emit a machine-consumable JSON
+		// payload on stdout (the monitor/agent parses it). Suppress the human banner
+		// + blank line in those modes so stdout stays valid standalone JSON.
+		const quietJsonMode = command === 'shepherd'
+			&& (args.includes('--bundle') || args.includes('--pull'));
 		if (!quietJsonMode) {
 			console.log(`Executing: forge ${command}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`);
 			console.log('');
@@ -362,7 +373,12 @@ async function main() { // NOSONAR S3776
 
 		} else if (command === 'shepherd') {
 			result = await HANDLERS.shepherd.handler(args, {}, process.cwd());
-			if (result.bundle !== undefined) {
+			if (result.pull !== undefined) {
+				// --pull: emit the compact "why it failed + what to fix" payload as
+				// JSON only, so an agent consumes ONE payload instead of running
+				// gh/GraphQL by hand.
+				console.log(JSON.stringify(result.pull, null, 2));
+			} else if (result.bundle !== undefined) {
 				// --bundle: emit the gathered PR-state bundle as JSON only, so the
 				// output is machine-consumable by the monitor/fixer-agent.
 				console.log(JSON.stringify(result.bundle, null, 2));

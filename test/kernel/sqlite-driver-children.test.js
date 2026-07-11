@@ -53,7 +53,9 @@ describe('Kernel SQLite driver — children query + rollup (epic support)', () =
 				('g1','Grandchild','task','open','P2',6,'c1',NULL,'${now}','${now}',0),
 				('solo','No children','task','open','P2',7,NULL,NULL,'${now}','${now}',0),
 				('np','Non-epic parent','task','open','P2',8,NULL,NULL,'${now}','${now}',0),
-				('npc','Child of a task','task','open','P2',9,'np',NULL,'${now}','${now}',0);`,
+				('npc','Child of a task','task','open','P2',9,'np',NULL,'${now}','${now}',0),
+				('e2','Backlog epic','epic','open','P1',0,NULL,NULL,'${now}','${now}',0),
+				('eb1','Parked idea','task','backlog','P2',1,'e2',NULL,'${now}','${now}',0);`,
 			config,
 		);
 		// c1 depends on c2 (c2 blocks c1): c1.dependencies=[c2], c1.blocked_by=[c2],
@@ -91,14 +93,25 @@ describe('Kernel SQLite driver — children query + rollup (epic support)', () =
 			open: 2,
 			review: 0,
 			cancelled: 1,
+			backlog: 0,
 			// cancelled does NOT count toward complete — done-only percentage: 1/5 = 20%.
 			percentage: 20,
 			// c1 is blocked by the still-open c2.
 			blocked: 1,
 		});
 		expect(res.data.rollup.by_status).toEqual({
-			open: 2, in_progress: 1, review: 0, done: 1, cancelled: 1,
+			open: 2, in_progress: 1, review: 0, done: 1, cancelled: 1, backlog: 0,
 		});
+	});
+
+	test('rollup counts backlog children — parked work is first-class', async () => {
+		const res = await driver.issueOperation('children', ['e2'], {}, config);
+		expect(res.data.rollup.total).toBe(1);
+		expect(res.data.rollup.backlog).toBe(1);
+		expect(res.data.rollup.by_status.backlog).toBe(1);
+		// parked work is not done, so it never counts toward completion.
+		expect(res.data.rollup.done).toBe(0);
+		expect(res.data.rollup.percentage).toBe(0);
 	});
 
 	test('children carry the reverse-dependency dependents + readiness blocked_by', async () => {
@@ -144,7 +157,7 @@ describe('Kernel SQLite driver — children query + rollup (epic support)', () =
 		expect(res.data.children).toEqual([]);
 		expect(res.data.count).toBe(0);
 		expect(res.data.rollup).toMatchObject({
-			total: 0, done: 0, in_progress: 0, open: 0, review: 0, cancelled: 0, blocked: 0, percentage: 0,
+			total: 0, done: 0, in_progress: 0, open: 0, review: 0, cancelled: 0, backlog: 0, blocked: 0, percentage: 0,
 		});
 	});
 

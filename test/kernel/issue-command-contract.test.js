@@ -144,6 +144,22 @@ describe('Kernel issue command contract', () => {
 		}
 	});
 
+	test('children rollup schema declares a count for every stored status, incl. backlog', () => {
+		const {
+			ISSUE_COMMAND_RESPONSE_SCHEMAS,
+			ISSUE_STATUSES,
+		} = require('../../lib/kernel/issue-command-contract');
+		const rollup = ISSUE_COMMAND_RESPONSE_SCHEMAS.children.properties.data.properties.rollup;
+
+		// The sqlite-driver emits rollup.<status> for every stored status (ROLLUP_STATUSES
+		// == ISSUE_STATUSES). The published response contract MUST declare each one so
+		// strict consumers don't drop the field — backlog was the missing case.
+		for (const status of ISSUE_STATUSES) {
+			expect(rollup.properties[status]).toEqual({ type: 'integer', minimum: 0 });
+		}
+		expect(rollup.properties.backlog).toEqual({ type: 'integer', minimum: 0 });
+	});
+
 	test('defines a stable error envelope and meaningful exit codes', () => {
 		const {
 			ISSUE_COMMAND_ERROR_SCHEMA,
