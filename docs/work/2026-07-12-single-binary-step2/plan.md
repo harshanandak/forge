@@ -16,9 +16,11 @@ the npm/npx channel byte-identical.
 `lib/package-root.js` exposes `getPackageRoot(diskFallback)`:
 
 - **npm/npx/dev**: returns the real on-disk package root (verified to carry assets).
-- **compiled binary**: lazily extracts the embedded assets to a version-stamped temp
-  dir (`os.tmpdir()/forge-assets-<version>`) and returns it. Every existing copy path
-  then reads real files from a real dir — no per-consumer rewrite.
+- **compiled binary**: lazily extracts the embedded assets to a per-USER cache dir
+  keyed by version + asset fingerprint (`%LOCALAPPDATA%\forge\assets-<version>-<fp>` on
+  Windows, `$XDG_CACHE_HOME|~/.cache/forge/assets-<version>-<fp>` on POSIX, `0o700`), then
+  returns it. Every existing copy path then reads real files from a real dir — no
+  per-consumer rewrite.
 
 Two distinct uses of `packageDir` were separated: **module `require()`s** (bundler
 concern, left alone) vs **asset reads** (routed through the helper).
@@ -57,8 +59,8 @@ manifest-path → blob and NEVER derives paths from embedded names (guidance #2)
 - Relative POSIX paths are split and re-joined with the platform separator only at write
   time (guidance #2).
 - Executable bit: files-only embedding drops mode, so the manifest records
-  `EXECUTABLE_ASSETS` (`.sh` + `.forge/hooks/*`); extraction `chmod 0o755` (no-op on
-  Windows) (guidance #7).
+  `EXECUTABLE_ASSETS` (`.sh` + `.forge/hooks/*`); extraction `chmod 0o700` (owner-only
+  rwx — this is a per-user cache dir; no-op on Windows) (guidance #7).
 - Symlinks are never embedded — the generator skips them; content is materialized
   (guidance #7).
 
@@ -70,12 +72,17 @@ manifest-path → blob and NEVER derives paths from embedded names (guidance #2)
 - **Safe default**: `getPackageRoot` tries the on-disk package first (real assets win),
   then the embedded channel; if BOTH fail it THROWS listing both attempted sources —
   never returns an asset-less dir that lets setup "succeed" with nothing.
-- **Post-extract assertion**: extraction asserts written-file-count == manifest-entry-count,
-  else throws (covers a binary missing embeds).
-- **Completion sentinel**: `.forge-assets-complete` (holds the version) is written only
-  after a fully-successful extraction; a later run reuses the dir only if the sentinel
-  matches — a crash mid-extraction or a concurrent process forces a clean re-extract
-  (guidance #8 / open-Q3).
+- **Post-extract stat-check**: after extraction, `assertAllPresent` stats every expected
+  relpath and asserts it exists + is non-empty (throws listing any missing) — a real
+  content check, not a count of the same manifest it iterates.
+- **Completion sentinel + content re-validation**: `.forge-assets-complete` (holds the
+  version) is written only after a fully-successful extraction; the fast-path reuse
+  re-runs the stat-check before trusting the sentinel, so a truncated/partly-deleted
+  cache re-extracts rather than being adopted. A crash mid-extraction or a concurrent
+  process can never bless a partial dir (atomic rename, below) (guidance #8 / open-Q3).
+- **Cache identity includes an asset fingerprint**: the dir name embeds a content hash
+  (`ASSET_FINGERPRINT`) emitted by the generator, so a same-version rebuild with a
+  changed asset set lands in a different dir and never reuses a stale extraction.
 
 ## Drift / completeness guard (guidance #1 / reconciliation A)
 

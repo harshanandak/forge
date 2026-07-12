@@ -11,7 +11,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { ASSET_ROOTS, DISK_PACKAGE_ROOT } = require('../lib/package-root');
-const { collectAssetFiles, isExecutableAsset } = require('../scripts/gen-embedded-assets.mjs');
+const {
+  collectAssetFiles,
+  isExecutableAsset,
+  assetFingerprint,
+} = require('../scripts/gen-embedded-assets.mjs');
 const { ESSENTIAL_DOCS } = require('../lib/docs-copy');
 
 const REPO = DISK_PACKAGE_ROOT;
@@ -93,6 +97,19 @@ test('executable assets are exactly the .sh + .forge/hooks files', () => {
     const expected = rel.endsWith('.sh') || rel.startsWith('.forge/hooks/');
     expect(exec).toBe(expected);
   }
+});
+
+test('assetFingerprint is a deterministic 64-hex digest over the asset set', () => {
+  const fp1 = assetFingerprint(REPO);
+  const fp2 = assetFingerprint(REPO);
+  expect(fp1).toMatch(/^[0-9a-f]{64}$/);
+  expect(fp1).toBe(fp2);
+});
+
+test('collectAssetFiles fails closed when a configured root is missing', () => {
+  expect(() => collectAssetFiles(REPO, ['skills', 'does-not-exist-root'])).toThrow(
+    /does not exist/i
+  );
 });
 
 test('embedded text assets are LF-only (no CRLF) so cross-platform embed bytes match', () => {

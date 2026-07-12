@@ -112,6 +112,9 @@ test('extractEmbeddedAssets() refuses unsafe manifest keys (traversal / absolute
 
   expect(() => extractEmbeddedAssets(destDir, { '../escape.md': src })).toThrow(/unsafe/i);
   expect(() => extractEmbeddedAssets(destDir, { 'a/../../escape.md': src })).toThrow(/unsafe/i);
+  // Backslash-separated traversal must also be rejected (Windows bypass).
+  expect(() => extractEmbeddedAssets(destDir, { '..\\escape.md': src })).toThrow(/unsafe/i);
+  expect(() => extractEmbeddedAssets(destDir, { 'a\\..\\..\\escape.md': src })).toThrow(/unsafe/i);
   const abs = process.platform === 'win32' ? 'C:\\evil.md' : '/evil.md';
   expect(() => extractEmbeddedAssets(destDir, { [abs]: src })).toThrow(/unsafe/i);
 

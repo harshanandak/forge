@@ -16,6 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import pkgRoot from '../lib/package-root.js';
 
@@ -53,13 +54,36 @@ export function collectAssetFiles(repoRoot = REPO_ROOT, roots = ASSET_ROOTS) {
   const files = [];
   for (const root of roots) {
     const abs = path.join(repoRoot, root);
-    if (!fs.existsSync(abs)) continue;
+    if (!fs.existsSync(abs)) {
+      // Fail CLOSED: a configured asset root that is absent would silently ship an
+      // incomplete manifest. Error instead so the build stops loudly.
+      throw new Error(
+        `Configured ASSET_ROOT does not exist: ${root} (looked in ${abs}). ` +
+          'Fix ASSET_ROOTS in lib/package-root.js or restore the missing path.'
+      );
+    }
     walk(abs, root.split(path.sep).join('/'), files);
   }
   return [...new Set(files)].sort(byteCompare);
 }
 
-function render(files) {
+/**
+ * Content fingerprint over the asset SET: sha256 of each relpath + its bytes, in
+ * sorted order. Emitted into the manifest so the runtime cache dir identity
+ * changes whenever any asset content or the set changes (invalidates stale
+ * same-version extractions). Deterministic across machines.
+ */
+export function assetFingerprint(repoRoot = REPO_ROOT, files = collectAssetFiles(repoRoot)) {
+  const h = crypto.createHash('sha256');
+  for (const rel of files) {
+    h.update(rel);
+    h.update('\0');
+    h.update(fs.readFileSync(path.join(repoRoot, ...rel.split('/'))));
+  }
+  return h.digest('hex');
+}
+
+function render(files, fingerprint) {
   const imports = [];
   const entries = [];
   const execEntries = [];
@@ -84,16 +108,19 @@ function render(files) {
     ...execEntries,
     '];',
     '',
+    `export const ASSET_FINGERPRINT = ${JSON.stringify(fingerprint)};`,
+    '',
   ].join('\n');
 }
 
 function main() {
   const files = collectAssetFiles();
+  const fingerprint = assetFingerprint(REPO_ROOT, files);
   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
-  fs.writeFileSync(OUT_FILE, render(files), 'utf8');
+  fs.writeFileSync(OUT_FILE, render(files, fingerprint), 'utf8');
   const execCount = files.filter(isExecutableAsset).length;
   console.log(
-    `Embedded ${files.length} asset file(s) (${execCount} executable) → ${path.relative(REPO_ROOT, OUT_FILE)}`
+    `Embedded ${files.length} asset file(s) (${execCount} executable), fingerprint ${fingerprint.slice(0, 16)} → ${path.relative(REPO_ROOT, OUT_FILE)}`
   );
 }
 

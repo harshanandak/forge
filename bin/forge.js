@@ -4200,7 +4200,7 @@ async function main() {
     } else {
       // `forge docs` reads packaged docs; route through the asset root so any
       // embedded topic resolves in a compiled binary too. (Full docs/ embedding
-      // for arbitrary topics is deferred to step 3 — see the design note.)
+      // for arbitrary topics is deferred to step 3 — see the step-2 plan note.)
       const result = getTopicContent(topic, getPackageRoot(packageDir));
       if (result.error) {
         console.error(`  Error: ${result.error}`);

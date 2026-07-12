@@ -81,36 +81,41 @@ function main() {
   const setupArgs = ['setup', '--quick', '--yes'];
   const npmDir = makeProject('npm');
   const binDir = makeProject('bin');
-  runSetup('npm', 'node', [path.join(REPO, 'bin', 'forge.js'), ...setupArgs], npmDir);
-  runSetup('bin', BIN_PATH, setupArgs, binDir);
 
-  // 3. Compare trees.
-  const a = hashTree(npmDir);
-  const b = hashTree(binDir);
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  const missingInBin = [];
-  const missingInNpm = [];
-  const differing = [];
-  for (const k of keys) {
-    if (!(k in b)) missingInBin.push(k);
-    else if (!(k in a)) missingInNpm.push(k);
-    else if (a[k] !== b[k]) differing.push(k);
+  // try/finally so the throwaway temp git projects are removed even when setup
+  // or the comparison throws (no leaked dirs on any failure path).
+  try {
+    runSetup('npm', 'node', [path.join(REPO, 'bin', 'forge.js'), ...setupArgs], npmDir);
+    runSetup('bin', BIN_PATH, setupArgs, binDir);
+
+    // 3. Compare trees.
+    const a = hashTree(npmDir);
+    const b = hashTree(binDir);
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    const missingInBin = [];
+    const missingInNpm = [];
+    const differing = [];
+    for (const k of keys) {
+      if (!(k in b)) missingInBin.push(k);
+      else if (!(k in a)) missingInNpm.push(k);
+      else if (a[k] !== b[k]) differing.push(k);
+    }
+
+    const problems = missingInBin.length + missingInNpm.length + differing.length;
+    console.log(`\nParity: ${Object.keys(a).length} npm files vs ${Object.keys(b).length} binary files.`);
+    if (missingInBin.length) console.log(`  Missing in binary: ${missingInBin.join(', ')}`);
+    if (missingInNpm.length) console.log(`  Missing in npm:    ${missingInNpm.join(', ')}`);
+    if (differing.length) console.log(`  Differing bytes:   ${differing.join(', ')}`);
+
+    if (problems > 0) {
+      console.error(`\nPARITY FAILED (${problems} discrepancies).`);
+      process.exit(1);
+    }
+    console.log('\nPARITY OK — npm and compiled binary produced byte-identical setup trees.');
+  } finally {
+    fs.rmSync(npmDir, { recursive: true, force: true });
+    fs.rmSync(binDir, { recursive: true, force: true });
   }
-
-  const problems = missingInBin.length + missingInNpm.length + differing.length;
-  console.log(`\nParity: ${Object.keys(a).length} npm files vs ${Object.keys(b).length} binary files.`);
-  if (missingInBin.length) console.log(`  Missing in binary: ${missingInBin.join(', ')}`);
-  if (missingInNpm.length) console.log(`  Missing in npm:    ${missingInNpm.join(', ')}`);
-  if (differing.length) console.log(`  Differing bytes:   ${differing.join(', ')}`);
-
-  fs.rmSync(npmDir, { recursive: true, force: true });
-  fs.rmSync(binDir, { recursive: true, force: true });
-
-  if (problems > 0) {
-    console.error(`\nPARITY FAILED (${problems} discrepancies).`);
-    process.exit(1);
-  }
-  console.log('\nPARITY OK — npm and compiled binary produced byte-identical setup trees.');
 }
 
 main();
