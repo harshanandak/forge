@@ -271,17 +271,33 @@ describe('shepherd acceptance §5', () => {
     expect(noResolve(res.actions)).toBe(true);
   });
 
-  test('comments: bot- and self-authored / resolved → not actionable (MERGE_READY)', async () => {
+  // Threads are classified BY MECHANISM: only RESOLVED or OUTDATED threads are
+  // non-actionable — author is irrelevant. All-resolved/outdated → MERGE_READY.
+  test('comments: only resolved / outdated threads → not actionable (MERGE_READY)', async () => {
     const s = scriptedAdapter([{
       required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
       comments: [
-        { author: 'coderabbitai', body: 'nit', isResolved: false },
-        { author: 'me-bot', body: 'self', isResolved: false },
         { author: 'bob', body: 'done', isResolved: true },
+        { author: 'coderabbitai', body: 'stale', isOutdated: true },
       ],
     }]);
     const res = await runShepherdPass({ ...BASE_CTX, self: 'me-bot', adapter: s.adapter });
     expect(res.state).toBe('MERGE_READY');
+  });
+
+  // #365 + agnosticism: an UNRESOLVED thread blocks regardless of author — a
+  // known review bot (CodeRabbit), a status/automation bot (github-actions), AND
+  // an UNKNOWN/unnamable bot all → NEEDS_REVIEW (fail-closed for unknowns).
+  test('comments: ANY unresolved thread → NEEDS_REVIEW (author-agnostic, fail-closed)', async () => {
+    for (const author of ['coderabbitai', 'github-actions', 'somenewbot[bot]']) {
+      const s = scriptedAdapter([{
+        required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+        comments: [{ author, body: 'open finding', isResolved: false }],
+      }]);
+      const res = await runShepherdPass({ ...BASE_CTX, self: 'me-bot', adapter: s.adapter });
+      expect(res.state).toBe('NEEDS_REVIEW');
+      expect(res.state).not.toBe('MERGE_READY');
+    }
   });
 
   test('comments: too many → NEEDS_REVIEW, capped sample', async () => {

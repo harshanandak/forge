@@ -353,13 +353,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(vercel.detailsUrl).toBe('https://vercel.com/x'); // targetUrl → detailsUrl
   });
 
-  test('readIssueComments returns author/body/createdAt from paginated GraphQL', async () => {
+  test('readIssueComments returns author/authorTypename/body/createdAt from paginated GraphQL', async () => {
     const page = JSON.stringify({
       data: { repository: { pullRequest: { comments: {
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
-          { author: { login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
-          { author: { login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
+          { author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
+          { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
         ],
       } } } },
     });
@@ -367,7 +367,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
     const adapter = new PrStateAdapter({ gh: run, git: run });
     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
     expect(comments).toHaveLength(2);
-    expect(comments[0]).toEqual({ author: 'sonarqubecloud', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
+    // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
+    expect(comments[0]).toEqual({ author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
+    expect(comments[1].authorTypename).toBe('User');
     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
   });
 });
