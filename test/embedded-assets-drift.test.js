@@ -33,7 +33,7 @@ function independentWalk(root, roots) {
     if (!fs.existsSync(abs)) continue;
     visit(abs, r.split(path.sep).join('/'));
   }
-  return out.sort();
+  return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 test('embed set == on-disk asset set (both directions)', () => {

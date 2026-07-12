@@ -25,6 +25,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const OUT_FILE = path.join(REPO_ROOT, 'lib', 'embedded-assets.generated.mjs');
 
+// Deterministic, locale-INDEPENDENT codepoint comparator. Locale-default sort would
+// diverge by machine locale and produce different embed bytes across the step-3
+// cross-compile targets, so sorting is pinned to codepoint order everywhere.
+const byteCompare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 /** True when the asset needs the executable bit restored on extraction (files-only embedding drops mode). */
 export function isExecutableAsset(relPosixPath) {
   return relPosixPath.endsWith('.sh') || relPosixPath.startsWith('.forge/hooks/');
@@ -35,7 +40,7 @@ function walk(absPath, relPath, out) {
   const stat = fs.lstatSync(absPath);
   if (stat.isSymbolicLink()) return;
   if (stat.isDirectory()) {
-    for (const entry of fs.readdirSync(absPath).sort()) {
+    for (const entry of fs.readdirSync(absPath).sort(byteCompare)) {
       walk(path.join(absPath, entry), `${relPath}/${entry}`, out);
     }
   } else if (stat.isFile()) {
@@ -51,7 +56,7 @@ export function collectAssetFiles(repoRoot = REPO_ROOT, roots = ASSET_ROOTS) {
     if (!fs.existsSync(abs)) continue;
     walk(abs, root.split(path.sep).join('/'), files);
   }
-  return [...new Set(files)].sort();
+  return [...new Set(files)].sort(byteCompare);
 }
 
 function render(files) {
