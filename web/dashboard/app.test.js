@@ -40,6 +40,24 @@ test('lifecyclePhase derives phase from real signals; claimed-open is UNKNOWN, n
   expect(app.lifecyclePhase({ status: 'open' })).toEqual({ idx: 1, label: 'planned' });
 });
 
+test('lifecyclePhase uses the REAL kernel stage when stage_runs supply current_stage (f61601ab)', () => {
+  // active stage → filled cells = index of that stage (prior stages done, this one running)
+  const dev = app.lifecyclePhase({ status: 'open', claimed_by: 'a', current_stage: 'dev', current_stage_status: 'active' });
+  expect(dev).toEqual({ idx: 1, label: 'dev', stage: 'dev', stageStatus: 'active' });
+  expect(dev.unknown).toBeUndefined(); // real stage → not the "unknown" guess
+  // completed stage → that stage counts as done too (idx = index + 1)
+  const val = app.lifecyclePhase({ status: 'open', claimed_by: 'a', current_stage: 'validate', current_stage_status: 'done' });
+  expect(val).toEqual({ idx: 3, label: 'validate', stage: 'validate', stageStatus: 'done' });
+  // verify is the last stage (index 5); completed → idx 6
+  expect(app.lifecyclePhase({ status: 'open', current_stage: 'verify', current_stage_status: 'done' }).idx).toBe(6);
+  // status 'done' still wins over any recorded stage
+  expect(app.lifecyclePhase({ status: 'done', current_stage: 'dev', current_stage_status: 'active' })).toEqual({ idx: 6, label: 'shipped' });
+  // a non-canonical stage string is ignored → falls back to the claimed 'unknown' guess
+  const bogus = app.lifecyclePhase({ status: 'open', claimed_by: 'a', current_stage: 'bogus' });
+  expect(bogus.unknown).toBe(true);
+  expect(bogus.label).toBe('in progress');
+});
+
 test('epicRollup includes a live count', () => {
   const kids = [{ status: 'open', claimed_by: 'a' }, { status: 'open', claimed_by: 'b' }, { status: 'open' }, { status: 'done' }];
   expect(app.epicRollup({ id: 'e' }, kids).live).toBe(2);
