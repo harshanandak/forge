@@ -26,10 +26,59 @@ describe('local Kernel broker contract', () => {
 		expect(calls).toEqual([{
 			command: 'git',
 			args: ['-C', projectRoot, 'rev-parse', '--git-common-dir'],
-			// Bounded timeout so a Windows git hang fails fast instead of wedging
-			// broker init (issue ba388d01).
-			options: { encoding: 'utf8', timeout: 5000 },
+			// Bounded timeout so a pathological Windows git hang fails fast instead
+			// of wedging broker init (issue ba388d01). 30s tolerates a legitimately
+			// slow git on a loaded CI runner while still capping a true wedge.
+			options: { encoding: 'utf8', timeout: 30000 },
 		}]);
+	});
+
+	test('resolveGitCommonDir falls back to <projectRoot>/.git when git times out (ETIMEDOUT is non-fatal)', () => {
+		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
+		const projectRoot = path.join(os.tmpdir(), 'forge-slow-git');
+		const warnings = [];
+
+		// Simulate the slow-CI git that exceeds the wall-clock bound: execFileSync
+		// throws an ETIMEDOUT error. This must NOT propagate — it would crash
+		// `forge remember` and every store-touching command.
+		const commonDir = resolveGitCommonDir(projectRoot, {
+			execFileSync: () => {
+				const error = new Error('spawnSync git ETIMEDOUT');
+				error.code = 'ETIMEDOUT';
+				throw error;
+			},
+			warn: (message) => warnings.push(message),
+		});
+
+		expect(commonDir).toBe(path.resolve(projectRoot, '.git'));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain('ETIMEDOUT');
+	});
+
+	test('resolveGitCommonDir falls back gracefully on a non-timeout git failure', () => {
+		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
+		const projectRoot = path.join(os.tmpdir(), 'forge-broken-git');
+
+		const commonDir = resolveGitCommonDir(projectRoot, {
+			execFileSync: () => {
+				throw new Error('git: command not found');
+			},
+			warn: () => {},
+		});
+
+		expect(commonDir).toBe(path.resolve(projectRoot, '.git'));
+	});
+
+	test('resolveGitCommonDir falls back when git returns an empty path instead of throwing', () => {
+		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
+		const projectRoot = path.join(os.tmpdir(), 'forge-empty-git');
+
+		const commonDir = resolveGitCommonDir(projectRoot, {
+			execFileSync: () => '   \n',
+			warn: () => {},
+		});
+
+		expect(commonDir).toBe(path.resolve(projectRoot, '.git'));
 	});
 
 	test('initializes SQLite-style WAL pragmas before applying Kernel migrations', async () => {
