@@ -8,7 +8,39 @@ the pre-merge gate (the embedded documentation-and-handoff gate in `/ship` and `
 ```bash
 forge shepherd <pr-number>
 forge shepherd <pr-number> --auto-rebase   # opt-in, default OFF
+forge shepherd <pr-number> --pull          # read-only: WHY it is blocked + what to fix
+forge shepherd <pr-number> --pull --json   # same payload as machine-readable JSON
+forge shepherd <pr-number> --bundle --json # read-only: the COMPLETE PR-state bundle
 ```
+
+## `--pull`: the actionable blocker payload
+
+`--pull` is a **strictly read-only** signal-gather. It computes the decision
+state via a dry-run pass (no rerun, no rebase, no merge, no thread resolution)
+and returns ONE bounded, **actionable-only** payload so an agent gets "everything
+blocking this PR + exactly what to fix" in a single call instead of running
+`gh pr checks`, `gh run view --log-failed`, GraphQL thread queries, and branch
+-protection lookups by hand. Default output is a compact human summary; `--json`
+emits the structured payload. Every field is something to ACT on — passing
+checks, resolved/outdated threads, and satisfied policy are omitted.
+
+| Field | Meaning |
+| --- | --- |
+| `state` / `summary` | Decision state + a one-line WHY (leads with the primary blocker). |
+| `mergeable` / `mergeStateStatus` | GitHub's raw merge signals (e.g. `BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`). |
+| `blockers[]` | Ordered `{type, detail}` list — the human-readable WHY. Types: `draft`, `conflict`, `check-failing`, `check-missing`, `check-skipped`, `check-pending`, `behind`, `changes-requested`, `review-required`, `unresolved-threads`, `blocked-unknown`, `unstable`. |
+| `requiredChecks` | Branch-protection required set classified vs what the PR produced: `missing` (never reported), `skipped` (a **required** check that resolved SKIPPED — NOT a pass to branch protection; this is why an all-green PR can stay `BLOCKED`), `pending`, `failing`. Omitted entirely when the required set is all green. |
+| `failures[]` | Per failed check: `name`, `conclusion`, `jobUrl`, the exact failure **excerpt** pulled from the job log, and `alsoFailedOn` (matrix duplicates collapse to one). |
+| `pendingChecks[]` | Names of checks still running. |
+| `reviewThreads[]` | Every UNRESOLVED, non-outdated thread from a human or a review bot (CodeRabbit et al.): `file`, `line`, `author`, `body`, `threadId`, `commentId`. Never the shepherd's own or resolved threads. |
+| `behind` | Commits behind base (present only when > 0). |
+| `conflicts` | `{conflicted, files[]}` — present only when a merge would conflict. |
+| `reviewDecision` | Present only when actionable (`CHANGES_REQUESTED` / `REVIEW_REQUIRED`); `APPROVED` is omitted. |
+| `draft` | Present only when the PR is a draft. |
+| `truncated` | Flags when `failures`/`reviewThreads` were capped for size. |
+
+`--bundle --json` is the sibling COMPLETE (not-only-actionable) read-only state
+bundle; `--pull` and `--bundle` are mutually exclusive.
 
 ## Why it is a utility, not a stage
 
