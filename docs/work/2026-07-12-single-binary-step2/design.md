@@ -35,6 +35,22 @@ manifest-path → blob and NEVER derives paths from embedded names (guidance #2)
 
 ### Extraction detail (proven in a real compiled binary)
 
+- **Per-user cache dir, not shared tmp** (reliability MAJOR #2): assets extract to
+  `%LOCALAPPDATA%\forge\assets-<version>` (Windows) / `$XDG_CACHE_HOME|~/.cache/forge/…`
+  (POSIX, `0o700`), NOT `os.tmpdir()`. A world-writable tmp would let a local attacker
+  pre-plant the path with a valid sentinel + malicious `.forge/hooks/*` that setup would
+  install.
+- **Atomic + concurrency-safe** (reliability MAJOR #1): extraction writes all files + the
+  sentinel into a private `mkdtempSync` sibling, then `renameSync`s it into the final
+  version-stamped path in ONE step. A half-written temp never acquires the final name, so
+  a crash mid-extract or a racing second process can never observe/bless a partial dir,
+  and no process `rmSync`es a dir another is reading. If the final path already exists
+  (another process won), we discard our temp and adopt theirs.
+- **Real completeness check** (hardening): after extraction, `assertAllPresent` stats each
+  expected relpath and asserts non-empty (replaces the near-tautological count check),
+  throwing the list of any missing.
+- **Traversal guard** (hardening): `extractEmbeddedAssets` rejects any manifest key that is
+  absolute or contains a `..` segment before writing.
 - `fs.writeFileSync(out, fs.readFileSync(embeddedPath))` — NOT `copyFileSync`: Bun's
   embedded `/$bunfs/…` (`B:/~BUN/root/…`) source paths support `readFileSync` but the
   copyfile syscall ENOENTs on them. Binary buffer copy → no line-ending translation.

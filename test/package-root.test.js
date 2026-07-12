@@ -103,3 +103,17 @@ test('extractEmbeddedAssets() writes every asset preserving relative paths and r
 
   fs.rmSync(workDir, { recursive: true, force: true });
 });
+
+test('extractEmbeddedAssets() refuses unsafe manifest keys (traversal / absolute)', () => {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-unsafe-'));
+  const src = path.join(workDir, 'a.md');
+  fs.writeFileSync(src, 'x');
+  const destDir = path.join(workDir, 'dest');
+
+  expect(() => extractEmbeddedAssets(destDir, { '../escape.md': src })).toThrow(/unsafe/i);
+  expect(() => extractEmbeddedAssets(destDir, { 'a/../../escape.md': src })).toThrow(/unsafe/i);
+  const abs = process.platform === 'win32' ? 'C:\\evil.md' : '/evil.md';
+  expect(() => extractEmbeddedAssets(destDir, { [abs]: src })).toThrow(/unsafe/i);
+
+  fs.rmSync(workDir, { recursive: true, force: true });
+});

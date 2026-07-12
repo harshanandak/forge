@@ -4196,8 +4196,9 @@ async function main() {
         process.exitCode = 1;
       }
     } else {
-      // `forge docs` reads packaged docs; route through the asset root so the
-      // embedded (TOOLCHAIN/VALIDATION) topics resolve in a compiled binary too.
+      // `forge docs` reads packaged docs; route through the asset root so any
+      // embedded topic resolves in a compiled binary too. (Full docs/ embedding
+      // for arbitrary topics is deferred to step 3 — see the design note.)
       const result = getTopicContent(topic, getPackageRoot(packageDir));
       if (result.error) {
         console.error(`  Error: ${result.error}`);
