@@ -156,6 +156,14 @@ describe('lease-enforcer computeLeaseExpiry', () => {
 		expect(computeLeaseExpiry('not-a-date', 1000)).toBeNull();
 	});
 
+	test('returns null (no RangeError) when claimed_at + ttl overflows the Date range', () => {
+		// A fat-fingered FORGE_LEASE_TTL_MS pushes base + ttl past ±8.64e15 ms, which would
+		// make new Date(...).toISOString() throw — must degrade to null instead.
+		expect(() => computeLeaseExpiry(NOW, Number.MAX_SAFE_INTEGER)).not.toThrow();
+		expect(computeLeaseExpiry(NOW, Number.MAX_SAFE_INTEGER)).toBeNull();
+		expect(computeLeaseExpiry(NOW, 8.64e15)).toBeNull();
+	});
+
 	test('DEFAULT_LEASE_TTL_MS is a positive finite duration', () => {
 		expect(Number.isFinite(DEFAULT_LEASE_TTL_MS)).toBe(true);
 		expect(DEFAULT_LEASE_TTL_MS).toBeGreaterThan(0);
