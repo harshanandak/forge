@@ -1,6 +1,9 @@
 const { describe, expect, test } = require('bun:test');
 
 const {
+	DEFAULT_LEASE_TTL_MS,
+	buildClaimRow,
+	computeLeaseExpiry,
 	isLeaseExpired,
 	isValidExpiresAt,
 	planClaimAcquisition,
@@ -131,6 +134,64 @@ describe('lease-enforcer planClaimAcquisition', () => {
 		expect(plan.action).toBe('reclaim');
 		expect(plan.supersede).toEqual({ claimId: 'claim-stale', toState: 'reclaimable' });
 		expect(plan.claim).toMatchObject({ id: 'claim-issue-1-A', issue_id: 'issue-1', state: 'active' });
+	});
+});
+
+describe('lease-enforcer computeLeaseExpiry', () => {
+	test('derives claimed_at + ttl in canonical ISO form', () => {
+		const expiry = computeLeaseExpiry(NOW, 60 * 60 * 1000);
+		expect(expiry).toBe('2026-06-18T01:00:00.000Z');
+		expect(isValidExpiresAt(expiry)).toBe(true);
+	});
+
+	test('returns null for an absent, zero, negative, or non-finite ttl (never expires)', () => {
+		expect(computeLeaseExpiry(NOW, null)).toBeNull();
+		expect(computeLeaseExpiry(NOW, undefined)).toBeNull();
+		expect(computeLeaseExpiry(NOW, 0)).toBeNull();
+		expect(computeLeaseExpiry(NOW, -5)).toBeNull();
+		expect(computeLeaseExpiry(NOW, Number.NaN)).toBeNull();
+	});
+
+	test('returns null when claimed_at is unparseable', () => {
+		expect(computeLeaseExpiry('not-a-date', 1000)).toBeNull();
+	});
+
+	test('DEFAULT_LEASE_TTL_MS is a positive finite duration', () => {
+		expect(Number.isFinite(DEFAULT_LEASE_TTL_MS)).toBe(true);
+		expect(DEFAULT_LEASE_TTL_MS).toBeGreaterThan(0);
+	});
+});
+
+describe('lease-enforcer buildClaimRow expires_at derivation', () => {
+	test('derives expires_at from the event lease_ttl_ms + claimed_at when no explicit expires_at', () => {
+		const event = claimEvent({ payload: { issue_id: 'issue-1' }, lease_ttl_ms: 60 * 60 * 1000 });
+		const row = buildClaimRow(event, NOW);
+		expect(row.expires_at).toBe('2026-06-18T01:00:00.000Z');
+		expect(row.claimed_at).toBe(NOW);
+	});
+
+	test('an explicit expires_at (from --expires) wins over the ttl', () => {
+		const event = claimEvent({
+			payload: { issue_id: 'issue-1', expires_at: '2026-06-18T02:30:00.000Z' },
+			lease_ttl_ms: 60 * 60 * 1000,
+		});
+		expect(buildClaimRow(event, NOW).expires_at).toBe('2026-06-18T02:30:00.000Z');
+	});
+
+	test('no ttl and no explicit expires_at keeps the historical null (never-expiring) default', () => {
+		const event = claimEvent({ payload: { issue_id: 'issue-1' } });
+		expect(buildClaimRow(event, NOW).expires_at).toBeNull();
+	});
+
+	test('carries session_id and worktree_id through from the event', () => {
+		const event = claimEvent({
+			payload: { issue_id: 'issue-1' },
+			session_id: 'sess-1',
+			worktree_id: 'wt-1',
+		});
+		const row = buildClaimRow(event, NOW);
+		expect(row.session_id).toBe('sess-1');
+		expect(row.worktree_id).toBe('wt-1');
 	});
 });
 
