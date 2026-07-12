@@ -8,6 +8,10 @@ const {
   jobIdFromUrl,
   dedupeFailures,
   buildReviewThreads,
+  classifyRequiredChecks,
+  pendingCheckNames,
+  computeBlockers,
+  renderPullSummary,
   buildPullPayload,
   gatherPullSignal,
 } = require('../lib/pr-pull');
@@ -180,6 +184,176 @@ describe('buildReviewThreads', () => {
   });
 });
 
+describe('classifyRequiredChecks (required-vs-produced)', () => {
+  const green = (name) => ({ name, status: 'COMPLETED', conclusion: 'SUCCESS' });
+  const fail = (name) => ({ name, status: 'COMPLETED', conclusion: 'FAILURE' });
+  const skip = (name) => ({ name, status: 'COMPLETED', conclusion: 'SKIPPED' });
+  const running = (name) => ({ name, status: 'IN_PROGRESS', conclusion: '' });
+
+  test('a required context that never reported is MISSING', () => {
+    const out = classifyRequiredChecks([green('Lint')], ['Lint', 'CodeQL']);
+    expect(out.missing).toEqual(['CodeQL']);
+    expect(out.skipped).toEqual([]);
+  });
+
+  test('a required context that only SKIPPED is a policy-block (the all-green-but-BLOCKED cause)', () => {
+    const out = classifyRequiredChecks([skip('Cross-OS Gate'), green('Lint')], ['Cross-OS Gate', 'Lint']);
+    expect(out.skipped).toEqual(['Cross-OS Gate']);
+    expect(out.failing).toEqual([]);
+    expect(out.missing).toEqual([]);
+  });
+
+  test('failing beats pending beats skipped when a matrix reports the same context multiple times', () => {
+    const checks = [skip('Gate'), running('Gate'), fail('Gate')];
+    expect(classifyRequiredChecks(checks, ['Gate']).failing).toEqual(['Gate']);
+    expect(classifyRequiredChecks([skip('Gate'), running('Gate')], ['Gate']).pending).toEqual(['Gate']);
+  });
+
+  test('a genuinely green required check appears in NONE of the actionable buckets', () => {
+    const out = classifyRequiredChecks([green('Lint'), skip('Lint')], ['Lint']);
+    expect(out.missing).toEqual([]);
+    expect(out.skipped).toEqual([]);
+    expect(out.pending).toEqual([]);
+    expect(out.failing).toEqual([]);
+  });
+
+  test('a null (unreadable) required set is flagged, not guessed', () => {
+    const out = classifyRequiredChecks([green('Lint')], null);
+    expect(out.unreadable).toBe(true);
+  });
+});
+
+describe('pendingCheckNames', () => {
+  test('returns unique names of only the in-flight checks', () => {
+    const checks = [
+      { name: 'a', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'b', status: 'IN_PROGRESS', conclusion: '' },
+      { name: 'b', status: 'QUEUED', conclusion: '' },
+      { name: 'c', status: 'COMPLETED', conclusion: 'FAILURE' },
+    ];
+    expect(pendingCheckNames(checks)).toEqual(['b']);
+  });
+});
+
+describe('computeBlockers (the human-readable WHY)', () => {
+  test('surfaces unresolved review threads as a blocker (the live #353 cause)', () => {
+    const blockers = computeBlockers({
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      unresolvedThreadCount: 2,
+    });
+    const types = blockers.map((b) => b.type);
+    expect(types).toContain('unresolved-threads');
+    // no phantom blockers for things that are fine
+    expect(types).not.toContain('draft');
+    expect(types).not.toContain('behind');
+  });
+
+  test('a SKIPPED required check produces an explicit policy-block blocker', () => {
+    const blockers = computeBlockers({
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      requiredClass: { missing: [], skipped: ['Cross-OS Gate'], pending: [], failing: [] },
+    });
+    expect(blockers.some((b) => b.type === 'check-skipped')).toBe(true);
+  });
+
+  test('behind-base, conflicts, draft, and changes-requested each surface', () => {
+    expect(computeBlockers({ mergeStateStatus: 'BEHIND', behind: 3 }).some((b) => b.type === 'behind')).toBe(true);
+    expect(computeBlockers({ mergeStateStatus: 'DIRTY', mergeable: 'CONFLICTING', conflicts: { conflicted: true, files: ['a.js'] } }).some((b) => b.type === 'conflict')).toBe(true);
+    expect(computeBlockers({ mergeStateStatus: 'BLOCKED', draft: true }).some((b) => b.type === 'draft')).toBe(true);
+    expect(computeBlockers({ mergeStateStatus: 'BLOCKED', reviewDecision: 'CHANGES_REQUESTED' }).some((b) => b.type === 'changes-requested')).toBe(true);
+  });
+
+  test('APPROVED review decision is NOT a blocker (actionable-only)', () => {
+    const blockers = computeBlockers({ mergeStateStatus: 'CLEAN', reviewDecision: 'APPROVED' });
+    expect(blockers.some((b) => b.type === 'changes-requested' || b.type === 'review-required')).toBe(false);
+  });
+
+  test('BLOCKED with no derivable cause still emits an explicit "blocked-unknown" so it is never invisible', () => {
+    const blockers = computeBlockers({ mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED' });
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0].type).toBe('blocked-unknown');
+  });
+
+  test('a clean, mergeable PR has zero blockers', () => {
+    expect(computeBlockers({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' })).toEqual([]);
+  });
+
+  test('a predicted conflict with an empty files list still fires a conflict blocker (payload/blocker consistency)', () => {
+    // conflicts.conflicted is true but files is empty AND mergeable/status do not
+    // literally say CONFLICTING/DIRTY — the blocker must still fire so the
+    // payload's conflicts object and blockers[] never disagree.
+    const blockers = computeBlockers({
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      conflicts: { conflicted: true, files: [] },
+    });
+    const conflict = blockers.find((b) => b.type === 'conflict');
+    expect(conflict).toBeDefined();
+    expect(conflict.detail).toMatch(/conflict/i);
+  });
+
+  test('BEHIND status with no derivable commit count still surfaces a fallback blocker', () => {
+    // The #363 edge: mergeStateStatus=BEHIND but `behind` is unavailable (0) —
+    // the PR is not mergeable, so it must not report "none detected".
+    const blockers = computeBlockers({ mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', behind: 0 });
+    expect(blockers.length).toBeGreaterThan(0);
+  });
+
+  test('unreadable required checks (branch-protection 403) surface as an explicit blocker', () => {
+    const blockers = computeBlockers({
+      mergeable: 'UNKNOWN', mergeStateStatus: 'BLOCKED',
+      requiredClass: { missing: [], skipped: [], pending: [], failing: [], unreadable: true },
+    });
+    expect(blockers.some((b) => b.type === 'check-required-unreadable')).toBe(true);
+  });
+});
+
+describe('renderPullSummary', () => {
+  test('renders the merge state, numbered blockers, and thread locations', () => {
+    const text = renderPullSummary({
+      pr: '353', state: 'NEEDS_REVIEW', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      blockers: [{ type: 'unresolved-threads', detail: '2 unresolved review thread(s) must be resolved before merge (see reviewThreads[]).' }],
+      failures: [],
+      reviewThreads: [{ file: 'lib/x.js', line: 44, author: 'coderabbitai', body: 'guard null' }],
+    });
+    expect(text).toContain('PR #353');
+    expect(text).toContain('mergeStateStatus=BLOCKED');
+    expect(text).toContain('[unresolved-threads]');
+    expect(text).toContain('lib/x.js:44');
+    expect(text).toContain('coderabbitai');
+  });
+});
+
+describe('buildPullPayload (extended actionable-only fields)', () => {
+  test('omits reviewDecision when APPROVED, includes it when CHANGES_REQUESTED', () => {
+    const approved = buildPullPayload({ state: 'PENDING', summary: 's', reviewDecision: 'APPROVED', failures: [], reviewThreads: [] });
+    expect(approved.reviewDecision).toBeUndefined();
+    const changes = buildPullPayload({ state: 'PENDING', summary: 's', reviewDecision: 'CHANGES_REQUESTED', failures: [], reviewThreads: [] });
+    expect(changes.reviewDecision).toBe('CHANGES_REQUESTED');
+  });
+
+  test('omits the requiredChecks block entirely when the required set is all green', () => {
+    const payload = buildPullPayload({
+      state: 'MERGE_READY', summary: 's',
+      requiredChecks: { missing: [], skipped: [], pending: [], failing: [], unreadable: false },
+      failures: [], reviewThreads: [],
+    });
+    expect(payload.requiredChecks).toBeUndefined();
+  });
+
+  test('includes requiredChecks + behind + conflicts only when actionable', () => {
+    const payload = buildPullPayload({
+      state: 'ESCALATE', summary: 's',
+      requiredChecks: { missing: [], skipped: ['Gate'], pending: [], failing: [], unreadable: false },
+      behind: 4,
+      conflicts: { conflicted: true, files: ['a.js', 'b.js'] },
+      failures: [], reviewThreads: [],
+    });
+    expect(payload.requiredChecks.skipped).toEqual(['Gate']);
+    expect(payload.behind).toBe(4);
+    expect(payload.conflicts.files).toEqual(['a.js', 'b.js']);
+  });
+});
+
 describe('buildPullPayload', () => {
   test('assembles the compact shape and enforces caps + truncation flags', () => {
     const failures = Array.from({ length: 15 }, (_, i) => ({
@@ -318,5 +492,108 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     });
     expect(payload.failures.length).toBe(1);
     expect(payload.failures[0].excerpt).toBe('');
+  });
+
+  test('surfaces mergeState, blockers, failing-required + unresolved-threads together', async () => {
+    const { adapter, runGh, runPass } = makeCtx();
+    const payload = await gatherPullSignal({
+      pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh, runPass, self: 'me',
+    });
+    expect(payload.mergeStateStatus).toBe('BLOCKED');
+    expect(payload.mergeable).toBe('MERGEABLE');
+    const types = payload.blockers.map((b) => b.type);
+    expect(types).toContain('check-failing'); // required matrix checks are FAILURE
+    expect(types).toContain('unresolved-threads'); // the CodeRabbit thread
+    expect(payload.requiredChecks.failing).toContain('test (ubuntu, 20)');
+  });
+
+  test('models the live #353 case: all-green required + BLOCKED + unresolved CodeRabbit thread', async () => {
+    // All required checks green (incl. a matrix that reports twice), NOT behind,
+    // reviewDecision empty, but 2 unresolved CodeRabbit threads → BLOCKED by
+    // required-conversation-resolution. The payload must name that cause and the threads.
+    const checks = [
+      { name: 'CodeQL', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'Cross-OS Gate', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'Cross-OS Gate', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'Beads Integration', status: 'COMPLETED', conclusion: 'SKIPPED' }, // not required → ignored
+    ];
+    const threads = [
+      { threadId: 'PRRT_a', path: 'lib/workflow/stage-transition.js', line: 44, isResolved: false, isOutdated: false, comments: [{ author: 'coderabbitai', body: 'Functional Correctness | Minor', commentId: '111' }] },
+      { threadId: 'PRRT_b', path: 'lib/workflow/stage-transition.js', line: 77, isResolved: false, isOutdated: false, comments: [{ author: 'coderabbitai', body: 'Data Integrity | Major', commentId: '222' }] },
+    ];
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: null, isDraft: false, checks, threads: [] }; },
+      async readRequiredChecks() { return ['CodeQL', 'Cross-OS Gate']; },
+      async readDivergence() { return { behind: 0, ahead: 2 }; },
+      async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
+      async readComments() { return threads; },
+    };
+    const payload = await gatherPullSignal({
+      pr: '353', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'NEEDS_REVIEW', reason: 'threads' }), self: 'me',
+    });
+    expect(payload.mergeStateStatus).toBe('BLOCKED');
+    // No required-check block: every required context is green → actionable-only omits it.
+    expect(payload.requiredChecks).toBeUndefined();
+    // The one and only blocker is the unresolved threads — named explicitly.
+    expect(payload.blockers.map((b) => b.type)).toEqual(['unresolved-threads']);
+    expect(payload.reviewThreads).toHaveLength(2);
+    expect(payload.reviewThreads[0]).toMatchObject({ file: 'lib/workflow/stage-transition.js', line: 44, author: 'coderabbitai', threadId: 'PRRT_a', commentId: '111' });
+    expect(payload.behind).toBeUndefined(); // not behind → omitted
+  });
+
+  test('behind base → a behind blocker with the commit count', async () => {
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', checks: [], threads: [] }; },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { return { behind: 5, ahead: 1 }; },
+      async readComments() { return []; },
+    };
+    const payload = await gatherPullSignal({
+      pr: '9', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'ESCALATE', reason: 'behind' }), self: 'me',
+    });
+    expect(payload.behind).toBe(5);
+    expect(payload.blockers.some((b) => b.type === 'behind')).toBe(true);
+  });
+
+  test('predicted merge conflicts → a conflict blocker listing the files', async () => {
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [], threads: [] }; },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async detectConflicts() { return { supported: true, conflicted: true, files: ['lib/a.js', 'lib/b.js'] }; },
+      async readComments() { return []; },
+    };
+    const payload = await gatherPullSignal({
+      pr: '9', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'ESCALATE', reason: 'conflict' }), self: 'me',
+    });
+    expect(payload.conflicts.files).toEqual(['lib/a.js', 'lib/b.js']);
+    expect(payload.blockers.some((b) => b.type === 'conflict')).toBe(true);
+  });
+
+  test('a skipped REQUIRED check surfaces as the policy-block cause even when the rollup looks green', async () => {
+    const checks = [
+      { name: 'CodeQL', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'Cross-OS Gate', status: 'COMPLETED', conclusion: 'SKIPPED' },
+    ];
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readRequiredChecks() { return ['CodeQL', 'Cross-OS Gate']; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async readComments() { return []; },
+    };
+    const payload = await gatherPullSignal({
+      pr: '9', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'ESCALATE', reason: 'skipped required' }), self: 'me',
+    });
+    expect(payload.requiredChecks.skipped).toEqual(['Cross-OS Gate']);
+    expect(payload.blockers.some((b) => b.type === 'check-skipped')).toBe(true);
   });
 });
