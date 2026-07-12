@@ -277,6 +277,34 @@ describe('computeBlockers (the human-readable WHY)', () => {
   test('a clean, mergeable PR has zero blockers', () => {
     expect(computeBlockers({ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' })).toEqual([]);
   });
+
+  test('a predicted conflict with an empty files list still fires a conflict blocker (payload/blocker consistency)', () => {
+    // conflicts.conflicted is true but files is empty AND mergeable/status do not
+    // literally say CONFLICTING/DIRTY — the blocker must still fire so the
+    // payload's conflicts object and blockers[] never disagree.
+    const blockers = computeBlockers({
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      conflicts: { conflicted: true, files: [] },
+    });
+    const conflict = blockers.find((b) => b.type === 'conflict');
+    expect(conflict).toBeDefined();
+    expect(conflict.detail).toMatch(/conflict/i);
+  });
+
+  test('BEHIND status with no derivable commit count still surfaces a fallback blocker', () => {
+    // The #363 edge: mergeStateStatus=BEHIND but `behind` is unavailable (0) —
+    // the PR is not mergeable, so it must not report "none detected".
+    const blockers = computeBlockers({ mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', behind: 0 });
+    expect(blockers.length).toBeGreaterThan(0);
+  });
+
+  test('unreadable required checks (branch-protection 403) surface as an explicit blocker', () => {
+    const blockers = computeBlockers({
+      mergeable: 'UNKNOWN', mergeStateStatus: 'BLOCKED',
+      requiredClass: { missing: [], skipped: [], pending: [], failing: [], unreadable: true },
+    });
+    expect(blockers.some((b) => b.type === 'check-required-unreadable')).toBe(true);
+  });
 });
 
 describe('renderPullSummary', () => {
