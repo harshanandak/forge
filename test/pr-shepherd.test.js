@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { runShepherdPass, TERMINAL_STATES } = require('../lib/pr-shepherd');
+const { runShepherdPass, TERMINAL_STATES, isFailed, isGreen } = require('../lib/pr-shepherd');
 
 /**
  * Build a fake pr-state adapter from a declarative spec. Every mutating action
@@ -312,5 +312,18 @@ describe('runShepherdPass — bounded pass state machine', () => {
     expect(/\.beads\b/i.test(src)).toBe(false);
     expect(/\bdolt\b/i.test(src)).toBe(false);
     expect(/gh pr merge/.test(src)).toBe(false);
+  });
+});
+
+describe('isFailed covers StatusContext error states (Vercel/Netlify)', () => {
+  test('ERROR (a StatusContext failure state) counts as failed', () => {
+    expect(isFailed({ conclusion: 'ERROR' })).toBe(true);
+    expect(isFailed({ conclusion: 'STARTUP_FAILURE' })).toBe(true);
+    expect(isFailed({ conclusion: 'FAILURE' })).toBe(true);
+  });
+  test('SUCCESS / PENDING are not failures', () => {
+    expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
+    expect(isFailed({ conclusion: 'PENDING' })).toBe(false);
+    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(true);
   });
 });
