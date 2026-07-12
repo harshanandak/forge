@@ -372,4 +372,72 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(comments[1].authorTypename).toBe('User');
     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
   });
+
+  test('readReviews constructs a GraphQL request and keeps the LATEST review per author with commitOid', async () => {
+    const page = JSON.stringify({
+      data: { repository: { pullRequest: { reviews: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [
+          // Oldest→newest: coderabbitai's second review supersedes its first.
+          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
+          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
+          { author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+        ],
+      } } } },
+    });
+    const { run, calls } = makeRunner([['reviews(first', page]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const reviews = await adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' });
+
+    // Latest-per-author: coderabbitai collapses to its newer (second) review.
+    expect(reviews).toHaveLength(2);
+    const cr = reviews.find((r) => r.author === 'coderabbitai');
+    expect(cr).toEqual({ author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
+    const alice = reviews.find((r) => r.author === 'alice');
+    expect(alice.commitOid).toBe('head-sha');
+    expect(alice.authorTypename).toBe('User');
+    // A GraphQL request was constructed (not a `gh pr view`).
+    expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+  });
+
+  test('readReviews paginates until hasNextPage is false', async () => {
+    let call = 0;
+    const run = (cmd, args) => {
+      const joined = [cmd, ...args].join(' ');
+      if (!joined.includes('reviews(first')) return '';
+      call += 1;
+      if (call === 1) {
+        return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+          pageInfo: { hasNextPage: true, endCursor: 'CUR' },
+          nodes: [{ author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+        } } } } });
+      }
+      return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+      } } } } });
+    };
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const reviews = await adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' });
+    expect(call).toBe(2); // followed the cursor
+    expect(reviews.map((r) => r.author).sort()).toEqual(['bot-a', 'bot-b']);
+  });
+
+  test('readHeadCommitTime parses the head commit committedDate to epoch ms', async () => {
+    const iso = '2026-07-12T10:00:00Z';
+    const { run, calls } = makeRunner([['.commits[-1].committedDate', iso]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const t = await adapter.readHeadCommitTime({ pr: '7' });
+    expect(t).toBe(Date.parse(iso));
+    // Requests the commits field with a jq projection (not the whole PR).
+    expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('--json commits'))).toBe(true);
+  });
+
+  test('readHeadCommitTime returns null for an invalid or unreadable value', async () => {
+    const bad = makeRunner([['.commits[-1].committedDate', 'not-a-date']]);
+    expect(await new PrStateAdapter({ gh: bad.run, git: bad.run }).readHeadCommitTime({ pr: '7' })).toBeNull();
+    // Empty output (e.g. an unreadable/edge PR) → null, never NaN.
+    const empty = makeRunner([]);
+    expect(await new PrStateAdapter({ gh: empty.run, git: empty.run }).readHeadCommitTime({ pr: '7' })).toBeNull();
+  });
 });
