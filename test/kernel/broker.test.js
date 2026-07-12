@@ -26,7 +26,9 @@ describe('local Kernel broker contract', () => {
 		expect(calls).toEqual([{
 			command: 'git',
 			args: ['-C', projectRoot, 'rev-parse', '--git-common-dir'],
-			options: { encoding: 'utf8' },
+			// Bounded timeout so a Windows git hang fails fast instead of wedging
+			// broker init (issue ba388d01).
+			options: { encoding: 'utf8', timeout: 5000 },
 		}]);
 	});
 

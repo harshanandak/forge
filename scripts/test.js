@@ -44,8 +44,13 @@ const isWindows = process.platform === 'win32';
 // `execFileSync` of git/bash that hangs during git mid-push state). Without this
 // ceiling such a hang blocks `forge push` indefinitely (observed ~50 min on
 // Windows, issue 8aef79e8). This kills the lane process so the push fails fast
-// instead of hanging forever. Override with FORGE_TEST_TIMEOUT_MS.
-const DEFAULT_TEST_COMMAND_TIMEOUT_MS = 15 * 60 * 1000;
+// instead of hanging forever.
+//
+// The default is a practical 5 minutes: a healthy full local suite completes
+// well under this, so a hang trips the ceiling in ~5 min instead of the old
+// 15-min wait that made `forge push` feel wedged. Raise it with
+// FORGE_TEST_TIMEOUT_MS for slow machines or intentionally long lanes.
+const DEFAULT_TEST_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Conventional shell exit code for a command terminated by a timeout.
 const TIMEOUT_EXIT_CODE = 124;

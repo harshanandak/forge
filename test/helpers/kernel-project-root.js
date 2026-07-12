@@ -28,7 +28,9 @@ function createKernelProjectRoots(prefix) {
 
   function makeProjectRoot() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    execFileSync('git', ['init', '-q'], { cwd: dir });
+    // Bounded timeout so a Windows git hang fails fast instead of stalling the
+    // suite until an outer ceiling kills it (issue ba388d01).
+    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: 5000 });
     tempDirs.push(dir);
     return dir;
   }
