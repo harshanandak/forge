@@ -114,6 +114,44 @@ describe('readKernelSnapshot — the flagship status snapshot reads the Kernel',
 	}, 20000);
 });
 
+describe('readKernelSnapshot — parked (backlog) work is a visible bucket', () => {
+	test('surfaces parked issues in a dedicated bucket, out of ready', async () => {
+		const { dir, kernelDeps } = makeKernelRepo();
+		try {
+			const readyId = await createIssue(dir, kernelDeps, 'Active work');
+			const parkedId = await createIssue(dir, kernelDeps, 'Parked idea');
+			// open -> backlog is a legal move; park the second issue.
+			const parked = await runIssueOperation('update', [parkedId, '--status', 'backlog'], dir, kernelDeps);
+			expect(parked.ok).toBe(true);
+
+			const snapshot = await readKernelSnapshot(dir, {
+				runIssueOperation: kernelReaderFor(kernelDeps),
+				env: {},
+			});
+
+			expect(Array.isArray(snapshot.parked)).toBe(true);
+			const parkedIds = snapshot.parked.map(issue => issue.id);
+			expect(parkedIds).toContain(parkedId);
+			// Parked work must never leak into ready — it needs a promote first.
+			expect(snapshot.ready.map(issue => issue.id)).not.toContain(parkedId);
+			expect(snapshot.ready.map(issue => issue.id)).toContain(readyId);
+		} finally {
+			cleanup(dir);
+		}
+	}, 20000);
+
+	test('the empty snapshot still exposes a parked bucket', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			runIssueOperation: async () => {
+				throw new Error('forced hard failure');
+			},
+			env: {},
+		});
+		expect(Array.isArray(snapshot.parked)).toBe(true);
+		expect(snapshot.parked).toEqual([]);
+	});
+});
+
 describe('readStatusSnapshot — backend routing', () => {
 	test('defaults to the Kernel reader when no backend is selected', async () => {
 		const calls = [];

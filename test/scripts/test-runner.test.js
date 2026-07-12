@@ -5,10 +5,12 @@ const path = require('node:path');
 
 const {
   ALWAYS_RUN_RISK_TEST_TARGETS,
+  DEFAULT_FULL_SUITE_TIMEOUT_MS,
   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
   buildTestExecutionPlan,
   classifyPushTests,
   resolveCommandTimeoutMs,
+  resolveFullSuiteTimeoutMs,
   runLocalValidationTests,
   runPrePushTests,
   runTestExecutionPlan,
@@ -509,6 +511,34 @@ describe('scripts/test pre-push runner', () => {
     expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: 'nonsense' })).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
     expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '-1' })).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
     expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '20000' })).toBe(20000);
+  });
+
+  test('the full-suite fallback lane uses the larger validation-aligned budget, not the fail-fast ceiling', () => {
+    const spawnSync = makeSpawnSync(0);
+    runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      // Unmapped pushed file → hasUnmappedFiles → full-suite fallback lane.
+      execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    const fullSuiteCall = spawnSync.calls.find(
+      (call) => call.command === 'node' && call.args[0] === 'scripts/test-full-suite.js'
+    );
+    expect(fullSuiteCall).toBeTruthy();
+    expect(fullSuiteCall.options.timeout).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+    expect(fullSuiteCall.options.timeout).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+    expect(fullSuiteCall.options.killSignal).toBe('SIGKILL');
+  });
+
+  test('resolveFullSuiteTimeoutMs defaults to the validation-aligned budget and honors valid overrides', () => {
+    expect(resolveFullSuiteTimeoutMs({})).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+    expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: 'nonsense' })).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+    expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '-1' })).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+    expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '7000' })).toBe(7000);
+    // The full-suite default must clear the targeted-lane fail-fast ceiling.
+    expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
   });
 
   test('a lane that times out fails fast with a non-zero status instead of hanging', () => {

@@ -410,6 +410,9 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
 .kcol__note { font-family: var(--mono); font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
 .phase .steps i.unk { border-style: dashed; background: transparent; opacity: .55; }
 .phase.dim .steps i.unk { border-color: var(--faint); }
+/* real current stage, in progress (from kernel stage_runs) — a half-filled, pulsing cell */
+.phase .steps i.act { background: linear-gradient(var(--text) 0 0) 0/100% 50% no-repeat; animation: phasePulse 1.6s ease-in-out infinite; }
+@keyframes phasePulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 .epicfocus { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; cursor: pointer; margin-left: auto; }
 .epicfocus:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
 .kcard--epic .kcard__id { margin-left: 0; }

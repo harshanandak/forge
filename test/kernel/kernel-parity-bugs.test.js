@@ -304,4 +304,80 @@ describe('Kernel parity bugs', () => {
 		expect(order.indexOf('ord-c')).toBeLessThan(order.indexOf('ord-b'));
 		expect(order.indexOf('ord-b')).toBeLessThan(order.indexOf('ord-a'));
 	});
+
+	// --- BUG: update mutation must enforce the status-transition graph -----------
+
+	async function currentStatus(id) {
+		const shown = await driver.issueOperation('show', [id], {}, config);
+		return shown.data.status;
+	}
+
+	test('update rejects an illegal status transition (backlog -> in_progress) and does not persist it', async () => {
+		await createIssue(['--id', 'tg-1', '--title', 'parked', '--type', 'task', '--status', 'backlog']);
+		const result = await broker.runIssueOperation(
+			'update',
+			['tg-1', '--status', 'in_progress'],
+			{ now: '2026-06-29T00:02:00.000Z', actor: 'tester' },
+		);
+		expect(result.ok).toBe(false);
+		expect(result.error.exit_code).toBe(6);
+		expect(result.error.code).toContain('VALIDATION');
+		// The illegal move was rejected before the write — status is still backlog.
+		expect(await currentStatus('tg-1')).toBe('backlog');
+	});
+
+	test('update rejects resurrecting a terminal issue (done -> open)', async () => {
+		await createIssue(['--id', 'tg-2', '--title', 'to close', '--type', 'task']);
+		// open -> in_progress -> review -> done are all legal moves.
+		await broker.runIssueOperation('update', ['tg-2', '--status', 'in_progress'], { now, actor: 'tester' });
+		await broker.runIssueOperation('update', ['tg-2', '--status', 'review'], { now, actor: 'tester' });
+		await broker.runIssueOperation('update', ['tg-2', '--status', 'done'], { now, actor: 'tester' });
+		expect(await currentStatus('tg-2')).toBe('done');
+
+		const result = await broker.runIssueOperation('update', ['tg-2', '--status', 'open'], { now, actor: 'tester' });
+		expect(result.ok).toBe(false);
+		expect(result.error.exit_code).toBe(6);
+		expect(await currentStatus('tg-2')).toBe('done');
+	});
+
+	test('update allows a legal status transition (open -> in_progress)', async () => {
+		await createIssue(['--id', 'tg-3', '--title', 'legal move', '--type', 'task']);
+		const result = await broker.runIssueOperation(
+			'update',
+			['tg-3', '--status', 'in_progress'],
+			{ now, actor: 'tester' },
+		);
+		expect(result.ok).toBe(true);
+		expect(await currentStatus('tg-3')).toBe('in_progress');
+	});
+
+	test('update with no status change (only other fields) is unaffected by the transition gate', async () => {
+		await createIssue(['--id', 'tg-4', '--title', 'parked', '--type', 'task', '--status', 'backlog']);
+		const result = await broker.runIssueOperation(
+			'update',
+			['tg-4', '--title', 'parked but renamed'],
+			{ now, actor: 'tester' },
+		);
+		expect(result.ok).toBe(true);
+		expect(await currentStatus('tg-4')).toBe('backlog');
+	});
+
+	// --- BUG: claim must not begin a parked (backlog) issue ----------------------
+
+	test('claim rejects a parked (backlog) issue — no backlog -> in_progress jump', async () => {
+		await createIssue(['--id', 'cl-1', '--title', 'parked idea', '--type', 'task', '--status', 'backlog']);
+		const result = await broker.runIssueOperation('claim', ['cl-1'], { now, actor: 'alice' });
+		expect(result.ok).toBe(false);
+		expect(result.error.exit_code).toBe(6);
+		expect(result.error.code).toContain('VALIDATION');
+		// No claim lease was minted for the parked issue.
+		const claims = await driver.queryAll('SELECT * FROM kernel_claims', config);
+		expect(claims).toHaveLength(0);
+	});
+
+	test('claim still succeeds for a workable (open) issue', async () => {
+		await createIssue(['--id', 'cl-2', '--title', 'ready work', '--type', 'task']);
+		const result = await broker.runIssueOperation('claim', ['cl-2'], { now, actor: 'alice' });
+		expect(result.ok).toBe(true);
+	});
 });
