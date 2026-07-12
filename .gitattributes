@@ -1,6 +1,17 @@
 # Enforce LF line endings on all text files
 * text=auto eol=lf
 
+# Single-binary embedded asset trees — force LF explicitly so the bytes Bun embeds
+# are identical on Windows dev boxes and Linux/macOS CI (step-3 cross-compile targets
+# all embed the same content). Placed BEFORE the binary rules so images still win.
+skills/** text eol=lf
+rules/** text eol=lf
+docs/** text eol=lf
+scripts/** text eol=lf
+.forge/hooks/** text eol=lf
+.claude/scripts/** text eol=lf
+AGENTS.md text eol=lf
+
 # Binary files — do not modify
 *.png binary
 *.jpg binary

@@ -59,6 +59,7 @@ const {
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
+const { getPackageRoot } = require('../lib/package-root');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 
@@ -4195,7 +4196,9 @@ async function main() {
         process.exitCode = 1;
       }
     } else {
-      const result = getTopicContent(topic, packageDir);
+      // `forge docs` reads packaged docs; route through the asset root so the
+      // embedded (TOOLCHAIN/VALIDATION) topics resolve in a compiled binary too.
+      const result = getTopicContent(topic, getPackageRoot(packageDir));
       if (result.error) {
         console.error(`  Error: ${result.error}`);
         process.exitCode = 1;
