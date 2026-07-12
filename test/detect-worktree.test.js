@@ -52,6 +52,40 @@ describe('detectWorktree', () => {
     expect(typeof result.inWorktree).toBe('boolean');
   });
 
+  test('degrades gracefully to { inWorktree: false } when the git spawn times out', () => {
+    const warnCalls = [];
+    const timeoutError = new Error('spawnSync git ETIMEDOUT');
+    timeoutError.code = 'ETIMEDOUT';
+    const throwingExec = () => {
+      throw timeoutError;
+    };
+
+    const result = detectWorktree('/some/dir', {
+      execFileSync: throwingExec,
+      warn: (message) => warnCalls.push(message),
+    });
+
+    expect(result).toEqual({ inWorktree: false });
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toContain('ETIMEDOUT');
+  });
+
+  test('bounds each git spawn with a timeout option', () => {
+    const seenOptions = [];
+    const fakeExec = (_cmd, _args, options) => {
+      seenOptions.push(options);
+      return 'main';
+    };
+
+    detectWorktree('/some/dir', { execFileSync: fakeExec });
+
+    expect(seenOptions.length).toBeGreaterThan(0);
+    for (const options of seenOptions) {
+      expect(typeof options.timeout).toBe('number');
+      expect(options.timeout).toBeGreaterThan(0);
+    }
+  });
+
   test('returns { inWorktree: false } from the main repo root', () => {
     // The main forge repo (not the worktree) — find it via git-common-dir
     const { execFileSync } = require('child_process');

@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
-const { bootstrapBeads, isRecoverableBeadsError } = require('../lib/beads-bootstrap');
+const { bootstrapBeads, isRecoverableBeadsError, resolveMainWorktree } = require('../lib/beads-bootstrap');
 
 function createMockSafeBeadsInit() {
   return (root, options) => {
@@ -357,6 +357,77 @@ describe('bootstrapBeads', () => {
       cmd: 'bd',
       args: ['backup', 'restore', path.resolve('/main', '.beads', 'backup')]
     });
+  });
+});
+
+describe('resolveMainWorktree', () => {
+  test('degrades gracefully to projectRoot when the git spawn times out', () => {
+    const warnCalls = [];
+    const timeoutError = new Error('spawnSync git ETIMEDOUT');
+    timeoutError.code = 'ETIMEDOUT';
+    const throwingExec = () => {
+      throw timeoutError;
+    };
+
+    const result = resolveMainWorktree('/worktree', throwingExec, {
+      warn: (message) => warnCalls.push(message),
+    });
+
+    expect(result).toBe('/worktree');
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toContain('ETIMEDOUT');
+  });
+
+  test('degrades gracefully to projectRoot on empty git output', () => {
+    const warnCalls = [];
+    const emptyExec = () => '';
+
+    const result = resolveMainWorktree('/worktree', emptyExec, {
+      warn: (message) => warnCalls.push(message),
+    });
+
+    expect(result).toBe('/worktree');
+    expect(warnCalls).toHaveLength(1);
+  });
+
+  test('bounds the git spawn with a timeout option', () => {
+    let seenOptions;
+    const fakeExec = (_cmd, _args, options) => {
+      seenOptions = options;
+      return '.git';
+    };
+
+    resolveMainWorktree('/worktree', fakeExec);
+
+    expect(typeof seenOptions.timeout).toBe('number');
+    expect(seenOptions.timeout).toBeGreaterThan(0);
+  });
+
+  test('bootstrapBeads falls back instead of throwing when git rev-parse times out', () => {
+    const warnCalls = [];
+    const timeoutError = new Error('spawnSync git ETIMEDOUT');
+    timeoutError.code = 'ETIMEDOUT';
+    const mockExec = (cmd, args) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') {
+        throw timeoutError;
+      }
+      throw new Error(`unexpected exec ${cmd}`);
+    };
+    const mockFs = {
+      // mainProjectRoot falls back to projectRoot itself, so beadsSource === beadsDest
+      existsSync: () => false,
+    };
+
+    const result = bootstrapBeads('/worktree', {
+      _exec: mockExec,
+      _fs: mockFs,
+      _platform: 'linux',
+      _warn: (message) => warnCalls.push(message),
+    });
+
+    expect(result).toEqual({ success: true, strategy: 'in-place', warning: null });
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toContain('ETIMEDOUT');
   });
 });
 
