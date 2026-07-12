@@ -46,27 +46,56 @@ const isWindows = process.platform === 'win32';
 // Windows, issue 8aef79e8). This kills the lane process so the push fails fast
 // instead of hanging forever.
 //
-// The default is a practical 5 minutes: a healthy full local suite completes
-// well under this, so a hang trips the ceiling in ~5 min instead of the old
-// 15-min wait that made `forge push` feel wedged. Raise it with
-// FORGE_TEST_TIMEOUT_MS for slow machines or intentionally long lanes.
+// The default is a practical 5 minutes for a single TARGETED lane: those run a
+// small, mapped subset that completes in seconds, so 5 min is comfortably a
+// fail-fast ceiling (not the old 15-min wait that made `forge push` feel
+// wedged). Raise it with FORGE_TEST_TIMEOUT_MS for slow machines.
 const DEFAULT_TEST_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Wall-clock budget for the FULL-SUITE fallback lane (`scripts/test-full-suite.js`),
+// which runs on package-level, unmapped, or zero-resolved changes. Unlike a
+// targeted lane, a healthy full suite legitimately takes 5-10 min, so the 5-min
+// fail-fast ceiling would kill a good-but-slow full run. Kept at 10 min to stay
+// aligned with the local-validation budget (VALIDATION_COMMAND_TIMEOUT_MS = 600000
+// in lib/commands/validate.js and its "long enough subprocess timeout for the
+// full local suite" regression test). FORGE_TEST_TIMEOUT_MS still overrides.
+const DEFAULT_FULL_SUITE_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Conventional shell exit code for a command terminated by a timeout.
 const TIMEOUT_EXIT_CODE = 124;
 
 /**
- * Resolves the per-lane wall-clock timeout, honoring FORGE_TEST_TIMEOUT_MS.
+ * Reads and validates the FORGE_TEST_TIMEOUT_MS override, if any.
+ *
+ * @param {NodeJS.ProcessEnv} env Environment to read the override from.
+ * @returns {number|null} The positive integer override, or null when unset/invalid.
+ */
+function readTimeoutOverride(env) {
+  const parsed = Number.parseInt(env.FORGE_TEST_TIMEOUT_MS, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Resolves the wall-clock timeout for a targeted/e2e/edge-case lane, honoring
+ * FORGE_TEST_TIMEOUT_MS.
  *
  * @param {NodeJS.ProcessEnv} [env=process.env] Environment to read the override from.
  * @returns {number} Timeout in milliseconds (defaults to DEFAULT_TEST_COMMAND_TIMEOUT_MS).
  */
 function resolveCommandTimeoutMs(env = process.env) {
-  const parsed = Number.parseInt(env.FORGE_TEST_TIMEOUT_MS, 10);
-  if (Number.isInteger(parsed) && parsed > 0) {
-    return parsed;
-  }
-  return DEFAULT_TEST_COMMAND_TIMEOUT_MS;
+  return readTimeoutOverride(env) ?? DEFAULT_TEST_COMMAND_TIMEOUT_MS;
+}
+
+/**
+ * Resolves the wall-clock budget for the full-suite fallback lane. An explicit
+ * FORGE_TEST_TIMEOUT_MS override wins; otherwise it uses the larger,
+ * validation-aligned budget so a healthy-but-slow full run is not failed fast.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env] Environment to read the override from.
+ * @returns {number} Timeout in milliseconds (defaults to DEFAULT_FULL_SUITE_TIMEOUT_MS).
+ */
+function resolveFullSuiteTimeoutMs(env = process.env) {
+  return readTimeoutOverride(env) ?? DEFAULT_FULL_SUITE_TIMEOUT_MS;
 }
 
 /**
@@ -323,13 +352,16 @@ function runTestExecutionPlan(plan, deps = {}) {
   const label = deps.label || 'tests';
   const timeout = resolveCommandTimeoutMs(env);
   const laneOptions = { env, killSignal: 'SIGKILL', timeout };
+  // The full-suite fallback gets a larger, validation-aligned budget so a
+  // healthy-but-slow full run is not failed fast by the targeted-lane ceiling.
+  const fullSuiteOptions = { env, killSignal: 'SIGKILL', timeout: resolveFullSuiteTimeoutMs(env) };
 
   console.log(`Running ${label} (${pkgManager})...`);
 
   try {
     if (plan.runFullSuite) {
       console.log(`  Mode: full suite (${plan.reason})`);
-      const status = runCommand('node', ['scripts/test-full-suite.js'], laneOptions, spawnSync);
+      const status = runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawnSync);
       if (status !== 0) return status;
     } else if (plan.testTargets.length > 0) {
       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
@@ -395,11 +427,13 @@ if (require.main === module) {
 
 module.exports = {
   ALWAYS_RUN_RISK_TEST_TARGETS,
+  DEFAULT_FULL_SUITE_TIMEOUT_MS,
   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
   buildTestExecutionPlan,
   classifyPushTests,
   detectPackageManager,
   resolveCommandTimeoutMs,
+  resolveFullSuiteTimeoutMs,
   runLocalValidationTests,
   runPrePushTests,
   runTestExecutionPlan,
