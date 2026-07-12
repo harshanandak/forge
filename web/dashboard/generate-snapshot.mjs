@@ -261,9 +261,65 @@ worktrees.forEach((w) => {
   w.archived = !op && !!mp;
 });
 
-const activeClaims = issues
-  .filter((i) => i.claimed_by && i.status === 'open')
-  .map((i) => ({ id: i.id, title: i.title, owner: i.claimed_by, priority: i.priority, updated_at: i.updated_at }));
+// ---- real workflow stage (f61601ab) ---------------------------------------
+// `forge issue list` omits current_stage, so read it per-issue with `forge show`
+// for the bounded open+claimed set — the only issues whose phase previously fell
+// back to the status+claim guess. Attaches current_stage/current_stage_status onto
+// the issue record so the client renders the REAL stage (unknown fallback stays
+// only while a claimed issue has no stage_run yet).
+const claimedOpen = issues.filter((i) => i.claimed_by && i.status === 'open');
+let stagePopulated = 0;
+claimedOpen.forEach((i) => {
+  const shown = tryRun(() => forge(['show', i.id, '--json']), null, `forge show ${String(i.id).slice(0, 8)}`);
+  const d = shown?.data;
+  if (d) {
+    i.current_stage = d.current_stage ?? null;
+    i.current_stage_status = d.current_stage_status ?? null;
+    if (i.current_stage) stagePopulated++;
+  }
+});
+
+// ---- live leases (7dc229d4 · forge claims) --------------------------------
+// Authoritative active-lease feed replaces inferring liveness from issue.claimed_by.
+// actor + claimed_at are real today; session_id / worktree_id / expires_at arrive
+// null until the kernel writes them (liveness-by-expiry lights up automatically).
+const PRANK = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
+const leaseRes = tryRun(() => forge(['claims', '--json']), null, 'forge claims');
+const leaseList = Array.isArray(leaseRes?.data?.claims) ? leaseRes.data.claims : null;
+const nowMs = Date.now();
+const leaseLiveness = (lease) => {
+  if (!lease.expires_at) return 'active'; // no expiry known yet (kernel not writing it)
+  return Date.parse(lease.expires_at) > nowMs ? 'live' : 'expired';
+};
+let activeClaims;
+if (leaseList) {
+  // One lease per issue (latest claimed_at wins if the single-active invariant ever
+  // breaks); keep only leases whose issue exists and is open — the "what's running" set.
+  const issueById = new Map(issues.map((i) => [i.id, i]));
+  const leaseByIssue = new Map();
+  for (const l of leaseList) {
+    const prev = leaseByIssue.get(l.issue_id);
+    if (!prev || Date.parse(l.claimed_at || 0) > Date.parse(prev.claimed_at || 0)) leaseByIssue.set(l.issue_id, l);
+  }
+  activeClaims = [...leaseByIssue.values()]
+    .map((l) => ({ l, issue: issueById.get(l.issue_id) }))
+    .filter(({ issue }) => issue && issue.status === 'open')
+    .map(({ l, issue }) => ({
+      id: issue.id, title: issue.title, owner: l.actor, priority: issue.priority, updated_at: issue.updated_at,
+      claimed_at: l.claimed_at ?? null, session_id: l.session_id ?? null,
+      worktree_id: l.worktree_id ?? null, expires_at: l.expires_at ?? null,
+      liveness: leaseLiveness(l),
+    }))
+    .sort((a, b) => (PRANK[a.priority] ?? 9) - (PRANK[b.priority] ?? 9));
+} else {
+  // Fallback for a kernel without `forge claims`: infer from issue.claimed_by.
+  activeClaims = claimedOpen.map((i) => ({
+    id: i.id, title: i.title, owner: i.claimed_by, priority: i.priority, updated_at: i.updated_at,
+    claimed_at: null, session_id: null, worktree_id: null, expires_at: null, liveness: 'active',
+  }));
+}
+const staleLeaseCount = activeClaims.filter((c) => c.liveness === 'expired').length;
+const leaseSourced = !!leaseList;
 
 // ---- Needs Attention (control surface, ranked) ----------------------------
 const needsAttention = [];
@@ -276,7 +332,8 @@ prs.forEach((p) => {
 });
 needsAttention.sort((a, b) => a.rank - b.rank);
 
-console.log(`  ops: ${worktrees.length} worktrees, ${prs.length} open PRs, ${mergedPrs.length} merged, ${activeClaims.length} active claims`);
+console.log(`  ops: ${worktrees.length} worktrees, ${prs.length} open PRs, ${mergedPrs.length} merged, ${activeClaims.length} active claims (${leaseSourced ? 'forge claims' : 'inferred'})`);
+console.log(`  stage_runs: ${stagePopulated}/${claimedOpen.length} claimed issues have a real current_stage · stale leases: ${staleLeaseCount}`);
 console.log(`  needs-attention: ${needsAttention.length}`);
 
 // ---- assemble + write -----------------------------------------------------
@@ -292,13 +349,23 @@ const snapshot = {
     needsAttention: needsAttention.length,
   },
   liveSeam: {
-    exposed: ['claimed_by (actor)', 'git worktree list (+ahead/behind/dirty)', 'gh pr list (+CI/mergeable)'],
-    pending: ['session_id', 'worktree_id', 'harness', 'region', 'lease expires_at'],
+    exposed: ['active leases via forge claims (actor, claimed_at)', 'current_stage via forge show (stage_runs)', 'git worktree list (+ahead/behind/dirty)', 'gh pr list (+CI/mergeable)'],
+    pending: ['lease session_id', 'lease worktree_id', 'harness', 'region', 'lease expires_at'],
+  },
+  // Real-vs-pending flags for the consumer wiring (5bfd2414).
+  live: {
+    leaseSourced,                 // activeClaims came from `forge claims` (authoritative) vs inferred
+    stagePopulated,               // # claimed issues with a real current_stage today
+    claimedOpen: claimedOpen.length,
+    staleLeaseCount,              // leases past expires_at (0 until the kernel writes expires_at)
+    expiryKnown: activeClaims.some((c) => c.expires_at),
+    worktreeIdKnown: activeClaims.some((c) => c.worktree_id),
+    sessionKnown: activeClaims.some((c) => c.session_id),
   },
   // Data seams — filed kernel issues that will replace best-effort/SEAM rendering.
   seams: {
-    staleClaims: '7dc229d4 · lease-read (session_id, worktree_id, harness, expires_at, heartbeat)',
-    workflowStage: 'a2279f65 · issue currentStage (phase is derived best-effort until then)',
+    staleClaims: '7dc229d4 · lease-read expiry/heartbeat (forge claims exposes leases; expires_at null until the kernel writes it)',
+    workflowStage: 'a2279f65 · current_stage now read from stage_runs (f61601ab); unknown only until a stage_run is recorded',
     workFolderGraph: '56461780 · work-folder ↔ PR/issue/decision connection graph',
     graphiti: 'c7971150 · Graphiti temporal-memory render feed (memory.backend=graphiti, opt-in)',
     backlogState: 'b2f856b1 · kernel backlog lifecycle state (parked ideas)',

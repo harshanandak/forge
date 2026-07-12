@@ -122,11 +122,20 @@ function matchesFilter(i) {
   return true;
 }
 function isLive(i) { return i.status === 'open' && !!i.claimed_by; }
-// Phase from real signals only (kernel has no currentStage — SEAM a2279f65). A done
-// issue is shipped; a claimed-open issue is in progress with the remaining stage UNKNOWN.
+// Phase from the REAL kernel stage_runs (f61601ab): the generator bakes
+// current_stage/current_stage_status (from `forge show`) onto claimed-open issues.
+// When a stage_run exists we show the actual stage; otherwise fall back honestly —
+// done = shipped, a claimed-open issue with NO stage_run yet is in progress with the
+// exact stage still UNKNOWN, an unclaimed one is planned.
 function lifecyclePhase(i) {
   if (i.status === 'done') return { idx: 6, label: 'shipped' };
   if (i.status === 'cancelled') return { idx: 0, label: 'cancelled' };
+  const stage = i.current_stage;
+  if (stage && PHASES.includes(stage)) {
+    const si = PHASES.indexOf(stage);
+    const complete = i.current_stage_status === 'done';
+    return { idx: complete ? si + 1 : si, label: stage, stage, stageStatus: i.current_stage_status || 'active' };
+  }
   if (i.claimed_by) return { idx: 2, label: 'in progress', unknown: true };
   return { idx: 1, label: 'planned' };
 }
@@ -181,8 +190,15 @@ function progress(r) {
 // 6-cell stepper — DETAIL ONLY now (removed from cards per the diet).
 function phaseTag(i) {
   const ph = lifecyclePhase(i);
-  const cells = PHASES.map((_, n) => n < ph.idx ? '<i class="on"></i>' : (ph.unknown ? '<i class="unk"></i>' : '<i></i>')).join('');
-  const t = ph.unknown ? `${ph.label} · exact stage unknown (SEAM a2279f65)` : ph.label;
+  // The current stage cell pulses when the real stage is active (not yet completed).
+  const activeCell = ph.stage && ph.stageStatus !== 'done' ? PHASES.indexOf(ph.stage) : -1;
+  const cells = PHASES.map((_, n) => {
+    if (n < ph.idx) return '<i class="on"></i>';
+    if (n === activeCell) return '<i class="act"></i>';
+    return ph.unknown ? '<i class="unk"></i>' : '<i></i>';
+  }).join('');
+  const t = ph.stage ? `stage ${ph.stage} (${ph.stageStatus}) — real, from kernel stage_runs`
+    : (ph.unknown ? `${ph.label} · exact stage unknown until a stage_run is recorded (a2279f65)` : ph.label);
   return `<span class="phase" title="lifecycle: ${esc(t)}"><span class="steps">${cells}</span><span class="lbl">${esc(ph.label)}</span></span>`;
 }
 
@@ -518,12 +534,23 @@ function renderNow() {
 
   const sentence = `<div class="nowline"><b>${agents}</b> agent${agents !== 1 ? 's' : ''} active · <b>${prs.length}</b> open PR${prs.length !== 1 ? 's' : ''} · <a href="#/overview" class="needslink"><b>${needs}</b> need${needs === 1 ? 's' : ''} you</a></div>`;
 
-  // Each live claim = one active thread. The branch/PR join is a SEAM (issue↔worktree
-  // linkage 56461780) — rendered as a slot so the shape is always visible.
-  const seam = seamId('workFolderGraph', '56461780');
+  // Each active lease = one thread of work, from the kernel lease feed (forge claims,
+  // 7dc229d4). actor + claimed-at are real; session / worktree / expiry render when
+  // present, else fall back to a SEAM. The branch/PR join stays a SEAM (work-graph 56461780).
+  const leaseSeam = seamId('harnessRegion', '7dc229d4');
+  const liveGlyph = (c) => (c.liveness === 'expired' ? '<span class="glyph" title="lease is past its expiry — stale">◐</span>' : pulse(true));
+  const leaseMeta = (c) => {
+    const bits = [];
+    if (c.claimed_at) bits.push(`<span class="slabel" title="lease claimed ${esc(c.claimed_at)}">claimed ${esc(relTime(c.claimed_at))} ago</span>`);
+    if (c.session_id) bits.push(`<span class="tag tag--soft" title="session">sess ${esc(clamp(String(c.session_id), 10))}</span>`);
+    if (c.worktree_id) bits.push(`<span class="tag tag--soft" title="worktree">wt ${esc(clamp(String(c.worktree_id), 10))}</span>`);
+    if (c.expires_at) bits.push(`<span class="${c.liveness === 'expired' ? 'seamtag' : 'slabel'}" title="lease expires ${esc(c.expires_at)}">${c.liveness === 'expired' ? 'expired' : 'expires ' + esc(relTime(c.expires_at))}</span>`);
+    else bits.push(`<span class="seamtag" title="session · worktree · expiry land when the kernel writes them">SEAM ${esc(leaseSeam)}</span>`);
+    return bits.join(' · ');
+  };
   const rows = claims.length ? claims.slice().sort(rankByPrio).map((c) => `<div class="nowrow" data-act="open" data-kind="issue" data-id="${esc(c.id)}">
-    ${pulse(true)}<span class="card__owner">${esc(c.owner)}</span><span class="nowrow__t">${esc(clamp(c.title, 66))}</span>${pmark(c.priority)}<span class="nowrow__link">→ branch · PR <span class="seamtag">SEAM ${esc(seam)}</span></span><span class="when">${esc(relTime(c.updated_at))}</span>
-  </div>`).join('') : `<div class="empty-state"><h4>Nothing running</h4><p>No open, claimed issues right now.</p></div>`;
+    ${liveGlyph(c)}<span class="card__owner">${esc(c.owner)}</span><span class="nowrow__t">${esc(clamp(c.title, 60))}</span>${pmark(c.priority)}<span class="nowrow__link">${leaseMeta(c)}</span><span class="when">${esc(relTime(c.updated_at))}</span>
+  </div>`).join('') : `<div class="empty-state"><h4>Nothing running</h4><p>No active leases right now.</p></div>`;
 
   const prRows = prs.length ? prs.map((p) => {
     const ci = p.ci ? p.ci.state : '';
@@ -542,7 +569,7 @@ function renderNow() {
       <div class="panel"><h3>Open pull requests · ${prs.length}</h3>${prRows}</div>
       <div class="panel"><h3>Worktrees · ${trees.filter((w) => !w.archived).length} <a href="#/workspaces" class="slabel" style="float:right">all →</a></h3>${wtRows}</div>
     </div>
-    <div class="seamnote">Real per-agent session · worktree · harness · region come from the kernel lease-read (${esc(seamId('harnessRegion', '7dc229d4'))}); today only <span class="mono">claimed_by</span> + git + PRs are exposed, so branch/PR↔issue joins above are SEAMs.</div>
+    <div class="seamnote">Active leases now come from the kernel lease feed (<span class="mono">forge claims</span> · ${esc(leaseSeam)}): actor + claimed-at are real. Per-lease session · worktree · harness · region · expiry render the moment the kernel writes them; branch/PR↔issue joins remain a SEAM (${esc(seamId('workFolderGraph', '56461780'))}).</div>
   </div>`;
 }
 
@@ -557,12 +584,20 @@ function renderAttention() {
     ${it.link ? `<a class="go" href="${esc(it.link)}" target="_blank" rel="noopener">open ↗</a>` : ''}
   </div>`).join('');
   const empty = !items.length ? `<div class="attn-row"><span class="glyph">●</span><span class="det">Nothing needs you — all open PRs are clean or in flight.</span></div>` : '';
-  const staleSeam = `<div class="attn-row"><span class="glyph">◐</span><span class="subj">Stale claims</span>
-    <span class="det">lease near expiry / heartbeat gone — not derivable from the CLI yet</span>
-    <span class="seamtag">SEAM ${esc(seamId('staleClaims', '7dc229d4'))}</span></div>`;
+  // Stale claims: real once the kernel writes expires_at (leases past expiry are stale).
+  // Until then, expires_at is null on every lease, so this honestly stays a SEAM.
+  const claims = (State.snapshot.ops && State.snapshot.ops.activeClaims) || [];
+  const expired = claims.filter((c) => c.liveness === 'expired');
+  const staleRow = expired.length
+    ? `<div class="attn-row"><span class="glyph">◐</span><span class="subj">Stale claims</span>
+        <span class="det">${expired.length} lease${expired.length > 1 ? 's' : ''} past expiry: ${esc(expired.slice(0, 3).map((c) => c.owner).join(', '))}</span>
+        <span class="why">reclaim or heartbeat</span></div>`
+    : `<div class="attn-row"><span class="glyph">◐</span><span class="subj">Stale claims</span>
+        <span class="det">no lease is past expiry — wired to <span class="mono">forge claims</span> expires_at, null until the kernel writes it</span>
+        <span class="seamtag">SEAM ${esc(seamId('staleClaims', '7dc229d4'))}</span></div>`;
   return `<div class="attention">
     <div class="attention__head"><span class="glyph">△</span><span class="ttl">Needs Attention</span><span class="ct">${items.length} now</span></div>
-    ${rows}${empty}${staleSeam}</div>`;
+    ${rows}${empty}${staleRow}</div>`;
 }
 
 /* ---- Workspaces ---- (worktree = card; "working on" makes the relation explicit) */
