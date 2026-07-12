@@ -1,6 +1,6 @@
 'use strict';
 
-const { execFileSync } = require('node:child_process');
+const { execFileSync: defaultExecFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -23,13 +23,23 @@ function rmrfWithRetry(dir) {
 // Per-suite factory: each test file gets its own tracked list of throwaway git-repo
 // project roots (the kernel store path resolves from the git common dir), plus a
 // cleanup that drains them. `prefix` names the tmp dirs so leaks are attributable.
-function createKernelProjectRoots(prefix) {
+function createKernelProjectRoots(prefix, deps = {}) {
   const tempDirs = [];
+  const execFileSync = deps.execFileSync || defaultExecFileSync;
 
   function makeProjectRoot() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    execFileSync('git', ['init', '-q'], { cwd: dir });
+    // Track for cleanup BEFORE the git call. mkdtempSync has already created the
+    // dir on disk, so if `git init` throws (e.g. the best-effort timeout below
+    // fires, or git errors) the dir must still be drained by cleanup() rather
+    // than leaking in the tmp tree.
     tempDirs.push(dir);
+    // Best-effort timeout, not a hard 5s ceiling: execFileSync still waits for
+    // git to exit after the timeout signals SIGTERM, so a genuinely hung git can
+    // delay setup past 5s. It bounds the common Windows hang (issue ba388d01) so
+    // the suite fails fast in practice instead of stalling to the outer lane
+    // ceiling. A strict bound would need a killable process-tree supervisor.
+    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: 5000 });
     return dir;
   }
 

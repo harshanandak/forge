@@ -592,7 +592,10 @@ describe('Kernel SQLite driver — issue mutations via guarded path (Wave 3)', (
 			driver: guarded,
 		});
 
-		const res = await guardedBroker.runIssueOperation('update', ['race-3', '--status', 'review'], { now: '2026-06-19T00:12:00.000Z', actor: 'tester' });
+		// open -> in_progress is a legal transition, so the request reaches the driver's
+		// applyAcceptedIssueMutation (which throws the revision conflict) rather than being
+		// short-circuited by the status-transition gate.
+		const res = await guardedBroker.runIssueOperation('update', ['race-3', '--status', 'in_progress'], { now: '2026-06-19T00:12:00.000Z', actor: 'tester' });
 
 		expect(res.ok).toBe(false);
 		expect(res.command).toBe('issue.update');
