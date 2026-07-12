@@ -70,6 +70,42 @@ describe('detectWorktree', () => {
     expect(warnCalls[0]).toContain('ETIMEDOUT');
   });
 
+  test('degrades gracefully when gitDir output is empty (does not resolve to cwd)', () => {
+    const warnCalls = [];
+    // --git-dir returns empty, --git-common-dir returns a real path. Without the
+    // guard, path.resolve(cwd, '') === cwd would make absGitDir !== absCommonDir
+    // and falsely report inWorktree: true.
+    const emptyGitDirExec = (_cmd, args) => {
+      if (args[1] === '--git-dir') return '';
+      if (args[1] === '--git-common-dir') return '/repo/.git';
+      return 'main';
+    };
+
+    const result = detectWorktree('/repo', {
+      execFileSync: emptyGitDirExec,
+      warn: (message) => warnCalls.push(message),
+    });
+
+    expect(result).toEqual({ inWorktree: false });
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toContain('empty git dir output');
+  });
+
+  test('degrades gracefully when both git dir outputs are empty', () => {
+    const warnCalls = [];
+    const bothEmptyExec = () => '';
+
+    const result = detectWorktree('/repo', {
+      execFileSync: bothEmptyExec,
+      warn: (message) => warnCalls.push(message),
+    });
+
+    // Must be the bare fallback shape — no extra branch/mainWorktree fields.
+    expect(result).toEqual({ inWorktree: false });
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toContain('empty git dir output');
+  });
+
   test('bounds each git spawn with a timeout option', () => {
     const seenOptions = [];
     const fakeExec = (_cmd, _args, options) => {
