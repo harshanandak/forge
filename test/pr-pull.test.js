@@ -14,6 +14,8 @@ const {
   renderPullSummary,
   buildPullPayload,
   gatherPullSignal,
+  buildBotStatusBlockers,
+  STATUS_BOT_LOGINS,
 } = require('../lib/pr-pull');
 
 // A gh `run view --log-failed` line: `jobName\tstepName\t<ISO-timestamp> content`.
@@ -595,5 +597,139 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     });
     expect(payload.requiredChecks.skipped).toEqual(['Cross-OS Gate']);
     expect(payload.blockers.some((b) => b.type === 'check-skipped')).toBe(true);
+  });
+
+  test('a failing StatusContext (Vercel-style ERROR) is classified as a failing required check', async () => {
+    // GAP 1: Vercel/Netlify report via the legacy commit-Status API (StatusContext,
+    // state=ERROR/FAILURE), not a CheckRun. The rollup normalizes state → conclusion,
+    // so an ERROR status must classify as FAILING (previously it looked "pending").
+    const checks = [
+      { name: 'Vercel', status: '', conclusion: 'ERROR', detailsUrl: 'https://vercel.com/x/deployments/abc' },
+      { name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    ];
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readRequiredChecks() { return ['Vercel', 'unit']; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async readComments() { return []; },
+    };
+    const payload = await gatherPullSignal({
+      pr: '9', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'ESCALATE', reason: 'vercel error' }), self: 'me',
+    });
+    expect(payload.requiredChecks.failing).toContain('Vercel');
+    expect(payload.blockers.some((b) => b.type === 'check-failing')).toBe(true);
+  });
+
+  test('a failing bot status COMMENT (SonarCloud quality gate) surfaces as a bot-status blocker', async () => {
+    // GAP 2: SonarCloud posts a Quality-Gate summary as a plain PR issue comment,
+    // NOT a resolvable review thread — the thread path never sees it.
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks: [], threads: [] }; },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async readComments() { return []; },
+      async readIssueComments() {
+        return [{ author: 'sonarqubecloud', body: '## Quality Gate failed\n❌ 3 New issues', createdAt: '2026-07-12T10:00:00Z' }];
+      },
+    };
+    const payload = await gatherPullSignal({
+      pr: '9', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'NEEDS_REVIEW', reason: 'quality gate' }), self: 'me',
+    });
+    const bs = payload.blockers.find((b) => b.type === 'bot-status');
+    expect(bs).toBeDefined();
+    expect(bs.detail).toMatch(/sonarqubecloud/i);
+    expect(bs.detail).toMatch(/quality gate failed/i);
+  });
+
+  test('a bot whose LATEST comment is a success does NOT surface (superseded)', async () => {
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: [], threads: [] }; },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async readComments() { return []; },
+      async readIssueComments() {
+        return [
+          { author: 'vercel', body: '❌ Deployment failed', createdAt: '2026-07-12T10:00:00Z' },
+          { author: 'vercel', body: '✅ Deployment has completed — Ready', createdAt: '2026-07-12T11:00:00Z' },
+        ];
+      },
+    };
+    const payload = await gatherPullSignal({
+      pr: '9', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', runPass: async () => ({ state: 'MERGE_READY', reason: 'clean' }), self: 'me',
+    });
+    expect(payload.blockers.some((b) => b.type === 'bot-status')).toBe(false);
+  });
+});
+
+describe('buildBotStatusBlockers (bot status/deploy/quality comment scanner)', () => {
+  test('surfaces a failing Vercel deployment comment', () => {
+    const out = buildBotStatusBlockers([
+      { author: 'vercel', body: 'Latest commit\n❌  Failed — Deployment error', createdAt: '2026-07-12T10:00:00Z' },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe('bot-status');
+    expect(out[0].detail).toMatch(/vercel/i);
+  });
+
+  test('surfaces a failing Codecov comment (an "automation" bot for threads, but its status comment is actionable)', () => {
+    const out = buildBotStatusBlockers([
+      { author: 'codecov[bot]', body: '❌ Patch coverage decreased below threshold', createdAt: '2026-07-12T10:00:00Z' },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].detail).toMatch(/codecov/i);
+  });
+
+  test('a later SUCCESS comment supersedes an earlier failure (uses timestamps, not array order)', () => {
+    const out = buildBotStatusBlockers([
+      { author: 'sonarqubecloud', body: 'Quality Gate passed ✅', createdAt: '2026-07-12T11:00:00Z' },
+      { author: 'sonarqubecloud', body: 'Quality Gate failed ❌', createdAt: '2026-07-12T10:00:00Z' },
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  test('ignores comments from non-status bots and humans', () => {
+    const out = buildBotStatusBlockers([
+      { author: 'coderabbitai', body: 'Quality issue: guard null ❌', createdAt: '2026-07-12T10:00:00Z' },
+      { author: 'a-human', body: 'this deployment failed for me too ❌', createdAt: '2026-07-12T10:00:00Z' },
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  test('a healthy latest status comment is not a blocker', () => {
+    const out = buildBotStatusBlockers([
+      { author: 'netlify', body: '✅ Deploy Preview ready!', createdAt: '2026-07-12T10:00:00Z' },
+    ]);
+    expect(out).toHaveLength(0);
+  });
+
+  test('STATUS_BOT_LOGINS covers the named deploy/quality bots', () => {
+    for (const login of ['vercel', 'netlify', 'sonarqubecloud', 'codecov', 'cloudflare-pages', 'render']) {
+      expect(STATUS_BOT_LOGINS.has(login)).toBe(true);
+    }
+  });
+});
+
+describe('computeBlockers with bot-status blockers', () => {
+  test('bot-status blockers are folded into the ordered blocker list', () => {
+    const blockers = computeBlockers({
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      botStatusBlockers: [{ type: 'bot-status', detail: 'vercel reports a failing status: ❌ Failed' }],
+    });
+    expect(blockers.some((b) => b.type === 'bot-status')).toBe(true);
+  });
+
+  test('a bot-status failure is enough to avoid the blocked-unknown fallback', () => {
+    const blockers = computeBlockers({
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED',
+      botStatusBlockers: [{ type: 'bot-status', detail: 'sonarqubecloud reports a failing status: Quality Gate failed' }],
+    });
+    expect(blockers.some((b) => b.type === 'blocked-unknown')).toBe(false);
+    expect(blockers.some((b) => b.type === 'bot-status')).toBe(true);
   });
 });
