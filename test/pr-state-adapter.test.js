@@ -332,4 +332,42 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(res.supported).toBe(false);
     expect(res.reason).toContain('--write-tree');
   });
+
+  test('readState maps a StatusContext (commit-status, no conclusion) into the same shape as a CheckRun', async () => {
+    // Vercel/Netlify report via the legacy commit-Status API — statusCheckRollup
+    // entries carry `context`+`state`+`targetUrl` (no name/conclusion/detailsUrl).
+    const rollupJson = JSON.stringify({
+      headRefOid: 'sha',
+      mergeStateStatus: 'BLOCKED',
+      statusCheckRollup: [
+        { __typename: 'StatusContext', context: 'Vercel', state: 'FAILURE', targetUrl: 'https://vercel.com/x' },
+        { __typename: 'CheckRun', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'https://gh/job/1' },
+      ],
+    });
+    const { run } = makeRunner([['pr view', rollupJson]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const state = await adapter.readState('7');
+    const vercel = state.checks.find((c) => c.name === 'Vercel');
+    expect(vercel).toBeDefined();
+    expect(vercel.conclusion).toBe('FAILURE'); // state → conclusion
+    expect(vercel.detailsUrl).toBe('https://vercel.com/x'); // targetUrl → detailsUrl
+  });
+
+  test('readIssueComments returns author/body/createdAt from paginated GraphQL', async () => {
+    const page = JSON.stringify({
+      data: { repository: { pullRequest: { comments: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [
+          { author: { login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
+          { author: { login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
+        ],
+      } } } },
+    });
+    const { run, calls } = makeRunner([['api graphql', page]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toEqual({ author: 'sonarqubecloud', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
+    expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+  });
 });
