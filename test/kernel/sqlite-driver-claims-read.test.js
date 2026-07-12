@@ -87,6 +87,40 @@ describe('Kernel SQLite driver — claims read op (active leases)', () => {
 		expect(claim.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 	});
 
+	test('derives expires_at from the lease TTL (claimed_at + leaseTtlMs) and reads it back (kernel d71a824b)', async () => {
+		await createIssue('clm-ttl', 'TtlLease');
+		const ttlMs = 60 * 60 * 1000; // 1h
+		await broker.runIssueOperation(
+			'claim',
+			['--issue', 'clm-ttl'],
+			{ now, actor: 'alice', sessionId: 'sess-ttl', worktreeId: 'wt-ttl', leaseTtlMs: ttlMs },
+		);
+
+		// Read while the lease is still live (well before now + 1h).
+		const res = await driver.issueOperation('claims', [], { now: '2026-06-20T00:30:00.000Z' }, config);
+		expect(res.data.count).toBe(1);
+		const claim = res.data.claims[0];
+		expect(claim.session_id).toBe('sess-ttl');
+		expect(claim.worktree_id).toBe('wt-ttl');
+		// claimed_at + 1h, canonical ISO — not null.
+		expect(claim.expires_at).toBe('2026-06-20T01:00:00.000Z');
+
+		// After the TTL elapses the lease is no longer reported live.
+		const expired = await driver.issueOperation('claims', [], { now: '2026-06-20T02:00:00.000Z' }, config);
+		expect(expired.data.count).toBe(0);
+	});
+
+	test('an explicit --expires still wins over the lease TTL', async () => {
+		await createIssue('clm-exp', 'ExplicitExpiry');
+		await broker.runIssueOperation(
+			'claim',
+			['--issue', 'clm-exp', '--expires', '2026-06-20T00:05:00.000Z'],
+			{ now, actor: 'alice', leaseTtlMs: 60 * 60 * 1000 },
+		);
+		const res = await driver.issueOperation('claims', [], { now: '2026-06-20T00:01:00.000Z' }, config);
+		expect(res.data.claims[0].expires_at).toBe('2026-06-20T00:05:00.000Z');
+	});
+
 	test('excludes released leases (state != active)', async () => {
 		await createIssue('clm-b', 'Beta');
 		await broker.runIssueOperation('claim', ['--issue', 'clm-b'], { now, actor: 'alice' });

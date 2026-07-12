@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { DEFAULT_LEASE_TTL_MS } = require('../lib/kernel/lease-enforcer');
 
 describe('forge issue service contract', () => {
   test('exports service factory and operation runner', () => {
@@ -210,6 +211,56 @@ describe('forge issue service contract', () => {
         deps: { createService: expect.any(Function), marker: 'injected' },
       },
     }]);
+  });
+
+  test('threads session_id, worktree_id, and lease TTL into the claim mutation context (kernel d71a824b)', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    let captured;
+    await runIssueOperation('claim', ['issue-1'], '/repo', {
+      createService: () => ({
+        async run(operation, args, context) {
+          captured = context;
+          return { success: true, ok: true };
+        },
+      }),
+      // Env drives session_id + the worktree override; detectWorktree is injected so the
+      // test never shells out to git. Default TTL applies (no FORGE_LEASE_TTL_MS).
+      env: { FORGE_SESSION_ID: 'sess-boundary', FORGE_WORKTREE_ID: 'wt-boundary' },
+    });
+    expect(captured.sessionId).toBe('sess-boundary');
+    expect(captured.worktreeId).toBe('wt-boundary');
+    expect(captured.leaseTtlMs).toBe(DEFAULT_LEASE_TTL_MS);
+  });
+
+  test('a read op (show) does NOT resolve a worktree id or lease TTL (claim-only cost)', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    let captured;
+    await runIssueOperation('show', ['issue-1'], '/repo', {
+      createService: () => ({
+        async run(operation, args, context) {
+          captured = context;
+          return { success: true };
+        },
+      }),
+      env: { FORGE_WORKTREE_ID: 'wt-boundary' },
+    });
+    expect(captured.worktreeId).toBeUndefined();
+    expect(captured.leaseTtlMs).toBeUndefined();
+  });
+
+  test('FORGE_LEASE_TTL_MS=0 opts out of expiry (null lease), omitting leaseTtlMs from context', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    let captured;
+    await runIssueOperation('claim', ['issue-1'], '/repo', {
+      createService: () => ({
+        async run(operation, args, context) {
+          captured = context;
+          return { success: true, ok: true };
+        },
+      }),
+      env: { FORGE_WORKTREE_ID: 'wt-boundary', FORGE_LEASE_TTL_MS: '0' },
+    });
+    expect(captured.leaseTtlMs).toBeUndefined();
   });
 
   test('top-level operation runner forwards injected Windows platform and PATH overrides', async () => {
