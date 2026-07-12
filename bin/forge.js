@@ -40,9 +40,11 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { execSync } = require('node:child_process');
 
-// Get version from package.json (single source of truth)
+// Get version from package.json (single source of truth). packageDir stays a
+// runtime value for asset copying, but the require is a static relative path so
+// `bun build --compile` can bundle package.json.
 const packageDir = path.dirname(__dirname);
-const packageJson = require(path.join(packageDir, 'package.json'));
+const packageJson = require('../package.json');
 const VERSION = packageJson.version;
 
 // Load PluginManager for discoverable agent architecture
@@ -63,15 +65,15 @@ const { getPackageRoot } = require('../lib/package-root');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
 
-// Load enhanced onboarding modules
-const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
-const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
+// Load enhanced onboarding modules (static relative requires — bundleable)
+const contextMerge = require('../lib/context-merge');
+const projectDiscovery = require('../lib/project-discovery');
 
 // Load lib modules for symlink, beads, and PAT setup
-const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
-const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
-const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
-const { scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
+const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require('../lib/symlink-utils');
+const beadsSetupLib = require('../lib/beads-setup');
+const { beadsHealthCheck } = require('../lib/beads-health-check');
+const { scaffoldBeadsSync } = require('../lib/beads-sync-scaffold');
 
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');

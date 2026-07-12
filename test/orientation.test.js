@@ -173,7 +173,11 @@ describe('issue-scoped recap command', () => {
     const result = await recap.handler([], {}, root);
 
     expect(result.success).toBe(false);
-    expect(result.output).toContain('forge recap <issue>');
+    // Usage goes on `error` (not `output`) so the CLI dispatcher prints it
+    // once via console.error instead of also appending a bare "Command
+    // failed" (see bin/forge.js registry dispatch).
+    expect(result.error).toContain('forge recap <issue>');
+    expect(result.output).toBeUndefined();
   });
 });
 

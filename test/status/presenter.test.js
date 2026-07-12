@@ -116,11 +116,13 @@ describe('buildPersonalStatusJson stays full-fidelity (machine consumers)', () =
         ready: [{ id: 'r', title: 'R' }],
         blocked: [{ id: 'b', title: 'B' }],
         stale: [{ id: 's', title: 'S' }],
+        parked: [{ id: 'p', title: 'P' }],
         recentCompleted: [{ id: 'd', title: 'D' }],
       },
       workflowResult: workflowResult(),
     });
     expect(json.personal.blocked.map(i => i.id)).toEqual(['b']);
+    expect(json.personal.parked.map(i => i.id)).toEqual(['p']);
     expect(json.personal.recentCompleted.map(i => i.id)).toEqual(['d']);
     expect(json.workflow.runCommand).toBe('ship');
   });

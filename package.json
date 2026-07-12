@@ -17,6 +17,9 @@
     "test:coverage": "c8 --check-coverage bun test --timeout 15000",
     "test:ci:shard": "node scripts/test-ci-shard.js",
     "typecheck": "echo 'No TypeScript in project - skipping type check'",
+    "gen:manifest": "node scripts/gen-command-manifest.js",
+    "gen:manifest:check": "node scripts/gen-command-manifest.js --check",
+    "prebuild": "node scripts/gen-command-manifest.js",
     "lint": "eslint . --max-warnings 0",
     "check": "node scripts/validate.js",
     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
@@ -52,9 +55,11 @@
     "@stryker-mutator/core": "^9.6.0",
     "c8": "^11.0.0",
     "eslint": "^10.0.2",
+    "eslint-plugin-sonarjs": "^4.1.0",
     "globals": "^17.3.0",
     "js-yaml": "^5.1.0",
-    "lefthook": "^2.1.4"
+    "lefthook": "^2.1.4",
+    "typescript": "5.4.5"
   },
   "keywords": [
     "ai",
