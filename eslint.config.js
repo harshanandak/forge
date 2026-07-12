@@ -18,6 +18,10 @@ export default [
       // Generated dashboard artifacts (baked kernel snapshot + work-folder docs)
       'web/dashboard/snapshot.js',
       'web/dashboard/docs.js',
+      // Generated Bun embed manifest (import attributes; only parsed by bun compile)
+      'lib/embedded-assets.generated.mjs',
+      // Compiled single-file binary output
+      'forge-bin',
     ],
   },
   // ES Modules — .mjs files (Node scripts using ESM)
