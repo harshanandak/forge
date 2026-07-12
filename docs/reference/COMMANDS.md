@@ -33,7 +33,6 @@ Use `--agents`, not `--agent`.
 ## Local State
 
 ```bash
-forge status --json
 forge board --json
 forge options lint
 forge options diff
@@ -41,9 +40,37 @@ forge options why <key>
 forge options stages
 ```
 
-`forge status` also supports workflow-state and issue-state inputs used by tests and stage recovery.
-
 `forge options` inspects the runtime graph and `.forge/` adoption config created by `forge init`.
+
+`forge status` (full flags below) also supports workflow-state and issue-state inputs used by tests and stage recovery.
+
+## Core Workflow Loop
+
+These are the CLI commands behind the default agent workflow template (`/plan -> /dev -> /validate -> /ship`, then the `/review` skill) plus the session-orientation and memory commands agents run alongside it. Verified against `lib/commands/<name>.js` and `forge <cmd> --help`.
+
+```bash
+forge plan "<feature description>"
+forge dev [--issue-id <id>] [--phase red|green|refactor]
+forge validate
+forge ship <feature-slug> [<title>] [--dry-run]
+forge status [--full] [--json]
+forge prime [--budget N] [--json]
+forge orient [--budget N] [--json]
+forge recap <issue> [--budget N] [--json]
+forge recall [query] [--limit N] [--all] [--json]
+forge remember <note> [--tag <label>]... [--json]
+```
+
+- `forge plan` creates the implementation plan, kernel issue, and feature branch/worktree from a researched feature description; it prints the created issue id, branch name, and the suggested next command.
+- `forge dev` runs the TDD development stage with RED/GREEN/REFACTOR phase guidance; `--issue-id` scopes it to a specific kernel issue and `--phase` overrides auto-detection.
+- `forge validate` runs the validation orchestration pipeline (conflict markers, type check, lint, security, tests) with no arguments — see also `bun run check` under Validation And Packaging.
+- `forge ship` creates the pull request from validated feature work (wraps `gh pr create`); `--dry-run` previews without creating a PR.
+- `forge status` is the one-glance orientation command: where you are, what to run next, and your active work; `--full` also shows blocked/stale/recently-completed issues.
+- `forge prime` emits the bounded session-entry orientation envelope agents read at the start of a session.
+- `forge orient` emits bounded project orientation from deterministic source files (broader than `prime`, still token-budgeted via `--budget`).
+- `forge recap <issue>` is the issue-scoped counterpart to `forge orient`/`forge prime` — it summarizes a single issue from the same deterministic file assembly instead of the whole project. Requires an issue id; running it with no id (or `--help`) prints usage only.
+- `forge recall` retrieves project-memory notes from the kernel-backed memory store; omit `query` to list recent notes.
+- `forge remember` persists a project-memory note to the kernel-backed memory store; repeat `--tag` to attach multiple labels.
 
 ## Issue Wrappers
 
