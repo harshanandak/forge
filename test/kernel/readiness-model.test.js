@@ -13,6 +13,7 @@ const NOW = '2026-06-17T00:00:00.000Z';
 describe('readiness reason and state vocabularies', () => {
 	test('exposes stable reason codes', () => {
 		expect(READINESS_REASONS.DEPENDENCY).toBe('dependency');
+		expect(READINESS_REASONS.DEPENDENCY_PARKED).toBe('dependency_parked');
 		expect(READINESS_REASONS.CLAIM).toBe('claimed');
 		expect(READINESS_REASONS.QUARANTINE).toBe('quarantine');
 		expect(READINESS_REASONS.GATE).toBe('gate');
@@ -86,6 +87,25 @@ describe('deriveReadiness — derived facts, never stored', () => {
 		);
 		expect(result.ready).toBe(true);
 		expect(result.blocked).toBe(false);
+	});
+
+	test('a parked (backlog) dependency blocks with a distinct blocked-by-parked reason', () => {
+		const result = deriveReadiness(
+			{ id: 'a', status: 'open' },
+			{ now: NOW, dependencyStatuses: [{ id: 'b', status: 'backlog' }] },
+		);
+		// A parked dependency still blocks (it is not done), but it must be
+		// distinguishable from ordinary in-flight work so a consumer can flag it for
+		// promotion rather than mistaking it for a task someone is actively working.
+		expect(result.blocked).toBe(true);
+		expect(result.blocked_by).toContain('b');
+		expect(result.state).toBe('blocked');
+		const depReason = result.reasons.find(reason => reason.issue_id === 'b');
+		expect(depReason).toBeDefined();
+		expect(depReason.code).toBe(READINESS_REASONS.DEPENDENCY_PARKED);
+		expect(depReason.code).toBe('dependency_parked');
+		expect(depReason.parked).toBe(true);
+		expect(depReason.status).toBe('backlog');
 	});
 
 	test('non-blocking dependency types are ignored', () => {
