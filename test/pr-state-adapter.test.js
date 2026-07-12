@@ -402,7 +402,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
 
   test('readReviews paginates until hasNextPage is false', async () => {
     let call = 0;
+    const calls = [];
     const run = (cmd, args) => {
+      calls.push({ cmd, args });
       const joined = [cmd, ...args].join(' ');
       if (!joined.includes('reviews(first')) return '';
       call += 1;
@@ -420,6 +422,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
     const adapter = new PrStateAdapter({ gh: run, git: run });
     const reviews = await adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' });
     expect(call).toBe(2); // followed the cursor
+    // The second page request must actually forward the returned cursor.
+    expect(calls[1].args).toContain('after=CUR');
     expect(reviews.map((r) => r.author).sort()).toEqual(['bot-a', 'bot-b']);
   });
 
