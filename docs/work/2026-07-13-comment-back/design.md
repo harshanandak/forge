@@ -104,6 +104,38 @@ Every read path is best-effort: a failing claims read, comment read, or missing
 `dashboard-inbox` issue degrades to "no pending comments". The hooks never throw and never
 emit malformed JSON — a broken digest never blocks a session or a prompt.
 
+## Targeting is FAIL CLOSED (review MAJOR fixes)
+
+- **Actor parity (MAJOR-1):** `resolveIdentity` derives `actor` via the SAME chain that
+  stamps a claim (`resolveIssueActor`: `FORGE_ACTOR` → `FORGE_SESSION_ID` → `'forge'`). A
+  session running with only `FORGE_SESSION_ID=S1` claims *as* actor `S1`, so its inbox
+  identity is also `S1` — it no longer rejects its own claims and miss its comments.
+- **No wrong-agent leak (MAJOR-2):** `classifyClaim` keys on the CLAIM's discriminators. If a
+  claim carries a `session_id` (or a `worktree_id`), the reading identity MUST present the
+  same value or it does NOT match. Only a claim with `session_id` AND `worktree_id` both null
+  falls to the actor-only floor. So worktree A's instruction can never leak into session B
+  merely because B's own worktree detection failed (both default actor to `forge`). The
+  trade-off is a deliberate *miss-not-leak*: if a claim has a discriminator the reader can't
+  reproduce, the comment simply doesn't surface (safe) rather than surfacing to the wrong
+  agent (unsafe).
+
+## Known limitations / follow-ups (reviewed)
+
+- **Board ack is broadcast (MINOR-2):** acks are a per-issue kernel fact (keyed on
+  `comment_id`). On a claimed issue that's correct (one owner). On the shared
+  `dashboard-inbox`, the first session to `forge inbox ack <id>` closes that notice for
+  **every** session — intentional for a board-level broadcast. Per-session board receipts
+  would need a session-scoped ack convention (deferred).
+- **dashboard-inbox creation is the WRITE path's job (MINOR-3):** the read path
+  (`defaultResolveDashboardInboxId`) only *matches* an existing `dashboard-inbox` chore issue
+  and never creates one (read paths stay side-effect free). Until it exists the board tier is
+  a silent no-op. The dashboard / `forge serve` process that posts the first unscoped comment
+  must first `forge create --title dashboard-inbox --type chore` and address the comment to it.
+- **Untrusted list output (MINOR-1):** `forge inbox` now `neutralize()`s comment bodies/authors
+  and provenance-fences the item block (`source: dashboard-comment`) for parity with the
+  SessionStart / UserPromptSubmit digests — the agent reading the list gets the same DATA-only
+  signal, and a planted `⟦END UNTRUSTED⟧` cannot break out.
+
 ## The done-loop
 
 dashboard writes instruction comment → session's next turn (SessionStart digest /
