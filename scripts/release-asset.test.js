@@ -1,4 +1,3 @@
-/* eslint-disable no-undef -- Bun globals are provided by the Bun runtime */
 // Tests the canonical release asset-name mapping (scripts/lib/release-asset.mjs)
 // for all seven published targets, and cross-checks that the shipping installer
 // scripts/install.sh derives the SAME names via its hidden --print-asset mode.
