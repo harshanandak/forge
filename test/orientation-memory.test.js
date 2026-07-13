@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   buildMemorySection,
   buildOrientationSections,
+  buildOrientation,
 } = require('../lib/orientation');
 
 // A hermetic in-memory store implementing the project-memory read seam
@@ -58,5 +59,17 @@ describe('buildMemorySection (orientation MEMORY / remembered notes)', () => {
     const root = tempRoot();
     const { sections } = buildOrientationSections(root, { store: fakeStore(NOTES) });
     expect(sections.some(s => s.id === 'remembered_notes')).toBe(true);
+  });
+
+  test('MAJOR-1: emitted remembered_notes content is provenance-fenced (assembler post-budget)', () => {
+    const root = tempRoot();
+    const result = buildOrientation(root, { store: fakeStore(NOTES) });
+    const section = result.sections.find(s => s.id === 'remembered_notes');
+    expect(section).toBeDefined();
+    expect(section.content).toContain('UNTRUSTED memory');
+    expect(section.content).toContain('END UNTRUSTED');
+    expect(section.content).toContain('Kernel is the single source of truth');
+    // The internal fencing marker is stripped from the emitted shape.
+    expect(section.untrustedSource).toBeUndefined();
   });
 });

@@ -94,10 +94,20 @@ describe('SessionStart context injection (memory push)', () => {
     expect(Array.isArray(block.SessionStart)).toBe(true);
     expect(block.SessionStart.length).toBe(1);
     const cmd = block.SessionStart[0].hooks[0].command;
-    expect(cmd).toBe('forge hooks session-start --harness claude');
+    expect(cmd).toContain('hooks session-start --harness claude');
     // Context hook goes through the CLI, NOT the self-contained enforcement adapter.
     expect(cmd).not.toContain(FORGE_MARK);
     expect(cmd).toContain(FORGE_CONTEXT_MARKER);
+  });
+
+  test('MAJOR-3: rendered command is a RESOLVED node invocation, never bare `forge`', () => {
+    const cmd = renderClaudeHooks(FORGE_HOOK_CONTRACT).SessionStart[0].hooks[0].command;
+    // A bare `forge` on a minimal PATH would silently no-op or run a foreign binary
+    // whose stdout gets injected as context. Must resolve the exact bin/forge.js.
+    expect(cmd.startsWith('node ')).toBe(true);
+    expect(cmd).not.toMatch(/^forge\b/);
+    expect(cmd).toContain('bin');
+    expect(cmd).toContain('forge.js');
   });
 
   test('capability matrix is honest — only Claude renders; others carry a skip reason', () => {
