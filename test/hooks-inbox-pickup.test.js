@@ -22,13 +22,16 @@ function run(args, opts) {
 }
 
 describe('forge hooks inbox-pickup (UserPromptSubmit — compliant comment-back)', () => {
-  test('claude emits UserPromptSubmit JSON with the fenced inbox digest', async () => {
+  test('claude emits UserPromptSubmit JSON with a COMPACT count nudge (not the full bodies)', async () => {
     const res = await run(['inbox-pickup', '--harness', 'claude'], pendingOpts());
     expect(res.success).toBe(true);
     const parsed = JSON.parse(res.output);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('act on this now');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('UNTRUSTED dashboard-comment');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('1 pending dashboard instruction');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('forge inbox');
+    // accumulation-safe: the untrusted body is NOT re-emitted on every prompt (it stays on
+    // SessionStart + `forge inbox`), so per-prompt additionalContext bloat is negligible.
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('act on this now');
   });
 
   test('honest skip: cursor / codex / hermes render nothing (no faked parity)', async () => {

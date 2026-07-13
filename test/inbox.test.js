@@ -14,6 +14,7 @@ const {
   collectInbox,
   inboxSection,
   buildInboxDigest,
+  buildInboxNudge,
   resolveIdentity,
   INBOX_UNTRUSTED_SOURCE,
 } = require('../lib/inbox');
@@ -191,6 +192,82 @@ describe('collectInbox — targeted routing, dashboard fallback, unacked filter 
       fetchComments: () => { throw new Error('show down'); },
     });
     expect(pending).toEqual([]);
+  });
+});
+
+describe('collectInbox — perf: cached inbox id + early termination (review #379 MAJOR)', () => {
+  test('opts.dashboardInboxId is used verbatim — the full-list scan resolver is NOT called', async () => {
+    let resolverCalls = 0;
+    const pending = await collectInbox('/root', {
+      identity: IDENTITY,
+      fetchClaims: () => [],
+      dashboardInboxId: 'cached-dash',
+      resolveDashboardInboxId: () => { resolverCalls += 1; return 'scanned'; },
+      fetchComments: (_root, issueId) => (issueId === 'cached-dash' ? [instr('d1', 'board notice')] : []),
+    });
+    expect(resolverCalls).toBe(0); // cached id short-circuits the scan
+    expect(pending.map(p => p.comment_id)).toEqual(['d1']);
+  });
+
+  test('opts.dashboardInboxId:null intentionally skips the board tier (no scan, no board target)', async () => {
+    let resolverCalls = 0;
+    const pending = await collectInbox('/root', {
+      identity: IDENTITY,
+      fetchClaims: () => [],
+      dashboardInboxId: null,
+      resolveDashboardInboxId: () => { resolverCalls += 1; return 'scanned'; },
+      fetchComments: () => [instr('x', 'should not be reached')],
+    });
+    expect(resolverCalls).toBe(0);
+    expect(pending).toEqual([]);
+  });
+
+  test('early termination: stops fetching comments once pending reaches the limit', async () => {
+    const fetched = [];
+    const claims = [
+      { actor: 'agent-a', session_id: null, worktree_id: 'wt-a', issue_id: 'i1' },
+      { actor: 'agent-a', session_id: null, worktree_id: 'wt-a', issue_id: 'i2' },
+      { actor: 'agent-a', session_id: null, worktree_id: 'wt-a', issue_id: 'i3' },
+    ];
+    const pending = await collectInbox('/root', {
+      identity: IDENTITY,
+      fetchClaims: () => claims,
+      dashboardInboxId: null,
+      inboxLimit: 2,
+      fetchComments: (_root, issueId) => {
+        fetched.push(issueId);
+        return [instr(`${issueId}-a`, 'x'), instr(`${issueId}-b`, 'y')];
+      },
+    });
+    expect(pending.length).toBe(2);
+    // i1 alone fills the limit (2) → i2 and i3 are never read.
+    expect(fetched).toEqual(['i1']);
+  });
+});
+
+describe('buildInboxNudge — compact, accumulation-safe (review #379 MINOR)', () => {
+  const pending = [
+    { comment_id: 'c1', issue_id: 'i1', basis: 'worktree', text: 'do the thing' },
+    { comment_id: 'd1', issue_id: 'dash', basis: 'board', text: 'board notice' },
+  ];
+
+  test('emits only a bounded count + pointer — no untrusted body text', () => {
+    const { text, empty, count } = buildInboxNudge(pending);
+    expect(empty).toBe(false);
+    expect(count).toBe(2);
+    expect(text).toContain('2 pending dashboard instructions');
+    expect(text).toContain('forge inbox');
+    expect(text).not.toContain('do the thing'); // bodies are NOT re-emitted per prompt
+    expect(text).not.toContain('UNTRUSTED'); // no untrusted content → no fence needed
+  });
+
+  test('singular grammar for one item', () => {
+    expect(buildInboxNudge([pending[0]]).text).toContain('1 pending dashboard instruction —');
+  });
+
+  test('empty → empty (hook injects nothing)', () => {
+    expect(buildInboxNudge([]).empty).toBe(true);
+    expect(buildInboxNudge([]).text).toBe('');
   });
 });
 
