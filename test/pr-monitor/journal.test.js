@@ -106,4 +106,36 @@ describe('withJournalLock (cross-process serialization)', () => {
     const got = await journal.withJournalLock(dir, () => 'recovered', { retries: 5, waitMs: 5 });
     expect(got).toBe('recovered');
   });
+
+  test('heartbeats the owner timestamp so a healthy long pass is never mistaken for stale', async () => {
+    // A pass that outlives staleMs several times over — without the heartbeat,
+    // the single acquisition-time timestamp would age well past staleMs and a
+    // competing caller would see (and steal) the lock as stale mid-flight.
+    const staleMs = 30;
+    const heartbeatMs = 10;
+    let sawStaleMidFlight = false;
+    const longPass = journal.withJournalLock(dir, async () => {
+      await new Promise((r) => { setTimeout(r, staleMs * 4); });
+    }, { staleMs, heartbeatMs });
+    // Sample staleness mid-flight, well past the original staleMs window, while
+    // the heartbeat should be keeping the owner timestamp fresh.
+    await new Promise((r) => { setTimeout(r, staleMs * 2); });
+    if (fs.existsSync(journal.lockPath(dir))) {
+      sawStaleMidFlight = lockIsStaleForTest(journal.lockPath(dir), staleMs);
+    }
+    await longPass;
+    expect(sawStaleMidFlight).toBe(false);
+    expect(fs.existsSync(journal.lockPath(dir))).toBe(false);
+  });
 });
+
+/** Mirrors journal.js's internal lockIsStale age check for the owner file, without requiring an internal export. */
+function lockIsStaleForTest(lock, staleMs) {
+  try {
+    const [, tsStr] = fs.readFileSync(path.join(lock, 'owner'), 'utf8').split(':');
+    const stampedAt = Number.parseInt(tsStr, 10);
+    return Date.now() - stampedAt > staleMs;
+  } catch {
+    return true;
+  }
+}
