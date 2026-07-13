@@ -44,14 +44,14 @@ describe('journal', () => {
   });
 
   test('readSnapshot returns null when absent', () => {
-    expect(journal.readSnapshot(dir)).toBe(null);
+    expect(journal.readSnapshot(dir)).toBeNull();
   });
 
   test('watcherRunning is false for a stale/own pid, so poll can fall back inline', () => {
     journal.writePid(dir, process.pid);
     expect(journal.watcherRunning(dir)).toBe(false); // our own pid is not a foreign watcher
     journal.removePid(dir);
-    expect(journal.readPid(dir)).toBe(null);
+    expect(journal.readPid(dir)).toBeNull();
   });
 
   test('writeSnapshot/readSnapshot carry an appliedSeq cursor (0 for legacy)', () => {

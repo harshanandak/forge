@@ -26,7 +26,7 @@ describe('events — schema + envelope', () => {
   test('finalizeEvent tolerates a missing verdict (fail-closed nulls)', () => {
     const rec = finalizeEvent(makeEvent('pr.merged', 'MERGED'), { seq: 1, ts: 'T', repo: 'r', pr: '1', headSha: null, verdict: null });
     expect(rec.verdict).toEqual({ state: null, reason: null });
-    expect(rec.headSha).toBe(null);
+    expect(rec.headSha).toBeNull();
   });
 
   test('every event type is present', () => {

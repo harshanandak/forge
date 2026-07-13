@@ -15,8 +15,8 @@ describe('gather — normalizeSnapshot mapping', () => {
   test('conflictBool is tri-state (null when prediction unsupported)', () => {
     expect(conflictBool({ supported: true, conflicted: true })).toBe(true);
     expect(conflictBool({ supported: true, conflicted: false })).toBe(false);
-    expect(conflictBool({ supported: false, reason: 'git too old' })).toBe(null);
-    expect(conflictBool(null)).toBe(null);
+    expect(conflictBool({ supported: false, reason: 'git too old' })).toBeNull();
+    expect(conflictBool(null)).toBeNull();
   });
 
   test('maps a raw gatherPrSnapshot result into the diff subject', () => {
