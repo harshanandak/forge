@@ -39,6 +39,17 @@ describe('worktree auto-file rail (autoFileBackingIssue)', () => {
     expect(result).toBeNull();
   });
 
+  test('degrades to null (no throw) when kernel is unavailable and nothing is injected', async () => {
+    // Real module loads, but no driver/broker injected and no .git → returns null.
+    // Exercises the reorganized code where the lazy require lives INSIDE the try
+    // (CodeRabbit #370: a require failure must never crash worktree create).
+    const result = await autoFileBackingIssue({
+      projectRoot: '/no/such/repo', worktreePath: '/no/such/repo/wt', branch: 'feat/foo', issueId: null,
+      opts: { _fs: { existsSync: () => false } },
+    });
+    expect(result).toBeNull();
+  });
+
   test('idempotent pass-through: an existing link is returned, not duplicated', async () => {
     const opts = baseOpts({ _ensureBackingIssue: () => ({ issueId: 'x', branch: 'feat/foo', created: false, existed: true }) });
     const result = await autoFileBackingIssue({ projectRoot: '/r', worktreePath: '/r/wt', branch: 'feat/foo', issueId: null, opts });

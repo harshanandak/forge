@@ -39,6 +39,12 @@ describe('push auto-file rail (autoFileBackingIssueForPush)', () => {
     expect(await autoFileBackingIssueForPush('/r', fakeExec(), deps)).toBeNull();
   });
 
+  test('degrades to null (no throw) when kernel is unavailable, nothing injected', async () => {
+    // No _ensureBackingIssue / driver / broker; '/no/such/repo/.git' does not exist.
+    // Confirms the reorganized require-inside-try never aborts a push (CodeRabbit #370).
+    expect(await autoFileBackingIssueForPush('/no/such/repo', fakeExec('feat/foo'), {})).toBeNull();
+  });
+
   test("returns null on an unresolved branch ('unknown')", async () => {
     const deps = { _kernelDriver: FAKE_DRIVER, _kernelBroker: FAKE_BROKER, _ensureBackingIssue: () => ({}) };
     const execUnknown = () => { throw new Error('no branch'); }; // getCurrentBranch → 'unknown'
