@@ -11,19 +11,25 @@
  * DataSource — the LIVE-VIEW SEAM.
  * ========================================================================== */
 const DataSource = {
+  // In LIVE mode the server gates /data.json (and docs.json) on the per-run
+  // token, so attach it. On file:// / baked-snapshot mode there is no token and
+  // headers are ignored, so this is a harmless no-op there.
+  _authHeaders() {
+    return Serve.token ? { 'X-Forge-Token': Serve.token } : {};
+  },
   async load() {
     if (window.FORGE_SNAPSHOT) return window.FORGE_SNAPSHOT;
-    return (await fetch('data.json')).json();
+    return (await fetch('data.json', { headers: this._authHeaders() })).json();
   },
   async refetch() {
     const ts = '?ts=' + Date.now();
-    const res = await fetch('data.json' + ts, { cache: 'no-store' });
+    const res = await fetch('data.json' + ts, { cache: 'no-store', headers: this._authHeaders() });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const snap = await res.json();
     // Refresh the baked markdown too, so edited/new work-folder docs aren't stale
     // until a full reload. Best-effort: an old snapshot.js bundle may predate docs.json.
     try {
-      const dres = await fetch('docs.json' + ts, { cache: 'no-store' });
+      const dres = await fetch('docs.json' + ts, { cache: 'no-store', headers: this._authHeaders() });
       if (dres.ok) window.FORGE_DOCS = await dres.json();
     } catch (_err) { /* keep the bootstrap docs if the twin is unavailable */ }
     return snap;

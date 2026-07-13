@@ -174,9 +174,23 @@ describe('bounded server smoke (starts, requests, closes)', () => {
     expect(health.status).toBe(200);
     expect((await health.json()).forge_serve).toBe(true);
 
-    const data = await fetch(`${base}/data.json`);
+    // /data.json is token-gated: no token -> 403.
+    const noToken = await fetch(`${base}/data.json`);
+    expect(noToken.status).toBe(403);
+    expect((await noToken.json()).ok).toBe(false);
+
+    // Wrong token -> 403.
+    const wrongToken = await fetch(`${base}/data.json`, { headers: { 'X-Forge-Token': 'wrong' } });
+    expect(wrongToken.status).toBe(403);
+
+    // Correct token via header -> 200.
+    const data = await fetch(`${base}/data.json`, { headers: { 'X-Forge-Token': token } });
     expect(data.status).toBe(200);
     expect((await data.json()).kind).toBe('live-snapshot');
+
+    // Correct token via ?token= query param -> 200 (parity with the header path).
+    const dataQ = await fetch(`${base}/data.json?token=${token}`);
+    expect(dataQ.status).toBe(200);
 
     const bundle = await fetch(`${base}/snapshot.js`);
     expect(bundle.status).toBe(200); // absent optional bundle -> empty stub
