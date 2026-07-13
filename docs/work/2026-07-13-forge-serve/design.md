@@ -69,7 +69,9 @@ Hooks / skills-as-controllable (`forge control`) are out of scope; only the exis
   our fragment nor forge the token.
 - **Host/Origin fence:** POST rejects any request whose `Host` is not `127.0.0.1`/`localhost`
   or whose `Origin` (when present) is not our loopback origin → `403`.
-- Reads (`/data.json`, `/health`, static) are unauthenticated but loopback-only.
+- `/health` and static assets are unauthenticated but loopback-only.
+- `/data.json` is gated by the SAME token fence as `POST /api/mutation` (loopback + constant-time
+  token compare), since the snapshot carries full issue/message data.
 
 ## Dashboard write UI (`web/dashboard/app.js`)
 

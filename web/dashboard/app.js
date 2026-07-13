@@ -1536,8 +1536,16 @@ async function serveRun(kind) {
 }
 function serveCopy(kind) {
   const spec = serveControlSpec(kind);
-  try { navigator.clipboard.writeText(spec.cmd); serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'); }
-  catch (_e) { serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'); }
+  // writeText() rejects ASYNChronously (denied permission, non-secure context, no
+  // user gesture); a sync try/catch would report success before the write settled.
+  // Route both async rejection and any sync throw to the copy-failed message.
+  try {
+    Promise.resolve(navigator.clipboard.writeText(spec.cmd))
+      .then(() => serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'))
+      .catch(() => serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'));
+  } catch (_e) {
+    serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err');
+  }
 }
 
 function serveTopButton(id, act, label) {
