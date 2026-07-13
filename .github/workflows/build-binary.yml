@@ -63,6 +63,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          # No pushes back to the repo; don't leave GITHUB_TOKEN in .git/config
+          # where a dependency lifecycle script (bun install) could read it.
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -123,8 +127,10 @@ jobs:
           echo "== $BIN setup --quick --yes (temp git dir) =="
           TMP="$(mktemp -d)"
           git -C "$TMP" init -q
+          # Under `bash -eo pipefail` a failure here aborts the step, so reaching
+          # the next line means setup succeeded — no exit-code echo needed.
           ( cd "$TMP" && "$BIN" setup --quick --yes )
-          echo "setup --quick exit=$?"
+          echo "setup --quick OK"
 
           echo "== $BIN ready (temp git dir) =="
           ( cd "$TMP" && "$BIN" ready ) \
@@ -149,6 +155,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          # No pushes back to the repo; don't leave GITHUB_TOKEN in .git/config
+          # where a dependency lifecycle script (bun install) could read it.
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6

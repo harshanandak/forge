@@ -17,19 +17,16 @@ a named workflow artifact. This step **produces + verifies + uploads** only. It 
 Proven locally on a Windows host (bun 1.3.6). A single machine compiled the native
 host target **and** all six cross targets successfully:
 
-| Target | Result | Size |
-|--------|--------|------|
-| bun-windows-x64 (host `forge-bin-host.exe`) | compiled | 116 MB |
-| bun-linux-x64 | compiled | 104 MB |
-| bun-linux-arm64 | compiled | 97 MB |
-| bun-darwin-arm64 | compiled | 61 MB |
-| bun-darwin-x64 | compiled | 67 MB |
-| bun-linux-x64-musl | compiled | 97 MB |
-| bun-linux-arm64-musl | compiled | 93 MB |
+The seven targets that compiled from the single host: `bun-windows-x64` (native
+host), `bun-linux-x64`, `bun-linux-arm64`, `bun-darwin-arm64`, `bun-darwin-x64`,
+`bun-linux-x64-musl`, `bun-linux-arm64-musl`. Each `--target=<t>` compile finished
+in a few seconds. (Exact binary sizes/timings vary by bun version and dependency
+tree — reproduce them with the compile command below rather than trusting a pinned
+number.)
 
-Each compile took ~3–5 s. **No target needs its own OS runner** — the workflow is a
-single `ubuntu-latest` matrix job that cross-compiles via `--target=<t>`. Musl
-variants are cheap, so they are included.
+**No target needs its own OS runner** — the workflow is a single `ubuntu-latest`
+matrix job that cross-compiles via `--target=<t>`. Musl variants are cheap, so they
+are included.
 
 ## Architecture
 
@@ -51,9 +48,11 @@ Three jobs:
 ### Why regenerate the manifest inside the job
 
 The workflow never relies on the committed `lib/embedded-assets.generated.mjs`. Each
-`build` leg regenerates it fresh. The generator is deterministic (stable content
-fingerprint — locally `56c0d68b945b31d9`), so every target in the matrix embeds
-byte-identical content. The fingerprint is printed for audit.
+`build` leg regenerates it fresh via `bun scripts/gen-embedded-assets.mjs`. The
+generator is deterministic (it prints a stable content fingerprint on each run), so
+every target in the matrix embeds byte-identical content. The fingerprint value is
+emitted by the generator for audit — run the script to see the current value rather
+than relying on a pinned copy here.
 
 ## Triggers
 
@@ -76,10 +75,17 @@ install/use. Adding real darwin/windows/arm smoke would require dedicated OS run
 
 ## Local proof (commands from the workflow, run on the host)
 
-- `bun scripts/gen-embedded-assets.mjs` → `Embedded 145 asset file(s), fingerprint 56c0d68b945b31d9`
-- `bun build --compile --target=<t> …` → all 7 targets compiled (table above)
-- `./forge-bin-host.exe --version` → `Forge v0.1.0-beta.1` (exit 0)
-- `bun scripts/parity-check.mjs` → `Parity: 220 npm files vs 220 binary files. PARITY OK — byte-identical`
+These are the exact commands the workflow runs; each was executed locally and
+passed. Run them yourself to reproduce (outputs — file counts, sizes, fingerprint —
+are generated dynamically and intentionally not pinned here):
+
+- `bun scripts/gen-embedded-assets.mjs` — regenerates the embed manifest and prints
+  the asset count + content fingerprint.
+- `bun build --compile --target=<t> …` — compiled all seven targets from the host.
+- `<binary> --version` — prints `Forge v<version>` and exits 0.
+- `bun scripts/parity-check.mjs` — reports equal npm/binary file counts and
+  `PARITY OK` (byte-identical setup trees); it self-builds the binary and runs
+  `setup --quick --yes`.
 
 ## Conventions followed
 
