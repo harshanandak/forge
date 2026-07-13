@@ -81,10 +81,38 @@ describe('isLoopbackRequest', () => {
 });
 
 describe('resolveStaticPath', () => {
-  test('maps / to index.html and blocks traversal', () => {
-    const dir = path.resolve('/tmp/dash');
+  const dir = path.resolve('/tmp/dash');
+
+  test('maps / to index.html', () => {
     expect(serve.resolveStaticPath(dir, '/')).toBe(path.join(dir, 'index.html'));
+  });
+
+  test('serves a legit nested asset inside the dashboard dir', () => {
+    expect(serve.resolveStaticPath(dir, '/assets/app.js')).toBe(path.join(dir, 'assets', 'app.js'));
+    // Query and fragment are stripped before resolution.
+    expect(serve.resolveStaticPath(dir, '/assets/app.js?v=2#top')).toBe(path.join(dir, 'assets', 'app.js'));
+  });
+
+  test('blocks dot-dot traversal', () => {
     expect(serve.resolveStaticPath(dir, '/../../etc/passwd')).toBeNull();
+    expect(serve.resolveStaticPath(dir, '/assets/../../../../etc/passwd')).toBeNull();
+  });
+
+  test('blocks percent-encoded traversal (%2e%2e%2f)', () => {
+    expect(serve.resolveStaticPath(dir, '/%2e%2e%2f%2e%2e%2fetc/passwd')).toBeNull();
+    expect(serve.resolveStaticPath(dir, '/..%2f..%2fetc%2fpasswd')).toBeNull();
+  });
+
+  test('blocks absolute-path escape', () => {
+    // A leading extra slash / absolute-looking path must not discard the root.
+    const out = serve.resolveStaticPath(dir, '/etc/passwd');
+    expect(out).toBe(path.join(dir, 'etc', 'passwd'));
+    expect(out.startsWith(dir + path.sep)).toBe(true);
+  });
+
+  test('rejects NUL bytes and malformed percent-encoding', () => {
+    expect(serve.resolveStaticPath(dir, '/index.html%00.js')).toBeNull();
+    expect(serve.resolveStaticPath(dir, '/%')).toBeNull();
   });
 });
 
