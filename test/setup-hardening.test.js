@@ -197,6 +197,27 @@ describe('finalizeWorkflowConfig runs init as part of setup (ac0b38c7)', () => {
       setupCommand.finalizeWorkflowConfig({ runInit: () => ({ success: false }) }));
     expect(output).toContain('forge init');
   });
+
+  test('skips init side effects when caller already installed hooks/Beads', async () => {
+    const root = makeTempDir();
+    let skipArg;
+    await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({
+        hooksAlreadyInstalled: true,
+        runInit: (_r, skip) => { skipArg = skip; return { success: true }; },
+      }));
+    expect(skipArg).toBe(true);
+  });
+
+  test('does NOT skip init side effects on interactive paths (hooks not pre-installed)', async () => {
+    const root = makeTempDir();
+    let skipArg;
+    await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({
+        runInit: (_r, skip) => { skipArg = skip; return { success: true }; },
+      }));
+    expect(skipArg).toBe(false);
+  });
 });
 
 describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
