@@ -69,6 +69,14 @@ bunx forge setup --agents claude,cursor
 
 Use `--agents`, not `--agent`.
 
+`forge setup` is one-step onboarding: if `.forge/config.yaml` does not exist yet,
+it runs `forge init` for you at the end (standard profile) so you finish with a
+working workflow config. Re-run `forge init --profile <minimal|standard|full>
+--force` to change it. On Windows without Git Bash, setup no longer aborts — it
+prints install guidance (https://git-scm.com/download/win) and continues in a
+reduced-capability mode where the shell-script-backed helper steps are unavailable
+until you install Git Bash and re-run `forge setup`.
+
 ## 4. Inspect Local State
 
 ```bash
@@ -120,6 +128,25 @@ The agent workflow stages are documented in `AGENTS.md` and the installed agent 
 ```
 
 These are the 6 agent workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages. A composable `research` skill runs as a phase of `/plan` or standalone. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
+
+### Agent slash-skills vs. typeable `forge` verbs
+
+`/plan`, `/dev`, `/validate`, `/ship`, `/review`, and `/verify` are **agent
+slash-skills** — you invoke them by asking your AI agent to run that stage (they
+resolve to the installed skill files under the agent's skills directory). They are
+**not** all mirrored by a `forge <verb>` CLI command you type in a terminal.
+
+What you type in a terminal are **`forge` CLI verbs**, for example:
+
+```text
+forge init | setup | status | board | ready | show | claim | close
+forge worktree | validate | test | push | sync | clean | prime | gate
+```
+
+Overlap is deliberate but partial: `/validate` the stage and `forge validate` the
+CLI verb both exist, whereas `/plan`, `/dev`, `/review`, and `/verify` have **no**
+`forge plan|dev|review|verify` terminal command — they are agent stages only. Run
+`forge --help` for the authoritative list of typeable verbs.
 
 The workflow template is core to Forge. It is also designed to become more configurable as runtime graph, stage-skill, adapter, and extension surfaces ship. See [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) and [Skills and command projections](docs/reference/SKILLS.md).
 
