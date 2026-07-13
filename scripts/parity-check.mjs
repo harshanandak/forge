@@ -29,17 +29,35 @@ function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
-/** Map of relative-posix-path → sha256 for every file under dir (excluding .git). */
+// Directories to skip entirely while walking a setup tree. `node_modules` is a
+// package-manager install artifact, NOT a Forge-managed asset — `setup --quick`
+// may run an npm/bun install whose output (dependency trees, registry metadata)
+// is legitimately non-deterministic between runs, channels, and OSes. Comparing
+// it produces false-positive drift, so it is excluded. `.git` is runtime VCS state.
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules']);
+
+// Files to skip regardless of location. Lockfiles are install byproducts: their
+// bytes vary with registry ordering/timestamps and are not Forge assets. Excluding
+// them keeps parity strict for real assets (skills/rules/hooks/.forge/AGENTS.md)
+// while ignoring package-manager noise. `.package-lock.json` normally lives under
+// node_modules/ (already excluded) but is guarded here too for robustness.
+const EXCLUDED_FILES = new Set(['package-lock.json', '.package-lock.json']);
+
+/**
+ * Map of relative-posix-path → sha256 for every Forge-managed file under dir.
+ * Excludes .git, node_modules/**, and package-manager lockfiles (see the
+ * EXCLUDED_* sets above) so parity compares only Forge assets, not install output.
+ */
 function hashTree(dir) {
   const map = {};
   const walk = (abs, rel) => {
     for (const e of fs.readdirSync(abs)) {
-      if (e === '.git') continue;
+      if (EXCLUDED_DIRS.has(e)) continue;
       const a = path.join(abs, e);
       const r = rel ? `${rel}/${e}` : e;
       const st = fs.lstatSync(a);
       if (st.isDirectory()) walk(a, r);
-      else if (st.isFile()) map[r] = sha256(a);
+      else if (st.isFile() && !EXCLUDED_FILES.has(e)) map[r] = sha256(a);
     }
   };
   walk(dir, '');
@@ -118,4 +136,10 @@ function main() {
   }
 }
 
-main();
+// Exported for unit testing the asset-vs-install-artifact filtering. `hashTree`
+// and the exclusion sets are the load-bearing parity logic; the rest of the file
+// drives real builds and only runs when executed directly (guarded below).
+export { hashTree, EXCLUDED_DIRS, EXCLUDED_FILES };
+
+// Only build + compare when run as a script, not when imported by a test.
+if (import.meta.main) main();
