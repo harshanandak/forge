@@ -1,6 +1,7 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const { EventEmitter } = require('node:events');
 
 const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
 const { maybeStartPrWatcher } = require('../../lib/commands/ship');
@@ -70,6 +71,20 @@ describe('startPrWatcherDetached', () => {
     });
     expect(spawned).toBe(true);
     expect(res.started).toBe(true);
+  });
+
+  test('attaches an error listener so an ASYNC spawn error never crashes ship', () => {
+    // spawn() can emit 'error' (ENOENT/EACCES) AFTER returning; on an EventEmitter
+    // with no 'error' listener that emit THROWS (would be an unhandled exception in
+    // the ship process). The no-op listener we attach must absorb it.
+    const child = new EventEmitter();
+    child.pid = 555;
+    child.unref = () => {};
+    const res = startPrWatcherDetached({ prNumber: 3, cwd: '/repo', resolveSlug: () => null, spawn: () => child });
+    expect(res.started).toBe(true);
+    expect(child.listenerCount('error')).toBe(1);
+    // With the listener present, a post-return async error is absorbed, not thrown.
+    expect(() => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))).not.toThrow();
   });
 
   test('never throws when spawn fails — degrades to not-started', () => {

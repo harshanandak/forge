@@ -6,7 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const journal = require('../../lib/pr-monitor/journal');
-const { watchLoop, jitter, DEFAULT_INTERVAL_MS } = require('../../lib/pr-monitor/watch');
+const {
+  watchLoop, jitter, defaultSleep, defaultClaim, DEFAULT_INTERVAL_MS,
+} = require('../../lib/pr-monitor/watch');
 const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
 
 function snap(over = {}) {
@@ -146,5 +148,55 @@ describe('jitter', () => {
     expect(jitter(1000, () => 0)).toBe(800);
     expect(jitter(1000, () => 0.9999999)).toBeLessThanOrEqual(1200);
     expect(jitter(1000, () => 0.5)).toBe(1000);
+  });
+});
+
+describe('defaultSleep (abortable)', () => {
+  test('resolves immediately when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const start = Date.now();
+    await defaultSleep(10000, controller.signal); // would be 10s if it ignored abort
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  test('resolves early when the signal aborts mid-sleep (Ctrl-C never waits out the interval)', async () => {
+    const controller = new AbortController();
+    const start = Date.now();
+    const sleeping = defaultSleep(10000, controller.signal);
+    controller.abort();
+    await sleeping;
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  test('a normal (un-aborted) sleep still honors the timer', async () => {
+    const start = Date.now();
+    await defaultSleep(30);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe('defaultClaim (atomic watcher claim)', () => {
+  test('two concurrent claims on the same PR: exactly ONE succeeds', async () => {
+    // Simulate a cross-process pid via shared state; the journal lock must
+    // serialize the check+write so both starts cannot both claim (and both begin
+    // emitting duplicate NDJSON).
+    let pid = null;
+    const primitives = {
+      watcherRunning: () => pid != null,
+      writePid: () => { pid = 4242; },
+    };
+    const [a, b] = await Promise.all([
+      defaultClaim(dir, primitives),
+      defaultClaim(dir, primitives),
+    ]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+
+  test('a claim fails once the slot is already owned', async () => {
+    let pid = null;
+    const primitives = { watcherRunning: () => pid != null, writePid: () => { pid = 1; } };
+    expect(await defaultClaim(dir, primitives)).toBe(true);
+    expect(await defaultClaim(dir, primitives)).toBe(false);
   });
 });
