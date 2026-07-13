@@ -247,6 +247,35 @@ test('cockpit: roleCommand yields the exact role→skill binding command', () =>
   expect(app.roleCommand({ role: 'plan', skill: 'my-plan' })).toBe('forge role plan --use my-plan');
 });
 
+test('cockpit: isDefaultBinding flags the self-noop default, not customized bindings', () => {
+  // dev→dev with no override → default self-binding (copy would be a no-op)
+  expect(app.isDefaultBinding({ role: 'dev', skill: 'dev', configSource: 'package-defaults' })).toBe(true);
+  // a different skill → meaningful, not default
+  expect(app.isDefaultBinding({ role: 'dev', skill: 'my-skill', configSource: 'package-defaults' })).toBe(false);
+  // same name but overridden in config → still show the (re-applying) command
+  expect(app.isDefaultBinding({ role: 'dev', skill: 'dev', configSource: '.forge/config.yaml' })).toBe(false);
+});
+
+test('cockpit: rail state tracks real config — a disabled unlocked rail offers ENABLE, not disable', () => {
+  // enabled + unlocked (default kernel_tracking) → disable command
+  expect(app.gateCommand({ id: 'rail.kernel_tracking', enabled: true, locked: false })).toBe('forge gate disable rail.kernel_tracking');
+  // AFTER `forge gate disable rail.kernel_tracking` → re-bake shows enabled:false;
+  // the cockpit must now offer ENABLE (never a stale "disable")
+  expect(app.gateCommand({ id: 'rail.kernel_tracking', enabled: false, locked: false })).toBe('forge gate enable rail.kernel_tracking');
+  // a disabled rail is customized → cfgBadge must reflect the override (isCustomized)
+  expect(app.isCustomized('.forge/config.yaml')).toBe(true);
+  // locked rails never emit a command
+  expect(app.gateCommand({ id: 'rail.secret_scan', enabled: true, locked: true })).toBe(null);
+});
+
+test('cockpit: renderingHarnesses derives SessionStart support from the matrix (no hardcoding)', () => {
+  const wf = { harnessMatrix: { claude: { rendered: true }, cursor: { rendered: false }, codex: { rendered: false } } };
+  expect(app.renderingHarnesses(wf)).toEqual(['claude']);
+  // if the matrix changes, the derivation changes with it
+  const wf2 = { harnessMatrix: { claude: { rendered: true }, cursor: { rendered: true } } };
+  expect(app.renderingHarnesses(wf2)).toEqual(['claude', 'cursor']);
+});
+
 test('cockpit: shortId strips the primitive prefix', () => {
   expect(app.shortId('gate.plan-exit')).toBe('plan-exit');
   expect(app.shortId('evidence.tdd-tests')).toBe('tdd-tests');

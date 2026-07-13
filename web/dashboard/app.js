@@ -890,6 +890,11 @@ function gateCommand(gate) {
 function roleCommand(role) {
   return `forge role ${role.role} --use ${role.skill}`;
 }
+// A role bound to its own default skill with no override — copying `forge role dev
+// --use dev` is a self-noop, so the cockpit shows a customize template instead.
+function isDefaultBinding(role) {
+  return !!role && role.skill === role.role && !isCustomized(role.configSource);
+}
 // The 6-stage rail: role binding (always) joined with its phase record (only the
 // 4 plan/dev/validate/ship phases exist today — review/verify are role-only).
 function stageRailModel(wf) {
@@ -899,7 +904,7 @@ function stageRailModel(wf) {
 }
 
 /* ---------- cockpit render (DOM-facing) ---------- */
-const cmdChip = (cmd) => `<button class="cmdchip" data-act="copy" data-cmd="${esc(cmd)}" title="Copy command"><code>${esc(cmd)}</code><span class="cmdchip__ico" aria-hidden="true">⧉</span></button>`;
+const cmdChip = (cmd) => `<button class="cmdchip" data-act="copy" data-cmd="${esc(cmd)}" title="Copy command"><code>${esc(cmd)}</code><span class="cmdchip__ico" aria-hidden="true">⧉</span><span class="cmdchip__sr" aria-live="polite"></span></button>`;
 const cfgBadge = (src) => (isCustomized(src)
   ? '<span class="wbadge wbadge--custom" title="overridden in .forge/config.yaml">customized</span>'
   : '<span class="wbadge wbadge--default" title="shipped default — no override">default</span>');
@@ -914,24 +919,30 @@ function planSubSkillsBlock(wf) {
   const items = subs.map((s) => `<li>${esc(s.label || shortId(s.id))}</li>`).join('');
   return `<div class="stage__row"><span class="wk">/plan sub-skills</span><ol class="wsubs">${items}</ol></div>`;
 }
+function roleCmdHtml(role, id) {
+  if (!role) return '';
+  if (isDefaultBinding(role)) return `<div class="stage__cmd wmute">default binding — customize: <code>forge role ${esc(id)} --use &lt;skill&gt;</code></div>`;
+  return `<div class="stage__cmd">${cmdChip(roleCommand(role))}</div>`;
+}
 function stageCard(node, idx, wf) {
   const { id, role, phase } = node;
   const skill = role ? role.skill : null;
-  const cmd = role ? `<div class="stage__cmd">${cmdChip(roleCommand(role))}</div>` : '';
+  const phaseState = phase ? `${cfgBadge(phase.configSource)}${gateStateBadge(phase)}` : '';
   const gates = phase ? `<div class="stage__row"><span class="wk">gates</span>${wtags(phase.gates)}</div>` : '';
   const ev = phase ? `<div class="stage__row"><span class="wk">evidence</span>${wtags(phase.evidence, 'wtag--ev')}</div>` : '';
   const art = phase ? `<div class="stage__row"><span class="wk">artifacts</span>${wtags(phase.artifacts, 'wtag--art')}</div>` : '';
   const sub = id === 'plan' ? planSubSkillsBlock(wf) : '';
   const seam = phase ? '' : `<div class="wseam">role-only stage — no runtime phase record yet · ${wseam('reviewVerifyPhases')}</div>`;
   return `<div class="stage ${phase ? '' : 'stage--roleonly'}">
-    <div class="stage__hd"><span class="stage__n">${idx + 1}</span><span class="stage__id">/${esc(id)}</span></div>
+    <div class="stage__hd"><span class="stage__n">${idx + 1}</span><span class="stage__id">/${esc(id)}</span>${phaseState}</div>
     <div class="stage__role">role <b>${esc(id)}</b> → skill <b>${esc(skill || '—')}</b> ${role ? cfgBadge(role.configSource) : ''}</div>
-    ${cmd}${gates}${ev}${art}${sub}${seam}
+    ${roleCmdHtml(role, id)}${gates}${ev}${art}${sub}${seam}
   </div>`;
 }
-function gateStateBadge(gate) {
-  if (gate.locked) return lockedBadge(`Cannot disable locked gate '${gate.id}'`);
-  return gate.enabled === false ? '<span class="wbadge wbadge--off">disabled</span>' : '<span class="wbadge wbadge--on">enabled</span>';
+// Shared state badge for gates, rails, and phases — all carry enabled/locked.
+function gateStateBadge(item) {
+  if (item.locked) return lockedBadge(`Cannot disable locked '${item.id}'`);
+  return item.enabled === false ? '<span class="wbadge wbadge--off">disabled</span>' : '<span class="wbadge wbadge--on">enabled</span>';
 }
 function gateRow(gate) {
   const cmd = gateCommand(gate);
@@ -954,29 +965,42 @@ function gatesPanel(wf) {
   const verify = gates.filter((g) => gateBucket(g) === 'verify');
   return `<div class="wpanel"><div class="wpanel__hd">Gates <span class="wmute">${stage.length} stage · ${human.length} human · ${verify.length} write-verify</span></div>${gateGroupHtml('Stage gates', stage, 'phase entry/exit')}${gateGroupHtml('Human gates', human, 'approval events')}${gateGroupHtml('Write verification', verify, 'check-after-write')}</div>`;
 }
+// Rails reuse the SAME helpers as gates so their state, command (enable vs
+// disable), and customized badge all track the real resolved config — never a
+// hardcoded "enabled" that goes stale after `forge gate disable rail.kernel_tracking`.
 function railRow(rail) {
-  const state = rail.locked ? lockedBadge('fixed L1 guardrail — cannot disable') : '<span class="wbadge wbadge--on">enabled</span>';
-  const cmdHtml = rail.locked ? '<div class="grow__cmd wmute">fixed — cannot disable</div>' : `<div class="grow__cmd">${cmdChip(`forge gate disable ${rail.id}`)}</div>`;
+  const cmd = gateCommand(rail);
+  const cmdHtml = cmd ? `<div class="grow__cmd">${cmdChip(cmd)}</div>` : '<div class="grow__cmd wmute">fixed — cannot disable</div>';
   return `<div class="grow ${rail.locked ? 'grow--locked' : ''}">
     <div class="grow__main"><code class="gid">${esc(rail.id)}</code><span class="glabel">${esc(rail.label || '')}</span></div>
-    <div class="grow__meta"><span class="wk">${esc(rail.layer || 'L1')}</span>${state}</div>
+    <div class="grow__meta"><span class="wk">${esc(rail.layer || 'L1')}</span>${cfgBadge(rail.configSource)}${gateStateBadge(rail)}</div>
     ${cmdHtml}
   </div>`;
 }
 function railsPanel(wf) {
-  return `<div class="wpanel"><div class="wpanel__hd">Rails <span class="wmute">L1 — all locked except rail.kernel_tracking</span></div>${(wf.rails || []).map(railRow).join('')}</div>`;
+  const rails = wf.rails || [];
+  const unlocked = rails.filter((r) => !r.locked).map((r) => r.id);
+  const note = unlocked.length ? `L1 — unlocked: ${unlocked.join(', ')}` : 'L1 — all locked';
+  return `<div class="wpanel"><div class="wpanel__hd">Rails <span class="wmute">${esc(note)}</span></div>${rails.map(railRow).join('')}</div>`;
 }
 function skillRow(sk) {
   const lock = sk.lock ? `<span class="wtag" title="${esc(sk.lock.source)} · ${esc(sk.lock.sourceType)}">lock ${esc(sk.lock.hash)}</span>` : '<span class="wmute">no lock entry</span>';
   return `<div class="skrow"><code class="skname">${esc(sk.name)}</code><span class="wbadge wbadge--win" title="wins precedence: user .skills &gt; project skills &gt; packaged">${esc(sk.winner)}</span>${lock}</div>`;
+}
+// Harnesses that actually inject context at SessionStart — DERIVED from the baked
+// matrix, not hardcoded, so it stays honest if the capability matrix changes.
+function renderingHarnesses(wf) {
+  return Object.entries(wf.harnessMatrix || {}).filter(([, v]) => v.rendered).map(([h]) => h);
 }
 function harnessMatrixHtml(wf) {
   return Object.entries(wf.harnessMatrix || {}).map(([h, v]) => `<span class="hchip ${v.rendered ? 'hchip--on' : 'hchip--off'}" title="${esc(v.reason || 'SessionStart injection')}">${esc(h)} ${v.rendered ? '✓' : '✕'}</span>`).join('');
 }
 function skillsCatalog(wf) {
   const dirs = (wf.skillDirs || []).map((d) => `<span class="wtag ${d.exists ? '' : 'wtag--muted'}">${esc(d.label)}${d.exists ? '' : ' (absent)'}</span>`).join(' › ');
+  const renders = renderingHarnesses(wf);
+  const note = renders.length ? `only ${renders.join(', ')} inject${renders.length === 1 ? 's' : ''} context` : 'no harness injects context';
   return `<div class="wpanel"><div class="wpanel__hd">Skills catalog <span class="wmute">precedence ${dirs}</span></div>
-    <div class="wpanel__sub">SessionStart render: ${harnessMatrixHtml(wf)} <span class="wmute">— only Claude injects context (honest)</span></div>
+    <div class="wpanel__sub">SessionStart render: ${harnessMatrixHtml(wf)} <span class="wmute">— ${esc(note)} (derived)</span></div>
     <div class="sklist">${(wf.skills || []).map(skillRow).join('')}</div></div>`;
 }
 function profileRow(name, p) {
@@ -1138,11 +1162,13 @@ function handleAct(t) {
 function copyCommand(el) {
   const cmd = el.dataset.cmd || '';
   const ico = el.querySelector('.cmdchip__ico');
+  const sr = el.querySelector('.cmdchip__sr');
   const flash = () => {
     el.classList.add('copied');
     const prev = ico ? ico.textContent : '';
     if (ico) ico.textContent = '✓';
-    setTimeout(() => { el.classList.remove('copied'); if (ico) ico.textContent = prev; }, 1200);
+    if (sr) sr.textContent = 'Copied to clipboard';
+    setTimeout(() => { el.classList.remove('copied'); if (ico) ico.textContent = prev; if (sr) sr.textContent = ''; }, 1200);
   };
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1275,5 +1301,5 @@ async function boot() {
 }
 if (typeof document !== 'undefined') boot();
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId };
+  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId, isDefaultBinding, renderingHarnesses };
 }
