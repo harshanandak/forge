@@ -76,7 +76,7 @@ $Dest = Join-Path $Dir 'forge.exe'
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-install-" + [System.Guid]::NewGuid().ToString('N') + ".exe")
 
 try {
-	Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing
+	Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing -TimeoutSec 300
 } catch {
 	throw "forge-install: download failed from $Url - is the release published for windows-x64? ($_)"
 }
@@ -95,7 +95,7 @@ if ($SkipChecksum -or $env:FORGE_SKIP_CHECKSUM -eq '1') {
 	$expected = $null
 	$manifestFetched = $false
 	try {
-		Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsTmp -UseBasicParsing
+		Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsTmp -UseBasicParsing -TimeoutSec 30
 		$manifestFetched = $true
 		foreach ($line in (Get-Content $SumsTmp)) {
 			# Lines are "<hash>  <name>" (text) or "<hash> *<name>" (binary).

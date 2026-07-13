@@ -148,11 +148,11 @@ fi
 
 # --- downloader ------------------------------------------------------------
 if command -v curl >/dev/null 2>&1; then
-	DL='curl -fSL --retry 3 -o'
-	DL_QUIET='curl -fsSL'
+	DL='curl -fSL --retry 3 --connect-timeout 10 --max-time 300 -o'
+	DL_QUIET='curl -fsSL --connect-timeout 10 --max-time 30'
 elif command -v wget >/dev/null 2>&1; then
-	DL='wget -O'
-	DL_QUIET='wget -qO-'
+	DL='wget --timeout=300 -O'
+	DL_QUIET='wget --timeout=30 -qO-'
 else
 	die "need either curl or wget installed to download the binary."
 fi
@@ -160,9 +160,9 @@ fi
 download_to() { # url dest
 	# shellcheck disable=SC2086
 	if command -v curl >/dev/null 2>&1; then
-		curl -fSL --retry 3 -o "$2" "$1"
+		curl -fSL --retry 3 --connect-timeout 10 --max-time 300 -o "$2" "$1"
 	else
-		wget -O "$2" "$1"
+		wget --timeout=300 -O "$2" "$1"
 	fi
 }
 
