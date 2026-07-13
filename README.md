@@ -199,6 +199,21 @@ bunx forge status                  # human one-glance view
 bunx forge prime                   # session-entry orientation for agents
 ```
 
+Prefer a standalone binary (no Node/Bun runtime)? Install it in one line:
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1 | iex
+```
+
+See the [installation guide](docs/reference/INSTALL.md) for the supported
+platforms, pinned versions, manual downloads, and the npm/npx alternative.
+
 <details>
 <summary><strong>Per-agent setup notes</strong></summary>
 
@@ -224,6 +239,7 @@ The full, honest per-agent delivery status lives in the
 Full guides:
 
 - [Quickstart](QUICKSTART.md) — clean first run, step by step
+- [Installation guide](docs/reference/INSTALL.md) — standalone binary + npm/npx
 - [Setup guide](docs/guides/SETUP.md)
 - [Support and troubleshooting](docs/guides/SUPPORT.md)
 - [Command reference](docs/reference/COMMANDS.md)

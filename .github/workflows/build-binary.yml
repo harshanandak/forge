@@ -175,3 +175,57 @@ jobs:
 
       - name: Run parity check (npm vs compiled binary)
         run: bun scripts/parity-check.mjs
+
+  # Step 4 (50afbc47): publish the compiled binaries to the GitHub Release on v*
+  # tags. This is the piece the install scripts (scripts/install.sh / install.ps1)
+  # download from. Runs ONLY on tag pushes; pull_request and workflow_dispatch
+  # runs stay artifact-only. Downloads every artifact from the build matrix,
+  # renames each to a clean per-OS/arch asset name by stripping the internal
+  # `bun-` target prefix (so `forge-bun-linux-x64-musl` -> `forge-linux-x64-musl`
+  # and `forge-bun-windows-x64.exe` -> `forge-windows-x64.exe`), then uploads them
+  # to the release for the tag. The names must match resolve_asset() in
+  # scripts/install.sh and releaseAssetName() in scripts/lib/release-asset.mjs.
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # Write access is scoped to THIS job only (top-level default stays read) so
+      # the release upload can create/attach assets via the built-in GITHUB_TOKEN.
+      contents: write
+    steps:
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Flatten and rename assets
+        run: |
+          mkdir -p release
+          found=0
+          for f in artifacts/forge-bun-*/forge-bun-*; do
+            [ -e "$f" ] || continue
+            base="$(basename "$f")"
+            asset="forge-${base#forge-bun-}"
+            cp "$f" "release/${asset}"
+            found=$((found + 1))
+            echo "  ${f} -> release/${asset}"
+          done
+          # A v* tag builds all seven canonical targets, so a short count means a
+          # matrix leg silently failed — fail the release rather than ship partial.
+          if [ "$found" -ne 7 ]; then
+            echo "::error::expected 7 release assets, found ${found}"
+            exit 1
+          fi
+          ls -l release
+
+      - name: Upload assets to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
