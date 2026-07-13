@@ -31,10 +31,12 @@ const {
 const FORGE_MARK = 'forge-native-hook.js';
 
 describe('Forge hook contract', () => {
-  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject) intents', () => {
+  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup) intents', () => {
     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
-    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject']);
+    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup']);
+    // Each context intent routes to the `forge` CLI via a `hooks <cliAction>` marker.
+    const CONTEXT_MARKERS = { 'memory-inject': FORGE_CONTEXT_MARKER, 'inbox-pickup': 'hooks inbox-pickup' };
     for (const intent of FORGE_HOOK_CONTRACT.intents) {
       expect(typeof intent.enforces).toBe('string');
       expect(intent.enforces.length).toBeGreaterThan(0);
@@ -45,7 +47,7 @@ describe('Forge hook contract', () => {
       } else {
         // Context intents route to the `forge` CLI, fail-open — no adapter marker.
         expect(intent.kind).toBe('context');
-        expect(intent.command).toContain(FORGE_CONTEXT_MARKER);
+        expect(intent.command).toContain(CONTEXT_MARKERS[intent.id]);
         expect(intent.command).not.toContain(FORGE_MARK);
       }
     }
