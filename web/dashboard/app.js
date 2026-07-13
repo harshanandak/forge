@@ -780,6 +780,7 @@ function issueDetailHtml(i) {
       <dt>Updated</dt><dd class="mono">${esc(relTime(i.updated_at))} ago</dd>
     </dl>
     ${i.body ? `<div class="detail__body">${esc(clamp(i.body, 1400))}</div>` : ''}
+    ${Serve.live ? issueWritePanel(i) : ''}
     ${kids.length ? `<div class="section-title">Children · ${kids.length}</div><div class="cardgrid">${childCards}</div>` : ''}
     <div class="section-title">Linked work</div>
     <div class="linkgraph">
@@ -1138,6 +1139,13 @@ function buildNav() {
 }
 
 // Shared action handler for clicks in both #view and the #detail overlay.
+// Route a clicked/activated [data-act] element: LIVE serve-* writes go to the
+// serve layer, everything else to the read-view handler. Keeps serve routing
+// out of handleAct's (already large) dispatch.
+function dispatchAct(t) {
+  if (t.dataset.act && t.dataset.act.startsWith('serve-')) { serveHandleAct(t); return; }
+  handleAct(t);
+}
 function handleAct(t) {
   const act = t.dataset.act;
   if (act === 'open') { const k = t.dataset.kind || 'issue'; location.hash = `#/${k}/${encodeURIComponent(t.dataset.id)}`; }
@@ -1189,7 +1197,7 @@ function fallbackCopy(text, done) {
 }
 function onViewClick(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
-  handleAct(t);
+  dispatchAct(t);
 }
 // Give every non-native [data-act] element button semantics so keyboard users can
 // reach and activate cards / rows / area-nodes. Called after each innerHTML render.
@@ -1208,7 +1216,7 @@ function onActKeydown(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
   if (!needsButtonSemantics(t.tagName)) return;
   e.preventDefault(); // Space would otherwise scroll
-  handleAct(t);
+  dispatchAct(t);
 }
 
 function wireGlobalSearch() {
@@ -1262,7 +1270,8 @@ function updateStamp() {
   const g = State.snapshot.generated_at;
   $('#updatedText').textContent = 'updated ' + (g ? relTime(g) + ' ago' : '—');
   const when = g ? new Date(g) : new Date();
-  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · read-only`;
+  const mode = Serve.live ? 'LIVE · write' : (Serve.serverUp ? 'LIVE · read' : 'SNAPSHOT · read-only');
+  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · ${mode}`;
   $('#brandVer').textContent = State.snapshot.status?.context?.branch ? esc(State.snapshot.status.context.branch) : 'kernel';
 }
 async function doRefresh(silent) {
@@ -1275,6 +1284,7 @@ async function doRefresh(silent) {
 
 async function boot() {
   try {
+    Serve.initToken();
     const snap = await DataSource.load();
     rebuild(snap);
     try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (_e) { /* private mode */ }
@@ -1284,7 +1294,7 @@ async function boot() {
     $('#view').addEventListener('keydown', onActKeydown);
     $('#detail').addEventListener('click', (e) => {
       if (e.target.closest('[data-act="detail-close"]')) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); return; }
-      const t = e.target.closest('[data-act]'); if (t) handleAct(t);
+      const t = e.target.closest('[data-act]'); if (t) dispatchAct(t);
     });
     $('#detail').addEventListener('keydown', onActKeydown);
     $('#detail').addEventListener('keydown', trapOverlayFocus);
@@ -1295,10 +1305,260 @@ async function boot() {
     route(); updateStamp();
     setInterval(updateStamp, 15000);
     setInterval(() => { if (document.visibilityState === 'visible') doRefresh(true); }, 60000);
+    serveActivate();
   } catch (err) {
     $('#view').innerHTML = `<div class="empty-state"><h4>Could not load snapshot</h4><p>${esc(err.message)}</p><p>Run node web/dashboard/generate-snapshot.mjs</p></div>`;
   }
 }
+/* ============================================================================
+ * Serve — the LOCAL write layer (active only under `forge serve`).
+ *
+ * The dashboard NEVER mutates the kernel directly: it POSTs the SAME forge
+ * verbs the CLI runs to /api/mutation, which relays them in-process through the
+ * broker (all validation lives there). On file:// or with no server, every
+ * write affordance is hidden and the dashboard stays read + copy-as-command.
+ * ========================================================================== */
+const STATUS_OPTIONS = ['backlog', 'open', 'in_progress', 'review', 'done', 'cancelled'];
+const ISSUE_TYPES = ['task', 'bug', 'feature', 'chore', 'epic', 'decision'];
+
+const Serve = {
+  serverUp: false, // /health answered
+  token: null,     // per-run capability, delivered in the page URL fragment
+  get live() { return this.serverUp && !!this.token; }, // write-capable
+
+  // Capture the per-run token from the URL fragment ONCE, persist it for the
+  // session, then strip it from the routing hash without navigating.
+  initToken() {
+    let stored = null;
+    try { stored = sessionStorage.getItem('forge-serve-token'); } catch (_e) { /* private mode */ }
+    const hash = location.hash.slice(1);
+    const m = /(?:^|[&/])token=([a-f0-9]{16,})/.exec(hash);
+    if (m) {
+      this.token = m[1];
+      try { sessionStorage.setItem('forge-serve-token', m[1]); } catch (_e) { /* private mode */ }
+      const rest = hash.replace(/(?:^|[&])token=[a-f0-9]{16,}/, '').replace(/^[&/]+/, '');
+      history.replaceState(null, '', rest.startsWith('/') ? '#' + rest : (rest ? '#/' + rest : '#/overview'));
+    } else if (stored) {
+      this.token = stored;
+    }
+  },
+
+  async detect() {
+    try {
+      const r = await fetch('/health', { cache: 'no-store' });
+      if (r.ok) { const j = await r.json(); this.serverUp = !!(j && j.forge_serve); }
+    } catch (_e) { this.serverUp = false; }
+    return this.serverUp;
+  },
+
+  async mutate(verb, args) {
+    try {
+      const res = await fetch('/api/mutation', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: this.token, verb, args }),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: 'bad response' }));
+      return { status: res.status, ...data };
+    } catch (err) { return { ok: false, error: err.message }; }
+  },
+};
+
+function serveSetMsg(elId, text, kind) {
+  const el = document.getElementById(elId);
+  if (el) { el.textContent = text; el.dataset.kind = kind || ''; }
+}
+
+// Refetch the snapshot + re-render after a successful write; reopen the issue
+// detail (when given) so the change is visible immediately.
+async function serveRefresh(id) {
+  try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); State.rendered = null; }
+  catch (_e) { /* keep current state if the refetch fails */ }
+  if (id && State.byId[id]) showIssue(id); else route();
+  updateStamp();
+}
+
+async function serveApply(verb, args, id) {
+  serveSetMsg('serveMsg-' + id, 'working…', 'busy');
+  const r = await Serve.mutate(verb, args);
+  if (r.ok) { await serveRefresh(id); return true; }
+  serveSetMsg('serveMsg-' + id, 'error: ' + (r.error || 'failed'), 'err');
+  return false;
+}
+
+function serveOption(val, cur) {
+  return `<option value="${esc(val)}"${val === cur ? ' selected' : ''}>${esc(val)}</option>`;
+}
+
+// The LIVE edit block appended to an issue's detail hub: status + priority
+// (POST issue.update), Close (issue.close), and a comment box (issue.comment).
+function issueWritePanel(i) {
+  const statuses = STATUS_OPTIONS.map((s) => serveOption(s, i.status)).join('');
+  const prios = PRIO_ORDER.map((p) => serveOption(p, i.priority)).join('');
+  const closed = i.status === 'done' || i.status === 'cancelled';
+  return `<div class="section-title">Edit · live</div>
+    <div class="serve-edit">
+      <div class="serve-row">
+        <label class="serve-field">Status<select class="serve-select" data-act="serve-status" data-id="${esc(i.id)}">${statuses}</select></label>
+        <label class="serve-field">Priority<select class="serve-select" data-act="serve-prio" data-id="${esc(i.id)}">${prios}</select></label>
+        ${closed ? '' : `<button class="btn" data-act="serve-close" data-id="${esc(i.id)}">Close issue</button>`}
+      </div>
+      <div class="serve-comment">
+        <textarea class="serve-textarea" id="serveComment-${esc(i.id)}" placeholder="Add a comment (reaches the agent on this issue)…"></textarea>
+        <button class="btn" data-act="serve-comment" data-id="${esc(i.id)}">Comment</button>
+      </div>
+      <div class="serve-msg" id="serveMsg-${esc(i.id)}" role="status"></div>
+    </div>`;
+}
+
+// change-delegated: status / priority <select> edits POST issue.update.
+function onServeChange(e) {
+  const sel = e.target.closest('[data-act="serve-status"], [data-act="serve-prio"]');
+  if (!sel) return;
+  const flag = sel.dataset.act === 'serve-status' ? '--status' : '--priority';
+  serveApply('issue.update', [sel.dataset.id, flag, sel.value], sel.dataset.id);
+}
+
+// click-delegated write actions (routed from handleAct + the serve modal).
+function serveHandleAct(t) {
+  const act = t.dataset.act; const id = t.dataset.id;
+  if (act === 'serve-close') serveApply('issue.close', [id], id);
+  else if (act === 'serve-comment') serveComment(id);
+  else if (act === 'serve-create') serveCreate();
+  else if (act === 'serve-add-open') openAddIssue();
+  else if (act === 'serve-controls') openControls();
+  else if (act === 'serve-run') serveRun(t.dataset.kind);
+  else if (act === 'serve-copy') serveCopy(t.dataset.kind);
+  else if (act === 'serve-modal-close') closeServeModal();
+}
+
+function serveComment(id) {
+  const ta = document.getElementById('serveComment-' + id);
+  const body = ta ? ta.value.trim() : '';
+  if (!body) { serveSetMsg('serveMsg-' + id, 'enter a comment first', 'err'); return; }
+  serveApply('issue.comment', [id, body], id);
+}
+
+/* ---------- modal (Add issue + Controls) — dynamic, reuses .detail skin ---------- */
+function ensureServeModal() {
+  let m = document.getElementById('serveModal');
+  if (m) return m;
+  m = document.createElement('div');
+  m.id = 'serveModal'; m.className = 'detail'; m.hidden = true;
+  m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+  m.innerHTML = '<div class="detail__scrim" data-act="serve-modal-close"></div>'
+    + '<div class="detail__panel" id="serveModalPanel" tabindex="-1"></div>';
+  document.body.appendChild(m);
+  m.addEventListener('click', (ev) => { const t = ev.target.closest('[data-act]'); if (t) serveHandleAct(t); });
+  return m;
+}
+function openServeModal(html) {
+  const m = ensureServeModal();
+  document.getElementById('serveModalPanel').innerHTML = html;
+  m.hidden = false; m.classList.add('on');
+}
+function closeServeModal() {
+  const m = document.getElementById('serveModal');
+  if (m) { m.classList.remove('on'); m.hidden = true; }
+}
+
+function openAddIssue() {
+  const types = ISSUE_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('');
+  const prios = PRIO_ORDER.map((p) => `<option value="${p}"${p === 'P2' ? ' selected' : ''}>${p}</option>`).join('');
+  openServeModal(`<button class="detail__close" data-act="serve-modal-close">✕ esc</button>
+    <h2 class="detail__title">New issue</h2>
+    <div class="serve-form">
+      <label class="serve-field">Title<input id="siTitle" class="serve-input" type="text" placeholder="Short summary" /></label>
+      <label class="serve-field">Type<select id="siType" class="serve-select">${types}</select></label>
+      <label class="serve-field">Priority<select id="siPrio" class="serve-select">${prios}</select></label>
+      <label class="serve-field">Parent epic id (optional)<input id="siParent" class="serve-input" type="text" placeholder="uuid" /></label>
+      <label class="serve-field">Body<textarea id="siBody" class="serve-textarea" placeholder="Details…"></textarea></label>
+      <div class="serve-row"><button class="btn btn--primary" data-act="serve-create">Create issue</button><button class="btn" data-act="serve-modal-close">Cancel</button></div>
+      <div class="serve-msg" id="serveMsg-new" role="status"></div>
+    </div>`);
+  const el = document.getElementById('siTitle'); if (el) el.focus();
+}
+
+async function serveCreate() {
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  const title = val('siTitle');
+  if (!title) { serveSetMsg('serveMsg-new', 'title is required', 'err'); return; }
+  const args = ['--title', title, '--type', val('siType') || 'task', '--priority', val('siPrio') || 'P2'];
+  const body = val('siBody'); if (body) args.push('--body', body);
+  const parent = val('siParent'); if (parent) args.push('--parent', parent);
+  serveSetMsg('serveMsg-new', 'creating…', 'busy');
+  const r = await Serve.mutate('issue.create', args);
+  if (r.ok) { closeServeModal(); await serveRefresh(null); }
+  else serveSetMsg('serveMsg-new', 'error: ' + (r.error || 'failed'), 'err');
+}
+
+// Controls: trigger the existing gate + role verbs. Each offers Copy (the
+// forge command) AND Run (POST the verb) — the handler validates the id.
+function openControls() {
+  openServeModal(`<button class="detail__close" data-act="serve-modal-close">✕ esc</button>
+    <h2 class="detail__title">Controls</h2>
+    <div class="serve-form">
+      <div class="section-title">Gate</div>
+      <div class="serve-row">
+        <label class="serve-field">Action<select id="scGateAction" class="serve-select"><option>enable</option><option>disable</option></select></label>
+        <label class="serve-field">Gate id<input id="scGateId" class="serve-input" value="gate.issue_verify" /></label>
+      </div>
+      <div class="serve-row"><button class="btn" data-act="serve-copy" data-kind="gate">Copy</button><button class="btn btn--primary" data-act="serve-run" data-kind="gate">Run</button></div>
+      <div class="section-title">Role → skill</div>
+      <div class="serve-row">
+        <label class="serve-field">Role<input id="scRole" class="serve-input" placeholder="planner" /></label>
+        <label class="serve-field">Skill<input id="scSkill" class="serve-input" placeholder="plan" /></label>
+      </div>
+      <div class="serve-row"><button class="btn" data-act="serve-copy" data-kind="role">Copy</button><button class="btn btn--primary" data-act="serve-run" data-kind="role">Run</button></div>
+      <div class="serve-msg" id="serveMsg-ctrl" role="status"></div>
+    </div>`);
+}
+
+function serveControlSpec(kind) {
+  const v = (id) => (document.getElementById(id)?.value || '').trim();
+  if (kind === 'gate') {
+    const action = v('scGateAction') || 'enable'; const gid = v('scGateId');
+    return { verb: 'gate', args: [action, gid], cmd: `forge gate ${action} ${gid}` };
+  }
+  const role = v('scRole'); const skill = v('scSkill');
+  return { verb: 'role', args: [role, '--use', skill], cmd: `forge role ${role} --use ${skill}` };
+}
+async function serveRun(kind) {
+  const spec = serveControlSpec(kind);
+  serveSetMsg('serveMsg-ctrl', 'running…', 'busy');
+  const r = await Serve.mutate(spec.verb, spec.args);
+  serveSetMsg('serveMsg-ctrl', r.ok ? ('ok — ' + spec.cmd) : ('error: ' + (r.error || 'failed')), r.ok ? 'ok' : 'err');
+}
+function serveCopy(kind) {
+  const spec = serveControlSpec(kind);
+  try { navigator.clipboard.writeText(spec.cmd); serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'); }
+  catch (_e) { serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'); }
+}
+
+function serveTopButton(id, act, label) {
+  const b = document.createElement('button');
+  b.id = id; b.className = 'btn'; b.type = 'button'; b.dataset.act = act; b.textContent = label;
+  b.addEventListener('click', () => serveHandleAct(b));
+  return b;
+}
+function mountServeControls() {
+  const bar = document.querySelector('.topbar');
+  if (!bar || document.getElementById('serveAddBtn')) return;
+  const ref = document.getElementById('refreshBtn');
+  bar.insertBefore(serveTopButton('serveAddBtn', 'serve-add-open', '＋ Issue'), ref);
+  bar.insertBefore(serveTopButton('serveCtlBtn', 'serve-controls', '⚙ Controls'), ref);
+}
+
+// Probe /health; when a server answers, expose the write UI. Never blocks the
+// initial read render — reads work identically with or without the server.
+async function serveActivate() {
+  await Serve.detect();
+  updateStamp();
+  if (!Serve.serverUp) return;
+  mountServeControls();
+  document.addEventListener('change', onServeChange);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeServeModal(); });
+}
+
 if (typeof document !== 'undefined') boot();
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId, isDefaultBinding, renderingHarnesses };

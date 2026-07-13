@@ -723,3 +723,21 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .wgrid--3 { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 820px) { .wgrid--3 { grid-template-columns: 1fr; } }
 .wpanel--future { border-style: dashed; opacity: .82; }
+
+/* ===================== forge serve — LIVE write UI ===================== */
+.serve-edit, .serve-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; }
+.serve-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.serve-field { display: flex; flex-direction: column; gap: 5px; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); flex: 1 1 auto; min-width: 120px; }
+.serve-input, .serve-select, .serve-textarea {
+  font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 0; padding: 7px 9px; letter-spacing: .02em; text-transform: none;
+}
+.serve-input:focus, .serve-select:focus, .serve-textarea:focus { outline: none; border-color: var(--line-2); }
+.serve-textarea { min-height: 64px; resize: vertical; width: 100%; }
+.serve-comment { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.btn--primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn--primary:hover { opacity: .82; }
+.serve-msg { font-family: var(--mono); font-size: 11px; min-height: 1.1em; letter-spacing: .02em; color: var(--muted); }
+.serve-msg[data-kind="err"] { color: #e0574f; }
+.serve-msg[data-kind="ok"] { color: var(--text); }
+.serve-msg[data-kind="busy"] { color: var(--muted); }
