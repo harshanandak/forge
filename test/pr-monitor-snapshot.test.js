@@ -47,6 +47,20 @@ describe('gatherPrSnapshot — the shared monitor gather', () => {
     expect(Array.isArray(snap.reviews)).toBe(true);
     expect(Array.isArray(snap.issueComments)).toBe(true);
   });
+
+  test('a failed base refresh fails CLOSED: fetchBase → unreadable → UNKNOWN verdict (A6)', async () => {
+    const adapter = recordingAdapter([]);
+    // A stale-ref refresh that throws must NOT let divergence/conflicts produce a
+    // false-clean verdict — it is verdict-relevant and marks the read unreadable.
+    adapter.fetchBase = () => { throw new Error('fetch failed: network'); };
+    const snap = await gatherPrSnapshot({
+      pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, self: 'forge-bot', now: 2000, settleWindowMs: 0,
+    });
+    expect(snap.unreadable).toContain('fetchBase');
+    expect(snap.degraded.some((d) => d.source === 'fetchBase')).toBe(true);
+    expect(snap.verdict).toBe('UNKNOWN');
+  });
 });
 
 describe('isFailed — STALE conclusion (A5)', () => {

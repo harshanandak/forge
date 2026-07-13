@@ -157,4 +157,27 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     expect(res.success).toBe(true);
     expect(res.events).toBeDefined();
   });
+
+  test('the events command enriches check.failed with the documented log excerpt', async () => {
+    // Regression: handleEvents must supply the DEFAULT failed-check enrichment,
+    // not only forward an injected one — otherwise a plain `forge shepherd events`
+    // emits bare check.failed events with no data.excerpt.
+    const green = { ...snap(), checks: [{ name: 'ci', class: 'green' }] };
+    const failed = { ...snap(), checks: [{ name: 'ci', class: 'failed' }] };
+    const gatherPull = async () => ({
+      failures: [{ name: 'ci', excerpt: 'AssertionError: boom', jobUrl: 'https://ci/job/1' }],
+    });
+    // Baseline pass (green) establishes the snapshot; no check.failed yet.
+    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir, gather: async () => green, now, watcherRunning: () => false, gatherPull,
+    });
+    // Transition to failed → check.failed emitted and enriched by the default hook.
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, {
+      dir, gather: async () => failed, now, watcherRunning: () => false, gatherPull,
+    });
+    const cf = res.events.find((e) => e.type === T.CHECK_FAILED);
+    expect(cf).toBeDefined();
+    expect(cf.data.excerpt).toBe('AssertionError: boom');
+    expect(cf.data.jobUrl).toBe('https://ci/job/1');
+  });
 });

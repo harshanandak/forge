@@ -58,6 +58,45 @@ describe('runMonitorPass', () => {
     expect(journal.readAllEvents(dir)).toHaveLength(1);
   });
 
+  test('fail → green → fail on the same sha re-emits: 3 check events, not 2', async () => {
+    // The dedup guard must be scoped to the snapshot cursor, NOT the whole
+    // journal history. A check that breaks, recovers, then breaks again keeps the
+    // same (type,key) identity (name+sha), so a history-wide guard would swallow
+    // the SECOND failure forever — a silent gap for a check that re-breaks.
+    const ci = (cls) => snap({ headSha: 'shaX', checks: [{ name: 'ci', class: cls }] });
+    await runMonitorPass({ dir, gather: async () => ci('green'), now });   // baseline
+    await runMonitorPass({ dir, gather: async () => ci('failed'), now });  // fail #1
+    await runMonitorPass({ dir, gather: async () => ci('green'), now });   // recover
+    await runMonitorPass({ dir, gather: async () => ci('failed'), now });  // fail #2 (re-emit)
+
+    const checkEvents = journal.readAllEvents(dir)
+      .filter((e) => e.type === T.CHECK_FAILED || e.type === T.CHECK_RECOVERED)
+      .map((e) => e.type);
+    expect(checkEvents).toEqual([T.CHECK_FAILED, T.CHECK_RECOVERED, T.CHECK_FAILED]);
+    expect(checkEvents.filter((t) => t === T.CHECK_FAILED)).toHaveLength(2);
+  });
+
+  test('concurrent passes do not duplicate events or reuse a sequence number', async () => {
+    // Two watchers/events callers racing on the same PR. The cross-process lock
+    // must serialize them: the second pass sees the first's snapshot and emits
+    // nothing, so exactly one check.failed lands with a unique seq.
+    await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'green' }] }), now });
+    const failGather = async () => {
+      await new Promise((r) => { setTimeout(r, 5); }); // widen the race window
+      return snap({ checks: [{ name: 'ci', class: 'failed' }] });
+    };
+    await Promise.all([
+      runMonitorPass({ dir, gather: failGather, now }),
+      runMonitorPass({ dir, gather: failGather, now }),
+    ]);
+    const all = journal.readAllEvents(dir);
+    const failed = all.filter((e) => e.type === T.CHECK_FAILED);
+    expect(failed).toHaveLength(1);
+    const seqs = all.map((e) => e.seq);
+    expect(new Set(seqs).size).toBe(seqs.length);           // unique
+    expect([...seqs].sort((a, b) => a - b)).toEqual(seqs);  // monotonic in journal order
+  });
+
   test('an enrich hook can decorate records before they are appended', async () => {
     // Establish the baseline first, then transition a check to failed so the
     // pass actually produces a check.failed record for the enricher to touch.
