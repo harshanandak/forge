@@ -13,10 +13,12 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 function findRepoRoot(start) {
   let dir = start;
@@ -336,6 +338,87 @@ console.log(`  ops: ${worktrees.length} worktrees, ${prs.length} open PRs, ${mer
 console.log(`  stage_runs: ${stagePopulated}/${claimedOpen.length} claimed issues have a real current_stage · stale leases: ${staleLeaseCount}`);
 console.log(`  needs-attention: ${needsAttention.length}`);
 
+// ---- workflow cockpit surface (84970f9d) ----------------------------------
+// Point-in-time bake of the CONFIGURABLE workflow architecture: the resolved
+// runtime graph (stages/gates/rails/roles/evidence/artifacts/plan sub-skills),
+// the raw .forge/config.yaml (absent = all-defaults), the workflow PROFILES, a
+// skills catalog (precedence + lock + per-harness render status), and lint
+// warnings. Read-only + copy-as-command in Tier-1; the config-intent WRITE path
+// is Tier-2 (9f2f0320) and drops into the same DataSource seam later.
+const skillDirLabel = (dir) => {
+  const s = String(dir).replace(/\\/g, '/');
+  const rootS = String(ROOT).replace(/\\/g, '/');
+  if (/\/\.skills$/.test(s)) return 'user';
+  if (s.startsWith(rootS)) return 'project';
+  return 'packaged';
+};
+
+function buildSkillsCatalog() {
+  const { skillSearchDirs } = require(join(ROOT, 'lib', 'config-writer.js'));
+  const dirs = skillSearchDirs(ROOT); // ordered: .skills > skills > packaged
+  let lock = {};
+  try { lock = JSON.parse(readFileSync(join(ROOT, 'skills-lock.json'), 'utf8')).skills || {}; }
+  catch { lock = {}; }
+  const byName = new Map();
+  dirs.forEach((dir) => {
+    if (!existsSync(dir)) return;
+    const label = skillDirLabel(dir);
+    for (const name of readdirSync(dir)) {
+      if (!existsSync(join(dir, name, 'SKILL.md'))) continue;
+      const existing = byName.get(name);
+      if (existing) { if (!existing.sources.includes(label)) existing.sources.push(label); continue; }
+      const l = lock[name] || null;
+      byName.set(name, {
+        name, winner: label, sources: [label],
+        lock: l ? { source: l.source, sourceType: l.sourceType, hash: String(l.computedHash || '').slice(0, 12) } : null,
+      });
+    }
+  });
+  const skills = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const skillDirs = dirs.map((d) => ({ path: String(d).replace(/\\/g, '/'), label: skillDirLabel(d), exists: existsSync(d) }));
+  return { skills, skillDirs };
+}
+
+const workflow = tryRun(() => {
+  const { getResolvedRuntimeGraph, lintRuntimeGraphConfig, ROLE_IDS } = require(join(ROOT, 'lib', 'core', 'runtime-graph.js'));
+  const { loadRawConfig } = require(join(ROOT, 'lib', 'config-writer.js'));
+  const { PROFILES } = require(join(ROOT, 'lib', 'workflow-profiles.js'));
+  const { SESSION_START_SUPPORT } = require(join(ROOT, 'lib', 'hook-renderer.js'));
+  const graph = getResolvedRuntimeGraph({ projectRoot: ROOT });
+  const lint = lintRuntimeGraphConfig({ projectRoot: ROOT });
+  const rawConfig = loadRawConfig(ROOT);
+  const configPresent = !!rawConfig && Object.keys(rawConfig).length > 0;
+  const { skills, skillDirs } = buildSkillsCatalog();
+  return {
+    stageOrder: [...ROLE_IDS], roleIds: [...ROLE_IDS],
+    phases: graph.phases, roles: graph.roles, gates: graph.gates, rails: graph.rails,
+    evidence: graph.evidence, artifacts: graph.artifacts, adapters: graph.adapters,
+    actions: graph.actions, edges: graph.edges,
+    planSubSkills: graph.planning?.subSkills ?? [],
+    planTemplate: graph.planning?.template ?? null,
+    config: graph.config, rawConfig: configPresent ? rawConfig : null, configPresent,
+    profiles: PROFILES,
+    lint: { ok: lint.ok, errors: lint.errors ?? [], warnings: lint.warnings ?? [] },
+    skills, skillDirs, harnessMatrix: SESSION_START_SUPPORT,
+    seams: {
+      reviewVerifyPhases: 'review/verify are ROLES (role.review, role.verify) — the runtime graph exposes phase records only for plan/dev/validate/ship; their gates/evidence are role-only until phase records land',
+      profilesEdit: '8e7e5ad6 · workflow PROFILES editing surface (read-only in cockpit)',
+      writePath: '9f2f0320 · Tier-2 forge serve config-intent write path (Tier-1 = copy-as-command)',
+      commentBack: 'e244f12d · Tier-1 comment-back (forge inbox verb)',
+      // North-star control plane covers EVERY extensibility surface. These three
+      // surfaces get reserved placeholder sections in the cockpit (follow-up bake).
+      hooksSurface: 'follow-up · hooks surface (enforcement + SessionStart per harness) not baked yet',
+      mcpSurface: 'follow-up · MCP servers surface (configured servers × harness) not baked yet',
+      rulesSurface: 'follow-up · rules surface (rules/*.md → per-harness ports) not baked yet',
+      // Target control-state model is TRI-STATE, richer than today's on/off.
+      tristate: 'target control state is tri-state: mandatory / optional / permission-based (today the graph exposes enabled/disabled only — rendered honestly)',
+    },
+  };
+}, null, 'workflow cockpit bake');
+if (workflow) {
+  console.log(`  workflow: ${workflow.phases.length} phases, ${workflow.gates.length} gates, ${workflow.rails.length} rails, ${workflow.skills.length} skills, config ${workflow.configPresent ? 'present' : 'all-defaults'}`);
+}
+
 // ---- assemble + write -----------------------------------------------------
 const snapshot = {
   generated_at: new Date().toISOString(),
@@ -374,6 +457,7 @@ const snapshot = {
   },
   needsAttention,
   backlog: null, // SEAM: kernel backlog state (b2f856b1) not yet landed
+  workflow, // cockpit surface (84970f9d) — configurable workflow architecture
   status: statusRes,
   memory,
   issues,
