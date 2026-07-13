@@ -60,3 +60,9 @@ pre-push:
     team-sync:
       run: bash scripts/forge-team/lib/hooks.sh sync --quiet || true
       tags: team
+
+    # 5. Auto-file rail — ensure the branch has a backing Kernel issue so a raw
+    # `git push` still auto-files started work (non-blocking; always exits 0).
+    auto-backing-issue:
+      run: node scripts/auto-backing-issue.js || true
+      tags: tracking

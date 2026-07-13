@@ -5,6 +5,9 @@ const { describe, test, expect } = require('bun:test');
 const {
   FORGE_HOOK_CONTRACT,
   HARNESS_HOOK_FILES,
+  FORGE_CONTEXT_MARKER,
+  SESSION_START_SUPPORT,
+  sessionStartCapability,
   HookConfigParseError,
   renderClaudeHooks,
   renderCursorHooks,
@@ -28,15 +31,23 @@ const {
 const FORGE_MARK = 'forge-native-hook.js';
 
 describe('Forge hook contract', () => {
-  test('declares the TDD-gate and protected-path enforcement intents', () => {
+  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject) intents', () => {
     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
-    expect(ids).toEqual(['protected-path', 'tdd-gate']);
+    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject']);
     for (const intent of FORGE_HOOK_CONTRACT.intents) {
-      expect(intent.command).toContain(FORGE_MARK);
-      expect(intent.command).toContain(`--intent ${intent.id}`);
       expect(typeof intent.enforces).toBe('string');
       expect(intent.enforces.length).toBeGreaterThan(0);
+      if (intent.kind === 'enforcement') {
+        // Enforcement intents route through the self-contained adapter, fail-closed.
+        expect(intent.command).toContain(FORGE_MARK);
+        expect(intent.command).toContain(`--intent ${intent.id}`);
+      } else {
+        // Context intents route to the `forge` CLI, fail-open — no adapter marker.
+        expect(intent.kind).toBe('context');
+        expect(intent.command).toContain(FORGE_CONTEXT_MARKER);
+        expect(intent.command).not.toContain(FORGE_MARK);
+      }
     }
   });
 
@@ -74,6 +85,56 @@ describe('renderClaudeHooks (.claude/settings.json hooks block)', () => {
       expect(cmd).toContain('$CLAUDE_PROJECT_DIR');
       expect(cmd).toContain(FORGE_MARK); // still marked Forge-owned for idempotent re-merge
     }
+  });
+});
+
+describe('SessionStart context injection (memory push)', () => {
+  test('Claude renders a SessionStart group wired to the forge CLI digest command', () => {
+    const block = renderClaudeHooks(FORGE_HOOK_CONTRACT);
+    expect(Array.isArray(block.SessionStart)).toBe(true);
+    expect(block.SessionStart.length).toBe(1);
+    const cmd = block.SessionStart[0].hooks[0].command;
+    expect(cmd).toBe('forge hooks session-start --harness claude');
+    // Context hook goes through the CLI, NOT the self-contained enforcement adapter.
+    expect(cmd).not.toContain(FORGE_MARK);
+    expect(cmd).toContain(FORGE_CONTEXT_MARKER);
+  });
+
+  test('capability matrix is honest — only Claude renders; others carry a skip reason', () => {
+    expect(sessionStartCapability('claude')).toEqual({ rendered: true });
+    expect(sessionStartCapability('cursor')).toEqual({ rendered: false, reason: 'no-session-start-surface' });
+    expect(sessionStartCapability('codex')).toEqual({ rendered: false, reason: 'global-config' });
+    expect(sessionStartCapability('hermes')).toEqual({ rendered: false, reason: 'global-config' });
+    expect(sessionStartCapability('nope')).toEqual({ rendered: false, reason: 'unknown-harness' });
+    // The exported matrix matches the capability function (single source).
+    expect(SESSION_START_SUPPORT.claude.rendered).toBe(true);
+  });
+
+  test('Cursor does NOT fake a session-start surface (no context hook rendered)', () => {
+    const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
+    const allCommands = Object.values(cfg.hooks).flat().map(h => h.command).join('\n');
+    expect(allCommands).not.toContain('session-start');
+  });
+
+  test('merging the SessionStart group is idempotent (both markers detected)', () => {
+    const once = mergeClaudeSettings('', FORGE_HOOK_CONTRACT);
+    const twice = mergeClaudeSettings(once, FORGE_HOOK_CONTRACT);
+    const a = JSON.parse(once);
+    const b = JSON.parse(twice);
+    expect(a.hooks.SessionStart.length).toBe(1);
+    expect(b.hooks.SessionStart.length).toBe(1);
+    const cmd = b.hooks.SessionStart[0].hooks[0].command;
+    expect(cmd).toContain('session-start');
+  });
+
+  test('merging preserves a user\'s own SessionStart hook', () => {
+    const existing = JSON.stringify({
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node user-welcome.js' }] }] },
+    }, null, 2);
+    const obj = JSON.parse(mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT));
+    const commands = obj.hooks.SessionStart.flatMap(g => g.hooks.map(h => h.command));
+    expect(commands).toContain('node user-welcome.js');                 // user hook preserved
+    expect(commands.some(c => c.includes(FORGE_CONTEXT_MARKER))).toBe(true); // Forge added
   });
 });
 
