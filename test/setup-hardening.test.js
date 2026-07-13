@@ -125,6 +125,101 @@ describe('printForgeInitNextStep completes first-run guidance', () => {
   });
 });
 
+/** Async variant of withCapturedRoot for handlers that return a promise. */
+async function withCapturedRootAsync(root, callback) {
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const { projectRoot: previousRoot } = setupCommand._getState();
+  const lines = [];
+  console.log = (...parts) => lines.push(parts.join(' '));
+  console.warn = (...parts) => lines.push(parts.join(' '));
+  try {
+    if (root) setupCommand._setState({ projectRoot: root });
+    const result = await callback();
+    return { result, output: lines.join('\n') };
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+    setupCommand._setState({ projectRoot: previousRoot });
+  }
+}
+
+describe('ensureWorkflowShellPolicy degrades gracefully when Git Bash is absent (048c1e6d)', () => {
+  test('Windows-without-Git-Bash does not throw; prints install guidance and continues degraded', () => {
+    const { result, output } = withCapturedRoot(null, () =>
+      setupCommand.ensureWorkflowShellPolicy(['claude'], {
+        platform: 'win32',
+        candidates: [],
+        _exists: () => false,
+      }));
+    expect(result.available).toBe(false);
+    expect(result.degraded).toBe(true);
+    expect(output).toContain('https://git-scm.com/download/win');
+    expect(output).toContain('reduced-capability');
+  });
+
+  test('does not degrade or print when the shell runtime is available', () => {
+    const { result, output } = withCapturedRoot(null, () =>
+      setupCommand.ensureWorkflowShellPolicy(['claude'], { platform: 'linux' }));
+    expect(result.available).toBe(true);
+    expect(result.degraded).toBeUndefined();
+    expect(output).toBe('');
+  });
+});
+
+describe('finalizeWorkflowConfig runs init as part of setup (ac0b38c7)', () => {
+  test('no-op when .forge/config.yaml already exists — init is not invoked', async () => {
+    const root = makeTempDir();
+    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), 'workflow: {}\n', 'utf8');
+    let called = false;
+    const { output } = await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({ runInit: () => { called = true; return { success: true }; } }));
+    expect(called).toBe(false);
+    expect(output).toBe('');
+  });
+
+  test('invokes init and confirms when config is absent', async () => {
+    const root = makeTempDir();
+    let receivedRoot = null;
+    const { output } = await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({
+        runInit: (r) => { receivedRoot = r; return { success: true }; },
+      }));
+    expect(receivedRoot).toBe(root);
+    expect(output).toContain('Workflow configured');
+    expect(output).toContain('.forge/config.yaml');
+  });
+
+  test('falls back to forge init guidance when init reports failure', async () => {
+    const root = makeTempDir();
+    const { output } = await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({ runInit: () => ({ success: false }) }));
+    expect(output).toContain('forge init');
+  });
+
+  test('skips init side effects when caller already installed hooks/Beads', async () => {
+    const root = makeTempDir();
+    let skipArg;
+    await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({
+        hooksAlreadyInstalled: true,
+        runInit: (_r, skip) => { skipArg = skip; return { success: true }; },
+      }));
+    expect(skipArg).toBe(true);
+  });
+
+  test('does NOT skip init side effects on interactive paths (hooks not pre-installed)', async () => {
+    const root = makeTempDir();
+    let skipArg;
+    await withCapturedRootAsync(root, () =>
+      setupCommand.finalizeWorkflowConfig({
+        runInit: (_r, skip) => { skipArg = skip; return { success: true }; },
+      }));
+    expect(skipArg).toBe(false);
+  });
+});
+
 describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
   test('backs up a markerless AGENTS.md before overwrite', () => {
     const root = makeTempDir();
