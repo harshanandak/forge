@@ -1,6 +1,6 @@
 'use strict';
 
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 
 const shepherdCmd = require('../../lib/commands/shepherd');
 const { validateCommand } = require('../../lib/commands/_registry');
@@ -99,5 +99,85 @@ describe('shepherd command handler', () => {
     });
     expect(out.state).toBe('MERGE_READY');
     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
+  });
+});
+
+describe('forge shepherd events — the agent-agnostic monitor pull surface', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const journal = require('../../lib/pr-monitor/journal');
+  const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
+
+  const now = () => '2026-07-13T00:00:00.000Z';
+  function snap() {
+    return {
+      repo: 'r', pr: '1', headSha: 'sha1', prState: 'OPEN', draft: false,
+      verdict: { state: 'CLEAN-MERGEABLE', reason: null },
+      checks: [], threads: [], reviews: [], comments: [], behind: 0, conflicts: false, degraded: [],
+    };
+  }
+
+  let root; let dir;
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-verb-')); dir = journal.journalDir({ root, repo: 'r', pr: '1' }); });
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+  test('parseSince reads --since <seq>', () => {
+    expect(shepherdCmd.parseSince(['events', '1', '--since', '7'])).toBe(7);
+    expect(shepherdCmd.parseSince(['events', '1'])).toBe(0);
+  });
+
+  test('runs an inline pass and returns NDJSON events since the cursor', async () => {
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir, gather: async () => snap(), now, watcherRunning: () => false,
+    });
+    expect(res.success).toBe(true);
+    expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
+    const parsed = res.output.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].seq).toBe(1);
+  });
+
+  test('a later poll with the advanced cursor returns nothing new', async () => {
+    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
+    expect(res.events).toEqual([]);
+  });
+
+  test('errors without a PR argument', async () => {
+    const res = await shepherdCmd.handleEvents(['events'], root, { dir, gather: async () => snap() });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/Usage/);
+  });
+
+  test('main handler routes the events subcommand', async () => {
+    const res = await shepherdCmd.handler(['events', '1', '--since', '0'], {}, root, {
+      dir, gather: async () => snap(), now, watcherRunning: () => false,
+    });
+    expect(res.success).toBe(true);
+    expect(res.events).toBeDefined();
+  });
+
+  test('the events command enriches check.failed with the documented log excerpt', async () => {
+    // Regression: handleEvents must supply the DEFAULT failed-check enrichment,
+    // not only forward an injected one — otherwise a plain `forge shepherd events`
+    // emits bare check.failed events with no data.excerpt.
+    const green = { ...snap(), checks: [{ name: 'ci', class: 'green' }] };
+    const failed = { ...snap(), checks: [{ name: 'ci', class: 'failed' }] };
+    const gatherPull = async () => ({
+      failures: [{ name: 'ci', excerpt: 'AssertionError: boom', jobUrl: 'https://ci/job/1' }],
+    });
+    // Baseline pass (green) establishes the snapshot; no check.failed yet.
+    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+      dir, gather: async () => green, now, watcherRunning: () => false, gatherPull,
+    });
+    // Transition to failed → check.failed emitted and enriched by the default hook.
+    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, {
+      dir, gather: async () => failed, now, watcherRunning: () => false, gatherPull,
+    });
+    const cf = res.events.find((e) => e.type === T.CHECK_FAILED);
+    expect(cf).toBeDefined();
+    expect(cf.data.excerpt).toBe('AssertionError: boom');
+    expect(cf.data.jobUrl).toBe('https://ci/job/1');
   });
 });
