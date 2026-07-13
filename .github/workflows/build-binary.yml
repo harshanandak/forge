@@ -187,7 +187,9 @@ jobs:
   # scripts/install.sh and releaseAssetName() in scripts/lib/release-asset.mjs.
   release:
     name: Publish GitHub Release
-    needs: build
+    # Depend on BOTH build (produces the binaries) and parity (the authoritative
+    # npm-vs-binary drift gate). Publishing must not proceed if either fails.
+    needs: [build, parity]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -203,22 +205,46 @@ jobs:
       - name: Flatten and rename assets
         run: |
           mkdir -p release
-          found=0
           for f in artifacts/forge-bun-*/forge-bun-*; do
             [ -e "$f" ] || continue
             base="$(basename "$f")"
             asset="forge-${base#forge-bun-}"
             cp "$f" "release/${asset}"
-            found=$((found + 1))
             echo "  ${f} -> release/${asset}"
           done
-          # A v* tag builds all seven canonical targets, so a short count means a
-          # matrix leg silently failed — fail the release rather than ship partial.
-          if [ "$found" -ne 7 ]; then
-            echo "::error::expected 7 release assets, found ${found}"
-            exit 1
-          fi
           ls -l release
+
+      - name: Verify the exact canonical asset set
+        run: |
+          # Assert the EXACT seven published assets exist and are non-empty — a
+          # plain count can hide a missing platform paired with an unexpected
+          # extra. This list is the canonical set from scripts/lib/release-asset.mjs
+          # (releaseAssetName over CANONICAL_ASSETS); keep the two in sync.
+          expected="forge-darwin-arm64 forge-darwin-x64 forge-linux-x64 forge-linux-arm64 forge-linux-x64-musl forge-linux-arm64-musl forge-windows-x64.exe"
+          status=0
+          for name in $expected; do
+            if [ ! -s "release/${name}" ]; then
+              echo "::error::missing or empty required asset: ${name}"
+              status=1
+            fi
+          done
+          # Reject any file in release/ that is not in the expected set.
+          for f in release/*; do
+            base="$(basename "$f")"
+            case " $expected " in
+              *" $base "*) : ;;
+              *) echo "::error::unexpected asset present: ${base}"; status=1 ;;
+            esac
+          done
+          [ "$status" -eq 0 ] || exit 1
+          echo "All 7 canonical assets present and non-empty."
+
+      - name: Generate SHA-256 checksum manifest
+        run: |
+          # Publish a checksums.txt (filename-only entries) so the install scripts
+          # can verify integrity of the asset they download before executing it.
+          ( cd release && sha256sum forge-* > checksums.txt )
+          cat release/checksums.txt
 
       - name: Upload assets to the GitHub Release
         env:

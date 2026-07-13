@@ -41,8 +41,17 @@ export function releaseAssetName({ os, arch, libc } = {}) {
 	if (!SUPPORTED_ARCH.includes(arch)) {
 		throw new Error(`Unsupported arch: ${arch} (supported: ${SUPPORTED_ARCH.join(', ')})`);
 	}
-	// Only x64 exists for Windows and only arm64/x64 for the rest — but every
-	// os/arch pair in the matrix below is real, so no further pruning is needed.
+	// Reject os/arch pairs that are not actually published. The independent
+	// allowlists above would otherwise accept e.g. windows/arm64 and invent a
+	// `forge-windows-arm64.exe` asset that no release contains. Validate the
+	// tuple against the canonical matrix (windows is x64-only) so JS, install.sh
+	// and install.ps1 all agree on the same supported set.
+	if (!PUBLISHED_OS_ARCH.has(`${os}/${arch}`)) {
+		throw new Error(
+			`Unsupported platform: ${os}/${arch} is not a published target ` +
+				`(supported: ${[...PUBLISHED_OS_ARCH].join(', ')})`,
+		);
+	}
 	let name = `forge-${os}-${arch}`;
 	if (os === 'linux' && libc === 'musl') {
 		name += '-musl';
@@ -66,3 +75,10 @@ export const CANONICAL_ASSETS = [
 	{ os: 'linux', arch: 'x64', libc: 'musl', asset: 'forge-linux-x64-musl' },
 	{ os: 'linux', arch: 'arm64', libc: 'musl', asset: 'forge-linux-arm64-musl' },
 ];
+
+/**
+ * The set of published `os/arch` tuples, derived from CANONICAL_ASSETS so it can
+ * never drift from the actual release matrix. Used by releaseAssetName() to
+ * reject unsupported combinations (e.g. windows/arm64).
+ */
+export const PUBLISHED_OS_ARCH = new Set(CANONICAL_ASSETS.map((a) => `${a.os}/${a.arch}`));

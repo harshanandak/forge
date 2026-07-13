@@ -116,6 +116,12 @@ resolve_asset() {
 		x64|arm64) ;;
 		*) die "unsupported arch: '$_arch' (need x64 or arm64)" ;;
 	esac
+	# Reject os/arch pairs that are not published (parity with releaseAssetName()
+	# in scripts/lib/release-asset.mjs). Windows ships x64 only, so windows/arm64
+	# must not resolve to a phantom forge-windows-arm64.exe.
+	if [ "$_os" = "windows" ] && [ "$_arch" != "x64" ]; then
+		die "unsupported platform: windows/${_arch} is not a published target (windows is x64 only)"
+	fi
 	_name="forge-${_os}-${_arch}"
 	if [ "$_os" = "linux" ] && [ "$_libc" = "musl" ]; then
 		_name="${_name}-musl"
@@ -187,6 +193,60 @@ TMP_BIN="$TMP/$BIN_NAME"
 
 download_to "$URL" "$TMP_BIN" || die "download failed from $URL — is the release published for your platform?"
 [ -s "$TMP_BIN" ] || die "downloaded file is empty — the asset '$ASSET' may not exist in release '$RESOLVED_VERSION'."
+
+# --- integrity verification (SHA-256) --------------------------------------
+# Verify the downloaded asset against the release's checksums.txt manifest BEFORE
+# making it executable or installing it. A mismatch is always fatal (corrupted or
+# substituted download). If the manifest cannot be fetched or no SHA-256 tool is
+# available we warn and continue; set FORGE_SKIP_CHECKSUM=1 to bypass entirely.
+verify_checksum() {
+	if [ "${FORGE_SKIP_CHECKSUM:-0}" = "1" ]; then
+		printf 'forge-install: FORGE_SKIP_CHECKSUM=1 set — skipping integrity check.\n' >&2
+		return 0
+	fi
+
+	_sha=""
+	if command -v sha256sum >/dev/null 2>&1; then _sha="sha256sum";
+	elif command -v shasum >/dev/null 2>&1; then _sha="shasum";
+	elif command -v openssl >/dev/null 2>&1; then _sha="openssl";
+	fi
+	if [ -z "$_sha" ]; then
+		printf 'forge-install: no sha256 tool (sha256sum/shasum/openssl) found — skipping integrity check.\n' >&2
+		return 0
+	fi
+
+	# The manifest lives beside the asset in the same release.
+	_sums_url="${URL%/*}/checksums.txt"
+	_manifest="$TMP/checksums.txt"
+	if ! download_to "$_sums_url" "$_manifest" >/dev/null 2>&1 || [ ! -s "$_manifest" ]; then
+		printf 'forge-install: could not download checksums.txt — skipping integrity check.\n' >&2
+		return 0
+	fi
+
+	# sha256sum manifest lines are "<hash>  <name>" (text) or "<hash> *<name>"
+	# (binary); match either form for our asset.
+	_expected="$(awk -v f="$ASSET" '{ n=$2; sub(/^\*/,"",n); if (n==f) { print $1; exit } }' "$_manifest")"
+	if [ -z "$_expected" ]; then
+		printf 'forge-install: %s not listed in checksums.txt — skipping integrity check.\n' "$ASSET" >&2
+		return 0
+	fi
+
+	case "$_sha" in
+		sha256sum) _actual="$(sha256sum "$TMP_BIN" | awk '{print $1}')" ;;
+		shasum) _actual="$(shasum -a 256 "$TMP_BIN" | awk '{print $1}')" ;;
+		openssl) _actual="$(openssl dgst -sha256 "$TMP_BIN" | awk '{print $NF}')" ;;
+	esac
+
+	if [ "$_actual" != "$_expected" ]; then
+		die "checksum mismatch for $ASSET
+  expected: $_expected
+  actual:   $_actual
+The download may be corrupted or tampered with — aborting."
+	fi
+	printf 'forge-install: checksum verified (sha256).\n'
+}
+verify_checksum
+
 chmod +x "$TMP_BIN"
 
 mkdir -p "$INSTALL_DIR"

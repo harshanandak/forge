@@ -63,6 +63,13 @@ describe('releaseAssetName (canonical JS mapping)', () => {
 		expect(() => releaseAssetName({ os: 'linux', arch: 'riscv' })).toThrow(/Unsupported arch/);
 	});
 
+	test('rejects windows/arm64 (a supported-but-unpublished os/arch pair)', () => {
+		// Both allowlists pass individually, but the tuple is not published.
+		expect(() => releaseAssetName({ os: 'windows', arch: 'arm64' })).toThrow(
+			/not a published target/,
+		);
+	});
+
 	test('supported sets are as expected', () => {
 		expect(SUPPORTED_OS).toEqual(['windows', 'darwin', 'linux']);
 		expect(SUPPORTED_ARCH).toEqual(['x64', 'arm64']);

@@ -78,22 +78,39 @@ If you prefer not to pipe a script to your shell, download the asset for your
 platform directly from the [latest release](https://github.com/harshanandak/forge/releases/latest)
 and run it.
 
+Every release also publishes a `checksums.txt` (SHA-256) manifest. **Verify the
+asset before you run it** — the one-line install scripts do this automatically.
+
 ### macOS / Linux
 
 ```sh
 # Pick the asset for your platform from the table above (here: linux x64 glibc)
 curl -fsSL -o forge \
   https://github.com/harshanandak/forge/releases/latest/download/forge-linux-x64
+
+# Verify integrity against the release manifest before running:
+curl -fsSL -o checksums.txt \
+  https://github.com/harshanandak/forge/releases/latest/download/checksums.txt
+grep ' forge-linux-x64$' checksums.txt | sha256sum -c -   # must print "forge-linux-x64: OK"
+
 chmod +x forge
 ./forge --version
 # Optionally move it onto your PATH:
 mkdir -p ~/.local/bin && mv forge ~/.local/bin/forge
 ```
 
+On macOS use `shasum -a 256 -c -` in place of `sha256sum -c -`.
+
 ### Windows (PowerShell)
 
 ```powershell
 irm https://github.com/harshanandak/forge/releases/latest/download/forge-windows-x64.exe -OutFile forge.exe
+
+# Verify integrity against the release manifest before running:
+irm https://github.com/harshanandak/forge/releases/latest/download/checksums.txt -OutFile checksums.txt
+$expected = ((Get-Content checksums.txt) -match ' \*?forge-windows-x64\.exe$') -replace '\s.*$',''
+if ((Get-FileHash -Algorithm SHA256 forge.exe).Hash -ieq $expected) { "OK" } else { throw "checksum mismatch" }
+
 .\forge.exe --version
 ```
 

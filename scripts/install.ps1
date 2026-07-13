@@ -29,7 +29,8 @@
 param(
 	[string]$Version = 'latest',
 	[string]$Dir = (Join-Path $env:LOCALAPPDATA 'Programs\forge'),
-	[switch]$PrintAsset
+	[switch]$PrintAsset,
+	[switch]$SkipChecksum
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +83,44 @@ try {
 if (-not (Test-Path $Tmp) -or (Get-Item $Tmp).Length -eq 0) {
 	throw "forge-install: downloaded file is empty - asset '$Asset' may not exist in release '$ResolvedVersion'."
 }
+
+# Integrity verification (SHA-256) BEFORE installing. A mismatch is fatal
+# (corrupted or substituted download). If the manifest cannot be fetched we warn
+# and continue; pass -SkipChecksum or set FORGE_SKIP_CHECKSUM=1 to bypass.
+if ($SkipChecksum -or $env:FORGE_SKIP_CHECKSUM -eq '1') {
+	Write-Host "forge-install: skipping integrity check (requested)."
+} else {
+	$SumsUrl = $Url.Substring(0, $Url.LastIndexOf('/') + 1) + 'checksums.txt'
+	$SumsTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-install-" + [System.Guid]::NewGuid().ToString('N') + ".txt")
+	$expected = $null
+	$manifestFetched = $false
+	try {
+		Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsTmp -UseBasicParsing
+		$manifestFetched = $true
+		foreach ($line in (Get-Content $SumsTmp)) {
+			# Lines are "<hash>  <name>" (text) or "<hash> *<name>" (binary).
+			if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $Asset) {
+				$expected = $Matches[1].ToLower()
+				break
+			}
+		}
+	} catch {
+		Write-Host "forge-install: could not download checksums.txt - skipping integrity check."
+	} finally {
+		if (Test-Path $SumsTmp) { Remove-Item -Force $SumsTmp }
+	}
+	if ($expected) {
+		$actual = (Get-FileHash -Algorithm SHA256 -Path $Tmp).Hash.ToLower()
+		if ($actual -ne $expected) {
+			Remove-Item -Force $Tmp
+			throw "forge-install: checksum mismatch for $Asset`n  expected: $expected`n  actual:   $actual`nThe download may be corrupted or tampered with - aborting."
+		}
+		Write-Host "forge-install: checksum verified (sha256)."
+	} elseif ($manifestFetched) {
+		Write-Host "forge-install: $Asset not listed in checksums.txt - skipping integrity check."
+	}
+}
+
 Move-Item -Force -Path $Tmp -Destination $Dest
 
 Write-Host ""
