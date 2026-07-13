@@ -84,7 +84,7 @@ describe('resolveStaticPath', () => {
   test('maps / to index.html and blocks traversal', () => {
     const dir = path.resolve('/tmp/dash');
     expect(serve.resolveStaticPath(dir, '/')).toBe(path.join(dir, 'index.html'));
-    expect(serve.resolveStaticPath(dir, '/../../etc/passwd')).toBe(null);
+    expect(serve.resolveStaticPath(dir, '/../../etc/passwd')).toBeNull();
   });
 });
 
