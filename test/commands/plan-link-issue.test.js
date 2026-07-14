@@ -12,6 +12,8 @@ const nodePath = require('node:path');
 const { execFileSync: nodeExecFileSync } = require('node:child_process');
 
 const { executePlan, handler } = require('../../lib/commands/plan.js');
+const { createLocalBroker } = require('../../lib/kernel/broker');
+const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
 const GIT_ENV = {
   ...process.env,
@@ -132,6 +134,55 @@ describe('B4: plan --issue links an existing issue instead of forking a new one'
       });
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/already bound to issue/i);
+    });
+  });
+
+  test('F4c: rejects linking a different issue on a registry-linked NON-UUID branch', async () => {
+    // The branch name has no UUID, so ONLY the kernel worktree registry (not the
+    // branch-name fallback) can catch the conflict — this is the plan-created
+    // slug-branch case CodeRabbit flagged.
+    const repo = makeRepoWithResearch('registry-conflict', 'Registry Conflict');
+    const issueA = 'kernel-issue-a';
+    const issueB = 'kernel-issue-b';
+    const branch = 'feat/plain-slug';
+    nodeExecFileSync('git', ['checkout', '-q', '-b', branch], { cwd: repo });
+
+    const dbPath = nodePath.join(repo, 'kernel.sqlite');
+    const driver = createBuiltinSQLiteDriver({ databasePath: dbPath });
+    const broker = createLocalBroker({
+      projectRoot: repo,
+      execFileSync: () => nodePath.join(repo, '.git'),
+      databasePath: dbPath,
+      driver,
+    });
+    await broker.initialize();
+    // Link the current (non-UUID) branch to issue A in the kernel registry.
+    driver.registerWorktree({
+      path: repo,
+      git_common_dir: nodePath.join(repo, '.git'),
+      branch,
+      actor: null,
+      issue_id: issueA,
+      work_folder: null,
+      registered_at: '2026-07-14T00:00:00.000Z',
+      state: 'active',
+    });
+
+    await withRepo(repo, async () => {
+      try {
+        const result = await executePlan('registry conflict', {
+          projectRoot: repo,
+          issue: issueB,
+          driver, // consulted by currentBranchIssueFromDriver via listWorktrees
+          runIssueOperation: async () => ({ ok: true, data: { id: issueB } }),
+        });
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/already bound to issue/i);
+        expect(result.error).toContain(issueA);
+      } finally {
+        // Close before withRepo's rmSync so the DB handle is released first.
+        driver.close();
+      }
     });
   });
 
