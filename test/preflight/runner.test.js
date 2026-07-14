@@ -48,3 +48,30 @@ describe('runGates — fast-fail gate runner', () => {
     expect(lines.some((l) => l.includes('b'))).toBe(true);
   });
 });
+
+// B2 (N1): a gate may report skipped (e.g. not applicable in a consumer repo).
+// Skipped must NOT count as a failure and must not short-circuit later gates.
+describe('runGates — skipped outcome honored (B2)', () => {
+  test('a skipped gate passes through and later gates still run', async () => {
+    const ran = [];
+    const gates = [
+      { name: 'a', run: async () => ({ ok: true, skipped: true, summary: 'not applicable' }) },
+      { name: 'b', run: async () => { ran.push('b'); return { ok: true, summary: 'ok' }; } },
+    ];
+    const { ok, results } = await runGates(gates);
+    expect(ok).toBe(true);
+    expect(results[0].skipped).toBe(true);
+    expect(ran).toContain('b');
+  });
+
+  test('live per-gate log labels a skipped gate SKIP, never PASS', async () => {
+    const lines = [];
+    const gates = [
+      { name: 'structural', run: async () => ({ ok: true, skipped: true, summary: 'not applicable' }) },
+    ];
+    await runGates(gates, { log: (m) => lines.push(m) });
+    const line = lines.find((l) => l.includes('structural')) || '';
+    expect(line.startsWith('SKIP')).toBe(true);
+    expect(line.startsWith('PASS')).toBe(false);
+  });
+});

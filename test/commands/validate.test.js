@@ -86,7 +86,9 @@ describe('Validate Command - Validation Orchestration', () => {
 			const source = fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'commands', 'validate.js'), 'utf8');
 			expect(source).toMatch(/VALIDATION_COMMAND_TIMEOUT_MS\s*=\s*600000/);
 			expect(source).toMatch(/timeout:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
-			expect(source).toMatch(/execFileSync\(\s*'bun'\s*,\s*\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'/);
+			// runAllTests takes an injectable exec (default execFileSync); assert the
+			// bun invocation + timeout arg without coupling to the local param name.
+			expect(source).toMatch(/\(\s*'bun'\s*,\s*\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'/);
 			expect(source).not.toContain('timed out after 2 minutes');
 		});
 	});
@@ -503,4 +505,54 @@ describe('Validate Command - Validation Orchestration', () => {
 			expect(result.message).toEqual(expect.stringContaining('STOP'));
 		});
 	});
+
+	// B2 (N1): a green Tests result must mean tests actually ran and passed.
+	describe('runAllTests — never false-green on 0 tests (B2)', () => {
+		const fakeExec = (out) => () => out;
+
+		test('bun ran but executed 0 tests => explicit SKIP, never PASS', async () => {
+			const result = await runAllTests(fakeExec('0 pass\n0 fail\nRan 0 tests across 0 files. [1.00ms]'));
+			expect(result.skipped).toBe(true);
+			expect(result.testsFound).toBe(false);
+			expect(result.total).toBe(0);
+			// The status label must not read PASS when nothing ran.
+			expect(getCheckStatus(result)).toBe('SKIPPED');
+			expect(result.message).toMatch(/no tests|0 tests/i);
+		});
+
+		test('real passing run => success and testsFound true', async () => {
+			const result = await runAllTests(fakeExec('5 pass\n0 fail\nRan 5 tests across 2 files. [1.00s]'));
+			expect(result.success).toBe(true);
+			expect(result.testsFound).toBe(true);
+			expect(result.total).toBe(5);
+			expect(getCheckStatus(result)).toBe('PASS');
+		});
+
+		test('failing run => success false with failed count', async () => {
+			const exec = () => {
+				const e = new Error('bun test failed');
+				e.stdout = '3 pass\n2 fail\nRan 5 tests across 2 files.';
+				throw e;
+			};
+			const result = await runAllTests(exec);
+			expect(result.success).toBe(false);
+			expect(result.failed).toBe(2);
+		});
+
+		test('bun not found => explicit SKIP, not silent PASS', async () => {
+			const exec = () => { const e = new Error('spawn bun ENOENT'); e.code = 'ENOENT'; throw e; };
+			const result = await runAllTests(exec);
+			expect(result.skipped).toBe(true);
+			expect(getCheckStatus(result)).toBe('SKIPPED');
+			expect(result.message).toMatch(/bun|test runner/i);
+		});
+	});
 });
+
+// getCheckStatus is internal; re-derive the same rule the summary uses for the
+// assertions above (skipped => SKIPPED, else PASS/FAIL).
+function getCheckStatus(check) {
+	if (!check) return null;
+	if (check.skipped) return 'SKIPPED';
+	return check.success ? 'PASS' : 'FAIL';
+}
