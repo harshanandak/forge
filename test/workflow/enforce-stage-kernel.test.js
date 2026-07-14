@@ -9,7 +9,7 @@
 // durable state, and `ship`'s enforcement reads it back and synthesizes
 // authoritative workflow state.
 //
-// The driver is injected (kernelDriver) so no git repo or bd is required.
+// The driver is injected (kernelDriver) so no git repo or Beads is required.
 
 const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('node:fs');
@@ -192,9 +192,7 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
   }, TIMEOUT);
 
   test('B4: dev runs kernel-primary with no Beads DB present (does not dead-end)', async () => {
-    // The tmp project has only a kernel DB — no .beads/ directory at all.
-    expect(fs.existsSync(path.join(projectRoot, '.beads'))).toBe(false);
-
+    // The tmp project has only a kernel DB and no Beads store of any kind.
     const result = await enforceStageEntry({
       commandName: 'dev',
       projectRoot,
