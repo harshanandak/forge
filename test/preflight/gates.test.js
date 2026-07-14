@@ -134,3 +134,105 @@ describe('runAffectedTests — real runner (injected)', () => {
     expect(calls[0].args).toContain('test/a.test.js');
   });
 });
+
+// R1 (B2 follow-up): a resolver ERROR must fail the affected-tests gate, not
+// silently become "no affected tests" (a green gate that checked nothing).
+describe('runAffectedTests — resolver error fails closed (R1)', () => {
+  const { runAffectedTests } = require('../../lib/preflight/gates');
+
+  test('resolver throws => gate FAILs (never a fast-lane pass)', () => {
+    let spawned = false;
+    const res = runAffectedTests({
+      projectRoot: '/x',
+      spawn: () => { spawned = true; return { status: 0 }; },
+      resolveTests: () => { throw new Error('git diff exploded'); },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.summary).toMatch(/fail-closed|resolution failed/i);
+    expect(spawned).toBe(false);
+  });
+
+  test('genuine zero affected tests => fast-lane pass (distinct from error)', () => {
+    const res = runAffectedTests({
+      projectRoot: '/x',
+      spawn: () => ({ status: 0 }),
+      resolveTests: () => [],
+    });
+    expect(res.ok).toBe(true);
+    expect(res.summary).toMatch(/fast lane/i);
+  });
+});
+
+// R2 (B2 follow-up): under --all the remedy mode must not leave sonar/affected
+// as vacuous green gates.
+describe('buildGates --all — no vacuous green gates (R2)', () => {
+  const { runSonar } = require('../../lib/preflight/gates');
+
+  test('sonar is scoped to the whole tree (null), not an empty changed-files list', async () => {
+    const seen = [];
+    const gates = buildGates({
+      projectRoot: '/x',
+      changedFiles: [],
+      runAll: true,
+      deps: {
+        eslint: () => ({ ok: true }),
+        structural: () => ({ ok: true }),
+        sonar: (files) => { seen.push(files); return { ok: true }; },
+        affected: () => ({ ok: true, summary: 'should-not-be-called' }),
+      },
+    });
+    await gates[2].run(); // sonar gate
+    expect(seen[0]).toBeNull();
+  });
+
+  test('affected-tests is explicitly SKIPPED under --all, never a vacuous PASS', async () => {
+    let affectedCalled = false;
+    const gates = buildGates({
+      projectRoot: '/x',
+      changedFiles: [],
+      runAll: true,
+      deps: {
+        eslint: () => ({ ok: true }),
+        structural: () => ({ ok: true }),
+        sonar: () => ({ ok: true }),
+        affected: () => { affectedCalled = true; return { ok: true }; },
+      },
+    });
+    const out = await gates[3].run(); // affected-tests gate
+    expect(out.skipped).toBe(true);
+    expect(affectedCalled).toBe(false);
+    expect(out.summary).toMatch(/--all|full suite/i);
+  });
+
+  test('runSonar(null) scans the whole tree (spawns eslint on ".")', () => {
+    let args;
+    runSonar(null, { projectRoot: '/x', spawn: (_cmd, a) => { args = a; return { status: 0 }; } });
+    expect(args[args.length - 1]).toBe('.');
+  });
+});
+
+// B2 (N1): the structural gate must not run Forge's OWN internal test paths in a
+// consumer repo that can never satisfy them.
+describe('runStructural — consumer-context exclusion (B2)', () => {
+  const { runStructural } = require('../../lib/preflight/gates');
+
+  test('no Forge-internal artifacts present => skipped, spawn never called', () => {
+    let spawned = false;
+    const spawn = () => { spawned = true; return { status: 0 }; };
+    const fs = { existsSync: () => false };
+    const res = runStructural({ projectRoot: '/consumer', spawn, fs });
+    expect(res.skipped).toBe(true);
+    expect(res.ok).toBe(true);
+    expect(spawned).toBe(false);
+  });
+
+  test('Forge-internal artifacts present => runs bun tests + agentic check', () => {
+    const cmds = [];
+    const spawn = (cmd) => { cmds.push(cmd); return { status: 0 }; };
+    const fs = { existsSync: () => true };
+    const res = runStructural({ projectRoot: '/forge', spawn, fs });
+    expect(res.ok).toBe(true);
+    expect(cmds).toContain('bun');
+    expect(cmds).toContain('node');
+  });
+});

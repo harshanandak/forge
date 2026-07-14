@@ -4072,6 +4072,10 @@ async function main() {
             args: context.args,
             flags: context.flags,
             projectRoot: context.projectRoot,
+            // Kernel is the source of truth for workflow stage state: resolve the
+            // active worktree's issue and persist/read currentStage in the kernel
+            // so `ship` is reachable from a pure-CLI plan->dev->validate flow.
+            autoResolveKernel: true,
           }),
         }
       );
@@ -4108,6 +4112,7 @@ async function main() {
         args: args.slice(1),
         flags,
         projectRoot,
+        autoResolveKernel: true,
       });
     } catch (err) {
       console.error(`Error running '${command}':`, err.message);
