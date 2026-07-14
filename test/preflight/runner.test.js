@@ -63,4 +63,15 @@ describe('runGates — skipped outcome honored (B2)', () => {
     expect(results[0].skipped).toBe(true);
     expect(ran).toContain('b');
   });
+
+  test('live per-gate log labels a skipped gate SKIP, never PASS', async () => {
+    const lines = [];
+    const gates = [
+      { name: 'structural', run: async () => ({ ok: true, skipped: true, summary: 'not applicable' }) },
+    ];
+    await runGates(gates, { log: (m) => lines.push(m) });
+    const line = lines.find((l) => l.includes('structural')) || '';
+    expect(line.startsWith('SKIP')).toBe(true);
+    expect(line.startsWith('PASS')).toBe(false);
+  });
 });
