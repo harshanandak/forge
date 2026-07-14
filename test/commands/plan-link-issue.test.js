@@ -33,13 +33,16 @@ function makeRepoWithResearch(slug, title) {
   return repo;
 }
 
-function withRepo(repo, fn) {
+async function withRepo(repo, fn) {
   const prevCwd = process.cwd();
   const prevEnv = process.env.FORGE_ISSUE_BACKEND;
   delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
   process.chdir(repo);
   try {
-    return fn();
+    // AWAIT the callback: otherwise the finally below restores CWD and deletes
+    // the temp repo while the async body is still running (teardown race — git
+    // then fails "cannot change to <deleted dir>").
+    await fn();
   } finally {
     process.chdir(prevCwd);
     if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
