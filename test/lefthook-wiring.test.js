@@ -5,8 +5,8 @@
 // bailed out writing NO lefthook.yml and wiring NO git hooks, so raw `git commit`/
 // `git push` had zero enforcement and `forge ship` then hard-blocked on a missing hook.
 //
-// This suite covers the shared wiring module that both `bin/forge.js` (the live
-// `forge setup` path) and `lib/commands/setup.js` (the repair path) delegate to:
+// This suite covers the shared wiring module that the LIVE `forge setup` path
+// (lib/commands/setup.js, the registry command) and the mid-stage repair path delegate to:
 //   1. a REAL lefthook.yml is written (never the stock commented-out example),
 //   2. a native `.git/hooks` fallback wires pre-commit/pre-push when lefthook is absent,
 //   3. verifyHooksActive() reports honestly so setup can fail LOUDLY instead of no-op.
@@ -15,6 +15,9 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 
 const {
   FORGE_USER_LEFTHOOK_YML,
@@ -105,6 +108,17 @@ describe('resolveGitHooksDir', () => {
   test('returns null when not a git repo', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-nogit-'));
     expect(resolveGitHooksDir(tmp)).toBeNull();
+  });
+
+  test('same-repo guard: a non-git subdir UNDER a git repo resolves to null, not the ancestor (N1)', () => {
+    if (!gitAvailable) return; // git required to make the ancestor real
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ancestor-'));
+    spawnSync('git', ['init'], { cwd: tmp }); // parent IS a real repo
+    const child = path.join(tmp, 'not-a-repo-yet');
+    fs.mkdirSync(child, { recursive: true });
+    // Without the guard, `git -C child rev-parse --git-path hooks` returns the PARENT's
+    // hooks dir. The guard requires child to have its OWN .git, so this must be null.
+    expect(resolveGitHooksDir(child)).toBeNull();
   });
   test('resolves the linked-worktree .git file to the common hooks dir', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-'));

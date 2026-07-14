@@ -175,4 +175,28 @@ describe('forge setup — LIVE handler end-to-end (B3)', () => {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   }, 120000);
+
+  test('(d) non-git subdir UNDER a repo → NO hooks written to the parent (N1 cross-repo guard)', () => {
+    if (!gitAvailable) return; // git required to make the ancestor real
+    // The user points forge at a not-yet-initialized project folder that happens to live
+    // inside another repo (e.g. a dotfiles-managed $HOME). Forge must NOT resolve/mutate the
+    // ANCESTOR repo's hooks — that would be a cross-repo write + a false-active verify.
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-parent-'));
+    try {
+      gitInit(parent); // parent IS a real git repo
+      const child = path.join(parent, 'app'); // a non-git subdir under it
+      fs.mkdirSync(child, { recursive: true });
+      fs.writeFileSync(path.join(child, 'AGENTS.md'), '# demo\n');
+
+      runForgeSetup(child);
+
+      // The parent repo must NOT have received Forge's native hooks.
+      const parentPreCommit = path.join(parent, '.git', 'hooks', 'pre-commit');
+      const wroteToParent = fs.existsSync(parentPreCommit)
+        && fs.readFileSync(parentPreCommit, 'utf8').includes(FORGE_NATIVE_HOOK_SENTINEL);
+      expect(wroteToParent).toBe(false);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  }, 120000);
 });
