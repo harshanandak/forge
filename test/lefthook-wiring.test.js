@@ -71,6 +71,30 @@ describe('forgeShouldWriteLefthookConfig', () => {
     fs.writeFileSync(file, 'pre-commit:\n  commands:\n    mine:\n      run: make check\n');
     expect(forgeShouldWriteLefthookConfig(file)).toBe(false);
   });
+
+  test('refuses to write through a symlinked lefthook.yml (no escape outside the project)', () => {
+    // Security guard (lib/lefthook-wiring.js): readFileSync/writeFileSync follow symlinks,
+    // so a checked-out lefthook.yml -> ../outside could let setup create/overwrite a file
+    // outside the repo. A symlink target — even a fully-commented stub — must return false.
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-symlink-'));
+    const outside = path.join(tmp, 'outside.yml');
+    fs.writeFileSync(outside, '# fully commented stub\n');
+    const link = path.join(tmp, 'lefthook.yml');
+    try {
+      fs.symlinkSync(outside, link);
+    } catch {
+      // Symlink creation needs privileges on Windows — skip when unavailable.
+      return;
+    }
+    expect(forgeShouldWriteLefthookConfig(link)).toBe(false);
+  });
+
+  test('refuses to write when lefthook.yml is a directory (non-regular file)', () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-dir-'));
+    const asDir = path.join(tmp, 'lefthook.yml');
+    fs.mkdirSync(asDir);
+    expect(forgeShouldWriteLefthookConfig(asDir)).toBe(false);
+  });
 });
 
 describe('resolveGitHooksDir', () => {
