@@ -134,3 +134,29 @@ describe('runAffectedTests — real runner (injected)', () => {
     expect(calls[0].args).toContain('test/a.test.js');
   });
 });
+
+// B2 (N1): the structural gate must not run Forge's OWN internal test paths in a
+// consumer repo that can never satisfy them.
+describe('runStructural — consumer-context exclusion (B2)', () => {
+  const { runStructural } = require('../../lib/preflight/gates');
+
+  test('no Forge-internal artifacts present => skipped, spawn never called', () => {
+    let spawned = false;
+    const spawn = () => { spawned = true; return { status: 0 }; };
+    const fs = { existsSync: () => false };
+    const res = runStructural({ projectRoot: '/consumer', spawn, fs });
+    expect(res.skipped).toBe(true);
+    expect(res.ok).toBe(true);
+    expect(spawned).toBe(false);
+  });
+
+  test('Forge-internal artifacts present => runs bun tests + agentic check', () => {
+    const cmds = [];
+    const spawn = (cmd) => { cmds.push(cmd); return { status: 0 }; };
+    const fs = { existsSync: () => true };
+    const res = runStructural({ projectRoot: '/forge', spawn, fs });
+    expect(res.ok).toBe(true);
+    expect(cmds).toContain('bun');
+    expect(cmds).toContain('node');
+  });
+});
