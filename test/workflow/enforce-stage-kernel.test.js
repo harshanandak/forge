@@ -60,7 +60,7 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
   test('ship is REACHABLE from kernel stage state with no .forge-state.json', async () => {
     // Simulate what plan/dev/validate wrote at the chokepoint: the kernel now
     // records the current stage as `validate`. No .forge-state.json exists.
-    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
+    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'complete' }, {});
     expect(fs.existsSync(path.join(projectRoot, '.forge-state.json'))).toBe(false);
 
     const result = await enforceStageEntry({
@@ -100,6 +100,9 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
         health: HEALTHY,
       });
       expect(step.allowed).toBe(true);
+      // Simulate the command runner recording completion on handler success, so
+      // the stage counts as 'done' (which is what unlocks ship).
+      step.recordCompletion();
     }
 
     // The kernel — not a .forge-state.json file — carries the progression.
@@ -129,7 +132,7 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
       registered_at: '2026-07-14T00:00:00.000Z',
       state: 'active',
     });
-    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
+    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'complete' }, {});
 
     const result = await enforceStageEntry({
       commandName: 'ship',
@@ -148,7 +151,7 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
       ['--id', uuidIssue, '--title', 'uuid-encoded branch issue', '--type', 'task'],
       { now: '2026-07-14T00:00:00.000Z', actor: 'tester' },
     );
-    driver.recordStageRun({ issue_id: uuidIssue, stage: 'validate', action: 'start' }, {});
+    driver.recordStageRun({ issue_id: uuidIssue, stage: 'validate', action: 'complete' }, {});
 
     const result = await enforceStageEntry({
       commandName: 'ship',
@@ -158,6 +161,34 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
       health: HEALTHY,
     });
     expect(result.allowed).toBe(true);
+  }, TIMEOUT);
+
+  test('F3: entering (not completing) validate does NOT unlock ship', async () => {
+    // validate started but never completed (e.g. validation failed).
+    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
+
+    await expect(enforceStageEntry({
+      commandName: 'ship',
+      projectRoot,
+      kernelDriver: driver,
+      activeIssueId: issueId,
+      health: HEALTHY,
+    })).rejects.toThrow(/validate to be completed/i);
+  }, TIMEOUT);
+
+  test('F2: dev is re-entrant after validate is recorded (dev<->validate loop)', async () => {
+    // A common iteration: validate runs, fails, agent re-runs dev.
+    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
+
+    const result = await enforceStageEntry({
+      commandName: 'dev',
+      projectRoot,
+      kernelDriver: driver,
+      activeIssueId: issueId,
+      health: HEALTHY,
+    });
+    expect(result.allowed).toBe(true);
+    expect(result.stage).toBe('dev');
   }, TIMEOUT);
 
   test('B4: dev runs kernel-primary with no Beads DB present (does not dead-end)', async () => {

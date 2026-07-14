@@ -95,6 +95,43 @@ describe('B4: plan --issue links an existing issue instead of forking a new one'
     });
   });
 
+  test('F5: --issue with no value errors and never creates a duplicate', async () => {
+    const repo = makeRepoWithResearch('novalue-demo', 'No Value Demo');
+    const ops = [];
+    const fakeRun = async (operation) => {
+      ops.push(operation);
+      return { ok: true, data: { id: 'should-not-be-created' } };
+    };
+
+    await withRepo(repo, async () => {
+      const result = await handler(['novalue demo', '--issue'], {}, repo, { runIssueOperation: fakeRun });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/--issue requires a value/i);
+      expect(ops).not.toContain('create');
+    });
+  });
+
+  test('F4c: refuses to link issue B on a branch already bound to issue A', async () => {
+    const repo = makeRepoWithResearch('conflict-demo', 'Conflict Demo');
+    const issueA = '11111111-1111-4111-8111-111111111111';
+    const issueB = '22222222-2222-4222-8222-222222222222';
+    // Sit on a feature branch that encodes issue A.
+    nodeExecFileSync('git', ['checkout', '-q', '-b', `feat/${issueA}`], { cwd: repo });
+    const fakeRun = async (operation) => (operation === 'show'
+      ? { ok: true, data: { id: issueB } }
+      : { ok: true, data: { id: issueB } });
+
+    await withRepo(repo, async () => {
+      const result = await executePlan('conflict demo', {
+        projectRoot: repo,
+        issue: issueB,
+        runIssueOperation: fakeRun,
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/already bound to issue/i);
+    });
+  });
+
   test('handler parses --issue and reports the linked id (no fork)', async () => {
     const repo = makeRepoWithResearch('handler-link', 'Handler Link');
     const existingId = 'kernel-handler-link-1';
