@@ -83,6 +83,12 @@ const { ActionCollector, isNonInteractive } = require('../lib/setup-utils');
 const { renderSetupSummary } = require('../lib/setup-summary-renderer');
 const { smartMergeAgentsMd } = require('../lib/smart-merge');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
+const {
+  FORGE_USER_LEFTHOOK_YML,
+  forgeShouldWriteLefthookConfig,
+  installNativeGitHooks,
+  verifyHooksActive,
+} = require('../lib/lefthook-wiring');
 const { detectHusky, migrateHusky } = require('../lib/husky-migration');
 // workflowProfiles: module exists and is tested but not yet wired into setup flow
 // Will be activated when workflow profile selection is added to interactive setup
@@ -2695,80 +2701,104 @@ async function handleHuskyMigration() {
 function installGitHooks() {
   console.log('Installing git hooks (TDD enforcement)...');
 
-  // Skip lefthook.yml creation if binary is not available
+  // Install the Forge hook SCRIPTS first, UNCONDITIONALLY - they back BOTH the lefthook
+  // pre-commit job AND the native .git/hooks fallback below, so they must exist whether
+  // or not the lefthook binary is available.
+  installForgeHookScripts();
+
   const lefthookStatus = checkLefthookStatus(projectRoot);
-  if (!lefthookStatus.binaryAvailable) {
-    if (lefthookStatus.message) {
-      console.warn(`  \u26A0 Skipping lefthook setup: ${lefthookStatus.message}`);
-    } else {
-      console.warn('  \u26A0 Skipping lefthook setup: binary not available');
-    }
-    return;
-  }
+  let lefthookInstalled = false;
 
-  // Check if lefthook.yml exists (it should, as it's in the package)
-  const lefthookConfig = path.join(packageDir, 'lefthook.yml');
-  const targetHooks = path.join(projectRoot, '.forge/hooks');
-
-  try {
-    // Copy lefthook.yml to project root
-    const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
-    if (!fs.existsSync(lefthookTarget)) {
-      if (copyFile(lefthookConfig, 'lefthook.yml')) {
+  if (lefthookStatus.binaryAvailable) {
+    try {
+      // Write the REAL user-facing lefthook.yml - never the repo's own dev config (which
+      // references repo-internal scripts/ a user project lacks), and never leave
+      // lefthook's stock commented-out example in place. Overwrite only a missing file
+      // or a fully-commented stub, never a config with active jobs (kernel e452422c).
+      const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
+      if (forgeShouldWriteLefthookConfig(lefthookTarget)) {
+        fs.writeFileSync(lefthookTarget, FORGE_USER_LEFTHOOK_YML, 'utf8');
         console.log('  ✓ Created lefthook.yml');
       }
-    }
 
-    // Copy check-tdd.js hook script
-    const hookSource = path.join(packageDir, '.forge/hooks/check-tdd.js');
-    if (fs.existsSync(hookSource)) {
-      // Ensure .forge/hooks directory exists
-      if (!fs.existsSync(targetHooks)) {
-        fs.mkdirSync(targetHooks, { recursive: true });
-      }
-
-      const hookTarget = path.join(targetHooks, 'check-tdd.js');
-      if (copyFile(hookSource, hookTarget)) {
-        console.log('  ✓ Created .forge/hooks/check-tdd.js');
-
-        // Make hook executable (Unix systems)
-        try {
-          fs.chmodSync(hookTarget, 0o755);
-        } catch (err) {
-          // Windows doesn't need chmod
-          console.warn('chmod not available (Windows):', err.message);
-        }
-      }
-    }
-
-    // Try to install lefthook hooks
-    // SECURITY: Using execFileSync with hardcoded commands (no user input)
-    try {
-      // Try npx first (local install), fallback to global
+      // Install lefthook's git hooks. Try local (npx) first, then a global binary.
+      // SECURITY: execFileSync with hardcoded commands (no user input).
       try {
         secureExecFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (local)');
+        lefthookInstalled = true;
       } catch (error_) {
-        // Fallback to global lefthook
         console.warn('npx lefthook failed, trying global:', error_.message);
         secureExecFileSync('lefthook', ['version'], { stdio: 'ignore' });
         secureExecFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
         console.log('  ✓ Lefthook hooks installed (global)');
+        lefthookInstalled = true;
       }
     } catch (err) {
       console.warn('Lefthook installation failed:', err.message);
-      console.log('  ℹ Lefthook not found. Install it:');
-      console.log('    bun add -d lefthook  (recommended)');
-      console.log('    OR: bun add -g lefthook  (global)');
-      console.log('    Then run: bunx lefthook install');
     }
+  } else if (lefthookStatus.message) {
+    console.warn(`  ⚠ lefthook binary unavailable: ${lefthookStatus.message}`);
+  }
 
-    console.log('');
+  // Native fallback: when lefthook is unavailable or its install failed, wire native
+  // .git/hooks so raw `git commit` / `git push` still enforce the TDD gate - the moat is
+  // never silently inert (B3). Runs regardless of whether a package.json exists.
+  if (!lefthookInstalled) {
+    const native = installNativeGitHooks(projectRoot);
+    if (native.installed) {
+      console.log(`  ✓ Native git hooks installed (${native.written.join(', ')}) - lefthook fallback`);
+    } else if (native.skipped && native.skipped.length > 0) {
+      console.warn(`  ⚠ Native hook(s) skipped to preserve existing hooks: ${native.skipped.join(', ')}`);
+    } else {
+      console.warn(`  ⚠ Could not install native git hooks: ${native.reason || 'unknown'}`);
+    }
+  }
 
-  } catch (error) {
-    console.log('  ⚠ Failed to install hooks:', error.message);
-    console.log('  You can install manually later with: lefthook install');
-    console.log('');
+  // VERIFY LOUDLY: never let setup silently no-op. If pre-commit enforcement is not
+  // actually active after all of the above, say so unmistakably and set a failure code.
+  const verdict = verifyHooksActive(projectRoot);
+  if (verdict.active) {
+    console.log(`  ✓ Git hook enforcement active (${verdict.method}).`);
+  } else {
+    const addCmd = PKG_MANAGER === 'bun'
+      ? 'bun add -d'
+      : PKG_MANAGER === 'npm'
+        ? 'npm install --save-dev'
+        : `${PKG_MANAGER} add -D`;
+    console.error('');
+    console.error('  ============================================================');
+    console.error('  ⚠ TDD ENFORCEMENT IS NOT ACTIVE');
+    console.error(`     ${verdict.reason || 'no pre-commit hook is installed'}.`);
+    console.error('     `forge ship` will block until hooks are active. To fix:');
+    console.error(`       ${addCmd} lefthook  &&  npx lefthook install`);
+    console.error('     (or re-run `forge setup` in the repo root).');
+    console.error('  ============================================================');
+    console.error('');
+    process.exitCode = 1;
+  }
+
+  console.log('');
+}
+
+// Copy the Forge hook scripts (check-tdd.js + the native-hook adapter) into the
+// project's .forge/hooks/. Runs UNCONDITIONALLY - independent of the lefthook binary -
+// because both the lefthook pre-commit job and the native fallback invoke them.
+function installForgeHookScripts() {
+  const targetHooks = path.join(projectRoot, '.forge/hooks');
+  for (const name of ['check-tdd.js', 'forge-native-hook.js']) {
+    const src = path.join(packageDir, '.forge/hooks', name);
+    if (!fs.existsSync(src)) continue;
+    if (!fs.existsSync(targetHooks)) fs.mkdirSync(targetHooks, { recursive: true });
+    const dest = path.join(targetHooks, name);
+    if (copyFile(src, dest)) {
+      console.log(`  ✓ Created .forge/hooks/${name}`);
+      try {
+        fs.chmodSync(dest, 0o755); // NOSONAR - hook scripts must be executable
+      } catch (err) {
+        console.warn('chmod not available (Windows):', err.message);
+      }
+    }
   }
 }
 
@@ -3264,7 +3294,19 @@ function autoInstallLefthook() {
     return;
   }
 
-  // Not in package.json at all — full install
+  // Not in package.json at all — full install.
+  // GUARD (kernel 22e33dbf): with no package.json in projectRoot, an
+  // `npm install --save-dev lefthook` / `bun add lefthook` resolves against the nearest
+  // ANCESTOR package.json and installs lefthook into the WRONG project (or fails). Skip
+  // the package-manager install entirely — installGitHooks() then wires native
+  // .git/hooks, which need no package.json, so enforcement is still live.
+  if (!fs.existsSync(path.join(projectRoot, 'package.json'))) {
+    console.log('  ℹ No package.json here — skipping lefthook npm install (would target an ancestor).');
+    console.log('    Git hook enforcement will use the native .git/hooks fallback instead.');
+    console.log('');
+    return;
+  }
+
   console.log('📦 Installing lefthook for git hooks...');
   try {
     // SECURITY: secureExecFileSync with PKG_MANAGER — cross-platform support
