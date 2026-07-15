@@ -77,19 +77,20 @@ describe('forge init closes the hooks onboarding path', () => {
 		expect(hooksNotActiveDiagnostics(root)).toEqual([]);
 	});
 
-	test('init auto-migrates an existing Beads store while onboarding', async () => {
+	test('init NEVER auto-migrates Beads — the transfer is explicit-only (a7e1443c)', async () => {
 		const root = makeCleanRepo();
-		let migratedFor = null;
+		let migrateInvoked = false;
 		const deps = {
 			installHooks: () => {},
-			autoMigrateBeads: (projectRoot) => {
-				migratedFor = projectRoot;
-				return { migrated: false, reason: 'stubbed' };
+			// If init still had an auto-migrate seam it would call this; it must not.
+			autoMigrateBeads: () => {
+				migrateInvoked = true;
+				return { migrated: false, reason: 'should-not-be-called' };
 			},
 		};
 
 		await initCommand.handler(['--profile', 'minimal', '--yes'], {}, root, deps);
-		expect(migratedFor).toBe(root);
+		expect(migrateInvoked).toBe(false);
 	});
 
 	test('init defaults its hook installer to setup.ensureGitHooksInstalled', () => {
