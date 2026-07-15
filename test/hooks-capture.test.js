@@ -74,7 +74,7 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
     expect(store.writes).toHaveLength(2);
   });
 
-  test('precompact ALWAYS captures a boundary marker, even with no in-progress issues', async () => {
+  test('precompact captures a boundary marker even with no in-progress issues (unlike Stop)', async () => {
     const store = recordingStore();
     const res = await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], {
       append: store.append,
@@ -84,6 +84,19 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
     expect(res.success).toBe(true);
     expect(store.writes).toHaveLength(1);
     expect(store.writes[0].note).toContain('precompact');
+  });
+
+  test('precompact is NOT exempt from dedupe: a byte-identical repeat does not write again', async () => {
+    const store = recordingStore();
+    const opts = {
+      append: store.append,
+      fetchNotes: store.fetchNotes,
+      fetchIssues: (_root, kind) => (kind === 'ready' ? [] : CLAIMED),
+    };
+    await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], opts);
+    await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], opts);
+    // Same trigger + same in-progress set → identical body → the second PreCompact is deduped.
+    expect(store.writes).toHaveLength(1);
   });
 
   test('a plain Stop with nothing in progress is a no-op (avoids per-turn flooding)', async () => {
