@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 71 | 8 |
-| runtime | 249 | 34 |
+| runtime | 252 | 35 |
 | docs | 395 | 47 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -44,6 +44,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 148 (bd), 214 (bd), 240 (bd)
 - [ ] lib/beads-detect.js (2)
   - lines: 29 (.beads), 38 (.beads)
+- [ ] lib/beads-nudge.js (3)
+  - lines: 18 (.beads), 20 (bd), 75 (.beads)
 - [ ] lib/beads-setup.js (41)
   - lines: 17 (.beads), 18 (dolt), 19 (.beads), 76 (.beads), 78 (.beads), 86 (.beads), 94 (dolt), 102 (.beads, dolt), 104 (.beads), 109 (.beads), 117 (dolt), 118 (dolt), 160 (.beads), 161 (dolt), 162 (.beads), 187 (.beads), 188 (dolt), 189 (.beads), 237 (.beads), 238 (.beads), 241 (bd, dolt), 244 (bd), 250 (.beads), 262 (bd), 278 (dolt), 286 (.beads), 312 (.beads), 319 (dolt), 323 (bd), 411 (bd), 417 (bd), 424 (bd), 425 (bd), 430 (.beads, dolt), 432 (bd), 440 (bd), 441 (bd), 476 (.beads, dolt), 480 (.beads), 487 (bd), 496 (bd)
 - [ ] lib/beads-sync-scaffold.js (3)
