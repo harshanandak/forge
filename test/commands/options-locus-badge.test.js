@@ -38,19 +38,25 @@ describe('forge options gates — enforcement-locus badges', () => {
     const items = JSON.parse(result.output).items;
 
     const planExit = items.find(g => g.id === 'gate.plan-exit');
-    expect(planExit.badge).toBe('ENFORCED (gate)');
-    expect(planExit.locus).toBe('run-time-deny (gate)');
+    expect(planExit.badge).toBe('DECLARED (no runtime consumer yet)');
+    expect(planExit.locus).toBe('registry — declared, not yet enforced');
     expect(planExit.surface).toBe('gate');
 
     const merge = items.find(g => g.id === 'gate.merge');
-    expect(merge.badge).toBe('PERMISSION (human approval)');
+    expect(merge.badge).toBe('DENY-ON-CHECK');
     expect(merge.surface).toBe('human-gate');
+
+    // Honesty invariant: no gate is badged ENFORCED (empty set today).
+    for (const item of items) {
+      expect(item.badge).not.toMatch(/ENFORCED/);
+    }
   });
 
-  test('human render includes the badge string', async () => {
+  test('human render includes the honest badge string', async () => {
     const root = makeProject();
     const result = await optionsCommand.handler(['gates'], {}, root);
-    expect(result.output).toMatch(/ENFORCED \(gate\)/);
-    expect(result.output).toMatch(/PERMISSION \(human approval\)/);
+    expect(result.output).toMatch(/DECLARED \(no runtime consumer yet\)/);
+    expect(result.output).toMatch(/DENY-ON-CHECK/);
+    expect(result.output).not.toMatch(/ENFORCED/);
   });
 });

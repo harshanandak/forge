@@ -65,14 +65,28 @@ describe('isControllable — only gates/rails have a real run-time deny', () => 
   });
 });
 
-describe('enforcementLocus', () => {
-  test('maps each surface to its honest locus string', () => {
-    expect(enforcementLocus('gate')).toBe('run-time-deny (gate)');
-    expect(enforcementLocus('rail')).toBe('run-time-deny (rail)');
-    expect(enforcementLocus('human-gate')).toBe('run-time-deny (permission)');
-    expect(enforcementLocus('mcp')).toBe('render-time presence-only');
-    expect(enforcementLocus('rule')).toBe('render-time presence-only');
-    expect(enforcementLocus('skill')).toBe('render-time presence-only');
+describe('enforcementLocus — honest to TODAY wiring, never overclaims run-time-deny', () => {
+  test('stage-exit gates + rails are declared, not yet enforced (no runtime consumer)', () => {
+    expect(enforcementLocus('gate.plan-exit')).toBe('registry — declared, not yet enforced');
+    expect(enforcementLocus('rail.kernel_tracking')).toBe('registry — declared, not yet enforced');
+  });
+  test('gate.issue_verify is warn-only (never denies)', () => {
+    expect(enforcementLocus('gate.issue_verify')).toBe('run-time verify (warn-only, never denies)');
+  });
+  test('human gates are deny-capable via check but no chokepoint invokes it yet', () => {
+    expect(enforcementLocus('gate.merge')).toMatch(/deny-on-check/);
+    expect(enforcementLocus('gate.merge')).toMatch(/no chokepoint invokes it yet/);
+  });
+  test('advisory surfaces are render-time presence-only', () => {
+    expect(enforcementLocus('mcp.context7')).toBe('render-time presence-only');
+    expect(enforcementLocus('rule.tdd')).toBe('render-time presence-only');
+    expect(enforcementLocus('skill.plan')).toBe('render-time presence-only');
+  });
+  test('NOTHING claims "run-time-deny" — that badge set is empty today', () => {
+    for (const id of ['gate.plan-exit', 'gate.dev-exit', 'gate.validate-exit',
+      'gate.ship-entry', 'gate.issue_verify', 'gate.merge', 'rail.kernel_tracking']) {
+      expect(enforcementLocus(id)).not.toMatch(/run-time-deny/);
+    }
   });
 });
 
@@ -91,13 +105,18 @@ describe('deriveState — label read back from (enabled, locked, surface)', () =
   });
 });
 
-describe('badgeFor — the read-view badge reflects locus + current state', () => {
-  test('enabled gate/rail render ENFORCED', () => {
-    expect(badgeFor({ id: 'gate.plan-exit', enabled: true })).toBe('ENFORCED (gate)');
-    expect(badgeFor({ id: 'rail.kernel_tracking', enabled: true })).toBe('ENFORCED (rail)');
+describe('badgeFor — the read-view badge tells the TODAY truth, never ENFORCED', () => {
+  test('enabled stage gate/rail render DECLARED (no runtime consumer yet)', () => {
+    expect(badgeFor({ id: 'gate.plan-exit', enabled: true }))
+      .toBe('DECLARED (no runtime consumer yet)');
+    expect(badgeFor({ id: 'rail.kernel_tracking', enabled: true }))
+      .toBe('DECLARED (no runtime consumer yet)');
   });
-  test('enabled human gate renders PERMISSION', () => {
-    expect(badgeFor({ id: 'gate.merge', enabled: true })).toBe('PERMISSION (human approval)');
+  test('gate.issue_verify renders VERIFY (warn-only)', () => {
+    expect(badgeFor({ id: 'gate.issue_verify', enabled: true })).toBe('VERIFY (warn-only)');
+  });
+  test('enabled human gate renders DENY-ON-CHECK', () => {
+    expect(badgeFor({ id: 'gate.merge', enabled: true })).toBe('DENY-ON-CHECK');
   });
   test('disabled controllable renders OFF', () => {
     expect(badgeFor({ id: 'gate.plan-exit', enabled: false })).toBe('OFF (optional)');
@@ -107,22 +126,27 @@ describe('badgeFor — the read-view badge reflects locus + current state', () =
     expect(badgeFor({ id: 'mcp.context7', enabled: true })).toBe('PRESENT (advisory)');
     expect(badgeFor({ id: 'skill.plan' })).toBe('PRESENT (advisory)');
   });
+  test('no controllable surface is ever badged ENFORCED (empty set today)', () => {
+    for (const id of ['gate.plan-exit', 'gate.issue_verify', 'gate.merge', 'rail.kernel_tracking']) {
+      expect(badgeFor({ id, enabled: true })).not.toMatch(/ENFORCED/);
+    }
+  });
   test('locked adds a LOCKED marker', () => {
     expect(badgeFor({ id: 'rail.locked_example', enabled: true, locked: true }))
-      .toBe('ENFORCED (rail) · LOCKED');
+      .toBe('DECLARED (no runtime consumer yet) · LOCKED');
   });
 });
 
 describe('describeControl — the full read record for a primitive', () => {
-  test('shapes a gate record', () => {
+  test('shapes a gate record with the honest locus/badge', () => {
     const rec = describeControl({ id: 'gate.plan-exit', enabled: true, locked: false });
     expect(rec).toMatchObject({
       id: 'gate.plan-exit',
       surface: 'gate',
       controllable: true,
       state: 'mandatory',
-      locus: 'run-time-deny (gate)',
-      badge: 'ENFORCED (gate)',
+      locus: 'registry — declared, not yet enforced',
+      badge: 'DECLARED (no runtime consumer yet)',
       locked: false,
     });
   });

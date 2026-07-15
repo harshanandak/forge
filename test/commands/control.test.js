@@ -45,7 +45,10 @@ afterEach(() => {
 });
 
 describe('forge control — set tri-state on gates/rails (reuses workflow.gates.<id>.enabled)', () => {
-  test('optional on a gate writes enabled=false AND the resolver honors it', async () => {
+  // NOTE: these assert the resolved graph REFLECTS the config write (registry
+  // reflection), NOT that anything denies on it — no runtime consumer reads
+  // these flags to refuse today (see docs/reference/control-plane-guarantees.md).
+  test('optional on a gate writes enabled=false AND the resolved registry reflects it', async () => {
     const root = makeProject();
     const result = await controlCommand.handler(['gate.plan-exit', 'optional'], {}, root);
     expect(result.success).toBe(true);
@@ -56,7 +59,7 @@ describe('forge control — set tri-state on gates/rails (reuses workflow.gates.
     expect(gate.enabled).toBe(false);
   });
 
-  test('mandatory flips a gate back to enabled=true', async () => {
+  test('mandatory flips the registry value back to enabled=true', async () => {
     const root = makeProject();
     await controlCommand.handler(['gate.plan-exit', 'optional'], {}, root);
     await controlCommand.handler(['gate.plan-exit', 'mandatory'], {}, root);
@@ -72,7 +75,7 @@ describe('forge control — set tri-state on gates/rails (reuses workflow.gates.
     expect(readConfig(root).workflow.gates['gate.merge'].enabled).toBe(true);
   });
 
-  test('optional on rail.kernel_tracking flips the resolved rail off', async () => {
+  test('optional on rail.kernel_tracking flips the resolved-registry rail off', async () => {
     const root = makeProject();
     const result = await controlCommand.handler(['rail.kernel_tracking', 'optional'], {}, root);
     expect(result.success).toBe(true);
@@ -138,17 +141,22 @@ describe('forge control status — all-surface read with enforcement-locus badge
     expect(planExit).toMatchObject({
       surface: 'gate',
       controllable: true,
-      badge: 'ENFORCED (gate)',
-      locus: 'run-time-deny (gate)',
+      badge: 'DECLARED (no runtime consumer yet)',
+      locus: 'registry — declared, not yet enforced',
       state: 'mandatory',
     });
 
     const merge = items.find(i => i.id === 'gate.merge');
     expect(merge).toMatchObject({
       surface: 'human-gate',
-      badge: 'PERMISSION (human approval)',
-      locus: 'run-time-deny (permission)',
+      badge: 'DENY-ON-CHECK',
     });
+    expect(merge.locus).toMatch(/deny-on-check/);
+
+    // Honesty invariant: the status view never badges any flag ENFORCED.
+    for (const item of items) {
+      expect(item.badge).not.toMatch(/ENFORCED/);
+    }
   });
 
   test('status reflects a control change', async () => {
