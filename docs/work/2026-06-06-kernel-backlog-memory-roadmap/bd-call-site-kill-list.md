@@ -7,7 +7,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 76 | 8 |
+| command | 71 | 8 |
 | runtime | 245 | 32 |
 | docs | 395 | 47 |
 | skills | 1 | 1 |
@@ -21,8 +21,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 8 (bd), 10 (bd)
 - [ ] lib/commands/dev.js (1)
   - lines: 466 (bd)
-- [ ] lib/commands/migrate.js (22)
-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 305 (.beads), 309 (bd, dolt), 310 (bd, dolt), 314 (.beads), 326 (bd, .beads), 472 (.beads), 473 (.beads), 474 (.beads), 475 (.beads)
+- [ ] lib/commands/migrate.js (17)
+  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
 - [ ] lib/commands/plan.js (9)
   - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 979 (bd), 1016 (bd)
 - [ ] lib/commands/status.js (10)
@@ -39,7 +39,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/adapters/beads-issue-adapter.js (1)
   - lines: 78 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (5)
-  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 832 (.beads)
+  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 899 (.beads)
 - [ ] lib/audit-evidence.js (3)
   - lines: 148 (bd), 214 (bd), 240 (bd)
 - [ ] lib/beads-setup.js (41)
