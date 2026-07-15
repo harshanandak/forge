@@ -6,6 +6,7 @@ const path = require('node:path');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const serve = require('../../lib/commands/serve');
+const security = require('../../lib/commands/_serve-security');
 
 const tempRoots = [];
 const servers = [];
@@ -207,5 +208,70 @@ describe('bounded server smoke (starts, requests, closes)', () => {
     });
     expect(unknownVerb.status).toBe(422);
     expect((await unknownVerb.json()).ok).toBe(false);
+  });
+
+  test('every mutation attempt is recorded in the hash-chained journal', async () => {
+    const projectRoot = makeProject();
+    const dashboardDir = makeDashboard('{"kind":"live-snapshot"}');
+    const token = 'c'.repeat(64);
+    const ctx = serve.buildContext(projectRoot, dashboardDir, token, { generate: async () => {} });
+    const server = serve.createServeServer(ctx);
+    const port = await listen(server);
+    const base = `http://127.0.0.1:${port}`;
+
+    // One accepted (real gate) + one rejected (unknown verb) — both journaled.
+    await fetch(`${base}/api/mutation`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, verb: 'gate', args: ['enable', 'gate.issue_verify'] }),
+    });
+    await fetch(`${base}/api/mutation`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, verb: 'rm.rf', args: [] }),
+    });
+
+    const verified = security.verifyJournal(projectRoot);
+    expect(verified.ok).toBe(true);
+    expect(verified.entries).toBe(2);
+
+    // Tampering with a journalled record must be detectable.
+    const file = security.journalPath(projectRoot);
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    const first = JSON.parse(lines[0]);
+    first.ok = !first.ok; // flip the recorded outcome
+    lines[0] = JSON.stringify(first);
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    expect(security.verifyJournal(projectRoot).ok).toBe(false);
+  });
+});
+
+describe('verifyJournalAtStartup — the tamper check actually runs on serve start', () => {
+  test('warns loudly when a past record was tampered', () => {
+    const root = makeProject();
+    security.appendJournal(root, { verb: 'gate', ok: true });
+    security.appendJournal(root, { verb: 'issue.create', ok: true });
+    // Silently rewrite record #0's payload.
+    const file = security.journalPath(root);
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    const rec = JSON.parse(lines[0]);
+    rec.verb = 'role';
+    lines[0] = JSON.stringify(rec);
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+
+    const warnings = [];
+    const res = serve.verifyJournalAtStartup(root, (m) => warnings.push(m));
+    expect(res.ok).toBe(false);
+    expect(res.brokenAt).toBe(0);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('integrity check FAILED');
+  });
+
+  test('stays silent on an intact (or absent) journal', () => {
+    const root = makeProject();
+    const warnings = [];
+    // Absent journal -> ok, no warning.
+    expect(serve.verifyJournalAtStartup(root, (m) => warnings.push(m)).ok).toBe(true);
+    security.appendJournal(root, { verb: 'gate', ok: true });
+    expect(serve.verifyJournalAtStartup(root, (m) => warnings.push(m)).ok).toBe(true);
+    expect(warnings.length).toBe(0);
   });
 });
