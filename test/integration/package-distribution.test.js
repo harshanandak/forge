@@ -128,7 +128,6 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
       'lib/lefthook-check.js',
       'lib/husky-migration.js',
       'lib/beads-setup.js',
-      'lib/beads-health-check.js',
       'lib/beads-sync-scaffold.js',
       'lib/pat-setup.js',
     ];

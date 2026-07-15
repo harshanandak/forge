@@ -72,7 +72,6 @@ const projectDiscovery = require('../lib/project-discovery');
 // Load lib modules for symlink, beads, and PAT setup
 const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require('../lib/symlink-utils');
 const beadsSetupLib = require('../lib/beads-setup');
-const { beadsHealthCheck } = require('../lib/beads-health-check');
 const { scaffoldBeadsSync } = require('../lib/beads-sync-scaffold');
 
 // Load incremental setup modules
@@ -2917,18 +2916,6 @@ function initializeBeads(installType) {
       console.warn(`  ⚠ ${w}`);
     }
     console.log('  ✓ Beads initialized');
-
-    // Run post-init health check (non-fatal)
-    try {
-      const health = beadsHealthCheck(projectRoot);
-      if (health.healthy) {
-        console.log('  ✓ Beads health check passed');
-      } else {
-        console.log(`  ⚠ Beads health check failed at ${health.failedStep}: ${health.error}`);
-      }
-    } catch (_healthErr) {
-      // Health check is best-effort — don't block setup
-    }
 
     return true;
   } catch (err) {
