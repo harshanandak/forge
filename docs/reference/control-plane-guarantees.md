@@ -57,6 +57,16 @@ is the *truth*. State is therefore **derived**, never stored twice:
 | `optional` | `workflow.gates.<id>.enabled = false` | unlocked gates & rails |
 | `permission` | `workflow.gates.<id>.enabled = true` | human gates only (enforced via approval event) |
 
+The explicit contract — each control state ↔ the **real resolver field it sets**
+↔ the **enforcement-locus** it thereby activates (this is what `forge control`
+writes and what badges read from):
+
+| State | Resolver field written | Enforcement-locus activated | How it is enforced |
+|---|---|---|---|
+| `mandatory` | `workflow.gates.<id>.enabled = true` | `run-time-deny (gate)` / `(rail)` | stage transition / resolver refuses without the gate's evidence (`enforce-stage.js`; `validate`/`preflight` fail-closed). |
+| `optional` | `workflow.gates.<id>.enabled = false` | none (advisory) | resolver does not deny; `forge gate check` returns *disabled — satisfied* without any approval. Unlocked gates/rails only. |
+| `permission` (human gates only) | `workflow.gates.<id>.enabled = true` | `run-time-deny (permission)` | the gate is ACTIVE, so `forge gate check <issue> <id>` **fails until** a durable `gate.approved` event exists via `forge gate approve <issue> <id>` — the real `forge gate` human-gate approval-event mechanism (`lib/gate-events.js`). Verified: `permission` → `check` returns *not approved*; `optional` → *disabled — satisfied*. |
+
 Read-back derives the label from `(enabled, locked, isHumanGate)`:
 - human gate + enabled → `permission`; human gate + disabled → `optional`.
 - non-human gate/rail + enabled → `mandatory`; + disabled → `optional`.
