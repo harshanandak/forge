@@ -24,11 +24,14 @@ floor on a *shared* box without pretending to be authentication.
 
 ## Endpoint authentication matrix
 
-The per-run token is `crypto.randomBytes(32)`, minted at startup, delivered only
-in the served page's URL **fragment** (`#token=…`, never sent to the server in a
-request line, `Referer`, or log), and compared in constant time
-(`crypto.timingSafeEqual`). Every gated request must also pass the loopback
-Host/Origin fence.
+The per-run token is `crypto.randomBytes(32)`, minted at startup and compared in
+constant time (`crypto.timingSafeEqual`). The **dashboard client** keeps it in
+the page's URL **fragment** (`#token=…`) and attaches it via the `X-Forge-Token`
+header — the browser never puts a fragment in a `Referer`, so a foreign origin
+cannot learn it that way. Note this describes client behavior: `readRequestToken`
+*also* accepts a `?token=` query fallback, so a token CAN appear in a request
+line (and thus a server/proxy access log) if a client chooses to send it there.
+Every gated request must also pass the loopback Host/Origin fence.
 
 | Endpoint | Method | Loopback fence | Token required | Rationale |
 |----------|--------|:--------------:|:--------------:|-----------|
@@ -88,14 +91,22 @@ bits are real and test-asserted.
 
 ### 3. Hash-chained tamper-evident journal
 
-Every mutation attempt (accepted **or** rejected) is appended to
-`.forge/serve/journal.jsonl`. Each record embeds `prevHash` and carries
-`hash = sha256(prevHash ‖ JSON(record-without-hash))`, genesis = 64 zeros.
-`verifyJournal()` re-walks the chain from genesis; **editing** a past record
-breaks its `hash`, and **deleting** one breaks the following record's `prevHash`
-— either returns `{ ok:false, brokenAt, reason }`. This makes silent
-after-the-fact edits of serve's action history detectable. (It is integrity, not
-secrecy or non-repudiation: a local actor who can rewrite the file can also
+Every **token-valid** mutation attempt (whether the handler then accepts **or**
+rejects it) is appended to `.forge/serve/journal.jsonl`. (A request that fails
+the loopback/token fence gets a `403` and returns *before* the append, so failed
+auth probes are not journaled — see the filed follow-up on journaling those,
+which needs its own flood-control design.) Each record embeds `prevHash` and
+carries `hash = sha256(prevHash ‖ JSON(record-without-hash))`, genesis = 64
+zeros. `verifyJournal()` re-walks the chain from genesis; **editing** a past
+record breaks its `hash`, and **deleting a non-tail record** breaks the following
+record's `prevHash` — either returns `{ ok:false, brokenAt, reason }`.
+**Tail truncation** (dropping the most recent record(s)) leaves a still-valid
+prefix and is **only** detectable with an externally anchored head hash (a filed
+follow-up); the built-in check does not catch it. `verifyJournal()` is run at
+`forge serve` **startup** (loud warn on failure, never blocking), so the control
+actually executes on every serve. This makes silent after-the-fact *edits* and
+*mid-chain deletions* of serve's action history detectable. (It is integrity, not
+secrecy or non-repudiation: a local actor who can rewrite the whole file can also
 recompute a fresh valid chain — the guarantee is that *partial* tampering that
 leaves later records intact is always caught.)
 
@@ -114,4 +125,6 @@ authority.
   release), perms-at-creation + audit (POSIX asserts real mode bits; Windows
   asserts best-effort/no-throw), hash-chain append + tamper/delete detection.
 - `test/commands/serve.test.js` — `/data.json` token gate (regression for B5a),
-  and every mutation attempt journaled + tamper-detected end-to-end.
+  every token-valid mutation journaled + tamper-detected end-to-end, and the
+  startup `verifyJournalAtStartup` check (warns on a tampered journal, silent on
+  an intact/absent one).

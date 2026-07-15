@@ -243,3 +243,35 @@ describe('bounded server smoke (starts, requests, closes)', () => {
     expect(security.verifyJournal(projectRoot).ok).toBe(false);
   });
 });
+
+describe('verifyJournalAtStartup — the tamper check actually runs on serve start', () => {
+  test('warns loudly when a past record was tampered', () => {
+    const root = makeProject();
+    security.appendJournal(root, { verb: 'gate', ok: true });
+    security.appendJournal(root, { verb: 'issue.create', ok: true });
+    // Silently rewrite record #0's payload.
+    const file = security.journalPath(root);
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    const rec = JSON.parse(lines[0]);
+    rec.verb = 'role';
+    lines[0] = JSON.stringify(rec);
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+
+    const warnings = [];
+    const res = serve.verifyJournalAtStartup(root, (m) => warnings.push(m));
+    expect(res.ok).toBe(false);
+    expect(res.brokenAt).toBe(0);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('integrity check FAILED');
+  });
+
+  test('stays silent on an intact (or absent) journal', () => {
+    const root = makeProject();
+    const warnings = [];
+    // Absent journal -> ok, no warning.
+    expect(serve.verifyJournalAtStartup(root, (m) => warnings.push(m)).ok).toBe(true);
+    security.appendJournal(root, { verb: 'gate', ok: true });
+    expect(serve.verifyJournalAtStartup(root, (m) => warnings.push(m)).ok).toBe(true);
+    expect(warnings.length).toBe(0);
+  });
+});
