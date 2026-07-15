@@ -203,6 +203,23 @@ describe('PreCompact + Stop capture-on-exit (memory capture)', () => {
     expect(stopCommands).toContain('node user-stop.js');
     expect(stopCommands.filter(c => c.includes('hooks capture')).length).toBe(1);
   });
+
+  test('a user hook that merely CONTAINS "hooks capture" survives re-merge (not clobbered)', () => {
+    // CodeRabbit MAJOR on #397: the Forge-ownership check must key on the full resolved Forge
+    // invocation, NOT the bare `hooks capture` verb — otherwise a user's own command that just
+    // mentions "hooks capture" would be treated as Forge-owned and DELETED on re-merge.
+    const userCmd = 'node my-capture-tool.js hooks capture --to sentry';
+    const existing = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: userCmd }] }] },
+    }, null, 2);
+    const once = mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT);
+    const twice = mergeClaudeSettings(once, FORGE_HOOK_CONTRACT);
+    const b = JSON.parse(twice);
+    const stopCommands = b.hooks.Stop.flatMap(g => g.hooks.map(h => h.command));
+    expect(stopCommands).toContain(userCmd); // user hook preserved across a double-merge
+    // exactly one Forge capture group is maintained (the resolved forge.js invocation).
+    expect(stopCommands.filter(c => c.includes('forge.js') && c.includes('hooks capture')).length).toBe(1);
+  });
 });
 
 describe('renderCursorHooks (.cursor/hooks.json)', () => {

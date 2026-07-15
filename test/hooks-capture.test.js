@@ -154,8 +154,8 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
       fetchIssues: (_r, k) => (k === 'ready' ? [] : many),
     });
     expect(store.writes).toHaveLength(1);
-    // A hard ceiling keeps the injected-at-next-session digest small.
-    expect(store.writes[0].note.length).toBeLessThan(1200);
+    // A hard ceiling (incl. the appended ellipsis) keeps the next-session digest small.
+    expect(store.writes[0].note.length).toBeLessThanOrEqual(1000);
   });
 });
 
