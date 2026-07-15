@@ -32,6 +32,7 @@
  */
 
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 // Conservative protected-path set, mirroring .forge/protected-paths.yaml categories:
@@ -51,6 +52,83 @@ const PROTECTED_PATTERNS = [
   /(^|\/)\.env(\.[^/]+)?$/i,
   /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock[b]?)$/i,
 ];
+
+// ── Config-honest enforcement ───────────────────────────────────────────────
+// A DISABLED gate/rail in .forge/config.yaml must make its hook genuinely inert
+// (issue eda6d866). These hooks are self-contained (target projects have
+// .forge/hooks/*.js but NOT lib/), so we read + interpret the config here rather
+// than through the resolver. The `yaml` package is a Forge dependency present in
+// any project that ran `forge setup`; when it is somehow absent we degrade to a
+// conservative raw-text scan. Unparseable/missing config FAILS TOWARD enforcement
+// (default ON) so we never silently drop a gate the user did not disable.
+
+/** Load `.forge/config.yaml` into an object, or `{ __raw }` for a text-scan fallback, or null. */
+function loadConfigObject(projectRoot) {
+  let raw;
+  try {
+    raw = fs.readFileSync(path.join(projectRoot, '.forge', 'config.yaml'), 'utf8');
+  } catch {
+    return null; // no config file → caller defaults to enforcement ON
+  }
+  if (!raw || !raw.trim()) return {};
+  try {
+    const YAML = require('yaml');
+    const parsed = YAML.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return { __raw: raw };
+  }
+}
+
+/** A primitive is "disabled" only when its `enabled` is explicitly boolean false. */
+function isExplicitlyDisabled(node) {
+  return Boolean(node) && typeof node === 'object' && node.enabled === false;
+}
+
+/** Scan raw YAML for a `<key>:` block whose immediate child is `enabled: false`. */
+function rawKeyDisabled(raw, key) {
+  const lines = String(raw).split(/\r?\n/);
+  const keyRe = new RegExp(`^(\\s*)"?${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"?\\s*:\\s*$`);
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(keyRe);
+    if (!m) continue;
+    const parentIndent = m[1].length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (!lines[j].trim()) continue;
+      const childIndent = lines[j].match(/^\s*/)[0].length;
+      if (childIndent <= parentIndent) break; // left the block
+      if (/^\s*enabled\s*:\s*false\s*$/.test(lines[j])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolve the enforcement state the installed hooks must honor.
+ * @returns {{ tddEnabled: boolean, protectedPaths: string[]|null }}
+ *   tddEnabled     — false only when rail.tdd_intent is explicitly disabled.
+ *   protectedPaths — the configured list (may be []), or null when unset (→ built-in set).
+ */
+function resolveEnforcement(projectRoot) {
+  const config = loadConfigObject(projectRoot);
+  if (!config) return { tddEnabled: true, protectedPaths: null };
+
+  let tddDisabled;
+  let protectedPaths = null;
+  if (config.__raw) {
+    tddDisabled = rawKeyDisabled(config.__raw, 'rail.tdd_intent') || rawKeyDisabled(config.__raw, 'tdd_intent');
+    if (/^\s*protectedPaths\s*:\s*\[\s*\]\s*$/m.test(config.__raw)) protectedPaths = [];
+  } else {
+    // `forge gate disable` writes workflow.gates['rail.tdd_intent']; the `full`
+    // profile writes top-level rails.tdd_intent. Honor either shape.
+    const gates = config.workflow && config.workflow.gates;
+    const rails = config.rails;
+    tddDisabled = isExplicitlyDisabled(gates && gates['rail.tdd_intent'])
+      || isExplicitlyDisabled(rails && rails.tdd_intent);
+    if (Array.isArray(config.protectedPaths)) protectedPaths = config.protectedPaths.slice();
+  }
+  return { tddEnabled: !tddDisabled, protectedPaths };
+}
 
 /** Parse `--intent <id> --harness <id>` from an argv slice. */
 function parseArgs(argv) {
@@ -133,12 +211,22 @@ function runInstalledTddCheck() {
   }
 }
 
+// Fully-ON default keeps back-compat: callers that pass no `enforcement` (and the
+// existing test suite) get the original always-enforce behavior.
+const ENFORCEMENT_ON = Object.freeze({ tddEnabled: true, protectedPaths: null });
+
 /**
- * Core enforcement decision. `runTddCheck` is injectable for deterministic tests.
+ * Core enforcement decision. `runTddCheck` is injectable for deterministic tests;
+ * `enforcement` (from resolveEnforcement) makes a DISABLED gate/rail inert.
  * @returns {{ decision: 'allow'|'deny', reason?: string }}
  */
-function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
+function decide({ intent, input, runTddCheck = runInstalledTddCheck, enforcement = ENFORCEMENT_ON }) {
+  // A configured-but-empty protectedPaths list means the user turned protected-path
+  // enforcement off — the hook must be inert. An unset list (null) keeps the built-in set.
+  const protectedPathsOff = Array.isArray(enforcement.protectedPaths) && enforcement.protectedPaths.length === 0;
+
   if (intent === 'protected-path') {
+    if (protectedPathsOff) return { decision: 'allow' };
     const target = extractPath(input);
     if (isProtectedPath(target)) {
       return {
@@ -162,6 +250,8 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
   }
 
   if (intent === 'tdd-gate') {
+    // TDD rail disabled in config → inert: never run the check, never block.
+    if (!enforcement.tddEnabled) return { decision: 'allow' };
     const command = extractCommand(input);
     if (!isGitCommit(command)) return { decision: 'allow' };
     const code = runTddCheck();
@@ -222,7 +312,10 @@ function readStdin() {
 function main() {
   const { intent, harness } = parseArgs(process.argv.slice(2));
   const input = readStdin();
-  const decision = decide({ intent, input });
+  // Project root is two levels up from this installed hook (<root>/.forge/hooks/),
+  // so enforcement resolves against the project's config regardless of cwd.
+  const enforcement = resolveEnforcement(path.resolve(__dirname, '..', '..'));
+  const decision = decide({ intent, input, enforcement });
   const output = formatOutput(harness || 'claude', decision);
   if (output) process.stdout.write(output);
   // Exit 0 always: the decision travels in the JSON body, not the exit code, so a
@@ -232,6 +325,7 @@ function main() {
 
 module.exports = {
   PROTECTED_PATTERNS,
+  resolveEnforcement,
   parseArgs,
   extractPath,
   extractCommand,

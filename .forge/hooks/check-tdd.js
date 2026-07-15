@@ -14,6 +14,60 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 
+// ── Config-honest enforcement (issue eda6d866) ──────────────────────────────
+// This pre-commit gate must be INERT when the TDD rail is disabled in
+// .forge/config.yaml. The hook is self-contained (target projects have
+// .forge/hooks/*.js but NOT lib/), so it reads the config directly. `forge gate
+// disable rail.tdd_intent` writes workflow.gates['rail.tdd_intent']; the `full`
+// profile writes top-level rails.tdd_intent — honor either. Missing/unparseable
+// config FAILS TOWARD enforcement (returns true) so a gate the user did not
+// disable is never silently dropped.
+function isTddEnabled(projectRoot) {
+  let raw;
+  try {
+    raw = fs.readFileSync(path.join(projectRoot, ".forge", "config.yaml"), "utf8");
+  } catch {
+    return true; // no config → enforce
+  }
+  if (!raw || !raw.trim()) return true;
+
+  const railDisabled = (config) =>
+    isExplicitlyDisabled(config?.workflow?.gates?.["rail.tdd_intent"]) ||
+    isExplicitlyDisabled(config?.rails?.tdd_intent);
+
+  try {
+    const YAML = require("yaml");
+    const parsed = YAML.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
+    return !railDisabled(parsed);
+  } catch {
+    // yaml lib unavailable → conservative raw-text scan for the disabled block.
+    return !(rawKeyDisabled(raw, "rail.tdd_intent") || rawKeyDisabled(raw, "tdd_intent"));
+  }
+}
+
+function isExplicitlyDisabled(node) {
+  return Boolean(node) && typeof node === "object" && node.enabled === false;
+}
+
+// Scan raw YAML for a `<key>:` block whose immediate child is `enabled: false`.
+function rawKeyDisabled(raw, key) {
+  const lines = String(raw).split(/\r?\n/);
+  const keyRe = new RegExp(`^(\\s*)"?${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"?\\s*:\\s*$`);
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(keyRe);
+    if (!m) continue;
+    const parentIndent = m[1].length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (!lines[j].trim()) continue;
+      const childIndent = lines[j].match(/^\s*/)[0].length;
+      if (childIndent <= parentIndent) break;
+      if (/^\s*enabled\s*:\s*false\s*$/.test(lines[j])) return true;
+    }
+  }
+  return false;
+}
+
 // Get staged files using git diff --cached
 function getStagedFiles() {
   try {
@@ -163,6 +217,12 @@ function promptUser(question, options) {
 
 // Main hook logic
 async function main() {
+  // Project root is two levels up from this installed hook (<root>/.forge/hooks/).
+  // When the TDD rail is disabled in config, the gate is inert — allow the commit.
+  if (!isTddEnabled(path.resolve(__dirname, "..", ".."))) {
+    process.exit(0);
+  }
+
   console.log("🔍 TDD Check: Verifying test coverage for staged files...\n");
 
   const stagedFiles = getStagedFiles();
@@ -236,8 +296,12 @@ async function main() {
   }
 }
 
-// Run with error handling
-main().catch((error) => {
-  console.error("Error in TDD check hook:", error.message);
-  process.exit(1);
-});
+module.exports = { isTddEnabled };
+
+// Run with error handling (only as a script, not when required by tests).
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Error in TDD check hook:", error.message);
+    process.exit(1);
+  });
+}

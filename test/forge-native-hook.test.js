@@ -120,6 +120,71 @@ describe('decide (enforcement logic; TDD check injected for determinism)', () =>
   });
 });
 
+describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  function makeProject(configYaml) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-cfg-'));
+    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+    if (configYaml !== null) {
+      fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), configYaml, 'utf8');
+    }
+    return root;
+  }
+
+  test('resolveEnforcement: no config => enforcement ON (tddEnabled true, protectedPaths null)', () => {
+    const root = makeProject(null);
+    const e = adapter.resolveEnforcement(root);
+    expect(e.tddEnabled).toBe(true);
+    expect(e.protectedPaths).toBe(null);
+  });
+
+  test('resolveEnforcement: workflow.gates rail.tdd_intent disabled => tddEnabled false', () => {
+    const root = makeProject('workflow:\n  gates:\n    "rail.tdd_intent":\n      enabled: false\n');
+    expect(adapter.resolveEnforcement(root).tddEnabled).toBe(false);
+  });
+
+  test('resolveEnforcement: top-level rails.tdd_intent disabled => tddEnabled false', () => {
+    const root = makeProject('rails:\n  tdd_intent:\n    enabled: false\n');
+    expect(adapter.resolveEnforcement(root).tddEnabled).toBe(false);
+  });
+
+  test('resolveEnforcement: empty protectedPaths => [] (protected-path inert)', () => {
+    const root = makeProject('protectedPaths: []\n');
+    expect(adapter.resolveEnforcement(root).protectedPaths).toEqual([]);
+  });
+
+  test('decide: tdd-gate is INERT (allow, never runs check) when tddEnabled false', () => {
+    let called = false;
+    const d = adapter.decide({
+      intent: 'tdd-gate',
+      input: { tool_input: { command: 'git commit -m "wip"' } },
+      runTddCheck: () => { called = true; return 1; },
+      enforcement: { tddEnabled: false, protectedPaths: null },
+    });
+    expect(d.decision).toBe('allow');
+    expect(called).toBe(false);
+  });
+
+  test('decide: protected-path is INERT (allow) when protectedPaths resolves empty', () => {
+    const d = adapter.decide({
+      intent: 'protected-path',
+      input: { tool_input: { file_path: '.forge/config.yaml' } },
+      enforcement: { tddEnabled: true, protectedPaths: [] },
+    });
+    expect(d.decision).toBe('allow');
+  });
+
+  test('decide: default (no enforcement arg) preserves ON behavior', () => {
+    const denied = adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.forge/config.yaml' } } });
+    expect(denied.decision).toBe('deny');
+    const tdd = adapter.decide({ intent: 'tdd-gate', input: { tool_input: { command: 'git commit' } }, runTddCheck: () => 1 });
+    expect(tdd.decision).toBe('deny');
+  });
+});
+
 describe('formatOutput (harness-native decision contracts)', () => {
   test('Claude deny -> hookSpecificOutput.permissionDecision = deny', () => {
     const out = JSON.parse(adapter.formatOutput('claude', { decision: 'deny', reason: 'Protected path' }));
