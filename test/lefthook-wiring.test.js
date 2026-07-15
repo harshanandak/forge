@@ -162,6 +162,45 @@ describe('installNativeGitHooks (fallback when lefthook is unavailable)', () => 
     expect(res.skipped).toContain('pre-commit');
     expect(fs.existsSync(pre + '.forge-backup')).toBe(true);
   });
+
+  // F4 (kernel 269e5d05): a user's CUSTOM hook that merely INVOKES lefthook among other
+  // steps contains the substring 'lefthook' — the old bare-substring classifier treated it
+  // as overwritable and clobbered it WITHOUT a backup. Such a hook is the user's; it must be
+  // preserved (skipped) and backed up, never destroyed.
+  test('preserves + backs up a user hook that merely invokes lefthook (not bare-substring clobber)', () => {
+    tmp = mkGitRepo();
+    const hooksDir = path.join(tmp, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const pre = path.join(hooksDir, 'pre-commit');
+    const userHook = '#!/bin/sh\n# my project pre-commit\nnpm run my-checks\nlefthook run pre-commit\n';
+    fs.writeFileSync(pre, userHook);
+    const res = installNativeGitHooks(tmp);
+    // The user's hook is untouched and preserved…
+    expect(fs.readFileSync(pre, 'utf8')).toBe(userHook);
+    expect(res.skipped).toContain('pre-commit');
+    // …and a one-time backup exists carrying the original content.
+    expect(fs.existsSync(pre + '.forge-backup')).toBe(true);
+    expect(fs.readFileSync(pre + '.forge-backup', 'utf8')).toBe(userHook);
+  });
+
+  // F4 (kernel 269e5d05): a genuine lefthook-GENERATED hook (defines call_lefthook) is a
+  // disposable generated artifact and may be overwritten with the native fallback — but the
+  // overwrite must ALWAYS back up first, so nothing is destroyed without a .forge-backup.
+  test('overwrites a genuine lefthook-generated hook but backs it up before overwriting', () => {
+    tmp = mkGitRepo();
+    const hooksDir = path.join(tmp, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const pre = path.join(hooksDir, 'pre-commit');
+    const generated = '#!/bin/sh\nif [ "$LEFTHOOK" = "0" ]; then exit 0; fi\ncall_lefthook()\n{\n  lefthook "$@"\n}\ncall_lefthook run "pre-commit" "$@"\n';
+    fs.writeFileSync(pre, generated);
+    const res = installNativeGitHooks(tmp);
+    // It IS replaced with Forge's native hook…
+    expect(res.written).toContain('pre-commit');
+    expect(fs.readFileSync(pre, 'utf8')).toContain(FORGE_NATIVE_HOOK_SENTINEL);
+    // …but the generated original was backed up first (never destroyed without a copy).
+    expect(fs.existsSync(pre + '.forge-backup')).toBe(true);
+    expect(fs.readFileSync(pre + '.forge-backup', 'utf8')).toBe(generated);
+  });
 });
 
 describe('verifyHooksActive (loud honesty — never silently no-op)', () => {
@@ -171,12 +210,31 @@ describe('verifyHooksActive (loud honesty — never silently no-op)', () => {
     expect(res.active).toBe(false);
     expect(res.method).toBe('none');
   });
-  test('reports active + native after installNativeGitHooks runs', () => {
+  // Helper: the native hook body only enforces when .forge/hooks/check-tdd.js exists
+  // (`if [ -f … ]`), so a truthful "active" verdict requires the gate script to be present.
+  function installGateScript(root) {
+    const gateDir = path.join(root, '.forge', 'hooks');
+    fs.mkdirSync(gateDir, { recursive: true });
+    fs.writeFileSync(path.join(gateDir, 'check-tdd.js'), '#!/usr/bin/env node\nprocess.exit(0);\n');
+  }
+
+  test('reports active + native after installNativeGitHooks runs (with gate script present)', () => {
     tmp = mkGitRepo();
     installNativeGitHooks(tmp);
+    installGateScript(tmp);
     const res = verifyHooksActive(tmp);
     expect(res.active).toBe(true);
     expect(res.method).toBe('native');
+  });
+
+  // F5 (kernel d96af31a): the native hook body no-ops when its gate script is absent, so a
+  // present-but-inert hook must report NOT active (loud) — never a silent false pass.
+  test('reports NOT active when the native hook is present but its gate script is absent', () => {
+    tmp = mkGitRepo();
+    installNativeGitHooks(tmp); // writes .git/hooks/pre-commit, but NO .forge/hooks/check-tdd.js
+    const res = verifyHooksActive(tmp);
+    expect(res.active).toBe(false);
+    expect(res.reason).toMatch(/check-tdd\.js|gate script/i);
   });
   test('reports active + lefthook when the pre-commit hook is lefthook-managed', () => {
     tmp = mkGitRepo();
