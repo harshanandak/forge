@@ -29,18 +29,17 @@ permissions:
   pull-requests: write
   checks: write
 
-# One run per PR, but do NOT cancel the in-flight one. cancel-in-progress:true
-# left every superseded run as a CANCELLED workflow run, which GitHub surfaces as
-# a red/non-SUCCESS check on the PR head — cosmetically alarming AND it trips
-# merge-gate tooling (Forge's own pr-bundle) that treats any non-SUCCESS check as
-# a failure. With cancel-in-progress:false the group SERIALIZES instead: overlapping
-# events queue and run to a clean completion in order, and because the sticky comment
-# is an idempotent upsert the last run still reflects the latest state. The extra
-# runner minutes for a lightweight surface-only monitor are worth never leaving a
-# false red X on an otherwise-green PR (kernel issue 97e6a146).
-concurrency:
-  group: pr-monitor-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_suite.pull_requests[0].number || github.ref }}
-  cancel-in-progress: false
+# DELIBERATELY NO `concurrency:` group. A per-PR group does NOT help here: GitHub's
+# queue replacement cancels the previously-PENDING run in a group UNCONDITIONALLY
+# (independent of cancel-in-progress), and this workflow bursts hard —
+# check_suite:completed alone fires ~10+ times per push, plus reviews/comments — so
+# a group left a trail of CANCELLED runs. Those render as red/non-SUCCESS checks on
+# the PR head, alarm humans, and trip merge-gate tooling (Forge's own pr-bundle) that
+# treats any non-SUCCESS check as a failure (kernel issue 97e6a146). Without a group,
+# nothing gets cancelled. The only race a group used to guard — two concurrent
+# first-runs both creating a sticky comment — is instead closed deterministically by
+# the reconcile-to-one upsert (lib/pr-monitor/upsert-sticky.js), which keeps the
+# lowest-id sticky and deletes the rest, converging to EXACTLY ONE per PR.
 
 jobs:
   monitor:
@@ -149,26 +148,21 @@ jobs:
           # jq -Rs slurps the raw markdown into a JSON string for the comment API.
           jq -Rs '{body: .}' monitor-body.md > monitor-payload.json
 
-      - name: Upsert sticky comment
+      - name: Upsert sticky comment (race-safe, exactly one)
         if: steps.resolve.outputs.should_run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
+          STICKY_PAYLOAD_FILE: monitor-payload.json
         run: |
           set -euo pipefail
-          # Find our prior sticky comment by its hidden marker and UPDATE it in
-          # place, so the monitor never spams new comments. Author-scoped by the
-          # marker, not by actor, so it is unambiguous.
-          CID=$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
-            --jq '.[] | select(.body | contains("<!-- forge-pr-monitor -->")) | .id' | head -n1)
-          if [ -n "$CID" ]; then
-            gh api -X PATCH "repos/$GH_REPO/issues/comments/$CID" --input monitor-payload.json > /dev/null
-            echo "Updated sticky comment #$CID"
-          else
-            gh api -X POST "repos/$GH_REPO/issues/$PR/comments" --input monitor-payload.json > /dev/null
-            echo "Created sticky comment"
-          fi
+          # Reconcile the PR's sticky comments to EXACTLY ONE: find prior stickies by
+          # their hidden marker, update the oldest (lowest-id) in place, and delete any
+          # duplicates a concurrent run created. Because this workflow has no
+          # concurrency group (see the top-of-file note), two first-runs could each
+          # create a sticky; the deterministic lowest-id survivor closes that race.
+          node lib/pr-monitor/upsert-sticky.js
 
       - name: Publish informational (neutral) check
         if: steps.resolve.outputs.should_run == 'true'
