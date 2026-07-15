@@ -130,6 +130,56 @@ function resolveEnforcement(projectRoot) {
   return { tddEnabled: !tddDisabled, protectedPaths };
 }
 
+/**
+ * The SINGLE resolved predicate each hook gates on — flag-agnostic on purpose.
+ * Whatever config flag ultimately governs an enforcement kind resolves inside
+ * resolveEnforcement(); callers ask only "is this active?". This is the one place
+ * the TDD off-switch is read, so a future flag change lands here with no rework.
+ * @param {'tdd'|'protected-path'} kind
+ */
+function isEnforcementActive(kind, projectRoot) {
+  const { tddEnabled, protectedPaths } = resolveEnforcement(projectRoot);
+  if (kind === 'tdd') return tddEnabled;
+  if (kind === 'protected-path') return protectedPaths === null || protectedPaths.length > 0;
+  return true;
+}
+
+// Translate a config protectedPaths entry (a path or glob like `.github/workflows/**`)
+// into an anchored matcher. `**` spans path separators, `*` stays within one segment.
+function globToRegExp(pattern) {
+  const norm = normalize(pattern);
+  let re = '';
+  for (let i = 0; i < norm.length; i += 1) {
+    const c = norm[i];
+    if (c === '*') {
+      if (norm[i + 1] === '*') { re += '.*'; i += 1; if (norm[i + 1] === '/') i += 1; }
+      else re += '[^/]*';
+    } else if ('\\^$.|?+()[]{}'.includes(c)) {
+      re += `\\${c}`;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp(`(^|/)${re}(/|$)`);
+}
+
+/**
+ * Build the protected-path matcher from resolved config (config is the source of
+ * truth — the hardcoded PROTECTED_PATTERNS set is only the fallback when config
+ * omits protectedPaths entirely, so no gate is silently dropped):
+ *   null → unset → built-in default set (fail toward enforcement / back-compat)
+ *   []   → explicitly empty → nothing protected (inert)
+ *   list → protect exactly those paths/globs
+ */
+function buildProtectedMatcher(protectedPaths) {
+  if (protectedPaths === null) {
+    return p => Boolean(p) && PROTECTED_PATTERNS.some(re => re.test(normalize(p)));
+  }
+  if (protectedPaths.length === 0) return () => false;
+  const regexes = protectedPaths.map(globToRegExp);
+  return p => Boolean(p) && regexes.some(re => re.test(normalize(p)));
+}
+
 /** Parse `--intent <id> --harness <id>` from an argv slice. */
 function parseArgs(argv) {
   const out = { intent: null, harness: null };
@@ -162,7 +212,7 @@ function normalize(p) {
   return String(p).replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
-/** True when a path falls inside Forge's protected set. */
+/** True when a path falls inside Forge's built-in protected set (the fallback matcher). */
 function isProtectedPath(p) {
   if (!p) return false;
   const n = normalize(p);
@@ -183,13 +233,13 @@ const WRITE_INTENT_RE = /(^|[\s;|&(])(rm|mv|cp|tee|truncate|chmod|chown|ln|sed|p
  * (rm/mv/sed/tee/redirection/...), then (2) token-scan (split on whitespace +
  * shell operators, strip quotes) for a protected path. Never throws.
  */
-function commandTouchesProtectedPath(command) {
+function commandTouchesProtectedPath(command, isProtected = isProtectedPath) {
   if (typeof command !== 'string' || !command) return false;
   if (!WRITE_INTENT_RE.test(command)) return false;
   const tokens = command.split(/[\s;|&<>()]+/);
   for (const raw of tokens) {
     const token = raw.replace(/^["']+|["']+$/g, '');
-    if (token && !token.startsWith('-') && isProtectedPath(token)) return true;
+    if (token && !token.startsWith('-') && isProtected(token)) return true;
   }
   return false;
 }
@@ -221,14 +271,12 @@ const ENFORCEMENT_ON = Object.freeze({ tddEnabled: true, protectedPaths: null })
  * @returns {{ decision: 'allow'|'deny', reason?: string }}
  */
 function decide({ intent, input, runTddCheck = runInstalledTddCheck, enforcement = ENFORCEMENT_ON }) {
-  // A configured-but-empty protectedPaths list means the user turned protected-path
-  // enforcement off — the hook must be inert. An unset list (null) keeps the built-in set.
-  const protectedPathsOff = Array.isArray(enforcement.protectedPaths) && enforcement.protectedPaths.length === 0;
-
   if (intent === 'protected-path') {
-    if (protectedPathsOff) return { decision: 'allow' };
+    // Config is the source of truth: matcher is built from the resolved
+    // protectedPaths list (empty → inert; unset → built-in fallback set).
+    const matchesProtected = buildProtectedMatcher(enforcement.protectedPaths);
     const target = extractPath(input);
-    if (isProtectedPath(target)) {
+    if (matchesProtected(target)) {
       return {
         decision: 'deny',
         reason: `Forge-protected path '${normalize(target)}' — edit it through the owning Forge CLI/skill, not a raw write.`,
@@ -239,7 +287,7 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck, enforcement
     // so the deny-capable shell surface actually protects instead of no-oping.
     if (!target) {
       const command = extractCommand(input);
-      if (commandTouchesProtectedPath(command)) {
+      if (commandTouchesProtectedPath(command, matchesProtected)) {
         return {
           decision: 'deny',
           reason: 'Shell command writes to a Forge-protected path — use the owning Forge CLI/skill instead.',
@@ -326,6 +374,9 @@ function main() {
 module.exports = {
   PROTECTED_PATTERNS,
   resolveEnforcement,
+  isEnforcementActive,
+  globToRegExp,
+  buildProtectedMatcher,
   parseArgs,
   extractPath,
   extractCommand,

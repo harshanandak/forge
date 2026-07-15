@@ -183,6 +183,39 @@ describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
     const tdd = adapter.decide({ intent: 'tdd-gate', input: { tool_input: { command: 'git commit' } }, runTddCheck: () => 1 });
     expect(tdd.decision).toBe('deny');
   });
+
+  test('isEnforcementActive: single flag-agnostic predicate for each kind', () => {
+    const tddOff = makeProject('workflow:\n  gates:\n    "rail.tdd_intent":\n      enabled: false\n');
+    expect(adapter.isEnforcementActive('tdd', tddOff)).toBe(false);
+    const ppEmpty = makeProject('protectedPaths: []\n');
+    expect(adapter.isEnforcementActive('protected-path', ppEmpty)).toBe(false);
+    const none = makeProject(null);
+    expect(adapter.isEnforcementActive('tdd', none)).toBe(true);
+    expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
+  });
+});
+
+describe('config-driven protected paths (config is the source of truth)', () => {
+  test('globToRegExp: ** spans separators, * stays within a segment', () => {
+    expect(adapter.globToRegExp('.github/workflows/**').test('.github/workflows/ci.yml')).toBe(true);
+    expect(adapter.globToRegExp('*.env').test('prod.env')).toBe(true);
+    expect(adapter.globToRegExp('*.env').test('config/prod.env')).toBe(true); // (^|/) prefix
+    expect(adapter.globToRegExp('AGENTS.md').test('AGENTS-x.md')).toBe(false);
+  });
+
+  test('decide protects EXACTLY the configured list, not the hardcoded set', () => {
+    const enforcement = { tddEnabled: true, protectedPaths: ['.github/workflows/**'] };
+    // In the configured list → deny
+    expect(adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.github/workflows/ci.yml' } }, enforcement }).decision).toBe('deny');
+    // A hardcoded-set path NOT in config → allowed (config is authoritative)
+    expect(adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.forge/config.yaml' } }, enforcement }).decision).toBe('allow');
+  });
+
+  test('shell-command scan honors the configured matcher', () => {
+    const enforcement = { tddEnabled: true, protectedPaths: ['.forge/config.yaml'] };
+    expect(adapter.decide({ intent: 'protected-path', input: { command: 'echo x > .forge/config.yaml' }, enforcement }).decision).toBe('deny');
+    expect(adapter.decide({ intent: 'protected-path', input: { command: 'rm -rf .github' }, enforcement }).decision).toBe('allow');
+  });
 });
 
 describe('formatOutput (harness-native decision contracts)', () => {
