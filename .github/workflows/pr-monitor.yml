@@ -42,30 +42,40 @@ jobs:
     steps:
       - name: Resolve PR number
         id: resolve
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_PATH: ${{ github.event_path }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Use the runner-provided env vars ($GITHUB_EVENT_NAME / $GITHUB_EVENT_PATH),
+          # which are ALWAYS set — the github.event_path expression context can resolve
+          # empty, which previously handed jq an empty filename and failed the job.
+          EVENT_NAME="${GITHUB_EVENT_NAME:-}"
+          EVENT_PATH="${GITHUB_EVENT_PATH:-}"
+          PR=""
+          if [ -z "$EVENT_PATH" ] || [ ! -f "$EVENT_PATH" ]; then
+            echo "No event payload file ('$EVENT_PATH'); clean no-op."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # jq errors are swallowed (|| true): a monitor must never red-X itself on an
+          # unrelated or malformed event — no PR context means a clean no-op, not a fail.
           case "$EVENT_NAME" in
             pull_request|pull_request_review|pull_request_review_comment)
-              PR=$(jq -r '.pull_request.number // empty' "$EVENT_PATH") ;;
+              PR=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true) ;;
             issue_comment)
-              # Only PR comments carry .issue.pull_request; plain issues are skipped.
-              if [ "$(jq -r '.issue.pull_request // empty' "$EVENT_PATH")" != "" ]; then
-                PR=$(jq -r '.issue.number // empty' "$EVENT_PATH")
-              else
-                PR=""
+              # Only PR comments carry .issue.pull_request; plain issue comments are skipped.
+              if [ "$(jq -r '.issue.pull_request // empty' "$EVENT_PATH" 2>/dev/null || true)" != "" ]; then
+                PR=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
               fi ;;
             check_suite)
-              PR=$(jq -r '.check_suite.pull_requests[0].number // empty' "$EVENT_PATH") ;;
+              # No direct PR number; may be empty for forks/detached suites — then skip.
+              PR=$(jq -r '.check_suite.pull_requests[0].number // empty' "$EVENT_PATH" 2>/dev/null || true) ;;
             *)
               PR="" ;;
           esac
           if [ -z "$PR" ]; then
-            echo "No PR associated with this event; nothing to surface."
+            echo "No PR associated with event '$EVENT_NAME'; clean no-op."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
+            echo "Resolved PR #$PR from event '$EVENT_NAME'."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "pr=$PR" >> "$GITHUB_OUTPUT"
           fi
