@@ -38,7 +38,7 @@ describe('adoption profiles', () => {
     expect(new Set(configs.map(config => JSON.stringify(config))).size).toBe(3);
     for (const config of configs) {
       expect(config.template.kind).toBe('forge.adoptionTemplate');
-      expect(config.template.version).toBe('0.0.15');
+      expect(config.template.version).toBe('0.0.16');
       expect(config.template.ancestry).toContain('forge.runtimeGraph.currentCommandFlow@0.0.17');
     }
   });
@@ -57,5 +57,17 @@ describe('adoption profiles', () => {
 
   test('unknown profiles fail with the available profile list', () => {
     expect(() => buildAdoptionConfig('custom')).toThrow('minimal, standard, full');
+  });
+
+  test('minimal disables the tdd_intent rail; standard/full keep it enabled', () => {
+    const { getResolvedRuntimeGraph } = require('../lib/core/runtime-graph');
+    const tddEnabled = (profile) => {
+      const root = makeProject(renderAdoptionConfigYaml(profile));
+      const graph = getResolvedRuntimeGraph({ projectRoot: root });
+      return graph.rails.find(rail => rail.id === 'rail.tdd_intent').enabled;
+    };
+    expect(tddEnabled('minimal')).toBe(false);
+    expect(tddEnabled('standard')).toBe(true);
+    expect(tddEnabled('full')).toBe(true);
   });
 });
