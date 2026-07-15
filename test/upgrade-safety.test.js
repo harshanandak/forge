@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const {
   buildUpgradeDryRunReport,
+  buildBeadsMigrationSummary,
   renderUpgradeDryRunReport,
 } = require('../lib/upgrade-safety');
 
@@ -65,5 +66,35 @@ describe('upgrade preview — beads -> kernel breaking boundary', () => {
 
     const output = renderUpgradeDryRunReport(report);
     expect(output).not.toContain('forge migrate --from beads');
+  });
+
+  // The advisory is a GUIDE, not an integrity failure — a pending migration must
+  // never flip `ok` (scripts key on it). Pin it: two otherwise-identical repos,
+  // one with a beads store, produce the SAME `ok`.
+  test('a pending beads migration does NOT flip report.ok', () => {
+    const withBeads = makeRoot({ beadsJsonl: true });
+    const without = makeRoot({ beadsJsonl: false });
+
+    const beadsReport = buildUpgradeDryRunReport(withBeads);
+    const cleanReport = buildUpgradeDryRunReport(without);
+
+    expect(beadsReport.beadsMigration.needsMigration).toBe(true);
+    expect(cleanReport.beadsMigration.needsMigration).toBe(false);
+    // The migration advisory is orthogonal to readiness `ok`.
+    expect(beadsReport.ok).toBe(cleanReport.ok);
+  });
+
+  // The advisory must respect the SAME opt-in the nudge does — including the
+  // FORGE_ISSUE_BACKEND env override, not just config.
+  test('an env opt-in (FORGE_ISSUE_BACKEND=beads) suppresses the advisory', () => {
+    const root = makeRoot({ beadsJsonl: true });
+
+    const envOptIn = buildBeadsMigrationSummary(root, { FORGE_ISSUE_BACKEND: 'beads' });
+    expect(envOptIn.jsonlPresent).toBe(true);
+    expect(envOptIn.needsMigration).toBe(false);
+
+    // Same repo, default env -> the advisory fires.
+    const defaultEnv = buildBeadsMigrationSummary(root, {});
+    expect(defaultEnv.needsMigration).toBe(true);
   });
 });

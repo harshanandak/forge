@@ -106,4 +106,32 @@ describe('issue-path unmigrated-beads nudge', () => {
     const hits = errors.filter(line => line.includes('forge migrate --from beads')).length;
     expect(hits).toBe(1);
   });
+
+  // The nudge is stderr-only: it must NEVER perturb stdout. Pin that `list --json`
+  // stdout is byte-identical whether or not the nudge fires (machine consumers
+  // parse stdout; the hint rides on stderr).
+  test('stdout (--json) is byte-identical with vs without the nudge firing', async () => {
+    const beadsRoot = makeRoot({ withBeads: true });
+    const cleanRoot = makeRoot({ withBeads: false });
+    const runner = kernelListRunner([]);
+
+    const withNudge = await runIssueSubcommand('list', ['--json'], beadsRoot, {
+      env: {},
+      runIssueOperation: runner,
+    });
+    const nudgeFired = errors.some(line => line.includes('forge migrate --from beads'));
+
+    errors = [];
+    const withoutNudge = await runIssueSubcommand('list', ['--json'], cleanRoot, {
+      env: {},
+      runIssueOperation: runner,
+    });
+    const nudgeSuppressed = errors.some(line => line.includes('forge migrate --from beads'));
+
+    // Preconditions: the nudge fired for the beads repo and not for the clean one.
+    expect(nudgeFired).toBe(true);
+    expect(nudgeSuppressed).toBe(false);
+    // The observable stdout payload is identical regardless.
+    expect(withNudge.output).toBe(withoutNudge.output);
+  });
 });
