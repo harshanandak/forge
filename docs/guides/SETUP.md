@@ -12,8 +12,11 @@ This guide covers supported Forge adoption paths. Use [Quickstart](../../QUICKST
 ## Install
 
 ```bash
-bun add -D forge-workflow
+bun add -D forge-workflow@beta
 ```
+
+> The current release is a prerelease under the `beta` dist-tag — install with
+> `@beta`. A bare `forge-workflow` resolves to the older stable `latest`.
 
 The package exposes `forge`, `forge-workflow`, and `forge-preflight`.
 
