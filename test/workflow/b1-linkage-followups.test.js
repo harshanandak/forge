@@ -25,6 +25,7 @@ const {
   registerBranchIssueLinkage,
   currentBranchIssueFromDriver,
 } = require('../../lib/commands/plan');
+const { findExistingLink } = require('../../lib/kernel/backing-issue');
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
@@ -186,5 +187,28 @@ describe('B1-followup linkage + stage-gate residuals', () => {
     };
     // No UUID in the branch name, so a state-aware resolver returns null.
     expect(currentBranchIssueFromDriver(staleDriver, 'feat/slug-guard')).toBe(null);
+  });
+
+  // --- R5 -------------------------------------------------------------------
+  // The THIRD branch->issue resolver (backing-issue.findExistingLink, used by
+  // `forge worktree create`) must be state-aware like the other two, so a reused
+  // branch does not treat a superseded row's OLD issue as the existing link.
+  test('R5: findExistingLink ignores a superseded row for a reused branch', () => {
+    const staleDriver = {
+      listWorktrees: () => [
+        { branch: 'feat/reused', issue_id: 'issue-old', state: 'superseded' },
+      ],
+    };
+    expect(findExistingLink(staleDriver, { branch: 'feat/reused' })).toBe(null);
+  });
+
+  test('R5: findExistingLink still matches an ACTIVE row for the branch', () => {
+    const liveDriver = {
+      listWorktrees: () => [
+        { branch: 'feat/reused', issue_id: 'issue-new', state: 'active' },
+      ],
+    };
+    const match = findExistingLink(liveDriver, { branch: 'feat/reused' });
+    expect(match && match.issue_id).toBe('issue-new');
   });
 });
