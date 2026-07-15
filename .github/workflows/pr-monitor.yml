@@ -112,15 +112,21 @@ jobs:
           set -uo pipefail
           # Reuse Forge's own agnostic gather so the monitor and the CLI share one
           # implementation. Read-only: --bundle decides nothing and takes no action.
-          if node bin/forge.js shepherd "$PR" --bundle --json > bundle.json 2> gather.err; then
+          # On success we stamp ciAvailable:true — the shepherd bundle doesn't carry
+          # that flag, and the renderer treats a missing flag as "unread" (fail-closed),
+          # so we must assert here that CI WAS read on this path.
+          if node bin/forge.js shepherd "$PR" --bundle --json > raw.json 2> gather.err \
+             && jq '. + {ciAvailable: true}' raw.json > bundle.json 2>/dev/null; then
             echo "gathered=true" >> "$GITHUB_OUTPUT"
           else
             echo "gathered=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Bundle gather failed; posting a degraded surface. See log."
             cat gather.err || true
-            # Fail-closed degraded bundle: unreadable threads are NOT rendered as zero.
+            # Fail-closed degraded bundle: NEITHER threads NOR checks were read, so
+            # both availability flags are false — the renderer surfaces both as
+            # unreadable rather than a false "zero unresolved / no failing checks".
             ERR=$(head -c 300 gather.err 2>/dev/null | tr '\n' ' ' | sed 's/"/\\"/g')
-            printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
+            printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ciAvailable":false,"ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
           fi
 
       - name: Render sticky comment body

@@ -21,6 +21,7 @@ function makeBundle(overrides = {}) {
     unresolvedCommentsAvailable: true,
     unresolvedCommentsError: null,
     mergeState: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', state: 'OPEN' },
+    ciAvailable: true,
     ci: { checks: [], failing: [], pending: [] },
     branch: { ahead: 1, behind: 0 },
     conflicts: { supported: true, conflicted: false },
@@ -82,6 +83,25 @@ describe('renderStickyComment', () => {
     expect(body).toContain('GraphQL 502');
     // must NOT claim a clean/zero state on unreadable data
     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+  });
+
+  test('unread CI (ciAvailable false) renders degraded, never a false "no failing checks"', () => {
+    // Mirror of the thread bypass on the CHECK side: on a gather outage the
+    // fallback bundle carries empty ci arrays. Without a guard renderChecks would
+    // print "No failing or pending checks" for CI that was NEVER read — a literal
+    // false-green claim in the monitor's own output.
+    const bundle = makeBundle({ ciAvailable: false, ci: { checks: [], failing: [], pending: [] } });
+    const { body } = renderStickyComment(bundle, { now: NOW });
+    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
+    expect(body.toLowerCase()).toContain('checks were **unreadable**'.toLowerCase());
+  });
+
+  test('CI with a missing availability flag is treated as unread (producer-proof, fail-closed)', () => {
+    const bundle = makeBundle();
+    delete bundle.ciAvailable;
+    const { body } = renderStickyComment(bundle, { now: NOW });
+    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
+    expect(body.toLowerCase()).toContain('unreadable');
   });
 
   test('unavailable thread read with NO error string (capability absent) still renders degraded, never zero', () => {
