@@ -14,11 +14,15 @@ This guide gets Forge installed and visible to an AI coding agent without assumi
 
 ```bash
 # Bun
-bun add -D forge-workflow
+bun add -D forge-workflow@beta
 
 # npm
-npm install --save-dev forge-workflow
+npm install --save-dev forge-workflow@beta
 ```
+
+> **Note:** the current release is a **prerelease** published under the `beta`
+> dist-tag, so install with `@beta`. A bare `forge-workflow` resolves to the
+> older `latest` (stable) version.
 
 You can also run one-off commands with `bunx forge ...` (or `npx forge ...`).
 
