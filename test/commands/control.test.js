@@ -175,4 +175,19 @@ describe('forge control status — all-surface read with enforcement-locus badge
     expect(result.success).toBe(true);
     expect(result.output).toMatch(/control-plane-guarantees\.md/);
   });
+
+  test('status rejects unexpected extra arguments (typo guard)', async () => {
+    const root = makeProject();
+    const result = await controlCommand.handler(['status', 'enabled'], {}, root);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/unexpected argument/i);
+    expect(result.error).toMatch(/enabled/);
+  });
+
+  test('status still accepts the --json flag in any position', async () => {
+    const root = makeProject();
+    const result = await controlCommand.handler(['status', '--json'], {}, root);
+    expect(result.success).toBe(true);
+    expect(() => JSON.parse(result.output)).not.toThrow();
+  });
 });
