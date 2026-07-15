@@ -538,3 +538,60 @@ describe('forge test command', () => {
 		});
 	});
 });
+
+// bfaa6e2a: getChangedFiles/getAffectedTestFiles caught a failed `git diff` and
+// returned [] — indistinguishable from a legitimate "no files changed". On
+// preflight's DEFAULT resolver path that surfaced as a green fast-lane pass: a
+// real fail-OPEN. Under opt-in strict mode a git-diff FAILURE must throw so the
+// caller can fail closed. The default (no-strict) path MUST stay unchanged so
+// `forge test --affected` and the pre-push mapping keep falling back to the
+// full suite on an empty/failed diff.
+describe('getChangedFiles/getAffectedTestFiles — strict distinguishes ERROR from EMPTY (bfaa6e2a)', () => {
+	// exec that succeeds for ref resolution but THROWS on the actual `git diff`.
+	const gitDiffThrows = (cmd, args) => {
+		if (cmd === 'git' && args && args[0] === 'diff') {
+			throw new Error('fatal: bad revision');
+		}
+		return '';
+	};
+
+	test('DEFAULT: git diff failure returns [] (preserves forge test / pre-push semantics)', () => {
+		expect(testCommand.getChangedFiles(gitDiffThrows)).toEqual([]);
+		expect(
+			testCommand.getAffectedTestFiles('/fake/root', gitDiffThrows, makeFsStub()),
+		).toEqual([]);
+	});
+
+	test('STRICT: git diff failure THROWS (fail-closed) instead of masquerading as empty', () => {
+		expect(() => testCommand.getChangedFiles(gitDiffThrows, { strict: true })).toThrow();
+		expect(() => testCommand.getAffectedTestFiles(
+			'/fake/root', gitDiffThrows, makeFsStub(), { strict: true },
+		)).toThrow();
+	});
+
+	test('STRICT: a genuinely EMPTY diff (git succeeded, no changes) is NOT an error', () => {
+		const emptyDiff = makeExecFileSync({ gitDiffOutput: '' });
+		expect(testCommand.getChangedFiles(emptyDiff, { strict: true })).toEqual([]);
+		expect(testCommand.getAffectedTestFiles(
+			'/fake/root', emptyDiff, makeFsStub(), { strict: true },
+		)).toEqual([]);
+	});
+});
+
+// bfaa6e2a wiring: `forge test --affected` must NOT adopt strict mode — a git
+// failure there falls back to the full suite (safe), never crashes the command.
+describe('forge test --affected — resilient to git failure (bfaa6e2a semantics guard)', () => {
+	test('git diff failure falls back to the full suite, does not throw', async () => {
+		const spawnSpy = makeSpawnSync();
+		const result = await testCommand.handler([], { affected: true }, '/fake/root', {
+			fs: makeFsStub(),
+			execFileSync: (cmd, args) => {
+				if (cmd === 'git' && args && args[0] === 'diff') throw new Error('fatal: bad revision');
+				return '';
+			},
+			spawnSync: spawnSpy,
+		});
+		expect(result.success).toBe(true);
+		expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
+	});
+});

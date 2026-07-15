@@ -75,3 +75,40 @@ describe('runGates — skipped outcome honored (B2)', () => {
     expect(line.startsWith('PASS')).toBe(false);
   });
 });
+
+// 4b73b6bf: `ok: skipped ? true : ...` coerced {ok:false, skipped:true} to a pass,
+// so a gate that reported BOTH skipped AND failed was silently treated green.
+// A skip must never mask an explicit failure.
+describe('runGates — skip must not mask an explicit ok:false (4b73b6bf)', () => {
+  test('{ok:false, skipped:true} stays a FAILURE (not coerced to pass)', async () => {
+    const gates = [
+      { name: 'x', run: async () => ({ ok: false, skipped: true, summary: 'boom' }) },
+    ];
+    const { ok, results } = await runGates(gates);
+    expect(ok).toBe(false);
+    expect(results[0].ok).toBe(false);
+  });
+
+  test('a failed-but-skipped gate still short-circuits later gates', async () => {
+    const ran = [];
+    const gates = [
+      { name: 'a', run: async () => ({ ok: false, skipped: true, summary: 'masked fail' }) },
+      { name: 'b', run: async () => { ran.push('b'); return { ok: true }; } },
+    ];
+    const { ok, results } = await runGates(gates);
+    expect(ok).toBe(false);
+    expect(ran).not.toContain('b');
+    expect(results[1].skipped).toBe(true);
+  });
+
+  test('a genuine skip (ok undefined) still passes through and does not short-circuit', async () => {
+    const ran = [];
+    const gates = [
+      { name: 'a', run: async () => ({ skipped: true, summary: 'n/a' }) },
+      { name: 'b', run: async () => { ran.push('b'); return { ok: true }; } },
+    ];
+    const { ok } = await runGates(gates);
+    expect(ok).toBe(true);
+    expect(ran).toContain('b');
+  });
+});
