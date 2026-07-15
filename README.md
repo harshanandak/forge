@@ -188,7 +188,9 @@ actually works, and update it as you grow.
 
 ```bash
 # Add to your project
-bun add -D forge-workflow          # or: npm install --save-dev forge-workflow
+bun add -D forge-workflow@beta     # or: npm install --save-dev forge-workflow@beta
+# The current release is a prerelease under the `beta` dist-tag; a bare
+# `forge-workflow` resolves to the older stable `latest`.
 
 # Install for your agent(s) and configure the workflow
 bunx forge setup --agents claude --yes
