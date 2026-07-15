@@ -29,11 +29,18 @@ permissions:
   pull-requests: write
   checks: write
 
-# One run per PR: overlapping events settle to the latest state, and the sticky
-# comment is an idempotent upsert, so cancelling an in-flight run is safe.
+# One run per PR, but do NOT cancel the in-flight one. cancel-in-progress:true
+# left every superseded run as a CANCELLED workflow run, which GitHub surfaces as
+# a red/non-SUCCESS check on the PR head — cosmetically alarming AND it trips
+# merge-gate tooling (Forge's own pr-bundle) that treats any non-SUCCESS check as
+# a failure. With cancel-in-progress:false the group SERIALIZES instead: overlapping
+# events queue and run to a clean completion in order, and because the sticky comment
+# is an idempotent upsert the last run still reflects the latest state. The extra
+# runner minutes for a lightweight surface-only monitor are worth never leaving a
+# false red X on an otherwise-green PR (kernel issue 97e6a146).
 concurrency:
   group: pr-monitor-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_suite.pull_requests[0].number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   monitor:
