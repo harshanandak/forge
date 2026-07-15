@@ -16,7 +16,7 @@
 //      command), so an empty `bdInvocations` is hard proof forge stayed off Beads.
 
 const { describe, test, expect, setDefaultTimeout } = require('bun:test');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -116,25 +116,33 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
         env[pathKey] = noBeadsBinDir + path.delimiter + (env[pathKey] || '');
 
         // forge runner bound to the cloned CLI, the clone cwd, and the no-beads PATH.
+        // Collects every command's stderr so step 5 can assert none of it ever
+        // mentions Beads (the "Beads-not-initialized" noise this suite guards
+        // against, per issue 8e38896c: a kernel-primary repo with no .beads/
+        // dir must run the runtime commands clean, not just avoid shelling out).
         const cloneForgeBin = path.join(freshCloneDir, 'bin', 'forge.js');
+        const capturedStderr = [];
         const forge = (args) => {
-          try {
-            return execFileSync('node', [cloneForgeBin, ...args], {
-              cwd: freshCloneDir,
-              env,
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
-          } catch (error) {
-            const stdout = error.stdout ? error.stdout.toString() : '';
-            const stderr = error.stderr ? error.stderr.toString() : '';
-            throw new Error(`forge ${args.join(' ')} failed (exit ${error.status}):\n${stdout}\n${stderr}`);
+          // spawnSync (not execFileSync) so stderr is captured on the success
+          // path too — a command can exit 0 while still warning on stderr.
+          const proc = spawnSync('node', [cloneForgeBin, ...args], {
+            cwd: freshCloneDir,
+            env,
+            encoding: 'utf8',
+          });
+          const stdout = proc.stdout || '';
+          const stderr = proc.stderr || '';
+          capturedStderr.push(stderr);
+          if (proc.status !== 0) {
+            throw new Error(`forge ${args.join(' ')} failed (exit ${proc.status}):\n${stdout}\n${stderr}`);
           }
+          return stdout;
         };
 
         // 3) Drive the full lifecycle in the fresh clone (each must exit 0 —
-        //    execFileSync throws on non-zero, which `forge` rethrows with stderr).
+        //    `forge` throws on a non-zero exit, with stderr in the message).
         forge(['prime']); // initialize/prime the kernel-backed session orientation
+        forge(['status', '--json']); // kernel-backed status snapshot
 
         const ready = JSON.parse(forge(['issue', 'ready', '--json']));
         expect(Array.isArray(ready.data.issues)).toBe(true); // empty on a fresh clone is fine
@@ -154,6 +162,12 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
           ? fs.readFileSync(bdInvocationsLog, 'utf8').split('\n').filter(line => line.trim().length > 0)
           : [];
         expect(bdInvocations).toEqual([]);
+
+        // 5) Prove none of the above printed Beads-not-initialized noise on
+        //    stderr — the runtime purge target, distinct from "never shelled
+        //    out" (a silent fs.existsSync probe could still warn on stderr).
+        const beadsNoise = capturedStderr.join('\n');
+        expect(beadsNoise).not.toMatch(/beads/i);
       } finally {
         rmrfWithRetry(workspace);
       }
