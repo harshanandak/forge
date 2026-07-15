@@ -132,3 +132,47 @@ describe('resolveChangeSet — strict base detection (B2)', () => {
     expect(calls.some((c) => c.startsWith('diff --name-only abc123...HEAD'))).toBe(true);
   });
 });
+
+// 45a63715: a fully-pushed feature branch's own @{upstream} points AT HEAD, so
+// diffing against it yields 0 changed files and every gate passes vacuously.
+// resolveBaseRef must reject an upstream equal to our own HEAD and demand a real
+// integration base (origin/main, etc.) — or FAIL when none exists.
+describe('resolveBaseRef — reject own-upstream-at-HEAD (45a63715)', () => {
+  const { resolveBaseRef } = require('../../lib/commands/preflight');
+
+  // No origin/HEAD; @{upstream} = origin/feature which resolves to the SAME sha
+  // as HEAD (branch fully pushed). A real base (origin/main) exists.
+  function makeExec({ mainExists = true, headSha = 'deadbeef', upstreamSha = 'deadbeef' } = {}) {
+    return (_cmd, args) => {
+      const a = args.join(' ');
+      if (a.includes('origin/HEAD')) throw new Error('origin/HEAD not set');
+      if (a.includes('@{upstream}')) return 'origin/feature\n';
+      if (a.includes('origin/feature') && a.includes('rev-parse')) return `${upstreamSha}\n`;
+      if (a.startsWith('rev-parse') && a.includes('HEAD')) return `${headSha}\n`;
+      // rev-parse --verify --quiet <ref> for the fallback candidate list
+      if (a.includes('--verify') && a.includes('origin/main')) {
+        if (mainExists) return 'main-sha\n';
+        throw new Error('bad ref');
+      }
+      if (a.includes('--verify')) throw new Error('bad ref');
+      return '';
+    };
+  }
+
+  test('own upstream at HEAD is skipped in favor of a real integration base', () => {
+    const base = resolveBaseRef(makeExec({ mainExists: true }));
+    expect(base).not.toBe('origin/feature');
+    expect(base).toBe('origin/main');
+  });
+
+  test('own upstream at HEAD with NO real base resolves to null (fail-closed)', () => {
+    const base = resolveBaseRef(makeExec({ mainExists: false }));
+    expect(base).toBeNull();
+  });
+
+  test('an upstream AHEAD of HEAD (unpushed commits) is still a usable base', () => {
+    // upstream sha differs from HEAD → diffing it yields a real change set.
+    const base = resolveBaseRef(makeExec({ headSha: 'aaa', upstreamSha: 'bbb' }));
+    expect(base).toBe('origin/feature');
+  });
+});
