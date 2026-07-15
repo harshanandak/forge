@@ -563,6 +563,22 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
+	test('surfaces an unmigrated Beads sidecar (config.jsonl) as an honest gap', () => {
+		const snapshot = loadBeadsSnapshotFromDirectory(LEGACY_BACKUP_DIR);
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+
+		// config.jsonl is present in the store but has no Kernel target. It must be
+		// reported honestly, never silently dropped — that unread-sidecar data loss is
+		// exactly the class this migrator exists to close.
+		expect(snapshot.unmigratedSidecars).toContain('config.jsonl');
+		const gap = result.report.gaps.find(entry => entry.field === 'sidecar.config.jsonl');
+		expect(gap).toBeDefined();
+		expect(gap.reason).toMatch(/no Kernel target|not migrated/i);
+		// Handled sidecars are never falsely reported as unmigrated.
+		expect(snapshot.unmigratedSidecars).not.toContain('issues.jsonl');
+		expect(snapshot.unmigratedSidecars).not.toContain('interactions.jsonl');
+	});
+
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
 		const snapshot = {
 			issues: [{
