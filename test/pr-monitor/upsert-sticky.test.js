@@ -9,6 +9,8 @@ const {
   upsertStickyComment,
   markerCommentIds,
   sortIdsAscending,
+  isAlreadyGone,
+  ghStickyClient,
 } = require('../../lib/pr-monitor/upsert-sticky');
 
 const MARKER = '<!-- forge-pr-monitor -->';
@@ -153,6 +155,65 @@ describe('pr-monitor upsert-sticky reconcile-to-one', () => {
   });
 });
 
+describe('pr-monitor sticky client error tolerance (only already-gone is benign)', () => {
+  // A gh error mimicking execFileSync's shape: non-zero exit + stderr text.
+  function ghError(stderr) {
+    const err = new Error('Command failed: gh api');
+    err.stderr = stderr;
+    return err;
+  }
+
+  test('isAlreadyGone classifies 404/410 as benign, real errors as not', () => {
+    expect(isAlreadyGone(ghError('gh: Not Found (HTTP 404)'))).toBe(true);
+    expect(isAlreadyGone(ghError('HTTP 410: Gone'))).toBe(true);
+    // Auth failures, rate limits, and generic errors must NOT be swallowed.
+    expect(isAlreadyGone(ghError('gh: Bad credentials (HTTP 401)'))).toBe(false);
+    expect(isAlreadyGone(ghError('HTTP 403: rate limit exceeded'))).toBe(false);
+    expect(isAlreadyGone(ghError('HTTP 500: server error'))).toBe(false);
+    expect(isAlreadyGone(new Error('socket hang up'))).toBe(false);
+  });
+
+  test('remove() swallows an already-gone 404 but rethrows a real error', async () => {
+    const gone = ghStickyClient({
+      repo: 'o/r',
+      pr: '1',
+      run: () => { throw ghError('gh: Not Found (HTTP 404)'); },
+    });
+    await expect(gone.remove(9)).resolves.toBeUndefined();
+
+    const auth = ghStickyClient({
+      repo: 'o/r',
+      pr: '1',
+      run: () => { throw ghError('gh: Bad credentials (HTTP 401)'); },
+    });
+    let caught;
+    try { await auth.remove(9); } catch (error) { caught = error; }
+    expect(caught).toBeDefined();
+    expect(String(caught.stderr)).toContain('401');
+  });
+
+  test('update() tolerates a 404 (peer won the survivor) but rethrows a real error', async () => {
+    const gone = ghStickyClient({
+      repo: 'o/r',
+      pr: '1',
+      payloadFile: 'p.json',
+      run: () => { throw ghError('HTTP 404: Not Found'); },
+    });
+    await expect(gone.update(9)).resolves.toBeUndefined();
+
+    const rate = ghStickyClient({
+      repo: 'o/r',
+      pr: '1',
+      payloadFile: 'p.json',
+      run: () => { throw ghError('HTTP 403: rate limit exceeded'); },
+    });
+    let caught;
+    try { await rate.update(9); } catch (error) { caught = error; }
+    expect(caught).toBeDefined();
+    expect(String(caught.stderr)).toContain('403');
+  });
+});
+
 describe('pr-monitor workflow has no concurrency group', () => {
   test('pr-monitor.yml declares no concurrency block (avoids GitHub run cancellations)', () => {
     const yml = fs.readFileSync(
@@ -168,5 +229,17 @@ describe('pr-monitor workflow has no concurrency group', () => {
     // The race-safe upsert must actually be wired into a run step.
     const steps = doc.jobs.monitor.steps.flatMap((step) => (step.run ? [step.run] : []));
     expect(steps.some((run) => run.includes('lib/pr-monitor/upsert-sticky.js'))).toBe(true);
+  });
+
+  test('the sticky-upsert step is best-effort (continue-on-error) so a transient gh failure is not a red check', () => {
+    const doc = yaml.load(fs.readFileSync(
+      path.resolve(__dirname, '..', '..', '.github', 'workflows', 'pr-monitor.yml'),
+      'utf8',
+    ));
+    const upsertStep = doc.jobs.monitor.steps.find(
+      (step) => typeof step.run === 'string' && step.run.includes('lib/pr-monitor/upsert-sticky.js'),
+    );
+    expect(upsertStep).toBeDefined();
+    expect(upsertStep['continue-on-error']).toBe(true);
   });
 });

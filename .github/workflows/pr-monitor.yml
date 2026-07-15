@@ -150,6 +150,10 @@ jobs:
 
       - name: Upsert sticky comment (race-safe, exactly one)
         if: steps.resolve.outputs.should_run == 'true'
+        # Best-effort: a transient gh/network failure must NOT fail the job and
+        # produce the very non-success check this monitor exists to avoid. A real
+        # (non-already-gone) error still surfaces as a failed step annotation.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
