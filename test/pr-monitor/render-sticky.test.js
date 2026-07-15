@@ -84,6 +84,21 @@ describe('renderStickyComment', () => {
     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
   });
 
+  test('unavailable thread read with NO error string (capability absent) still renders degraded, never zero', () => {
+    // The bypass: gatherUnresolvedComments returns { available:false, error:null }
+    // when the adapter cannot read comments at all. A guard that also required a
+    // truthy error would fall through to the empty-list "clean" render — a
+    // misleading zero on data we genuinely could not read.
+    const bundle = makeBundle({
+      unresolvedComments: [],
+      unresolvedCommentsAvailable: false,
+      unresolvedCommentsError: null,
+    });
+    const { body } = renderStickyComment(bundle, { now: NOW });
+    expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+    expect(body.toLowerCase()).toContain('unreadable');
+  });
+
   test('clean state surfaces clear signals but NEVER a merge/pass verdict', () => {
     const { body } = renderStickyComment(makeBundle(), { now: NOW });
     expect(body.toLowerCase()).toContain('no unresolved review threads');

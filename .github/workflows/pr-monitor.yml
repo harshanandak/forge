@@ -85,6 +85,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          # Do not persist GITHUB_TOKEN in the checkout's git config: all GitHub
+          # access goes through gh/the API (GH_TOKEN env), and the bundle's git
+          # ops are read-only against already-fetched refs. No credential is needed
+          # in .git/config, so leaving one there only widens the attack surface.
+          persist-credentials: false
 
       - name: Setup Bun
         if: steps.resolve.outputs.should_run == 'true'
