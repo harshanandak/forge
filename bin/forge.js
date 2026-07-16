@@ -74,6 +74,7 @@ const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
+const { firstPositionalIndex } = require('../lib/global-flags');
 
 // Load enhanced onboarding modules (static relative requires — bundleable)
 const contextMerge = require('../lib/context-merge');
@@ -4084,12 +4085,21 @@ async function main() {
   // stage AND its bare alias's canonical is exactly `<command> <sub>` (so only a
   // genuine noun→stage form matches; non-stage pr/gate subcommands route via
   // their noun handler as usual). Only `pr ship` matches today.
-  const nounSub = dispatchArgv[1];
+  //
+  // The stage token is located as the first POSITIONAL after the noun (scanning
+  // past any global flags and their values), so `forge pr --path /tmp ship ...`
+  // shares the same stage path as `forge pr ship ...` instead of falling through
+  // to pr.handler and missing stage-entry enforcement. Intervening global flags
+  // are preserved into the rewritten argv so the stage handler still sees them.
+  const stageIdx = firstPositionalIndex(dispatchArgv, 1);
+  const nounSub = stageIdx >= 0 ? dispatchArgv[stageIdx] : undefined;
   if (nounSub && normalizeStageId(nounSub) && registry.commands.has(nounSub)) {
     const bareAlias = resolveAlias(nounSub);
     if (bareAlias && bareAlias.canonical === `${command} ${nounSub}`) {
       command = nounSub;
-      dispatchArgv = dispatchArgv.slice(1);
+      // Drop only the consumed stage token (the noun at index 0 is dropped by the
+      // registry dispatch's own `.slice(1)`); keep the intervening global flags.
+      dispatchArgv = [nounSub, ...dispatchArgv.slice(1, stageIdx), ...dispatchArgv.slice(stageIdx + 1)];
     }
   }
 

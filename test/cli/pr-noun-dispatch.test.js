@@ -24,6 +24,15 @@ function run(argv) {
     encoding: 'utf8',
     timeout: 30000,
   });
+  // spawnSync signals a timeout (or spawn failure) with `error` set and a null
+  // status. Fail loudly instead of comparing null==null, which would let a
+  // double-timeout silently pass the equality assertions below.
+  if (result.error) {
+    throw new Error(`forge ${argv.join(' ')} failed to run: ${result.error.message}`);
+  }
+  if (result.status === null) {
+    throw new Error(`forge ${argv.join(' ')} did not exit with an integer status (killed by signal ${result.signal})`);
+  }
   return { status: result.status, out: result.stdout || '', err: result.stderr || '' };
 }
 
@@ -32,6 +41,9 @@ function run(argv) {
 // network mutation (nonexistent slug / PR number).
 const EQUIVALENT_INVOCATIONS = [
   { name: 'ship (stage — must share stage-entry enforcement)', bare: ['ship', 'nonexistent-slug-xyz'], noun: ['pr', 'ship', 'nonexistent-slug-xyz'] },
+  // Global flag BETWEEN the noun and the stage must still route through the stage
+  // path (the rewrite scans past global flags, not just dispatchArgv[1]).
+  { name: 'ship with a global flag before the stage', bare: ['ship', '--path', '.', 'nonexistent-slug-xyz'], noun: ['pr', '--path', '.', 'ship', 'nonexistent-slug-xyz'] },
   { name: 'shepherd --pull --json (flag passthrough)', bare: ['shepherd', '999999', '--pull', '--json'], noun: ['pr', 'shepherd', '999999', '--pull', '--json'] },
   { name: 'shepherd events (subcommand shape passthrough)', bare: ['shepherd', 'events', '999999', '--since', '1', '--json'], noun: ['pr', 'shepherd', 'events', '999999', '--since', '1', '--json'] },
   { name: 'merge --auto (fail-closed preview)', bare: ['merge', '--auto', '999999'], noun: ['pr', 'merge', '--auto', '999999'] },
