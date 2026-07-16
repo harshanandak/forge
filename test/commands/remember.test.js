@@ -106,4 +106,31 @@ describe('forge remember command', () => {
     const [entry] = await recalledNotes(projectRoot);
     expect(entry.note).toBe('multi word note');
   });
+
+  // Explicit session-summary path (kernel 3867b9c2): `--session-summary` is the memorable
+  // one-flag alias for `--kind session-summary`, so an agent can capture on the way out with
+  // the same #392 structured fields (--what/--why/--learned). Surfaced via `forge memory add`.
+  test('--session-summary writes a retrievable type:session-summary typed note', async () => {
+    const projectRoot = makeProjectRoot();
+    const result = await remember.handler(
+      ['--session-summary', 'wrapped the capture hook', '--what', 'added PreCompact/Stop capture',
+        '--why', 'memory was pull-only', '--learned', 'trigger rides as a CLI arg', '--json'],
+      {},
+      projectRoot
+    );
+
+    expect(result.success).toBe(true);
+    const payload = JSON.parse(result.output);
+    expect(payload.type).toBe('session-summary');
+
+    const [entry] = await recalledNotes(projectRoot);
+    expect(entry.tags).toContain('type:session-summary');
+    // Structured fields are folded into the body so they stay FTS-searchable.
+    expect(entry.note).toContain('What: added PreCompact/Stop capture');
+    expect(entry.note).toContain('Learned: trigger rides as a CLI arg');
+  });
+
+  test('--session-summary is advertised in the command flags', () => {
+    expect(remember.flags['--session-summary']).toBeDefined();
+  });
 });

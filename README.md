@@ -188,7 +188,9 @@ actually works, and update it as you grow.
 
 ```bash
 # Add to your project
-bun add -D forge-workflow          # or: npm install --save-dev forge-workflow
+bun add -D forge-workflow@beta     # or: npm install --save-dev forge-workflow@beta
+# The current release is a prerelease under the `beta` dist-tag; a bare
+# `forge-workflow` resolves to the older stable `latest`.
 
 # Install for your agent(s) and configure the workflow
 bunx forge setup --agents claude --yes
@@ -198,6 +200,21 @@ bunx forge init --profile minimal --classification standard --yes
 bunx forge status                  # human one-glance view
 bunx forge prime                   # session-entry orientation for agents
 ```
+
+Prefer a standalone binary (no Node/Bun runtime)? Install it in one line:
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1 | iex
+```
+
+See the [installation guide](docs/reference/INSTALL.md) for the supported
+platforms, pinned versions, manual downloads, and the npm/npx alternative.
 
 <details>
 <summary><strong>Per-agent setup notes</strong></summary>
@@ -224,6 +241,7 @@ The full, honest per-agent delivery status lives in the
 Full guides:
 
 - [Quickstart](QUICKSTART.md) — clean first run, step by step
+- [Installation guide](docs/reference/INSTALL.md) — standalone binary + npm/npx
 - [Setup guide](docs/guides/SETUP.md)
 - [Support and troubleshooting](docs/guides/SUPPORT.md)
 - [Command reference](docs/reference/COMMANDS.md)

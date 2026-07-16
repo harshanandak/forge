@@ -60,8 +60,16 @@ jobs:
       # Verify package contents before publishing (no build needed - pure JS package)
       - name: Verify package contents
         run: npm pack --dry-run
-      # Publish. A prerelease version (contains a hyphen, e.g. 0.1.0-beta.1) goes under the
+      # npm Trusted Publishing (OIDC) requires npm >= 11.5.1; Node 22 ships npm 10.x,
+      # so upgrade before publishing. This is what lets the workflow auth via OIDC
+      # instead of a long-lived NPM_TOKEN (which expires — see the beta.1 publish failure).
+      - name: Ensure OIDC-capable npm
+        run: npm install -g npm@latest && npm --version
+      # Publish. A prerelease version (contains a hyphen, e.g. 0.1.0-beta.2) goes under the
       # `beta` dist-tag so `npm install forge-workflow` keeps resolving the latest STABLE.
+      # Auth is npm Trusted Publishing (OIDC) via the `id-token: write` permission above —
+      # NO NODE_AUTH_TOKEN needed; the trusted-publisher config on npmjs.com authorizes this
+      # exact repo + workflow file.
       - name: Publish to npm
         run: |
           VERSION=$(node -p "require('./package.json').version")
@@ -71,5 +79,3 @@ jobs:
           else
             npm publish --provenance
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.npm_token}}

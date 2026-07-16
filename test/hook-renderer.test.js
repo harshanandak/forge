@@ -7,7 +7,9 @@ const {
   HARNESS_HOOK_FILES,
   FORGE_CONTEXT_MARKER,
   SESSION_START_SUPPORT,
+  SESSION_END_SUPPORT,
   sessionStartCapability,
+  sessionEndCapability,
   HookConfigParseError,
   renderClaudeHooks,
   renderCursorHooks,
@@ -31,10 +33,16 @@ const {
 const FORGE_MARK = 'forge-native-hook.js';
 
 describe('Forge hook contract', () => {
-  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject) intents', () => {
+  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup, memory-capture) intents', () => {
     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
-    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject']);
+    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'memory-capture']);
+    // Each context intent routes to the `forge` CLI via a `hooks <cliAction>` marker.
+    const CONTEXT_MARKERS = {
+      'memory-inject': FORGE_CONTEXT_MARKER,
+      'inbox-pickup': 'hooks inbox-pickup',
+      'memory-capture': 'hooks capture',
+    };
     for (const intent of FORGE_HOOK_CONTRACT.intents) {
       expect(typeof intent.enforces).toBe('string');
       expect(intent.enforces.length).toBeGreaterThan(0);
@@ -45,7 +53,7 @@ describe('Forge hook contract', () => {
       } else {
         // Context intents route to the `forge` CLI, fail-open — no adapter marker.
         expect(intent.kind).toBe('context');
-        expect(intent.command).toContain(FORGE_CONTEXT_MARKER);
+        expect(intent.command).toContain(CONTEXT_MARKERS[intent.id]);
         expect(intent.command).not.toContain(FORGE_MARK);
       }
     }
@@ -145,6 +153,72 @@ describe('SessionStart context injection (memory push)', () => {
     const commands = obj.hooks.SessionStart.flatMap(g => g.hooks.map(h => h.command));
     expect(commands).toContain('node user-welcome.js');                 // user hook preserved
     expect(commands.some(c => c.includes(FORGE_CONTEXT_MARKER))).toBe(true); // Forge added
+  });
+});
+
+describe('PreCompact + Stop capture-on-exit (memory capture)', () => {
+  test('Claude renders PreCompact and Stop groups wired to `forge hooks capture`', () => {
+    const block = renderClaudeHooks(FORGE_HOOK_CONTRACT);
+    for (const [event, trigger] of [['PreCompact', 'precompact'], ['Stop', 'stop']]) {
+      expect(Array.isArray(block[event])).toBe(true);
+      expect(block[event].length).toBe(1);
+      const cmd = block[event][0].hooks[0].command;
+      expect(cmd).toContain('hooks capture --harness claude');
+      // The event stamps the trigger so the CLI never needs to read hook stdin.
+      expect(cmd).toContain(`--trigger ${trigger}`);
+      // Context hook goes through the CLI, NOT the self-contained enforcement adapter.
+      expect(cmd).not.toContain(FORGE_MARK);
+      expect(cmd).toContain('hooks capture');
+      // A RESOLVED node invocation, never a bare `forge`.
+      expect(cmd.startsWith('node ')).toBe(true);
+      expect(cmd).toContain('forge.js');
+    }
+  });
+
+  test('capability matrix is honest — only Claude captures; others carry a skip reason', () => {
+    expect(sessionEndCapability('claude')).toEqual({ rendered: true });
+    expect(sessionEndCapability('cursor')).toEqual({ rendered: false, reason: 'no-session-end-surface' });
+    expect(sessionEndCapability('codex')).toEqual({ rendered: false, reason: 'global-config' });
+    expect(sessionEndCapability('hermes')).toEqual({ rendered: false, reason: 'global-config' });
+    expect(sessionEndCapability('nope')).toEqual({ rendered: false, reason: 'unknown-harness' });
+    expect(SESSION_END_SUPPORT.claude.rendered).toBe(true);
+  });
+
+  test('Cursor does NOT fake a capture surface (no capture hook rendered)', () => {
+    const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
+    const allCommands = Object.values(cfg.hooks).flat().map(h => h.command).join('\n');
+    expect(allCommands).not.toContain('hooks capture');
+  });
+
+  test('merging PreCompact + Stop groups is idempotent and preserves user hooks', () => {
+    const existing = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node user-stop.js' }] }] },
+    }, null, 2);
+    const once = mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT);
+    const twice = mergeClaudeSettings(once, FORGE_HOOK_CONTRACT);
+    const b = JSON.parse(twice);
+    expect(b.hooks.PreCompact.length).toBe(1);
+    // user Stop hook + one Forge Stop group, idempotent across a re-merge.
+    const stopCommands = b.hooks.Stop.flatMap(g => g.hooks.map(h => h.command));
+    expect(stopCommands).toContain('node user-stop.js');
+    expect(stopCommands.filter(c => c.includes('hooks capture')).length).toBe(1);
+  });
+
+  test('a user hook that merely CONTAINS "hooks capture" survives re-merge (not clobbered)', () => {
+    // CodeRabbit MAJOR on #397: the Forge-ownership check must key on the full resolved Forge
+    // invocation, NOT the bare `hooks capture` verb — otherwise a user's own command that just
+    // mentions "hooks capture" would be treated as Forge-owned and DELETED on re-merge.
+    const userCmd = 'node my-capture-tool.js hooks capture --to sentry';
+    const existing = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: userCmd }] }] },
+    }, null, 2);
+    const once = mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT);
+    const twice = mergeClaudeSettings(once, FORGE_HOOK_CONTRACT);
+    const b = JSON.parse(twice);
+    const stopCommands = b.hooks.Stop.flatMap(g => g.hooks.map(h => h.command));
+    expect(stopCommands).toContain(userCmd); // user hook preserved across a double-merge
+    // exactly one Forge capture group is maintained (the resolved forge.js invocation).
+    expect(stopCommands.filter(c => c.includes('forge.js') && c.includes('hooks capture')).length).toBe(1);
   });
 });
 

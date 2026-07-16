@@ -11,19 +11,25 @@
  * DataSource — the LIVE-VIEW SEAM.
  * ========================================================================== */
 const DataSource = {
+  // In LIVE mode the server gates /data.json (and docs.json) on the per-run
+  // token, so attach it. On file:// / baked-snapshot mode there is no token and
+  // headers are ignored, so this is a harmless no-op there.
+  _authHeaders() {
+    return Serve.token ? { 'X-Forge-Token': Serve.token } : {};
+  },
   async load() {
     if (window.FORGE_SNAPSHOT) return window.FORGE_SNAPSHOT;
-    return (await fetch('data.json')).json();
+    return (await fetch('data.json', { headers: this._authHeaders() })).json();
   },
   async refetch() {
     const ts = '?ts=' + Date.now();
-    const res = await fetch('data.json' + ts, { cache: 'no-store' });
+    const res = await fetch('data.json' + ts, { cache: 'no-store', headers: this._authHeaders() });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const snap = await res.json();
     // Refresh the baked markdown too, so edited/new work-folder docs aren't stale
     // until a full reload. Best-effort: an old snapshot.js bundle may predate docs.json.
     try {
-      const dres = await fetch('docs.json' + ts, { cache: 'no-store' });
+      const dres = await fetch('docs.json' + ts, { cache: 'no-store', headers: this._authHeaders() });
       if (dres.ok) window.FORGE_DOCS = await dres.json();
     } catch (_err) { /* keep the bootstrap docs if the twin is unavailable */ }
     return snap;
@@ -65,6 +71,7 @@ function icon(name) {
     workspaces: '<rect x="3" y="4" width="18" height="14"/><path d="M3 9h18M8 4v5"/>',
     memory: '<circle cx="6" cy="6" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><path d="M8 6h8M7 8l1.5 7M16 9l-6 7"/>',
     backlog: '<path d="M3 4h18v6H3zM3 14h18v6H3"/><path d="M7 7h4M7 17h4"/>',
+    workflow: '<circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 6h6a2 2 0 0 1 2 2v2M7 18h6a2 2 0 0 0 2-2v-2"/>',
   }[name] || '';
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="miter">${p}</svg>`;
 }
@@ -228,6 +235,7 @@ function card(i) {
  * ========================================================================== */
 const VIEWS = [
   { id: 'overview', title: 'Overview', flush: false, render: renderOverview },
+  { id: 'workflow', title: 'Workflow', flush: false, render: renderWorkflow },
   { id: 'board', title: 'Work Board', flush: true, render: renderBoard },
   { id: 'epics', title: 'Epics', flush: false, render: renderEpics },
   { id: 'workspaces', title: 'Workspaces', flush: false, render: renderWorkspaces },
@@ -778,6 +786,7 @@ function issueDetailHtml(i) {
       <dt>Updated</dt><dd class="mono">${esc(relTime(i.updated_at))} ago</dd>
     </dl>
     ${i.body ? `<div class="detail__body">${esc(clamp(i.body, 1400))}</div>` : ''}
+    ${Serve.live ? issueWritePanel(i) : ''}
     ${kids.length ? `<div class="section-title">Children · ${kids.length}</div><div class="cardgrid">${childCards}</div>` : ''}
     <div class="section-title">Linked work</div>
     <div class="linkgraph">
@@ -858,6 +867,219 @@ function restoreOverlayFocus() {
 /* ============================================================================
  * Router — every entity is a URL; the detail overlay is route-driven.
  * ========================================================================== */
+/* ============================================================================
+ * WORKFLOW COCKPIT (84970f9d) — read view + copy-as-command.
+ * Renders the CONFIGURABLE workflow architecture from snapshot.workflow (baked by
+ * generate-snapshot.mjs). Every configurable item carries the exact `forge …`
+ * command + a copy button — the Tier-1 write path (no server; Tier-2 = 9f2f0320).
+ * Pure model helpers below are DOM-free and unit-tested.
+ * ========================================================================== */
+const HUMAN_GATE_IDS = new Set(['gate.intent', 'gate.plan-approval', 'gate.merge']);
+const VERIFY_GATE_IDS = new Set(['gate.issue_verify']);
+const shortId = (id) => String(id || '').replace(/^(gate|evidence|artifact|rail|action|role|adapter)\./, '');
+
+// Which of the three closed buckets a gate belongs to.
+function gateBucket(gate) {
+  if (HUMAN_GATE_IDS.has(gate.id)) return 'human';
+  if (VERIFY_GATE_IDS.has(gate.id)) return 'verify';
+  return 'stage';
+}
+// Honesty: an item is "customized" only when its configSource is a real override.
+function isCustomized(configSource) {
+  return !!configSource && configSource !== 'package-defaults' && configSource !== 'package-default';
+}
+// Exact copy-as-command for a gate toggle — null when locked (fixed, not configurable).
+function gateCommand(gate) {
+  if (gate.locked) return null;
+  return gate.enabled === false ? `forge gate enable ${gate.id}` : `forge gate disable ${gate.id}`;
+}
+// Exact copy-as-command for a role → skill binding.
+function roleCommand(role) {
+  return `forge role ${role.role} --use ${role.skill}`;
+}
+// A role bound to its own default skill with no override — copying `forge role dev
+// --use dev` is a self-noop, so the cockpit shows a customize template instead.
+function isDefaultBinding(role) {
+  return !!role && role.skill === role.role && !isCustomized(role.configSource);
+}
+// The 6-stage rail: role binding (always) joined with its phase record (only the
+// 4 plan/dev/validate/ship phases exist today — review/verify are role-only).
+function stageRailModel(wf) {
+  const phaseById = new Map((wf.phases || []).map((p) => [p.id, p]));
+  const roleByStage = new Map((wf.roles || []).map((r) => [r.role, r]));
+  return (wf.stageOrder || []).map((id) => ({ id, role: roleByStage.get(id) || null, phase: phaseById.get(id) || null }));
+}
+
+/* ---------- cockpit render (DOM-facing) ---------- */
+const cmdChip = (cmd) => `<button class="cmdchip" data-act="copy" data-cmd="${esc(cmd)}" title="Copy command"><code>${esc(cmd)}</code><span class="cmdchip__ico" aria-hidden="true">⧉</span><span class="cmdchip__sr" aria-live="polite"></span></button>`;
+const cfgBadge = (src) => (isCustomized(src)
+  ? '<span class="wbadge wbadge--custom" title="overridden in .forge/config.yaml">customized</span>'
+  : '<span class="wbadge wbadge--default" title="shipped default — no override">default</span>');
+const fixedBadge = (why) => `<span class="wbadge wbadge--fixed" title="${esc(why)}">fixed</span>`;
+const lockedBadge = (why) => `<span class="wbadge wbadge--locked" title="${esc(why)}">locked</span>`;
+const wtags = (ids, extra) => (ids || []).map((x) => `<span class="wtag ${extra || ''}">${esc(shortId(x))}</span>`).join('');
+const wseam = (key) => esc((State.snapshot.workflow.seams || {})[key] || 'SEAM');
+
+function planSubSkillsBlock(wf) {
+  const subs = wf.planSubSkills || [];
+  if (!subs.length) return '';
+  const items = subs.map((s) => `<li>${esc(s.label || shortId(s.id))}</li>`).join('');
+  return `<div class="stage__row"><span class="wk">/plan sub-skills</span><ol class="wsubs">${items}</ol></div>`;
+}
+function roleCmdHtml(role, id) {
+  if (!role) return '';
+  if (isDefaultBinding(role)) return `<div class="stage__cmd wmute">default binding — customize: <code>forge role ${esc(id)} --use &lt;skill&gt;</code></div>`;
+  return `<div class="stage__cmd">${cmdChip(roleCommand(role))}</div>`;
+}
+function stageCard(node, idx, wf) {
+  const { id, role, phase } = node;
+  const skill = role ? role.skill : null;
+  const phaseState = phase ? `${cfgBadge(phase.configSource)}${gateStateBadge(phase)}` : '';
+  const gates = phase ? `<div class="stage__row"><span class="wk">gates</span>${wtags(phase.gates)}</div>` : '';
+  const ev = phase ? `<div class="stage__row"><span class="wk">evidence</span>${wtags(phase.evidence, 'wtag--ev')}</div>` : '';
+  const art = phase ? `<div class="stage__row"><span class="wk">artifacts</span>${wtags(phase.artifacts, 'wtag--art')}</div>` : '';
+  const sub = id === 'plan' ? planSubSkillsBlock(wf) : '';
+  const seam = phase ? '' : `<div class="wseam">role-only stage — no runtime phase record yet · ${wseam('reviewVerifyPhases')}</div>`;
+  return `<div class="stage ${phase ? '' : 'stage--roleonly'}">
+    <div class="stage__hd"><span class="stage__n">${idx + 1}</span><span class="stage__id">/${esc(id)}</span>${phaseState}</div>
+    <div class="stage__role">role <b>${esc(id)}</b> → skill <b>${esc(skill || '—')}</b> ${role ? cfgBadge(role.configSource) : ''}</div>
+    ${roleCmdHtml(role, id)}${gates}${ev}${art}${sub}${seam}
+  </div>`;
+}
+// Shared state badge for gates, rails, and phases — all carry enabled/locked.
+function gateStateBadge(item) {
+  if (item.locked) return lockedBadge(`Cannot disable locked '${item.id}'`);
+  return item.enabled === false ? '<span class="wbadge wbadge--off">disabled</span>' : '<span class="wbadge wbadge--on">enabled</span>';
+}
+function gateRow(gate) {
+  const cmd = gateCommand(gate);
+  const phase = gate.phase ? `<span class="wk">${esc(gate.phase)}</span>` : '';
+  const cmdHtml = cmd ? `<div class="grow__cmd">${cmdChip(cmd)}</div>` : '<div class="grow__cmd wmute">fixed — not toggleable</div>';
+  return `<div class="grow ${gate.locked ? 'grow--locked' : ''}">
+    <div class="grow__main"><code class="gid">${esc(gate.id)}</code><span class="glabel">${esc(gate.label || '')}</span></div>
+    <div class="grow__meta">${phase}${cfgBadge(gate.configSource)}${gateStateBadge(gate)}</div>
+    ${cmdHtml}
+  </div>`;
+}
+function gateGroupHtml(title, list, note) {
+  if (!list.length) return '';
+  return `<div class="gategrp"><div class="gategrp__t">${esc(title)} <span class="wmute">${esc(note)}</span></div>${list.map(gateRow).join('')}</div>`;
+}
+function gatesPanel(wf) {
+  const gates = wf.gates || [];
+  const stage = gates.filter((g) => gateBucket(g) === 'stage');
+  const human = gates.filter((g) => gateBucket(g) === 'human');
+  const verify = gates.filter((g) => gateBucket(g) === 'verify');
+  return `<div class="wpanel"><div class="wpanel__hd">Gates <span class="wmute">${stage.length} stage · ${human.length} human · ${verify.length} write-verify</span></div>${gateGroupHtml('Stage gates', stage, 'phase entry/exit')}${gateGroupHtml('Human gates', human, 'approval events')}${gateGroupHtml('Write verification', verify, 'check-after-write')}</div>`;
+}
+// Rails reuse the SAME helpers as gates so their state, command (enable vs
+// disable), and customized badge all track the real resolved config — never a
+// hardcoded "enabled" that goes stale after `forge gate disable rail.kernel_tracking`.
+function railRow(rail) {
+  const cmd = gateCommand(rail);
+  const cmdHtml = cmd ? `<div class="grow__cmd">${cmdChip(cmd)}</div>` : '<div class="grow__cmd wmute">fixed — cannot disable</div>';
+  return `<div class="grow ${rail.locked ? 'grow--locked' : ''}">
+    <div class="grow__main"><code class="gid">${esc(rail.id)}</code><span class="glabel">${esc(rail.label || '')}</span></div>
+    <div class="grow__meta"><span class="wk">${esc(rail.layer || 'L1')}</span>${cfgBadge(rail.configSource)}${gateStateBadge(rail)}</div>
+    ${cmdHtml}
+  </div>`;
+}
+function railsPanel(wf) {
+  const rails = wf.rails || [];
+  const unlocked = rails.filter((r) => !r.locked).map((r) => r.id);
+  const note = unlocked.length ? `L1 — unlocked: ${unlocked.join(', ')}` : 'L1 — all locked';
+  return `<div class="wpanel"><div class="wpanel__hd">Rails <span class="wmute">${esc(note)}</span></div>${rails.map(railRow).join('')}</div>`;
+}
+function skillRow(sk) {
+  const lock = sk.lock ? `<span class="wtag" title="${esc(sk.lock.source)} · ${esc(sk.lock.sourceType)}">lock ${esc(sk.lock.hash)}</span>` : '<span class="wmute">no lock entry</span>';
+  return `<div class="skrow"><code class="skname">${esc(sk.name)}</code><span class="wbadge wbadge--win" title="wins precedence: user .skills &gt; project skills &gt; packaged">${esc(sk.winner)}</span>${lock}</div>`;
+}
+// Harnesses that actually inject context at SessionStart — DERIVED from the baked
+// matrix, not hardcoded, so it stays honest if the capability matrix changes.
+function renderingHarnesses(wf) {
+  return Object.entries(wf.harnessMatrix || {}).filter(([, v]) => v.rendered).map(([h]) => h);
+}
+function harnessMatrixHtml(wf) {
+  return Object.entries(wf.harnessMatrix || {}).map(([h, v]) => `<span class="hchip ${v.rendered ? 'hchip--on' : 'hchip--off'}" title="${esc(v.reason || 'SessionStart injection')}">${esc(h)} ${v.rendered ? '✓' : '✕'}</span>`).join('');
+}
+function skillsCatalog(wf) {
+  const dirs = (wf.skillDirs || []).map((d) => `<span class="wtag ${d.exists ? '' : 'wtag--muted'}">${esc(d.label)}${d.exists ? '' : ' (absent)'}</span>`).join(' › ');
+  const renders = renderingHarnesses(wf);
+  const note = renders.length ? `only ${renders.join(', ')} inject${renders.length === 1 ? 's' : ''} context` : 'no harness injects context';
+  return `<div class="wpanel"><div class="wpanel__hd">Skills catalog <span class="wmute">precedence ${dirs}</span></div>
+    <div class="wpanel__sub">SessionStart render: ${harnessMatrixHtml(wf)} <span class="wmute">— ${esc(note)} (derived)</span></div>
+    <div class="sklist">${(wf.skills || []).map(skillRow).join('')}</div></div>`;
+}
+function profileRow(name, p) {
+  const kw = (p.keywords || []).map((k) => `<span class="wtag wtag--kw">${esc(k)}</span>`).join('');
+  return `<div class="profrow"><div class="profrow__hd"><b>${esc(p.name || name)}</b> <span class="wmute">tdd:${esc(p.tdd || '—')} · research:${esc(p.research || '—')}</span></div>
+    <div class="profrow__stages">${esc((p.stages || []).join(' → '))}</div>
+    ${kw ? `<div class="profrow__kw"><span class="wk">keywords</span>${kw}</div>` : ''}</div>`;
+}
+function profilesMatrix(wf) {
+  const rows = Object.entries(wf.profiles || {}).map(([k, p]) => profileRow(k, p)).join('');
+  return `<div class="wpanel wpanel--seam"><div class="wpanel__hd">Profiles × stage <span class="wbadge wbadge--fixed">read-only</span> <span class="wmute">${wseam('profilesEdit')}</span></div>${rows}</div>`;
+}
+function lintBanner(wf) {
+  const warns = (wf.lint && wf.lint.warnings) || [];
+  const errs = (wf.lint && wf.lint.errors) || [];
+  if (!warns.length && !errs.length) return '<div class="wnote wnote--ok">config lint clean — no unknown keys</div>';
+  const li = (x) => `<li>${esc(x.code ? x.code + ': ' : '')}${esc(x.message || String(x))}</li>`;
+  return `<div class="wnote wnote--warn"><b>config lint</b><ul>${errs.map(li).join('')}${warns.map(li).join('')}</ul></div>`;
+}
+function configBadge(wf) {
+  return wf.configPresent
+    ? '<span class="wbadge wbadge--custom">.forge/config.yaml present</span>'
+    : '<span class="wbadge wbadge--default">no .forge/config.yaml — all defaults</span>';
+}
+// Reserved placeholder for an extensibility surface not yet baked. The cockpit's
+// north star is a control plane over EVERY surface (skills, gates, roles, hooks,
+// MCP, rules); these sections keep the layout so a follow-up bake slots in without
+// a redesign — honest "follow-up", never faked data.
+function surfacePlaceholder(title, covers, ref) {
+  return `<div class="wpanel wpanel--future">
+    <div class="wpanel__hd">${esc(title)} <span class="wbadge wbadge--soon">follow-up</span></div>
+    <div class="wpanel__sub">${esc(covers)}</div>
+    <div class="wseam">Not baked yet — reserved section so a follow-up slots in without a redesign · ${esc(ref)}</div>
+  </div>`;
+}
+function futureSurfaces(wf) {
+  const s = wf.seams || {};
+  return `<div class="wgrid wgrid--3">
+    ${surfacePlaceholder('Hooks', 'Enforcement + SessionStart hooks per harness (PreToolUse, protected-path, tdd-gate).', s.hooksSurface || 'follow-up')}
+    ${surfacePlaceholder('MCP servers', 'Configured MCP servers and which harness they attach to.', s.mcpSurface || 'follow-up')}
+    ${surfacePlaceholder('Rules', 'Rendered rules (rules/*.md → per-harness ports, e.g. kernel-tracking).', s.rulesSurface || 'follow-up')}
+  </div>`;
+}
+// Control-state legend: today the graph exposes enabled/disabled; the target model
+// is tri-state (mandatory / optional / permission-based) — rendered honestly.
+function controlStateNote(wf) {
+  const tri = (wf.seams && wf.seams.tristate) || 'target control state is tri-state (mandatory / optional / permission)';
+  return `<div class="wnote wnote--tri"><b>control state</b> — today: <span class="wbadge wbadge--on">enabled</span> / <span class="wbadge wbadge--off">disabled</span>. Target: <span class="wbadge wbadge--tri">mandatory</span> <span class="wbadge wbadge--tri">optional</span> <span class="wbadge wbadge--tri">permission</span>. <span class="wmute">${esc(tri)}</span></div>`;
+}
+function renderWorkflow() {
+  const wf = State.snapshot.workflow;
+  if (!wf) return '<div class="empty-state"><h4>No workflow surface baked</h4><p>Run node web/dashboard/generate-snapshot.mjs to bake the cockpit surface.</p></div>';
+  const rail = stageRailModel(wf).map((n, i) => stageCard(n, i, wf)).join('');
+  const order = (wf.stageOrder || []).join(' → ');
+  const writeRef = esc((wf.seams && wf.seams.writePath || '9f2f0320').split(' ')[0]);
+  return `<div class="fade-in wcockpit">
+    <div class="viewhead"><span class="crumb">Control plane over the configurable workflow — one section per surface, each item shows how to customize it. Read-only page; the write path is Tier-2 (${writeRef}).</span> ${configBadge(wf)}</div>
+    ${lintBanner(wf)}
+    <div class="section-title">Chain · stages + roles <span class="wmute">${esc(order)} · ${fixedBadge('ROLE_IDS is a closed, fixed set — new stages are not user-addable in Tier-1')}</span></div>
+    <div class="stagerail">${rail}</div>
+    <div class="section-title">Gates + rails</div>
+    ${controlStateNote(wf)}
+    <div class="wgrid">${gatesPanel(wf)}${railsPanel(wf)}</div>
+    <div class="section-title">Skills</div>
+    ${skillsCatalog(wf)}
+    <div class="section-title">Profiles</div>
+    ${profilesMatrix(wf)}
+    <div class="section-title">More surfaces <span class="wmute">north-star control plane — reserved, baked in a follow-up</span></div>
+    ${futureSurfaces(wf)}
+  </div>`;
+}
+
 const VIEW_IDS = new Set(VIEWS.map((v) => v.id));
 const ENTITY_KINDS = new Set(['issue', 'epic', 'decision', 'work']);
 function parseHash() {
@@ -923,6 +1145,13 @@ function buildNav() {
 }
 
 // Shared action handler for clicks in both #view and the #detail overlay.
+// Route a clicked/activated [data-act] element: LIVE serve-* writes go to the
+// serve layer, everything else to the read-view handler. Keeps serve routing
+// out of handleAct's (already large) dispatch.
+function dispatchAct(t) {
+  if (t.dataset.act && t.dataset.act.startsWith('serve-')) { serveHandleAct(t); return; }
+  handleAct(t);
+}
 function handleAct(t) {
   const act = t.dataset.act;
   if (act === 'open') { const k = t.dataset.kind || 'issue'; location.hash = `#/${k}/${encodeURIComponent(t.dataset.id)}`; }
@@ -940,10 +1169,41 @@ function handleAct(t) {
   else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (_e) { /* private mode */ } rerender(); }
   else if (act === 'toggle-workgroup') { const id = t.dataset.id; State.board.tableCollapsed.has(id) ? State.board.tableCollapsed.delete(id) : State.board.tableCollapsed.add(id); rerender(); }
   else if (act === 'toggle-area') { const id = t.dataset.id; State.archExpanded.has(id) ? State.archExpanded.delete(id) : State.archExpanded.add(id); rerender(); }
+  else if (act === 'copy') { copyCommand(t); }
+}
+// Copy-as-command (the Tier-1 write path): clipboard with a file:// execCommand
+// fallback, plus a brief "copied" flash. No server, no config write here.
+function copyCommand(el) {
+  const cmd = el.dataset.cmd || '';
+  const ico = el.querySelector('.cmdchip__ico');
+  const sr = el.querySelector('.cmdchip__sr');
+  const flash = () => {
+    el.classList.add('copied');
+    const prev = ico ? ico.textContent : '';
+    if (ico) ico.textContent = '✓';
+    if (sr) sr.textContent = 'Copied to clipboard';
+    setTimeout(() => { el.classList.remove('copied'); if (ico) ico.textContent = prev; if (sr) sr.textContent = ''; }, 1200);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(cmd).then(flash).catch(() => fallbackCopy(cmd, flash));
+      return;
+    }
+  } catch (_e) { /* clipboard API unavailable — fall through */ }
+  fallbackCopy(cmd, flash);
+}
+function fallbackCopy(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.position = 'absolute'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta); done();
+  } catch (_e) { /* clipboard unavailable in this context */ }
 }
 function onViewClick(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
-  handleAct(t);
+  dispatchAct(t);
 }
 // Give every non-native [data-act] element button semantics so keyboard users can
 // reach and activate cards / rows / area-nodes. Called after each innerHTML render.
@@ -962,7 +1222,7 @@ function onActKeydown(e) {
   const t = e.target.closest('[data-act]'); if (!t) return;
   if (!needsButtonSemantics(t.tagName)) return;
   e.preventDefault(); // Space would otherwise scroll
-  handleAct(t);
+  dispatchAct(t);
 }
 
 function wireGlobalSearch() {
@@ -1016,7 +1276,8 @@ function updateStamp() {
   const g = State.snapshot.generated_at;
   $('#updatedText').textContent = 'updated ' + (g ? relTime(g) + ' ago' : '—');
   const when = g ? new Date(g) : new Date();
-  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · read-only`;
+  const mode = Serve.live ? 'LIVE · write' : (Serve.serverUp ? 'LIVE · read' : 'SNAPSHOT · read-only');
+  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · ${mode}`;
   $('#brandVer').textContent = State.snapshot.status?.context?.branch ? esc(State.snapshot.status.context.branch) : 'kernel';
 }
 async function doRefresh(silent) {
@@ -1029,6 +1290,7 @@ async function doRefresh(silent) {
 
 async function boot() {
   try {
+    Serve.initToken();
     const snap = await DataSource.load();
     rebuild(snap);
     try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (_e) { /* private mode */ }
@@ -1038,7 +1300,7 @@ async function boot() {
     $('#view').addEventListener('keydown', onActKeydown);
     $('#detail').addEventListener('click', (e) => {
       if (e.target.closest('[data-act="detail-close"]')) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); return; }
-      const t = e.target.closest('[data-act]'); if (t) handleAct(t);
+      const t = e.target.closest('[data-act]'); if (t) dispatchAct(t);
     });
     $('#detail').addEventListener('keydown', onActKeydown);
     $('#detail').addEventListener('keydown', trapOverlayFocus);
@@ -1049,11 +1311,269 @@ async function boot() {
     route(); updateStamp();
     setInterval(updateStamp, 15000);
     setInterval(() => { if (document.visibilityState === 'visible') doRefresh(true); }, 60000);
+    serveActivate();
   } catch (err) {
     $('#view').innerHTML = `<div class="empty-state"><h4>Could not load snapshot</h4><p>${esc(err.message)}</p><p>Run node web/dashboard/generate-snapshot.mjs</p></div>`;
   }
 }
+/* ============================================================================
+ * Serve — the LOCAL write layer (active only under `forge serve`).
+ *
+ * The dashboard NEVER mutates the kernel directly: it POSTs the SAME forge
+ * verbs the CLI runs to /api/mutation, which relays them in-process through the
+ * broker (all validation lives there). On file:// or with no server, every
+ * write affordance is hidden and the dashboard stays read + copy-as-command.
+ * ========================================================================== */
+const STATUS_OPTIONS = ['backlog', 'open', 'in_progress', 'review', 'done', 'cancelled'];
+const ISSUE_TYPES = ['task', 'bug', 'feature', 'chore', 'epic', 'decision'];
+
+const Serve = {
+  serverUp: false, // /health answered
+  token: null,     // per-run capability, delivered in the page URL fragment
+  get live() { return this.serverUp && !!this.token; }, // write-capable
+
+  // Capture the per-run token from the URL fragment ONCE, persist it for the
+  // session, then strip it from the routing hash without navigating.
+  initToken() {
+    let stored = null;
+    try { stored = sessionStorage.getItem('forge-serve-token'); } catch (_e) { /* private mode */ }
+    const hash = location.hash.slice(1);
+    const m = /(?:^|[&/])token=([a-f0-9]{16,})/.exec(hash);
+    if (m) {
+      this.token = m[1];
+      try { sessionStorage.setItem('forge-serve-token', m[1]); } catch (_e) { /* private mode */ }
+      const rest = hash.replace(/(?:^|[&])token=[a-f0-9]{16,}/, '').replace(/^[&/]+/, '');
+      history.replaceState(null, '', rest.startsWith('/') ? '#' + rest : (rest ? '#/' + rest : '#/overview'));
+    } else if (stored) {
+      this.token = stored;
+    }
+  },
+
+  async detect() {
+    try {
+      const r = await fetch('/health', { cache: 'no-store' });
+      if (r.ok) { const j = await r.json(); this.serverUp = !!(j && j.forge_serve); }
+    } catch (_e) { this.serverUp = false; }
+    return this.serverUp;
+  },
+
+  async mutate(verb, args) {
+    try {
+      const res = await fetch('/api/mutation', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: this.token, verb, args }),
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: 'bad response' }));
+      return { status: res.status, ...data };
+    } catch (err) { return { ok: false, error: err.message }; }
+  },
+};
+
+function serveSetMsg(elId, text, kind) {
+  const el = document.getElementById(elId);
+  if (el) { el.textContent = text; el.dataset.kind = kind || ''; }
+}
+
+// Refetch the snapshot + re-render after a successful write; reopen the issue
+// detail (when given) so the change is visible immediately.
+async function serveRefresh(id) {
+  try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); State.rendered = null; }
+  catch (_e) { /* keep current state if the refetch fails */ }
+  if (id && State.byId[id]) showIssue(id); else route();
+  updateStamp();
+}
+
+async function serveApply(verb, args, id) {
+  serveSetMsg('serveMsg-' + id, 'working…', 'busy');
+  const r = await Serve.mutate(verb, args);
+  if (r.ok) { await serveRefresh(id); return true; }
+  serveSetMsg('serveMsg-' + id, 'error: ' + (r.error || 'failed'), 'err');
+  return false;
+}
+
+function serveOption(val, cur) {
+  return `<option value="${esc(val)}"${val === cur ? ' selected' : ''}>${esc(val)}</option>`;
+}
+
+// The LIVE edit block appended to an issue's detail hub: status + priority
+// (POST issue.update), Close (issue.close), and a comment box (issue.comment).
+function issueWritePanel(i) {
+  const statuses = STATUS_OPTIONS.map((s) => serveOption(s, i.status)).join('');
+  const prios = PRIO_ORDER.map((p) => serveOption(p, i.priority)).join('');
+  const closed = i.status === 'done' || i.status === 'cancelled';
+  return `<div class="section-title">Edit · live</div>
+    <div class="serve-edit">
+      <div class="serve-row">
+        <label class="serve-field">Status<select class="serve-select" data-act="serve-status" data-id="${esc(i.id)}">${statuses}</select></label>
+        <label class="serve-field">Priority<select class="serve-select" data-act="serve-prio" data-id="${esc(i.id)}">${prios}</select></label>
+        ${closed ? '' : `<button class="btn" data-act="serve-close" data-id="${esc(i.id)}">Close issue</button>`}
+      </div>
+      <div class="serve-comment">
+        <textarea class="serve-textarea" id="serveComment-${esc(i.id)}" placeholder="Add a comment (reaches the agent on this issue)…"></textarea>
+        <button class="btn" data-act="serve-comment" data-id="${esc(i.id)}">Comment</button>
+      </div>
+      <div class="serve-msg" id="serveMsg-${esc(i.id)}" role="status"></div>
+    </div>`;
+}
+
+// change-delegated: status / priority <select> edits POST issue.update.
+function onServeChange(e) {
+  const sel = e.target.closest('[data-act="serve-status"], [data-act="serve-prio"]');
+  if (!sel) return;
+  const flag = sel.dataset.act === 'serve-status' ? '--status' : '--priority';
+  serveApply('issue.update', [sel.dataset.id, flag, sel.value], sel.dataset.id);
+}
+
+// click-delegated write actions (routed from handleAct + the serve modal).
+function serveHandleAct(t) {
+  const act = t.dataset.act; const id = t.dataset.id;
+  if (act === 'serve-close') serveApply('issue.close', [id], id);
+  else if (act === 'serve-comment') serveComment(id);
+  else if (act === 'serve-create') serveCreate();
+  else if (act === 'serve-add-open') openAddIssue();
+  else if (act === 'serve-controls') openControls();
+  else if (act === 'serve-run') serveRun(t.dataset.kind);
+  else if (act === 'serve-copy') serveCopy(t.dataset.kind);
+  else if (act === 'serve-modal-close') closeServeModal();
+}
+
+function serveComment(id) {
+  const ta = document.getElementById('serveComment-' + id);
+  const body = ta ? ta.value.trim() : '';
+  if (!body) { serveSetMsg('serveMsg-' + id, 'enter a comment first', 'err'); return; }
+  serveApply('issue.comment', [id, body], id);
+}
+
+/* ---------- modal (Add issue + Controls) — dynamic, reuses .detail skin ---------- */
+function ensureServeModal() {
+  let m = document.getElementById('serveModal');
+  if (m) return m;
+  m = document.createElement('div');
+  m.id = 'serveModal'; m.className = 'detail'; m.hidden = true;
+  m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+  m.innerHTML = '<div class="detail__scrim" data-act="serve-modal-close"></div>'
+    + '<div class="detail__panel" id="serveModalPanel" tabindex="-1"></div>';
+  document.body.appendChild(m);
+  m.addEventListener('click', (ev) => { const t = ev.target.closest('[data-act]'); if (t) serveHandleAct(t); });
+  return m;
+}
+function openServeModal(html) {
+  const m = ensureServeModal();
+  document.getElementById('serveModalPanel').innerHTML = html;
+  m.hidden = false; m.classList.add('on');
+}
+function closeServeModal() {
+  const m = document.getElementById('serveModal');
+  if (m) { m.classList.remove('on'); m.hidden = true; }
+}
+
+function openAddIssue() {
+  const types = ISSUE_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('');
+  const prios = PRIO_ORDER.map((p) => `<option value="${p}"${p === 'P2' ? ' selected' : ''}>${p}</option>`).join('');
+  openServeModal(`<button class="detail__close" data-act="serve-modal-close">✕ esc</button>
+    <h2 class="detail__title">New issue</h2>
+    <div class="serve-form">
+      <label class="serve-field">Title<input id="siTitle" class="serve-input" type="text" placeholder="Short summary" /></label>
+      <label class="serve-field">Type<select id="siType" class="serve-select">${types}</select></label>
+      <label class="serve-field">Priority<select id="siPrio" class="serve-select">${prios}</select></label>
+      <label class="serve-field">Parent epic id (optional)<input id="siParent" class="serve-input" type="text" placeholder="uuid" /></label>
+      <label class="serve-field">Body<textarea id="siBody" class="serve-textarea" placeholder="Details…"></textarea></label>
+      <div class="serve-row"><button class="btn btn--primary" data-act="serve-create">Create issue</button><button class="btn" data-act="serve-modal-close">Cancel</button></div>
+      <div class="serve-msg" id="serveMsg-new" role="status"></div>
+    </div>`);
+  const el = document.getElementById('siTitle'); if (el) el.focus();
+}
+
+async function serveCreate() {
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  const title = val('siTitle');
+  if (!title) { serveSetMsg('serveMsg-new', 'title is required', 'err'); return; }
+  const args = ['--title', title, '--type', val('siType') || 'task', '--priority', val('siPrio') || 'P2'];
+  const body = val('siBody'); if (body) args.push('--body', body);
+  const parent = val('siParent'); if (parent) args.push('--parent', parent);
+  serveSetMsg('serveMsg-new', 'creating…', 'busy');
+  const r = await Serve.mutate('issue.create', args);
+  if (r.ok) { closeServeModal(); await serveRefresh(null); }
+  else serveSetMsg('serveMsg-new', 'error: ' + (r.error || 'failed'), 'err');
+}
+
+// Controls: trigger the existing gate + role verbs. Each offers Copy (the
+// forge command) AND Run (POST the verb) — the handler validates the id.
+function openControls() {
+  openServeModal(`<button class="detail__close" data-act="serve-modal-close">✕ esc</button>
+    <h2 class="detail__title">Controls</h2>
+    <div class="serve-form">
+      <div class="section-title">Gate</div>
+      <div class="serve-row">
+        <label class="serve-field">Action<select id="scGateAction" class="serve-select"><option>enable</option><option>disable</option></select></label>
+        <label class="serve-field">Gate id<input id="scGateId" class="serve-input" value="gate.issue_verify" /></label>
+      </div>
+      <div class="serve-row"><button class="btn" data-act="serve-copy" data-kind="gate">Copy</button><button class="btn btn--primary" data-act="serve-run" data-kind="gate">Run</button></div>
+      <div class="section-title">Role → skill</div>
+      <div class="serve-row">
+        <label class="serve-field">Role<input id="scRole" class="serve-input" placeholder="planner" /></label>
+        <label class="serve-field">Skill<input id="scSkill" class="serve-input" placeholder="plan" /></label>
+      </div>
+      <div class="serve-row"><button class="btn" data-act="serve-copy" data-kind="role">Copy</button><button class="btn btn--primary" data-act="serve-run" data-kind="role">Run</button></div>
+      <div class="serve-msg" id="serveMsg-ctrl" role="status"></div>
+    </div>`);
+}
+
+function serveControlSpec(kind) {
+  const v = (id) => (document.getElementById(id)?.value || '').trim();
+  if (kind === 'gate') {
+    const action = v('scGateAction') || 'enable'; const gid = v('scGateId');
+    return { verb: 'gate', args: [action, gid], cmd: `forge gate ${action} ${gid}` };
+  }
+  const role = v('scRole'); const skill = v('scSkill');
+  return { verb: 'role', args: [role, '--use', skill], cmd: `forge role ${role} --use ${skill}` };
+}
+async function serveRun(kind) {
+  const spec = serveControlSpec(kind);
+  serveSetMsg('serveMsg-ctrl', 'running…', 'busy');
+  const r = await Serve.mutate(spec.verb, spec.args);
+  serveSetMsg('serveMsg-ctrl', r.ok ? ('ok — ' + spec.cmd) : ('error: ' + (r.error || 'failed')), r.ok ? 'ok' : 'err');
+}
+function serveCopy(kind) {
+  const spec = serveControlSpec(kind);
+  // writeText() rejects ASYNChronously (denied permission, non-secure context, no
+  // user gesture); a sync try/catch would report success before the write settled.
+  // Route both async rejection and any sync throw to the copy-failed message.
+  try {
+    Promise.resolve(navigator.clipboard.writeText(spec.cmd))
+      .then(() => serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'))
+      .catch(() => serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'));
+  } catch (_e) {
+    serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err');
+  }
+}
+
+function serveTopButton(id, act, label) {
+  const b = document.createElement('button');
+  b.id = id; b.className = 'btn'; b.type = 'button'; b.dataset.act = act; b.textContent = label;
+  b.addEventListener('click', () => serveHandleAct(b));
+  return b;
+}
+function mountServeControls() {
+  const bar = document.querySelector('.topbar');
+  if (!bar || document.getElementById('serveAddBtn')) return;
+  const ref = document.getElementById('refreshBtn');
+  bar.insertBefore(serveTopButton('serveAddBtn', 'serve-add-open', '＋ Issue'), ref);
+  bar.insertBefore(serveTopButton('serveCtlBtn', 'serve-controls', '⚙ Controls'), ref);
+}
+
+// Probe /health; when a server answers, expose the write UI. Never blocks the
+// initial read render — reads work identically with or without the server.
+async function serveActivate() {
+  await Serve.detect();
+  updateStamp();
+  if (!Serve.serverUp) return;
+  mountServeControls();
+  document.addEventListener('change', onServeChange);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeServeModal(); });
+}
+
 if (typeof document !== 'undefined') boot();
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State };
+  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId, isDefaultBinding, renderingHarnesses };
 }
