@@ -35,14 +35,24 @@ function isTddEnabled(projectRoot) {
     isExplicitlyDisabled(config?.workflow?.gates?.["rail.tdd_intent"]) ||
     isExplicitlyDisabled(config?.rails?.tdd_intent);
 
+  let YAML;
   try {
-    const YAML = require("yaml");
+    YAML = require("yaml");
+  } catch {
+    // The yaml MODULE is genuinely unavailable → conservative raw-text scan for the
+    // disabled block. Parser presence and parse success are split so a MALFORMED file
+    // never reaches this fuzzy scan.
+    return !(rawKeyDisabled(raw, "rail.tdd_intent") || rawKeyDisabled(raw, "tdd_intent"));
+  }
+  try {
     const parsed = YAML.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
     return !railDisabled(parsed);
   } catch {
-    // yaml lib unavailable → conservative raw-text scan for the disabled block.
-    return !(rawKeyDisabled(raw, "rail.tdd_intent") || rawKeyDisabled(raw, "tdd_intent"));
+    // MALFORMED YAML (module present, parse threw) → FAIL TOWARD ENFORCEMENT (return
+    // true). Never fall to the raw-text scan: a broken file with a `rail.tdd_intent:
+    // enabled: false` fragment must not switch the gate off (issue eda6d866).
+    return true;
   }
 }
 

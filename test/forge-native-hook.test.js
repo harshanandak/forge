@@ -194,18 +194,36 @@ describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
     expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
   });
 
-  test('unparseable config FAILS TOWARD enforcement (__raw fallback: TDD ON, protectedPaths built-in)', () => {
-    // An unterminated flow sequence makes YAML.parse throw, so loadConfigObject
-    // returns { __raw }. It contains neither a `rail.tdd_intent ... enabled: false`
-    // block nor a literal `protectedPaths: []`, so the raw-scan must NOT silently
-    // drop either gate: corrupt config keeps TDD ON and protected-path on the
-    // built-in set (protectedPaths === null), never inert (issue eda6d866).
-    const corrupt = makeProject("protectedPaths: ['.forge/config.yaml'\n");
+  test('MALFORMED config fails toward enforcement EVEN when it embeds a disabled rail block', () => {
+    // Security regression (T1): a broken file (unterminated flow sequence) that ALSO
+    // contains a `tdd_intent ... enabled: false` fragment must NOT switch enforcement
+    // off via the fuzzy raw-text scan. Parse presence is split from parse success, so a
+    // YAML.parse error fails TOWARD enforcement: TDD stays ON and protectedPaths falls
+    // back to the built-in set (protectedPaths === null) (issue eda6d866).
+    const corrupt = makeProject("rails:\n  tdd_intent:\n    enabled: false\nprotectedPaths: ['oops\n");
     const e = adapter.resolveEnforcement(corrupt);
     expect(e.tddEnabled).toBe(true);
-    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, not silently disabled
+    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, never silently dropped
     expect(adapter.isEnforcementActive('tdd', corrupt)).toBe(true);
     expect(adapter.isEnforcementActive('protected-path', corrupt)).toBe(true);
+  });
+
+  test('invalid/overly-broad protectedPaths fall back to built-in enforcement (never authoritative)', () => {
+    // Security regression (T2): a parseable config whose protectedPaths contains an
+    // overly-broad or non-string entry is rejected WHOLESALE (the runtime graph rejects
+    // the same entries), so it falls back to the built-in set instead of weakening
+    // protection. An invalid list must never become authoritative (issue eda6d866).
+    const broad = makeProject('protectedPaths:\n  - "**"\n');
+    expect(adapter.resolveEnforcement(broad).protectedPaths).toBe(null);
+    expect(adapter.isEnforcementActive('protected-path', broad)).toBe(true);
+
+    const nonString = makeProject('protectedPaths:\n  - 42\n');
+    expect(adapter.resolveEnforcement(nonString).protectedPaths).toBe(null);
+    expect(adapter.isEnforcementActive('protected-path', nonString)).toBe(true);
+
+    // A well-formed, specific list is still honored verbatim.
+    const valid = makeProject('protectedPaths:\n  - .github/workflows/**\n');
+    expect(adapter.resolveEnforcement(valid).protectedPaths).toEqual(['.github/workflows/**']);
   });
 });
 

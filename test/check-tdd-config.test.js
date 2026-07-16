@@ -55,12 +55,13 @@ describe('isTddEnabled (config-honest pre-commit gate)', () => {
     expect(isTddEnabled(root)).toBe(true);
   });
 
-  test('unparseable config => FAILS TOWARD enforcement (true) via raw-scan fallback', () => {
-    // An unterminated flow sequence makes YAML.parse throw, so isTddEnabled falls to
-    // the conservative raw-text scan. The corrupt text has no `rail.tdd_intent`/
-    // `tdd_intent` block with `enabled: false`, so the gate a user did not disable is
-    // never silently dropped — corrupt config keeps TDD ON (issue eda6d866).
-    writeConfig("protectedPaths: ['.forge/config.yaml'\n");
+  test('MALFORMED config => enforce (true) EVEN when it embeds a disabled tdd_intent block', () => {
+    // Security regression (T1): a broken file (unterminated flow sequence) that also
+    // contains a `tdd_intent ... enabled: false` fragment must NOT switch the gate off
+    // via the fuzzy raw-text scan. Parser presence is split from parse success, so a
+    // YAML.parse error fails TOWARD enforcement — corrupt config keeps TDD ON. The
+    // raw-text scan now runs ONLY when the yaml module is genuinely absent (issue eda6d866).
+    writeConfig("rails:\n  tdd_intent:\n    enabled: false\nprotectedPaths: ['oops\n");
     expect(isTddEnabled(root)).toBe(true);
   });
 });

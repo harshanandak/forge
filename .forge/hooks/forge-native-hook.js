@@ -71,18 +71,57 @@ function loadConfigObject(projectRoot) {
     return null; // no config file → caller defaults to enforcement ON
   }
   if (!raw || !raw.trim()) return {};
+  let YAML;
   try {
-    const YAML = require('yaml');
+    YAML = require('yaml');
+  } catch {
+    // The yaml MODULE is genuinely unavailable → degrade to a conservative raw-text
+    // scan (the only case that keeps { __raw }). Parser presence and parse success are
+    // deliberately separated so a MALFORMED file never reaches the fuzzy scan below.
+    return { __raw: raw };
+  }
+  try {
     const parsed = YAML.parse(raw);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
-    return { __raw: raw };
+    // MALFORMED YAML (module present, parse threw) → FAIL TOWARD ENFORCEMENT. Return {}
+    // so resolveEnforcement defaults to TDD ON + built-in protected paths. We must NOT
+    // fall through to the raw-text scan: a broken file containing a `rail.tdd_intent:
+    // enabled: false` fragment could otherwise switch enforcement OFF (issue eda6d866).
+    return {};
   }
 }
 
 /** A primitive is "disabled" only when its `enabled` is explicitly boolean false. */
 function isExplicitlyDisabled(node) {
   return Boolean(node) && typeof node === 'object' && node.enabled === false;
+}
+
+// Overly-broad patterns the runtime graph rejects (lib/core/runtime-graph.js
+// validateProtectedPaths). Kept in sync here because this hook is self-contained
+// and cannot import from lib/.
+const OVERLY_BROAD_PROTECTED_PATTERNS = ['*', '**', '**/*', '.', './', '/'];
+
+/**
+ * Validate a config-supplied protectedPaths list with the SAME rules the runtime
+ * graph enforces: every entry must be a non-empty string and not an overly-broad
+ * pattern. A list with ANY invalid entry is rejected WHOLESALE (returns null →
+ * caller falls back to the built-in protected set), so an invalid or overly-broad
+ * config can never become authoritative and WEAKEN protection — it fails toward
+ * enforcement, matching the rest of this hook's fail-safe stance (issue eda6d866).
+ * @returns {string[]|null} validated list (may be empty = deliberately inert), or
+ *   null when the list is absent/invalid.
+ */
+function validateConfiguredProtectedPaths(list) {
+  if (!Array.isArray(list)) return null;
+  const validated = [];
+  for (const entry of list) {
+    if (typeof entry !== 'string' || entry.trim() === '') return null;
+    const pattern = entry.trim();
+    if (OVERLY_BROAD_PROTECTED_PATTERNS.includes(pattern)) return null;
+    validated.push(pattern);
+  }
+  return validated;
 }
 
 /** Scan raw YAML for a `<key>:` block whose immediate child is `enabled: false`. */
@@ -125,7 +164,9 @@ function resolveEnforcement(projectRoot) {
     const rails = config.rails;
     tddDisabled = isExplicitlyDisabled(gates && gates['rail.tdd_intent'])
       || isExplicitlyDisabled(rails && rails.tdd_intent);
-    if (Array.isArray(config.protectedPaths)) protectedPaths = config.protectedPaths.slice();
+    // Validate before overriding built-in protection: a bad/overly-broad list must
+    // fall back to the built-in set (null), never become authoritative (T2).
+    protectedPaths = validateConfiguredProtectedPaths(config.protectedPaths);
   }
   return { tddEnabled: !tddDisabled, protectedPaths };
 }
