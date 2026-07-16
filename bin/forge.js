@@ -74,6 +74,7 @@ const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
 const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
 const { normalizeStageId } = require('../lib/workflow/stages');
+const { firstPositionalIndex } = require('../lib/global-flags');
 
 // Load enhanced onboarding modules (static relative requires — bundleable)
 const contextMerge = require('../lib/context-merge');
@@ -4072,6 +4073,34 @@ async function main() {
     const resolved = resolveDispatch(command, args, (name) => registry.commands.has(name));
     command = resolved.command;
     dispatchArgv = resolved.args;
+  }
+
+  // A workflow stage reached through its canonical noun form (e.g. `pr ship`,
+  // whose bare alias `ship` IS a stage) must dispatch through the SAME top-level
+  // stage path as the bare verb — stage-entry enforcement, kernel stage-run
+  // recording, and ensureForgeHome all key on the stage token, which sits at the
+  // subcommand position under a noun. Rewrite `<noun> <stage> [args]` to the
+  // top-level `<stage> [args]` so behavior is byte-identical to the bare stage
+  // alias. Detected precisely via the declarative alias map: the subcommand is a
+  // stage AND its bare alias's canonical is exactly `<command> <sub>` (so only a
+  // genuine noun→stage form matches; non-stage pr/gate subcommands route via
+  // their noun handler as usual). Only `pr ship` matches today.
+  //
+  // The stage token is located as the first POSITIONAL after the noun (scanning
+  // past any global flags and their values), so `forge pr --path /tmp ship ...`
+  // shares the same stage path as `forge pr ship ...` instead of falling through
+  // to pr.handler and missing stage-entry enforcement. Intervening global flags
+  // are preserved into the rewritten argv so the stage handler still sees them.
+  const stageIdx = firstPositionalIndex(dispatchArgv, 1);
+  const nounSub = stageIdx >= 0 ? dispatchArgv[stageIdx] : undefined;
+  if (nounSub && normalizeStageId(nounSub) && registry.commands.has(nounSub)) {
+    const bareAlias = resolveAlias(nounSub);
+    if (bareAlias && bareAlias.canonical === `${command} ${nounSub}`) {
+      command = nounSub;
+      // Drop only the consumed stage token (the noun at index 0 is dropped by the
+      // registry dispatch's own `.slice(1)`); keep the intervening global flags.
+      dispatchArgv = [nounSub, ...dispatchArgv.slice(1, stageIdx), ...dispatchArgv.slice(stageIdx + 1)];
+    }
   }
 
   // Registry command dispatch — auto-discovered commands take priority

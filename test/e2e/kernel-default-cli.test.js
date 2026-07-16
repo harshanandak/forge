@@ -200,6 +200,10 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
       const id = extractId(runForgeDefault(repo, ['create', '--title', 'gap issue', '--type', 'task']).stdout);
       expect(id).toBeTruthy();
 
+      // grounding (gate.read_first): reading the issue is now a precondition of
+      // claiming it, so recap first (its output is the load-the-doc action).
+      runForgeDefault(repo, ['recap', id]);
+
       // claim — the de-beading spine (#241) implemented the real kernel claim
       // handler (fixed the invalid_claim_scope gap). No --kernel flag, so this
       // proves the DEFAULT path now claims successfully.
