@@ -67,6 +67,23 @@ up from there.
 a `/loop`) that re-invokes the bounded pass with a debounce of at least 60
 seconds and cancel-in-progress. The shepherd itself never waits in-process.
 
+## Auto-start on ship (`rail.auto_shepherd`)
+
+`forge shepherd watch <pr>` is the constant, self-stopping local monitor loop
+(≈60 s jittered cadence; appends events to the per-PR NDJSON journal under
+`.forge/pr-monitor/<repo>-<pr>/`; self-stops on `PR_MERGED`/`PR_CLOSED`). On a
+successful `forge ship`, the new PR's watcher is **auto-started detached** so a
+shipped PR is tended without a manual trigger. The spawn is best-effort and
+**never fails ship** (a spawn or config-read error degrades to "not started"),
+and it is idempotent — the watch-lifecycle PID/journal lock prevents a second
+watcher for the same PR.
+
+This auto-start is governed by the default-ON, unlocked **`rail.auto_shepherd`**
+rail. Opt out with `forge gate disable rail.auto_shepherd` (re-enable with
+`forge gate enable rail.auto_shepherd`); when disabled, `forge ship` skips the
+auto-start. This keeps the behavior honestly toggleable through the same config
+surface as every other rail.
+
 ## Terminal states
 
 | State         | Meaning |
