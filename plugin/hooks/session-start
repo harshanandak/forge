@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# SessionStart hook for the Forge activation plugin.
+#
+# READ-ONLY by contract: this surfaces Forge's presence in ANY project and
+# creates NOTHING. Discovery != initialization — no `.forge/` is written here.
+# The first MUTATING `forge` verb lazily creates the bare-minimum home.
+
+set -euo pipefail
+
+# Orient without writing: is this a git repo, and does a Forge home already exist?
+forge_state="available here — nothing is initialized yet"
+if [ -d ".forge" ]; then
+  forge_state="active in this project (.forge/ present)"
+fi
+
+nudge="Forge is ${forge_state}. To begin, invoke the \`forge:activation\` skill (it orients on the project first, then offers a bare-minimum setup — never forced), or run a \`forge\` verb (e.g. \`forge status\`, \`forge ready\`). Read-only verbs create nothing; the first mutating verb lazily initializes a gates-disabled \`.forge/\` skeleton."
+
+# Escape for JSON embedding (single C-level pass each; matches superpowers).
+escape_for_json() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+session_context="$(escape_for_json "$nudge")"
+
+# Emit only the context field the current platform consumes (no dedup upstream).
+# Uses printf (not heredoc) to avoid the bash 5.3+ heredoc hang.
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "additional_context": "%s"\n}\n' "$session_context" | cat
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$session_context" | cat
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "$session_context" | cat
+fi
+
+exit 0

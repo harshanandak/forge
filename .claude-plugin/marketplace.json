@@ -1,0 +1,20 @@
+{
+  "name": "forge",
+  "description": "Forge — self-marketplace. Install the activation front-door plugin to make Forge discoverable in every project.",
+  "owner": {
+    "name": "Harsha Nanda",
+    "url": "https://github.com/harshanandak/forge"
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "description": "Forge activation front door: SessionStart nudge + the `activation` bootstrap skill. Discovery only — creates nothing until a mutating verb runs.",
+      "version": "0.1.0-beta.1",
+      "source": "./plugin",
+      "author": {
+        "name": "Harsha Nanda",
+        "url": "https://github.com/harshanandak/forge"
+      }
+    }
+  ]
+}

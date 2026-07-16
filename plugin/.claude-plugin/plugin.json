@@ -1,0 +1,19 @@
+{
+  "name": "forge",
+  "description": "Forge activation front door: makes Forge's presence and the `activation` bootstrap skill discoverable in ANY project via one global install, with a read-only SessionStart nudge. Creates nothing until you run a mutating verb.",
+  "version": "0.1.0-beta.1",
+  "author": {
+    "name": "Harsha Nanda",
+    "url": "https://github.com/harshanandak/forge"
+  },
+  "homepage": "https://github.com/harshanandak/forge",
+  "repository": "https://github.com/harshanandak/forge",
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "tdd",
+    "issue-tracker",
+    "agent-workflow",
+    "activation"
+  ]
+}
