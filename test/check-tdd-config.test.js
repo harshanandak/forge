@@ -54,4 +54,13 @@ describe('isTddEnabled (config-honest pre-commit gate)', () => {
     writeConfig('workflow:\n  gates:\n    "gate.plan-exit":\n      enabled: false\n');
     expect(isTddEnabled(root)).toBe(true);
   });
+
+  test('unparseable config => FAILS TOWARD enforcement (true) via raw-scan fallback', () => {
+    // An unterminated flow sequence makes YAML.parse throw, so isTddEnabled falls to
+    // the conservative raw-text scan. The corrupt text has no `rail.tdd_intent`/
+    // `tdd_intent` block with `enabled: false`, so the gate a user did not disable is
+    // never silently dropped — corrupt config keeps TDD ON (issue eda6d866).
+    writeConfig("protectedPaths: ['.forge/config.yaml'\n");
+    expect(isTddEnabled(root)).toBe(true);
+  });
 });

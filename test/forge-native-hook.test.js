@@ -193,6 +193,20 @@ describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
     expect(adapter.isEnforcementActive('tdd', none)).toBe(true);
     expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
   });
+
+  test('unparseable config FAILS TOWARD enforcement (__raw fallback: TDD ON, protectedPaths built-in)', () => {
+    // An unterminated flow sequence makes YAML.parse throw, so loadConfigObject
+    // returns { __raw }. It contains neither a `rail.tdd_intent ... enabled: false`
+    // block nor a literal `protectedPaths: []`, so the raw-scan must NOT silently
+    // drop either gate: corrupt config keeps TDD ON and protected-path on the
+    // built-in set (protectedPaths === null), never inert (issue eda6d866).
+    const corrupt = makeProject("protectedPaths: ['.forge/config.yaml'\n");
+    const e = adapter.resolveEnforcement(corrupt);
+    expect(e.tddEnabled).toBe(true);
+    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, not silently disabled
+    expect(adapter.isEnforcementActive('tdd', corrupt)).toBe(true);
+    expect(adapter.isEnforcementActive('protected-path', corrupt)).toBe(true);
+  });
 });
 
 describe('config-driven protected paths (config is the source of truth)', () => {

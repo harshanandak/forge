@@ -70,4 +70,29 @@ describe('adoption profiles', () => {
     expect(tddEnabled('standard')).toBe(true);
     expect(tddEnabled('full')).toBe(true);
   });
+
+  test('minimal leaves protectedPaths empty (protected-path guard inert); standard/full guard paths', () => {
+    // minimal = zero active enforcement, so the protected-path guard has nothing to
+    // fire on. isEnforcementActive('protected-path') is inert only when the resolved
+    // protectedPaths is an empty list — a lone config.yaml entry would keep the guard
+    // active and contradict "minimal = fully inert" (issue eda6d866).
+    const { getResolvedRuntimeGraph } = require('../lib/core/runtime-graph');
+    const {
+      isEnforcementActive,
+    } = require('../.forge/hooks/forge-native-hook.js');
+    const resolved = (profile) => {
+      const root = makeProject(renderAdoptionConfigYaml(profile));
+      return {
+        protectedPaths: getResolvedRuntimeGraph({ projectRoot: root }).protectedPaths,
+        protectedPathActive: isEnforcementActive('protected-path', root),
+      };
+    };
+
+    const minimal = resolved('minimal');
+    expect(minimal.protectedPaths).toEqual([]);
+    expect(minimal.protectedPathActive).toBe(false); // guard does NOT fire under minimal
+
+    expect(resolved('standard').protectedPaths.length).toBeGreaterThan(0);
+    expect(resolved('full').protectedPaths.length).toBeGreaterThan(0);
+  });
 });
