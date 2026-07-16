@@ -128,5 +128,8 @@ surface as every other rail.
 
 ## State
 
-Progress is durable in GitHub PR comments and labels plus `git`. There is no
-separate local state store.
+Progress is durable in GitHub PR comments and labels plus `git`. The one local
+store is the constant monitor's per-PR journal under
+`.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
+consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
+`events --since`. The bounded shepherd pass itself keeps no separate local state.
