@@ -73,8 +73,12 @@ describe('command aliases — memory noun shortcuts (P1, febf7690)', () => {
     }
   });
 
-  test('visibleAliasNames() lists exactly the memory shortcuts', () => {
-    expect([...aliases.visibleAliasNames()].sort()).toEqual(Object.keys(MEMORY_SHORTCUTS).sort());
+  test('visibleAliasNames() includes the memory shortcuts', () => {
+    // P2 adds ship/preflight to the visible set, so this is now a subset check.
+    const visible = new Set(aliases.visibleAliasNames());
+    for (const name of Object.keys(MEMORY_SHORTCUTS)) {
+      expect(visible.has(name)).toBe(true);
+    }
   });
 
   test('memory shortcuts are NOT in the bd flag-passthrough set (keeps -p / --help byte-identical)', () => {
@@ -100,6 +104,69 @@ describe('command aliases — memory noun shortcuts (P1, febf7690)', () => {
     expect(out.redirected).toBe(true);
     expect(out.command).toBe('memory');
     expect(out.args).toEqual(['memory', 'recall', 'bun', '--limit', '3']);
+  });
+});
+
+describe('command aliases — pr noun shortcuts + gate doc (P2, 6ab3f30c)', () => {
+  // P2 introduces the `pr` noun (ship/preflight/shepherd/merge) and folds doc-gate
+  // under the existing `gate` noun. ship + preflight stay VISIBLE (hot verbs, zero
+  // keystroke loss); shepherd/merge/doc-gate are HIDDEN back-compat aliases. All
+  // keep their standalone command files, so resolveDispatch is a strict no-op.
+  const PR_ALIASES = {
+    ship: { canonical: 'pr ship', visible: true },
+    preflight: { canonical: 'pr preflight', visible: true },
+    shepherd: { canonical: 'pr shepherd', visible: false },
+    merge: { canonical: 'pr merge', visible: false },
+    'doc-gate': { canonical: 'gate doc', visible: false },
+  };
+
+  test('each P2 alias resolves to its canonical noun form with the right visibility', () => {
+    for (const [name, expected] of Object.entries(PR_ALIASES)) {
+      const descriptor = aliases.resolveAlias(name);
+      expect(descriptor).toBeDefined();
+      expect(descriptor.canonical).toBe(expected.canonical);
+      expect(descriptor.visible).toBe(expected.visible);
+      expect(aliases.isVisibleAlias(name)).toBe(expected.visible);
+      expect(aliases.isHiddenAlias(name)).toBe(!expected.visible);
+    }
+  });
+
+  test('ship + preflight are the newly VISIBLE pr shortcuts', () => {
+    const visible = new Set(aliases.visibleAliasNames());
+    expect(visible.has('ship')).toBe(true);
+    expect(visible.has('preflight')).toBe(true);
+  });
+
+  test('no P2 alias enters the issue flag-passthrough set (keeps shepherd/ship flags parsing intact)', () => {
+    // Passthrough is issue-canonical only; pr/gate aliases must be excluded so
+    // bare `shepherd <pr> --pull --json` and `ship` parse flags exactly as before.
+    const passthrough = new Set(aliases.passthroughAliasNames());
+    for (const name of Object.keys(PR_ALIASES)) {
+      expect(passthrough.has(name)).toBe(false);
+    }
+  });
+
+  test('a registered P2 alias is never rewritten (byte-identical dispatch)', () => {
+    for (const name of Object.keys(PR_ALIASES)) {
+      const out = aliases.resolveDispatch(name, [name, '123', '--pull', '--json'], () => true);
+      expect(out.redirected).toBe(false);
+      expect(out.command).toBe(name);
+      expect(out.args).toEqual([name, '123', '--pull', '--json']);
+    }
+  });
+
+  test('an unregistered pr alias would route to its pr subcommand', () => {
+    const out = aliases.resolveDispatch('shepherd', ['shepherd', '123', '--pull', '--json'], () => false);
+    expect(out.redirected).toBe(true);
+    expect(out.command).toBe('pr');
+    expect(out.args).toEqual(['pr', 'shepherd', '123', '--pull', '--json']);
+  });
+
+  test('an unregistered doc-gate alias would route to gate doc', () => {
+    const out = aliases.resolveDispatch('doc-gate', ['doc-gate', 'check', '--base', 'main'], () => false);
+    expect(out.redirected).toBe(true);
+    expect(out.command).toBe('gate');
+    expect(out.args).toEqual(['gate', 'doc', 'check', '--base', 'main']);
   });
 });
 
