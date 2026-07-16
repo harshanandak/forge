@@ -20,9 +20,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
   pull_request_review_comment:
     types: [created]
+  # Resolving/unresolving a review thread is what clears (or re-raises) the
+  # threads-open signal — without this trigger, closing the LAST unresolved thread
+  # would leave a stale `pr-verdict:blocked-threads` label + sticky until some
+  # unrelated event happened to re-run the monitor (CodeRabbit PR #403).
+  pull_request_review_thread:
+    types: [resolved, unresolved]
   issue_comment:
     types: [created]
   check_suite:
@@ -68,7 +74,7 @@ jobs:
           # jq errors are swallowed (|| true): a monitor must never red-X itself on an
           # unrelated or malformed event — no PR context means a clean no-op, not a fail.
           case "$EVENT_NAME" in
-            pull_request|pull_request_review|pull_request_review_comment)
+            pull_request|pull_request_review|pull_request_review_comment|pull_request_review_thread)
               PR=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true) ;;
             issue_comment)
               # Only PR comments carry .issue.pull_request; plain issue comments are skipped.
@@ -135,8 +141,21 @@ jobs:
             # Fail-closed degraded bundle: NEITHER threads NOR checks were read, so
             # both availability flags are false — the renderer surfaces both as
             # unreadable rather than a false "zero unresolved / no failing checks".
-            ERR=$(head -c 300 gather.err 2>/dev/null | tr '\n' ' ' | sed 's/"/\\"/g')
-            printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ciAvailable":false,"ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
+            # Build with `jq --arg` (NOT manual escaping): gather.err can contain
+            # backslashes, tabs, control chars, or a truncated multibyte sequence that
+            # hand-escaping only quotes/newlines would turn into invalid JSON — making
+            # the fail-closed path itself fail (CodeRabbit PR #403).
+            ERR=$(head -c 300 gather.err 2>/dev/null || true)
+            jq -n --arg pr "$PR" --arg err "gather failed: $ERR" '{
+              pr: $pr,
+              unresolvedComments: [],
+              unresolvedCommentsAvailable: false,
+              unresolvedCommentsError: $err,
+              ciAvailable: false,
+              mergeState: { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN", state: "OPEN" },
+              ci: { checks: [], failing: [], pending: [] },
+              branch: { ahead: 0, behind: 0 }
+            }' > bundle.json
           fi
 
       - name: Gather merge verdict (single source — forge shepherd --pull)
@@ -227,8 +246,9 @@ jobs:
           set -uo pipefail
           # Keep EXACTLY ONE pr-verdict:* label on the PR — the cheap agent-agnostic
           # read (`gh pr view <pr> --json labels`). Ensure the chosen label exists
-          # (upsert), strip any stale sibling, then add the chosen one. Surface only:
-          # a LABEL never merges, never resolves threads, never blocks.
+          # (upsert), then remove EVERY OTHER label in the pr-verdict:* enum (not just
+          # a presumed single sibling, so multiple stale ones can't linger), and add
+          # the chosen one. Surface only: a LABEL never merges, resolves, or blocks.
           gh label create "$LABEL" --repo "$GH_REPO" --force --color BFD4F2 \
             --description "Forge PR verdict (auto, surface only)" > /dev/null 2>&1 || true
           IFS=',' read -ra LABELS <<< "$ALL_LABELS"
