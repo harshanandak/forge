@@ -67,6 +67,25 @@ up from there.
 a `/loop`) that re-invokes the bounded pass with a debounce of at least 60
 seconds and cancel-in-progress. The shepherd itself never waits in-process.
 
+## Surfacing events back to the agent (`forge hooks shepherd-events`)
+
+The constant watch loop and `forge shepherd events <pr> --since <seq>` write
+per-PR NDJSON journals under `.forge/pr-monitor/<repo>-<pr>/`, but a journal only
+helps if something reads it. `forge hooks shepherd-events` is the thin, agent-
+agnostic CONSUMER: it reads the NEW budget events across all open-PR journals
+since a persisted per-PR **consumer cursor** (kept in `consumer.cursor`, distinct
+from the watcher's snapshot), renders a **compact, capped** summary of the
+actionable transitions only — verdict changes, failed checks, new review threads,
+merged/closed — then advances the cursor so nothing re-surfaces.
+
+For Claude Code this is wired as a **UserPromptSubmit** context hook (the honest
+capability matrix: only Claude exposes that additionalContext surface; Cursor /
+Codex / Hermes carry an explicit skip reason). It is **additive and FAIL-OPEN** —
+a missing/empty digest, a corrupt journal, or no `.forge/pr-monitor` at all never
+blocks a prompt — and it reads the user's own local journal only: it never
+injects into stdin and never drives the agent. Any other harness can call the
+same verb (or `forge shepherd events`) on its own cadence.
+
 ## Terminal states
 
 | State         | Meaning |
