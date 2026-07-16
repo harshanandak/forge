@@ -111,6 +111,20 @@ describe('isMutatingVerb', () => {
     expect(MUTATING_VERBS.has('setup')).toBe(false);
   });
 
+  test('excludes gate/stage — they have read-only subcommands that must write nothing', () => {
+    // gate status|check and stage --list|--current are read-only; a verb-level
+    // trigger would wrongly create .forge/ for them. Their mutating forms
+    // self-manage (config writer / kernel broker) without ensureForgeHome.
+    expect(isMutatingVerb('gate')).toBe(false);
+    expect(isMutatingVerb('stage')).toBe(false);
+    expect(MUTATING_VERBS.has('gate')).toBe(false);
+    expect(MUTATING_VERBS.has('stage')).toBe(false);
+  });
+
+  test('retains role — it has no read-only form (every invocation writes config)', () => {
+    expect(isMutatingVerb('role')).toBe(true);
+  });
+
   test("a command module's explicit mutating flag overrides the default set", () => {
     expect(isMutatingVerb('ready', { mutating: true })).toBe(true);
     expect(isMutatingVerb('claim', { mutating: false })).toBe(false);

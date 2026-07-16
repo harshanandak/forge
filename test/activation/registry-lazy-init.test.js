@@ -73,6 +73,25 @@ describe('executeCommand lazy .forge/ home', () => {
     expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
   });
 
+  test('gate/stage read-only subcommands write NOTHING in a bare repo', async () => {
+    // Verb-level guard: because gate/stage are not in MUTATING_VERBS, dispatch
+    // never calls ensureForgeHome for them — regardless of subcommand — so their
+    // read-only forms (gate status/check, stage --list/--current) leave a bare
+    // repo untouched. (Their mutating forms self-manage inside their handlers.)
+    const cases = [
+      ['gate', ['status', 'gate.plan-exit']],
+      ['gate', ['check', 'gate.plan-exit']],
+      ['stage', ['--list']],
+      ['stage', ['--current']],
+    ];
+    for (const [verb, args] of cases) {
+      const root = makeBareRepo();
+      const commands = makeCommands({ [verb]: {} });
+      await executeCommand(commands, verb, args, {}, root);
+      expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
+    }
+  });
+
   test('an existing .forge/ is never clobbered by a mutating verb', async () => {
     const root = makeBareRepo();
     const configPath = path.join(root, '.forge', 'config.yaml');
