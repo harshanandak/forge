@@ -772,3 +772,34 @@ describe('pull payload carries the merge verdict (c01936be regression)', () => {
     expect(verdictLabel('not-a-verdict')).toBe('pr-verdict:unknown');
   });
 });
+
+// Regression for 5291f2d2: the BEHIND verdict must track GitHub's actual blocking
+// state (mergeStateStatus=BEHIND), NOT a raw compareCommits behind-count. A stale
+// or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
+// pr-verdict label falsely reads `behind` on a PR GitHub considers up-to-date.
+describe('BEHIND verdict reconciles with mergeStateStatus (5291f2d2)', () => {
+  const settled = { headOidStart: 'h', headOidEnd: 'h' };
+
+  test('behind-count>0 but mss=UNSTABLE (the #402 case) is NOT BEHIND', () => {
+    const { verdict } = computeVerdict({ mergeStateStatus: 'UNSTABLE', behind: 25, ...settled });
+    expect(verdict).not.toBe('BEHIND');
+    expect(verdict).toBe('BLOCKED-CHECKS'); // UNSTABLE routes to the checks rung
+  });
+
+  test('behind-count>0 but mss=CLEAN stays CLEAN-MERGEABLE (count ignored)', () => {
+    const { verdict } = computeVerdict({
+      mergeStateStatus: 'CLEAN', behind: 5, headPushKnown: true, ...settled,
+    });
+    expect(verdict).toBe('CLEAN-MERGEABLE');
+  });
+
+  test('mss=BEHIND still yields BEHIND (GitHub actually blocks)', () => {
+    const { verdict } = computeVerdict({ mergeStateStatus: 'BEHIND', behind: 25, ...settled });
+    expect(verdict).toBe('BEHIND');
+  });
+
+  test('mss=BEHIND yields BEHIND even when the commit count is unavailable', () => {
+    const { verdict } = computeVerdict({ mergeStateStatus: 'BEHIND', behind: 0, ...settled });
+    expect(verdict).toBe('BEHIND');
+  });
+});
