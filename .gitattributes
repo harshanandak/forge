@@ -10,6 +10,7 @@ docs/** text eol=lf
 scripts/** text eol=lf
 .forge/hooks/** text eol=lf
 .claude/scripts/** text eol=lf
+plugin/hooks/** text eol=lf
 AGENTS.md text eol=lf
 
 # Binary files — do not modify
