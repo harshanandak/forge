@@ -16,6 +16,10 @@ const {
   gatherPullSignal,
   buildBotStatusBlockers,
   STATUS_BOT_LOGINS,
+  computeVerdict,
+  verdictLabel,
+  VERDICT_LABELS,
+  MERGE_VERDICTS,
 } = require('../lib/pr-pull');
 
 // A gh `run view --log-failed` line: `jobName\tstepName\t<ISO-timestamp> content`.
@@ -731,5 +735,71 @@ describe('computeBlockers with bot-status blockers', () => {
     });
     expect(blockers.some((b) => b.type === 'blocked-unknown')).toBe(false);
     expect(blockers.some((b) => b.type === 'bot-status')).toBe(true);
+  });
+});
+
+// Regression for c01936be: `forge shepherd --pull --json` must emit a `.verdict`.
+// The CLI prints `JSON.stringify(pull)`, and `pull` is what buildPullPayload
+// returns — so guarding that buildPullPayload carries `verdict` (and that
+// computeVerdict only produces canonical enum values) locks the surface.
+describe('pull payload carries the merge verdict (c01936be regression)', () => {
+  test('buildPullPayload includes the top-level verdict field', () => {
+    const payload = buildPullPayload({
+      pr: '7', state: 'ESCALATE', verdict: 'BEHIND', summary: 's',
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', behind: 3,
+    });
+    expect(payload.verdict).toBe('BEHIND');
+  });
+
+  test('computeVerdict only ever returns a value in the canonical MERGE_VERDICTS set', () => {
+    const inputs = [
+      {},
+      { mergeStateStatus: 'DIRTY' },
+      { behind: 5 },
+      { requiredChecks: { failing: ['x'], missing: [], skipped: [], pending: [], unreadable: false } },
+      { unresolvedThreadCount: 2 },
+      { mergeStateStatus: 'CLEAN', headPushKnown: true },
+    ];
+    for (const input of inputs) {
+      const { verdict } = computeVerdict(input);
+      expect(MERGE_VERDICTS).toContain(verdict);
+    }
+  });
+
+  test('verdictLabel maps every canonical verdict into the reconcile set (fail-closed)', () => {
+    for (const v of MERGE_VERDICTS) expect(VERDICT_LABELS).toContain(verdictLabel(v));
+    expect(verdictLabel('')).toBe('pr-verdict:unknown');
+    expect(verdictLabel('not-a-verdict')).toBe('pr-verdict:unknown');
+  });
+});
+
+// Regression for 5291f2d2: the BEHIND verdict must track GitHub's actual blocking
+// state (mergeStateStatus=BEHIND), NOT a raw compareCommits behind-count. A stale
+// or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
+// pr-verdict label falsely reads `behind` on a PR GitHub considers up-to-date.
+describe('BEHIND verdict reconciles with mergeStateStatus (5291f2d2)', () => {
+  const settled = { headOidStart: 'h', headOidEnd: 'h' };
+
+  test('behind-count>0 but mss=UNSTABLE (the #402 case) is NOT BEHIND', () => {
+    const { verdict } = computeVerdict({ mergeStateStatus: 'UNSTABLE', behind: 25, ...settled });
+    expect(verdict).not.toBe('BEHIND');
+    expect(verdict).toBe('BLOCKED-CHECKS'); // UNSTABLE routes to the checks rung
+  });
+
+  test('behind-count>0 but mss=CLEAN stays CLEAN-MERGEABLE (count ignored)', () => {
+    const { verdict } = computeVerdict({
+      mergeStateStatus: 'CLEAN', behind: 5, headPushKnown: true, ...settled,
+    });
+    expect(verdict).toBe('CLEAN-MERGEABLE');
+  });
+
+  test('mss=BEHIND still yields BEHIND (GitHub actually blocks)', () => {
+    const { verdict } = computeVerdict({ mergeStateStatus: 'BEHIND', behind: 25, ...settled });
+    expect(verdict).toBe('BEHIND');
+  });
+
+  test('mss=BEHIND yields BEHIND even when the commit count is unavailable', () => {
+    const { verdict } = computeVerdict({ mergeStateStatus: 'BEHIND', behind: 0, ...settled });
+    expect(verdict).toBe('BEHIND');
   });
 });

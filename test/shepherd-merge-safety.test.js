@@ -65,9 +65,13 @@ describe('computeVerdict precedence (fail-closed, never false-clean)', () => {
     expect(computeVerdict({ ...cleanBase, conflicts: { conflicted: true, files: ['a'] } }).verdict).toBe('BLOCKED-CONFLICT');
   });
 
-  test('BEHIND for mergeStateStatus BEHIND or behind>0', () => {
+  test('BEHIND only for mergeStateStatus BEHIND, NOT a raw behind-count (5291f2d2)', () => {
     expect(computeVerdict({ ...cleanBase, mergeStateStatus: 'BEHIND' }).verdict).toBe('BEHIND');
-    expect(computeVerdict({ ...cleanBase, behind: 2 }).verdict).toBe('BEHIND');
+    // A behind-count>0 on a PR GitHub still considers mergeable (mss=CLEAN) must NOT
+    // falsely escalate to BEHIND — the compareCommits count is often stale or
+    // non-blocking (strict-up-to-date not required). It stays CLEAN-MERGEABLE; the
+    // count is surfaced only as evidence/blocker context.
+    expect(computeVerdict({ ...cleanBase, behind: 2 }).verdict).toBe('CLEAN-MERGEABLE');
   });
 
   test('BLOCKED-CHECKS for failing/missing/skipped/pending required or UNSTABLE', () => {

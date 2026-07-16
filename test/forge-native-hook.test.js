@@ -120,6 +120,136 @@ describe('decide (enforcement logic; TDD check injected for determinism)', () =>
   });
 });
 
+describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  function makeProject(configYaml) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-cfg-'));
+    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+    if (configYaml !== null) {
+      fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), configYaml, 'utf8');
+    }
+    return root;
+  }
+
+  test('resolveEnforcement: no config => enforcement ON (tddEnabled true, protectedPaths null)', () => {
+    const root = makeProject(null);
+    const e = adapter.resolveEnforcement(root);
+    expect(e.tddEnabled).toBe(true);
+    expect(e.protectedPaths).toBe(null);
+  });
+
+  test('resolveEnforcement: workflow.gates rail.tdd_intent disabled => tddEnabled false', () => {
+    const root = makeProject('workflow:\n  gates:\n    "rail.tdd_intent":\n      enabled: false\n');
+    expect(adapter.resolveEnforcement(root).tddEnabled).toBe(false);
+  });
+
+  test('resolveEnforcement: top-level rails.tdd_intent disabled => tddEnabled false', () => {
+    const root = makeProject('rails:\n  tdd_intent:\n    enabled: false\n');
+    expect(adapter.resolveEnforcement(root).tddEnabled).toBe(false);
+  });
+
+  test('resolveEnforcement: empty protectedPaths => [] (protected-path inert)', () => {
+    const root = makeProject('protectedPaths: []\n');
+    expect(adapter.resolveEnforcement(root).protectedPaths).toEqual([]);
+  });
+
+  test('decide: tdd-gate is INERT (allow, never runs check) when tddEnabled false', () => {
+    let called = false;
+    const d = adapter.decide({
+      intent: 'tdd-gate',
+      input: { tool_input: { command: 'git commit -m "wip"' } },
+      runTddCheck: () => { called = true; return 1; },
+      enforcement: { tddEnabled: false, protectedPaths: null },
+    });
+    expect(d.decision).toBe('allow');
+    expect(called).toBe(false);
+  });
+
+  test('decide: protected-path is INERT (allow) when protectedPaths resolves empty', () => {
+    const d = adapter.decide({
+      intent: 'protected-path',
+      input: { tool_input: { file_path: '.forge/config.yaml' } },
+      enforcement: { tddEnabled: true, protectedPaths: [] },
+    });
+    expect(d.decision).toBe('allow');
+  });
+
+  test('decide: default (no enforcement arg) preserves ON behavior', () => {
+    const denied = adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.forge/config.yaml' } } });
+    expect(denied.decision).toBe('deny');
+    const tdd = adapter.decide({ intent: 'tdd-gate', input: { tool_input: { command: 'git commit' } }, runTddCheck: () => 1 });
+    expect(tdd.decision).toBe('deny');
+  });
+
+  test('isEnforcementActive: single flag-agnostic predicate for each kind', () => {
+    const tddOff = makeProject('workflow:\n  gates:\n    "rail.tdd_intent":\n      enabled: false\n');
+    expect(adapter.isEnforcementActive('tdd', tddOff)).toBe(false);
+    const ppEmpty = makeProject('protectedPaths: []\n');
+    expect(adapter.isEnforcementActive('protected-path', ppEmpty)).toBe(false);
+    const none = makeProject(null);
+    expect(adapter.isEnforcementActive('tdd', none)).toBe(true);
+    expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
+  });
+
+  test('MALFORMED config fails toward enforcement EVEN when it embeds a disabled rail block', () => {
+    // Security regression (T1): a broken file (unterminated flow sequence) that ALSO
+    // contains a `tdd_intent ... enabled: false` fragment must NOT switch enforcement
+    // off via the fuzzy raw-text scan. Parse presence is split from parse success, so a
+    // YAML.parse error fails TOWARD enforcement: TDD stays ON and protectedPaths falls
+    // back to the built-in set (protectedPaths === null) (issue eda6d866).
+    const corrupt = makeProject("rails:\n  tdd_intent:\n    enabled: false\nprotectedPaths: ['oops\n");
+    const e = adapter.resolveEnforcement(corrupt);
+    expect(e.tddEnabled).toBe(true);
+    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, never silently dropped
+    expect(adapter.isEnforcementActive('tdd', corrupt)).toBe(true);
+    expect(adapter.isEnforcementActive('protected-path', corrupt)).toBe(true);
+  });
+
+  test('invalid/overly-broad protectedPaths fall back to built-in enforcement (never authoritative)', () => {
+    // Security regression (T2): a parseable config whose protectedPaths contains an
+    // overly-broad or non-string entry is rejected WHOLESALE (the runtime graph rejects
+    // the same entries), so it falls back to the built-in set instead of weakening
+    // protection. An invalid list must never become authoritative (issue eda6d866).
+    const broad = makeProject('protectedPaths:\n  - "**"\n');
+    expect(adapter.resolveEnforcement(broad).protectedPaths).toBe(null);
+    expect(adapter.isEnforcementActive('protected-path', broad)).toBe(true);
+
+    const nonString = makeProject('protectedPaths:\n  - 42\n');
+    expect(adapter.resolveEnforcement(nonString).protectedPaths).toBe(null);
+    expect(adapter.isEnforcementActive('protected-path', nonString)).toBe(true);
+
+    // A well-formed, specific list is still honored verbatim.
+    const valid = makeProject('protectedPaths:\n  - .github/workflows/**\n');
+    expect(adapter.resolveEnforcement(valid).protectedPaths).toEqual(['.github/workflows/**']);
+  });
+});
+
+describe('config-driven protected paths (config is the source of truth)', () => {
+  test('globToRegExp: ** spans separators, * stays within a segment', () => {
+    expect(adapter.globToRegExp('.github/workflows/**').test('.github/workflows/ci.yml')).toBe(true);
+    expect(adapter.globToRegExp('*.env').test('prod.env')).toBe(true);
+    expect(adapter.globToRegExp('*.env').test('config/prod.env')).toBe(true); // (^|/) prefix
+    expect(adapter.globToRegExp('AGENTS.md').test('AGENTS-x.md')).toBe(false);
+  });
+
+  test('decide protects EXACTLY the configured list, not the hardcoded set', () => {
+    const enforcement = { tddEnabled: true, protectedPaths: ['.github/workflows/**'] };
+    // In the configured list → deny
+    expect(adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.github/workflows/ci.yml' } }, enforcement }).decision).toBe('deny');
+    // A hardcoded-set path NOT in config → allowed (config is authoritative)
+    expect(adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.forge/config.yaml' } }, enforcement }).decision).toBe('allow');
+  });
+
+  test('shell-command scan honors the configured matcher', () => {
+    const enforcement = { tddEnabled: true, protectedPaths: ['.forge/config.yaml'] };
+    expect(adapter.decide({ intent: 'protected-path', input: { command: 'echo x > .forge/config.yaml' }, enforcement }).decision).toBe('deny');
+    expect(adapter.decide({ intent: 'protected-path', input: { command: 'rm -rf .github' }, enforcement }).decision).toBe('allow');
+  });
+});
+
 describe('formatOutput (harness-native decision contracts)', () => {
   test('Claude deny -> hookSpecificOutput.permissionDecision = deny', () => {
     const out = JSON.parse(adapter.formatOutput('claude', { decision: 'deny', reason: 'Protected path' }));

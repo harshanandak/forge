@@ -563,6 +563,43 @@ describe('Beads Kernel compatibility adapter', () => {
 		});
 	});
 
+	test('surfaces an unmigrated Beads sidecar (config.jsonl) as an honest gap', () => {
+		const snapshot = loadBeadsSnapshotFromDirectory(LEGACY_BACKUP_DIR);
+		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+
+		// config.jsonl is present in the store but has no Kernel target. It must be
+		// reported honestly, never silently dropped — that unread-sidecar data loss is
+		// exactly the class this migrator exists to close.
+		expect(snapshot.unmigratedSidecars).toContain('config.jsonl');
+		const gap = result.report.gaps.find(entry => entry.field === 'sidecar.config.jsonl');
+		expect(gap).toBeDefined();
+		expect(gap.reason).toMatch(/no Kernel target|not migrated/i);
+		// Handled sidecars are never falsely reported as unmigrated.
+		expect(snapshot.unmigratedSidecars).not.toContain('issues.jsonl');
+		expect(snapshot.unmigratedSidecars).not.toContain('interactions.jsonl');
+	});
+
+	test('surfaces a real sidecar-scan failure (ENOTDIR) as an honest gap, not a silent skip', () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-scan-fail-'));
+		const beadsDir = path.join(tmpDir, '.beads');
+		fs.mkdirSync(beadsDir);
+		fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
+		// Make the `backup/` scan CANDIDATE a FILE — readdirSync throws ENOTDIR, a real
+		// scan failure that could hide sidecars. A missing candidate (ENOENT) is fine to
+		// swallow; a real error must be surfaced, never silently treated as "no sidecars".
+		fs.writeFileSync(path.join(beadsDir, 'backup'), 'not a directory');
+		try {
+			const snapshot = loadBeadsSnapshotFromDirectory(beadsDir);
+			const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+
+			const scanGap = result.report.gaps.find(entry => entry.field.startsWith('sidecar-scan.'));
+			expect(scanGap).toBeDefined();
+			expect(scanGap.reason).toMatch(/could not scan|ENOTDIR/i);
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
 		const snapshot = {
 			issues: [{

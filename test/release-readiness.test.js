@@ -10,6 +10,7 @@ const {
   auditBdCallSites,
   buildReadinessReport,
   renderBdCallSiteAuditMarkdown,
+  writeAuditArtifact,
 } = require('../lib/release-readiness');
 
 const tempRoots = [];
@@ -461,6 +462,34 @@ module.exports = {
     });
     const blocker = stale.blockers.find(item => item.id === 'd20-audit-artifact-current');
     expect(blocker.detail).toContain('stale');
+  });
+
+  test('names the exact one-liner regen command in the stale-artifact blocker detail', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+    writeFile(root, AUDIT_ARTIFACT, 'stale artifact\n');
+
+    const report = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
+    const blocker = report.blockers.find(item => item.id === 'd20-audit-artifact-current');
+    // The fix must hand the developer a copy-paste one-liner, not just "regenerate it".
+    expect(blocker.detail).toContain('forge release regen-audit');
+  });
+
+  test('writeAuditArtifact regenerates the kill-list so the d20 blocker clears', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+
+    // Missing artifact → blocked.
+    const before = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
+    expect(before.blockers.map(blocker => blocker.id)).toContain('d20-audit-artifact-current');
+
+    // Regenerate with the same scan roots the gate uses, then the blocker clears.
+    const result = writeAuditArtifact(root, { scanRoots: ['lib'] });
+    expect(result.path).toBe(AUDIT_ARTIFACT);
+    expect(fs.existsSync(path.join(root, ...AUDIT_ARTIFACT.split('/')))).toBe(true);
+
+    const after = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
+    expect(after.blockers.map(blocker => blocker.id)).not.toContain('d20-audit-artifact-current');
   });
 
   test('accepts a current kill-list artifact with CRLF line endings', () => {

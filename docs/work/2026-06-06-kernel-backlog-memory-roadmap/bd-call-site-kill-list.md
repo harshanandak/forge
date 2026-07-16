@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 76 | 8 |
-| runtime | 245 | 32 |
+| command | 71 | 8 |
+| runtime | 252 | 35 |
 | docs | 395 | 47 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -21,10 +21,10 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 8 (bd), 10 (bd)
 - [ ] lib/commands/dev.js (1)
   - lines: 466 (bd)
-- [ ] lib/commands/migrate.js (22)
-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 305 (.beads), 309 (bd, dolt), 310 (bd, dolt), 314 (.beads), 326 (bd, .beads), 472 (.beads), 473 (.beads), 474 (.beads), 475 (.beads)
+- [ ] lib/commands/migrate.js (17)
+  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
 - [ ] lib/commands/plan.js (9)
-  - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 979 (bd), 1016 (bd)
+  - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 998 (bd), 1035 (bd)
 - [ ] lib/commands/status.js (10)
   - lines: 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 245 (.beads), 247 (.beads), 368 (bd), 427 (bd)
 - [ ] lib/commands/test.js (5)
@@ -39,9 +39,13 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/adapters/beads-issue-adapter.js (1)
   - lines: 78 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (5)
-  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 832 (.beads)
+  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 899 (.beads)
 - [ ] lib/audit-evidence.js (3)
   - lines: 148 (bd), 214 (bd), 240 (bd)
+- [ ] lib/beads-detect.js (2)
+  - lines: 29 (.beads), 38 (.beads)
+- [ ] lib/beads-nudge.js (3)
+  - lines: 18 (.beads), 20 (bd), 75 (.beads)
 - [ ] lib/beads-setup.js (41)
   - lines: 17 (.beads), 18 (dolt), 19 (.beads), 76 (.beads), 78 (.beads), 86 (.beads), 94 (dolt), 102 (.beads, dolt), 104 (.beads), 109 (.beads), 117 (dolt), 118 (dolt), 160 (.beads), 161 (dolt), 162 (.beads), 187 (.beads), 188 (dolt), 189 (.beads), 237 (.beads), 238 (.beads), 241 (bd, dolt), 244 (bd), 250 (.beads), 262 (bd), 278 (dolt), 286 (.beads), 312 (.beads), 319 (dolt), 323 (bd), 411 (bd), 417 (bd), 424 (bd), 425 (bd), 430 (.beads, dolt), 432 (bd), 440 (bd), 441 (bd), 476 (.beads, dolt), 480 (.beads), 487 (bd), 496 (bd)
 - [ ] lib/beads-sync-scaffold.js (3)
@@ -70,8 +74,10 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 178 (bd), 219 (.beads), 278 (.beads), 336 (.beads), 508 (bd), 542 (bd), 544 (bd), 547 (bd), 548 (bd), 551 (bd), 556 (bd), 557 (bd), 600 (bd)
 - [ ] lib/status/beads-snapshot.js (1)
   - lines: 31 (.beads)
+- [ ] lib/upgrade-safety.js (2)
+  - lines: 70 (.beads), 182 (.beads)
 - [ ] lib/workflow/enforce-stage.js (2)
-  - lines: 364 (bd), 365 (bd)
+  - lines: 390 (bd), 391 (bd)
 - [ ] scripts/beads-migrate-to-dolt.sh (1)
   - lines: 7 (dolt)
 - [ ] scripts/beads-upgrade-smoke.sh (1)
@@ -104,7 +110,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] docs/guides/BEADS_GITHUB_SYNC.md (3)
   - lines: 7 (.beads), 10 (dolt), 32 (.beads)
 - [ ] docs/guides/SETUP.md (6)
-  - lines: 10 (bd), 79 (bd, dolt), 84 (bd), 85 (bd, dolt), 89 (dolt), 113 (dolt)
+  - lines: 10 (bd), 82 (bd, dolt), 87 (bd), 88 (bd, dolt), 92 (dolt), 116 (dolt)
 - [ ] docs/guides/SUPPORT.md (26)
   - lines: 18 (bd), 19 (bd, dolt), 23 (bd), 53 (dolt), 58 (dolt), 60 (.beads), 66 (bd), 67 (bd, dolt), 68 (bd, dolt), 69 (bd, dolt), 72 (.beads, dolt), 76 (.beads), 78 (bd), 79 (.beads), 80 (.beads), 81 (bd, dolt), 85 (dolt), 87 (.beads), 93 (bd), 94 (bd, dolt), 119 (dolt), 131 (.beads), 144 (.beads), 152 (.beads), 158 (.beads), 165 (.beads)
 - [ ] docs/PROJECT_DESIGN.md (20)
