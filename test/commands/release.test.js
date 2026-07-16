@@ -3,10 +3,12 @@
 const { describe, expect, test } = require('bun:test');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const releaseCommand = require('../../lib/commands/release');
 const {
+  AUDIT_ARTIFACT,
   buildReadinessReport,
   canonicalizeAuditArtifact,
   renderBdCallSiteAuditMarkdown,
@@ -36,6 +38,23 @@ describe('forge release check command', () => {
     expect(result.report.target).toBe('0.1.0');
     expect(result.report.blockers).toEqual([]);
   }, FULL_REPO_READINESS_TIMEOUT_MS);
+
+  test('forge release regen-audit rewrites the kill-list artifact and clears the d20 blocker', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-release-regen-'));
+    try {
+      const result = await releaseCommand.handler(['regen-audit'], {}, root);
+
+      expect(result.success).toBe(true);
+      const artifactPath = path.join(root, ...AUDIT_ARTIFACT.split('/'));
+      expect(fs.existsSync(artifactPath)).toBe(true);
+
+      // The freshly written artifact is current, so the staleness gate no longer fires.
+      const report = buildReadinessReport(root, { target: '0.1.0' });
+      expect(report.blockers.map(blocker => blocker.id)).not.toContain('d20-audit-artifact-current');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   test('rejects unsupported targets explicitly', async () => {
     const result = await releaseCommand.handler(['check', '--target', '0.0.11'], {}, repoRoot);

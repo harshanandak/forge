@@ -120,10 +120,17 @@ describe('CLI lifecycle commands', () => {
       // the default 10s execFileSync timeout — bump the inner timeout to 55s
       // so it completes before bun test's outer 60s test-case timeout fires.
       const result = runForge(['reinstall', '--force'], { cwd: tmpDir, timeoutMs: 55000 });
-      const _output = result.stdout + result.stderr;
+      const output = result.stdout + result.stderr;
 
-      // .forge should be removed (hard reset part)
-      expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
+      // resetHard removes the pre-existing .forge (the empty setup-state.json marker),
+      // then setup re-runs and lands a FRESH .forge (hook scripts under .forge/hooks).
+      // So the post-condition is a reinstalled .forge, not its absence — and the original
+      // empty marker must be gone (proving the reset half ran).
+      expect(output).toContain('Reinstall complete');
+      const stateFile = path.join(tmpDir, '.forge', 'setup-state.json');
+      const originalMarkerSurvived =
+        fs.existsSync(stateFile) && fs.readFileSync(stateFile, 'utf-8').trim() === '{}';
+      expect(originalMarkerSurvived).toBe(false);
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }, 60000);
