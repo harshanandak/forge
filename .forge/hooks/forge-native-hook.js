@@ -32,6 +32,7 @@
  */
 
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 // Conservative protected-path set, mirroring .forge/protected-paths.yaml categories:
@@ -51,6 +52,174 @@ const PROTECTED_PATTERNS = [
   /(^|\/)\.env(\.[^/]+)?$/i,
   /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock[b]?)$/i,
 ];
+
+// ── Config-honest enforcement ───────────────────────────────────────────────
+// A DISABLED gate/rail in .forge/config.yaml must make its hook genuinely inert
+// (issue eda6d866). These hooks are self-contained (target projects have
+// .forge/hooks/*.js but NOT lib/), so we read + interpret the config here rather
+// than through the resolver. The `yaml` package is a Forge dependency present in
+// any project that ran `forge setup`; when it is somehow absent we degrade to a
+// conservative raw-text scan. Unparseable/missing config FAILS TOWARD enforcement
+// (default ON) so we never silently drop a gate the user did not disable.
+
+/** Load `.forge/config.yaml` into an object, or `{ __raw }` for a text-scan fallback, or null. */
+function loadConfigObject(projectRoot) {
+  let raw;
+  try {
+    raw = fs.readFileSync(path.join(projectRoot, '.forge', 'config.yaml'), 'utf8');
+  } catch {
+    return null; // no config file → caller defaults to enforcement ON
+  }
+  if (!raw || !raw.trim()) return {};
+  let YAML;
+  try {
+    YAML = require('yaml');
+  } catch {
+    // The yaml MODULE is genuinely unavailable → degrade to a conservative raw-text
+    // scan (the only case that keeps { __raw }). Parser presence and parse success are
+    // deliberately separated so a MALFORMED file never reaches the fuzzy scan below.
+    return { __raw: raw };
+  }
+  try {
+    const parsed = YAML.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    // MALFORMED YAML (module present, parse threw) → FAIL TOWARD ENFORCEMENT. Return {}
+    // so resolveEnforcement defaults to TDD ON + built-in protected paths. We must NOT
+    // fall through to the raw-text scan: a broken file containing a `rail.tdd_intent:
+    // enabled: false` fragment could otherwise switch enforcement OFF (issue eda6d866).
+    return {};
+  }
+}
+
+/** A primitive is "disabled" only when its `enabled` is explicitly boolean false. */
+function isExplicitlyDisabled(node) {
+  return Boolean(node) && typeof node === 'object' && node.enabled === false;
+}
+
+// Overly-broad patterns the runtime graph rejects (lib/core/runtime-graph.js
+// validateProtectedPaths). Kept in sync here because this hook is self-contained
+// and cannot import from lib/.
+const OVERLY_BROAD_PROTECTED_PATTERNS = ['*', '**', '**/*', '.', './', '/'];
+
+/**
+ * Validate a config-supplied protectedPaths list with the SAME rules the runtime
+ * graph enforces: every entry must be a non-empty string and not an overly-broad
+ * pattern. A list with ANY invalid entry is rejected WHOLESALE (returns null →
+ * caller falls back to the built-in protected set), so an invalid or overly-broad
+ * config can never become authoritative and WEAKEN protection — it fails toward
+ * enforcement, matching the rest of this hook's fail-safe stance (issue eda6d866).
+ * @returns {string[]|null} validated list (may be empty = deliberately inert), or
+ *   null when the list is absent/invalid.
+ */
+function validateConfiguredProtectedPaths(list) {
+  if (!Array.isArray(list)) return null;
+  const validated = [];
+  for (const entry of list) {
+    if (typeof entry !== 'string' || entry.trim() === '') return null;
+    const pattern = entry.trim();
+    if (OVERLY_BROAD_PROTECTED_PATTERNS.includes(pattern)) return null;
+    validated.push(pattern);
+  }
+  return validated;
+}
+
+/** Scan raw YAML for a `<key>:` block whose immediate child is `enabled: false`. */
+function rawKeyDisabled(raw, key) {
+  const lines = String(raw).split(/\r?\n/);
+  const keyRe = new RegExp(`^(\\s*)"?${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"?\\s*:\\s*$`);
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(keyRe);
+    if (!m) continue;
+    const parentIndent = m[1].length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (!lines[j].trim()) continue;
+      const childIndent = lines[j].match(/^\s*/)[0].length;
+      if (childIndent <= parentIndent) break; // left the block
+      if (/^\s*enabled\s*:\s*false\s*$/.test(lines[j])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolve the enforcement state the installed hooks must honor.
+ * @returns {{ tddEnabled: boolean, protectedPaths: string[]|null }}
+ *   tddEnabled     — false only when rail.tdd_intent is explicitly disabled.
+ *   protectedPaths — the configured list (may be []), or null when unset (→ built-in set).
+ */
+function resolveEnforcement(projectRoot) {
+  const config = loadConfigObject(projectRoot);
+  if (!config) return { tddEnabled: true, protectedPaths: null };
+
+  let tddDisabled;
+  let protectedPaths = null;
+  if (config.__raw) {
+    tddDisabled = rawKeyDisabled(config.__raw, 'rail.tdd_intent') || rawKeyDisabled(config.__raw, 'tdd_intent');
+    if (/^\s*protectedPaths\s*:\s*\[\s*\]\s*$/m.test(config.__raw)) protectedPaths = [];
+  } else {
+    // `forge gate disable` writes workflow.gates['rail.tdd_intent']; the `full`
+    // profile writes top-level rails.tdd_intent. Honor either shape.
+    const gates = config.workflow && config.workflow.gates;
+    const rails = config.rails;
+    tddDisabled = isExplicitlyDisabled(gates && gates['rail.tdd_intent'])
+      || isExplicitlyDisabled(rails && rails.tdd_intent);
+    // Validate before overriding built-in protection: a bad/overly-broad list must
+    // fall back to the built-in set (null), never become authoritative (T2).
+    protectedPaths = validateConfiguredProtectedPaths(config.protectedPaths);
+  }
+  return { tddEnabled: !tddDisabled, protectedPaths };
+}
+
+/**
+ * The SINGLE resolved predicate each hook gates on — flag-agnostic on purpose.
+ * Whatever config flag ultimately governs an enforcement kind resolves inside
+ * resolveEnforcement(); callers ask only "is this active?". This is the one place
+ * the TDD off-switch is read, so a future flag change lands here with no rework.
+ * @param {'tdd'|'protected-path'} kind
+ */
+function isEnforcementActive(kind, projectRoot) {
+  const { tddEnabled, protectedPaths } = resolveEnforcement(projectRoot);
+  if (kind === 'tdd') return tddEnabled;
+  if (kind === 'protected-path') return protectedPaths === null || protectedPaths.length > 0;
+  return true;
+}
+
+// Translate a config protectedPaths entry (a path or glob like `.github/workflows/**`)
+// into an anchored matcher. `**` spans path separators, `*` stays within one segment.
+function globToRegExp(pattern) {
+  const norm = normalize(pattern);
+  let re = '';
+  for (let i = 0; i < norm.length; i += 1) {
+    const c = norm[i];
+    if (c === '*') {
+      if (norm[i + 1] === '*') { re += '.*'; i += 1; if (norm[i + 1] === '/') i += 1; }
+      else re += '[^/]*';
+    } else if ('\\^$.|?+()[]{}'.includes(c)) {
+      re += `\\${c}`;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp(`(^|/)${re}(/|$)`);
+}
+
+/**
+ * Build the protected-path matcher from resolved config (config is the source of
+ * truth — the hardcoded PROTECTED_PATTERNS set is only the fallback when config
+ * omits protectedPaths entirely, so no gate is silently dropped):
+ *   null → unset → built-in default set (fail toward enforcement / back-compat)
+ *   []   → explicitly empty → nothing protected (inert)
+ *   list → protect exactly those paths/globs
+ */
+function buildProtectedMatcher(protectedPaths) {
+  if (protectedPaths === null) {
+    return p => Boolean(p) && PROTECTED_PATTERNS.some(re => re.test(normalize(p)));
+  }
+  if (protectedPaths.length === 0) return () => false;
+  const regexes = protectedPaths.map(globToRegExp);
+  return p => Boolean(p) && regexes.some(re => re.test(normalize(p)));
+}
 
 /** Parse `--intent <id> --harness <id>` from an argv slice. */
 function parseArgs(argv) {
@@ -84,7 +253,7 @@ function normalize(p) {
   return String(p).replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
-/** True when a path falls inside Forge's protected set. */
+/** True when a path falls inside Forge's built-in protected set (the fallback matcher). */
 function isProtectedPath(p) {
   if (!p) return false;
   const n = normalize(p);
@@ -105,13 +274,13 @@ const WRITE_INTENT_RE = /(^|[\s;|&(])(rm|mv|cp|tee|truncate|chmod|chown|ln|sed|p
  * (rm/mv/sed/tee/redirection/...), then (2) token-scan (split on whitespace +
  * shell operators, strip quotes) for a protected path. Never throws.
  */
-function commandTouchesProtectedPath(command) {
+function commandTouchesProtectedPath(command, isProtected = isProtectedPath) {
   if (typeof command !== 'string' || !command) return false;
   if (!WRITE_INTENT_RE.test(command)) return false;
   const tokens = command.split(/[\s;|&<>()]+/);
   for (const raw of tokens) {
     const token = raw.replace(/^["']+|["']+$/g, '');
-    if (token && !token.startsWith('-') && isProtectedPath(token)) return true;
+    if (token && !token.startsWith('-') && isProtected(token)) return true;
   }
   return false;
 }
@@ -133,14 +302,22 @@ function runInstalledTddCheck() {
   }
 }
 
+// Fully-ON default keeps back-compat: callers that pass no `enforcement` (and the
+// existing test suite) get the original always-enforce behavior.
+const ENFORCEMENT_ON = Object.freeze({ tddEnabled: true, protectedPaths: null });
+
 /**
- * Core enforcement decision. `runTddCheck` is injectable for deterministic tests.
+ * Core enforcement decision. `runTddCheck` is injectable for deterministic tests;
+ * `enforcement` (from resolveEnforcement) makes a DISABLED gate/rail inert.
  * @returns {{ decision: 'allow'|'deny', reason?: string }}
  */
-function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
+function decide({ intent, input, runTddCheck = runInstalledTddCheck, enforcement = ENFORCEMENT_ON }) {
   if (intent === 'protected-path') {
+    // Config is the source of truth: matcher is built from the resolved
+    // protectedPaths list (empty → inert; unset → built-in fallback set).
+    const matchesProtected = buildProtectedMatcher(enforcement.protectedPaths);
     const target = extractPath(input);
-    if (isProtectedPath(target)) {
+    if (matchesProtected(target)) {
       return {
         decision: 'deny',
         reason: `Forge-protected path '${normalize(target)}' — edit it through the owning Forge CLI/skill, not a raw write.`,
@@ -151,7 +328,7 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
     // so the deny-capable shell surface actually protects instead of no-oping.
     if (!target) {
       const command = extractCommand(input);
-      if (commandTouchesProtectedPath(command)) {
+      if (commandTouchesProtectedPath(command, matchesProtected)) {
         return {
           decision: 'deny',
           reason: 'Shell command writes to a Forge-protected path — use the owning Forge CLI/skill instead.',
@@ -162,6 +339,8 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
   }
 
   if (intent === 'tdd-gate') {
+    // TDD rail disabled in config → inert: never run the check, never block.
+    if (!enforcement.tddEnabled) return { decision: 'allow' };
     const command = extractCommand(input);
     if (!isGitCommit(command)) return { decision: 'allow' };
     const code = runTddCheck();
@@ -222,7 +401,10 @@ function readStdin() {
 function main() {
   const { intent, harness } = parseArgs(process.argv.slice(2));
   const input = readStdin();
-  const decision = decide({ intent, input });
+  // Project root is two levels up from this installed hook (<root>/.forge/hooks/),
+  // so enforcement resolves against the project's config regardless of cwd.
+  const enforcement = resolveEnforcement(path.resolve(__dirname, '..', '..'));
+  const decision = decide({ intent, input, enforcement });
   const output = formatOutput(harness || 'claude', decision);
   if (output) process.stdout.write(output);
   // Exit 0 always: the decision travels in the JSON body, not the exit code, so a
@@ -232,6 +414,10 @@ function main() {
 
 module.exports = {
   PROTECTED_PATTERNS,
+  resolveEnforcement,
+  isEnforcementActive,
+  globToRegExp,
+  buildProtectedMatcher,
   parseArgs,
   extractPath,
   extractCommand,

@@ -114,6 +114,25 @@ describe('forge init command', () => {
     expect(config.adapters.harness.targets).toEqual(['codex']);
   });
 
+  test('init --profile minimal emits EMPTY protectedPaths so the guard is inert end-to-end', async () => {
+    // Regression for the renderer override (T1): the minimal PROFILE resolves
+    // protectedPaths [], but renderDayOneConfigYaml used to UNCONDITIONALLY append
+    // .forge/config.yaml et al, silently re-activating the protected-path guard. Assert
+    // on the RENDERED output (not just profile resolution — that was the gap that let it
+    // slip): the emitted config.yaml must carry an empty protectedPaths AND the native
+    // guard must resolve inert end-to-end (issue eda6d866).
+    const root = makeProject();
+    const result = await handler(['--profile', 'minimal', '--yes'], {}, root);
+    expect(result.success).toBe(true);
+
+    const config = readYaml(path.join(root, '.forge', 'config.yaml'));
+    expect(config.template.profile).toBe('minimal');
+    expect(config.protectedPaths).toEqual([]);
+
+    const { isEnforcementActive } = require('../.forge/hooks/forge-native-hook.js');
+    expect(isEnforcementActive('protected-path', root)).toBe(false);
+  });
+
   test('preserves explicit profile harness defaults when no harness markers exist', async () => {
     const root = makeProject();
 

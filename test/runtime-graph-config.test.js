@@ -69,11 +69,33 @@ adapters:
   test('rejects config that disables a locked L1 rail', () => {
     const projectRoot = makeProject(`
 rails:
-  tdd_intent:
+  secret_scan:
     enabled: false
 `);
 
     expect(() => getResolvedRuntimeGraph({ projectRoot })).toThrow('locked L1 rail');
+  });
+
+  test('allows disabling the unlocked tdd_intent rail (strong default, not a floor)', () => {
+    // rail.tdd_intent was reclassified from a locked L1 floor to a default-ON
+    // toggleable rail (issue eda6d866) so progressive setup can honestly turn
+    // TDD enforcement off. Both config surfaces must accept the disable.
+    const viaRails = makeProject(`
+rails:
+  tdd_intent:
+    enabled: false
+`);
+    const railGraph = getResolvedRuntimeGraph({ projectRoot: viaRails });
+    expect(railGraph.rails.find(rail => rail.id === 'rail.tdd_intent').enabled).toBe(false);
+
+    const viaGates = makeProject(`
+workflow:
+  gates:
+    "rail.tdd_intent":
+      enabled: false
+`);
+    const gateGraph = getResolvedRuntimeGraph({ projectRoot: viaGates });
+    expect(gateGraph.rails.find(rail => rail.id === 'rail.tdd_intent').enabled).toBe(false);
   });
 
   test('reports malformed YAML and unknown primitive IDs during config lint', () => {
