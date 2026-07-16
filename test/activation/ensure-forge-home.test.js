@@ -79,15 +79,42 @@ describe('ensureForgeHome', () => {
     expect(fs.readFileSync(configPath, 'utf8')).toBe('user: sacred\n');
   });
 
-  test('no-ops when .forge/ exists even without config.yaml (never clobber)', () => {
+  test('self-heals a half-init: .forge/ exists but config.yaml is missing', () => {
+    // A prior run that was killed between mkdir and write (or a disk-full write)
+    // leaves .forge/ without config.yaml. The next call must COMPLETE init, not
+    // return stuck. No-clobber keys on config.yaml presence, so this is safe.
     const root = makeBareRepo();
     fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
 
     const result = ensureForgeHome(root);
 
-    expect(result.created).toBe(false);
-    expect(result.reason).toBe('forge-dir-exists');
+    expect(result.created).toBe(true);
+    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
+  });
+
+  test('a write failure after mkdir leaves a RETRYABLE state, not a stuck half-init', () => {
+    const root = makeBareRepo();
+    let throwOnce = true;
+    const failingFirstWrite = {
+      existsSync: fs.existsSync,
+      mkdirSync: fs.mkdirSync,
+      writeFileSync: (...args) => {
+        if (throwOnce) {
+          throwOnce = false;
+          throw new Error('ENOSPC: no space left on device');
+        }
+        return fs.writeFileSync(...args);
+      },
+    };
+
+    // First attempt fails mid-write (dir created, config not written).
+    expect(() => ensureForgeHome(root, { fs: failingFirstWrite })).toThrow('ENOSPC');
     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
+
+    // Next attempt (fs recovered) COMPLETES init instead of being stuck.
+    const result = ensureForgeHome(root);
+    expect(result.created).toBe(true);
+    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
   });
 });
 
