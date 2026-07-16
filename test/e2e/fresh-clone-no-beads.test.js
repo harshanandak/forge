@@ -152,6 +152,7 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
         expect(typeof issueId).toBe('string');
         expect(issueId.length).toBeGreaterThan(0);
 
+        forge(['recap', issueId]); // grounding (gate.read_first): read the issue before claiming it
         forge(['claim', issueId, '--json']);
         forge(['comment', issueId, 'Acceptance run: fresh-clone lifecycle in progress', '--json']);
         forge(['close', issueId, '--reason=fresh-clone acceptance complete', '--json']);
