@@ -208,6 +208,52 @@ describe('CLI Registry Integration', () => {
     });
   });
 
+  describe('memory noun + visible shortcuts (P1, febf7690)', () => {
+    test('forge --help lists the memory noun in Additional commands', () => {
+      const { stdout } = runForge(['--help']);
+      const names = parseAdditionalCommands(stdout);
+      expect(names).toContain('memory');
+    });
+
+    test('forge --help moves remember/recall/insights into a Shortcuts block, not Additional commands', () => {
+      const { stdout } = runForge(['--help']);
+      const names = parseAdditionalCommands(stdout);
+      // The bare verbs are no longer enumerated as top-level commands...
+      for (const alias of ['remember', 'recall', 'insights']) {
+        expect(names).not.toContain(alias);
+      }
+      // ...they surface in a Shortcuts block mapping to their canonical memory sub.
+      expect(stdout).toContain('Shortcuts');
+      expect(stdout).toMatch(/remember\s+-> forge memory add/);
+      expect(stdout).toMatch(/recall\s+-> forge memory recall/);
+      expect(stdout).toMatch(/insights\s+-> forge memory insights/);
+    });
+
+    test('bare forge recall --help still prints recall usage (passthrough fix keeps --help parsed)', () => {
+      // Regression guard: if the memory shortcuts leaked into the bd flag-passthrough
+      // set, --help would reach the recall handler as a query instead of short-circuiting.
+      const { stdout, stderr, status } = runForge(['recall', '--help']);
+      const combined = stdout + stderr;
+      expect(status).toBe(0);
+      expect(combined).toContain('forge recall');
+      expect(combined).not.toContain('FORGE_SETUP_REQUIRED');
+    });
+
+    test('bare forge remember --help still prints remember usage', () => {
+      const { stdout, stderr, status } = runForge(['remember', '--help']);
+      const combined = stdout + stderr;
+      expect(status).toBe(0);
+      expect(combined).toContain('forge remember');
+    });
+
+    test('forge memory --help prints the memory noun surface', () => {
+      const { stdout, stderr, status } = runForge(['memory', '--help']);
+      const combined = stdout + stderr;
+      expect(status).toBe(0);
+      expect(combined).toContain('memory');
+    });
+  });
+
   describe('hidden issue aliases stay executable (back-compat)', () => {
     test('hidden aliases remain routable in the registry', () => {
       const { commands } = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
