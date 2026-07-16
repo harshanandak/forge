@@ -150,6 +150,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated 
 - Blocks commits if source code modified without test files
 - Offers guided recovery (add tests now, skip with tech debt tracking, emergency override)
 - No AI decision required - automatic validation
+- **Strong default, not a hard floor.** The TDD gate is the default-ON `rail.tdd_intent` rail; turn it off with `forge gate disable rail.tdd_intent` (the `minimal` adoption profile ships it off). The installed hooks read the resolved config at run time, so a disabled rail makes them genuinely inert — enforcement honestly follows your config.
 
 **Pre-push hook validates tests:**
 - Branch protection: blocks direct push to `main`/`master`

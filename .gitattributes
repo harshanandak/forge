@@ -10,6 +10,13 @@ docs/** text eol=lf
 scripts/** text eol=lf
 .forge/hooks/** text eol=lf
 .claude/scripts/** text eol=lf
+# Plugin hooks are a cross-platform POLYGLOT (superpowers pattern): run-hook.cmd
+# runs under cmd.exe on Windows AND under sh on Unix (the `: << 'CMDBLOCK'`
+# heredoc). It MUST be LF — CRLF makes the Unix heredoc terminator (`CMDBLOCK\r`)
+# never match and breaks the hook on macOS/Linux. cmd.exe tolerates LF for this
+# straight-line script (no labels/goto). Matches superpowers' own `*.cmd text eol=lf`.
+plugin/hooks/run-hook.cmd text eol=lf
+plugin/hooks/session-start text eol=lf
 AGENTS.md text eol=lf
 
 # Binary files — do not modify

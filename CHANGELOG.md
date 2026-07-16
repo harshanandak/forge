@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-07-15
+
+The **beta-blocker hardening wave** — Forge's advertised loop now composes end to end, its quality gates fail closed, its control surfaces describe themselves honestly, and the runtime is Beads-free. Every change below was adversarially reviewed before merge. (v0.1.0-beta.1 was tagged but never reached npm — its publish token had expired; this release switches to OIDC Trusted Publishing and is the first npm beta.)
+
+### Fixed
+
+- **`forge ship` is reachable from the pure CLI.** `plan`/`dev`/`validate`/`ship` persist and read workflow stage state in the Kernel (completion-gated at the enforcement chokepoint), so **any** agent driving the bare CLI reaches ship — previously the stage state was written only by a Claude-specific slash layer, so a non-Claude agent ran every stage green then dead-ended. `plan --issue <id>` links an existing issue instead of forking a duplicate; `--issue` with no value errors instead of creating one. (#380)
+- **Quality gates fail closed.** `forge validate` reports `SKIPPED` (never a silent `PASS`) on 0 tests; `forge preflight` fails on an unresolvable base instead of vacuously passing, and no longer runs Forge's own internal test files inside a consumer repo. Further preflight fail-open residuals closed. (#381, #386)
+- **`forge setup` installs real TDD enforcement — on the live path.** Native `.git/hooks` fallback when lefthook's binary is absent, honors `core.hooksPath`, writes real hook jobs (never the stock example), verifies hooks are active with a loud non-zero exit when they aren't, never resolves/writes hooks into an ancestor repo, and never clobbers a user's existing hook without a backup. (#382, #388)
+- npm publishing now authenticates via **Trusted Publishing (OIDC)** instead of a long-lived `NPM_TOKEN` (which had expired and silently failed the beta.1 publish).
+
+### Added
+
+- **`forge serve` shared-machine hardening.** Single-instance `serve.lock` (dead-PID reclaim), server state files created with restrictive permissions + a startup audit, and a hash-chained mutation journal verified at every startup. (#383)
+- **`forge control` — an honest tri-state control plane.** Set gates/rails `mandatory`/`optional`/`permission` over the **real resolver-enforced** config field (no parallel un-enforced key); refuses to "control" surfaces it can't enforce. Ships a state × enforcement-locus **guarantee matrix** and locus badges that state honestly what is run-time-enforced vs declared vs advisory. (#385)
+- **Surface-only, author-agnostic PR auto-monitor.** A GitHub Actions workflow that posts a single sticky summary of unresolved review threads (grouped by author — any review bot or human) + failing/pending checks; fail-closed on both halves, never merges and never posts a verdict. (#384)
+- Single-binary distribution (`bun build --compile`, checksum-verified install script) + an interactive local `forge serve` dashboard with a comment-back inbox. (#378, #379)
+
+### Changed
+
+- **Beads is retired from the runtime.** The default kernel-primary path touches no Beads — the unconditional bootstrap/health probes (and their "Beads-not-initialized" stderr noise) are gone. An opt-in `forge migrate` import/export is the only remaining Beads surface. (#387)
+
+### Known limitation (honest by design)
+
+- The *configurable* gate/rail registry is not yet consumed by a runtime deny — real quality enforcement today lives in the lefthook TDD pre-commit hook, fail-closed `validate`/`preflight`, and kernel stage-order/completion (all independent of the configurable flags). The `forge control` guarantee matrix documents exactly what each control does today; wiring the registry to those enforcement points is tracked for a later release.
+
 ## [0.1.0-beta.1] - 2026-07-09
 
 First public release (beta). Published under the npm `beta` dist-tag. The default issue backend changed from Beads to the built-in Kernel store, the Kernel's git-tracked JSONL portability loop now works end to end, and a pre-beta audit hardened the CLI surface, docs, and npm packaging.

@@ -215,3 +215,118 @@ test('baked snapshot, when generated, is well-formed', () => {
   const cancelled = snap.issues.filter((i) => i.status === 'cancelled').length;
   expect(placed + cancelled).toBe(snap.issues.length);
 });
+
+/* ---------- Workflow cockpit (84970f9d) ---------- */
+test('cockpit: gateBucket classifies stage / human / write-verify gates', () => {
+  expect(app.gateBucket({ id: 'gate.plan-exit' })).toBe('stage');
+  expect(app.gateBucket({ id: 'gate.ship-entry' })).toBe('stage');
+  expect(app.gateBucket({ id: 'gate.intent' })).toBe('human');
+  expect(app.gateBucket({ id: 'gate.plan-approval' })).toBe('human');
+  expect(app.gateBucket({ id: 'gate.merge' })).toBe('human');
+  expect(app.gateBucket({ id: 'gate.issue_verify' })).toBe('verify');
+});
+
+test('cockpit: isCustomized flags overrides, not package defaults', () => {
+  expect(app.isCustomized('package-defaults')).toBe(false);
+  expect(app.isCustomized('package-default')).toBe(false);
+  expect(app.isCustomized(undefined)).toBe(false);
+  expect(app.isCustomized('project-config')).toBe(true);
+});
+
+test('cockpit: gateCommand yields the exact toggle command, null when locked', () => {
+  // enabled + unlocked → disable command
+  expect(app.gateCommand({ id: 'gate.plan-exit', enabled: true, locked: false })).toBe('forge gate disable gate.plan-exit');
+  // disabled → enable command
+  expect(app.gateCommand({ id: 'gate.plan-exit', enabled: false, locked: false })).toBe('forge gate enable gate.plan-exit');
+  // locked → no command (fixed, never toggleable)
+  expect(app.gateCommand({ id: 'gate.plan-exit', enabled: true, locked: true })).toBe(null);
+});
+
+test('cockpit: roleCommand yields the exact role→skill binding command', () => {
+  expect(app.roleCommand({ role: 'dev', skill: 'dev' })).toBe('forge role dev --use dev');
+  expect(app.roleCommand({ role: 'plan', skill: 'my-plan' })).toBe('forge role plan --use my-plan');
+});
+
+test('cockpit: isDefaultBinding flags the self-noop default, not customized bindings', () => {
+  // dev→dev with no override → default self-binding (copy would be a no-op)
+  expect(app.isDefaultBinding({ role: 'dev', skill: 'dev', configSource: 'package-defaults' })).toBe(true);
+  // a different skill → meaningful, not default
+  expect(app.isDefaultBinding({ role: 'dev', skill: 'my-skill', configSource: 'package-defaults' })).toBe(false);
+  // same name but overridden in config → still show the (re-applying) command
+  expect(app.isDefaultBinding({ role: 'dev', skill: 'dev', configSource: '.forge/config.yaml' })).toBe(false);
+});
+
+test('cockpit: rail state tracks real config — a disabled unlocked rail offers ENABLE, not disable', () => {
+  // enabled + unlocked (default kernel_tracking) → disable command
+  expect(app.gateCommand({ id: 'rail.kernel_tracking', enabled: true, locked: false })).toBe('forge gate disable rail.kernel_tracking');
+  // AFTER `forge gate disable rail.kernel_tracking` → re-bake shows enabled:false;
+  // the cockpit must now offer ENABLE (never a stale "disable")
+  expect(app.gateCommand({ id: 'rail.kernel_tracking', enabled: false, locked: false })).toBe('forge gate enable rail.kernel_tracking');
+  // a disabled rail is customized → cfgBadge must reflect the override (isCustomized)
+  expect(app.isCustomized('.forge/config.yaml')).toBe(true);
+  // locked rails never emit a command
+  expect(app.gateCommand({ id: 'rail.secret_scan', enabled: true, locked: true })).toBe(null);
+});
+
+test('cockpit: renderingHarnesses derives SessionStart support from the matrix (no hardcoding)', () => {
+  const wf = { harnessMatrix: { claude: { rendered: true }, cursor: { rendered: false }, codex: { rendered: false } } };
+  expect(app.renderingHarnesses(wf)).toEqual(['claude']);
+  // if the matrix changes, the derivation changes with it
+  const wf2 = { harnessMatrix: { claude: { rendered: true }, cursor: { rendered: true } } };
+  expect(app.renderingHarnesses(wf2)).toEqual(['claude', 'cursor']);
+});
+
+test('cockpit: shortId strips the primitive prefix', () => {
+  expect(app.shortId('gate.plan-exit')).toBe('plan-exit');
+  expect(app.shortId('evidence.tdd-tests')).toBe('tdd-tests');
+  expect(app.shortId('artifact.design-doc')).toBe('design-doc');
+  expect(app.shortId(null)).toBe('');
+});
+
+test('cockpit: stageRailModel joins the 6 role stages with the 4 phase records', () => {
+  const wf = {
+    stageOrder: ['plan', 'dev', 'validate', 'ship', 'review', 'verify'],
+    roles: ['plan', 'dev', 'validate', 'ship', 'review', 'verify'].map((r) => ({ role: r, skill: r })),
+    phases: [{ id: 'plan' }, { id: 'dev' }, { id: 'validate' }, { id: 'ship' }],
+  };
+  const rail = app.stageRailModel(wf);
+  expect(rail.map((n) => n.id)).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'verify']);
+  // every stage has a role binding
+  expect(rail.every((n) => n.role)).toBe(true);
+  // only the first four have a phase record — review/verify are role-only (honest SEAM)
+  expect(rail.filter((n) => n.phase).map((n) => n.id)).toEqual(['plan', 'dev', 'validate', 'ship']);
+  expect(rail.find((n) => n.id === 'review').phase).toBe(null);
+  expect(rail.find((n) => n.id === 'verify').phase).toBe(null);
+});
+
+test('baked snapshot: workflow cockpit surface is well-formed when generated', () => {
+  const path = join(here, 'data.json');
+  if (!existsSync(path)) return; // generated artifact; absent on a fresh clone / CI
+  const wf = JSON.parse(readFileSync(path, 'utf8')).workflow;
+  if (!wf) return; // bake degraded to null (lib unavailable) — nothing to assert
+  // the closed 6-stage role order
+  expect(wf.stageOrder).toEqual(['plan', 'dev', 'validate', 'ship', 'review', 'verify']);
+  expect(wf.roleIds).toEqual(wf.stageOrder);
+  // core baked collections present
+  ['phases', 'roles', 'gates', 'rails', 'evidence', 'artifacts', 'planSubSkills', 'skills', 'skillDirs'].forEach((k) => {
+    expect(Array.isArray(wf[k])).toBe(true);
+  });
+  // 6 roles, one per stage
+  expect(wf.roles.length).toBe(6);
+  // the 8 gates split 4 stage / 3 human / 1 write-verify
+  const buckets = { stage: 0, human: 0, verify: 0 };
+  wf.gates.forEach((g) => { buckets[app.gateBucket(g)]++; });
+  expect(buckets).toEqual({ stage: 4, human: 3, verify: 1 });
+  // exactly one rail is unlocked (rail.kernel_tracking); the rest are fixed L1
+  const unlocked = wf.rails.filter((r) => !r.locked);
+  expect(unlocked.length).toBe(1);
+  expect(unlocked[0].id).toBe('rail.kernel_tracking');
+  // 5 /plan sub-skills
+  expect(wf.planSubSkills.length).toBe(5);
+  // honest per-harness render matrix — only Claude injects at SessionStart
+  expect(wf.harnessMatrix.claude.rendered).toBe(true);
+  expect(wf.harnessMatrix.cursor.rendered).toBe(false);
+  // profiles baked (read-only SEAM) + lint result present
+  expect(Object.keys(wf.profiles).length).toBeGreaterThan(0);
+  expect(typeof wf.lint.ok).toBe('boolean');
+});
