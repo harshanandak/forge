@@ -18,8 +18,17 @@ const LEGACY_ISSUE_ALIASES = [
 ];
 
 describe('command aliases — declarative map', () => {
-  test('aliasNames() equals the migrated ISSUE_ALIAS_COMMANDS set (back-compat)', () => {
-    expect([...aliases.aliasNames()].sort()).toEqual([...LEGACY_ISSUE_ALIASES].sort());
+  test('passthroughAliasNames() equals the migrated ISSUE_ALIAS_COMMANDS set (bd flag-passthrough back-compat)', () => {
+    // The bd flag-passthrough set — the aliases bin/forge.js skips global flag
+    // parsing for — is exactly the issue-canonical aliases, unchanged by P1.
+    expect([...aliases.passthroughAliasNames()].sort()).toEqual([...LEGACY_ISSUE_ALIASES].sort());
+  });
+
+  test('aliasNames() is a superset of the legacy issue aliases (map also holds P1 memory shortcuts)', () => {
+    const all = new Set(aliases.aliasNames());
+    for (const name of LEGACY_ISSUE_ALIASES) {
+      expect(all.has(name)).toBe(true);
+    }
   });
 
   test('every seed alias resolves to a canonical "issue <sub>" form', () => {
@@ -38,6 +47,59 @@ describe('command aliases — declarative map', () => {
   test('isAlias reflects membership', () => {
     expect(aliases.isAlias('create')).toBe(true);
     expect(aliases.isAlias('status')).toBe(false);
+  });
+});
+
+describe('command aliases — memory noun shortcuts (P1, febf7690)', () => {
+  // The memory noun (add/recall/search/insights) shipped in PR #392 (issue
+  // 25362344). P1 wires remember/recall/insights as VISIBLE back-compat shortcuts
+  // of the canonical `memory <sub>` form. The canonical WRITE verb is `memory add`
+  // (there is no `save`).
+  const MEMORY_SHORTCUTS = {
+    remember: 'memory add',
+    recall: 'memory recall',
+    insights: 'memory insights',
+  };
+
+  test('remember/recall/insights are VISIBLE, non-deprecated aliases of a memory subcommand', () => {
+    for (const [name, canonical] of Object.entries(MEMORY_SHORTCUTS)) {
+      const descriptor = aliases.resolveAlias(name);
+      expect(descriptor).toBeDefined();
+      expect(descriptor.canonical).toBe(canonical);
+      expect(descriptor.visible).toBe(true);
+      expect(descriptor.deprecated).toBeUndefined();
+      expect(aliases.isVisibleAlias(name)).toBe(true);
+      expect(aliases.isHiddenAlias(name)).toBe(false);
+    }
+  });
+
+  test('visibleAliasNames() lists exactly the memory shortcuts', () => {
+    expect([...aliases.visibleAliasNames()].sort()).toEqual(Object.keys(MEMORY_SHORTCUTS).sort());
+  });
+
+  test('memory shortcuts are NOT in the bd flag-passthrough set (keeps -p / --help byte-identical)', () => {
+    const passthrough = new Set(aliases.passthroughAliasNames());
+    for (const name of Object.keys(MEMORY_SHORTCUTS)) {
+      expect(passthrough.has(name)).toBe(false);
+    }
+  });
+
+  test('a registered memory shortcut is never rewritten (byte-identical dispatch)', () => {
+    // remember/recall/insights keep their own command files, so resolveDispatch
+    // is a strict no-op — dispatch is identical to before P1.
+    for (const name of Object.keys(MEMORY_SHORTCUTS)) {
+      const out = aliases.resolveDispatch(name, [name, 'foo', '--json'], () => true);
+      expect(out.redirected).toBe(false);
+      expect(out.command).toBe(name);
+      expect(out.args).toEqual([name, 'foo', '--json']);
+    }
+  });
+
+  test('an unregistered memory shortcut would route to its memory subcommand', () => {
+    const out = aliases.resolveDispatch('recall', ['recall', 'bun', '--limit', '3'], () => false);
+    expect(out.redirected).toBe(true);
+    expect(out.command).toBe('memory');
+    expect(out.args).toEqual(['memory', 'recall', 'bun', '--limit', '3']);
   });
 });
 
