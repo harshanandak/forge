@@ -1,24 +1,34 @@
 name: PR Monitor
 
-# Surface-only PR monitor. On every PR event it reads the PR's open review +
-# check state and keeps a SINGLE sticky comment up to date so async review-bot
+# Surface + label PR monitor. On every PR event it reads the PR's open review +
+# check state, keeps a SINGLE sticky comment up to date so async review-bot
 # (CodeRabbit / Greptile / Qodo) or human feedback in a window nobody is watching
-# never rots. It NEVER merges and NEVER posts a pass/fail merge verdict — that
-# belongs to the trustworthy-shepherd redesign, not here.
+# never rots, AND lands ONE actionable `pr-verdict:*` label (the cheap agent read).
+# It LABELS state (check-failed / threads-open / mergeable / …) but takes no MERGE
+# action: it NEVER merges, NEVER resolves review threads, NEVER blocks, and is
+# fail-closed (`unknown` on unreadable signals).
 #
 # Signal source: Forge's own agnostic gather, `forge shepherd <pr> --bundle
-# --json` (lib/pr-bundle.js). Unresolved threads come from GraphQL
-# reviewThreads{isResolved} across ALL authors — no name-list, no bot is
-# privileged. Kernel issues: 35ee8d78 (no-auto-trigger fix), b5c154cd (safe
-# surface part), c2d398e5 (constant-monitor epic).
+# --json` (lib/pr-bundle.js) for the sticky's threads/checks. Unresolved threads
+# come from GraphQL reviewThreads{isResolved} across ALL authors — no name-list,
+# no bot is privileged. The verdict label + sticky headline read the SAME value
+# `forge shepherd <pr> --pull --json` emits (lib/pr-pull.js computeVerdict) — one
+# verdict, no second ladder to drift. Kernel issues: 35ee8d78 (auto-trigger),
+# b5c154cd (verdict label), c01936be (--pull verdict), c2d398e5 (epic).
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
   pull_request_review_comment:
     types: [created]
+  # Resolving/unresolving a review thread is what clears (or re-raises) the
+  # threads-open signal — without this trigger, closing the LAST unresolved thread
+  # would leave a stale `pr-verdict:blocked-threads` label + sticky until some
+  # unrelated event happened to re-run the monitor (CodeRabbit PR #403).
+  pull_request_review_thread:
+    types: [resolved, unresolved]
   issue_comment:
     types: [created]
   check_suite:
@@ -64,7 +74,7 @@ jobs:
           # jq errors are swallowed (|| true): a monitor must never red-X itself on an
           # unrelated or malformed event — no PR context means a clean no-op, not a fail.
           case "$EVENT_NAME" in
-            pull_request|pull_request_review|pull_request_review_comment)
+            pull_request|pull_request_review|pull_request_review_comment|pull_request_review_thread)
               PR=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true) ;;
             issue_comment)
               # Only PR comments carry .issue.pull_request; plain issue comments are skipped.
@@ -131,18 +141,59 @@ jobs:
             # Fail-closed degraded bundle: NEITHER threads NOR checks were read, so
             # both availability flags are false — the renderer surfaces both as
             # unreadable rather than a false "zero unresolved / no failing checks".
-            ERR=$(head -c 300 gather.err 2>/dev/null | tr '\n' ' ' | sed 's/"/\\"/g')
-            printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ciAvailable":false,"ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
+            # Build with `jq --arg` (NOT manual escaping): gather.err can contain
+            # backslashes, tabs, control chars, or a truncated multibyte sequence that
+            # hand-escaping only quotes/newlines would turn into invalid JSON — making
+            # the fail-closed path itself fail (CodeRabbit PR #403).
+            ERR=$(head -c 300 gather.err 2>/dev/null || true)
+            jq -n --arg pr "$PR" --arg err "gather failed: $ERR" '{
+              pr: $pr,
+              unresolvedComments: [],
+              unresolvedCommentsAvailable: false,
+              unresolvedCommentsError: $err,
+              ciAvailable: false,
+              mergeState: { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN", state: "OPEN" },
+              ci: { checks: [], failing: [], pending: [] },
+              branch: { ahead: 0, behind: 0 }
+            }' > bundle.json
           fi
+
+      - name: Gather merge verdict (single source — forge shepherd --pull)
+        if: steps.resolve.outputs.should_run == 'true'
+        id: pullverdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -uo pipefail
+          # The verdict is the SAME code `forge shepherd <pr> --pull --json` emits
+          # (lib/pr-pull.js computeVerdict) — the label + sticky headline read it
+          # here rather than recomputing, so they can never disagree with --pull.
+          # Fail-closed: any gather failure or a missing field yields UNKNOWN.
+          if node bin/forge.js shepherd "$PR" --pull --json > pull.json 2> pull.err; then
+            VERDICT=$(jq -r '.verdict // "UNKNOWN"' pull.json 2>/dev/null || echo UNKNOWN)
+          else
+            echo "::warning::--pull gather failed; verdict falls closed to UNKNOWN. See log."
+            cat pull.err || true
+            VERDICT=UNKNOWN
+          fi
+          [ -z "$VERDICT" ] && VERDICT=UNKNOWN
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "Merge verdict: $VERDICT"
 
       - name: Render sticky comment body
         if: steps.resolve.outputs.should_run == 'true'
+        env:
+          VERDICT: ${{ steps.pullverdict.outputs.verdict }}
         run: |
           set -euo pipefail
+          # Pass the --pull verdict into the renderer so the sticky leads with the
+          # SAME verdict as the pr-verdict:* label (render-sticky only displays it).
           node -e '
             const { renderStickyComment } = require("./lib/pr-monitor/render-sticky");
             const bundle = JSON.parse(require("fs").readFileSync("bundle.json", "utf8"));
-            const { body } = renderStickyComment(bundle);
+            const { body } = renderStickyComment(bundle, { verdict: process.env.VERDICT });
             require("fs").writeFileSync("monitor-body.md", body);
           '
           # jq -Rs slurps the raw markdown into a JSON string for the comment API.
@@ -168,6 +219,51 @@ jobs:
           # create a sticky; the deterministic lowest-id survivor closes that race.
           node lib/pr-monitor/upsert-sticky.js
 
+      - name: Compute pr-verdict label
+        if: steps.resolve.outputs.should_run == 'true'
+        id: label
+        # Map the --pull verdict to its single `pr-verdict:<verdict>` label using
+        # lib/pr-pull.js's own enum (no second verdict logic). Emits `label` +
+        # `all_labels` to $GITHUB_OUTPUT.
+        env:
+          VERDICT: ${{ steps.pullverdict.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          node scripts/pr-verdict-label.js "$VERDICT"
+
+      - name: Reconcile single pr-verdict label
+        if: steps.resolve.outputs.should_run == 'true'
+        # Best-effort: a label reconcile must never fail the job and produce the
+        # non-success check this monitor exists to avoid.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+          LABEL: ${{ steps.label.outputs.label }}
+          ALL_LABELS: ${{ steps.label.outputs.all_labels }}
+        run: |
+          set -uo pipefail
+          # Keep EXACTLY ONE pr-verdict:* label on the PR — the cheap agent-agnostic
+          # read (`gh pr view <pr> --json labels`). Ensure the chosen label exists
+          # (upsert), then remove EVERY OTHER label in the pr-verdict:* enum (not just
+          # a presumed single sibling, so multiple stale ones can't linger), and add
+          # the chosen one. Surface only: a LABEL never merges, resolves, or blocks.
+          gh label create "$LABEL" --repo "$GH_REPO" --force --color BFD4F2 \
+            --description "Forge PR verdict (auto, surface only)" > /dev/null 2>&1 || true
+          IFS=',' read -ra LABELS <<< "$ALL_LABELS"
+          for L in "${LABELS[@]}"; do
+            [ -z "$L" ] && continue
+            if [ "$L" != "$LABEL" ]; then
+              gh pr edit "$PR" --repo "$GH_REPO" --remove-label "$L" > /dev/null 2>&1 || true
+            fi
+          done
+          if gh pr edit "$PR" --repo "$GH_REPO" --add-label "$LABEL" > /dev/null 2>&1; then
+            echo "Set label $LABEL on PR #$PR"
+          else
+            echo "::warning::Could not set label $LABEL (non-fatal)."
+          fi
+
       - name: Publish informational (neutral) check
         if: steps.resolve.outputs.should_run == 'true'
         continue-on-error: true
@@ -190,5 +286,5 @@ jobs:
             -f status='completed' \
             -f conclusion='neutral' \
             -f 'output[title]=PR monitor surfaced review + check state' \
-            -f 'output[summary]=See the Forge PR Monitor sticky comment. Surface-only: never merges, never a verdict.' \
+            -f 'output[summary]=See the Forge PR Monitor sticky comment + the pr-verdict:* label. Surface-only: labels state, never merges, never resolves threads.' \
             > /dev/null && echo "Published neutral check for $SHA" || echo "::warning::Neutral check publish failed (non-fatal)."
