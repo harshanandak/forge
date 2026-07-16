@@ -1,16 +1,19 @@
 name: PR Monitor
 
-# Surface-only PR monitor. On every PR event it reads the PR's open review +
-# check state and keeps a SINGLE sticky comment up to date so async review-bot
+# Surface + label PR monitor. On every PR event it reads the PR's open review +
+# check state, keeps a SINGLE sticky comment up to date so async review-bot
 # (CodeRabbit / Greptile / Qodo) or human feedback in a window nobody is watching
-# never rots. It NEVER merges and NEVER posts a pass/fail merge verdict — that
-# belongs to the trustworthy-shepherd redesign, not here.
+# never rots, AND lands ONE actionable `pr-verdict:*` label (the cheap agent read).
+# It LABELS state (check-failed / threads-open / mergeable / …) but takes no MERGE
+# action: it NEVER merges, NEVER resolves review threads, NEVER blocks, and is
+# fail-closed (`unknown` on unreadable signals).
 #
 # Signal source: Forge's own agnostic gather, `forge shepherd <pr> --bundle
 # --json` (lib/pr-bundle.js). Unresolved threads come from GraphQL
 # reviewThreads{isResolved} across ALL authors — no name-list, no bot is
-# privileged. Kernel issues: 35ee8d78 (no-auto-trigger fix), b5c154cd (safe
-# surface part), c2d398e5 (constant-monitor epic).
+# privileged. The verdict label (lib/pr-verdict.js) mirrors the canonical
+# `forge shepherd --pull --json` ladder so it never disagrees with it. Kernel
+# issues: 35ee8d78 (auto-trigger), b5c154cd (verdict label), c2d398e5 (epic).
 
 on:
   pull_request:
@@ -168,6 +171,49 @@ jobs:
           # create a sticky; the deterministic lowest-id survivor closes that race.
           node lib/pr-monitor/upsert-sticky.js
 
+      - name: Compute pr-verdict label
+        if: steps.resolve.outputs.should_run == 'true'
+        id: verdict
+        # Distil the SAME bundle.json the sticky already used into ONE actionable
+        # verdict (lib/pr-verdict.js), whose vocabulary + priority mirror the
+        # canonical `forge shepherd --pull --json` ladder. Read-only compute; emits
+        # `label` + `all_labels` to $GITHUB_OUTPUT.
+        run: |
+          set -euo pipefail
+          node scripts/pr-verdict-label.js bundle.json
+
+      - name: Reconcile single pr-verdict label
+        if: steps.resolve.outputs.should_run == 'true'
+        # Best-effort: a label reconcile must never fail the job and produce the
+        # non-success check this monitor exists to avoid.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+          LABEL: ${{ steps.verdict.outputs.label }}
+          ALL_LABELS: ${{ steps.verdict.outputs.all_labels }}
+        run: |
+          set -uo pipefail
+          # Keep EXACTLY ONE pr-verdict:* label on the PR — the cheap agent-agnostic
+          # read (`gh pr view <pr> --json labels`). Ensure the chosen label exists
+          # (upsert), strip any stale sibling, then add the chosen one. Surface only:
+          # a LABEL never merges, never resolves threads, never blocks.
+          gh label create "$LABEL" --repo "$GH_REPO" --force --color BFD4F2 \
+            --description "Forge PR verdict (auto, surface only)" > /dev/null 2>&1 || true
+          IFS=',' read -ra LABELS <<< "$ALL_LABELS"
+          for L in "${LABELS[@]}"; do
+            [ -z "$L" ] && continue
+            if [ "$L" != "$LABEL" ]; then
+              gh pr edit "$PR" --repo "$GH_REPO" --remove-label "$L" > /dev/null 2>&1 || true
+            fi
+          done
+          if gh pr edit "$PR" --repo "$GH_REPO" --add-label "$LABEL" > /dev/null 2>&1; then
+            echo "Set label $LABEL on PR #$PR"
+          else
+            echo "::warning::Could not set label $LABEL (non-fatal)."
+          fi
+
       - name: Publish informational (neutral) check
         if: steps.resolve.outputs.should_run == 'true'
         continue-on-error: true
@@ -190,5 +236,5 @@ jobs:
             -f status='completed' \
             -f conclusion='neutral' \
             -f 'output[title]=PR monitor surfaced review + check state' \
-            -f 'output[summary]=See the Forge PR Monitor sticky comment. Surface-only: never merges, never a verdict.' \
+            -f 'output[summary]=See the Forge PR Monitor sticky comment + the pr-verdict:* label. Surface-only: labels state, never merges, never resolves threads.' \
             > /dev/null && echo "Published neutral check for $SHA" || echo "::warning::Neutral check publish failed (non-fatal)."

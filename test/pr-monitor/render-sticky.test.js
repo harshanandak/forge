@@ -119,13 +119,28 @@ describe('renderStickyComment', () => {
     expect(body.toLowerCase()).toContain('unreadable');
   });
 
-  test('clean state surfaces clear signals but NEVER a merge/pass verdict', () => {
+  test('leads with the actionable state verdict (mirrors the pr-verdict:* label)', () => {
+    // clean bundle → mergeable verdict headline
+    const cleanBody = renderStickyComment(makeBundle(), { now: NOW }).body;
+    expect(cleanBody).toContain('Verdict:');
+    expect(cleanBody).toContain('mergeable');
+    // failing check → check-failed verdict, naming the check
+    const failBody = renderStickyComment(
+      makeBundle({ ci: { checks: [], failing: [{ name: 'unit' }], pending: [] } }),
+      { now: NOW },
+    ).body;
+    expect(failBody).toContain('check-failed');
+    expect(failBody).toContain('unit');
+  });
+
+  test('surfaces state but never a MERGE action — labels only, never merges/approves', () => {
     const { body } = renderStickyComment(makeBundle(), { now: NOW });
     expect(body.toLowerCase()).toContain('no unresolved review threads');
-    // surface-only guarantee: no pass/fail merge verdict language
+    // honest guarantee: it labels state but never claims to have merged/approved
     expect(body.toLowerCase()).not.toContain('approved');
     expect(body).not.toContain('✅ Ready to merge');
     expect(body.toLowerCase()).toContain('does not merge');
+    expect(body.toLowerCase()).toContain('never resolves review threads');
   });
 
   test('output is deterministic for a fixed clock', () => {
