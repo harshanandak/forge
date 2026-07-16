@@ -4,9 +4,15 @@ name: PR Monitor
 # check state, keeps a SINGLE sticky comment up to date so async review-bot
 # (CodeRabbit / Greptile / Qodo) or human feedback in a window nobody is watching
 # never rots, AND lands ONE actionable `pr-verdict:*` label (the cheap agent read).
-# It LABELS state (check-failed / threads-open / mergeable / …) but takes no MERGE
-# action: it NEVER merges, NEVER resolves review threads, NEVER blocks, and is
-# fail-closed (`unknown` on unreadable signals).
+# It LABELS state (check-failed / threads-open / mergeable / …) and, in Tier-2
+# (issue addf5297), takes at most ONE of two SAFE, fail-closed ACTIONS off the same
+# verdict: update-branch on an otherwise-clean-behind PR, or re-run a genuinely
+# infrastructural (cancelled/timed-out/stale) required check once per head SHA. It
+# still NEVER merges the PR, NEVER resolves review threads, NEVER force-pushes,
+# NEVER touches code, NEVER blocks, and is fail-closed (`unknown` on unreadable
+# signals). The decision core is lib/pr-monitor/auto-actions.js (unit-tested);
+# per-head-SHA idempotency markers (`forge/auto-update`, `forge/auto-rerun`) keep
+# it loop-safe.
 #
 # Signal source: Forge's own agnostic gather, `forge shepherd <pr> --bundle
 # --json` (lib/pr-bundle.js) for the sticky's threads/checks. Unresolved threads
@@ -37,10 +43,18 @@ on:
   check_suite:
     types: [completed]
 
+# Tier-1 (surface/label) needs only read + PR/checks write. Tier-2 auto-actions
+# add two scoped writes: `contents: write` for the update-branch merge (merge base
+# INTO an otherwise-clean-behind PR — never a PR merge), and `actions: write` to
+# re-run a genuinely-flaky required check. For fork PRs (`pull_request` from a
+# fork) GitHub hands this workflow a READ-ONLY token regardless of this block, so
+# these elevated scopes only ever apply to same-repo PRs — forks are also skipped
+# explicitly by the decision core (auto-actions isFork guard).
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   checks: write
+  actions: write
 
 # DELIBERATELY NO `concurrency:` group. A per-PR group does NOT help here: GitHub's
 # queue replacement cancels the previously-PENDING run in a group UNCONDITIONALLY
@@ -291,3 +305,104 @@ jobs:
             -f 'output[title]=PR monitor surfaced review + check state' \
             -f 'output[summary]=See the Forge PR Monitor sticky comment + the pr-verdict:* label. Surface-only: labels state, never merges, never resolves threads.' \
             > /dev/null && echo "Published neutral check for $SHA" || echo "::warning::Neutral check publish failed (non-fatal)."
+
+      # ---------------------------------------------------------------------------
+      # TIER-2 auto-actions (issue addf5297). Everything ABOVE surfaces state and
+      # NEVER changes the PR; everything BELOW may take ONE of two SAFE, fail-closed
+      # actions keyed off the SAME `--pull` verdict payload (pull.json). All steps
+      # are best-effort (continue-on-error) so an action can NEVER red-X the monitor
+      # or block merge. The honest line is preserved: it may update-branch and
+      # rerun-flaky, but it NEVER merges, NEVER resolves threads, NEVER force-pushes,
+      # NEVER touches code.
+      # ---------------------------------------------------------------------------
+      - name: Decide auto-actions (surface-safe)
+        if: steps.resolve.outputs.should_run == 'true'
+        id: autoact
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -uo pipefail
+          # pull.json is the SAME `--pull --json` payload the verdict step read; the
+          # decision core (lib/pr-monitor/auto-actions, unit-tested) turns it into
+          # update_branch / rerun flags. Fork PRs skip the branch update (a base-repo
+          # token cannot push a fork). A failed fork read falls closed to isFork=true.
+          IS_FORK=$(gh pr view "$PR" --repo "$GH_REPO" --json isCrossRepository --jq '.isCrossRepository' 2>/dev/null || echo true)
+          node scripts/pr-auto-actions.js pull.json "$IS_FORK"
+
+      - name: 'Auto-action: update otherwise-clean-behind branch'
+        if: steps.resolve.outputs.should_run == 'true' && steps.autoact.outputs.update_branch == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -uo pipefail
+          # Merge base INTO the PR branch — the "last mile" for a clean-but-behind PR.
+          # This is NOT a PR merge and touches no code; it only clears BEHIND churn.
+          SHA=$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+          if [ -z "$SHA" ]; then echo "No head sha; skip auto-update."; exit 0; fi
+          # Idempotency + anti-loop: a per-head-SHA marker check-run. Skip if we
+          # already acted on THIS sha. A SUCCESSFUL update changes the head sha, so
+          # the CI run it triggers is a NEW sha that is no longer BEHIND and will not
+          # re-fire — the marker only suppresses redundant fires within the burst of
+          # events on the same sha (check_suite alone fires ~10x/push; see the #394
+          # history on why we must not churn the same sha).
+          EXISTING=$(gh api "repos/$GH_REPO/commits/$SHA/check-runs" --jq '[.check_runs[]|select(.name=="forge/auto-update")]|length' 2>/dev/null || echo 0)
+          if [ "$EXISTING" != "0" ]; then echo "Already auto-updated $SHA; skip."; exit 0; fi
+          # expected_head_sha makes GitHub reject the update if the head moved since
+          # we read it (guards against acting on a stale sha).
+          if gh api -X PUT "repos/$GH_REPO/pulls/$PR/update-branch" -f expected_head_sha="$SHA" > update.out 2>&1; then
+            echo "update-branch requested for PR #$PR @ $SHA"
+          else
+            echo "::warning::update-branch failed (non-fatal):"; cat update.out || true
+          fi
+          # Stamp the marker regardless of the update's outcome so a transient failure
+          # does not re-loop on this same sha (the next push mints a new sha to retry).
+          gh api -X POST "repos/$GH_REPO/check-runs" \
+            -f name='forge/auto-update' \
+            -f head_sha="$SHA" \
+            -f status='completed' \
+            -f conclusion='neutral' \
+            -f 'output[title]=Forge auto-update-branch (otherwise-clean-behind)' \
+            -f 'output[summary]=Merged base into an otherwise-clean-behind PR. Surface-safe: never merges the PR, never resolves threads, never touches code.' \
+            > /dev/null 2>&1 || true
+
+      - name: 'Auto-action: rerun genuinely-flaky required check (once)'
+        if: steps.resolve.outputs.should_run == 'true' && steps.autoact.outputs.rerun == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+          RERUN_RUN_IDS: ${{ steps.autoact.outputs.rerun_run_ids }}
+        run: |
+          set -uo pipefail
+          # Re-run ONLY the failed jobs of runs whose required check failed with an
+          # INFRASTRUCTURAL conclusion (cancelled/timed-out/stale/startup-failure) —
+          # never a real FAILURE (the decision core fails the whole rerun closed if
+          # ANY failing required check is a genuine failure). Once per head sha.
+          SHA=$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+          if [ -z "$SHA" ]; then echo "No head sha; skip rerun."; exit 0; fi
+          EXISTING=$(gh api "repos/$GH_REPO/commits/$SHA/check-runs" --jq '[.check_runs[]|select(.name=="forge/auto-rerun")]|length' 2>/dev/null || echo 0)
+          if [ "$EXISTING" != "0" ]; then echo "Already reran for $SHA; skip."; exit 0; fi
+          IFS=',' read -ra IDS <<< "${RERUN_RUN_IDS:-}"
+          for RID in "${IDS[@]}"; do
+            [ -z "$RID" ] && continue
+            if gh run rerun "$RID" --failed > /dev/null 2>&1; then
+              echo "Re-ran failed jobs of run $RID"
+            else
+              echo "::warning::rerun of run $RID failed (non-fatal)."
+            fi
+          done
+          gh api -X POST "repos/$GH_REPO/check-runs" \
+            -f name='forge/auto-rerun' \
+            -f head_sha="$SHA" \
+            -f status='completed' \
+            -f conclusion='neutral' \
+            -f 'output[title]=Forge auto-rerun flaky required check' \
+            -f 'output[summary]=Re-ran the failed jobs of an infrastructural (cancelled/timed-out/stale) required check once. Surface-safe: never merges, never resolves threads.' \
+            > /dev/null 2>&1 || true
