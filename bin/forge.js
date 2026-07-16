@@ -61,11 +61,14 @@ const {
 const { resetSoft, resetHard, reinstall } = require('../lib/reset');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
 const {
-  aliasNames,
   isAlias,
   isHiddenAlias,
+  isVisibleAlias,
+  resolveAlias,
   resolveDispatch,
   maybeWarnDeprecation,
+  passthroughAliasNames,
+  visibleAliasNames,
 } = require('../lib/commands/_aliases');
 const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
 const { getPackageRoot } = require('../lib/package-root');
@@ -2352,8 +2355,11 @@ function parseFlags() {
 
   // Issue passthrough commands delegate all flags to bd.
   // Skip global parsing so flags like --type, -p, --help reach the handler intact.
-  // Canonical `issue` plus the hidden back-compat aliases (single source of truth).
-  const issuePassthroughCommands = [...aliasNames(), 'issue'];
+  // Canonical `issue` plus the ISSUE-canonical back-compat aliases only. Non-issue
+  // aliases (e.g. the memory shortcuts remember/recall/insights) are excluded so
+  // their global flags still parse exactly as their standalone commands' did —
+  // keeping bare `recall -p <dir>` / `recall --help` byte-identical.
+  const issuePassthroughCommands = [...passthroughAliasNames(), 'issue'];
   if (issuePassthroughCommands.includes(args[0])) {
     return flags;
   }
@@ -2613,15 +2619,30 @@ function showHelp() {
   console.log('  Run `forge init --help` for all profile/classification/harness flags.');
   console.log('');
 
+  // Shortcuts block: VISIBLE back-compat aliases for a canonical `<noun> <sub>`
+  // form (e.g. `remember` -> `forge memory add`). The bare verb keeps working and
+  // is documented here; the noun form is canonical. Rendered as its own block ABOVE
+  // "Additional commands" (and trimmed from that enumeration below) so the noun
+  // surface reads clean.
+  const shortcutNames = visibleAliasNames();
+  if (shortcutNames.length > 0) {
+    console.log('Shortcuts (bare aliases for canonical noun subcommands):');
+    const shortcutWidth = Math.max(...shortcutNames.map(name => name.length));
+    for (const name of shortcutNames) {
+      console.log(`  ${name.padEnd(shortcutWidth)}  -> forge ${resolveAlias(name).canonical}`);
+    }
+    console.log('');
+  }
+
   // Append auto-discovered registry commands. Hidden issue aliases (the bare
   // passthroughs + plural `issues`, plus any command self-declaring `hidden: true`)
-  // still route and execute, but are trimmed from this enumeration so `forge issue`
-  // reads as the single canonical issue surface. This registry instance is loaded
-  // solely to render help, so deleting from its Map only affects the printed list —
-  // command dispatch (main) uses a separate registry and is unaffected.
+  // AND the visible noun shortcuts rendered above are trimmed from this enumeration
+  // so the canonical noun surface reads clean; both remain routable. This registry
+  // instance is loaded solely to render help, so deleting from its Map only affects
+  // the printed list — command dispatch (main) uses a separate registry.
   const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
   for (const [name, cmd] of [...helpRegistry.commands]) {
-    if (isHiddenAlias(name) || cmd.hidden === true) {
+    if (isHiddenAlias(name) || isVisibleAlias(name) || cmd.hidden === true) {
       helpRegistry.commands.delete(name);
     }
   }
