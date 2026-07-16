@@ -23,12 +23,15 @@ on:
     types: [submitted, dismissed]
   pull_request_review_comment:
     types: [created]
-  # Resolving/unresolving a review thread is what clears (or re-raises) the
-  # threads-open signal — without this trigger, closing the LAST unresolved thread
-  # would leave a stale `pr-verdict:blocked-threads` label + sticky until some
-  # unrelated event happened to re-run the monitor (CodeRabbit PR #403).
-  pull_request_review_thread:
-    types: [resolved, unresolved]
+  # NOTE: there is deliberately NO `pull_request_review_thread` trigger here.
+  # GitHub Actions does NOT support it as a workflow `on:` event (it's a webhook
+  # event only — actionlint flags it, and it silently never fires), so resolving
+  # the LAST unresolved thread has no dedicated re-run trigger. That threads-open
+  # signal instead clears on the NEXT event that DOES re-run the monitor —
+  # pull_request_review (submitted/dismissed), pull_request_review_comment,
+  # issue_comment, or check_suite — which in practice accompanies almost every
+  # thread-resolving action. The label may briefly lag a pure "click resolve, no
+  # comment" until then; that's the accepted fail-closed tradeoff (CodeRabbit PR #403).
   issue_comment:
     types: [created]
   check_suite:
@@ -74,7 +77,7 @@ jobs:
           # jq errors are swallowed (|| true): a monitor must never red-X itself on an
           # unrelated or malformed event — no PR context means a clean no-op, not a fail.
           case "$EVENT_NAME" in
-            pull_request|pull_request_review|pull_request_review_comment|pull_request_review_thread)
+            pull_request|pull_request_review|pull_request_review_comment)
               PR=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true) ;;
             issue_comment)
               # Only PR comments carry .issue.pull_request; plain issue comments are skipped.
