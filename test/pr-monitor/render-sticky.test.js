@@ -119,18 +119,22 @@ describe('renderStickyComment', () => {
     expect(body.toLowerCase()).toContain('unreadable');
   });
 
-  test('leads with the actionable state verdict (mirrors the pr-verdict:* label)', () => {
-    // clean bundle → mergeable verdict headline
-    const cleanBody = renderStickyComment(makeBundle(), { now: NOW }).body;
+  test('leads with the actionable verdict headline from the passed-in --pull verdict', () => {
+    // The verdict VALUE comes from pr-pull (opts.verdict); render-sticky only displays it.
+    const cleanBody = renderStickyComment(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' }).body;
     expect(cleanBody).toContain('Verdict:');
-    expect(cleanBody).toContain('mergeable');
-    // failing check → check-failed verdict, naming the check
+    expect(cleanBody).toContain('clean-mergeable');
     const failBody = renderStickyComment(
       makeBundle({ ci: { checks: [], failing: [{ name: 'unit' }], pending: [] } }),
-      { now: NOW },
+      { now: NOW, verdict: 'BLOCKED-CHECKS' },
     ).body;
-    expect(failBody).toContain('check-failed');
-    expect(failBody).toContain('unit');
+    expect(failBody).toContain('blocked-checks');
+    expect(failBody).toContain('unit'); // failing check is still named in the Checks section
+  });
+
+  test('a missing verdict falls closed to the unknown headline', () => {
+    const body = renderStickyComment(makeBundle(), { now: NOW }).body;
+    expect(body).toContain('unknown');
   });
 
   test('surfaces state but never a MERGE action — labels only, never merges/approves', () => {

@@ -9,11 +9,12 @@ name: PR Monitor
 # fail-closed (`unknown` on unreadable signals).
 #
 # Signal source: Forge's own agnostic gather, `forge shepherd <pr> --bundle
-# --json` (lib/pr-bundle.js). Unresolved threads come from GraphQL
-# reviewThreads{isResolved} across ALL authors — no name-list, no bot is
-# privileged. The verdict label (lib/pr-verdict.js) mirrors the canonical
-# `forge shepherd --pull --json` ladder so it never disagrees with it. Kernel
-# issues: 35ee8d78 (auto-trigger), b5c154cd (verdict label), c2d398e5 (epic).
+# --json` (lib/pr-bundle.js) for the sticky's threads/checks. Unresolved threads
+# come from GraphQL reviewThreads{isResolved} across ALL authors — no name-list,
+# no bot is privileged. The verdict label + sticky headline read the SAME value
+# `forge shepherd <pr> --pull --json` emits (lib/pr-pull.js computeVerdict) — one
+# verdict, no second ladder to drift. Kernel issues: 35ee8d78 (auto-trigger),
+# b5c154cd (verdict label), c01936be (--pull verdict), c2d398e5 (epic).
 
 on:
   pull_request:
@@ -138,14 +139,42 @@ jobs:
             printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ciAvailable":false,"ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
           fi
 
+      - name: Gather merge verdict (single source — forge shepherd --pull)
+        if: steps.resolve.outputs.should_run == 'true'
+        id: pullverdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -uo pipefail
+          # The verdict is the SAME code `forge shepherd <pr> --pull --json` emits
+          # (lib/pr-pull.js computeVerdict) — the label + sticky headline read it
+          # here rather than recomputing, so they can never disagree with --pull.
+          # Fail-closed: any gather failure or a missing field yields UNKNOWN.
+          if node bin/forge.js shepherd "$PR" --pull --json > pull.json 2> pull.err; then
+            VERDICT=$(jq -r '.verdict // "UNKNOWN"' pull.json 2>/dev/null || echo UNKNOWN)
+          else
+            echo "::warning::--pull gather failed; verdict falls closed to UNKNOWN. See log."
+            cat pull.err || true
+            VERDICT=UNKNOWN
+          fi
+          [ -z "$VERDICT" ] && VERDICT=UNKNOWN
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "Merge verdict: $VERDICT"
+
       - name: Render sticky comment body
         if: steps.resolve.outputs.should_run == 'true'
+        env:
+          VERDICT: ${{ steps.pullverdict.outputs.verdict }}
         run: |
           set -euo pipefail
+          # Pass the --pull verdict into the renderer so the sticky leads with the
+          # SAME verdict as the pr-verdict:* label (render-sticky only displays it).
           node -e '
             const { renderStickyComment } = require("./lib/pr-monitor/render-sticky");
             const bundle = JSON.parse(require("fs").readFileSync("bundle.json", "utf8"));
-            const { body } = renderStickyComment(bundle);
+            const { body } = renderStickyComment(bundle, { verdict: process.env.VERDICT });
             require("fs").writeFileSync("monitor-body.md", body);
           '
           # jq -Rs slurps the raw markdown into a JSON string for the comment API.
@@ -173,14 +202,15 @@ jobs:
 
       - name: Compute pr-verdict label
         if: steps.resolve.outputs.should_run == 'true'
-        id: verdict
-        # Distil the SAME bundle.json the sticky already used into ONE actionable
-        # verdict (lib/pr-verdict.js), whose vocabulary + priority mirror the
-        # canonical `forge shepherd --pull --json` ladder. Read-only compute; emits
-        # `label` + `all_labels` to $GITHUB_OUTPUT.
+        id: label
+        # Map the --pull verdict to its single `pr-verdict:<verdict>` label using
+        # lib/pr-pull.js's own enum (no second verdict logic). Emits `label` +
+        # `all_labels` to $GITHUB_OUTPUT.
+        env:
+          VERDICT: ${{ steps.pullverdict.outputs.verdict }}
         run: |
           set -euo pipefail
-          node scripts/pr-verdict-label.js bundle.json
+          node scripts/pr-verdict-label.js "$VERDICT"
 
       - name: Reconcile single pr-verdict label
         if: steps.resolve.outputs.should_run == 'true'
@@ -191,8 +221,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
-          LABEL: ${{ steps.verdict.outputs.label }}
-          ALL_LABELS: ${{ steps.verdict.outputs.all_labels }}
+          LABEL: ${{ steps.label.outputs.label }}
+          ALL_LABELS: ${{ steps.label.outputs.all_labels }}
         run: |
           set -uo pipefail
           # Keep EXACTLY ONE pr-verdict:* label on the PR — the cheap agent-agnostic

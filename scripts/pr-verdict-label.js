@@ -2,40 +2,27 @@
 'use strict';
 
 /**
- * pr-verdict label emitter — thin glue between the read-only PR-state bundle the
- * pr-monitor workflow already gathers and its label-reconcile step. Reads
- * bundle.json, computes the actionable verdict (lib/pr-verdict.js), and emits the
- * chosen `pr-verdict:*` label plus the full reconcile set to `$GITHUB_OUTPUT`
- * (or stdout when run locally).
+ * pr-verdict label emitter — maps a canonical merge verdict (from
+ * `forge shepherd <pr> --pull --json`, lib/pr-pull.js) to its single
+ * `pr-verdict:*` label and emits `label` + `all_labels` to `$GITHUB_OUTPUT`
+ * (or stdout locally) for the pr-monitor workflow's reconcile step.
  *
- * Performs NO GitHub writes — the workflow owns the visible, auditable `gh` calls
- * that add the chosen label and strip stale siblings. Pure compute + emit, so the
- * decision logic stays unit-tested in lib/pr-verdict.js and this stays trivial.
- * Surface only: never merges, never resolves threads.
+ * SINGLE SOURCE: the verdict value and the label vocabulary both come from
+ * lib/pr-pull.js — this script computes NO verdict of its own, so the label can
+ * never disagree with `--pull`. Fails closed to `unknown` on empty input.
+ * Performs NO GitHub writes (the workflow owns the visible `gh` calls).
  *
- * Usage: node scripts/pr-verdict-label.js <bundle.json>
+ * Usage: node scripts/pr-verdict-label.js <VERDICT>
  *
  * @module scripts/pr-verdict-label
  */
 
 const fs = require('node:fs');
 
-const { computeVerdict, verdictLabel, VERDICT_LABELS } = require('../lib/pr-verdict');
+const { verdictLabel, VERDICT_LABELS } = require('../lib/pr-pull');
 
 /**
- * Build the label report for a bundle.
- *
- * @param {object} bundle
- * @returns {{ verdict: string, label: string, allLabels: string[] }}
- */
-function buildLabelReport(bundle) {
-  const payload = computeVerdict(bundle);
-  return { verdict: payload.verdict, label: verdictLabel(payload.verdict), allLabels: VERDICT_LABELS };
-}
-
-/**
- * Append `key=value` lines to `$GITHUB_OUTPUT` when set, else print them. Values
- * are single-line, so no heredoc framing is needed.
+ * Append `key=value` lines to `$GITHUB_OUTPUT` when set, else print them.
  *
  * @param {Record<string,string>} outputs
  */
@@ -47,21 +34,12 @@ function emitOutputs(outputs) {
 }
 
 function main(argv) {
-  const bundlePath = argv[2];
-  if (!bundlePath) {
-    console.error('Usage: node scripts/pr-verdict-label.js <bundle.json>');
-    return 1;
-  }
-  let bundle;
-  try {
-    bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf8'));
-  } catch (err) {
-    console.error(`pr-verdict-label: cannot read/parse ${bundlePath}: ${err.message}`);
-    return 1;
-  }
-  const report = buildLabelReport(bundle);
-  emitOutputs({ verdict: report.verdict, label: report.label, all_labels: report.allLabels.join(',') });
-  console.log(`pr-verdict label: ${report.label}`);
+  // Fail closed: a missing/empty verdict arg maps to the `unknown` label rather
+  // than erroring — the workflow must still land a label on every pass.
+  const verdict = argv[2] || 'UNKNOWN';
+  const label = verdictLabel(verdict);
+  emitOutputs({ label, all_labels: VERDICT_LABELS.join(',') });
+  console.log(`pr-verdict label: ${label} (verdict ${verdict})`);
   return 0;
 }
 
@@ -69,4 +47,4 @@ if (require.main === module) {
   process.exit(main(process.argv));
 }
 
-module.exports = { buildLabelReport, emitOutputs, main };
+module.exports = { emitOutputs, main };
