@@ -2,7 +2,7 @@
 
 const { describe, test, expect } = require('bun:test');
 
-const { stripGlobalFlags } = require('../lib/global-flags');
+const { stripGlobalFlags, firstPositionalIndex } = require('../lib/global-flags');
 
 describe('stripGlobalFlags', () => {
   test('strips -p and its value (kernel c1e090ff regression)', () => {
@@ -40,5 +40,28 @@ describe('stripGlobalFlags', () => {
 
   test('leaves plain words that resemble flag names untouched', () => {
     expect(stripGlobalFlags(['force', 'sync', 'path'])).toEqual(['force', 'sync', 'path']);
+  });
+});
+
+describe('firstPositionalIndex', () => {
+  test('returns 0 when the first token is already positional', () => {
+    expect(firstPositionalIndex(['ship', 'slug'])).toBe(0);
+  });
+
+  test('skips a value-taking global flag and its value', () => {
+    // ['pr', '--path', '/tmp', 'ship'] scanned from index 1 → 'ship' at index 3.
+    expect(firstPositionalIndex(['pr', '--path', '/tmp', 'ship'], 1)).toBe(3);
+  });
+
+  test('skips the --path=<dir> form and boolean global flags', () => {
+    expect(firstPositionalIndex(['pr', '--path=/tmp', '--verbose', 'ship'], 1)).toBe(3);
+  });
+
+  test('skips non-global flags too (only bare words are positional)', () => {
+    expect(firstPositionalIndex(['pr', '--json', 'ship'], 1)).toBe(2);
+  });
+
+  test('returns -1 when there is no positional token', () => {
+    expect(firstPositionalIndex(['pr', '--path', '/tmp'], 1)).toBe(-1);
   });
 });
