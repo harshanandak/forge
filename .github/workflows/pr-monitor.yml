@@ -115,7 +115,7 @@ jobs:
 
       - name: Checkout
         if: steps.resolve.outputs.should_run == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Do not persist GITHUB_TOKEN in the checkout's git config: all GitHub
