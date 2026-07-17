@@ -155,3 +155,62 @@ describe('gate-events module', () => {
     expect(await isGateApproved(UNUSED_ROOT, issue, 'gate.merge', { deps: deps(kernel) })).toBe(false);
   });
 });
+
+// Driver-lifecycle invariant (same class as the grounding fix, kernel issue
+// e62e4bde): a kernel gate-events BUILDS itself must be closed (an unclosed
+// SQLite handle locks the DB dir on Windows -> rmSync EBUSY); an INJECTED/shared
+// kernel must NEVER be closed (the caller owns it). Cross-platform: counts close().
+describe('gate-events kernel-driver lifecycle', () => {
+  // Wrap a driver so its methods still hit the real :memory: kernel, but close()
+  // is counted instead of actually closing (so the shared db stays usable).
+  function withCloseCounter(driver) {
+    const counter = { count: 0 };
+    const wrapped = {};
+    for (const key of Object.keys(driver)) {
+      wrapped[key] = typeof driver[key] === 'function' ? driver[key].bind(driver) : driver[key];
+    }
+    wrapped.close = () => { counter.count += 1; };
+    return { driver: wrapped, counter };
+  }
+
+  test('an INJECTED/shared kernel is NEVER closed', async () => {
+    const kernel = await freshKernel();
+    const issue = await seedIssue(kernel, 'gate-life-injected');
+    const { driver, counter } = withCloseCounter(kernel.kernelDriver);
+    const injected = { kernelBroker: kernel.kernelBroker, kernelDriver: driver };
+
+    await recordGateEvent(UNUSED_ROOT, {
+      issueId: issue, gateId: 'gate.merge', decision: 'approved', env: { FORGE_ACTOR: 'a' }, deps: injected,
+    });
+    await listGateEvents(UNUSED_ROOT, issue, { deps: injected });
+
+    expect(counter.count).toBe(0);
+  });
+
+  test('a kernel the module BUILT itself is closed after record and list', async () => {
+    const kernel = await freshKernel();
+    const issue = await seedIssue(kernel, 'gate-life-owned');
+    const { driver, counter } = withCloseCounter(kernel.kernelDriver);
+    const built = { kernelBuilder: async () => ({ kernelBroker: kernel.kernelBroker, kernelDriver: driver }) };
+
+    await recordGateEvent(UNUSED_ROOT, {
+      issueId: issue, gateId: 'gate.merge', decision: 'approved', env: { FORGE_ACTOR: 'a' }, deps: built,
+    });
+    expect(counter.count).toBe(1);
+
+    await listGateEvents(UNUSED_ROOT, issue, { deps: built });
+    expect(counter.count).toBe(2);
+  });
+
+  test('the built kernel is closed even when the issue is missing', async () => {
+    const kernel = await freshKernel();
+    const { driver, counter } = withCloseCounter(kernel.kernelDriver);
+    const built = { kernelBuilder: async () => ({ kernelBroker: kernel.kernelBroker, kernelDriver: driver }) };
+
+    const result = await recordGateEvent(UNUSED_ROOT, {
+      issueId: 'ghost', gateId: 'gate.merge', decision: 'approved', env: { FORGE_ACTOR: 'a' }, deps: built,
+    });
+    expect(result.issueMissing).toBe(true);
+    expect(counter.count).toBe(1); // finally still closes on the early return
+  });
+});
