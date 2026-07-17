@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`forge worktree create` bases the new branch on the default branch, not the current checkout.** A worktree created while on a WIP branch previously forked from the current HEAD and silently inherited unrelated commits. New worktrees now fork from the repository default branch (`origin/<default>` when the remote ref exists, else the local default); a new `--base <ref>` flag overrides it (invalid refs error and create nothing), and `create` prints the base it used so the fork point is never silent. (B2)
+
 ## [0.1.0-beta.2] - 2026-07-15
 
 The **beta-blocker hardening wave** — Forge's advertised loop now composes end to end, its quality gates fail closed, its control surfaces describe themselves honestly, and the runtime is Beads-free. Every change below was adversarially reviewed before merge. (v0.1.0-beta.1 was tagged but never reached npm — its publish token had expired; this release switches to OIDC Trusted Publishing and is the first npm beta.)

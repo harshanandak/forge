@@ -105,11 +105,20 @@ forge sync
 
 ```bash
 forge worktree create <slug> --branch <branch-name>
+forge worktree create <slug> --base <ref>
 forge worktree remove <slug>
 forge clean --dry-run
 ```
 
 Slugs must not contain `..`, `/`, or `\`.
+
+A new worktree's branch is forked from the repository's **default branch**
+(`origin/<default>` when the remote ref exists, else the local default) — **not**
+the checkout's current branch/HEAD — so a worktree created from a WIP branch never
+silently inherits unrelated commits. Pass `--base <ref>` to fork from a specific
+ref instead; an invalid `--base` errors and creates nothing. `create` prints the
+base it used (e.g. `Created worktree <path> on <branch> (based on origin/main).`)
+so the fork point is never silent.
 
 ## Adapters
 
