@@ -120,4 +120,20 @@ describe('forge shepherd watch --adopt', () => {
     });
     expect(res.adopted.sort((a, b) => a - b)).toEqual([1, 3]);
   });
+
+  test('is a no-op when rail.auto_shepherd is disabled — no listing, no spawn', async () => {
+    let listed = false;
+    let spawned = false;
+    const res = await shepherd.handler(['watch', '--adopt'], {}, '/r', {
+      railEnabled: () => false,
+      listOpenPrs: () => { listed = true; return [1, 2, 3]; },
+      startWatcher: () => { spawned = true; return { started: true }; },
+    });
+    expect(listed).toBe(false);
+    expect(spawned).toBe(false);
+    expect(res.success).toBe(true);
+    expect(res.adopted).toEqual([]);
+    expect(res.total).toBe(0);
+    expect(res.reason).toMatch(/rail\.auto_shepherd/);
+  });
 });
