@@ -180,8 +180,31 @@ describe('workflow enforce-stage', () => {
     }));
   });
 
-  test('enforceStageEntry requires workflow state for non-plan stages', async () => {
+  test('enforceStageEntry allows ship with no state and no kernel context, with a warning', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-missing-state-'));
+    try {
+      const warnings = [];
+      const result = await enforceStageEntry({
+        commandName: 'ship',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] },
+        warn: (m) => warnings.push(m)
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(result.stage).toBe('ship');
+      expect(result.degradedGate).toBe('no-kernel-context');
+      expect(warnings.some(w => /stage gate skipped/i.test(w))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('enforceStageEntry with FORGE_STAGE_GATE=strict restores the authoritative-state error for ship', async () => {
+    const prev = process.env.FORGE_STAGE_GATE;
+    process.env.FORGE_STAGE_GATE = 'strict';
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-strict-ship-'));
     try {
       await expect(enforceStageEntry({
         commandName: 'ship',
@@ -190,6 +213,8 @@ describe('workflow enforce-stage', () => {
         health: { healthy: true, hardStop: false, diagnostics: [] }
       })).rejects.toThrow(/requires authoritative workflow state/i);
     } finally {
+      if (prev === undefined) delete process.env.FORGE_STAGE_GATE;
+      else process.env.FORGE_STAGE_GATE = prev;
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -234,8 +259,31 @@ describe('workflow enforce-stage', () => {
     }
   });
 
-  test('enforceStageEntry requires workflow state for review so ship-to-review transitions stay guarded', async () => {
+  test('enforceStageEntry allows review with no state and no kernel context, with a warning', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-review-missing-state-'));
+    try {
+      const warnings = [];
+      const result = await enforceStageEntry({
+        commandName: 'review',
+        flags: {},
+        projectRoot: tmpDir,
+        health: { healthy: true, hardStop: false, diagnostics: [] },
+        warn: (m) => warnings.push(m)
+      });
+
+      expect(result.allowed).toBe(true);
+      expect(result.stage).toBe('review');
+      expect(result.degradedGate).toBe('no-kernel-context');
+      expect(warnings.some(w => /stage gate skipped/i.test(w))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('enforceStageEntry with FORGE_STAGE_GATE=strict restores the authoritative-state error for review', async () => {
+    const prev = process.env.FORGE_STAGE_GATE;
+    process.env.FORGE_STAGE_GATE = 'strict';
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-strict-review-'));
     try {
       await expect(enforceStageEntry({
         commandName: 'review',
@@ -244,6 +292,8 @@ describe('workflow enforce-stage', () => {
         health: { healthy: true, hardStop: false, diagnostics: [] }
       })).rejects.toThrow(/requires authoritative workflow state/i);
     } finally {
+      if (prev === undefined) delete process.env.FORGE_STAGE_GATE;
+      else process.env.FORGE_STAGE_GATE = prev;
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
