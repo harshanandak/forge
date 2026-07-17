@@ -86,10 +86,11 @@ surface as every other rail.
 
 ## Surfacing events back to the agent (`forge hooks shepherd-events`)
 
-The constant watch loop and `forge shepherd events <pr> --since <seq>` write
-per-PR NDJSON journals under `.forge/pr-monitor/<repo>-<pr>/`, but a journal only
-helps if something reads it. `forge hooks shepherd-events` is the thin, agent-
-agnostic CONSUMER: it reads the NEW budget events across all open-PR journals
+The constant watch loop is the PRODUCER: it writes per-PR NDJSON journals under
+`.forge/pr-monitor/<repo>-<pr>/`, while the `forge shepherd events <pr> --since
+<seq>` pull surface reads existing records back from them. But a journal only
+helps if the working agent sees it. `forge hooks shepherd-events` is the thin,
+agent-agnostic CONSUMER: it reads the NEW budget events across all open-PR journals
 since a persisted per-PR **consumer cursor** (kept in `consumer.cursor`, distinct
 from the watcher's snapshot), renders a **compact, capped** summary of the
 actionable transitions only — verdict changes, failed checks, new review threads,

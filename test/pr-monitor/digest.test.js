@@ -147,6 +147,8 @@ describe('forge hooks shepherd-events — the UserPromptSubmit consumer hook', (
       collectDigest: () => ({ text: 'should not be used', total: 1, prs: ['12'] }),
     });
     expect(res.output).toBe('');
+    // Skip reason preserved as surface-only metadata (never injected).
+    expect(res.reason).toBe('no-user-prompt-surface');
   });
 
   test('fail-open: a throwing collector never breaks the prompt', async () => {
