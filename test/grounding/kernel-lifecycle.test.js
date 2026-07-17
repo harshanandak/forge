@@ -44,47 +44,61 @@ function withCloseCounter(driver) {
     wrapped[key] = typeof driver[key] === 'function' ? driver[key].bind(driver) : driver[key];
   }
   wrapped.close = () => { counter.count += 1; };
-  return { driver: wrapped, counter };
+  // dispose closes the REAL driver so the underlying SQLite handle is released
+  // during teardown (unclosed handles lock the DB dir on Windows -> rmSync EBUSY).
+  return { driver: wrapped, counter, dispose: () => driver.close() };
 }
 
 describe('grounding kernel-driver lifecycle', () => {
   test('an INJECTED/shared kernel is NEVER closed (caller owns it)', async () => {
     const kernel = await freshKernel();
-    const issue = await seedIssue(kernel, 'life-injected');
-    const { driver, counter } = withCloseCounter(kernel.kernelDriver);
-    const deps = { kernelBroker: kernel.kernelBroker, kernelDriver: driver };
+    const { driver, counter, dispose } = withCloseCounter(kernel.kernelDriver);
+    try {
+      const issue = await seedIssue(kernel, 'life-injected');
+      const deps = { kernelBroker: kernel.kernelBroker, kernelDriver: driver };
 
-    await recordContextLoaded(ROOT, { issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'a' }, deps });
-    await readFirstVerdict(ROOT, issue, { deps });
+      await recordContextLoaded(ROOT, { issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'a' }, deps });
+      await readFirstVerdict(ROOT, issue, { deps });
 
-    expect(counter.count).toBe(0);
-    // The shared kernel is still usable afterwards (would throw if we'd closed it).
-    const events = await listContextLoadedEvents(ROOT, issue, { deps });
-    expect(events.length).toBeGreaterThan(0);
+      expect(counter.count).toBe(0);
+      // The shared kernel is still usable afterwards (would throw if we'd closed it).
+      const events = await listContextLoadedEvents(ROOT, issue, { deps });
+      expect(events.length).toBeGreaterThan(0);
+    } finally {
+      dispose(); // always close the REAL driver so teardown can rmSync the DB dir
+    }
   });
 
   test('a kernel the module BUILT itself is closed after each read/append', async () => {
     const kernel = await freshKernel();
-    const issue = await seedIssue(kernel, 'life-owned');
-    const { driver, counter } = withCloseCounter(kernel.kernelDriver);
-    // kernelBuilder is the test seam over buildMigratedKernelIssueDeps — supplying
-    // it (without kernelBroker/kernelDriver) drives the OWNED path.
-    const deps = { kernelBuilder: async () => ({ kernelBroker: kernel.kernelBroker, kernelDriver: driver }) };
+    const { driver, counter, dispose } = withCloseCounter(kernel.kernelDriver);
+    try {
+      const issue = await seedIssue(kernel, 'life-owned');
+      // kernelBuilder is the test seam over buildMigratedKernelIssueDeps — supplying
+      // it (without kernelBroker/kernelDriver) drives the OWNED path.
+      const deps = { kernelBuilder: async () => ({ kernelBroker: kernel.kernelBroker, kernelDriver: driver }) };
 
-    await recordContextLoaded(ROOT, { issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'a' }, deps });
-    expect(counter.count).toBe(1);
+      await recordContextLoaded(ROOT, { issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'a' }, deps });
+      expect(counter.count).toBe(1);
 
-    await readFirstVerdict(ROOT, issue, { deps });
-    expect(counter.count).toBe(2);
+      await readFirstVerdict(ROOT, issue, { deps });
+      expect(counter.count).toBe(2);
+    } finally {
+      dispose(); // always close the REAL driver so teardown can rmSync the DB dir
+    }
   });
 
   test('the built kernel is closed even when the issue is missing', async () => {
     const kernel = await freshKernel();
-    const { driver, counter } = withCloseCounter(kernel.kernelDriver);
-    const deps = { kernelBuilder: async () => ({ kernelBroker: kernel.kernelBroker, kernelDriver: driver }) };
+    const { driver, counter, dispose } = withCloseCounter(kernel.kernelDriver);
+    try {
+      const deps = { kernelBuilder: async () => ({ kernelBroker: kernel.kernelBroker, kernelDriver: driver }) };
 
-    const result = await recordContextLoaded(ROOT, { issueId: 'ghost', env: { FORGE_ACTOR: 'a' }, deps });
-    expect(result.issueMissing).toBe(true);
-    expect(counter.count).toBe(1); // finally still closes on the early return
+      const result = await recordContextLoaded(ROOT, { issueId: 'ghost', env: { FORGE_ACTOR: 'a' }, deps });
+      expect(result.issueMissing).toBe(true);
+      expect(counter.count).toBe(1); // finally still closes on the early return
+    } finally {
+      dispose(); // always close the REAL driver so teardown can rmSync the DB dir
+    }
   });
 });
