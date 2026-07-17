@@ -15,6 +15,7 @@ describe('forge worktree command', () => {
     expect(mod.usage).toBe('forge worktree <create|remove|list> <slug>');
     expect(mod.flags).toEqual({
       '--branch': 'Custom branch name (default: feat/<slug>)',
+      '--base': 'Base ref a new branch forks from (default: the repo default branch, e.g. origin/main)',
       '--issue': 'Kernel issue id to link this worktree to (records issue → worktree)',
       '--work-folder': 'Repo-relative work-folder this issue owns (records worktree → work-folder + drops a .forge-issue marker)',
     });
