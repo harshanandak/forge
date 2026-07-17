@@ -9,9 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.3] - 2026-07-17
+
+The **adoption-unblocking wave** — the changes beta testers hit on their very first real session. `forge ship`, the hook-enforcement verdict, and `forge worktree create` no longer dead-end a fresh or in-flight branch, and the PR shepherd now arms itself for any agent. Every change below was adversarially reviewed before merge.
+
 ### Fixed
 
-- **`forge worktree create` bases the new branch on the default branch, not the current checkout.** A worktree created while on a WIP branch previously forked from the current HEAD and silently inherited unrelated commits. New worktrees now fork from the repository default branch (`origin/<default>` when the remote ref exists, else the local default); a new `--base <ref>` flag overrides it (invalid refs error and create nothing), and `create` prints the base it used so the fork point is never silent. (B2)
+- **`forge ship` / `forge review` no longer hard-fail on a fresh or in-flight branch (B1).** They previously threw `Stage ship requires authoritative workflow state` whenever no `/plan → /dev → /validate → /ship` history had been walked — blocking the three most common adoption paths: a fresh setup, an in-flight branch, and a manual commit. The stage gate now degrades to a loud stderr warning and seeds stage history in the kernel, so ship works incrementally and future gating gets real data. The rework/contradiction guard (e.g. `validate` started-but-not-done) stays **fail-closed**, and `FORGE_STAGE_GATE=strict` restores the legacy hard block. (#413)
+- **`forge setup` / `forge init --profile minimal` report hook enforcement honestly.** A deliberately-disabled TDD gate no longer prints `✓ Git hook enforcement active` or exits `1` with a `TDD ENFORCEMENT IS NOT ACTIVE` banner — the human-facing verdict and exit code now honor the resolved config (the hook scripts already honored it at run time; this closes the reporting/exit half). A disabled gate reports as intentionally inert with the re-enable command; a corrupt config still fails toward enforcement. (#414, #399)
+- **`forge worktree create` bases new branches on the default branch, not the current checkout (B2).** A worktree created while on a WIP branch previously forked from the current HEAD and silently inherited unrelated commits. New worktrees now fork from the repository default branch (`origin/<default>` when the remote ref exists, else the local default); a new `--base <ref>` flag overrides it (invalid refs error and create nothing), and `create` prints the base it used so the fork point is never silent. (#415)
+- **`forge plan` no longer moves the shared checkout's HEAD.** Creating the feature branch during planning switched the shared working checkout, colliding with parallel work; it now creates the branch without switching HEAD. (#396)
+- **CI and grounding hardening.** Closed a Windows `EBUSY` by closing the kernel driver after context-event I/O (#411); removed an invalid `pull_request_review_thread` Actions trigger from the PR monitor (#404); stopped the pr-monitor red-X and auto-regenerated the D20 kill-list (#394); and cleared five residual B1 stage-state/worktree-linkage rows (#393). The kernel-driver close/ownership invariant is now regression-tested (#412).
+
+### Added
+
+- **Agent-agnostic auto-shepherd PR monitor.** The PR watcher now arms itself on any open PR (`forge push` + `watch --adopt`), gated on the default-ON `rail.auto_shepherd` rail so **any** harness gets PR tracking without a per-agent monitor (#408, #407). It surfaces PR-monitor events into each turn via shepherd-events hooks (#409), lands an actionable `pr-verdict:*` label on the PR (#403), and takes Tier-2 **safe** auto-actions — update-branch when behind, re-run a flaky required check (#406).
+- **Grounding read-first gate.** A P1 **fail-closed** `gate.read_first` blocks a claim about a file the agent has not read. (#410)
+- **Unified command surface — noun verbs + aliases.** Declarative command-alias infrastructure (#401), `forge memory` shortcuts with a passthrough fix (#402), and a `forge pr` noun (`ship`/`preflight`/`shepherd`/`merge`) with gate docs (#405) — the CLI now groups by how people conventionally use it, aliases preserved.
+- **Memory capture-on-exit + unified `forge memory`.** Memory commands are consolidated under `forge memory` with typed notes (#392), and a PreCompact/Stop hook plus `--session-summary` captures session memory on exit so nothing is lost to a compaction. (#397)
+- **Global-plugin front door + lazy `.forge` home.** A global activation entry point that creates the `.forge` home lazily on first use. (#400)
+- **Guided 0.0.10 → current upgrade.** `forge upgrade` walks the breaking Beads → Kernel upgrade from 0.0.10 and nudges the issue-path migration. (#398)
+- **Consolidated opt-in Beads → Kernel migrator.** A single explicit-only migrator with an honest field-gap report. (#391)
+
+### Changed
+
+- **TypeScript dev dependency bumped 5.4.5 → 7.0.2** (dev-deps group; no runtime change). (#371)
+- Install docs now point at `forge-workflow@beta` so users land on the current prerelease. (#395)
+- Bumped the GitHub Actions dependency group (3 updates). (#390)
 
 ## [0.1.0-beta.2] - 2026-07-15
 
