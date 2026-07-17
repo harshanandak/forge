@@ -108,6 +108,11 @@ Create isolated work:
 forge worktree create <slug> --branch <branch-name>
 ```
 
+The new branch is forked from the repository's default branch (`origin/<default>`
+when present, else the local default), not the current checkout — so a worktree
+made from a WIP branch does not inherit unrelated commits. Override with
+`--base <ref>` to fork from a specific ref; `create` prints the base it used.
+
 Remove it:
 
 ```bash
