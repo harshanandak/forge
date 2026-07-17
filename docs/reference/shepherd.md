@@ -67,6 +67,43 @@ up from there.
 a `/loop`) that re-invokes the bounded pass with a debounce of at least 60
 seconds and cancel-in-progress. The shepherd itself never waits in-process.
 
+## Auto-start on ship (`rail.auto_shepherd`)
+
+`forge shepherd watch <pr>` is the constant, self-stopping local monitor loop
+(≈60 s jittered cadence; appends events to the per-PR NDJSON journal under
+`.forge/pr-monitor/<repo>-<pr>/`; self-stops on `PR_MERGED`/`PR_CLOSED`). On a
+successful `forge ship`, the new PR's watcher is **auto-started detached** so a
+shipped PR is tended without a manual trigger. The spawn is best-effort and
+**never fails ship** (a spawn or config-read error degrades to "not started"),
+and it is idempotent — the watch-lifecycle PID/journal lock prevents a second
+watcher for the same PR.
+
+This auto-start is governed by the default-ON, unlocked **`rail.auto_shepherd`**
+rail. Opt out with `forge gate disable rail.auto_shepherd` (re-enable with
+`forge gate enable rail.auto_shepherd`); when disabled, `forge ship` skips the
+auto-start. This keeps the behavior honestly toggleable through the same config
+surface as every other rail.
+
+## Surfacing events back to the agent (`forge hooks shepherd-events`)
+
+The constant watch loop is the PRODUCER: it writes per-PR NDJSON journals under
+`.forge/pr-monitor/<repo>-<pr>/`, while the `forge shepherd events <pr> --since
+<seq>` pull surface reads existing records back from them. But a journal only
+helps if the working agent sees it. `forge hooks shepherd-events` is the thin,
+agent-agnostic CONSUMER: it reads the NEW budget events across all open-PR journals
+since a persisted per-PR **consumer cursor** (kept in `consumer.cursor`, distinct
+from the watcher's snapshot), renders a **compact, capped** summary of the
+actionable transitions only — verdict changes, failed checks, new review threads,
+merged/closed — then advances the cursor so nothing re-surfaces.
+
+For Claude Code this is wired as a **UserPromptSubmit** context hook (the honest
+capability matrix: only Claude exposes that additionalContext surface; Cursor /
+Codex / Hermes carry an explicit skip reason). It is **additive and FAIL-OPEN** —
+a missing/empty digest, a corrupt journal, or no `.forge/pr-monitor` at all never
+blocks a prompt — and it reads the user's own local journal only: it never
+injects into stdin and never drives the agent. Any other harness can call the
+same verb (or `forge shepherd events`) on its own cadence.
+
 ## Terminal states
 
 | State         | Meaning |
@@ -111,5 +148,8 @@ seconds and cancel-in-progress. The shepherd itself never waits in-process.
 
 ## State
 
-Progress is durable in GitHub PR comments and labels plus `git`. There is no
-separate local state store.
+Progress is durable in GitHub PR comments and labels plus `git`. The one local
+store is the constant monitor's per-PR journal under
+`.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
+consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
+`events --since`. The bounded shepherd pass itself keeps no separate local state.

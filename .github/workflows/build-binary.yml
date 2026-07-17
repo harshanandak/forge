@@ -62,14 +62,14 @@ jobs:
         include: ${{ fromJSON(needs.set-matrix.outputs.targets) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # No pushes back to the repo; don't leave GITHUB_TOKEN in .git/config
           # where a dependency lifecycle script (bun install) could read it.
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -154,14 +154,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # No pushes back to the repo; don't leave GITHUB_TOKEN in .git/config
           # where a dependency lifecycle script (bun install) could read it.
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -198,7 +198,7 @@ jobs:
       contents: write
     steps:
       - name: Download all binary artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 

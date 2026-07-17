@@ -36,11 +36,12 @@ describe('Forge hook contract', () => {
   test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup, memory-capture) intents', () => {
     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
-    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'memory-capture']);
+    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'shepherd-events', 'memory-capture']);
     // Each context intent routes to the `forge` CLI via a `hooks <cliAction>` marker.
     const CONTEXT_MARKERS = {
       'memory-inject': FORGE_CONTEXT_MARKER,
       'inbox-pickup': 'hooks inbox-pickup',
+      'shepherd-events': 'hooks shepherd-events',
       'memory-capture': 'hooks capture',
     };
     for (const intent of FORGE_HOOK_CONTRACT.intents) {
