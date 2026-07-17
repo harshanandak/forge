@@ -206,15 +206,82 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
     expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('dev');
   }, TIMEOUT);
 
-  test('still hard-blocks ship when the kernel has NO recorded stage (fail-closed)', async () => {
-    // No stage recorded, no .forge-state.json, no inline state → nothing durable
-    // says we progressed, so ship must not silently pass.
+  test('B1: ship with a linked issue and empty stage history is allowed, warns, and records ship start', async () => {
+    // Fresh setup / in-flight branch: an issue IS linked but no plan->validate
+    // history was ever walked. Degrade-to-warn (default) so incremental adoption
+    // is not blocked, and seed the kernel so future gating gets real data.
+    const warnings = [];
+    const result = await enforceStageEntry({
+      commandName: 'ship',
+      projectRoot,
+      kernelDriver: driver,
+      activeIssueId: issueId,
+      health: HEALTHY,
+      warn: (m) => warnings.push(m),
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.stage).toBe('ship');
+    expect(result.degradedGate).toBe('kernel-empty');
+    // The warning must name the issue so the operator can see what was allowed.
+    expect(warnings.some(w => w.includes(issueId))).toBe(true);
+    // Entering ship was recorded into the kernel (history is now seeded).
+    expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('ship');
+  }, TIMEOUT);
+
+  test('B1: ship stays blocked when validate is started but not done (rework protection preserved)', async () => {
+    // A recorded-but-contradicting history must still fail-closed regardless of
+    // the degrade-to-warn default — this is the dev<->validate rework guard.
+    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
+
     await expect(enforceStageEntry({
       commandName: 'ship',
       projectRoot,
       kernelDriver: driver,
       activeIssueId: issueId,
       health: HEALTHY,
-    })).rejects.toThrow(/authoritative workflow state/i);
+    })).rejects.toThrow(/validate to be completed/i);
+  }, TIMEOUT);
+
+  test('B1: review after a degraded ship is allowed once ship is recorded done', async () => {
+    // Degraded ship (empty history) seeds a ship start; the command runner then
+    // records completion on handler success. review must now pass the real gate.
+    const ship = await enforceStageEntry({
+      commandName: 'ship',
+      projectRoot,
+      kernelDriver: driver,
+      activeIssueId: issueId,
+      health: HEALTHY,
+      warn: () => {},
+    });
+    expect(ship.allowed).toBe(true);
+    ship.recordCompletion();
+
+    const review = await enforceStageEntry({
+      commandName: 'review',
+      projectRoot,
+      kernelDriver: driver,
+      activeIssueId: issueId,
+      health: HEALTHY,
+    });
+    expect(review.allowed).toBe(true);
+    expect(review.stage).toBe('review');
+  }, TIMEOUT);
+
+  test('B1: FORGE_STAGE_GATE=strict restores the hard authoritative-state block', async () => {
+    const prev = process.env.FORGE_STAGE_GATE;
+    process.env.FORGE_STAGE_GATE = 'strict';
+    try {
+      await expect(enforceStageEntry({
+        commandName: 'ship',
+        projectRoot,
+        kernelDriver: driver,
+        activeIssueId: issueId,
+        health: HEALTHY,
+      })).rejects.toThrow(/authoritative workflow state/i);
+    } finally {
+      if (prev === undefined) delete process.env.FORGE_STAGE_GATE;
+      else process.env.FORGE_STAGE_GATE = prev;
+    }
   }, TIMEOUT);
 });
