@@ -24,8 +24,11 @@ describe('forge hooks session-start (context hook — memory push)', () => {
     expect(parsed.hookSpecificOutput.additionalContext).toContain('[ready] Wire auto-file rail');
   });
 
-  test('empty digest → empty output (harness injects nothing), exit-safe', async () => {
+  test('empty digest AND no dispatch bootstrap → empty output (harness injects nothing), exit-safe', async () => {
+    // Isolate the digest path: disable the always-on using-forge dispatch bootstrap so this test
+    // asserts digest-empty behavior alone (the bootstrap is covered in its own describe block).
     const res = await run(['session-start', '--harness', 'claude'], {
+      loadDispatchText: () => '',
       fetchNotes: () => [],
       fetchIssues: () => [],
     });
@@ -43,7 +46,9 @@ describe('forge hooks session-start (context hook — memory push)', () => {
   });
 
   test('fail-open: a throwing fetcher never errors the hook', async () => {
+    // Disable the dispatch bootstrap so this isolates the digest fail-open path -> '' on throw.
     const res = await run(['session-start', '--harness', 'claude'], {
+      loadDispatchText: () => '',
       fetchNotes: () => { throw new Error('kernel down'); },
       fetchIssues: () => { throw new Error('issue store down'); },
     });

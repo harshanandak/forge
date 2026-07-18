@@ -88,6 +88,21 @@ describe('buildPrime live-state section', () => {
     }
   });
 
+  test('prime LEADS with live state — it is the first section of the complete orientation', () => {
+    const root = tmpRoot();
+    try {
+      const result = buildPrime(root, { liveState: SAMPLE });
+      // Prepended to the FULL orientation (not just extras) and prioritized to sort first.
+      expect(result.orientation.sections[0].id).toBe('live_state');
+      const text = formatOrientationText(result);
+      // The Live State heading appears before any other section heading.
+      expect(text.indexOf('## Live State')).toBeGreaterThan(-1);
+      expect(text.indexOf('## Live State')).toBeLessThan(text.indexOf('## Key Commands'));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('existing prime output is unchanged when no live state is supplied', () => {
     const root = tmpRoot();
     try {
@@ -115,5 +130,44 @@ describe('collectPrimeLiveState', () => {
     expect(typeof state.readyCount).toBe('number');
     expect(Array.isArray(state.gates)).toBe(true);
     expect(typeof state.nudge).toBe('string');
+  });
+
+  test('maps an injected snapshot: activeAssigned->claimed{id,title}, ready->readyCount, stage', async () => {
+    const snapshot = {
+      activeAssigned: [{ id: 'k1', title: 'Fix the parser' }, { id: 'k2', title: 'Add tests' }],
+      ready: [{ id: 'r1' }, { id: 'r2' }, { id: 'r3' }],
+    };
+    const state = await collectPrimeLiveState('/nonexistent', {
+      _readSnapshot: async () => snapshot,
+      _workflowState: { currentStage: 'dev' },
+    });
+    expect(state.claimed).toEqual([{ id: 'k1', title: 'Fix the parser' }, { id: 'k2', title: 'Add tests' }]);
+    expect(state.readyCount).toBe(3);
+    expect(state.stage).toEqual({ id: 'dev', name: 'dev' });
+    // claimed work -> resume nudge referencing the first claimed id.
+    expect(state.nudge).toContain('forge recap k1');
+  });
+
+  test('missing title maps to null and an empty ready list maps to 0', async () => {
+    const state = await collectPrimeLiveState('/nonexistent', {
+      _readSnapshot: async () => ({ activeAssigned: [{ id: 'x' }], ready: [] }),
+    });
+    expect(state.claimed).toEqual([{ id: 'x', title: null }]);
+    expect(state.readyCount).toBe(0);
+  });
+
+  test('read-only: does NOT create a Kernel DB in a repo that has none (session-entry contract)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-prime-nodb-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    try {
+      const state = await collectPrimeLiveState(root);
+      // Fresh repo with no Kernel DB -> honest fallback, and crucially NO DB was created.
+      expect(state.claimed).toEqual([]);
+      expect(state.readyCount).toBe(0);
+      expect(state.stage).toBeNull();
+      expect(fs.existsSync(path.join(root, '.git', 'forge', 'kernel.sqlite'))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

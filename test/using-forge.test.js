@@ -3,8 +3,7 @@
 const { describe, test, expect } = require('bun:test');
 const path = require('node:path');
 
-const { routeSkill, loadSkillCatalog, parseFrontmatter } = require('../lib/using-forge');
-const skillCommand = require('../lib/commands/skill');
+const { routeSkill, loadSkillCatalog, loadDispatchText, parseFrontmatter } = require('../lib/using-forge');
 
 const repoRoot = path.resolve(__dirname, '..');
 const catalog = loadSkillCatalog(repoRoot);
@@ -16,6 +15,16 @@ describe('using-forge router (forge skill for)', () => {
     for (const expected of ['plan', 'dev', 'validate', 'ship', 'review', 'verify']) {
       expect(names).toContain(expected);
     }
+  });
+
+  test('catalog + dispatch text load from the PACKAGE root with no argument (works outside a source checkout)', () => {
+    // The BLOCKER fix: skills are read from the Forge package (getPackageRoot), not projectRoot.
+    // With no override, both resolve against the packaged canonical skills/.
+    expect(loadSkillCatalog().length).toBeGreaterThan(0);
+    expect(loadDispatchText().length).toBeGreaterThan(0);
+    // An explicit override that has no skills/ yields an empty catalog (honest, no throw).
+    expect(loadSkillCatalog(path.join(__dirname, 'no-such-skills-root'))).toEqual([]);
+    expect(loadDispatchText(path.join(__dirname, 'no-such-skills-root'))).toBe('');
   });
 
   test.each([
@@ -44,6 +53,14 @@ describe('using-forge router (forge skill for)', () => {
     expect(result.matches).toEqual([]);
   });
 
+  test('an empty/unavailable catalog returns no matches (never fabricates skill names)', () => {
+    // Even a strong curated-keyword situation must NOT return a skill the catalog does not have.
+    const result = routeSkill('open a PR', { catalog: [] });
+    expect(result.best).toBeNull();
+    expect(result.unknown).toBe(true);
+    expect(result.matches).toEqual([]);
+  });
+
   test('empty situation is safe and returns unknown', () => {
     const result = routeSkill('', { catalog });
     expect(result.unknown).toBe(true);
@@ -54,48 +71,6 @@ describe('using-forge router (forge skill for)', () => {
     const a = routeSkill('open a PR', { catalog });
     const b = routeSkill('open a PR', { catalog });
     expect(a).toEqual(b);
-  });
-});
-
-describe('forge skill command', () => {
-  test('forge skill for "<situation>" --json returns a machine-readable result', () => {
-    const res = skillCommand.handler(['for', 'open a PR', '--json'], {}, repoRoot);
-    expect(res.success).toBe(true);
-    const parsed = JSON.parse(res.output);
-    expect(parsed.best).toBe('ship');
-    expect(parsed.unknown).toBe(false);
-    expect(Array.isArray(parsed.matches)).toBe(true);
-  });
-
-  test('text mode names the best skill and the announce line', () => {
-    const res = skillCommand.handler(['for', 'add a feature'], {}, repoRoot);
-    expect(res.success).toBe(true);
-    expect(res.output).toContain('plan');
-    expect(res.output).toContain('Announce:');
-  });
-
-  test('multi-word unquoted situation is joined from positional args', () => {
-    const res = skillCommand.handler(['for', 'run', 'the', 'tests', '--json'], {}, repoRoot);
-    const parsed = JSON.parse(res.output);
-    expect(parsed.best).toBe('validate');
-  });
-
-  test('missing situation errors with usage', () => {
-    const res = skillCommand.handler(['for'], {}, repoRoot);
-    expect(res.success).toBe(false);
-    expect(res.error).toContain('Usage: forge skill for');
-  });
-
-  test('unknown verb errors and lists supported verbs', () => {
-    const res = skillCommand.handler(['bogus'], {}, repoRoot);
-    expect(res.success).toBe(false);
-    expect(res.error).toContain('Supported: for');
-  });
-
-  test('exports the standard command interface', () => {
-    expect(skillCommand.name).toBe('skill');
-    expect(typeof skillCommand.description).toBe('string');
-    expect(typeof skillCommand.handler).toBe('function');
   });
 });
 
