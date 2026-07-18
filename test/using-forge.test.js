@@ -67,6 +67,15 @@ describe('using-forge router (forge skill for)', () => {
     expect(result.best).toBeNull();
   });
 
+  test('routes memory intents (remember/recall/save a note) to the memory skill', () => {
+    // Regression: the memory skill exists, so the deterministic fallback must not drop these.
+    expect(routeSkill('remember that decision', { catalog }).best).toBe('memory');
+    expect(routeSkill('recall the auth decision', { catalog }).best).toBe('memory');
+    expect(routeSkill('save a note about the tradeoff', { catalog }).best).toBe('memory');
+    // A generic non-Forge prompt still returns unknown (overlap never routes on its own).
+    expect(routeSkill('please review this commit', { catalog }).unknown).toBe(true);
+  });
+
   test('routing is deterministic (same input, same output)', () => {
     const a = routeSkill('open a PR', { catalog });
     const b = routeSkill('open a PR', { catalog });
