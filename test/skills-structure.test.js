@@ -111,11 +111,12 @@ describe('skills/ directory structure', () => {
     // Canonical skill set after the skills-only migration: the 11 workflow stage
     // skills + the `kernel` umbrella (ported from the removed .claude/commands/
     // surface) plus the three packaged skills, the kernel-native skills
-    // (triage-ready, issue-basics) registered through the umbrella, and the
-    // `smith` orchestrator super-skill that composes the stage skills. These are
-    // the single source of truth; agent harness dirs are generated from them by
-    // `skills sync` / setup. Pre-merge is a doc-update gate embedded in
-    // ship/review, not a skill.
+    // (triage-ready, issue-basics) registered through the umbrella, the
+    // `smith` orchestrator super-skill that composes the stage skills, and the
+    // `using-forge` dispatch skill (W1 — the session bootstrap that routes to the
+    // right skill). These are the single source of truth; agent harness dirs are
+    // generated from them by `skills sync` / setup. Pre-merge is a doc-update gate
+    // embedded in ship/review, not a skill.
     const expectedSkillDirs = [
       'dev',
       'plan',
@@ -137,6 +138,7 @@ describe('skills/ directory structure', () => {
       'issue-basics',
       'smith',
       'memory',
+      'using-forge',
     ];
 
     test('skills/ contains exactly the expected skill directories', () => {
