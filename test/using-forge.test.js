@@ -75,11 +75,19 @@ describe('using-forge router (forge skill for)', () => {
 
   test('single-word keywords match on a WORD BOUNDARY, not as a substring', () => {
     // Regression: bare "lease" must NOT fire inside "please" (was misrouting to claim-safety).
-    const misleading = routeSkill('please review this commit', { catalog });
-    expect(misleading.best).not.toBe('claim-safety');
     // The real word "lease" still routes to claim-safety (boundary match keeps the keyword working).
     const real = routeSkill('claim the issue and hold the lease', { catalog });
     expect(real.best).toBe('claim-safety');
+  });
+
+  test('a generic prompt with no curated hit is unknown (description overlap never routes alone)', () => {
+    // "please review this commit" has no INTENT_RULES keyword hit; incidental token overlap with a
+    // skill description (e.g. ship) must NOT push it into a workflow stage. Overlap is tie-break only.
+    const generic = routeSkill('please review this commit', { catalog });
+    expect(generic.unknown).toBe(true);
+    expect(generic.best).toBeNull();
+    // A real curated prompt still routes confidently.
+    expect(routeSkill('open a PR', { catalog }).best).toBe('ship');
   });
 });
 
