@@ -52,7 +52,10 @@ describe('skill-dispatch parity across delivery surfaces (mechanism, not identit
 
   test('the AGENTS.md generator names the dispatch skill by path (Codex/Claude/Hermes carrier)', () => {
     const md = generateAgentsMdContent({ name: 'x', testCommand: 'bun test', buildCommand: 'bun run build' });
-    expect(md).toContain('skills/using-forge/SKILL.md');
+    // Names the dispatch skill BY NAME + the CLI — NOT a repo-relative skills/ path, which does
+    // not exist in a set-up consumer project (only the generated mirrors do).
+    expect(md).toContain('using-forge');
+    expect(md).not.toContain('skills/using-forge/SKILL.md');
     expect(md).toContain('Skill Dispatch');
   });
 });

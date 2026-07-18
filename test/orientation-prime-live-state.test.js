@@ -10,6 +10,7 @@ const {
   formatPrimeLiveState,
   buildAdoptionNudge,
   collectPrimeLiveState,
+  shouldSkipLiveSnapshot,
   formatOrientationText,
 } = require('../lib/orientation');
 
@@ -154,6 +155,20 @@ describe('collectPrimeLiveState', () => {
     });
     expect(state.claimed).toEqual([{ id: 'x', title: null }]);
     expect(state.readyCount).toBe(0);
+  });
+
+  test('backend-aware gate: kernel-backend repo with no DB is skipped; beads-backend repo is NOT', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-prime-backend-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    try {
+      // Kernel backend (default) with no kernel.sqlite → skip (read-only, avoids DB creation).
+      expect(shouldSkipLiveSnapshot(root, {})).toBe(true);
+      // Beads backend has no kernel DB by design and reads .beads via bd (non-creating) — it must
+      // NOT be suppressed by the kernel-DB gate, or prime would show empty for Beads projects.
+      expect(shouldSkipLiveSnapshot(root, { FORGE_ISSUE_BACKEND: 'beads' })).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('read-only: does NOT create a Kernel DB in a repo that has none (session-entry contract)', async () => {
