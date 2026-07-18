@@ -18,5 +18,7 @@ applies to what you are doing, invoke that skill first. Then announce
   -> ship; address review feedback -> review; where am I -> status.
 
 This rule is a **thin pointer**. The full 1%-rule, red-flags table, subagent
-escape hatch, and routing table live ONLY in `skills/using-forge/SKILL.md` (the
-canonical dispatch skill) — do not duplicate that policy here.
+escape hatch, and routing table live in the **`using-forge` dispatch skill**,
+installed into your agent's own skill surface by `forge setup` (for Cursor:
+`.cursor/skills/using-forge/SKILL.md`) — invoke it by name, or run
+`forge skill for "<situation>"`. Do not duplicate that policy here.

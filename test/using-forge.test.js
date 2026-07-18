@@ -72,6 +72,15 @@ describe('using-forge router (forge skill for)', () => {
     const b = routeSkill('open a PR', { catalog });
     expect(a).toEqual(b);
   });
+
+  test('single-word keywords match on a WORD BOUNDARY, not as a substring', () => {
+    // Regression: bare "lease" must NOT fire inside "please" (was misrouting to claim-safety).
+    const misleading = routeSkill('please review this commit', { catalog });
+    expect(misleading.best).not.toBe('claim-safety');
+    // The real word "lease" still routes to claim-safety (boundary match keeps the keyword working).
+    const real = routeSkill('claim the issue and hold the lease', { catalog });
+    expect(real.best).toBe('claim-safety');
+  });
 });
 
 describe('parseFrontmatter', () => {
