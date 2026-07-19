@@ -12,6 +12,7 @@ const {
   validatePlanSubSkillList,
   SUBSKILL_REGISTRY,
 } = require('../../lib/core/runtime-graph');
+const { WORKFLOW_STAGE_MATRIX } = require('../../lib/workflow/stages');
 
 const repoRoot = path.resolve(__dirname, '../..');
 const skillsDir = path.join(repoRoot, 'skills');
@@ -39,6 +40,9 @@ const STAGE_NEXT = {
 // `next` (it is terminal + a subskill of plan).
 const FEEDER_NEXT = {
   'triage-ready': 'claim-safety',
+  // claim-safety proves the live lease, then work continues into dev (smith
+  // proceeds into plan/dev after the proof) — it does NOT dead-end the flow.
+  'claim-safety': 'dev',
 };
 const TERMINAL_SKILLS = [
   'verify',
@@ -47,7 +51,6 @@ const TERMINAL_SKILLS = [
   'shepherd',
   'kernel',
   'issue-basics',
-  'claim-safety',
   'memory',
   'rollback',
   'sonarcloud',
@@ -166,6 +169,46 @@ describe('stage skills carry the HARD-GATE body chain line (body half of the dua
       }
     });
   }
+});
+
+// The stage chain metadata must AGREE with the change-classification matrix in
+// lib/workflow/stages.js (the runtime source of truth). frontmatter `next` is the
+// DEFAULT / critical-path successor; it must be a successor stages.js actually
+// uses for SOME classification, and no stage may assert a successor stages.js
+// never uses. (ship/review/verify successors are classification-dependent — the
+// body HARD-GATE lines spell that out; frontmatter carries the critical-path.)
+function stagesJsSuccessors(stage) {
+  const successors = new Set();
+  for (const path of Object.values(WORKFLOW_STAGE_MATRIX)) {
+    const i = path.indexOf(stage);
+    if (i !== -1 && i < path.length - 1) successors.add(path[i + 1]);
+  }
+  return successors;
+}
+
+describe('stage chain metadata is consistent with lib/workflow/stages.js', () => {
+  for (const stage of STAGE_CHAIN) {
+    test(`${stage}: frontmatter next is a successor stages.js actually uses (or terminal)`, () => {
+      const next = FM[stage].next;
+      if (next === undefined || next === null) {
+        // Terminal in the critical path — verify. stages.js must also treat it as
+        // terminal for at least one classification (it is, for all but docs).
+        const isTerminalSomewhere = Object.values(WORKFLOW_STAGE_MATRIX)
+          .some((path) => path.at(-1) === stage);
+        expect(isTerminalSomewhere).toBeTruthy();
+        return;
+      }
+      expect([...stagesJsSuccessors(stage)]).toContain(next);
+    });
+  }
+
+  test('no stage declares a successor stages.js never uses for any classification', () => {
+    for (const stage of STAGE_CHAIN) {
+      const next = FM[stage].next;
+      if (!next) continue;
+      expect([...stagesJsSuccessors(stage)]).toContain(next);
+    }
+  });
 });
 
 describe('feeder skills point into the chain', () => {

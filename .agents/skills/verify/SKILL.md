@@ -19,7 +19,7 @@ Verify that the merge landed correctly and everything is running properly after 
 
 # Verify
 
-> **Chain (HARD-GATE):** `verify` is the TERMINAL stage — the post-merge health check. No stage follows it; the chain ends here.
+> **Chain (HARD-GATE):** in the default post-merge flow `verify` is the TERMINAL stage — nothing follows it (source of truth: lib/workflow/stages.js). The `docs` classification alone reuses `verify` → `ship` as a pre-ship content check, so `verify` is not universally terminal.
 
 This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled by the pre-merge gate embedded in `/ship` and `/review`).
 

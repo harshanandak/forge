@@ -23,7 +23,7 @@ Process ALL pull request issues including GitHub Actions failures, review-agent 
 
 # Review
 
-> **Chain (HARD-GATE):** after `review` lands the merge, the next skill is `verify` (post-merge health check). While the PR is still open you may hand off to `shepherd` to watch checks toward merge. `review` never merges.
+> **Chain (HARD-GATE):** the successor depends on the change classification (source of truth: lib/workflow/stages.js) — Critical → `verify` (post-merge health check); Standard ENDS at `review`. `verify` is the default/critical-path next. While the PR is still open you may hand off to `shepherd` to watch checks toward merge. `review` never merges.
 
 This skill handles ALL issues that arise after creating a pull request.
 

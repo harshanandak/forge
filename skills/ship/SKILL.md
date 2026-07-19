@@ -24,7 +24,7 @@ Push code and create a pull request with full context and documentation links.
 
 # Ship
 
-> **Chain (HARD-GATE):** the ONLY skill you invoke after `ship` is `review` (or `shepherd` to monitor the PR's checks toward merge). `ship` never merges.
+> **Chain (HARD-GATE):** the successor depends on the change classification (source of truth: lib/workflow/stages.js) — Standard → `review`; Critical → `review` → `verify`; Simple/Hotfix/Refactor/Docs END at `ship`. `review` is the default/critical-path next; `shepherd` may monitor the PR's checks. `ship` never merges.
 
 This skill creates a PR after validation passes.
 

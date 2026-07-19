@@ -72,14 +72,20 @@ announces the next one. The linear ladder:
 | `review` | `verify` | no (handoff → `shepherd`) |
 | `verify` | — | **yes (terminal)** |
 
-Feeders into the chain: `triage-ready` → `claim-safety` (prove the lease before
-work starts), then plan/dev. `research` is standalone / callable mid-workflow and
-returns to its CALLER (no forced `next`); it is also a `subskill` of `plan`. The
-`smith` orchestrator composes the six stages (`subskills`). Utility/terminal
-skills (`status`, `shepherd`, `kernel`, `issue-basics`, `claim-safety`, `memory`,
+Feeders into the chain: `triage-ready` → `claim-safety` → `dev` (rank the pick,
+prove the live lease, then work it). `research` is standalone / callable
+mid-workflow and returns to its CALLER (no forced `next`); it is also a `subskill`
+of `plan`. The `smith` orchestrator composes the six stages (`subskills`).
+Utility/terminal skills (`status`, `shepherd`, `kernel`, `issue-basics`, `memory`,
 `rollback`, `research`, `sonarcloud`, `sonarcloud-analysis`,
 `parallel-deep-research`, `using-forge`) declare no forward-stage `next`. Meta
 skills (`hermes-forge`) are chain-exempt.
+
+The stage `next` values above are the DEFAULT / critical-path successors. The
+actual successor after `ship`, `review`, and `verify` is
+classification-dependent — the authoritative matrix is `lib/workflow/stages.js`
+(Simple/Hotfix/Refactor end at `ship`; Standard ends at `review`; Critical runs
+through `verify`; the `docs` classification reuses `verify` → `ship`).
 
 ## Orchestrator super-skill
 

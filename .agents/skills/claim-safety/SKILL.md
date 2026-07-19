@@ -14,10 +14,13 @@ description: >
   and NOT for read-only selecting or ranking the next ready issue without claiming (that is
   triage-ready).
 allowed-tools: Read, Bash(forge:*)
-terminal: true
+next: dev
+terminal: false
 ---
 
 # Claim safety — claim, then prove you own the lease
+
+> **Chain:** once you have PROVEN the lease (`forge issue owns <id>` exits 0), continue to `dev` to work the issue (`smith` proceeds into plan/dev after this proof). Usable standalone whenever ownership is in question.
 
 Claiming is not owning. The Forge kernel keys a claim's idempotency on
 `claim.create:<issue_id>:<actor>`, so a **same-key duplicate replay returns
