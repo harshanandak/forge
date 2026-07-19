@@ -41,6 +41,33 @@ const PR_VIEW_JSON = JSON.stringify({
 
 const REQUIRED_CHECKS_JSON = JSON.stringify({ contexts: ['unit', 'lint'] });
 
+// A statusCheckRollup GraphQL payload with per-context `isRequired` — the shape
+// `gh api graphql` returns and the fallback path reads when branch-protection is
+// unreadable by the Actions token. Includes a StatusContext, a non-required
+// CheckRun, and a matrix duplicate (must dedupe to ['unit', 'deploy/ok']).
+const ROLLUP_REQUIRED_JSON = JSON.stringify({
+  data: {
+    repository: {
+      pullRequest: {
+        headRef: {
+          target: {
+            statusCheckRollup: {
+              contexts: {
+                nodes: [
+                  { __typename: 'CheckRun', name: 'unit', isRequired: true },
+                  { __typename: 'CheckRun', name: 'optional-bench', isRequired: false },
+                  { __typename: 'StatusContext', context: 'deploy/ok', isRequired: true },
+                  { __typename: 'CheckRun', name: 'unit', isRequired: true },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
+
 describe('PrStateAdapter', () => {
   test('satisfies the pr-state adapter contract', () => {
     const { run } = makeRunner([]);
@@ -114,6 +141,51 @@ describe('PrStateAdapter', () => {
     const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
 
     expect(result).toBeNull(); // null = "cannot determine required set"
+  });
+
+  test('readRequiredChecks falls back to rollup isRequired when protection is unreadable (403)', async () => {
+    // The real bug: the Actions GITHUB_TOKEN can NEVER read branch protection
+    // (admin scope), so protection 403s in CI and the required set was permanently
+    // null → verdict UNKNOWN. The rollup `isRequired` fallback is readable with the
+    // plain PR-read scope the Actions token DOES hold.
+    const err = new Error('403');
+    err.stderr = 'HTTP 403: Resource not accessible by integration';
+    const { run } = makeRunner([
+      ['protection/required_status_checks', () => { throw err; }],
+      ['api graphql', ROLLUP_REQUIRED_JSON],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const required = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' });
+
+    // Only required contexts, deduped across matrix duplicates, from both node types.
+    expect(required).toEqual(['unit', 'deploy/ok']);
+    expect(adapter.lastRequiredSource).toBe('rollup');
+  });
+
+  test('readRequiredChecks stamps requiredSource=protection when protection is readable', async () => {
+    const { run } = makeRunner([
+      ['protection/required_status_checks', REQUIRED_CHECKS_JSON],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const required = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' });
+
+    // Unchanged behaviour on the readable path — no rollup call, source = protection.
+    expect(required).toEqual(['unit', 'lint']);
+    expect(adapter.lastRequiredSource).toBe('protection');
+  });
+
+  test('readRequiredChecks returns null (fail-closed) when BOTH protection and rollup are unreadable', async () => {
+    const err = new Error('403');
+    err.stderr = 'HTTP 403: Resource not accessible by integration';
+    const { run } = makeRunner([
+      ['protection/required_status_checks', () => { throw err; }],
+      ['api graphql', () => { throw new Error('graphql boom'); }],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' });
+
+    expect(result).toBeNull();
+    expect(adapter.lastRequiredSource).toBeNull();
   });
 
   test('readDivergence parses git rev-list --left-right --count as { behind, ahead }', async () => {

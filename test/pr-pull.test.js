@@ -227,6 +227,20 @@ describe('classifyRequiredChecks (required-vs-produced)', () => {
     const out = classifyRequiredChecks([green('Lint')], null);
     expect(out.unreadable).toBe(true);
   });
+
+  test('a rollup-sourced required set (isRequired fallback) still flags failing/pending', () => {
+    // The fallback returns the SAME string[] shape as branch protection, so the
+    // required-vs-produced classification is source-agnostic — a set recovered
+    // from statusCheckRollup.isRequired classifies identically to a protection set.
+    const requiredFromRollup = ['Cross-OS Gate', 'Run eslint scanning'];
+    const out = classifyRequiredChecks(
+      [fail('Cross-OS Gate'), running('Run eslint scanning')],
+      requiredFromRollup,
+    );
+    expect(out.failing).toEqual(['Cross-OS Gate']);
+    expect(out.pending).toEqual(['Run eslint scanning']);
+    expect(out.unreadable).toBe(false);
+  });
 });
 
 describe('pendingCheckNames', () => {

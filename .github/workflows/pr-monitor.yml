@@ -196,21 +196,38 @@ jobs:
             VERDICT=UNKNOWN
           fi
           [ -z "$VERDICT" ] && VERDICT=UNKNOWN
+          # Carry the unreadable-signal list forward so the sticky/label step can
+          # name WHICH signal was unreadable (default [] when pull.json is absent).
+          UNREADABLE=$(jq -c '.evidence.unreadable // []' pull.json 2>/dev/null || echo '[]')
+          [ -z "$UNREADABLE" ] && UNREADABLE='[]'
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "unreadable=$UNREADABLE" >> "$GITHUB_OUTPUT"
           echo "Merge verdict: $VERDICT"
+          # NAME the failure: an UNKNOWN verdict is fail-closed but silent by
+          # default. Emit a WARNING (never a red-X — the no-non-success-check design
+          # is deliberate) that says which signal(s) were unreadable, so a
+          # permanent-UNKNOWN regression can't hide again.
+          if [ "$VERDICT" = "UNKNOWN" ]; then
+            echo "::warning::verdict UNKNOWN — unreadable: $UNREADABLE"
+          fi
 
       - name: Render sticky comment body
         if: steps.resolve.outputs.should_run == 'true'
         env:
           VERDICT: ${{ steps.pullverdict.outputs.verdict }}
+          UNREADABLE: ${{ steps.pullverdict.outputs.unreadable }}
         run: |
           set -euo pipefail
           # Pass the --pull verdict into the renderer so the sticky leads with the
           # SAME verdict as the pr-verdict:* label (render-sticky only displays it).
+          # Also pass the unreadable-signal list so an UNKNOWN verdict on the PR
+          # always says WHICH signal was unreadable (never a bare `unknown`).
           node -e '
             const { renderStickyComment } = require("./lib/pr-monitor/render-sticky");
             const bundle = JSON.parse(require("fs").readFileSync("bundle.json", "utf8"));
-            const { body } = renderStickyComment(bundle, { verdict: process.env.VERDICT });
+            let unreadable = [];
+            try { unreadable = JSON.parse(process.env.UNREADABLE || "[]"); } catch { unreadable = []; }
+            const { body } = renderStickyComment(bundle, { verdict: process.env.VERDICT, unreadable });
             require("fs").writeFileSync("monitor-body.md", body);
           '
           # jq -Rs slurps the raw markdown into a JSON string for the comment API.
