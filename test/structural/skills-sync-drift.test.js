@@ -93,5 +93,5 @@ describe('all harness skill dirs render from canonical source', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, 20000); // 20s budget: regenerates 5 harness mirrors × every skill dir — slow on Windows I/O.
 });
