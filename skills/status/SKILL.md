@@ -12,6 +12,7 @@ description: >
   (issue-basics); the Hermes harness's token-bounded orient/recap contract (hermes-forge); or
   the post-merge CI health check that closes issues after a merge lands (verify).
 allowed-tools: Bash, Read, Grep, Glob
+terminal: true
 ---
 
 Check where you are in the project and what work is in progress.

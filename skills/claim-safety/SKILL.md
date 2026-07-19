@@ -14,6 +14,7 @@ description: >
   and NOT for read-only selecting or ranking the next ready issue without claiming (that is
   triage-ready).
 allowed-tools: Read, Bash(forge:*)
+terminal: true
 ---
 
 # Claim safety — claim, then prove you own the lease

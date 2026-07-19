@@ -14,6 +14,8 @@ description: >
   heavyweight EXTERNAL market/competitive report (paid Parallel AI); `plan` for the full plan
   stage (brainstorm + tasks); `dev` or `validate` to implement or scan rather than investigate.
 allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+next: plan
+terminal: false
 ---
 
 Investigate anything, from anywhere: verify a claim, search the web, find better options, pull

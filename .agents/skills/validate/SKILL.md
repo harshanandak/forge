@@ -13,6 +13,8 @@ description: >
   is `/ship`), it does not answer PR review feedback from Greptile / SonarCloud / CodeRabbit
   (that is `/review`), and it is not the post-merge CI health check (that is `/verify`).
 allowed-tools: Bash, Read, Grep, Glob
+next: ship
+terminal: false
 ---
 
 > **Note:** Three things share the "validate" name in Forge:
@@ -23,6 +25,8 @@ allowed-tools: Bash, Read, Grep, Glob
 Run comprehensive validation including type checking, linting, code review, security review, and tests.
 
 # Validate
+
+> **Chain (HARD-GATE):** the ONLY skill you invoke after `validate` is `ship`. Do not open the PR until validation shows fresh passing output in THIS session.
 
 This skill validates all code before creating a pull request.
 

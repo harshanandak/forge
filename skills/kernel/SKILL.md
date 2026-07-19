@@ -14,6 +14,7 @@ description: >
   merged PR under gates → `smith`; token-bounded state for the Hermes harness →
   `hermes-forge`.
 allowed-tools: Read, Bash(forge:*)
+terminal: true
 ---
 
 # Forge kernel surface
@@ -55,6 +56,28 @@ mutating it — a claim returning ok:true does not by itself prove ownership).
 ```
 status → plan → dev → validate → ship → review → verify
 ```
+
+### Chain map (each skill declares its successor)
+
+Every skill carries chain metadata in its frontmatter (`next`, `terminal`,
+`subskills`, `handoffs`) plus a HARD-GATE chain line in its body, so each stage
+announces the next one. The linear ladder:
+
+| Skill | `next` | terminal |
+|-------|--------|----------|
+| `plan` | `dev` | no (composes `research`) |
+| `dev` | `validate` | no |
+| `validate` | `ship` | no |
+| `ship` | `review` | no (handoff → `shepherd`) |
+| `review` | `verify` | no (handoff → `shepherd`) |
+| `verify` | — | **yes (terminal)** |
+
+Feeders into the chain: `research` → `plan`, `triage-ready` → `plan`. The `smith`
+orchestrator composes the six stages (`subskills`). Utility/terminal skills
+(`status`, `shepherd`, `kernel`, `issue-basics`, `claim-safety`, `memory`,
+`rollback`, `sonarcloud`, `sonarcloud-analysis`, `parallel-deep-research`,
+`using-forge`) declare no forward-stage `next`. Meta skills (`hermes-forge`) are
+chain-exempt.
 
 ## Orchestrator super-skill
 

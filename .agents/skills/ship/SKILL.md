@@ -14,11 +14,17 @@ description: >
   (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
   not the skill.
 allowed-tools: Bash, Read, Edit, Grep, Glob
+next: review
+terminal: false
+handoffs:
+  - shepherd
 ---
 
 Push code and create a pull request with full context and documentation links.
 
 # Ship
+
+> **Chain (HARD-GATE):** the ONLY skill you invoke after `ship` is `review` (or `shepherd` to monitor the PR's checks toward merge). `ship` never merges.
 
 This skill creates a PR after validation passes.
 

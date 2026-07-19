@@ -14,6 +14,7 @@ description: >
   deterministic fallback. NOT itself a stage; the kernel skill is the fuller umbrella index
   once oriented.
 allowed-tools: Read, Bash(forge:*)
+terminal: true
 ---
 
 <SUBAGENT-STOP>

@@ -18,6 +18,7 @@ tags: [sonarcloud, code-quality, issues, metrics, security]
 context: fork
 tools: [Bash, WebFetch, Read, Grep, Glob]
 model: sonnet
+terminal: true
 ---
 
 <role>

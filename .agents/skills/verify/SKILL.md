@@ -12,11 +12,14 @@ description: >
   rollback to undo an already-shipped change, status to merely report the current stage
   without acting, and issue-basics to close an issue unrelated to a just-merged PR.
 allowed-tools: Bash, Read, Grep, Glob
+terminal: true
 ---
 
 Verify that the merge landed correctly and everything is running properly after merge.
 
 # Verify
+
+> **Chain (HARD-GATE):** `verify` is the TERMINAL stage — the post-merge health check. No stage follows it; the chain ends here.
 
 This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled by the pre-merge gate embedded in `/ship` and `/review`).
 

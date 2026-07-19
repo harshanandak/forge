@@ -13,6 +13,7 @@ description: >
   Not for local SAST scans of your own code, nor the Forge issue tracker (`forge issue ...`,
   "open/ready issues") — here those bare words always mean SonarCloud.
 allowed-tools: Bash, Read, Grep, Glob, WebFetch
+terminal: true
 ---
 
 # SonarCloud Query Command
