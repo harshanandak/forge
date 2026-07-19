@@ -312,4 +312,27 @@ planning:
     expect(graph.planning.template.partialInvocation.only).toEqual([]);
     expect(graph.planning.template.partialInvocation.skip).toEqual(['plan.final_lock']);
   });
+
+  // Guards the W2 registry split: `research` is a COMPOSED whole-skill of plan
+  // (its SKILL.md subskills), NOT a partialInvocation micro-phase. partialInvocation
+  // maps ids to runtime-graph plan.* actions, so accepting `research` here would be
+  // silent dead config. It must fail closed.
+  test('rejects a composed whole-skill (research) in planning template partial invocation', () => {
+    const projectRoot = makeProject(`
+planning:
+  template:
+    partialInvocation:
+      only:
+        - research
+`);
+
+    const result = lintRuntimeGraphConfig({ projectRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.map(error => error.code)).toContain('UNKNOWN_PLAN_SUBSKILL');
+
+    const { graph } = resolveRuntimeGraph({ projectRoot, throwOnError: false });
+    // Dead config dropped — never mapped into the runtime graph.
+    expect(graph.planning.template.partialInvocation.only).toEqual([]);
+  });
 });

@@ -287,4 +287,19 @@ describe('generic sub-skill registry (backward compatible with plan)', () => {
       expect(out).toEqual(declared);
     });
   }
+
+  // The two plan contracts must stay SEPARATE: the composed whole-skill `research`
+  // resolves as a frontmatter subskill, but must be REJECTED as a partialInvocation
+  // micro-phase (it maps to no runtime-graph action — silent dead config otherwise).
+  test('research resolves as a plan frontmatter subskill but is rejected as a partial-invocation micro-phase', () => {
+    const composeErrors = [];
+    const composed = validateSubSkillList('plan', ['research'], composeErrors, 'plan.frontmatter');
+    expect(composeErrors).toEqual([]);
+    expect(composed).toEqual(['research']);
+
+    const partialErrors = [];
+    const partial = validatePlanSubSkillList(['research'], partialErrors, 'planning.template.partialInvocation.only');
+    expect(partial).toBeUndefined();
+    expect(partialErrors.map((e) => e.code)).toContain('UNKNOWN_PLAN_SUBSKILL');
+  });
 });
