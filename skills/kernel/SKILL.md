@@ -60,8 +60,9 @@ status → plan → dev → validate → ship → review → verify
 ### Chain map (each skill declares its successor)
 
 Every skill carries chain metadata in its frontmatter (`next`, `terminal`,
-`subskills`, `handoffs`) plus a HARD-GATE chain line in its body, so each stage
-announces the next one. The linear ladder:
+`subskills`, `handoffs`); each workflow STAGE skill additionally carries a
+HARD-GATE chain line in its body, so each stage announces the next one. The
+linear ladder:
 
 | Skill | `next` | terminal |
 |-------|--------|----------|
