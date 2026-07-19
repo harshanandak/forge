@@ -38,6 +38,19 @@ describe('renderStickyComment', () => {
     expect(body.startsWith(STICKY_MARKER)).toBe(true);
   });
 
+  test('an UNKNOWN verdict names which signal(s) were unreadable', () => {
+    // A bare `unknown` verdict is useless on the PR — the sticky must say WHICH
+    // signal was unreadable so a human/agent knows what to fix (the fallback's
+    // whole point is that requiredChecks should no longer be permanently unknown).
+    const { body } = renderStickyComment(makeBundle(), {
+      now: NOW,
+      verdict: 'UNKNOWN',
+      unreadable: ['requiredChecks'],
+    });
+    expect(body).toContain('requiredChecks');
+    expect(body).toMatch(/[Uu]nreadable/);
+  });
+
   test('groups unresolved threads BY AUTHOR across all authors (agnostic)', () => {
     const bundle = makeBundle({
       unresolvedComments: [
