@@ -34,14 +34,29 @@ describe('rules sync drift detection', () => {
     expect(result.issues).toHaveLength(0);
   });
 
-  test('canonical source defines the five policy rules', () => {
+  test('canonical source defines the six policy rules', () => {
     expect(CANONICAL_RULE_NAMES).toEqual([
-      'workflow', 'tdd', 'security', 'documentation', 'kernel-tracking',
+      'workflow', 'tdd', 'security', 'documentation', 'kernel-tracking', 'using-forge',
     ]);
     const rules = listCanonicalRules(repoRoot);
     expect(rules.map((r) => r.name).sort()).toEqual(
-      ['documentation', 'kernel-tracking', 'security', 'tdd', 'workflow'],
+      ['documentation', 'kernel-tracking', 'security', 'tdd', 'using-forge', 'workflow'],
     );
+  });
+
+  // The using-forge dispatch pointer is Cursor's always-on carrier for the skill auto-trigger
+  // bootstrap — the rule-surface analogue of Claude's SessionStart hook and Codex's committed
+  // AGENTS.md. The drift gate keeps this fanned-out copy from silently losing the pointer.
+  test('using-forge renders to the Cursor native surface (always-apply dispatch pointer)', () => {
+    expect(CURSOR_RULE_FILES['using-forge']).toBe('using-forge.mdc');
+    const [rule] = listCanonicalRules(repoRoot, { only: ['using-forge'] });
+    expect(rule.alwaysApply).toBe('true');
+    const cursor = renderCursorRule(rule);
+    expect(cursor.includes('alwaysApply: true')).toBe(true);
+    expect(cursor).toContain('forge skill for');
+    expect(cursor).toContain('1%');
+    // Thin pointer: defers to the authoritative skill source, no duplicated policy.
+    expect(cursor).toContain('skills/using-forge/SKILL.md');
   });
 
   // The always-on kernel-tracking rule must render to EVERY port: a native

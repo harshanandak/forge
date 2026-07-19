@@ -59,6 +59,7 @@ forge orient [--budget N] [--json]
 forge recap <issue> [--budget N] [--json]
 forge recall [query] [--limit N] [--all] [--json]
 forge remember <note> [--tag <label>]... [--json]
+forge skill for "<situation>" [--json]
 ```
 
 - `forge plan` creates the implementation plan, kernel issue, and feature branch/worktree from a researched feature description; it prints the created issue id, branch name, and the suggested next command.
@@ -66,7 +67,8 @@ forge remember <note> [--tag <label>]... [--json]
 - `forge validate` runs the validation orchestration pipeline (conflict markers, type check, lint, security, tests) with no arguments — see also `bun run check` under Validation And Packaging.
 - `forge ship` creates the pull request from validated feature work (wraps `gh pr create`); `--dry-run` previews without creating a PR.
 - `forge status` is the one-glance orientation command: where you are, what to run next, and your active work; `--full` also shows blocked/stale/recently-completed issues.
-- `forge prime` emits the bounded session-entry orientation envelope agents read at the start of a session.
+- `forge prime` emits the bounded session-entry orientation envelope agents read at the start of a session; it now leads with a bounded (<=20-line) **live-state** block — current stage, claimed issue(s), ready-work count, enabled gates/rails, and one progressive-adoption nudge — collected best-effort (never blocks, honest fallbacks) before the deterministic orientation.
+- `forge skill for "<situation>"` is the deterministic intent-to-skill router: it reads the canonical skill catalog and prints the best-fit Forge skill(s) plus why, as the reasoning fallback for harnesses without a SessionStart hook that auto-injects the `using-forge` dispatch skill. `--json` emits the machine-readable routing result. The `forge skill` noun is structured so later waves can add `forge skill eval` / `forge skill scores`.
 - `forge orient` emits bounded project orientation from deterministic source files (broader than `prime`, still token-budgeted via `--budget`).
 - `forge recap <issue>` is the issue-scoped counterpart to `forge orient`/`forge prime` — it summarizes a single issue from the same deterministic file assembly instead of the whole project. Requires an issue id; running it with no id (or `--help`) prints usage only.
 - `forge recall` retrieves project-memory notes from the kernel-backed memory store; omit `query` to list recent notes.

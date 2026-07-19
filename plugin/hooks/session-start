@@ -13,7 +13,7 @@ if [ -d ".forge" ]; then
   forge_state="active in this project (.forge/ present)"
 fi
 
-nudge="Forge is ${forge_state}. To begin, invoke the \`forge:activation\` skill (it orients on the project first, then offers a bare-minimum setup — never forced), or run a \`forge\` verb (e.g. \`forge status\`, \`forge ready\`). Read-only verbs create nothing; the first mutating verb lazily initializes a gates-disabled \`.forge/\` skeleton."
+nudge="Forge is ${forge_state}. To begin, invoke the \`forge:activation\` skill (it orients on the project first, then offers a bare-minimum setup — never forced), or run a \`forge\` verb (e.g. \`forge status\`, \`forge ready\`). Read-only verbs create nothing; the first mutating verb lazily initializes a gates-disabled \`.forge/\` skeleton. In an active Forge project, the \`using-forge\` dispatch skill is the reasoning-driven router: before ANY response, if there is even a 1% chance a Forge skill applies, invoke it — or run \`forge skill for \"<situation>\"\` to find the best-fit skill."
 
 # Escape for JSON embedding (single C-level pass each; matches superpowers).
 escape_for_json() {

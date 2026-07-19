@@ -7,6 +7,7 @@ const {
   HARNESS_HOOK_FILES,
   FORGE_CONTEXT_MARKER,
   SESSION_START_SUPPORT,
+  BOOTSTRAP_DELIVERY,
   SESSION_END_SUPPORT,
   sessionStartCapability,
   sessionEndCapability,
@@ -119,17 +120,30 @@ describe('SessionStart context injection (memory push)', () => {
     expect(cmd).toContain('forge.js');
   });
 
-  test('capability matrix is honest — only Claude renders; others carry a skip reason', () => {
+  test('capability matrix is honest — only Claude renders a hook; others name where the bootstrap is delivered', () => {
     expect(sessionStartCapability('claude')).toEqual({ rendered: true });
-    expect(sessionStartCapability('cursor')).toEqual({ rendered: false, reason: 'no-session-start-surface' });
-    expect(sessionStartCapability('codex')).toEqual({ rendered: false, reason: 'global-config' });
-    expect(sessionStartCapability('hermes')).toEqual({ rendered: false, reason: 'global-config' });
+    // rendered:false does NOT mean "no auto-surface" — the reason names the delivery surface.
+    expect(sessionStartCapability('cursor')).toEqual({ rendered: false, reason: 'delivered-via-rule-surface' });
+    expect(sessionStartCapability('codex')).toEqual({ rendered: false, reason: 'delivered-via-agents-md' });
+    expect(sessionStartCapability('hermes')).toEqual({ rendered: false, reason: 'delivered-via-cli-fallback' });
     expect(sessionStartCapability('nope')).toEqual({ rendered: false, reason: 'unknown-harness' });
     // The exported matrix matches the capability function (single source).
     expect(SESSION_START_SUPPORT.claude.rendered).toBe(true);
   });
 
-  test('Cursor does NOT fake a session-start surface (no context hook rendered)', () => {
+  test('every non-rendered harness has a real bootstrap delivery surface (no orphaned harness)', () => {
+    for (const harness of Object.keys(SESSION_START_SUPPORT)) {
+      if (SESSION_START_SUPPORT[harness].rendered) continue;
+      // A rendered:false harness MUST name a delivery surface in BOOTSTRAP_DELIVERY —
+      // a real always-on surface OR the explicit 'cli-fallback' honest-fallback marker.
+      expect(BOOTSTRAP_DELIVERY[harness]).toBeTruthy();
+    }
+    // claude's delivery is its native hook; the honest fallback marker is Hermes only.
+    expect(BOOTSTRAP_DELIVERY.claude).toBe('session-start-hook');
+    expect(BOOTSTRAP_DELIVERY.hermes).toBe('cli-fallback');
+  });
+
+  test('Cursor does NOT render a session-start HOOK (bootstrap is delivered via its rule surface instead)', () => {
     const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
     const allCommands = Object.values(cfg.hooks).flat().map(h => h.command).join('\n');
     expect(allCommands).not.toContain('session-start');
