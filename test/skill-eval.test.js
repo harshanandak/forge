@@ -31,6 +31,9 @@ const {
   buildAllScorecards,
   evaluateGate,
   parseSkillSource,
+  resolveSkillsDir,
+  resolveSkillsContext,
+  detectScorecardDrift,
 } = require('../lib/skill-eval');
 
 const { loadSkillCatalog } = require('../lib/using-forge');
@@ -284,27 +287,62 @@ function buildSeed(overrides = {}) {
   return base;
 }
 
-// ── committed-artifact drift ──────────────────────────────────────────────────
+// ── committed-artifact drift (canonical AND the .agents/skills mirror) ─────────
 describe('committed scorecards stay fresh', () => {
   const catalog = loadSkillCatalog(repoRoot);
+  const mirrorDir = path.join(repoRoot, '.agents', 'skills');
+  const freshCards = buildAllScorecards(skillsDir, catalog);
 
-  test('each skill has a committed scorecard.json equal to the recomputed one', () => {
-    const drifted = [];
-    const names = fs
-      .readdirSync(skillsDir, { withFileTypes: true })
-      .filter(e => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
-      .map(e => e.name);
-    for (const name of names) {
-      const cardPath = path.join(skillsDir, name, 'evals', 'scorecard.json');
-      if (!fs.existsSync(cardPath)) { drifted.push(`${name}: missing scorecard.json`); continue; }
-      const committed = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
-      const recomputed = buildScorecard({ skillsDir, name, catalog });
-      if (JSON.stringify(committed) !== JSON.stringify(recomputed)) {
-        drifted.push(`${name}: scorecard.json out of date — run \`forge skill eval --static\``);
-      }
+  test('canonical AND mirror scorecard.json each equal the recomputed card', () => {
+    const drift = detectScorecardDrift({ skillsDir, freshCards, mirrorDir });
+    if (drift.length) {
+      throw new Error('Scorecard drift:\n' + drift.map(d => `  ${d.skill} [${d.where}]: ${d.reason}`).join('\n'));
     }
-    if (drifted.length) throw new Error('Scorecard drift:\n' + drifted.map(d => '  ' + d).join('\n'));
-    expect(drifted).toEqual([]);
+    expect(drift).toEqual([]);
+  });
+
+  test('detectScorecardDrift flags a mirror that is missing a card', () => {
+    // Point the mirror at an empty temp dir: every skill should be reported as mirror-missing,
+    // proving the mirror is gated (not just the canonical tree).
+    const emptyMirror = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-mirror-'));
+    const drift = detectScorecardDrift({ skillsDir, freshCards, mirrorDir: emptyMirror });
+    expect(drift.some(d => d.where === 'mirror')).toBe(true);
+    fs.rmSync(emptyMirror, { recursive: true, force: true });
+  });
+});
+
+// ── shared consumer-repo resolver (finding A: un-regressable) ──────────────────
+describe('resolveSkillsDir / resolveSkillsContext', () => {
+  test('a dev checkout resolves its own skills/ dir', () => {
+    expect(resolveSkillsDir(repoRoot)).toBe(skillsDir);
+  });
+
+  test('a consumer project with NO skills/ falls back to the packaged skills root', () => {
+    const noSkills = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-consumer-'));
+    const resolved = resolveSkillsDir(noSkills);
+    // Must NOT be null and must NOT be the (skill-less) consumer dir — it falls back to the package.
+    expect(resolved).not.toBeNull();
+    expect(resolved.startsWith(noSkills)).toBe(false);
+    const ctx = resolveSkillsContext(noSkills);
+    expect(ctx).not.toBeNull();
+    expect(ctx.catalog.length).toBeGreaterThan(0);
+    fs.rmSync(noSkills, { recursive: true, force: true });
+  });
+});
+
+// ── evaluateGate is drift-aware (finding B) ───────────────────────────────────
+describe('evaluateGate drift-awareness', () => {
+  const catalog = loadSkillCatalog(repoRoot);
+  const freshCards = buildAllScorecards(skillsDir, catalog);
+
+  test('a drift entry makes the gate FAIL even when every card is otherwise clean', () => {
+    const result = evaluateGate(freshCards, { drift: [{ skill: 'ship', where: 'mirror', reason: 'stale' }] });
+    expect(result.passed).toBe(false);
+    expect(result.failures.some(f => f.kind === 'scorecard_drift' && f.skill === 'ship')).toBe(true);
+  });
+
+  test('no drift + clean cards still PASS', () => {
+    expect(evaluateGate(freshCards, { drift: [] }).passed).toBe(true);
   });
 });
 
