@@ -421,6 +421,44 @@ describe('invalid fixtures', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('WRONG-KEY entry (shouldTrigger instead of should_trigger) -> invalid, gate FAILS', () => {
+    const { root, skillsDir: sd } = tempSkill('[{"query":"open a pr","shouldTrigger":true}]');
+    try {
+      const card = buildScorecard({ skillsDir: sd, name: 'demo', catalog: [] });
+      expect(card.fixtures).toBe('invalid');
+      expect(String(card.router_reachability.error)).toContain('should_trigger');
+      const gate = evaluateGate({ demo: card });
+      expect(gate.passed).toBe(false);
+      expect(gate.failures.some(f => f.skill === 'demo' && f.kind === 'invalid_fixtures')).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a well-shaped array with ONLY negatives (no positive) -> invalid, gate FAILS', () => {
+    const { root, skillsDir: sd } = tempSkill('[{"query":"a","should_trigger":false},{"query":"b","should_trigger":false}]');
+    try {
+      const card = buildScorecard({ skillsDir: sd, name: 'demo', catalog: [] });
+      expect(card.fixtures).toBe('invalid');
+      expect(String(card.router_reachability.error)).toContain('no positive');
+      expect(evaluateGate({ demo: card }).passed).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an entry with a missing/empty query -> invalid, gate FAILS', () => {
+    const { root, skillsDir: sd } = tempSkill('[{"query":"   ","should_trigger":true}]');
+    try {
+      const card = buildScorecard({ skillsDir: sd, name: 'demo', catalog: [] });
+      expect(card.fixtures).toBe('invalid');
+      expect(String(card.router_reachability.error)).toContain('query');
+      expect(evaluateGate({ demo: card }).passed).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── parseSkillSource matches the context-cost parser ──────────────────────────
