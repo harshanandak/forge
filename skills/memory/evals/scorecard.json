@@ -1,0 +1,41 @@
+{
+  "skill": "memory",
+  "fixtures": "no-fixtures",
+  "static": {
+    "token_cost": {
+      "desc_chars": 938,
+      "body_lines": 87,
+      "score": 45
+    },
+    "caps": {
+      "desc_within": true,
+      "body_within": true,
+      "score": 100
+    },
+    "description_quality": {
+      "has_trigger_cues": true,
+      "has_disambiguation_cues": true,
+      "adequate_length": true,
+      "score": 100
+    }
+  },
+  "router_reachability": {
+    "has_curated_rule": true,
+    "router_exempt": false,
+    "fixtures": "no-fixtures",
+    "fixtures_total": 0,
+    "fixtures_best_hit": 0,
+    "reachable": null,
+    "keyword_alignment": null
+  },
+  "behavioral": {
+    "trigger_recall": null,
+    "trigger_precision": null,
+    "disambiguation": null,
+    "chain_correctness": null,
+    "outcome_quality": null,
+    "variance": null,
+    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+  },
+  "composite": 84
+}
