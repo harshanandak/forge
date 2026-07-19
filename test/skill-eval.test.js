@@ -365,6 +365,64 @@ describe('evaluateGate drift-awareness', () => {
   });
 });
 
+// ── invalid vs absent fixtures (a broken evals.json must FAIL the gate) ───────
+describe('invalid fixtures', () => {
+  const DESC = 'Use this when you want to exercise the fixture-state gate path. This is NOT a real skill and ' +
+    'unlike ship it never runs; it exists only to give the scorer an adequately long, cue-bearing description.';
+
+  function tempSkill(evalsContent) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-fx-'));
+    const sdir = path.join(root, 'skills', 'demo');
+    fs.mkdirSync(sdir, { recursive: true });
+    fs.writeFileSync(path.join(sdir, 'SKILL.md'), `---\nname: demo\ndescription: ${DESC}\n---\nbody line 1\nbody line 2\n`);
+    if (evalsContent !== undefined) {
+      fs.mkdirSync(path.join(sdir, 'evals'), { recursive: true });
+      fs.writeFileSync(path.join(sdir, 'evals', 'evals.json'), evalsContent);
+    }
+    return { root, skillsDir: path.join(root, 'skills') };
+  }
+
+  test('ABSENT evals.json -> no-fixtures, gate unaffected (passes)', () => {
+    const { root, skillsDir: sd } = tempSkill(undefined);
+    try {
+      const card = buildScorecard({ skillsDir: sd, name: 'demo', catalog: [] });
+      expect(card.fixtures).toBe('no-fixtures');
+      const gate = evaluateGate({ demo: card });
+      expect(gate.passed).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('MALFORMED evals.json -> fixtures:invalid, gate FAILS naming the skill + reason', () => {
+    const { root, skillsDir: sd } = tempSkill('{ this is not valid json');
+    try {
+      const card = buildScorecard({ skillsDir: sd, name: 'demo', catalog: [] });
+      expect(card.fixtures).toBe('invalid');
+      expect(String(card.router_reachability.error)).toContain('malformed');
+      const gate = evaluateGate({ demo: card });
+      expect(gate.passed).toBe(false);
+      const fail = gate.failures.find(f => f.skill === 'demo' && f.kind === 'invalid_fixtures');
+      expect(fail).toBeTruthy();
+      expect(fail.detail.length).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('valid JSON that is NOT an array -> fixtures:invalid, gate FAILS', () => {
+    const { root, skillsDir: sd } = tempSkill('{"query":"x","should_trigger":true}');
+    try {
+      const card = buildScorecard({ skillsDir: sd, name: 'demo', catalog: [] });
+      expect(card.fixtures).toBe('invalid');
+      expect(String(card.router_reachability.error)).toContain('not a JSON array');
+      expect(evaluateGate({ demo: card }).passed).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── parseSkillSource matches the context-cost parser ──────────────────────────
 describe('parseSkillSource', () => {
   test('parses a temp SKILL.md into description + body-line count', () => {
