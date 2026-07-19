@@ -90,7 +90,7 @@ describe('formatPrimeLiveState (pure)', () => {
       expect(claimed.title).not.toContain('\n');
       expect(claimed.id).not.toContain('\n');
       expect(claimed.title.length).toBeLessThan(evil.length); // clipped/bounded, not raw
-    } finally { cleanup(root); }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   test('buildAdoptionNudge clips attacker-influenceable ids (no newline injection into the Next: line)', () => {
