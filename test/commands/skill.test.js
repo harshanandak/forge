@@ -76,14 +76,40 @@ describe('forge skill scores', () => {
 
   // Finding A (consumer-repo resolution): a real installed project has no root skills/, and the
   // command MUST fall back to the packaged Forge skills instead of erroring.
-  test('falls back to the packaged skills root when cwd has no skills/', () => {
+  test('falls back to the packaged skills root when cwd has no skills/ (no mirror check)', () => {
     const consumer = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-scores-consumer-'));
     try {
       const res = skillCommand.handler(['scores', '--json'], {}, consumer);
       expect(res.success).toBe(true);
-      expect(Object.keys(JSON.parse(res.output).scorecards).length).toBeGreaterThan(0);
+      const parsed = JSON.parse(res.output);
+      expect(Object.keys(parsed.scorecards).length).toBeGreaterThan(0);
+      // Packaged-root path: no mirror ships, so the mirror check is omitted -> no mirror drift.
+      expect(parsed.drift.every(d => d.where !== 'mirror')).toBe(true);
     } finally {
       fs.rmSync(consumer, { recursive: true, force: true });
+    }
+  });
+
+  // Finding: mirror drift must be gated by CONTEXT (which root was resolved), not by whether the
+  // mirror dir happens to exist — otherwise a deleted mirror in a SOURCE checkout silently passes.
+  test('a SOURCE checkout with a DELETED .agents mirror REPORTS drift (gate FAILS)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-scores-source-'));
+    try {
+      const sdir = path.join(root, 'skills', 'demo');
+      fs.mkdirSync(sdir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sdir, 'SKILL.md'),
+        '---\nname: demo\ndescription: Use this when exercising the source-checkout mirror gate. This is NOT a real ' +
+          'skill and unlike ship it never runs; it only needs an adequately long, cue-bearing description string.\n---\nbody\n'
+      );
+      // Seed a FRESH canonical scorecard so the ONLY drift is the missing mirror. No .agents/skills exists here.
+      expect(skillCommand.handler(['eval', 'demo', '--json'], {}, root).success).toBe(true);
+      const res = skillCommand.handler(['scores', '--json'], {}, root);
+      const parsed = JSON.parse(res.output);
+      expect(parsed.drift.some(d => d.where === 'mirror')).toBe(true);
+      expect(parsed.gate.passed).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

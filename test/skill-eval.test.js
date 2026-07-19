@@ -339,6 +339,16 @@ describe('resolveSkillsDir / resolveSkillsContext', () => {
     fs.rmSync(noSkills, { recursive: true, force: true });
   });
 
+  test('resolveSkillsContext reports source: project for a checkout, package for the fallback', () => {
+    expect(resolveSkillsContext(repoRoot).source).toBe('project');
+    const consumer = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-src-'));
+    try {
+      expect(resolveSkillsContext(consumer).source).toBe('package');
+    } finally {
+      fs.rmSync(consumer, { recursive: true, force: true });
+    }
+  });
+
   test('a project with an EMPTY skills/ dir (no */SKILL.md) also falls back to the package', () => {
     const emptySkills = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-empty-'));
     fs.mkdirSync(path.join(emptySkills, 'skills', 'not-a-skill'), { recursive: true }); // dir, but no SKILL.md
