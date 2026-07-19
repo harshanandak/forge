@@ -13,11 +13,17 @@ description: >
   where work stands or what is stale (status), and NOT for everyday issue create/list/close or
   picking the next ready issue (issue-basics / triage-ready).
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+next: dev
+terminal: false
+subskills:
+  - research
 ---
 
 Plan a feature from scratch: brainstorm design intent, research technical approach, then set up branch, worktree, and a complete task list ready for /dev.
 
 # Plan
+
+> **Chain (HARD-GATE):** the next skill after `plan` is `dev`. `plan` composes the `research` sub-skill for its Phase 2 technical bundle. Do not skip ahead past `dev`.
 
 `/plan` is the default planning super-skill. A full invocation runs the three legacy sections below (intent, research, setup/task list), but v3 treats the internal planning work as callable sub-skills:
 

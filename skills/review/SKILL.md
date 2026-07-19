@@ -13,11 +13,17 @@ description: >
   closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
   type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
 allowed-tools: Bash, Read, Edit, Grep, Glob
+next: verify
+terminal: false
+handoffs:
+  - shepherd
 ---
 
 Process ALL pull request issues including GitHub Actions failures, review-agent inline comments (Greptile, CodeRabbit, Qodo, or human reviewers), SonarCloud analysis, and other CI/CD checks.
 
 # Review
+
+> **Chain (HARD-GATE):** the successor depends on the change classification (source of truth: lib/workflow/stages.js) — Critical → `verify` (post-merge health check); Standard ENDS at `review`. `verify` is the default/critical-path next. While the PR is still open you may hand off to `shepherd` to watch checks toward merge. `review` never merges.
 
 This skill handles ALL issues that arise after creating a pull request.
 

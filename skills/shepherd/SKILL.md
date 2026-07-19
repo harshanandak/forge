@@ -13,6 +13,9 @@ description: >
   `ship`; nor for the post-merge "CI green on master + close issues" check — that is `verify`;
   nor for a general "where am I / what's in flight" report — that is `status`.
 allowed-tools: Bash, Read, Grep, Glob
+terminal: true
+handoffs:
+  - review
 ---
 
 Run one bounded monitor pass over a pull request: read CI and check state, take at most one idempotent action, then hand off. Never merges and never resolves review threads.

@@ -14,6 +14,7 @@ description: >
   merged PR under gates → `smith`; token-bounded state for the Hermes harness →
   `hermes-forge`.
 allowed-tools: Read, Bash(forge:*)
+terminal: true
 ---
 
 # Forge kernel surface
@@ -55,6 +56,43 @@ mutating it — a claim returning ok:true does not by itself prove ownership).
 ```
 status → plan → dev → validate → ship → review → verify
 ```
+
+### Chain map (each skill declares its successor)
+
+Every skill carries chain metadata in its frontmatter (`next`, `terminal`,
+`subskills`, `handoffs`); each workflow STAGE skill additionally carries a
+HARD-GATE chain line in its body, so each stage announces the next one. The
+linear ladder:
+
+| Skill | `next` | `terminal` |
+|-------|--------|-----------|
+| `plan` | `dev` | `false` |
+| `dev` | `validate` | `false` |
+| `validate` | `ship` | `false` |
+| `ship` | `review` | `false` |
+| `review` | `verify` | `false` |
+| `verify` | `ship` | `false` |
+
+The `next` column is each stage's DEFAULT / critical-path successor (`plan`
+composes `research`; `ship` and `review` also carry a `shepherd` handoff). The
+actual successor after `ship`, `review`, and `verify` is classification-dependent
+— see the note below. `verify`'s `next` (`ship`) is the `docs`-only pre-ship
+reuse; in every other flow nothing follows `verify`.
+
+Feeders into the chain: `triage-ready` → `claim-safety` → `dev` (rank the pick,
+prove the live lease, then work it). `research` is standalone / callable
+mid-workflow and returns to its CALLER (no forced `next`); it is also a `subskill`
+of `plan`. The `smith` orchestrator composes the six stages (`subskills`).
+Utility/terminal skills (`status`, `shepherd`, `kernel`, `issue-basics`, `memory`,
+`rollback`, `research`, `sonarcloud`, `sonarcloud-analysis`,
+`parallel-deep-research`, `using-forge`) declare no forward-stage `next`. Meta
+skills (`hermes-forge`) are chain-exempt.
+
+The stage `next` values above are the DEFAULT / critical-path successors. The
+actual successor after `ship`, `review`, and `verify` is
+classification-dependent — the authoritative matrix is `lib/workflow/stages.js`
+(Simple/Hotfix/Refactor end at `ship`; Standard ends at `review`; Critical runs
+through `verify`; the `docs` classification reuses `verify` → `ship`).
 
 ## Orchestrator super-skill
 

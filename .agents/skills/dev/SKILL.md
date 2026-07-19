@@ -13,11 +13,15 @@ description: >
   opening the PR (ship), for addressing PR review feedback (review), or for orchestrating
   several stages / taking an issue end-to-end to a merged PR (smith).
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+next: validate
+terminal: false
 ---
 
 Implement each task from the /plan task list using a subagent-driven loop: implementer → spec compliance reviewer → code quality reviewer per task.
 
 # Dev
+
+> **Chain (HARD-GATE):** the ONLY skill you invoke after `dev` is `validate`. Never open a PR straight from `dev`.
 
 This skill reads the task list created by `/plan` and implements each task using a three-stage subagent loop. TDD is enforced inside each implementer subagent.
 

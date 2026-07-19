@@ -13,6 +13,7 @@ description: >
   The local backend is always the offline floor. Not for: issue create/list/close ops
   (issue-basics), workflow status (status), or transient scratch notes.
 allowed-tools: Bash, Read, Grep, Glob
+terminal: true
 ---
 
 # Memory

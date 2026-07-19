@@ -26,6 +26,7 @@ metadata:
   author: forge
   version: "1.0.0"
   roadmap: forge-2agy.9.7.x
+chainExempt: true
 ---
 
 # Hermes ⇄ Forge consumption contract

@@ -14,6 +14,7 @@ description: >
   the plan->dev->validate->ship pipeline or open a PR (use smith or stage skills); does NOT
   report the current stage or what's in flight (use status).
 allowed-tools: Read, Bash(forge:*)
+terminal: true
 ---
 
 # Issue basics — the CRUD floor

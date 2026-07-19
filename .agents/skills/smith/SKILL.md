@@ -13,6 +13,14 @@ description: >
   skill only when the user explicitly wants just that one step (e.g. "just open the
   PR").
 allowed-tools: Read, Bash(forge:*)
+terminal: true
+subskills:
+  - plan
+  - dev
+  - validate
+  - ship
+  - review
+  - verify
 ---
 
 # Smith — the orchestrator super-skill

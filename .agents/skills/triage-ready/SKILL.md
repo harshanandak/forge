@@ -14,6 +14,8 @@ description: >
   whole session or routing to stage skills (use kernel), not for driving an issue to a merged
   PR (use smith).
 allowed-tools: Read, Bash(forge:*)
+next: claim-safety
+terminal: false
 ---
 
 # Triage: what should I work on next

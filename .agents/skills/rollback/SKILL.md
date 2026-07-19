@@ -13,6 +13,7 @@ description: >
   (shepherd), the post-merge CI health check on master (verify), pushing a branch or opening a
   PR (ship), or ordinary issue status/field edits (issue-basics).
 allowed-tools: Bash, Read, Edit, Grep, Glob
+terminal: true
 ---
 
 Comprehensive rollback system with multiple methods and automatic USER content preservation.

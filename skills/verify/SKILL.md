@@ -12,11 +12,15 @@ description: >
   rollback to undo an already-shipped change, status to merely report the current stage
   without acting, and issue-basics to close an issue unrelated to a just-merged PR.
 allowed-tools: Bash, Read, Grep, Glob
+next: ship
+terminal: false
 ---
 
 Verify that the merge landed correctly and everything is running properly after merge.
 
 # Verify
+
+> **Chain (HARD-GATE):** the successor depends on the change classification (source of truth: lib/workflow/stages.js) — in the post-merge flow (Critical/Standard/Refactor/Simple/Hotfix) NOTHING follows `verify`; the `docs` flow alone reuses `verify` → `ship` as a pre-ship content check. `verify` is therefore not universally terminal — a chain-aware harness MUST gate on classification, not blindly follow `next`.
 
 This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled by the pre-merge gate embedded in `/ship` and `/review`).
 

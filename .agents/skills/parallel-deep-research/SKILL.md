@@ -17,6 +17,7 @@ compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 mi
 metadata:
   author: harshanandak
   version: "1.0.0"
+terminal: true
 ---
 
 # Parallel Deep Research
