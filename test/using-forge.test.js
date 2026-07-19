@@ -67,13 +67,24 @@ describe('using-forge router (forge skill for)', () => {
     expect(result.best).toBeNull();
   });
 
-  test('routes memory intents (remember/recall/save a note) to the memory skill', () => {
-    // Regression: the memory skill exists, so the deterministic fallback must not drop these.
+  test('routes memory / sonarcloud / research intents to their skills (catalog-only skills reachable)', () => {
+    // Regression: since overlap is tie-breaker-only, every routable packaged skill needs a curated
+    // rule or its documented triggers silently drop through the deterministic fallback.
     expect(routeSkill('remember that decision', { catalog }).best).toBe('memory');
     expect(routeSkill('recall the auth decision', { catalog }).best).toBe('memory');
-    expect(routeSkill('save a note about the tradeoff', { catalog }).best).toBe('memory');
+    expect(routeSkill('what does SonarCloud say about this PR', { catalog }).best).toBe('sonarcloud');
+    expect(routeSkill('competitive research on vendors', { catalog }).best).toBe('parallel-deep-research');
     // A generic non-Forge prompt still returns unknown (overlap never routes on its own).
     expect(routeSkill('please review this commit', { catalog }).unknown).toBe(true);
+  });
+
+  test('every routable catalog skill has a curated route (no silent drops as skills are added)', () => {
+    // Meta skills are intentionally not route targets: the dispatch skill itself and the harness adapter.
+    const META = new Set(['using-forge', 'hermes-forge']);
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'lib', 'using-forge.js'), 'utf8');
+    const curated = new Set([...src.matchAll(/skill: '([^']+)'/g)].map(m => m[1]));
+    const uncovered = catalog.map(s => s.name).filter(n => !curated.has(n) && !META.has(n));
+    expect(uncovered).toEqual([]);
   });
 
   test('routing is deterministic (same input, same output)', () => {

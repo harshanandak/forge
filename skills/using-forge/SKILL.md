@@ -51,7 +51,7 @@ Process skills set the approach first; then the stage/implementation skill carri
 |------------------------|-----------|
 | "Add / build / scope a new feature", "let's build X" | `plan` |
 | Implement a task that a plan already defined | `dev` |
-| "Fix this bug" / a failing test / unexpected behavior | `superpowers:systematic-debugging`, then `dev` |
+| "Fix this bug" / a failing test / unexpected behavior | `dev` (if `superpowers:systematic-debugging` is installed, apply its technique first, then implement via `dev`) |
 | Run type-check, lint, security, or tests | `validate` |
 | Push the branch and open a PR | `ship` |
 | Address PR / review-agent feedback (CodeRabbit, Greptile, CI) | `review` |
