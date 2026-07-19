@@ -309,6 +309,16 @@ describe('committed scorecards stay fresh', () => {
     expect(drift.some(d => d.where === 'mirror')).toBe(true);
     fs.rmSync(emptyMirror, { recursive: true, force: true });
   });
+
+  test('a TOTALLY absent mirror dir still reports drift (no existsSync guard hides total loss)', () => {
+    // A path that does not exist at all — the worst case (mirror deleted / fresh checkout). The
+    // guard-free check must report mirror drift for every skill, not silently pass.
+    const gone = path.join(os.tmpdir(), 'skill-eval-nonexistent-mirror-' + Date.now());
+    expect(fs.existsSync(gone)).toBe(false);
+    const drift = detectScorecardDrift({ skillsDir, freshCards, mirrorDir: gone });
+    const mirrorDrift = drift.filter(d => d.where === 'mirror');
+    expect(mirrorDrift.length).toBe(Object.keys(freshCards).length);
+  });
 });
 
 // ── shared consumer-repo resolver (finding A: un-regressable) ──────────────────
@@ -327,6 +337,15 @@ describe('resolveSkillsDir / resolveSkillsContext', () => {
     expect(ctx).not.toBeNull();
     expect(ctx.catalog.length).toBeGreaterThan(0);
     fs.rmSync(noSkills, { recursive: true, force: true });
+  });
+
+  test('a project with an EMPTY skills/ dir (no */SKILL.md) also falls back to the package', () => {
+    const emptySkills = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-empty-'));
+    fs.mkdirSync(path.join(emptySkills, 'skills', 'not-a-skill'), { recursive: true }); // dir, but no SKILL.md
+    const resolved = resolveSkillsDir(emptySkills);
+    expect(resolved).not.toBeNull();
+    expect(resolved.startsWith(emptySkills)).toBe(false); // did NOT select the skill-less dir
+    fs.rmSync(emptySkills, { recursive: true, force: true });
   });
 });
 
