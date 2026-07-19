@@ -25,14 +25,20 @@ const skillsDir = path.join(repoRoot, 'skills');
 // the chain rules (hermes-forge is a harness adapter, not a chain/route target).
 // ---------------------------------------------------------------------------
 const STAGE_CHAIN = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
+// Each stage's frontmatter `next` (the DEFAULT / critical-path successor). No
+// stage is unconditionally terminal: verify's only stages.js successor is `ship`
+// (the docs-only pre-ship reuse), so verify carries next:ship too. The linear
+// critical ladder is plan→dev→validate→ship→review→verify (CRITICAL_LADDER below).
 const STAGE_NEXT = {
   plan: 'dev',
   dev: 'validate',
   validate: 'ship',
   ship: 'review',
   review: 'verify',
-  // verify → terminal
+  verify: 'ship',
 };
+// The canonical critical-path ladder (WORKFLOW_STAGE_MATRIX.critical order).
+const CRITICAL_LADDER = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
 // Feeders point INTO the chain. triage-ready routes through claim-safety (prove
 // the live lease before work starts) — NOT straight to plan, which would bypass
 // lease safety. `research` is intentionally NOT a feeder: it is standalone /
@@ -44,8 +50,10 @@ const FEEDER_NEXT = {
   // proceeds into plan/dev after the proof) — it does NOT dead-end the flow.
   'claim-safety': 'dev',
 };
+// Utility/terminal skills — terminal by their OWN semantics (return to caller),
+// not stages in lib/workflow/stages.js. verify is NOT here: it is a stage and
+// (per the docs flow) not unconditionally terminal.
 const TERMINAL_SKILLS = [
-  'verify',
   'research',
   'status',
   'shepherd',
@@ -123,12 +131,13 @@ describe('linear stage chain plan → dev → validate → ship → review → v
     });
   }
 
-  test('verify is terminal (end of the linear chain)', () => {
-    expect(FM.verify.terminal).toBe(true);
-    expect(FM.verify.next === undefined || FM.verify.next === null).toBeTruthy();
+  test('the critical-path ladder edges match frontmatter next (plan→…→verify)', () => {
+    for (let i = 0; i < CRITICAL_LADDER.length - 1; i++) {
+      expect(FM[CRITICAL_LADDER[i]].next).toBe(CRITICAL_LADDER[i + 1]);
+    }
   });
 
-  test('walking `next` from plan visits every stage in order and terminates at verify', () => {
+  test('walking `next` from plan visits every stage in critical order (docs back-edge stops the walk)', () => {
     const walked = [];
     let cursor = 'plan';
     const seen = new Set();
@@ -137,8 +146,10 @@ describe('linear stage chain plan → dev → validate → ship → review → v
       walked.push(cursor);
       cursor = FM[cursor].next;
     }
+    // plan→dev→validate→ship→review→verify, then verify.next=ship is already seen
+    // (the docs-only back-edge) so the walk terminates cleanly.
     expect(walked).toEqual(STAGE_CHAIN);
-    expect(FM[walked[walked.length - 1]].terminal).toBe(true);
+    expect(FM.verify.next).toBe('ship');
   });
 });
 
@@ -160,13 +171,10 @@ describe('stage skills carry the HARD-GATE body chain line (body half of the dua
     test(`${name}: the successor named in the body agrees with frontmatter next`, () => {
       const line = chainGateLine(name);
       const fm = FM[name];
-      if (fm.terminal === true) {
-        // verify — terminal; the body must say so and name no successor.
-        expect(line.toUpperCase()).toContain('TERMINAL');
-      } else {
-        // The frontmatter successor must be named (backtick-quoted) in the body line.
-        expect(line).toContain('`' + fm.next + '`');
-      }
+      // Every stage carries a frontmatter next; the body HARD-GATE line must name
+      // that successor (backtick-quoted) so prose and metadata never drift.
+      expect(typeof fm.next).toBe('string');
+      expect(line).toContain('`' + fm.next + '`');
     });
   }
 });
@@ -188,14 +196,19 @@ function stagesJsSuccessors(stage) {
 
 describe('stage chain metadata is consistent with lib/workflow/stages.js', () => {
   for (const stage of STAGE_CHAIN) {
-    test(`${stage}: frontmatter next is a successor stages.js actually uses (or terminal)`, () => {
+    // IFF: a stage may advertise terminal:true ONLY IF no classification continues
+    // past it. Every one of the 6 stages has a successor in SOME classification
+    // (verify → ship in docs), so none is unconditionally terminal.
+    test(`${stage}: terminal:true iff stages.js never continues past it`, () => {
+      const continuesSomewhere = stagesJsSuccessors(stage).size > 0;
+      expect(FM[stage].terminal).toBe(!continuesSomewhere);
+    });
+
+    test(`${stage}: frontmatter next is a successor stages.js actually uses`, () => {
       const next = FM[stage].next;
       if (next === undefined || next === null) {
-        // Terminal in the critical path — verify. stages.js must also treat it as
-        // terminal for at least one classification (it is, for all but docs).
-        const isTerminalSomewhere = Object.values(WORKFLOW_STAGE_MATRIX)
-          .some((path) => path.at(-1) === stage);
-        expect(isTerminalSomewhere).toBeTruthy();
+        // Only permitted if the stage truly never continues (no such stage today).
+        expect(stagesJsSuccessors(stage).size).toBe(0);
         return;
       }
       expect([...stagesJsSuccessors(stage)]).toContain(next);
@@ -207,6 +220,14 @@ describe('stage chain metadata is consistent with lib/workflow/stages.js', () =>
       const next = FM[stage].next;
       if (!next) continue;
       expect([...stagesJsSuccessors(stage)]).toContain(next);
+    }
+  });
+
+  test('no stage advertises terminal where some classification continues past it', () => {
+    for (const stage of STAGE_CHAIN) {
+      if (FM[stage].terminal === true) {
+        expect(stagesJsSuccessors(stage).size).toBe(0);
+      }
     }
   });
 });
@@ -344,5 +365,69 @@ describe('generic sub-skill registry (backward compatible with plan)', () => {
     const partial = validatePlanSubSkillList(['research'], partialErrors, 'planning.template.partialInvocation.only');
     expect(partial).toBeUndefined();
     expect(partialErrors.map((e) => e.code)).toContain('UNKNOWN_PLAN_SUBSKILL');
+  });
+
+  // VALIDATE-vs-RESOLVE parity: the id set that validates (getSubSkillIds) must
+  // exactly equal the id set that resolves (getSubSkillDefinitions) for every
+  // owner — a subskill that validates also resolves, and vice versa.
+  for (const owner of ['plan', 'smith']) {
+    test(`${owner}: getSubSkillIds equals the ids of getSubSkillDefinitions (validate == resolve)`, () => {
+      const resolveIds = new Set(getSubSkillDefinitions(owner).map((d) => d.id));
+      const validateIds = getSubSkillIds(owner);
+      expect([...resolveIds].sort()).toEqual([...validateIds].sort());
+    });
+
+    test(`${owner}: every declared frontmatter subskill BOTH validates AND resolves`, () => {
+      const declared = FM[owner].subskills || [];
+      const resolveIds = new Set(getSubSkillDefinitions(owner).map((d) => d.id));
+      for (const sub of declared) {
+        const errors = [];
+        expect(validateSubSkillList(owner, [sub], errors, 'test')).toEqual([sub]);
+        expect(errors).toEqual([]);
+        expect(resolveIds.has(sub)).toBeTruthy();
+      }
+    });
+  }
+
+  test('getSubSkillDefinitions(plan) resolves the composed whole-skill research (not just plan.* phases)', () => {
+    const ids = getSubSkillDefinitions('plan').map((d) => d.id);
+    expect(ids).toContain('research');
+    expect(ids).toContain('plan.intent_capture');
+  });
+});
+
+// KERNEL-MAP vs METADATA: the kernel umbrella publishes a chain-map table. Its
+// rows MUST agree with each skill's actual frontmatter, so the human-facing index
+// can never drift from the machine metadata.
+describe('kernel chain-map table agrees with per-skill frontmatter', () => {
+  function parseKernelChainMap() {
+    const body = readSkill('kernel');
+    const rows = [];
+    for (const line of body.split(/\r?\n/)) {
+      // Rows look like: | `plan` | `dev` | `false` |
+      const m = line.match(/^\|\s*`(\w[\w-]*)`\s*\|\s*(`[\w-]+`|—|-)\s*\|\s*`(true|false)`\s*\|/);
+      if (!m) continue;
+      const skill = m[1];
+      const nextCell = m[2] === '—' || m[2] === '-' ? null : m[2].replace(/`/g, '');
+      const terminal = m[3] === 'true';
+      rows.push({ skill, next: nextCell, terminal });
+    }
+    return rows;
+  }
+
+  test('every stage row is present in the kernel chain-map', () => {
+    const rows = parseKernelChainMap();
+    const mapped = new Set(rows.map((r) => r.skill));
+    for (const stage of STAGE_CHAIN) expect(mapped.has(stage)).toBeTruthy();
+  });
+
+  test('each kernel chain-map row matches the skill frontmatter (next + terminal)', () => {
+    for (const row of parseKernelChainMap()) {
+      const fm = FM[row.skill];
+      expect(fm).toBeTruthy();
+      const fmNext = fm.next === undefined || fm.next === null ? null : fm.next;
+      expect(row.next).toBe(fmNext);
+      expect(row.terminal).toBe(fm.terminal === true);
+    }
   });
 });

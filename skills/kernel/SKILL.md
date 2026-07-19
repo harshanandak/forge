@@ -64,14 +64,20 @@ Every skill carries chain metadata in its frontmatter (`next`, `terminal`,
 HARD-GATE chain line in its body, so each stage announces the next one. The
 linear ladder:
 
-| Skill | `next` | terminal |
-|-------|--------|----------|
-| `plan` | `dev` | no (composes `research`) |
-| `dev` | `validate` | no |
-| `validate` | `ship` | no |
-| `ship` | `review` | no (handoff → `shepherd`) |
-| `review` | `verify` | no (handoff → `shepherd`) |
-| `verify` | — | **yes (terminal)** |
+| Skill | `next` | `terminal` |
+|-------|--------|-----------|
+| `plan` | `dev` | `false` |
+| `dev` | `validate` | `false` |
+| `validate` | `ship` | `false` |
+| `ship` | `review` | `false` |
+| `review` | `verify` | `false` |
+| `verify` | `ship` | `false` |
+
+The `next` column is each stage's DEFAULT / critical-path successor (`plan`
+composes `research`; `ship` and `review` also carry a `shepherd` handoff). The
+actual successor after `ship`, `review`, and `verify` is classification-dependent
+— see the note below. `verify`'s `next` (`ship`) is the `docs`-only pre-ship
+reuse; in every other flow nothing follows `verify`.
 
 Feeders into the chain: `triage-ready` → `claim-safety` → `dev` (rank the pick,
 prove the live lease, then work it). `research` is standalone / callable
