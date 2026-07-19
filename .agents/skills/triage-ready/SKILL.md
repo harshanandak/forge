@@ -14,7 +14,7 @@ description: >
   whole session or routing to stage skills (use kernel), not for driving an issue to a merged
   PR (use smith).
 allowed-tools: Read, Bash(forge:*)
-next: plan
+next: claim-safety
 terminal: false
 ---
 

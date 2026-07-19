@@ -32,12 +32,17 @@ const STAGE_NEXT = {
   review: 'verify',
   // verify → terminal
 };
+// Feeders point INTO the chain. triage-ready routes through claim-safety (prove
+// the live lease before work starts) — NOT straight to plan, which would bypass
+// lease safety. `research` is intentionally NOT a feeder: it is standalone /
+// callable mid-workflow and returns to its CALLER, so it declares no forced
+// `next` (it is terminal + a subskill of plan).
 const FEEDER_NEXT = {
-  research: 'plan',
-  'triage-ready': 'plan',
+  'triage-ready': 'claim-safety',
 };
 const TERMINAL_SKILLS = [
   'verify',
+  'research',
   'status',
   'shepherd',
   'kernel',
@@ -132,6 +137,35 @@ describe('linear stage chain plan → dev → validate → ship → review → v
     expect(walked).toEqual(STAGE_CHAIN);
     expect(FM[walked[walked.length - 1]].terminal).toBe(true);
   });
+});
+
+// The dual-encoding's BODY half: each stage skill carries a model-facing
+// HARD-GATE chain line (the instruction the agent actually obeys). This must
+// stay in agreement with the frontmatter `next` — a future edit that changes
+// frontmatter but leaves stale body prose is exactly what this catches.
+function chainGateLine(name) {
+  const body = readSkill(name).replace(/^---\r?\n[\s\S]*?\r?\n---/, '');
+  return body.split(/\r?\n/).find((l) => l.includes('Chain (HARD-GATE)'));
+}
+
+describe('stage skills carry the HARD-GATE body chain line (body half of the dual-encoding)', () => {
+  for (const name of STAGE_CHAIN) {
+    test(`${name}: body has a "Chain (HARD-GATE)" line`, () => {
+      expect(typeof chainGateLine(name)).toBe('string');
+    });
+
+    test(`${name}: the successor named in the body agrees with frontmatter next`, () => {
+      const line = chainGateLine(name);
+      const fm = FM[name];
+      if (fm.terminal === true) {
+        // verify — terminal; the body must say so and name no successor.
+        expect(line.toUpperCase()).toContain('TERMINAL');
+      } else {
+        // The frontmatter successor must be named (backtick-quoted) in the body line.
+        expect(line).toContain('`' + fm.next + '`');
+      }
+    });
+  }
 });
 
 describe('feeder skills point into the chain', () => {
@@ -239,4 +273,18 @@ describe('generic sub-skill registry (backward compatible with plan)', () => {
     expect(errors).toEqual([]);
     expect(out).toEqual(['plan', 'dev', 'verify']);
   });
+
+  // Reconciliation: a skill's ADVERTISED frontmatter subskills must resolve
+  // through the same generic registry (frontmatter is the source of truth). This
+  // catches the plan `subskills: [research]` vs registry drift.
+  for (const owner of ['plan', 'smith']) {
+    test(`${owner}: declared frontmatter subskills all resolve through the registry`, () => {
+      const declared = FM[owner].subskills || [];
+      expect(declared.length).toBeGreaterThan(0);
+      const errors = [];
+      const out = validateSubSkillList(owner, declared, errors, `${owner}.frontmatter`);
+      expect(errors).toEqual([]);
+      expect(out).toEqual(declared);
+    });
+  }
 });

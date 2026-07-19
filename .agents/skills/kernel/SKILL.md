@@ -72,12 +72,14 @@ announces the next one. The linear ladder:
 | `review` | `verify` | no (handoff → `shepherd`) |
 | `verify` | — | **yes (terminal)** |
 
-Feeders into the chain: `research` → `plan`, `triage-ready` → `plan`. The `smith`
-orchestrator composes the six stages (`subskills`). Utility/terminal skills
-(`status`, `shepherd`, `kernel`, `issue-basics`, `claim-safety`, `memory`,
-`rollback`, `sonarcloud`, `sonarcloud-analysis`, `parallel-deep-research`,
-`using-forge`) declare no forward-stage `next`. Meta skills (`hermes-forge`) are
-chain-exempt.
+Feeders into the chain: `triage-ready` → `claim-safety` (prove the lease before
+work starts), then plan/dev. `research` is standalone / callable mid-workflow and
+returns to its CALLER (no forced `next`); it is also a `subskill` of `plan`. The
+`smith` orchestrator composes the six stages (`subskills`). Utility/terminal
+skills (`status`, `shepherd`, `kernel`, `issue-basics`, `claim-safety`, `memory`,
+`rollback`, `research`, `sonarcloud`, `sonarcloud-analysis`,
+`parallel-deep-research`, `using-forge`) declare no forward-stage `next`. Meta
+skills (`hermes-forge`) are chain-exempt.
 
 ## Orchestrator super-skill
 
