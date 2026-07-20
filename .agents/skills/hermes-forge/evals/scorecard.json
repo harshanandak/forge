@@ -24,9 +24,9 @@
     "router_exempt": false,
     "fixtures": "present",
     "fixtures_total": 6,
-    "fixtures_best_hit": 4,
+    "fixtures_best_hit": 2,
     "reachable": true,
-    "keyword_alignment": 0.67
+    "keyword_alignment": 0.33
   },
   "behavioral": {
     "trigger_recall": null,
