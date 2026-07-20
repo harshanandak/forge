@@ -81,6 +81,20 @@ describe('kernel_pr write path (§5a)', () => {
 		expect(row.head_sha).toBe('sha2');
 	});
 
+	test('upsertPr coalesces journal_ptr: a head-only refresh does not sever the journal link', async () => {
+		// journal_ptr is a soft link — a head change that omits it must NOT null it (Codex #426).
+		const broker = makeBroker();
+		await broker.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 23 };
+
+		await broker.upsertPr({ ...key, head_sha: 'shaA', journal_ptr: 'jrnl/23' });
+		await broker.upsertPr({ ...key, head_sha: 'shaB' }); // head-only refresh, no journalPtr
+
+		const row = await readRow('/repo-a/.git', 'owner/a', 23);
+		expect(row.head_sha).toBe('shaB');
+		expect(row.journal_ptr).toBe('jrnl/23');
+	});
+
 	test('updatePrVerdict with a STALE head_sha does NOT overwrite a fresher-head verdict', async () => {
 		const broker = makeBroker();
 		await broker.initialize();

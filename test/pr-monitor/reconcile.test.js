@@ -118,6 +118,27 @@ describe('reconcile() — pure diff rules', () => {
 		expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
 	});
 
+	test('composite (repo, number) key: a stale renamed-slug row is retired, not masked by the new slug', () => {
+		// Two rows can share a number under one git_common_dir after a repo rename; the
+		// natural key includes repo, so the diff must too (Codex #426).
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5', { repo: 'owner/new' })] };
+		const observed = {
+			lease: { watchers: [] },
+			leaseFresh: true,
+			prRows: [kRow(5, 'sha5', 'open', { repo: 'owner/old' })], // stale OLD slug, same number
+			liveWatcherPids: [],
+		};
+
+		const { actions } = reconcile(desired, observed, NOW);
+
+		// The old-slug row (no longer desired) is retired…
+		expect(actions).toContainEqual({ type: 'retire', pr: { repo: 'owner/old', number: 5 } });
+		// …and the new-slug PR is registered (kernel has no owner/new#5 row — not masked).
+		const upsert = actions.find(a => a.type === 'upsertPrRow');
+		expect(upsert).toBeDefined();
+		expect(upsert.row.repo).toBe('owner/new');
+	});
+
 	test('legacy numeric watcher entry is never reaped (unverifiable pid)', () => {
 		const desired = { gitCommonDir: '/r/.git', openPrs: [] };
 		const observed = {
