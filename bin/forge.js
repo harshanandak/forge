@@ -4159,6 +4159,11 @@ async function main() {
       console.error(`Error running '${command}':`, err.message);
       process.exit(1);
     }
+    // NOTE: the autonomous-shepherd per-command trigger is intentionally NOT wired here.
+    // The reconcile engine + daemon land in this PR; the auto-fire wiring is deferred to a
+    // follow-up (W-S4c) because a naive dispatch-finally trigger spawns a session-outliving
+    // daemon on EVERY command, which breaks test isolation (Windows rmSync EBUSY) and needs
+    // its own firing-policy + containment design. Start the daemon via `forge shepherd daemon`.
     return;
   }
 
