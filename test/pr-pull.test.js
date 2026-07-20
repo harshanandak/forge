@@ -803,7 +803,8 @@ describe('verdictToLegacyState (verdict → deprecated legacy ladder, single sou
     expect(verdictToLegacyState('REVIEW-PENDING')).toBe('NEEDS_REVIEW');
     expect(verdictToLegacyState('BLOCKED-THREADS')).toBe('NEEDS_REVIEW');
     expect(verdictToLegacyState('BLOCKED-CHECKS')).toBe('PENDING');
-    expect(verdictToLegacyState('BEHIND')).toBe('PENDING');
+    // BEHIND escalates (legacy handleBehindBase default) — not PENDING.
+    expect(verdictToLegacyState('BEHIND')).toBe('ESCALATE');
     expect(verdictToLegacyState('BLOCKED-CONFLICT')).toBe('ESCALATE');
     expect(verdictToLegacyState('UNKNOWN')).toBe('UNKNOWN');
   });
