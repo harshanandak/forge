@@ -80,9 +80,15 @@ describe('using-forge router (forge skill for)', () => {
 
   test('hermes-forge is Hermes-SCOPED: generic orientation stays with kernel/status, not hermes-forge', () => {
     // hermes-forge keywords are Hermes-specific only, so a normal user's generic orientation
-    // request must NOT route to the Hermes-scoped skill (kernel owns general "orient").
-    expect(routeSkill('orient me', { catalog }).best).not.toBe('hermes-forge');
-    expect(routeSkill('orient me on this project', { catalog }).best).not.toBe('hermes-forge');
+    // request must NOT route to the Hermes-scoped skill (kernel owns general "orient"). Assert the
+    // POSITIVE target (kernel) and a KNOWN route — a bare `not.toBe('hermes-forge')` passes vacuously
+    // when routing returns no match at all, so it would not catch a regression to unknown.
+    const orient = routeSkill('orient me', { catalog });
+    expect(orient.unknown).toBe(false);
+    expect(orient.best).toBe('kernel');
+    const orientProject = routeSkill('orient me on this project', { catalog });
+    expect(orientProject.unknown).toBe(false);
+    expect(orientProject.best).toBe('kernel');
     // A genuinely Hermes-specific phrase still reaches hermes-forge.
     expect(routeSkill('starting a Hermes session on this Forge repo', { catalog }).best).toBe('hermes-forge');
   });
