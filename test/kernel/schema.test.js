@@ -27,6 +27,7 @@ const REQUIRED_TABLES = [
 	'outbox',
 	'dead_letters',
 	'memories',
+	'pr',
 ];
 
 describe('kernel schema registry', () => {

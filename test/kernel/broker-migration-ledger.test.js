@@ -130,6 +130,7 @@ describe('Kernel broker — migration ledger', () => {
 			'006_kernel_issue_fidelity_columns',
 			'007_kernel_worktrees_linkage_columns',
 			'008_kernel_memories_fts',
+			'009_kernel_pr_linkage',
 		]);
 
 		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
