@@ -238,6 +238,7 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
 			gatherDesired: async () => ({ openPrs: [{ repo: 'forge', number: 1, branch: 'b', headSha: 's', issueId: null, worktreeId: null, journalPtr: null }], gitCommonDir: '/repo/.git' }),
 			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
 			spawnWatcher: () => ({ pid: 1 }),
+			writeClaim: () => {}, // inject the FS seam — no real watch.startedat marker written to /repo
 			updateWatchers: () => false, // superseded on the immediate converge
 			exit: () => { exited = true; },
 		});
@@ -385,7 +386,10 @@ describe('real kernel broker wiring (no module-namespace default)', () => {
 
 	test('defaultBuildBroker returns a createLocalBroker-backed broker (instance methods present)', async () => {
 		const dir = tmpRepo();
-		const built = await executor.defaultBuildBroker({ projectRoot: dir, gitCommonDir: '/gcd/.git' });
+		// gitCommonDir must live UNDER the test's tmp dir — a fake absolute path like
+		// '/gcd/.git' resolves to an unwritable fs-root on Linux CI (and to a real,
+		// pollution-prone C:\gcd on Windows). Keep the DB inside `dir`.
+		const built = await executor.defaultBuildBroker({ projectRoot: dir, gitCommonDir: path.join(dir, '.git') });
 		try {
 			expect(typeof built.broker.listOpenPrs).toBe('function');
 			expect(typeof built.broker.upsertPr).toBe('function');
@@ -609,6 +613,7 @@ describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', () 
 		let acquired = false; const launches = [];
 		executor.fireAndForget({
 			projectRoot: '/repo', gitCommonDir: '/g',
+			kernelInitialized: () => true, // isolate the RAIL gate — else the kernel guard short-circuits first (vacuous pass)
 			railEnabled: () => false,
 			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
 			release: () => {},
@@ -623,6 +628,7 @@ describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', () 
 		let acquired = false;
 		executor.fireAndForget({
 			projectRoot: '/repo', gitCommonDir: '/g',
+			kernelInitialized: () => true, // isolate the RAIL gate from the kernel-exists guard
 			railEnabled: () => true,
 			acquire: () => { acquired = true; return { ok: false }; },
 			release: () => {},
