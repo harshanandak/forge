@@ -350,3 +350,240 @@ describe('launchDaemon — capability classification + detached spawn options', 
 		expect(spawned).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// W-S4b daemon-lifecycle review fixes (findings 1-10). Each test fails without
+// its corresponding fix in reconcile-executor.js.
+// ---------------------------------------------------------------------------
+
+describe('finding 1 — a failed gh listing is a no-op, never a teardown', () => {
+	test('gatherDesired reports listingOk:false when the gh call throws', async () => {
+		const desired = await executor.gatherDesired('/g', {
+			repo: 'forge', broker: null,
+			runGh: () => { throw new Error('network/auth/rate-limit'); },
+		});
+		expect(desired.listingOk).toBe(false);
+		expect(desired.openPrs).toEqual([]);
+	});
+
+	test('gatherDesired reports listingOk:true on a successful listing', async () => {
+		const desired = await executor.gatherDesired('/g', {
+			repo: 'forge', broker: null, runGh: () => '[]',
+		});
+		expect(desired.listingOk).toBe(true);
+	});
+
+	test('convergeOnce SKIPS reconcile+execute when listingOk===false (zero retire/stop, no observe)', async () => {
+		let observed = false;
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/g',
+			repo: 'forge',
+			now: () => 1000,
+			gatherDesired: async () => ({ openPrs: [], gitCommonDir: '/g', listingOk: false }),
+			gatherObserved: async () => { observed = true; return { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }; },
+			broker: { upsertPr: async () => ({}), retirePr: async () => ({}) },
+			spawnWatcher: () => ({ pid: 1 }),
+			writeClaim: () => {},
+		});
+		expect(conv.actions).toEqual([]);
+		expect(conv.actions.some((a) => a.type === 'retire' || a.type === 'stopWatcher')).toBe(false);
+		expect(observed).toBe(false); // early return — no observe, no reconcile, no execute
+		expect(conv.desiredCount).not.toBe(0); // must not look like "no PRs" (would trigger self-retire)
+	});
+});
+
+describe('finding 2 — daemon threads the live watcher set across converge passes', () => {
+	test('runDaemon feeds pass N\'s returned watchers into pass N+1\'s lock (not a fresh lease:null each tick)', async () => {
+		const locksSeen = [];
+		// Inject convergeOnce to capture the lock the daemon threads in per pass, and
+		// echo a started watcher so a later pass should observe it as the live set.
+		const converge = async (_root, o) => {
+			locksSeen.push(o.lock ? o.lock.watchers : null);
+			return { actions: [], watchers: [{ pr: 5, repo: 'forge', pid: 111, startedAt: 't' }], desiredCount: 1 };
+		};
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g',
+			intervalMs: 5,
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {}, release: () => {},
+			exit: () => {},
+			convergeOnce: converge,
+		});
+		await new Promise((r) => setTimeout(r, 40));
+		if (res && res.timer) clearInterval(res.timer);
+		expect(locksSeen.length).toBeGreaterThanOrEqual(2); // immediate pass + ≥1 interval tick
+		expect(locksSeen[0]).toEqual([]);                    // cold start: empty threaded set
+		// A later pass MUST see the watcher the prior pass returned — without threading
+		// the daemon would pass a null/empty lock every tick (lease:null → re-start forever).
+		expect(locksSeen.some((w) => Array.isArray(w) && w.some((x) => x.pid === 111))).toBe(true);
+	});
+});
+
+describe('finding 3 — the non-once daemon converges immediately on cold start', () => {
+	test('runDaemon invokes convergeOnce once before the interval fires', async () => {
+		let calls = 0;
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g',
+			intervalMs: 100000, // far larger than the test window: only the immediate pass can run
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {}, release: () => {},
+			exit: () => {},
+			convergeOnce: async () => { calls += 1; return { actions: [], watchers: [], desiredCount: 1 }; },
+		});
+		expect(calls).toBe(1);
+		if (res && res.timer) clearInterval(res.timer);
+	});
+});
+
+describe('finding 4 — retire never strands an un-exited zombie on release failure', () => {
+	test('release throws during retire → the daemon still calls exit', async () => {
+		let exited = null;
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g',
+			intervalMs: 100000,
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {},
+			release: () => { throw new Error('release boom'); },
+			exit: (code) => { exited = code; },
+			convergeOnce: async () => ({ actions: [], watchers: [], desiredCount: 0 }),
+		});
+		expect(exited).toBe(0);
+		if (res && res.timer) clearInterval(res.timer);
+	});
+});
+
+describe('finding 5 — re-entrancy guard on the converge interval', () => {
+	test('a slow converge → overlapping ticks never run two passes concurrently', async () => {
+		let concurrent = 0; let maxConcurrent = 0; let calls = 0;
+		const converge = async () => {
+			calls += 1; concurrent += 1; maxConcurrent = Math.max(maxConcurrent, concurrent);
+			await new Promise((r) => setTimeout(r, 40));
+			concurrent -= 1;
+			return { actions: [], watchers: [], desiredCount: 1 };
+		};
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/g',
+			intervalMs: 5, // ticks fire far faster than a 40ms converge → would overlap without the guard
+			acquire: () => ({ ok: true, token: 't' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {}, release: () => {},
+			exit: () => {},
+			convergeOnce: converge,
+		});
+		await new Promise((r) => setTimeout(r, 140));
+		if (res && res.timer) clearInterval(res.timer);
+		expect(maxConcurrent).toBe(1);
+		expect(calls).toBeGreaterThan(1);
+	});
+});
+
+describe('finding 6 — gatherObserved verifies the journal marker before reporting a pid live', () => {
+	test('pid alive but marker mismatch → NOT live → reconcile emits startWatcher (PR stays monitored)', async () => {
+		const observed = await executor.gatherObserved('/g',
+			{ watchers: [{ pr: 9, repo: 'forge', pid: 999, startedAt: 't1' }], heartbeatAt: new Date().toISOString() },
+			{ isAlive: () => true, readClaim: () => 't2', projectRoot: '/repo' });
+		expect(observed.liveWatcherPids).toHaveLength(0);
+		const { reconcile } = require('../../lib/pr-monitor/reconcile');
+		const { actions } = reconcile(
+			{ openPrs: [{ repo: 'forge', number: 9, branch: 'b', headSha: 's' }], gitCommonDir: '/g' },
+			observed, Date.now());
+		expect(actions.some((a) => a.type === 'startWatcher' && a.pr.number === 9)).toBe(true);
+	});
+
+	test('pid alive AND marker matches → reported live', async () => {
+		const observed = await executor.gatherObserved('/g',
+			{ watchers: [{ pr: 9, repo: 'forge', pid: 999, startedAt: 't1' }], heartbeatAt: new Date().toISOString() },
+			{ isAlive: () => true, readClaim: () => 't1', projectRoot: '/repo' });
+		expect(observed.liveWatcherPids).toEqual([{ pid: 999, startedAt: 't1' }]);
+	});
+});
+
+describe('finding 7 — rowByNumber uses a (repo, number) composite key', () => {
+	test('two kernel rows, same number, different repo → the desired PR gets ITS repo row', async () => {
+		const desired = await executor.gatherDesired('/g', {
+			repo: 'forge', projectRoot: '/repo',
+			runGh: () => JSON.stringify([{ number: 5, headRefName: 'b', headRefOid: 'sha5' }]),
+			// The correct ('forge') row is FIRST, the wrong ('other') row LAST — a
+			// number-only key would let the last write win and attach 'other'. The
+			// composite (repo, number) key must still pick 'forge'.
+			broker: { listOpenPrs: async () => [
+				{ repo: 'forge', number: 5, issue_id: 'ISSUE-FORGE', worktree_id: 'WT-FORGE' },
+				{ repo: 'other', number: 5, issue_id: 'ISSUE-OTHER', worktree_id: 'WT-OTHER' },
+			] },
+		});
+		expect(desired.openPrs).toHaveLength(1);
+		expect(desired.openPrs[0].issueId).toBe('ISSUE-FORGE');
+		expect(desired.openPrs[0].worktreeId).toBe('WT-FORGE');
+	});
+});
+
+describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', () => {
+	test('rail disabled → fully inert (no acquire, no launch)', () => {
+		let acquired = false; const launches = [];
+		executor.fireAndForget({
+			projectRoot: '/repo', gitCommonDir: '/g',
+			railEnabled: () => false,
+			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
+			release: () => {},
+			launch: (c) => launches.push(c),
+			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
+		});
+		expect(acquired).toBe(false);
+		expect(launches).toHaveLength(0);
+	});
+
+	test('rail enabled → arbitration proceeds (acquire is called)', () => {
+		let acquired = false;
+		executor.fireAndForget({
+			projectRoot: '/repo', gitCommonDir: '/g',
+			railEnabled: () => true,
+			acquire: () => { acquired = true; return { ok: false }; },
+			release: () => {},
+			launch: () => {},
+			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
+		});
+		expect(acquired).toBe(true);
+	});
+});
+
+describe('finding 9 — execute dispatches every action type via the handler map', () => {
+	test('all five action types run with identical behavior after the refactor', async () => {
+		const upserts = []; const retires = []; const spawns = []; const kills = [];
+		const watchers = await executor.execute([
+			{ type: 'startWatcher', pr: { repo: 'forge', number: 1 } },
+			{ type: 'upsertPrRow', row: { repo: 'forge', number: 1 } },
+			{ type: 'reapOrphan', pid: 900, startedAt: 't9' },
+			{ type: 'retire', pr: { repo: 'forge', number: 2 } },
+			{ type: 'stopWatcher', pr: { number: 3 } },
+		], {
+			projectRoot: '/repo', repo: 'forge', gitCommonDir: '/g',
+			now: () => Date.parse('2026-07-20T00:00:00.000Z'),
+			watchers: [
+				{ pr: 3, repo: 'forge', pid: 300, startedAt: 't3' },
+				{ pr: 4, repo: 'forge', pid: 900, startedAt: 't9' },
+			],
+			isAlive: () => true,
+			readClaim: (e) => (e.pid === 900 ? 't9' : (e.pid === 300 ? 't3' : null)),
+			kill: (pid) => kills.push(pid),
+			spawnWatcher: (o) => { spawns.push(o.prNumber); return { pid: 111 }; },
+			writeClaim: () => {},
+			broker: { upsertPr: async (r) => upserts.push(r), retirePr: async (k) => retires.push(k) },
+		});
+		expect(spawns).toEqual([1]);
+		expect(upserts).toHaveLength(1);
+		expect(retires).toHaveLength(1);
+		expect(kills.slice().sort()).toEqual([300, 900]);
+		expect(watchers.some((w) => w.pr === 1)).toBe(true);
+		expect(watchers.some((w) => w.pr === 3)).toBe(false);   // stopped
+		expect(watchers.some((w) => w.pid === 900)).toBe(false); // reaped
+	});
+});
+
+describe('finding 10 — gh pr list is paginated with a high --limit', () => {
+	test('gatherDesired passes a --limit large enough to cover >30 open PRs', async () => {
+		let argv = null;
+		await executor.gatherDesired('/g', { repo: 'forge', broker: null, runGh: (a) => { argv = a; return '[]'; } });
+		expect(argv).toContain('--limit');
+		const i = argv.indexOf('--limit');
+		expect(Number(argv[i + 1])).toBeGreaterThanOrEqual(100);
+	});
+});
