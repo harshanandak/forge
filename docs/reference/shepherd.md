@@ -26,7 +26,7 @@ verb:
   (exiting immediately as a clean no-op if a live daemon already owns it),
   heartbeats, and converges the *entire* PR world every ~60s: self-registering
   hand-opened PRs, restarting killed watchers, reaping verified orphan watchers,
-  converging CI/check state into kernel verdicts, and retiring merged/closed PRs.
+  converging CI check state into kernel verdicts, and retiring merged/closed PRs.
   It **self-retires** — releases the lease, kills its verified children, exits —
   once no PRs remain open. It is normally launched by Forge's own auto-fire
   trigger or started in a harness background shell at session start; it is not

@@ -2,7 +2,7 @@
 name: shepherd
 description: >
   Own open PRs to merge-readiness — autonomously. Forge runs a singleton shepherd
-  daemon (forge shepherd daemon) that watches every open PR, converges CI/check
+  daemon (forge shepherd daemon) that watches every open PR, converges CI check
   state into kernel verdicts, re-runs flaky required checks, reaps orphan watchers,
   and self-retires when no PRs remain; one-shot passes (forge shepherd <pr>) exist
   for a single bounded check. Use when a PR was just opened or shipped; when a
@@ -25,7 +25,7 @@ Forge owns your open PRs. A singleton daemon converges every open PR toward merg
 
 `shepherd` is the PR-ownership utility, not a workflow stage. It has two modes over the **single `forge shepherd` verb**:
 
-- **Daemon (default ownership):** `forge shepherd daemon` is a machine-wide singleton for this repo. It heartbeats and converges the whole PR world every ~60s — self-registering hand-opened PRs, restarting killed watchers, reaping verified orphans, converging CI/check state into kernel verdicts, retiring merged/closed PRs — then self-retires (releases the lease, kills its children, exits) once no PRs remain open. You do NOT poll by hand; the daemon does.
+- **Daemon (default ownership):** `forge shepherd daemon` is a machine-wide singleton for this repo. It heartbeats and converges the whole PR world every ~60s — self-registering hand-opened PRs, restarting killed watchers, reaping verified orphans, converging CI check state into kernel verdicts, retiring merged/closed PRs — then self-retires (releases the lease, kills its children, exits) once no PRs remain open. You do NOT poll by hand; the daemon does.
 - **One-shot pass:** `forge shepherd <pr>` reads one PR's state, takes at most one idempotent Tier-A action, and exits. Use it for a point-in-time question about a single PR.
 
 ## Which mode? (decision rule)
