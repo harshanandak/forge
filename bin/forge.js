@@ -4158,17 +4158,12 @@ async function main() {
     } catch (err) {
       console.error(`Error running '${command}':`, err.message);
       process.exit(1);
-    } finally {
-      // Autonomous-shepherd per-command trigger (W-S4b). Fires the debounce tick so
-      // a live daemon converges PRs without any explicit user invocation. HARD
-      // CONTRACT: non-blocking (no await), error-swallowing (bare catch), and it
-      // NEVER touches `result` or the exit code — a throw here can never break the
-      // command that ran. The hot path is a single lock read; only a cold tick with
-      // no live daemon spawns (detached, off the command's critical path).
-      try {
-        require('../lib/pr-monitor/reconcile-executor').fireAndForget({ projectRoot, dryRun: process.argv.includes('--dry-run') });
-      } catch { /* never affect the command result or exit code */ }
     }
+    // NOTE: the autonomous-shepherd per-command trigger is intentionally NOT wired here.
+    // The reconcile engine + daemon land in this PR; the auto-fire wiring is deferred to a
+    // follow-up (W-S4c) because a naive dispatch-finally trigger spawns a session-outliving
+    // daemon on EVERY command, which breaks test isolation (Windows rmSync EBUSY) and needs
+    // its own firing-policy + containment design. Start the daemon via `forge shepherd daemon`.
     return;
   }
 
