@@ -153,9 +153,18 @@ the default `GITHUB_TOKEN` — a `pull_request: synchronize` it produces lands i
 
 **Fix (maintainer action required):** create a repository secret named
 **`FORGE_PR_TOKEN`** holding a fine-grained **PAT** (or GitHub-App installation
-token) with **`contents: write`** and **`workflows`** permissions. The
-auto-update-branch step uses it and falls back to `GITHUB_TOKEN` when the secret
-is absent:
+token). The PAT's OWN permissions — not the workflow's `permissions:` block, which
+only governs the built-in `GITHUB_TOKEN` — must cover every call the step makes:
+
+| Permission | Why |
+| --- | --- |
+| **Contents: write** | push the update-branch merge to the head |
+| **Pull requests: write** | `PUT /pulls/{n}/update-branch` (the update-branch API) |
+| **Checks: write** | create the `forge/auto-update` marker check run |
+| **Workflows** | only if the base branch may change `.github/workflows/**` (the merge would carry it) |
+
+The auto-update-branch step uses the token and falls back to `GITHUB_TOKEN` when
+the secret is absent:
 
 ```yaml
 GH_TOKEN: ${{ secrets.FORGE_PR_TOKEN || github.token }}
