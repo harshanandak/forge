@@ -1,22 +1,38 @@
 [
   {
+    "query": "A PR just got shipped — keep watching it until every required check is green.",
+    "should_trigger": true
+  },
+  {
+    "query": "Why isn't my PR merging? Tell me exactly what's blocking the PR.",
+    "should_trigger": true
+  },
+  {
     "query": "Is PR #212 ready to merge yet?",
     "should_trigger": true
   },
   {
-    "query": "The lint check on my PR keeps failing intermittently — kick off a re-run of the failed jobs.",
+    "query": "My PR has been sitting for an hour with no merge — poll the PR and tell me what's wrong.",
     "should_trigger": true
   },
   {
-    "query": "Keep an eye on pull request 88 and tell me when all the required checks pass.",
+    "query": "One of the checks failed on my pull request — kick off a re-run of the required job.",
     "should_trigger": true
   },
   {
-    "query": "I just wrapped up /review on this PR — babysit the checks and escalate if it isn't mergeable.",
+    "query": "Keep an eye on my open PRs and babysit them toward merge.",
     "should_trigger": true
   },
   {
-    "query": "Shepherd PR 300 and rebase it onto master if it's behind.",
+    "query": "Start the shepherd daemon so my open PRs get watched.",
+    "should_trigger": true
+  },
+  {
+    "query": "Watch the pull request and let me know when it's mergeable.",
+    "should_trigger": true
+  },
+  {
+    "query": "What's the current PR verdict on #90 — read it back for me.",
     "should_trigger": true
   },
   {
@@ -24,19 +40,15 @@
     "should_trigger": false
   },
   {
-    "query": "The PR just merged to master — confirm CI is green there and close the linked issue.",
-    "should_trigger": false
-  },
-  {
     "query": "Push my validated feature branch and open a pull request from the template.",
     "should_trigger": false
   },
   {
-    "query": "Where am I in the workflow and what work is still in flight right now?",
+    "query": "The PR merged to master — run the post-merge health check and close the linked issue.",
     "should_trigger": false
   },
   {
-    "query": "Show me the SonarCloud issues flagged on this PR.",
+    "query": "Where am I in the workflow and what work is still in flight right now?",
     "should_trigger": false
   }
 ]

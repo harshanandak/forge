@@ -6,12 +6,40 @@ polling / rerun / escalation loop a human otherwise runs by hand after
 the pre-merge gate (the embedded documentation-and-handoff gate in `/ship` and `/review`).
 
 ```bash
-forge shepherd <pr-number>
+forge shepherd daemon                      # singleton reconcile daemon: owns ALL open PRs
+forge shepherd <pr-number>                 # one bounded pass over a single PR
 forge shepherd <pr-number> --auto-rebase   # opt-in, default OFF
 forge shepherd <pr-number> --pull          # read-only: WHY it is blocked + what to fix
 forge shepherd <pr-number> --pull --json   # same payload as machine-readable JSON
 forge shepherd <pr-number> --bundle --json # read-only: the COMPLETE PR-state bundle
+forge shepherd watch <pr-number>           # single-PR constant monitor loop
+forge shepherd events <pr-number> --since <seq>  # read new journal events back
 ```
+
+## Daemon vs bounded pass (two modes, one verb)
+
+There are two ways to run the shepherd, both under the single `forge shepherd`
+verb:
+
+- **`forge shepherd daemon` — the singleton reconcile daemon (W-S4b), the default
+  ownership model.** It acquires the machine-wide shepherd lease for this repo
+  (exiting immediately as a clean no-op if a live daemon already owns it),
+  heartbeats, and converges the *entire* PR world every ~60s: self-registering
+  hand-opened PRs, restarting killed watchers, reaping verified orphan watchers,
+  converging CI/check state into kernel verdicts, and retiring merged/closed PRs.
+  It **self-retires** — releases the lease, kills its verified children, exits —
+  once no PRs remain open. It is normally launched by Forge's own auto-fire
+  trigger or started in a harness background shell at session start; it is not
+  meant to be run by hand as a detached process. This is why an agent does not
+  poll: the daemon owns the convergence loop.
+- **`forge shepherd <pr>` — one bounded pass.** Reads one PR's state, takes at
+  most one Tier-A action, exits. The point-in-time surface for a single PR (see
+  *Bounded-pass model* below).
+
+Session start: `forge prime` reports the open-PR count and daemon liveness (one
+lease-file read). If PRs are open and the daemon is dead, start
+`forge shepherd daemon` in the harness background shell so it is reaped with the
+session.
 
 ## `--pull`: the actionable blocker payload
 

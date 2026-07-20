@@ -3,9 +3,9 @@
   "fixtures": "present",
   "static": {
     "token_cost": {
-      "desc_chars": 991,
-      "body_lines": 51,
-      "score": 47
+      "desc_chars": 939,
+      "body_lines": 86,
+      "score": 46
     },
     "caps": {
       "desc_within": true,
@@ -23,10 +23,10 @@
     "has_curated_rule": true,
     "router_exempt": false,
     "fixtures": "present",
-    "fixtures_total": 5,
-    "fixtures_best_hit": 1,
+    "fixtures_total": 9,
+    "fixtures_best_hit": 9,
     "reachable": true,
-    "keyword_alignment": 0.2
+    "keyword_alignment": 1
   },
   "behavioral": {
     "trigger_recall": null,

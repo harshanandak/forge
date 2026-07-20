@@ -1,69 +1,105 @@
 ---
 name: shepherd
 description: >
-  Monitor an already-reviewed OPEN pull request toward merge: read the CI/check rollup and the
-  branch-protection required-check set, take at most one idempotent action (re-run a flaky
-  required check, or post a status reply to a thread), then declare MERGE_READY, PENDING, or
-  escalate. Use when the user says "is PR #123 ready to merge yet?", "poll/watch the checks on
-  my PR", "the required CI job is flaky — kick off a re-run", "keep an eye on this PR until
-  it's green", "babysit the checks after /review", "shepherd PR 45", or "monitor the PR toward
-  merge (rebase if behind, --auto-rebase)". NEVER merges (the human merges in the GitHub UI),
-  edits code, or resolves review threads. Do NOT use to fix or reply-and-resolve PR feedback
-  from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR — that is
-  `ship`; nor for the post-merge "CI green on master + close issues" check — that is `verify`;
-  nor for a general "where am I / what's in flight" report — that is `status`.
+  Own open PRs to merge-readiness — autonomously. Forge runs a singleton shepherd
+  daemon (forge shepherd daemon) that watches every open PR, converges CI/check
+  state into kernel verdicts, re-runs flaky required checks, reaps orphan watchers,
+  and self-retires when no PRs remain; one-shot passes (forge shepherd <pr>) exist
+  for a single bounded check. Use when a PR was just opened or shipped; when a
+  session starts and open PRs exist (check daemon liveness, start it in a
+  background shell if dead); when the user asks "why isn't my PR merging", "what's
+  blocking the PR", "is the PR ready", "did a check fail / go red"; when asked to
+  "keep watching / keep an eye on / babysit my PRs"; or to read PR verdicts
+  (forge shepherd <pr> --pull --json, forge shepherd events). NEVER merges and
+  never resolves review threads — fixing review feedback is `review`; opening the
+  PR is `ship`; post-merge health is `verify`; general orientation is `status`.
 allowed-tools: Bash, Read, Grep, Glob
 terminal: true
 handoffs:
   - review
 ---
 
-Run one bounded monitor pass over a pull request: read CI and check state, take at most one idempotent action, then hand off. Never merges and never resolves review threads.
+Forge owns your open PRs. A singleton daemon converges every open PR toward merge-readiness; you read its verdicts and only step in on escalations. Never merges, never resolves review threads.
 
 # Shepherd
 
-`shepherd` is a **utility command, not a workflow stage.** It automates the polling / rerun / escalation loop that today is done by hand after `/review`. It does **not** replace `/review` (which still owns semantic review and its stage transition) and does **not** perform the pre-merge doc gate (embedded in `/ship` and `/review`).
+`shepherd` is the PR-ownership utility, not a workflow stage. It has two modes over the **single `forge shepherd` verb**:
 
-## Usage
+- **Daemon (default ownership):** `forge shepherd daemon` is a machine-wide singleton for this repo. It heartbeats and converges the whole PR world every ~60s — self-registering hand-opened PRs, restarting killed watchers, reaping verified orphans, converging CI/check state into kernel verdicts, retiring merged/closed PRs — then self-retires (releases the lease, kills its children, exits) once no PRs remain open. You do NOT poll by hand; the daemon does.
+- **One-shot pass:** `forge shepherd <pr>` reads one PR's state, takes at most one idempotent Tier-A action, and exits. Use it for a point-in-time question about a single PR.
+
+## Which mode? (decision rule)
+
+- User asks about **one PR, right now** ("is #212 ready?", "why is this blocked?") → **one-shot** (`forge shepherd <pr> --pull`).
+- Anything **ongoing** — "keep", "until it merges", "watch", "babysit", multiple PRs, or a session that starts with PRs already open → **ensure the daemon is running**.
+
+## Session-start ritual
+
+`forge prime` reports open-PR count + daemon liveness (a single lease-file read) and the exact start command. If open PRs exist and the daemon is dead:
 
 ```bash
-forge shepherd <pr-number>
-forge shepherd <pr-number> --auto-rebase   # opt-in, default OFF
+forge shepherd daemon    # start it in the HARNESS BACKGROUND SHELL
 ```
 
-## Bounded-pass model (one pass = one invocation)
+Start it in the harness background shell (Claude Code / Codex background-shell), so it is session-scoped and reaped with the session. NEVER launch a detached spawn from the agent — the detached path is Forge's own auto-fire trigger and bare-CLI fallback, not something you invoke by hand.
 
-Each `forge shepherd <pr>` invocation is **ONE discrete bounded pass**: it reads PR state, takes at most the allowed Tier-A action, then **exits**. It never sits in-process polling "until merge-ready."
+## Reading verdicts (the common case)
 
-This mirrors the project's documented ergonomic from `/review`, the pre-merge gate, and the Greptile process: **poll briefly, then stop and hand off.** Any pass that finds checks still pending exits as `PENDING`, and the next scheduled pass picks up where it left off.
+```bash
+forge shepherd <pr> --pull --json          # actionable payload: WHY blocked + exactly what to fix
+forge shepherd <pr> --bundle --json        # the COMPLETE read-only PR-state bundle
+forge shepherd events <pr> --since <seq>   # only the new events since sequence <seq>
+```
 
-A `--watch` affordance, if you want one, lives in an **external scheduler** (e.g. cron or a `/loop`) that re-invokes the bounded pass on an interval with debounce (>= 60s between passes, cancel-in-progress). There is no in-process infinite loop.
+`--pull` is strictly read-only (dry-run pass: no rerun, no rebase, no merge, no thread resolution). It returns one bounded, actionable-only payload — `blockers[]`, classified `requiredChecks`, failed-check log `failures[]` (matrix-deduped), and every unresolved `reviewThreads[]` — so you get "everything blocking this PR + what to fix" in one call. Passing checks and satisfied policy are omitted.
 
-## What it never does
+### Verdict vocabulary (collapsed, W-S1)
 
-- **Never merges.** There is no merge action and no server-side auto-merge latch. The shepherd terminates at `MERGE_READY` and hands off to the human, who merges in the GitHub UI (mirroring the pre-merge gate's merge handoff).
-- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/review-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
+| Verdict | Meaning |
+| --- | --- |
+| `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
+| `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
+| `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
+| `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Needs a re-trigger, not more waiting. |
+| `ESCALATE` | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |
+| `HARD_STOP` | A permanent auth/scope failure retrying cannot fix — a human must widen token scope. |
 
-## Action ladder
+## Trigger scenario → command
 
-- **Tier-A (autonomous, idempotent, reversible):** re-run a flaky **required** check via `gh run rerun --failed` (capped by a rerun budget). Post status replies to threads (reply only).
-- **Tier-B (opt-in per-flag, default OFF):** `--auto-rebase` rebases onto the base and force-pushes with lease. Preconditions: clean working tree, HEAD unchanged during the pass. A lease rejection is a **hard-stop + escalate** — the shepherd never re-arms the lease, because doing so would clobber the concurrent human push the lease exists to protect.
-- **Tier-C (human escalation):** merge conflicts, required-check failures a rerun did not fix, an unreadable required-check set, unknown mergeability, auth/scope failures, oscillation, and budget exhaustion all stop and escalate with context posted to the PR.
+| Situation | Command |
+| --- | --- |
+| PR just opened / shipped | ensure `forge shepherd daemon` running |
+| Session starts, open PRs exist, daemon dead | `forge shepherd daemon` (background shell) |
+| "Why isn't my PR merging / what's blocking it" | `forge shepherd <pr> --pull` |
+| "Is the PR ready?" | `forge shepherd <pr> --pull` (read `MERGE_READY`) |
+| "A check failed / went red" | `forge shepherd <pr> --pull --json` (read `failures[]`) |
+| "Keep watching / babysit my PRs" | ensure `forge shepherd daemon` running |
+| Read incremental deltas | `forge shepherd events <pr> --since <seq>` |
 
-## Merge-readiness gate
+## Boundaries (kept — true of both modes)
 
-Merge-ready is declared **only** when the branch-protection required-check set is **known** AND all of it is green AND the branch is not behind base. The required set is read from `gh api repos/{owner}/{repo}/branches/{base}/protection/required_status_checks`. If branch protection is unreadable (insufficient token scope, or the branch is not protected), the shepherd does **not** guess — it escalates with the readable rollup attached.
+- **Never merges.** No merge action, no server-side auto-merge latch. Terminates at `MERGE_READY` and hands off — a human merges in the GitHub UI.
+- **Never resolves review threads.** It may post a status reply; thread *resolution* is semantic and stays with `review`.
+- **Action ladder.** Tier-A (autonomous, idempotent): re-run a flaky **required** check (rerun-budget capped); post status replies. Tier-B (opt-in, default OFF): `--auto-rebase` rebases onto base and force-pushes with lease — a lease rejection is a hard-stop, never re-armed. Tier-C: everything else escalates.
+- **Required-check gate.** `MERGE_READY` only when the branch-protection required set is *known* and all green; if protection is unreadable, it escalates rather than guessing.
+- **HEAD-changed abort.** Before any mutating action it re-reads the head SHA and aborts if HEAD moved.
 
-## Concurrency & safety
+## Adjacent skills
 
-- The advisory `shepherd:active` marker is **not** mutual exclusion. The real guard is a per-action HEAD-SHA re-read: before any mutating action the shepherd re-reads the head SHA, and if HEAD moved since the pass started it **aborts** the action.
-- Auth taxonomy: token expiry (401) pauses and surfaces; insufficient scope (403) is a permanent **hard-stop**; a secondary rate limit (403 + `Retry-After`) honors the delay and resumes on the next pass.
+- Fixing review feedback (CodeRabbit/Greptile/human comments, resolving threads) → `review`.
+- Opening or pushing the PR → `ship`.
+- Post-merge health (CI green on main, close issues) → `verify`.
+- "Where am I / what's in flight" orientation → `status`.
 
-## Per-harness behavior
+## Kill-switches
 
-- **Claude Code / Codex:** invoke `forge shepherd <pr>` directly; an external scheduler may drive repeated bounded passes.
-- **Cursor:** manually-invoked only. Run `forge shepherd <pr>` from a terminal — there is no polling-loop affordance and no hook reliance on this surface.
+```bash
+FORGE_SHEPHERD_DISABLE=1        # env: makes the auto-fire trigger fully inert
+forge gate disable rail.auto_shepherd   # config: disables auto-start on ship/push
+```
+
+Both leave the manual `forge shepherd` surface usable; they only stop the automatic daemon fire.
 
 ## State
 
-Progress is durable in GitHub: PR **comments** and **labels** plus `git`. There is no separate local state store.
+Progress is durable in GitHub (PR comments, labels, `git`). The one local store is the per-PR journal under `.forge/pr-monitor/<repo>-<pr>/` (append-only `events.ndjson` + snapshot/consumer cursors) — the replay surface for `events --since`. The bounded one-shot pass keeps no separate local state.
