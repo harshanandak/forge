@@ -12,8 +12,10 @@ const NOW = 1_700_000_000_000;
 function pr(number, headSha, extra = {}) {
 	return { repo: 'owner/r', number, branch: `feat/${number}`, headSha, issueId: null, worktreeId: null, journalPtr: null, ...extra };
 }
-function kRow(number, headSha, state = 'open') {
-	return { id: `x#${number}`, number, repo: 'owner/r', head_sha: headSha, state };
+function kRow(number, headSha, state = 'open', extra = {}) {
+	// A complete kernel_pr row (listOpenPrs is SELECT *): include branch + soft links
+	// so link-drift detection has real values to compare (defaults match pr()).
+	return { id: `x#${number}`, number, repo: 'owner/r', head_sha: headSha, state, branch: `feat/${number}`, issue_id: null, worktree_id: null, journal_ptr: null, ...extra };
 }
 
 describe('reconcile() — pure diff rules', () => {
@@ -81,6 +83,39 @@ describe('reconcile() — pure diff rules', () => {
 		expect(upsert).toBeDefined();
 		expect(upsert.row.head_sha).toBe('shaB');
 		expect(actions.some(a => a.type === 'startWatcher')).toBe(false);
+	});
+
+	test('same head but a newly-discovered soft link → upsertPrRow refreshes (never left unlinked)', () => {
+		// A worktree/issue discovered AFTER the row was first registered must reach the
+		// ledger even though the head is unchanged (Codex #426).
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5', { issueId: 'ISSUE-9', worktreeId: 'WT-9' })] };
+		const observed = {
+			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 't0' }] },
+			leaseFresh: true,
+			prRows: [kRow(5, 'sha5')], // issue_id/worktree_id still null in kernel
+			liveWatcherPids: [{ pid: 100, startedAt: 't0' }],
+		};
+
+		const { actions } = reconcile(desired, observed, NOW);
+
+		const upsert = actions.find(a => a.type === 'upsertPrRow');
+		expect(upsert).toBeDefined();
+		expect(upsert.row.issue_id).toBe('ISSUE-9');
+		expect(upsert.row.worktree_id).toBe('WT-9');
+		// Head unchanged + watcher already live → no startWatcher, no reap.
+		expect(actions.some(a => a.type === 'startWatcher')).toBe(false);
+	});
+
+	test('same head AND same links → still converged (no needless upsert)', () => {
+		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5', { issueId: 'ISSUE-9' })] };
+		const observed = {
+			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 't0' }] },
+			leaseFresh: true,
+			prRows: [kRow(5, 'sha5', 'open', { issue_id: 'ISSUE-9' })],
+			liveWatcherPids: [{ pid: 100, startedAt: 't0' }],
+		};
+
+		expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
 	});
 
 	test('legacy numeric watcher entry is never reaped (unverifiable pid)', () => {

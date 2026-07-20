@@ -196,4 +196,23 @@ describe('kernel_pr write path (§5a)', () => {
 		const open = await makeBroker().listOpenPrs('/repo-a/.git');
 		expect(open.some(r => r.number === 13)).toBe(false);
 	});
+
+	test('upsertPr REOPENS a retired row (state back to open, retired_at cleared)', async () => {
+		// A reopened PR re-upserts the same key; without resetting state it would stay
+		// invisible to listOpenPrs (state='open') forever (Codex #426).
+		const broker = makeBroker();
+		await broker.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 21 };
+
+		await broker.upsertPr({ ...key, head_sha: 'shaA' });
+		await broker.retirePr(key, { state: 'closed', retired_at: '2026-07-20T10:00:00.000Z' });
+		expect((await makeBroker().listOpenPrs('/repo-a/.git')).some(r => r.number === 21)).toBe(false);
+
+		// PR reopened → reconciler upserts it again (it is in the open set now).
+		await broker.upsertPr({ ...key, head_sha: 'shaA' });
+		const row = await readRow('/repo-a/.git', 'owner/a', 21);
+		expect(row.state).toBe('open');
+		expect(row.retired_at).toBeFalsy();
+		expect((await makeBroker().listOpenPrs('/repo-a/.git')).some(r => r.number === 21)).toBe(true);
+	});
 });
