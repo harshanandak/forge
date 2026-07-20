@@ -113,6 +113,34 @@ describe('kernel_pr write path (§5a)', () => {
 		expect(row.verdict).toBe('approve');
 	});
 
+	test('upsertPr INVALIDATES the prior verdict when the head advances to a new commit', async () => {
+		// A new commit must not carry the old head's verdict forward as if fresh (Codex
+		// P1 #426) — else a stale approval reads as current and the freshest-head guard
+		// loses its evidence.
+		const broker = makeBroker();
+		await broker.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 19 };
+
+		await broker.upsertPr({ ...key, head_sha: 'shaA' });
+		await broker.updatePrVerdict(key, { verdict: 'approve', verdict_source: 'local', verdict_at: '2026-07-20T08:00:00.000Z', head_sha: 'shaA' });
+		expect((await readRow('/repo-a/.git', 'owner/a', 19)).verdict).toBe('approve');
+
+		// New commit → upsert refreshes head AND clears the now-stale verdict fields.
+		await broker.upsertPr({ ...key, head_sha: 'shaB' });
+		const row = await readRow('/repo-a/.git', 'owner/a', 19);
+		expect(row.head_sha).toBe('shaB');
+		expect(row.verdict).toBeFalsy();
+		expect(row.verdict_source).toBeFalsy();
+		expect(row.verdict_at).toBeFalsy();
+
+		// A SAME-head refresh must NOT clear a verdict (only a head change invalidates).
+		await broker.updatePrVerdict(key, { verdict: 'approve', verdict_source: 'local', verdict_at: '2026-07-20T09:00:00.000Z', head_sha: 'shaB' });
+		await broker.upsertPr({ ...key, head_sha: 'shaB', branch: 'feat/19b' });
+		const row2 = await readRow('/repo-a/.git', 'owner/a', 19);
+		expect(row2.verdict).toBe('approve');
+		expect(row2.branch).toBe('feat/19b');
+	});
+
 	test('a LOCAL verdict overrides a superseded head (source=local bypass); a github one would be discarded', async () => {
 		// Guards the design's core "local is always authoritative" branch
 		// (`OR ? = 'local'`). Without it this write would be discarded and the branch

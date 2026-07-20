@@ -26,6 +26,9 @@ describe('reconcile() — pure diff rules', () => {
 		expect(actions.map(a => a.type)).toEqual(['upsertPrRow', 'startWatcher']);
 		expect(actions[0].row.number).toBe(5);
 		expect(actions[0].row.head_sha).toBe('sha5');
+		// git_common_dir is part of the kernel_pr natural key — must be carried from
+		// desired so broker.upsertPr(action.row) is directly writable (Codex #426).
+		expect(actions[0].row.git_common_dir).toBe('/r/.git');
 		expect(actions[1].pr.number).toBe(5);
 	});
 
