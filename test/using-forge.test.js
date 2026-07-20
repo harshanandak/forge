@@ -78,6 +78,21 @@ describe('using-forge router (forge skill for)', () => {
     expect(routeSkill('please review this commit', { catalog }).unknown).toBe(true);
   });
 
+  test('hermes-forge is Hermes-SCOPED: generic orientation stays with kernel/status, not hermes-forge', () => {
+    // hermes-forge keywords are Hermes-specific only, so a normal user's generic orientation
+    // request must NOT route to the Hermes-scoped skill (kernel owns general "orient"). Assert the
+    // POSITIVE target (kernel) and a KNOWN route — a bare `not.toBe('hermes-forge')` passes vacuously
+    // when routing returns no match at all, so it would not catch a regression to unknown.
+    const orient = routeSkill('orient me', { catalog });
+    expect(orient.unknown).toBe(false);
+    expect(orient.best).toBe('kernel');
+    const orientProject = routeSkill('orient me on this project', { catalog });
+    expect(orientProject.unknown).toBe(false);
+    expect(orientProject.best).toBe('kernel');
+    // A genuinely Hermes-specific phrase still reaches hermes-forge.
+    expect(routeSkill('starting a Hermes session on this Forge repo', { catalog }).best).toBe('hermes-forge');
+  });
+
   test('every routable catalog skill has a curated route (no silent drops as skills are added)', () => {
     // Meta skills are intentionally not route targets: the dispatch skill itself and the harness adapter.
     const META = new Set(['using-forge', 'hermes-forge']);

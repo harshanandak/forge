@@ -1,0 +1,41 @@
+{
+  "skill": "ship",
+  "fixtures": "present",
+  "static": {
+    "token_cost": {
+      "desc_chars": 993,
+      "body_lines": 237,
+      "score": 28
+    },
+    "caps": {
+      "desc_within": true,
+      "body_within": true,
+      "score": 100
+    },
+    "description_quality": {
+      "has_trigger_cues": true,
+      "has_disambiguation_cues": true,
+      "adequate_length": true,
+      "score": 100
+    }
+  },
+  "router_reachability": {
+    "has_curated_rule": true,
+    "router_exempt": false,
+    "fixtures": "present",
+    "fixtures_total": 5,
+    "fixtures_best_hit": 3,
+    "reachable": true,
+    "keyword_alignment": 0.6
+  },
+  "behavioral": {
+    "trigger_recall": null,
+    "trigger_precision": null,
+    "disambiguation": null,
+    "chain_correctness": null,
+    "outcome_quality": null,
+    "variance": null,
+    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+  },
+  "composite": 78
+}
