@@ -195,11 +195,64 @@ describe('runDaemon — singleton lease lifecycle', () => {
 	});
 });
 
+describe('watcher marker cleanup + superseded-daemon stop', () => {
+	test('stopWatcher/reapOrphan remove the start-time marker (a reused PID cannot match a stale one)', async () => {
+		const removed = [];
+		await executor.execute(
+			[{ type: 'stopWatcher', pr: { number: 5 } }],
+			{
+				projectRoot: '/repo',
+				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: 't1' }],
+				isAlive: () => true, readClaim: () => 't1', kill: () => {},
+				removeClaim: (e) => removed.push(e),
+				broker: {},
+			},
+		);
+		expect(removed).toHaveLength(1);
+		expect(removed[0].pr).toBe(5);
+	});
+
+	test('convergeOnce reports leaseLost when updateWatchers is rejected (stale/superseded token)', async () => {
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/repo/.git',
+			token: 'stale-tok',
+			gatherDesired: async () => ({ openPrs: [{ repo: 'forge', number: 1, branch: 'b', headSha: 's', issueId: null, worktreeId: null, journalPtr: null }], gitCommonDir: '/repo/.git' }),
+			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
+			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
+			spawnWatcher: () => ({ pid: 1 }),
+			writeClaim: () => {},
+			updateWatchers: () => false, // lock reclaimed by a newer daemon → publish rejected
+		});
+		expect(conv.leaseLost).toBe(true);
+	});
+
+	test('daemon self-exits when superseded (updateWatchers rejects its stale token)', async () => {
+		let exited = false;
+		let released = false;
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/repo/.git',
+			acquire: () => ({ ok: true, token: 'stale' }),
+			startHeartbeat: () => ({}), stopHeartbeat: () => {},
+			release: () => { released = true; }, // token-guarded in prod; a no-op vs the new owner
+			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
+			gatherDesired: async () => ({ openPrs: [{ repo: 'forge', number: 1, branch: 'b', headSha: 's', issueId: null, worktreeId: null, journalPtr: null }], gitCommonDir: '/repo/.git' }),
+			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
+			spawnWatcher: () => ({ pid: 1 }),
+			updateWatchers: () => false, // superseded on the immediate converge
+			exit: () => { exited = true; },
+		});
+		expect(exited).toBe(true);
+		expect(res.retired).toBe(true);
+		expect(released).toBe(true); // retire ran (release is token-guarded in prod, so harmless to the new owner)
+	});
+});
+
 describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
 	test('a throwing tick is swallowed — fireAndForget never throws (dispatch-safety contract)', () => {
 		expect(() => executor.fireAndForget({
 			projectRoot: '/repo',
 			gitCommonDir: '/repo/.git',
+			kernelInitialized: () => true, // reach the tick so the throw-swallow is actually exercised
 			tick: () => { throw new Error('boom in tick'); },
 		})).not.toThrow();
 	});
@@ -226,6 +279,7 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
 		const ctx = {
 			projectRoot: repo,
 			gitCommonDir,
+			kernelInitialized: () => true, // bypass the no-lazy-create guard for this arbitration test
 			acquire,
 			release: () => {}, // keep the winner's lock in place so the loser truly loses
 			launch: (c) => launches.push(c),
@@ -236,6 +290,40 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
 
 		expect(launches).toHaveLength(1);
 		fs.rmSync(repo, { recursive: true, force: true });
+	});
+
+	test('no kernel DB → creates NOTHING (no-lazy-create invariant; setup/init/dry-run safe)', () => {
+		const repo = tmpRepo(); // fresh dir, no kernel DB
+		const launches = [];
+		let acquired = false;
+		executor.fireAndForget({
+			projectRoot: repo,
+			gitCommonDir: repo,
+			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
+			launch: (c) => launches.push(c),
+			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
+		});
+		expect(acquired).toBe(false); // never even arbitrated the lease
+		expect(launches).toHaveLength(0);
+		// The trigger created no shepherd state under the repo.
+		expect(fs.existsSync(path.join(repo, 'forge', 'shepherd.lock'))).toBe(false);
+		fs.rmSync(repo, { recursive: true, force: true });
+	});
+
+	test('dry-run → no-op even when the kernel exists', () => {
+		const launches = [];
+		let acquired = false;
+		executor.fireAndForget({
+			projectRoot: '/repo',
+			gitCommonDir: '/repo/.git',
+			dryRun: true,
+			kernelInitialized: () => true,
+			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
+			launch: (c) => launches.push(c),
+			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
+		});
+		expect(acquired).toBe(false);
+		expect(launches).toHaveLength(0);
 	});
 });
 

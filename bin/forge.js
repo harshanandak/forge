@@ -4166,7 +4166,7 @@ async function main() {
       // command that ran. The hot path is a single lock read; only a cold tick with
       // no live daemon spawns (detached, off the command's critical path).
       try {
-        require('../lib/pr-monitor/reconcile-executor').fireAndForget({ projectRoot });
+        require('../lib/pr-monitor/reconcile-executor').fireAndForget({ projectRoot, dryRun: process.argv.includes('--dry-run') });
       } catch { /* never affect the command result or exit code */ }
     }
     return;
