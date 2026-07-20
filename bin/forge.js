@@ -4158,6 +4158,16 @@ async function main() {
     } catch (err) {
       console.error(`Error running '${command}':`, err.message);
       process.exit(1);
+    } finally {
+      // Autonomous-shepherd per-command trigger (W-S4b). Fires the debounce tick so
+      // a live daemon converges PRs without any explicit user invocation. HARD
+      // CONTRACT: non-blocking (no await), error-swallowing (bare catch), and it
+      // NEVER touches `result` or the exit code — a throw here can never break the
+      // command that ran. The hot path is a single lock read; only a cold tick with
+      // no live daemon spawns (detached, off the command's critical path).
+      try {
+        require('../lib/pr-monitor/reconcile-executor').fireAndForget({ projectRoot });
+      } catch { /* never affect the command result or exit code */ }
     }
     return;
   }
