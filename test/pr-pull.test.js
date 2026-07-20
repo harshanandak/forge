@@ -18,6 +18,7 @@ const {
   STATUS_BOT_LOGINS,
   computeVerdict,
   verdictToLegacyState,
+  legacyStateFor,
   verdictLabel,
   VERDICT_LABELS,
   MERGE_VERDICTS,
@@ -820,6 +821,24 @@ describe('verdictToLegacyState (verdict → deprecated legacy ladder, single sou
     expect(verdictToLegacyState('')).toBe('UNKNOWN');
     expect(verdictToLegacyState(undefined)).toBe('UNKNOWN');
     expect(verdictToLegacyState('not-a-verdict')).toBe('UNKNOWN');
+  });
+});
+
+describe('legacyStateFor (terminal lifecycle wins over the verdict projection)', () => {
+  test('a MERGED / CLOSED lifecycle overrides the verdict', () => {
+    // Regression: the old dry-run runShepherdPass emitted MERGED/CLOSED via
+    // lifecycleOutcome, so a legacy `state` consumer stops polling a landed PR.
+    expect(legacyStateFor('CLEAN-MERGEABLE', 'MERGED')).toBe('MERGED');
+    expect(legacyStateFor('UNKNOWN', 'MERGED')).toBe('MERGED');
+    expect(legacyStateFor('BLOCKED-CHECKS', 'CLOSED')).toBe('CLOSED');
+    expect(legacyStateFor('REVIEW-PENDING', 'closed')).toBe('CLOSED');
+  });
+
+  test('an OPEN / absent lifecycle falls through to the verdict projection', () => {
+    expect(legacyStateFor('CLEAN-MERGEABLE', 'OPEN')).toBe('MERGE_READY');
+    expect(legacyStateFor('BEHIND', 'OPEN')).toBe('ESCALATE');
+    expect(legacyStateFor('BLOCKED-CONFLICT', undefined)).toBe('ESCALATE');
+    expect(legacyStateFor('UNKNOWN', '')).toBe('UNKNOWN');
   });
 });
 
