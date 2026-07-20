@@ -238,3 +238,115 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
 		fs.rmSync(repo, { recursive: true, force: true });
 	});
 });
+
+// Regression for the wave-review MAJOR finding: the daemon must use a REAL
+// createLocalBroker (listOpenPrs/upsertPr/retirePr are INSTANCE methods) — the broker
+// MODULE namespace has none, so the kernel half would silently no-op behind the catch
+// while unit tests (injecting mock brokers) stayed green. These exercise the un-mocked
+// real broker so a regression to the namespace default is caught.
+describe('real kernel broker wiring (no module-namespace default)', () => {
+	const { createLocalBroker } = require('../../lib/kernel/broker');
+	const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+
+	async function realBroker(dir) {
+		const driver = createBuiltinSQLiteDriver({});
+		const broker = createLocalBroker({ projectRoot: dir, gitCommonDir: '/gcd/.git', databasePath: path.join(dir, 'kernel.sqlite'), driver });
+		await broker.initialize();
+		return { broker, driver };
+	}
+
+	test('execute upsertPrRow actually writes a kernel_pr row via a real broker instance', async () => {
+		const dir = tmpRepo();
+		const { broker, driver } = await realBroker(dir);
+		try {
+			await executor.execute(
+				[{ type: 'upsertPrRow', row: { git_common_dir: '/gcd/.git', repo: 'owner/a', number: 5, branch: 'feat/5', head_sha: 'sha5' } }],
+				{ broker, gitCommonDir: '/gcd/.git', projectRoot: dir, watchers: [] },
+			);
+			const rows = await broker.listOpenPrs('/gcd/.git');
+			expect(rows.some((r) => r.number === 5 && r.repo === 'owner/a')).toBe(true);
+		} finally {
+			driver.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('runDaemon threads its broker end-to-end: a desired PR is registered in kernel_pr', async () => {
+		const dir = tmpRepo();
+		const { broker, driver } = await realBroker(dir);
+		try {
+			const res = await executor.runDaemon(dir, {
+				once: true,
+				gitCommonDir: '/gcd/.git',
+				acquire: () => ({ ok: true, token: 'tok' }),
+				startHeartbeat: () => null, stopHeartbeat: () => {}, release: () => {},
+				broker, // injected real broker → threaded through convergeArgs → execute
+				gatherDesired: async () => ({ gitCommonDir: '/gcd/.git', openPrs: [{ repo: 'owner/a', number: 7, branch: 'feat/7', headSha: 'sha7', issueId: null, worktreeId: null, journalPtr: null }] }),
+				gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
+				spawnWatcher: () => ({ pid: 111 }),
+				updateWatchers: () => {},
+			});
+			expect(res.ok).toBe(true);
+			const rows = await broker.listOpenPrs('/gcd/.git');
+			expect(rows.some((r) => r.number === 7)).toBe(true);
+		} finally {
+			driver.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('defaultBuildBroker returns a createLocalBroker-backed broker (instance methods present)', async () => {
+		const dir = tmpRepo();
+		const built = await executor.defaultBuildBroker({ projectRoot: dir, gitCommonDir: '/gcd/.git' });
+		try {
+			expect(typeof built.broker.listOpenPrs).toBe('function');
+			expect(typeof built.broker.upsertPr).toBe('function');
+			expect(typeof built.broker.retirePr).toBe('function');
+		} finally {
+			if (built.driver && built.driver.close) built.driver.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('launchDaemon — capability classification + detached spawn options', () => {
+	test('bg-shell capability present → launches via bg-shell (classified by capability, not name)', () => {
+		const calls = [];
+		const res = executor.launchDaemon({
+			projectRoot: '/repo',
+			harness: { hasBgShell: true, runBgShell: (argv) => calls.push(argv) },
+		});
+		expect(res.via).toBe('bg-shell');
+		expect(calls).toHaveLength(1);
+	});
+
+	test('no bg-shell capability → detached spawn with windowsHide + unref + error listener', () => {
+		let opts = null; let unrefed = false; let errorListener = false;
+		const fakeChild = {
+			pid: 999,
+			on: (ev) => { if (ev === 'error') errorListener = true; },
+			unref: () => { unrefed = true; },
+		};
+		const res = executor.launchDaemon({
+			projectRoot: '/repo',
+			spawnProcess: (_bin, _args, o) => { opts = o; return fakeChild; },
+		});
+		expect(res.via).toBe('detached');
+		expect(opts.detached).toBe(true);
+		expect(opts.stdio).toBe('ignore');
+		expect(opts.windowsHide).toBe(true); // containment: never flash a console
+		expect(unrefed).toBe(true);          // never keep the triggering command's event loop alive
+		expect(errorListener).toBe(true);    // a failed launch degrades to "not started", never throws
+	});
+
+	test('uncertain capability (empty harness) → detached fallback (fail-safe)', () => {
+		let spawned = false;
+		const res = executor.launchDaemon({
+			projectRoot: '/repo',
+			harness: {},
+			spawnProcess: () => { spawned = true; return { pid: 1, on: () => {}, unref: () => {} }; },
+		});
+		expect(res.via).toBe('detached');
+		expect(spawned).toBe(true);
+	});
+});

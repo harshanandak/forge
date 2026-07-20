@@ -51,6 +51,7 @@ const BACKGROUND_REACHABLE = [
   'lib/commands/shepherd.js',
   'lib/adapters/pr-state-adapter.js',
   'lib/pr-monitor/watch-lifecycle.js',
+  'lib/pr-monitor/reconcile-executor.js',
   'lib/pr-monitor/upsert-sticky.js',
   'lib/adapters/greptile-review-adapter.js',
   'lib/commands/serve.js',
