@@ -353,7 +353,22 @@ jobs:
         if: steps.resolve.outputs.should_run == 'true' && steps.autoact.outputs.update_branch == 'true'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          # CI-dead-head fix (kernel 3c8a8962): the update-branch PUSH below must be
+          # authored by a token that RE-TRIGGERS CI on the new head. GitHub does NOT
+          # start new workflow runs for events created with the default GITHUB_TOKEN
+          # (the pull_request `synchronize` it creates lands in an approval-required
+          # state), so a GITHUB_TOKEN-updated head would sit with NO CI running and
+          # could never satisfy required checks to merge. A fine-grained PAT or
+          # GitHub-App token (repo secret FORGE_PR_TOKEN) re-triggers CI normally.
+          # The PAT's OWN scopes must cover every call this step makes: Contents:
+          # write (push), Pull requests: write (PUT /pulls/{n}/update-branch), and
+          # Checks: write (the forge/auto-update marker check run) — the workflow
+          # permissions: block only governs the built-in GITHUB_TOKEN, not this PAT.
+          # Falls back to github.token when the secret is
+          # ABSENT — identical no-retrigger behavior to before, so no regression;
+          # there is simply no auto-CI until a maintainer adds the secret.
+          # Docs: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+          GH_TOKEN: ${{ secrets.FORGE_PR_TOKEN || github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
         run: |

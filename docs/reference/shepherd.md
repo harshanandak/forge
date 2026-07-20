@@ -139,6 +139,42 @@ same verb (or `forge shepherd events`) on its own cadence.
 - **Auth taxonomy.** 401 (expiry) pauses and surfaces; 403 insufficient-scope is
   a hard-stop; 403 with `Retry-After` honors the delay and resumes next pass.
 
+## GitHub Actions backstop — auto-updated heads re-trigger CI (`FORGE_PR_TOKEN`)
+
+The `pr-monitor.yml` Actions workflow can auto-update an otherwise-clean-but-behind
+PR branch (merge base into the head). That push must **re-trigger CI on the new
+head**, or the head sits with no required checks running and can never merge.
+
+GitHub deliberately does **not** start new workflow runs for events created with
+the default `GITHUB_TOKEN` — a `pull_request: synchronize` it produces lands in an
+*approval-required* state instead of running. So an auto-update authored by
+`GITHUB_TOKEN` leaves a **CI-dead head**. (Official rule:
+<https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow>.)
+
+**Fix (maintainer action required):** create a repository secret named
+**`FORGE_PR_TOKEN`** holding a fine-grained **PAT** (or GitHub-App installation
+token). The PAT's OWN permissions — not the workflow's `permissions:` block, which
+only governs the built-in `GITHUB_TOKEN` — must cover every call the step makes:
+
+| Permission | Why |
+| --- | --- |
+| **Contents: write** | push the update-branch merge to the head |
+| **Pull requests: write** | `PUT /pulls/{n}/update-branch` (the update-branch API) |
+| **Checks: write** | create the `forge/auto-update` marker check run |
+| **Workflows** | only if the base branch may change `.github/workflows/**` (the merge would carry it) |
+
+The auto-update-branch step uses the token and falls back to `GITHUB_TOKEN` when
+the secret is absent:
+
+```yaml
+GH_TOKEN: ${{ secrets.FORGE_PR_TOKEN || github.token }}
+```
+
+With the secret set, auto-updated heads re-run CI automatically. Without it, the
+workflow behaves exactly as before (no regression) — it just cannot auto-run CI on
+the updated head. Forge only wires the code path and reads the secret; **creating
+the secret is the maintainer's responsibility** — Forge never fabricates a token.
+
 ## Per-harness behavior
 
 - **Claude Code / Codex:** invoke `forge shepherd <pr>` directly; an external
