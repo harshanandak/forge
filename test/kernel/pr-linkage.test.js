@@ -37,9 +37,10 @@ describe('kernel migration 009 — pr linkage table', () => {
 		expect(migration.apply[0]).toContain('git_common_dir TEXT NOT NULL');
 		expect(migration.apply[0]).toContain('number INTEGER NOT NULL');
 		expect(migration.apply[0]).toContain("state TEXT NOT NULL DEFAULT 'open'");
-		// The reconciler's "open PRs in this repo" index + the natural-key uniqueness guard.
+		// The reconciler's covering "open PRs in this repo, ordered" index + the
+		// natural-key uniqueness guard.
 		expect(migration.apply).toContain(
-			'CREATE INDEX IF NOT EXISTS idx_pr_common_dir_state ON kernel_pr (git_common_dir, state);',
+			'CREATE INDEX IF NOT EXISTS idx_pr_common_dir_state_repo_number ON kernel_pr (git_common_dir, state, repo, number);',
 		);
 		expect(migration.apply).toContain(
 			'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_common_dir_repo_number ON kernel_pr (git_common_dir, repo, number);',
@@ -47,7 +48,7 @@ describe('kernel migration 009 — pr linkage table', () => {
 		// Rollback drops the indexes (reverse order) and the table.
 		expect(migration.rollback).toEqual([
 			'DROP INDEX IF EXISTS idx_pr_common_dir_repo_number;',
-			'DROP INDEX IF EXISTS idx_pr_common_dir_state;',
+			'DROP INDEX IF EXISTS idx_pr_common_dir_state_repo_number;',
 			'DROP TABLE IF EXISTS kernel_pr;',
 		]);
 	});
@@ -67,7 +68,7 @@ describe('kernel migration 009 — pr linkage table', () => {
 			'009_kernel_pr_linkage',
 		]);
 		expect(plan.apply).toContain(
-			'CREATE INDEX IF NOT EXISTS idx_pr_common_dir_state ON kernel_pr (git_common_dir, state);',
+			'CREATE INDEX IF NOT EXISTS idx_pr_common_dir_state_repo_number ON kernel_pr (git_common_dir, state, repo, number);',
 		);
 		// KEEP-IN-SYNC guard: kernel_pr must NOT be created by 001 — it is owned by 009 so a
 		// fresh DB creates it exactly once. FAILS until `pr` is added to MIGRATION_ADDED_TABLES.
