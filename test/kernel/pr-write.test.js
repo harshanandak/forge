@@ -113,6 +113,46 @@ describe('kernel_pr write path (§5a)', () => {
 		expect(row.verdict).toBe('approve');
 	});
 
+	test('a LOCAL verdict overrides a superseded head (source=local bypass); a github one would be discarded', async () => {
+		// Guards the design's core "local is always authoritative" branch
+		// (`OR ? = 'local'`). Without it this write would be discarded and the branch
+		// is otherwise untested — deleting it leaves every other test green.
+		const broker = makeBroker();
+		await broker.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 15 };
+
+		// Row registered at an OLD head. A github verdict against a NEW, mismatched head
+		// is discarded (not the current head, not local).
+		await broker.upsertPr({ ...key, head_sha: 'shaOld' });
+		await broker.updatePrVerdict(key, { verdict: 'reject', verdict_source: 'github', verdict_at: '2026-07-20T05:00:00.000Z', head_sha: 'shaNew' });
+		let row = await readRow('/repo-a/.git', 'owner/a', 15);
+		expect(row.verdict).toBeFalsy(); // github mismatched-head write discarded
+
+		// A LOCAL verdict against that same mismatched head DOES land — local is
+		// authoritative (it holds the lease and polls fastest). This is the bypass branch.
+		await broker.updatePrVerdict(key, { verdict: 'approve', verdict_source: 'local', verdict_at: '2026-07-20T06:00:00.000Z', head_sha: 'shaNew' });
+		row = await readRow('/repo-a/.git', 'owner/a', 15);
+		expect(row.verdict).toBe('approve');
+		expect(row.verdict_source).toBe('local');
+		expect(row.head_sha).toBe('shaNew');
+	});
+
+	test('updatePrVerdict lands on a row with no head_sha yet (head_sha IS NULL disjunct)', async () => {
+		// Guards the first precedence disjunct: a freshly-registered row with no head
+		// accepts its first verdict regardless of source. Deleting `head_sha IS NULL OR`
+		// would leave this write with no matching disjunct.
+		const broker = makeBroker();
+		await broker.initialize();
+		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 17 };
+
+		await broker.upsertPr({ ...key, branch: 'feat/17' }); // no head_sha → stored null
+		await broker.updatePrVerdict(key, { verdict: 'approve', verdict_source: 'github', verdict_at: '2026-07-20T07:00:00.000Z', head_sha: 'shaFirst' });
+
+		const row = await readRow('/repo-a/.git', 'owner/a', 17);
+		expect(row.verdict).toBe('approve');
+		expect(row.head_sha).toBe('shaFirst');
+	});
+
 	test('retirePr sets state + retired_at', async () => {
 		const broker = makeBroker();
 		await broker.initialize();

@@ -98,6 +98,31 @@ describe('reconcile tick() debounce (§2)', () => {
 		expect(s.calls.execute).toBe(0);
 	});
 
+	// G3 bumps the sentinel BEFORE the (unwrapped) enumerate() — so even a slow/failing
+	// gh call still stamps the throttle and the NEXT tick takes G2 instead of re-hammering
+	// gh. If the bump were moved after enumerate(), a throw would skip it and the throttle
+	// would never hold. This asserts the documented ordering invariant.
+	test('G3 stamps the sentinel BEFORE enumerate so a failing gh still throttles the next tick', () => {
+		writeLock({ heartbeatAgoMs: STALE_MS + 10000 }); // stale
+		writeSentinelAgo(90000); // window elapsed → G3
+		const calls = { enumerate: 0, execute: 0 };
+		const throwingEnumerate = () => { calls.enumerate += 1; throw new Error('gh timed out'); };
+		const execute = () => { calls.execute += 1; };
+
+		// The failure surfaces out of tick (fireAndForget swallows it in prod)…
+		expect(() => tick({ gitCommonDir: dir, now: () => BASE, enumerate: throwingEnumerate, execute })).toThrow('gh timed out');
+		expect(calls.enumerate).toBe(1);
+		expect(calls.execute).toBe(0);
+		// …but the sentinel was already stamped to `now` BEFORE enumerate ran.
+		expect(Math.abs(fs.statSync(sentinelPath()).mtimeMs - BASE)).toBeLessThan(1000);
+
+		// A follow-up tick 10s later now takes G2 — the throttle held; NO re-enumeration.
+		const s2 = makeSpies();
+		const r2 = tick({ gitCommonDir: dir, now: () => BASE + 10000, enumerate: s2.enumerate, execute: s2.execute });
+		expect(r2.path).toBe('G2');
+		expect(s2.calls.enumerate).toBe(0);
+	});
+
 	test('no lock at all + no sentinel → cold path enumerates once and creates sentinel', () => {
 		const s = makeSpies();
 
