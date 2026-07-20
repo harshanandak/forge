@@ -17,6 +17,7 @@ const {
   buildBotStatusBlockers,
   STATUS_BOT_LOGINS,
   computeVerdict,
+  verdictToLegacyState,
   verdictLabel,
   VERDICT_LABELS,
   MERGE_VERDICTS,
@@ -446,7 +447,10 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
       adapter, runGh, runPass, self: 'me',
     });
 
-    expect(payload.state).toBe('ESCALATE');
+    // `state` is now DERIVED from the verdict (verdictToLegacyState), not from the
+    // injected runPass: failing required matrix checks → BLOCKED-CHECKS → PENDING.
+    expect(payload.state).toBe('PENDING');
+    expect(payload.verdict).toBe('BLOCKED-CHECKS');
     expect(typeof payload.summary).toBe('string');
     // matrix collapse: two failing jobs, identical excerpt → ONE failure entry
     expect(payload.failures.length).toBe(1);
@@ -471,9 +475,10 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     expect(ghCalls.some((c) => c.includes('111'))).toBe(true);
   });
 
-  test('is STRICTLY read-only: the real decision pass never fires a Tier-A rerun mutation', async () => {
-    // Use the REAL runShepherdPass (no injected runPass) with a FAILING required
-    // check — the path that would normally rerun. --pull must NOT mutate.
+  test('is STRICTLY read-only: never fires a Tier-A rerun mutation on a failing required check', async () => {
+    // --pull derives its verdict/state from a read-only snapshot and NEVER runs the
+    // acting decision pass, so a FAILING required check (the path that would rerun
+    // under `forge shepherd`) must NOT mutate CI here.
     let rerunCalls = 0;
     const checks = [
       { name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/1/job/111' },
@@ -784,6 +789,36 @@ describe('pull payload carries the merge verdict (c01936be regression)', () => {
     for (const v of MERGE_VERDICTS) expect(VERDICT_LABELS).toContain(verdictLabel(v));
     expect(verdictLabel('')).toBe('pr-verdict:unknown');
     expect(verdictLabel('not-a-verdict')).toBe('pr-verdict:unknown');
+  });
+});
+
+// verdictToLegacyState is the SINGLE source that maps the canonical 7-enum
+// verdict onto the deprecated `runShepherdPass` ladder for back-compat consumers.
+// The read-only `--pull` payload no longer runs a second decision pass to compute
+// `state` independently — it derives `state` from `verdict` through this one map,
+// so the two vocabularies can never disagree.
+describe('verdictToLegacyState (verdict → deprecated legacy ladder, single source)', () => {
+  test('maps every canonical verdict to a legacy terminal state', () => {
+    expect(verdictToLegacyState('CLEAN-MERGEABLE')).toBe('MERGE_READY');
+    expect(verdictToLegacyState('REVIEW-PENDING')).toBe('NEEDS_REVIEW');
+    expect(verdictToLegacyState('BLOCKED-THREADS')).toBe('NEEDS_REVIEW');
+    expect(verdictToLegacyState('BLOCKED-CHECKS')).toBe('PENDING');
+    expect(verdictToLegacyState('BEHIND')).toBe('PENDING');
+    expect(verdictToLegacyState('BLOCKED-CONFLICT')).toBe('ESCALATE');
+    expect(verdictToLegacyState('UNKNOWN')).toBe('UNKNOWN');
+  });
+
+  test('covers the whole MERGE_VERDICTS set (no verdict falls through)', () => {
+    for (const v of MERGE_VERDICTS) {
+      expect(typeof verdictToLegacyState(v)).toBe('string');
+      expect(verdictToLegacyState(v)).not.toBe('');
+    }
+  });
+
+  test('fails closed to UNKNOWN for empty / unrecognized input', () => {
+    expect(verdictToLegacyState('')).toBe('UNKNOWN');
+    expect(verdictToLegacyState(undefined)).toBe('UNKNOWN');
+    expect(verdictToLegacyState('not-a-verdict')).toBe('UNKNOWN');
   });
 });
 
