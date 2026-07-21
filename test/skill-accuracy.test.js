@@ -34,13 +34,14 @@ const { loadSkillCatalog } = require('../lib/using-forge');
 const ROOT = path.join(__dirname, '..');
 const skillsDir = resolveSkillsDir(ROOT);
 
-// Deterministic keyword-collision guards: each query must NOT route to the named skill.
-// These are the exact over-matches surfaced during the batch-1 review (a bare `gate
-// status` cue capturing a SonarCloud question; `worktree for` capturing a PR request).
+// Deterministic keyword-collision guards: each query must route to its INTENDED skill
+// (stronger than "not the wrong one" — it also catches routing to a third wrong skill).
+// These are the exact collisions surfaced during the batch-1 review: a SonarCloud
+// quality-gate question must reach `sonarcloud` (not gates), and a PR request that
+// mentions the worktree must reach `ship` (not worktree).
 const PRECISION_CASES = [
-  { query: 'SonarCloud gate status for this PR', skill: 'gates' },
-  { query: 'Open a pull request from the worktree for this feature.', skill: 'worktree' },
-  { query: 'run validation in this worktree', skill: 'worktree' },
+  { query: 'Check the SonarCloud quality gate for this PR', expect: 'sonarcloud' },
+  { query: 'Open a pull request from the worktree for this feature.', expect: 'ship' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -108,21 +109,22 @@ describe('auditCommandDocumentation — detector', () => {
 });
 
 describe('auditRouterPrecision — detector', () => {
-  test('flags a case that routes to the disclaimed skill', () => {
-    // Inject a router that (wrongly) routes the 'status' query to gates.
-    const route = (q) => ({ best: q === 'status' ? 'gates' : 'other' });
-    const v = auditRouterPrecision({ cases: [{ query: 'status', skill: 'gates' }], catalog: [], route });
-    expect(v.map(x => x.query)).toContain('status');
+  test('flags a case that routes to the WRONG destination', () => {
+    // Router lands on 'status' but the case expects 'sonarcloud'.
+    const route = () => ({ best: 'status' });
+    const cases = [{ query: 'SonarCloud quality gate', expect: 'sonarcloud' }];
+    const v = auditRouterPrecision({ cases, catalog: [], route });
+    expect(v).toEqual([{ query: 'SonarCloud quality gate', expected: 'sonarcloud', routedTo: 'status' }]);
   });
 
-  test('passes when the case routes elsewhere', () => {
-    const route = () => ({ best: 'ship' });
-    const cases = [{ query: 'open a pull request', skill: 'gates' }];
+  test('passes when the case routes to its expected destination', () => {
+    const route = () => ({ best: 'sonarcloud' });
+    const cases = [{ query: 'SonarCloud quality gate', expect: 'sonarcloud' }];
     expect(auditRouterPrecision({ cases, catalog: [], route })).toEqual([]);
   });
 
   test('ignores malformed cases', () => {
     const route = () => ({ best: 'gates' });
-    expect(auditRouterPrecision({ cases: [null, { query: 'x' }, { skill: 'y' }], catalog: [], route })).toEqual([]);
+    expect(auditRouterPrecision({ cases: [null, { query: 'x' }, { expect: 'y' }], catalog: [], route })).toEqual([]);
   });
 });
