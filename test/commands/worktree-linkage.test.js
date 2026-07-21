@@ -116,7 +116,12 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', () 
       { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver },
     );
 
-    const list = await worktree.handler(['list'], {}, root, { _kernelDriver: driver });
+    // git is stubbed so the checkout dir never lands on disk; inject a permissive
+    // existsSync so the linked row survives the on-disk staleness filter.
+    const list = await worktree.handler(['list'], {}, root, {
+      _kernelDriver: driver,
+      _fs: { existsSync: () => true },
+    });
     expect(list.success).toBe(true);
     expect(Array.isArray(list.worktrees)).toBe(true);
     expect(list.worktrees.some(w => w.issue_id === 'forge-linktest' && w.branch === 'feat/s1')).toBe(true);
@@ -125,6 +130,16 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', () 
     expect(typeof list.output).toBe('string');
     expect(list.output.length).toBeGreaterThan(0);
     expect(list.output).toContain('feat/s1');
+
+    // Staleness filter: rows whose path no longer exists on disk (removed via
+    // `forge worktree remove` / `forge clean`, which don't yet reconcile the
+    // registry) must NOT be surfaced.
+    const stale = await worktree.handler(['list'], {}, root, {
+      _kernelDriver: driver,
+      _fs: { existsSync: () => false },
+    });
+    expect(stale.worktrees).toHaveLength(0);
+    expect(stale.output).toBe('No worktrees registered.');
   }, TIMEOUT);
 });
 
