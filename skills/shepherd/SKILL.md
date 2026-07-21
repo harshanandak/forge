@@ -61,7 +61,7 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence 
 | `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
 | `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
 | `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
-| `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Needs a re-trigger, not more waiting. |
+| `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Recovery is an **escalation, not an autonomous Tier-A rerun**: it needs a maintainer-provided `FORGE_PR_TOKEN` (contents + pull-requests + checks) to re-author the push so CI re-triggers. |
 | `ESCALATE` | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |
 | `HARD_STOP` | A permanent auth/scope failure retrying cannot fix — a human must widen token scope. |
 
@@ -80,8 +80,8 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence 
 ## Boundaries (kept — true of both modes)
 
 - **Never merges.** No merge action, no server-side auto-merge latch. Terminates at `MERGE_READY` and hands off — a human merges in the GitHub UI.
-- **Never resolves review threads.** It may post a status reply; thread *resolution* is semantic and stays with `review`.
-- **Action ladder.** Tier-A (autonomous, idempotent): re-run a flaky **required** check (rerun-budget capped); post status replies. Tier-B (opt-in, default OFF): `--auto-rebase` rebases onto base and force-pushes with lease — a lease rejection is a hard-stop, never re-armed. Tier-C: everything else escalates.
+- **Never resolves review threads.** It refreshes a single **sticky** status comment; thread *resolution* is semantic and stays with `review`.
+- **Action ladder.** Tier-A (autonomous, idempotent): re-run a flaky **required** check (rerun-budget capped); refresh the single **sticky** status comment — an *upsert*, never an append, so the ~60s daemon loop cannot post duplicate comments. Tier-B (opt-in, default OFF): `--auto-rebase` rebases onto base and force-pushes with lease — a lease rejection is a hard-stop, never re-armed. Tier-C: everything else escalates (incl. `CI_DEAD_HEAD` recovery, which needs the maintainer `FORGE_PR_TOKEN`).
 - **Required-check gate.** `MERGE_READY` only when the branch-protection required set is *known* and all green; if protection is unreadable, it escalates rather than guessing.
 - **HEAD-changed abort.** Before any mutating action it re-reads the head SHA and aborts if HEAD moved.
 
