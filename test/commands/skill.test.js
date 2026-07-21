@@ -41,12 +41,13 @@ describe('forge skill command', () => {
     expect(res.error).toContain('Usage: forge skill for');
   });
 
-  test('unknown verb error advertises every supported verb (for, eval, scores)', () => {
+  test('unknown verb error advertises every supported verb (for, eval, scores, coverage)', () => {
     const res = skillCommand.handler(['bogus'], {});
     expect(res.success).toBe(false);
     // Tightened: the old `toContain('Supported: for')` passed trivially once the list grew.
     expect(res.error).toContain('eval');
     expect(res.error).toContain('scores');
+    expect(res.error).toContain('coverage');
   });
 
   test('exports the standard command interface', () => {
@@ -151,6 +152,33 @@ describe('forge skill scores', () => {
     expect(res.gate.passed).toBe(true);
     expect(res.success).toBe(true);
     expect(res.error).toBeUndefined();
+  });
+});
+
+// ── forge skill coverage (read-only) ──────────────────────────────────────────
+describe('forge skill coverage', () => {
+  test('--json against the dev checkout returns a passing coverage report', () => {
+    const res = skillCommand.handler(['coverage', '--json'], {}, repoRoot);
+    expect(res.success).toBe(true);
+    const parsed = JSON.parse(res.output);
+    expect(parsed.passed).toBe(true);
+    expect(parsed.total).toBeGreaterThan(0);
+    expect(parsed.mapped + parsed.exempt).toBe(parsed.total);
+    expect(parsed.failures).toEqual([]);
+  });
+
+  test('text mode renders the coverage summary and a PASS verdict', () => {
+    const res = skillCommand.handler(['coverage'], {}, repoRoot);
+    expect(res.success).toBe(true);
+    expect(res.output).toContain('Skill coverage');
+    expect(res.output).toContain('Coverage gate: PASS');
+  });
+
+  test('scores --json now carries the folded coverage gate', () => {
+    const res = skillCommand.handler(['scores', '--json'], {}, repoRoot);
+    const parsed = JSON.parse(res.output);
+    expect(typeof parsed.coverage.passed).toBe('boolean');
+    expect(parsed.coverage.passed).toBe(true);
   });
 });
 
