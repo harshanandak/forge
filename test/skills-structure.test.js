@@ -131,6 +131,8 @@ describe('skills/ directory structure', () => {
       'verify',
       'kernel',
       'claim-safety',
+      'worktree',
+      'gates',
       'hermes-forge',
       'parallel-deep-research',
       'sonarcloud-analysis',
