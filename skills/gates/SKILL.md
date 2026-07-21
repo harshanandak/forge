@@ -49,9 +49,9 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
 ## Human-gate approval events
 
 ```bash
-forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
-forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
-forge gate status  <issue-id> [--json]                      # list recorded events for that issue (resume-safe)
+forge gate approve <issue-id> <gate-id>                     # record a durable gate.approved event
+forge gate reject  <issue-id> <gate-id>                     # record gate.rejected
+forge gate status  <issue-id>                               # list recorded events for that issue (resume-safe)
 forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
 ```
 

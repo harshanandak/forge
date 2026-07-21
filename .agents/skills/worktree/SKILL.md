@@ -69,7 +69,6 @@ forge worktree remove <slug>     # git worktree remove for that slug
 ```bash
 forge clean                      # remove worktrees whose branches merged; FF the default branch
 forge clean --dry-run            # show what would be removed, change nothing
-forge clean --no-master-sync     # skip fast-forwarding the default-branch checkout
 ```
 
 `forge clean` is **squash-aware** — it detects branches that merged via squash, not just fast-forward merges.
