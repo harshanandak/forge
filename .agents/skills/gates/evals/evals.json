@@ -34,5 +34,9 @@
   {
     "query": "Run the tests and lint before I push.",
     "should_trigger": false
+  },
+  {
+    "query": "SonarCloud gate status for this PR",
+    "should_trigger": false
   }
 ]
