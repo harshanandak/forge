@@ -30,7 +30,7 @@
 
     "worktree": "worktree",
     "clean": "worktree",
-    "orphans": "worktree",
+    "orphans": "issue-basics",
     "rollback": "rollback",
     "review": "review",
     "verify": "verify",
