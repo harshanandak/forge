@@ -52,10 +52,10 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
 forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
 forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
 forge gate status  [--json]                                 # list recorded events (resume-safe)
-forge gate check   <gate-id>                                # exit 0 iff gate DISABLED or an approval exists
+forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
 ```
 
-`check` is the reusable enforcement primitive a stage skill calls: it passes when the gate is disabled or an approval event has been recorded. Events are durable on the issue, so they survive a compaction or crash.
+`check` is the reusable enforcement primitive a stage skill calls: it passes when the gate is disabled or an approval event has been recorded for that specific issue id (approvals are issue-scoped, so pass the same `<issue-id>` you approved against). Events are durable on the issue, so they survive a compaction or crash.
 
 ## Tri-state control (declared intent)
 
