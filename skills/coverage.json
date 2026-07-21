@@ -30,7 +30,7 @@
 
     "worktree": "worktree",
     "clean": "worktree",
-    "orphans": "issue-basics",
+    "orphans": { "exempt": "full ownership (command-name routing + `forge issue orphans` guidance in the issue-basics body) pending — issue e1e33cf8; issue-basics does not yet document it, so mapping now would be a hollow claim" },
     "rollback": "rollback",
     "review": "review",
     "verify": "verify",
