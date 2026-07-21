@@ -36,6 +36,11 @@ verb:
 - **`forge shepherd <pr>` — one bounded pass.** Reads one PR's state, takes at
   most one Tier-A action, exits. The point-in-time surface for a single PR (see
   *Bounded-pass model* below).
+- **`forge shepherd watch <pr>` / `watch --adopt`** — foreground streaming watch of
+  one PR, or (`--adopt`) adopt every currently-open PR into the watcher set.
+- **`forge shepherd events <pr> --since <seq>`** — the event deltas for a PR since a
+  cursor; **`forge shepherd <pr> --pull --json` / `--bundle`** read the kernel verdict
+  + rollup without taking any action.
 
 Session start: if the repo has open PRs, start `forge shepherd daemon` in the
 harness background shell so it is reaped with the session. No liveness check is
