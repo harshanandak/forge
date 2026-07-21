@@ -34,6 +34,15 @@ const { loadSkillCatalog } = require('../lib/using-forge');
 const ROOT = path.join(__dirname, '..');
 const skillsDir = resolveSkillsDir(ROOT);
 
+// Deterministic keyword-collision guards: each query must NOT route to the named skill.
+// These are the exact over-matches surfaced during the batch-1 review (a bare `gate
+// status` cue capturing a SonarCloud question; `worktree for` capturing a PR request).
+const PRECISION_CASES = [
+  { query: 'SonarCloud gate status for this PR', skill: 'gates' },
+  { query: 'Open a pull request from the worktree for this feature.', skill: 'worktree' },
+  { query: 'run validation in this worktree', skill: 'worktree' },
+];
+
 // ---------------------------------------------------------------------------
 // Integration: the real shipped skills must satisfy both dimensions.
 // ---------------------------------------------------------------------------
@@ -47,10 +56,13 @@ describe('skill accuracy — shipped skills', () => {
     expect(violations).toEqual([]);
   });
 
-  test('no should_trigger:false fixture routes to its own skill', () => {
-    const catalog = loadSkillCatalog(skillsDir);
-    const violations = auditRouterPrecision({ skillsDir, catalog });
-    // A non-empty list means a keyword over-matches a case the skill disclaims:
+  test('curated keyword-collision queries do not over-match their skill', () => {
+    // loadSkillCatalog expects the ROOT that CONTAINS skills/, not the skills dir
+    // itself — passing skillsDir yields an empty catalog and a vacuous no-op test.
+    const catalog = loadSkillCatalog(ROOT);
+    expect(catalog.length).toBeGreaterThan(0); // guard: never let this assertion no-op
+    const violations = auditRouterPrecision({ cases: PRECISION_CASES, catalog });
+    // A non-empty list means a curated keyword over-matches a phrase it should not own:
     // narrow the keyword (or add a more specific competing cue).
     expect(violations).toEqual([]);
   });
@@ -96,35 +108,21 @@ describe('auditCommandDocumentation — detector', () => {
 });
 
 describe('auditRouterPrecision — detector', () => {
-  let dir;
-  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skacc-')); });
-  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
-
-  function writeSkillWithFixtures(name, fixtures) {
-    fs.mkdirSync(path.join(dir, name, 'evals'), { recursive: true });
-    fs.writeFileSync(path.join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\nbody\n`);
-    fs.writeFileSync(path.join(dir, name, 'evals', 'evals.json'), JSON.stringify(fixtures));
-  }
-
-  test('flags a should_trigger:false fixture that the router routes to the skill', () => {
-    writeSkillWithFixtures('gates', [
-      { query: 'disable the gate', should_trigger: true },
-      { query: 'status', should_trigger: false },
-    ]);
-    const catalog = [{ name: 'gates', description: '' }];
-    // Inject a router that (wrongly) routes the disclaimed 'status' query to gates.
+  test('flags a case that routes to the disclaimed skill', () => {
+    // Inject a router that (wrongly) routes the 'status' query to gates.
     const route = (q) => ({ best: q === 'status' ? 'gates' : 'other' });
-    const v = auditRouterPrecision({ skillsDir: dir, catalog, route });
+    const v = auditRouterPrecision({ cases: [{ query: 'status', skill: 'gates' }], catalog: [], route });
     expect(v.map(x => x.query)).toContain('status');
   });
 
-  test('passes when disclaimed fixtures route elsewhere', () => {
-    writeSkillWithFixtures('gates', [
-      { query: 'disable the gate', should_trigger: true },
-      { query: 'open a pull request', should_trigger: false },
-    ]);
-    const catalog = [{ name: 'gates', description: '' }];
-    const route = (q) => ({ best: q === 'open a pull request' ? 'ship' : 'gates' });
-    expect(auditRouterPrecision({ skillsDir: dir, catalog, route })).toEqual([]);
+  test('passes when the case routes elsewhere', () => {
+    const route = () => ({ best: 'ship' });
+    const cases = [{ query: 'open a pull request', skill: 'gates' }];
+    expect(auditRouterPrecision({ cases, catalog: [], route })).toEqual([]);
+  });
+
+  test('ignores malformed cases', () => {
+    const route = () => ({ best: 'gates' });
+    expect(auditRouterPrecision({ cases: [null, { query: 'x' }, { skill: 'y' }], catalog: [], route })).toEqual([]);
   });
 });
