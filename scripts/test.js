@@ -166,7 +166,12 @@ function isKnownTargetablePath(file) {
     || file.startsWith('docs/guides/')
     || file.startsWith('docs/plans/')
     || file.startsWith('docs/reference/')
-    || file.startsWith('docs/work/')) {
+    || file.startsWith('docs/work/')
+    // Skill sources + their committed mirror map to the skill suite (see
+    // SKILL_TEST_TARGETS in lib/commands/test.js); a skills-only PR stays on the
+    // targeted lane instead of the full suite.
+    || file.startsWith('skills/')
+    || file.startsWith('.agents/skills/')) {
     return true;
   }
 

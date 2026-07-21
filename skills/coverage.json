@@ -28,9 +28,9 @@
     "list": "issue-basics",
     "skill": "using-forge",
 
-    "worktree": { "exempt": "worktree skill pending (plan §3.2 B: new `worktree` skill)" },
-    "clean": { "exempt": "worktree skill pending (plan §3.2 B: new `worktree` skill)" },
-    "orphans": { "exempt": "worktree skill pending — orphan/worktree cleanup (plan §3.2 B)" },
+    "worktree": "worktree",
+    "clean": "worktree",
+    "orphans": { "exempt": "full ownership (command-name routing + `forge issue orphans` guidance in the issue-basics body) pending — issue e1e33cf8; issue-basics does not yet document it, so mapping now would be a hollow claim" },
     "rollback": "rollback",
     "review": "review",
     "verify": "verify",
@@ -39,9 +39,9 @@
     "reset": { "exempt": "bin/forge.js-direct; setup-family (undo install) — folds into the pending `setup` skill (plan §3.2 B)" },
     "reinstall": { "exempt": "bin/forge.js-direct; setup-family (reinstall hooks) — folds into the pending `setup` skill (plan §3.2 B)" },
 
-    "gate": { "exempt": "gates skill pending (plan §3.2 B: new `gates` skill)" },
-    "control": { "exempt": "gates skill pending (plan §3.2 B: new `gates` skill)" },
-    "doc-gate": { "exempt": "gates skill pending — doc-gate rail (plan §3.2 B)" },
+    "gate": "gates",
+    "control": "gates",
+    "doc-gate": "gates",
 
     "adapter": { "exempt": "extensions skill pending (plan §3.2 B: new `extensions` skill)" },
     "add": { "exempt": "extensions skill pending (plan §3.2 B: new `extensions` skill)" },
