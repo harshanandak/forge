@@ -1,0 +1,38 @@
+[
+  {
+    "query": "Spin up an isolated worktree so I can work on this branch separately.",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a worktree for this issue with its branch and dependencies installed.",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to work on another PR in parallel without disturbing my current checkout.",
+    "should_trigger": true
+  },
+  {
+    "query": "Clean up all the merged worktrees and fast-forward main.",
+    "should_trigger": true
+  },
+  {
+    "query": "Why did my new worktree miss its node_modules dependencies?",
+    "should_trigger": true
+  },
+  {
+    "query": "Set up an isolated branch checkout under .worktrees for this task.",
+    "should_trigger": true
+  },
+  {
+    "query": "Open a pull request and push my feature branch.",
+    "should_trigger": false
+  },
+  {
+    "query": "Plan this new feature and break it into a task list.",
+    "should_trigger": false
+  },
+  {
+    "query": "Watch my PR and tell me why it isn't merging.",
+    "should_trigger": false
+  }
+]

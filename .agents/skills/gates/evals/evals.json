@@ -1,0 +1,38 @@
+[
+  {
+    "query": "Disable the tdd gate for this repo.",
+    "should_trigger": true
+  },
+  {
+    "query": "Turn off TDD enforcement — the tdd intent rail is blocking my commit.",
+    "should_trigger": true
+  },
+  {
+    "query": "Toggle the kernel tracking rail off for now.",
+    "should_trigger": true
+  },
+  {
+    "query": "Enable a gate that I disabled earlier and loosen enforcement.",
+    "should_trigger": true
+  },
+  {
+    "query": "Approve the human gate on this issue so the stage can proceed.",
+    "should_trigger": true
+  },
+  {
+    "query": "Disable the auto shepherd rail so no PR daemon fires.",
+    "should_trigger": true
+  },
+  {
+    "query": "Address the CodeRabbit review feedback and resolve the threads.",
+    "should_trigger": false
+  },
+  {
+    "query": "Where am I in the workflow and what work is in flight right now?",
+    "should_trigger": false
+  },
+  {
+    "query": "Run the tests and lint before I push.",
+    "should_trigger": false
+  }
+]
