@@ -1,13 +1,14 @@
 ---
 name: shepherd
 description: >
-  Own open PRs to merge-readiness — autonomously. Forge runs a singleton shepherd
-  daemon (forge shepherd daemon) that watches every open PR, converges CI check
-  state into kernel verdicts, re-runs flaky required checks, reaps orphan watchers,
-  and self-retires when no PRs remain; one-shot passes (forge shepherd <pr>) exist
-  for a single bounded check. Use when a PR was just opened or shipped; when a
-  session starts and open PRs exist (check daemon liveness, start it in a
-  background shell if dead); when the user asks "why isn't my PR merging", "what's
+  Own open PRs to merge-readiness — autonomously. Forge provides a singleton
+  shepherd daemon — start it with `forge shepherd daemon` — that then watches every
+  open PR, converges CI check state into kernel verdicts, re-runs flaky required
+  checks, reaps orphan watchers, and self-retires when no PRs remain; one-shot
+  passes (forge shepherd <pr>) exist for a single bounded check. Use when a PR was
+  just opened or shipped; when a session starts with open PRs (start the daemon in
+  a background shell — the singleton lease makes a duplicate start a safe no-op);
+  when the user asks "why isn't my PR merging", "what's
   blocking the PR", "is the PR ready", "did a check fail / go red"; when asked to
   "keep watching / keep an eye on / babysit my PRs"; or to read PR verdicts
   (forge shepherd <pr> --pull --json, forge shepherd events). NEVER merges and
@@ -35,13 +36,13 @@ Forge owns your open PRs. A singleton daemon converges every open PR toward merg
 
 ## Session-start ritual
 
-`forge prime` reports open-PR count + daemon liveness (a single lease-file read) and the exact start command. If open PRs exist and the daemon is dead:
+When a session starts and the repo has open PRs, ensure the daemon is running:
 
 ```bash
 forge shepherd daemon    # start it in the HARNESS BACKGROUND SHELL
 ```
 
-Start it in the harness background shell (Claude Code / Codex background-shell), so it is session-scoped and reaped with the session. NEVER launch a detached spawn from the agent — the detached path is Forge's own auto-fire trigger and bare-CLI fallback, not something you invoke by hand.
+The daemon is a **repo singleton** guarded by an O_EXCL lease, so you do NOT need a liveness check first — a second start when one is already running simply exits (the lease is already held). Start it in the harness background shell (Claude Code / Codex background-shell) so it is session-scoped and reaped with the session. NEVER launch a detached spawn from the agent: the detached path is Forge's bare-CLI fallback only. (Automatic per-command launch and a `forge prime` daemon-liveness line are planned follow-ups — W-S4c/W-S5 — not yet wired; until then you start the daemon explicitly as above.)
 
 ## Reading verdicts (the common case)
 
@@ -94,8 +95,8 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence 
 ## Kill-switches
 
 ```bash
-FORGE_SHEPHERD_DISABLE=1        # env: makes the auto-fire trigger fully inert
-forge gate disable rail.auto_shepherd   # config: disables auto-start on ship/push
+FORGE_SHEPHERD_DISABLE=1        # env: makes the shepherd trigger inert (once the auto-fire wiring lands, W-S4c)
+forge gate disable rail.auto_shepherd   # config gate honored by the trigger + ship/push arming
 ```
 
 Both leave the manual `forge shepherd` surface usable; they only stop the automatic daemon fire.

@@ -28,18 +28,20 @@ verb:
   hand-opened PRs, restarting killed watchers, reaping verified orphan watchers,
   converging CI check state into kernel verdicts, and retiring merged/closed PRs.
   It **self-retires** — releases the lease, kills its verified children, exits —
-  once no PRs remain open. It is normally launched by Forge's own auto-fire
-  trigger or started in a harness background shell at session start; it is not
-  meant to be run by hand as a detached process. This is why an agent does not
-  poll: the daemon owns the convergence loop.
+  once no PRs remain open. Today it is started explicitly — in a harness
+  background shell at session start, or `forge shepherd daemon` — not run by hand
+  as a detached process; automatic per-command launch (W-S4c) is a planned
+  follow-up, not yet wired. Once running, an agent does not poll: the daemon owns
+  the convergence loop.
 - **`forge shepherd <pr>` — one bounded pass.** Reads one PR's state, takes at
   most one Tier-A action, exits. The point-in-time surface for a single PR (see
   *Bounded-pass model* below).
 
-Session start: `forge prime` reports the open-PR count and daemon liveness (one
-lease-file read). If PRs are open and the daemon is dead, start
-`forge shepherd daemon` in the harness background shell so it is reaped with the
-session.
+Session start: if the repo has open PRs, start `forge shepherd daemon` in the
+harness background shell so it is reaped with the session. No liveness check is
+needed first — the O_EXCL singleton lease makes a duplicate start a clean no-op.
+(A `forge prime` open-PR + daemon-liveness line is a planned follow-up — W-S5 —
+not yet wired.)
 
 ## `--pull`: the actionable blocker payload
 
