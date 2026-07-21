@@ -124,4 +124,15 @@ describe('the canonical command surface is fully covered', () => {
       expect(Object.prototype.hasOwnProperty.call(coverage.commands, cmd)).toBe(true);
     }
   });
+
+  test('FAIL CLOSED: an unreadable command-source binary fails the gate (never silently skipped)', () => {
+    const res = evaluateCoverage({
+      commands: ['ship'],
+      coverage: { commands: { ship: 'ship' } },
+      skillNames: new Set(['ship']),
+      scanErrors: [{ source: 'bin/forge-cmd.js', detail: 'ENOENT' }],
+    });
+    expect(res.passed).toBe(false);
+    expect(res.failures.some((f) => f.kind === 'unreadable_command_source' && f.command === 'bin/forge-cmd.js')).toBe(true);
+  });
 });
