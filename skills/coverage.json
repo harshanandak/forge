@@ -31,6 +31,10 @@
     "worktree": { "exempt": "worktree skill pending (plan §3.2 B: new `worktree` skill)" },
     "clean": { "exempt": "worktree skill pending (plan §3.2 B: new `worktree` skill)" },
     "orphans": { "exempt": "worktree skill pending — orphan/worktree cleanup (plan §3.2 B)" },
+    "rollback": "rollback",
+    "docs": { "exempt": "bin/forge.js-direct; AGENTS.md/docs management — owning skill pending (coverage pass, plan §3.2)" },
+    "reset": { "exempt": "bin/forge.js-direct; setup-family (undo install) — folds into the pending `setup` skill (plan §3.2 B)" },
+    "reinstall": { "exempt": "bin/forge.js-direct; setup-family (reinstall hooks) — folds into the pending `setup` skill (plan §3.2 B)" },
 
     "gate": { "exempt": "gates skill pending (plan §3.2 B: new `gates` skill)" },
     "control": { "exempt": "gates skill pending (plan §3.2 B: new `gates` skill)" },
