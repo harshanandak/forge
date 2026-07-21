@@ -120,6 +120,11 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', () 
     expect(list.success).toBe(true);
     expect(Array.isArray(list.worktrees)).toBe(true);
     expect(list.worktrees.some(w => w.issue_id === 'forge-linktest' && w.branch === 'feat/s1')).toBe(true);
+    // The CLI dispatcher only prints result.output, so a display command MUST
+    // render one — otherwise `forge worktree list` is a silent no-op.
+    expect(typeof list.output).toBe('string');
+    expect(list.output.length).toBeGreaterThan(0);
+    expect(list.output).toContain('feat/s1');
   }, TIMEOUT);
 });
 
