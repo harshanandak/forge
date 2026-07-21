@@ -117,6 +117,21 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  test('classifyPushTests maps skills-only changes to the skill suite without forcing a full suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'skills/gates/SKILL.md\nskills/coverage.json\n.agents/skills/gates/SKILL.md\n',
+    }));
+
+    // Skill sources are mapped, not "unmapped" — so a skills-only PR runs the fast
+    // targeted skill suite instead of the full ~1500-test suite (which flaky-hangs).
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.mode).toBe('targeted');
+    expect(plan.testTargets).toContain('test/skill-coverage.test.js');
+    expect(plan.testTargets).toContain('test/skills-structure.test.js');
+    expect(plan.testTargets).toContain('test/structural/skills-sync-drift.test.js');
+  });
+
   test('buildTestExecutionPlan marks workflow-oriented targets explicitly', () => {
     const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
       changedFiles: '.github/agentic-workflows/behavioral-test.md\n',

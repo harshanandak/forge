@@ -595,3 +595,31 @@ describe('forge test --affected — resilient to git failure (bfaa6e2a semantics
 		expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
 	});
 });
+
+// Skill sources (skills/** and their committed .agents/skills/** mirror) must map
+// to the skill test suite. Without this they were "unmapped" → the pre-push hook
+// fell back to the full ~1500-test suite for every skills-only PR.
+describe('skill source → test mapping', () => {
+	test('maps skills/ edits to the skill test suite', () => {
+		const candidates = testCommand.getTestCandidatesForChangedFile('skills/gates/SKILL.md');
+		expect(candidates).toContain('test/skill-coverage.test.js');
+		expect(candidates).toContain('test/skill-eval.test.js');
+		expect(candidates).toContain('test/skills-structure.test.js');
+		expect(candidates).toContain('test/using-forge.test.js');
+		expect(candidates).toContain('test/skills/chain-integrity.test.js');
+		expect(candidates).toContain('test/structural/skills-sync-drift.test.js');
+	});
+
+	test('maps coverage.json / scorecard edits to the skill test suite', () => {
+		expect(testCommand.getTestCandidatesForChangedFile('skills/coverage.json'))
+			.toContain('test/skill-coverage.test.js');
+		expect(testCommand.getTestCandidatesForChangedFile('skills/worktree/evals/scorecard.json'))
+			.toContain('test/skill-eval.test.js');
+	});
+
+	test('maps the committed .agents/skills/ mirror to the same suite (drift guard included)', () => {
+		const candidates = testCommand.getTestCandidatesForChangedFile('.agents/skills/gates/SKILL.md');
+		expect(candidates).toContain('test/skill-coverage.test.js');
+		expect(candidates).toContain('test/structural/skills-sync-drift.test.js');
+	});
+});
