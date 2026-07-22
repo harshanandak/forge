@@ -617,6 +617,14 @@ describe('skill source → test mapping', () => {
 			.toContain('test/skill-eval.test.js');
 	});
 
+	test('maps lib/skill-eval.js to its own AND the accuracy-lint detector suite', () => {
+		// skill-eval hosts auditCommandDocumentation / auditRouterPrecision, so an edit
+		// there must run the accuracy-lint detectors, not just test/skill-eval.test.js.
+		const candidates = testCommand.getTestCandidatesForChangedFile('lib/skill-eval.js');
+		expect(candidates).toContain('test/skill-eval.test.js');
+		expect(candidates).toContain('test/skill-accuracy.test.js');
+	});
+
 	test('maps the committed .agents/skills/ mirror to the same suite (drift guard included)', () => {
 		const candidates = testCommand.getTestCandidatesForChangedFile('.agents/skills/gates/SKILL.md');
 		expect(candidates).toContain('test/skill-coverage.test.js');

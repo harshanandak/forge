@@ -45,6 +45,8 @@ This command dynamically computes and displays all issues ranked by composite sc
 
 For full context on any issue: `forge show <id>`
 
+For the full workflow contract and command reference at session start, run `forge prime`.
+
 ### Step 1b: Reconcile stale in-progress issues
 
 Check if any in-progress issues were already merged but not closed (can happen if `/verify` was skipped or backup was restored from stale snapshot):
