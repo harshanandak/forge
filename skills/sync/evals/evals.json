@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Sync the kernel issue state before I push.",
+    "should_trigger": true
+  },
+  {
+    "query": "Export the kernel backlog to git-tracked JSONL.",
+    "should_trigger": true
+  },
+  {
+    "query": "Migrate our Beads issue store into the Forge kernel.",
+    "should_trigger": true
+  },
+  {
+    "query": "Dry-run the beads migration and show what would be imported.",
+    "should_trigger": true
+  },
+  {
+    "query": "Re-import the exported backlog JSONL into the kernel.",
+    "should_trigger": true
+  },
+  {
+    "query": "Migrate the database schema to add the new billing column.",
+    "should_trigger": false
+  },
+  {
+    "query": "Sync my feature branch with main before opening the PR.",
+    "should_trigger": false
+  },
+  {
+    "query": "Remember this decision for later.",
+    "should_trigger": false
+  }
+]

@@ -44,6 +44,8 @@ const PRECISION_CASES = [
   { query: 'Open a pull request from the worktree for this feature.', expect: 'ship' },
   { query: 'Initialize forge in this fresh repo with the minimal profile', expect: 'setup' },
   { query: 'Install the forge native hooks globally', expect: 'setup' },
+  { query: 'Migrate our Beads issue store into the kernel', expect: 'sync' },
+  { query: 'Export the kernel backlog to JSONL', expect: 'sync' },
 ];
 
 // ---------------------------------------------------------------------------

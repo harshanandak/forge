@@ -49,9 +49,9 @@
     "audit": { "exempt": "extensions skill pending (plan §3.2 B: new `extensions` skill)" },
     "role": { "exempt": "extensions skill pending — role/skill binding (plan §3.2 B)" },
 
-    "export": { "exempt": "sync skill pending (plan §3.2 B: new `sync` skill)" },
-    "migrate": { "exempt": "sync skill pending (plan §3.2 B: new `sync` skill)" },
-    "sync": { "exempt": "sync skill pending (plan §3.2 B: new `sync` skill)" },
+    "export": "sync",
+    "migrate": "sync",
+    "sync": "sync",
 
     "board": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
     "inbox": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
