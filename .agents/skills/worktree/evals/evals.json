@@ -34,9 +34,5 @@
   {
     "query": "Watch my PR and tell me why it isn't merging.",
     "should_trigger": false
-  },
-  {
-    "query": "Open a pull request from the worktree for this feature.",
-    "should_trigger": false
   }
 ]
