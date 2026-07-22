@@ -17,7 +17,6 @@ assert_contains_file() {
 echo "── /status integration ──"
 STATUS="$SCRIPT_DIR/.claude/commands/status.md"
 assert_contains_file "status calls workload --me" "forge-team.*workload.*--me" "$STATUS"
-assert_contains_file "status calls dashboard" "forge-team.*dashboard" "$STATUS"
 
 echo ""
 echo "── /plan integration ──"

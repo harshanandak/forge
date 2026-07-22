@@ -53,7 +53,6 @@
     "migrate": "portability",
     "sync": { "exempt": "cloud-native external-platform sync (ADR-0004); a local no-op with no value until a server backend is configured — skill deferred (issue 666f4b4c)" },
 
-    "board": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
     "inbox": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
     "serve": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
     "team": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
