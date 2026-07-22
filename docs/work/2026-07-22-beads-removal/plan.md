@@ -1,7 +1,7 @@
 # Beads Live-Feature Removal Plan (keep only `forge migrate --from beads`)
 
-Repo: C:/Users/harsha_befach/Downloads/forge (master). Verified against source 2026-07-22.
-Supersedes D44's "Beads as compatibility projection" — recorded as new decision D45 (Slice E).
+Repo: forge. Verified against source 2026-07-22.
+Proposes retiring D44's "Beads as compatibility projection" clause via a new decision **D45**, which is recorded in Slice E (not yet on record when this plan lands).
 
 ## Global KEEP list (migration feature — never touch in removal slices)
 - `lib/commands/migrate.js` (+ its imports: `lib/migrate-dry-run.js`, `lib/adapters/beads-kernel-compat.js`, `lib/kernel/cli-broker-factory.js`)
@@ -21,7 +21,7 @@ Isolation rule: after Slice D, the only modules allowed to import beads-named mo
 ---
 
 ## Slice A — One kernel-sourced dashboard (PR 1; folds issue 454deef3)
-Survivor: **`forge status`** (terminal personal board, kernel via `readStatusSnapshot`) + **`forge serve` hosting `web/dashboard/`** whose `generate-snapshot.mjs` already shells `forge issue list --json` / `status --json` (kernel-sourced — verified L46-68). No rewiring needed for serve.
+Survivor: **`forge status`** (terminal personal board, **kernel-default** via `readStatusSnapshot`) + **`forge serve` hosting `web/dashboard/`** whose `generate-snapshot.mjs` already shells `forge issue list --json` / `status --json` (kernel-default — verified L46-68). No rewiring needed for serve. NOTE: this slice only deletes the two Beads-reading *renders*; some live `.beads` readers elsewhere (status/snapshot, orientation, insights) still exist until Slice C makes the kernel the sole source. So Slice A is "kernel-default, compatibility readers remain", not "kernel-only" — the kernel-only end state is proven after Slice C/D.
 1. DELETE `lib/commands/board.js` (64 lines; reads `readBeadsSnapshot` L3/L36 while its description claims "from kernel state" — false today). Find + remove its registration (grep `require.*commands/board`/`'board'` in `bin/forge.js`; not in forge-cmd.js).
 2. DELETE `scripts/forge-team/lib/dashboard.sh` + `cmd_dashboard` wiring in the forge-team entry script + its bats/JS tests.
 3. `lib/status/presenter.js` L180: reword `Source: local Beads runtime state` → kernel wording (presenter stays — status uses it).
@@ -78,5 +78,5 @@ A first: bounded, already-tracked (454deef3), zero backend coupling. B before C:
 ## Verification per slice
 - `bun test` full suite locally + CI matrix (local green ≠ matrix green — gate on `gh pr checks`).
 - After D: run `test/e2e/fresh-clone-no-beads.test.js` and `release-readiness` gates — they are the acceptance proof.
-- After each slice: `grep -rn "beads" lib bin scripts --include=*.js | grep -v -E "migrate|beads-kernel-compat|beads-detect|deprecated-sync|upgrade-safety|kernel/"` should shrink toward zero.
+- After each slice, the beads footprint should shrink toward zero. Do NOT use a line-based `grep -v` filter — it drops a whole line if it merely mentions an allowed token (`migrate`, `kernel/`), hiding a forbidden reference on that same line. Instead exclude by explicit allowed PATHS: `grep -rln "beads" lib bin scripts --include=*.js` then subtract the KEEP files (migrate.js, migrate-dry-run.js, beads-kernel-compat.js, beads-detect.js, upgrade-safety.js, init.js, deprecated-sync-cleanup.js, setup.js, reset.js, lib/kernel/*). The **authoritative** check is the Slice-D isolation test (`test/beads-isolation.test.js`) asserting no non-KEEP module `require`s a `beads-*` module — this heuristic grep is only a spot-check.
 - Migration regression: run `forge migrate --from beads --dry-run` against `test/fixtures/beads-kernel-adapter/issues.jsonl` after EVERY slice.
