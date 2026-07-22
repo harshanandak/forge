@@ -133,6 +133,7 @@ describe('skills/ directory structure', () => {
       'claim-safety',
       'worktree',
       'gates',
+      'setup',
       'hermes-forge',
       'parallel-deep-research',
       'sonarcloud-analysis',

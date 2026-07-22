@@ -1,0 +1,42 @@
+[
+  {
+    "query": "Install Forge into this repo and configure it for Claude and Cursor.",
+    "should_trigger": true
+  },
+  {
+    "query": "Initialize forge in this fresh repository with the minimal adoption profile.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run forge doctor — is the kernel database on a cloud-synced path?",
+    "should_trigger": true
+  },
+  {
+    "query": "Upgrade forge and self-heal anything unsafe first.",
+    "should_trigger": true
+  },
+  {
+    "query": "Install the Forge native hooks globally for Codex.",
+    "should_trigger": true
+  },
+  {
+    "query": "Undo the forge install — reset this repo's forge files.",
+    "should_trigger": true
+  },
+  {
+    "query": "Disable the TDD gate, it's blocking my commit.",
+    "should_trigger": false
+  },
+  {
+    "query": "Set up the database schema for the new billing feature.",
+    "should_trigger": false
+  },
+  {
+    "query": "Upgrade the eslint dependency to the latest version.",
+    "should_trigger": false
+  },
+  {
+    "query": "Install the project dependencies with bun install.",
+    "should_trigger": false
+  }
+]
