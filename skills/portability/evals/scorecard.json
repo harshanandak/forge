@@ -1,11 +1,11 @@
 {
-  "skill": "sync",
+  "skill": "portability",
   "fixtures": "present",
   "static": {
     "token_cost": {
-      "desc_chars": 1021,
-      "body_lines": 39,
-      "score": 46
+      "desc_chars": 957,
+      "body_lines": 31,
+      "score": 50
     },
     "caps": {
       "desc_within": true,
@@ -37,5 +37,5 @@
     "variance": null,
     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
   },
-  "composite": 84
+  "composite": 85
 }

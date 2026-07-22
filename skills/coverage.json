@@ -49,9 +49,9 @@
     "audit": { "exempt": "extensions skill pending (plan §3.2 B: new `extensions` skill)" },
     "role": { "exempt": "extensions skill pending — role/skill binding (plan §3.2 B)" },
 
-    "export": "sync",
-    "migrate": "sync",
-    "sync": "sync",
+    "export": "portability",
+    "migrate": "portability",
+    "sync": { "exempt": "cloud-native external-platform sync (ADR-0004); a local no-op with no value until a server backend is configured — skill deferred (issue 666f4b4c)" },
 
     "board": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
     "inbox": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },

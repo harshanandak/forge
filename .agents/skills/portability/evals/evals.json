@@ -1,6 +1,6 @@
 [
   {
-    "query": "Sync the kernel issue state before I push.",
+    "query": "Back up the kernel backlog to a git-tracked JSONL snapshot.",
     "should_trigger": true
   },
   {
