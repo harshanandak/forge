@@ -42,6 +42,8 @@ const skillsDir = resolveSkillsDir(ROOT);
 const PRECISION_CASES = [
   { query: 'Check the SonarCloud quality gate for this PR', expect: 'sonarcloud' },
   { query: 'Open a pull request from the worktree for this feature.', expect: 'ship' },
+  { query: 'Initialize forge in this fresh repo with the minimal profile', expect: 'setup' },
+  { query: 'Install the forge native hooks globally', expect: 'setup' },
 ];
 
 // ---------------------------------------------------------------------------
