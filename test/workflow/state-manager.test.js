@@ -80,7 +80,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('falls back to Beads comments when file missing and comments provided', () => {
+    test('falls back to issue comments when file missing and comments provided', () => {
       const dir = createTmpDir();
       try {
         const state = createWorkflowState('plan', 'standard');
@@ -96,14 +96,14 @@ describe('state-manager', () => {
       }
     });
 
-    test('file takes priority over Beads comments', () => {
+    test('file takes priority over issue comments', () => {
       const dir = createTmpDir();
       try {
         const fileState = createWorkflowState('dev', 'standard');
         writeStateFile(dir, fileState);
 
-        const beadsState = createWorkflowState('plan', 'standard');
-        const compact = JSON.stringify(JSON.parse(writeWorkflowState(beadsState)));
+        const issueState = createWorkflowState('plan', 'standard');
+        const compact = JSON.stringify(JSON.parse(writeWorkflowState(issueState)));
         const comments = `WorkflowState: ${compact}`;
 
         const result = loadState(dir, { comments });
@@ -114,7 +114,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('preferIssueLookup falls back to file when Beads lookup throws', () => {
+    test('preferIssueLookup falls back to file when the issue lookup throws', () => {
       const dir = createTmpDir();
       try {
         const fileState = createWorkflowState('dev', 'standard');
@@ -122,7 +122,7 @@ describe('state-manager', () => {
         const throwingIssue = {};
         Object.defineProperty(throwingIssue, 'comments', {
           get() {
-            throw new Error('simulated Beads read failure');
+            throw new Error('simulated issue read failure');
           },
         });
 
@@ -140,7 +140,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('falls back to Beads when state file is malformed', () => {
+    test('falls back to the issue when state file is malformed', () => {
       const dir = createTmpDir();
       try {
         fs.writeFileSync(path.join(dir, WORKFLOW_STATE_FILENAME), '{bad json', 'utf8');
@@ -158,7 +158,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('returns null when state file is malformed and no Beads fallback', () => {
+    test('returns null when state file is malformed and no issue fallback', () => {
       const dir = createTmpDir();
       try {
         fs.writeFileSync(path.join(dir, WORKFLOW_STATE_FILENAME), '{bad json', 'utf8');
@@ -171,13 +171,13 @@ describe('state-manager', () => {
       }
     });
 
-    test('returns null when projectRoot is null and no Beads options', () => {
+    test('returns null when projectRoot is null and no issue options', () => {
       const result = loadState(null);
       expect(result.state).toBeNull();
       expect(result.source).toBeNull();
     });
 
-    test('falls back to Beads when projectRoot is null but comments provided', () => {
+    test('falls back to the issue when projectRoot is null but comments provided', () => {
       const state = createWorkflowState('dev', 'standard');
       const compact = JSON.stringify(JSON.parse(writeWorkflowState(state)));
       const comments = `WorkflowState: ${compact}`;

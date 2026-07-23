@@ -251,7 +251,7 @@ describe('Status Command - Stage Detection', () => {
 			expect(factors.allChecksPass).toBe(true);
 		});
 
-		test('should analyze Beads issue state', () => {
+		test('should analyze kernel issue state', () => {
 			const factors = analyzeIssue({ status: 'in_progress', type: 'feature' });
 			expect(factors.hasActiveIssue).toBe(true);
 			expect(factors.issueStatus).toBe('in_progress');
@@ -280,7 +280,7 @@ describe('Status Command - Stage Detection', () => {
 					branch: {},
 					pr: {},
 					checks: {},
-					beads: {},
+					issue: {},
 				},
 			});
 			expect(output).toMatch(/6/);
@@ -300,7 +300,7 @@ describe('Status Command - Stage Detection', () => {
 					branch: {},
 					pr: {},
 					checks: { allChecksPass: true },
-					beads: {},
+					issue: {},
 				},
 			});
 			expect(output).toMatch(/research doc exists/i);
@@ -320,7 +320,7 @@ describe('Status Command - Stage Detection', () => {
 					branch: {},
 					pr: {},
 					checks: {},
-					beads: {},
+					issue: {},
 				},
 			});
 			expect(output).toMatch(/manual verification suggested/i);
@@ -368,7 +368,7 @@ describe('Status Command - Stage Detection', () => {
 			}
 		});
 
-		test('file state takes priority over Beads comments', () => {
+		test('file state takes priority over issue comments', () => {
 			const tmpDir = makeTmpStateDir({
 				schemaVersion: 2,
 				currentStage: 'validate',
@@ -383,14 +383,14 @@ describe('Status Command - Stage Detection', () => {
 				parallelTracks: [],
 			});
 
-			const beadsComments = [
+			const issueComments = [
 				'WorkflowState: {"schemaVersion":2,"currentStage":"plan","completedStages":[],"skippedStages":[],"workflowDecisions":{"classification":"standard","reason":"test","userOverride":false,"overrides":[]},"parallelTracks":[]}',
 			].join('\n');
 
 			try {
 				const { workflowState, fallbackReason } = resolveWorkflowState({
 					projectRoot: tmpDir,
-					bdComments: beadsComments,
+					bdComments: issueComments,
 				});
 
 				expect(fallbackReason).toBeNull();

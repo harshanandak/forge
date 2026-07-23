@@ -81,7 +81,7 @@ function statusFlags(repoRoot, extra = {}) {
   };
 }
 
-function createTempBeadsRepo(entries, options = {}) {
+function createTempStatusRepo(entries, options = {}) {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-fixture-'));
 
   execFileSync('git', ['init'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -174,7 +174,7 @@ describe('status command authoritative workflow state', () => {
     expect(result.workflowDecisions.classification).toBe('standard');
   });
 
-  test('handler resolves authoritative state from Beads comments when issue id is provided', async () => {
+  test('handler resolves authoritative state from issue comments when issue id is provided', async () => {
     const comments =
       'Stage: plan complete → ready for dev\n' +
       `WorkflowState: ${JSON.stringify(createWorkflowState('dev'))}`;
@@ -274,7 +274,7 @@ describe('status command authoritative workflow state', () => {
   });
 
   test('handler does not fall back to heuristic stage detection when state is missing', async () => {
-    const repoRoot = createTempBeadsRepo([]);
+    const repoRoot = createTempStatusRepo([]);
     const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
     expect(result.missingWorkflowState).toBe(true);
     expect(result.output).toContain('Context');
@@ -296,7 +296,7 @@ describe('status command authoritative workflow state', () => {
   test('handler falls back gracefully when bd is unavailable', async () => {
     const originalPATH = process.env.PATH;
     const originalPath = process.env.Path;
-    const repoRoot = createTempBeadsRepo([]);
+    const repoRoot = createTempStatusRepo([]);
 
     process.env.PATH = '';
     process.env.Path = '';
@@ -325,7 +325,7 @@ describe('status command authoritative workflow state', () => {
 
 describe('status command workflow discovery', () => {
   test('zero-arg status prefers .forge-state.json over discovered issue context', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-a',
         title: 'Discovered issue',
@@ -346,7 +346,7 @@ describe('status command workflow discovery', () => {
   });
 
   test('zero-arg status discovers workflow from a slug-matched active issue', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-match',
         title: 'Matched issue',
@@ -376,7 +376,7 @@ describe('status command workflow discovery', () => {
   });
 
   test('zero-arg status matches branch slug against exact design-path slugs only', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-plan',
         title: 'Exact slug match',
@@ -407,7 +407,7 @@ describe('status command workflow discovery', () => {
   });
 
   test('zero-arg status falls back to the single active assigned issue when no slug match exists', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-only',
         title: 'Only active issue',
@@ -427,7 +427,7 @@ describe('status command workflow discovery', () => {
   });
 
   test('zero-arg status leaves workflow unresolved when multiple active issues are ambiguous', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-a',
         title: 'First active issue',
@@ -458,7 +458,7 @@ describe('status command workflow discovery', () => {
 
 describe('status command zero-arg presentation', () => {
   test('zero-arg status renders all personal status sections in order', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-active',
         title: 'Active issue',
@@ -506,7 +506,7 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status prints explicit empty-state lines for your-work', async () => {
-    const repoRoot = createTempBeadsRepo([], {
+    const repoRoot = createTempStatusRepo([], {
       branch: 'feat/empty-status',
     });
 
@@ -519,7 +519,7 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status includes blocked and stale personal focus sections', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-active-old',
         title: 'Old active issue',
@@ -553,7 +553,7 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status hides blocked/stale detail sections without --full', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-blocked',
         title: 'Blocked issue',
@@ -576,7 +576,7 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status returns JSON for the same personal focus state', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       { id: 'forge-active', title: 'Active issue', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-05-18T08:00:00Z' },
       { id: 'forge-blocked', title: 'Blocked issue', status: 'open', dependency_count: 1, updated_at: '2026-05-17T08:00:00Z' },
     ], {
@@ -606,7 +606,7 @@ describe('status command zero-arg presentation', () => {
       status: 'closed',
       updated_at: `2026-04-1${Math.min(index, 9)}T08:00:00Z`,
     }));
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-active',
         title: 'Active issue',
