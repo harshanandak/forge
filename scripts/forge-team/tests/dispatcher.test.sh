@@ -60,7 +60,7 @@ assert_output_contains "unknown subcommand shows error" "unknown subcommand" bas
 # Test 4: Each stub subcommand is reachable (exits 0)
 echo ""
 echo "-- stub subcommands reachable --"
-for cmd in workload epic dashboard add verify sync claim; do
+for cmd in workload epic add verify sync claim; do
   assert_exit "$cmd exits 0" 0 bash "$DISPATCHER" "$cmd"
   assert_output_contains "$cmd outputs stub message" "not implemented" bash "$DISPATCHER" "$cmd"
 done

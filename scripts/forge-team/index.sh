@@ -4,7 +4,6 @@
 # Subcommands:
 #   workload    Show team workload by developer
 #   epic        Epic progress rollup
-#   dashboard   Team health dashboard
 #   add         Add developer to team map
 #   verify      Check 1:1 Beads<>GitHub enforcement
 #   sync        Manual GitHub<>Beads sync
@@ -22,7 +21,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$SCRIPT_DIR/lib/identity.sh" ]] && source "$SCRIPT_DIR/lib/identity.sh"
 [[ -f "$SCRIPT_DIR/lib/workload.sh" ]] && source "$SCRIPT_DIR/lib/workload.sh"
 [[ -f "$SCRIPT_DIR/lib/epic.sh" ]] && source "$SCRIPT_DIR/lib/epic.sh"
-[[ -f "$SCRIPT_DIR/lib/dashboard.sh" ]] && source "$SCRIPT_DIR/lib/dashboard.sh"
 [[ -f "$SCRIPT_DIR/lib/hooks.sh" ]] && source "$SCRIPT_DIR/lib/hooks.sh"
 [[ -f "$SCRIPT_DIR/lib/verify.sh" ]] && source "$SCRIPT_DIR/lib/verify.sh"
 [[ -f "$SCRIPT_DIR/lib/claim.sh" ]] && source "$SCRIPT_DIR/lib/claim.sh"
@@ -34,7 +32,6 @@ FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Stub implementations ──
 # cmd_workload provided by lib/workload.sh
 # cmd_epic provided by lib/epic.sh
-# cmd_dashboard provided by lib/dashboard.sh
 cmd_add() { auto_detect_identity "$@"; }
 # cmd_verify provided by lib/verify.sh
 cmd_sync() { forge_team_sync "$@"; }
@@ -47,7 +44,6 @@ Usage: forge team <subcommand> [args...]
 Subcommands:
   workload [--developer=<user>] [--me]  Show team workload
   epic <issue-id>                        Epic progress rollup
-  dashboard                              Team health dashboard
   add [--github=<user>]                  Add developer to team map
   verify                                 Check 1:1 Beads<>GitHub sync
   sync                                   Manual GitHub<>Beads sync
@@ -69,7 +65,6 @@ main() {
   case "$subcommand" in
     workload)   cmd_workload "$@" ;;
     epic)       cmd_epic "$@" ;;
-    dashboard)  cmd_dashboard "$@" ;;
     add)        cmd_add "$@" ;;
     verify)     cmd_verify "$@" ;;
     sync)       cmd_sync "$@" ;;
