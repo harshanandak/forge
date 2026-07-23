@@ -188,6 +188,36 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
+  // Regression: bin/forge-cmd.js matched neither the lib//scripts/ arm nor the
+  // explicit bin/forge.js entry, so touching it silently forced the 10-minute
+  // full-suite lane. Slice B2's push hit exactly that and never reached the remote.
+  test('classifyPushTests maps the forge-cmd CLI surface without forcing a full suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'bin/forge-cmd.js\n',
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/cli/forge-cmd.test.js',
+      'test/forge-cmd-shepherd.test.js',
+      ...riskTargets,
+    ]);
+  });
+
+  test('classifyPushTests maps the forge-preflight CLI surface without forcing a full suite', () => {
+    const plan = classifyPushTests(repoRoot, makeExecFileSync({
+      changedFiles: 'bin/forge-preflight.js\n',
+    }));
+
+    expect(plan.runFullSuite).toBe(false);
+    expect(plan.hasUnmappedFiles).toBe(false);
+    expect(plan.testTargets).toEqual([
+      'test/bin/forge-preflight.test.js',
+      ...riskTargets,
+    ]);
+  });
+
   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
     const plan = classifyPushTests(repoRoot, makeExecFileSync({
       changedFiles: [

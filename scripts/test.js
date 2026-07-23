@@ -156,6 +156,8 @@ function isKnownTargetablePath(file) {
 
   if (file === 'README.md'
     || file === 'bin/forge.js'
+    || file === 'bin/forge-cmd.js'
+    || file === 'bin/forge-preflight.js'
     || file === 'QUICKSTART.md'
     || file === 'CHANGELOG.md'
     || file === 'AGENTS.md'
