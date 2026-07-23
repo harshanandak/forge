@@ -8,6 +8,8 @@ const path = require('node:path');
 const {
   resolveIssueBackend,
   hasExplicitBackendSignal,
+  removedBackendHint,
+  VALID_BACKENDS,
 } = require('../lib/issue-backend');
 
 function makeTempProject() {
@@ -78,24 +80,65 @@ describe('resolveIssueBackend precedence', () => {
     expect(resolved).toBe('kernel');
   });
 
-  test('beads is reachable opt-out via config', () => {
-    const projectRoot = makeTempProject();
-    writeConfig(projectRoot, 'issueBackend: beads\n');
+});
 
-    const resolved = resolveIssueBackend({ env: {}, projectRoot });
-
-    expect(resolved).toBe('beads');
+describe('resolveIssueBackend removed backends', () => {
+  test('kernel is the only valid backend', () => {
+    expect([...VALID_BACKENDS]).toEqual(['kernel']);
   });
 
-  test('beads is reachable opt-out via env', () => {
+  test('beads in config falls back to kernel with the migrate pointer', () => {
     const projectRoot = makeTempProject();
+    writeConfig(projectRoot, 'issueBackend: beads\n');
+    const warnings = [];
+
+    const resolved = resolveIssueBackend({
+      env: {},
+      projectRoot,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(resolved).toBe('kernel');
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('beads');
+    expect(warnings[0]).toContain('forge migrate --from beads');
+  });
+
+  test('beads in env falls back to kernel with the migrate pointer', () => {
+    const projectRoot = makeTempProject();
+    const warnings = [];
 
     const resolved = resolveIssueBackend({
       env: { FORGE_ISSUE_BACKEND: 'beads' },
       projectRoot,
+      warn: (message) => warnings.push(message),
     });
 
-    expect(resolved).toBe('beads');
+    expect(resolved).toBe('kernel');
+    expect(warnings[0]).toContain('forge migrate --from beads');
+  });
+
+  test('an explicit deps beads value falls back to kernel with the migrate pointer', () => {
+    const projectRoot = makeTempProject();
+    const warnings = [];
+
+    const resolved = resolveIssueBackend({
+      deps: { issueBackend: 'BEADS' },
+      env: {},
+      projectRoot,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(resolved).toBe('kernel');
+    expect(warnings[0]).toContain('forge migrate --from beads');
+  });
+
+  test('removedBackendHint answers only for retired backends', () => {
+    expect(removedBackendHint('beads')).toContain('forge migrate --from beads');
+    expect(removedBackendHint(' Beads ')).toContain('forge migrate --from beads');
+    expect(removedBackendHint('kernel')).toBeNull();
+    expect(removedBackendHint('mongo')).toBeNull();
+    expect(removedBackendHint(undefined)).toBeNull();
   });
 });
 

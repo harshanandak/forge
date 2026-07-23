@@ -197,7 +197,7 @@ describe('issue backend resolution from env/config', () => {
     expect(calls[0].deps.issueBackend).toBe('kernel');
   });
 
-  test('no backend signal leaves opts untouched and routes through beads', async () => {
+  test('no backend signal leaves opts byte-identical (no injected issueBackend key)', async () => {
     const calls = [];
     const create = createIssueSubcommand('create');
 
@@ -220,7 +220,8 @@ describe('issue backend resolution from env/config', () => {
 
     await ready.handler([], {}, '/repo', {
       issueBackend: 'kernel',
-      env: { FORGE_ISSUE_BACKEND: 'beads' },
+      // A stale env value must not outrank the explicit opts selection.
+      env: { FORGE_ISSUE_BACKEND: 'mongo' },
       runIssueOperation: async (operation, args, projectRoot, deps) => {
         calls.push({ deps });
         return { ok: true, command: operation, data: { issues: [] } };
@@ -245,7 +246,7 @@ describe('issue backend resolution from env/config', () => {
 
     // 'KERNEL' is normalized to 'kernel' and routed to the broker. An early bypass
     // of the resolver would leave it raw, and shouldUseKernelBroker's exact
-    // `=== 'kernel'` check would misroute the op to Beads.
+    // `=== 'kernel'` check would then miss the kernel-only code paths.
     expect(calls).toHaveLength(1);
     expect(calls[0].deps.issueBackend).toBe('kernel');
   });
@@ -295,7 +296,7 @@ describe('issue backend resolution from env/config', () => {
     expect(envelope.next_commands).toEqual(['forge issue show k1 --json']);
   });
 
-  test('a Beads-shaped {success,output} result passes through unchanged', async () => {
+  test('a legacy {success,output} result passes through unchanged', async () => {
     // `create` is a write subcommand, so it always routes through the shared
     // runner — letting us assert the normalizer leaves a {success,output} result
     // byte-identical (only the contract {ok,...} shape is transformed).
@@ -311,9 +312,9 @@ describe('issue backend resolution from env/config', () => {
 });
 
 describe('kernel create positional-title parity', () => {
-  // Beads accepts `forge create "title"` (positional); the Kernel create payload
-  // reads only --title. On the KERNEL PATH ONLY, a single leading bare positional
-  // is translated to `--title <value>` so the title isn't dropped.
+  // `forge create "title"` is the natural CLI shape, but the Kernel create payload
+  // reads only --title. When kernel deps are assembled on opts, a single leading bare
+  // positional is translated to `--title <value>` so the title isn't dropped.
   function captureKernelCreate(args, extraOpts = {}) {
     const calls = [];
     const create = createIssueSubcommand('create');
@@ -355,10 +356,10 @@ describe('kernel create positional-title parity', () => {
     expect(calls[0].operationArgs).toEqual(['--type', 'task']);
   });
 
-  test('the Beads path keeps its native positional handling (no injection)', async () => {
-    // `create` is a write subcommand, so it routes through the shared runner even
-    // for Beads — letting us assert the positional is passed through verbatim with
-    // NO --title injection (the mapping is kernel-path-only).
+  test('opts without assembled kernel deps pass the positional through verbatim', async () => {
+    // The translation is gated on assembled kernel deps (shouldUseKernelBroker), so a
+    // caller that injects only a runner keeps its args untouched — no --title
+    // injection behind an injected runner's back.
     const calls = [];
     const create = createIssueSubcommand('create');
     await create.handler(['my title'], {}, '/repo', {
@@ -375,9 +376,9 @@ describe('kernel create positional-title parity', () => {
 });
 
 describe('kernel batch close (KAP-9)', () => {
-  // The kernel close op closes a single id (first positional). For parity with the
-  // Beads `bd close id1 id2 ...` passthrough, the CLI fans out one runner call per
-  // id on the KERNEL PATH ONLY and aggregates a single {success,output} result.
+  // The kernel close op closes a single id (first positional), but `forge close a b c`
+  // must keep working, so the CLI fans out one runner call per id (when kernel deps are
+  // assembled) and aggregates a single {success,output} result.
   test('closes each id and aggregates success on the kernel path', async () => {
     const calls = [];
     const close = createIssueSubcommand('close');
@@ -485,7 +486,7 @@ describe('kernel batch close (KAP-9)', () => {
     expect(envelope.data).toEqual({ id: 'k1', revision: 2 });
   });
 
-  test('the Beads path with multiple ids stays a single runner call', async () => {
+  test('without assembled kernel deps, multiple ids stay a single runner call', async () => {
     const calls = [];
     const close = createIssueSubcommand('close');
 

@@ -11,7 +11,7 @@ describe('forge issue service contract', () => {
     const forgeIssues = require('../lib/forge-issues');
 
     expect(typeof forgeIssues.createIssueService).toBe('function');
-    expect(typeof forgeIssues.createBeadsIssueBackend).toBe('function');
+    expect(typeof forgeIssues.createKernelIssueBackend).toBe('function');
     expect(typeof forgeIssues.runIssueOperation).toBe('function');
   });
 
@@ -209,6 +209,11 @@ describe('forge issue service contract', () => {
       context: {
         projectRoot: '/repo',
         deps: { createService: expect.any(Function), marker: 'injected' },
+        // Now that the kernel is the only backend the projection-outbox target is
+        // unconditional — every mutation must land in the 'jsonl' outbox that
+        // `forge export` drains (previously gated on the kernel selector, so a
+        // deps-less caller silently enqueued under the legacy 'beads' target).
+        projectionTarget: 'jsonl',
       },
     }]);
   });
@@ -261,61 +266,6 @@ describe('forge issue service contract', () => {
       env: { FORGE_WORKTREE_ID: 'wt-boundary', FORGE_LEASE_TTL_MS: '0' },
     });
     expect(captured.leaseTtlMs).toBeUndefined();
-  });
-
-  test('top-level operation runner forwards injected Windows platform and PATH overrides', async () => {
-    const { runIssueOperation } = require('../lib/forge-issues');
-    const calls = [];
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-run-issue-win32-'));
-
-    try {
-      const exePath = path.join(tempDir, 'bd.exe');
-      fs.writeFileSync(exePath, '', 'utf8');
-
-      const result = await runIssueOperation('create', ['--help'], '/repo', {
-        platform: 'win32',
-        env: { PATH: tempDir },
-        spawn: (command, _args, _options) => {
-          calls.push(command);
-          const events = {};
-          const stdoutHandlers = {};
-          const stderrHandlers = {};
-
-          queueMicrotask(() => {
-            stdoutHandlers.data?.('BD CREATE HELP\n');
-            events.close?.(0);
-          });
-
-          return {
-            stdout: {
-              setEncoding() {},
-              on(event, handler) {
-                stdoutHandlers[event] = handler;
-              },
-            },
-            stderr: {
-              setEncoding() {},
-              on(event, handler) {
-                stderrHandlers[event] = handler;
-              },
-            },
-            on(event, handler) {
-              events[event] = handler;
-            },
-          };
-        },
-      });
-
-      expect(result).toEqual({
-        success: true,
-        operation: 'create',
-        output: 'BD CREATE HELP\n',
-        stderr: '',
-      });
-      expect(calls).toEqual([exePath]);
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
   });
 
   test('top-level operation runner selects the Kernel broker backend when requested', async () => {
@@ -375,562 +325,50 @@ describe('forge issue service contract', () => {
     expect(calls).toEqual([{ operation: 'create', args: ['--title', 'my title', '--type', 'task'] }]);
   });
 
-  test('default beads backend rejects issue operations when beads is not initialized', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
+  test('the beads backend is gone: no adapter factory, no bd argv helpers', () => {
+    const forgeIssues = require('../lib/forge-issues');
 
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => false,
-    });
-
-    await expect(backend.list([], { projectRoot: '/repo' })).resolves.toEqual({
-      success: false,
-      error: 'Beads is not initialized in this project. Run forge setup before using forge issues.',
-    });
-  });
-
-  test('default beads backend executes bd with mapped arguments', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const calls = [];
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async (args, projectRoot) => {
-        calls.push({ args, projectRoot });
-        return { code: 0, stdout: `mocked ${args[0]} output`, stderr: '' };
-      },
-    });
-
-    await expect(backend.create(['--title', 'New issue'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'create', output: 'mocked create output', stderr: '' });
-    await expect(backend.list(['--json'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'list', output: 'mocked list output', stderr: '' });
-    await expect(backend.show(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'show', output: 'mocked show output', stderr: '' });
-    await expect(backend.close(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'close', output: 'mocked close output', stderr: '' });
-    await expect(backend.update(['forge-1', '--title', 'Renamed'], { projectRoot: '/repo' }))
-      .resolves.toEqual({ success: true, operation: 'update', output: 'mocked update output', stderr: '' });
-
-    expect(calls).toEqual([
-      {
-        args: ['create', '--title', 'New issue'],
-        projectRoot: '/repo',
-      },
-      {
-        args: ['list', '--json'],
-        projectRoot: '/repo',
-      },
-      {
-        args: ['show', 'forge-1'],
-        projectRoot: '/repo',
-      },
-      {
-        args: ['close', 'forge-1'],
-        projectRoot: '/repo',
-      },
-      {
-        args: ['update', 'forge-1', '--title', 'Renamed'],
-        projectRoot: '/repo',
-      },
-    ]);
-  });
-
-  test('beads backend translates claim to bd update <id> --claim', async () => {
-    // De-bead parity: the claim->`update --claim` translation moved out of
-    // _issue.js into the beads layer. BeadsIssueAdapter.claim must emit the bd
-    // update argv so beads stays functional as the opt-out backend.
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const calls = [];
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async (args, projectRoot) => {
-        calls.push({ args, projectRoot });
-        return { code: 0, stdout: '', stderr: '' };
-      },
-    });
-
-    await expect(backend.claim(['forge-1'], { projectRoot: '/repo' }))
-      .resolves.toMatchObject({ success: true, operation: 'update' });
-
-    expect(calls).toEqual([{ args: ['update', 'forge-1', '--claim'], projectRoot: '/repo' }]);
-  });
-
-  test('beads backend release reports the kernel-only error without invoking bd', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    let invoked = false;
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async () => {
-        invoked = true;
-        return { code: 0, stdout: '', stderr: '' };
-      },
-    });
-
-    await expect(backend.release(['forge-1'], { projectRoot: '/repo' })).resolves.toEqual({
-      success: false,
-      error: 'forge release <id> is defined for the Kernel issue backend; Beads passthrough has no verified release operation.',
-    });
-    expect(invoked).toBe(false);
-  });
-
-  test('beads backend passes derived reads (blocked/stale/orphans/lint/stats) through to bd', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const calls = [];
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async (args, projectRoot) => {
-        calls.push({ args, projectRoot });
-        return { code: 0, stdout: '', stderr: '' };
-      },
-    });
-
-    await backend.blocked([], { projectRoot: '/repo' });
-    await backend.stale(['--days', '7'], { projectRoot: '/repo' });
-    await backend.orphans([], { projectRoot: '/repo' });
-    await backend.lint(['--json'], { projectRoot: '/repo' });
-    await backend.stats(['--json'], { projectRoot: '/repo' });
-
-    expect(calls.map(call => call.args)).toEqual([
-      ['blocked'],
-      ['stale', '--days', '7'],
-      ['orphans'],
-      ['lint', '--json'],
-      ['status', '--json'],
-    ]);
-  });
-
-  test('default beads backend lets per-call deps override construction deps', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const calls = [];
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async () => ({ code: 1, stdout: '', stderr: 'construction deps used' }),
-    });
-
-    await expect(backend.show(['forge-1'], {
-      projectRoot: '/repo',
-      deps: {
-        runBdCommand: async (args, projectRoot) => {
-          calls.push({ args, projectRoot });
-          return { code: 0, stdout: '{"id":"forge-1"}', stderr: '' };
-        },
-      },
-    })).resolves.toEqual({
-      success: true,
-      operation: 'show',
-      output: '{"id":"forge-1"}',
-      stderr: '',
-    });
-    expect(calls).toEqual([{ args: ['show', 'forge-1'], projectRoot: '/repo' }]);
-  });
-
-  test('default beads backend translates missing bd binary into a forge-level error', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async () => {
-        const error = new Error('spawn bd ENOENT');
-        error.code = 'ENOENT';
-        throw error;
-      },
-    });
-
-    await expect(backend.show(['forge-1'], { projectRoot: '/repo' })).resolves.toEqual({
-      success: false,
-      error: 'Beads (bd) command not found. Install or initialize Beads before using forge issues.',
-    });
-  });
-
-  test('default beads backend treats zero-exit bd soft failures as forge-level errors', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async () => ({
-        code: 0,
-        stdout: 'Error resolving/updating forge-missing: issue not found',
-        stderr: '',
-      }),
-    });
-
-    await expect(backend.update(['forge-missing', '--title', 'Renamed'], { projectRoot: '/repo' })).resolves.toEqual({
-      success: false,
-      error: 'Error resolving/updating forge-missing: issue not found',
-    });
-  });
-
-  test('default beads backend treats empty show payloads as not-found failures', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      runBdCommand: async () => ({
-        code: 0,
-        stdout: '[]',
-        stderr: '',
-      }),
-    });
-
-    await expect(backend.show(['forge-missing', '--json'], { projectRoot: '/repo' })).resolves.toEqual({
-      success: false,
-      error: 'Issue not found: forge-missing',
-    });
-  });
-
-  test('default beads backend captures successful show output for downstream consumers', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const writes = [];
-    let childRef;
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      spawn: (_command, _args, _options) => {
-        const events = {};
-        const stdoutHandlers = {};
-        const stderrHandlers = {};
-        childRef = {
-          stdout: {
-            setEncoding() {},
-            on(event, handler) {
-              stdoutHandlers[event] = handler;
-            },
-          },
-          stderr: {
-            setEncoding() {},
-            on(event, handler) {
-              stderrHandlers[event] = handler;
-            },
-          },
-          on(event, handler) {
-            events[event] = handler;
-          },
-          emitSuccess() {
-            stdoutHandlers.data?.('{"id":"forge-1"}');
-            events.close?.(0);
-          },
-        };
-
-        return childRef;
-      },
-      stdout: { write: chunk => writes.push({ stream: 'stdout', chunk }) },
-      stderr: { write: chunk => writes.push({ stream: 'stderr', chunk }) },
-    });
-
-    const promise = backend.show(['forge-1', '--json'], { projectRoot: '/repo' });
-    childRef.emitSuccess();
-
-    await expect(promise).resolves.toEqual({
-      success: true,
-      operation: 'show',
-      output: '{"id":"forge-1"}',
-      stderr: '',
-    });
-
-    expect(writes).toEqual([]);
-  });
-
-  test('default beads backend bypasses init checks for bd help passthrough', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const calls = [];
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => false,
-      runBdCommand: async (args, projectRoot) => {
-        calls.push({ args, projectRoot });
-        return {
-          code: 0,
-          stdout: 'bd create help output',
-          stderr: '',
-        };
-      },
-    });
-
-    await expect(backend.create(['--help'], { projectRoot: '/repo' })).resolves.toEqual({
-      success: true,
-      operation: 'create',
-      output: 'bd create help output',
-      stderr: '',
-    });
-
-    expect(calls).toEqual([{
-      args: ['create', '--help'],
-      projectRoot: '/repo',
-    }]);
-  });
-
-  test('default beads backend streams successful stderr passthrough output', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const writes = [];
-    let childRef;
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      spawn: (_command, _args, _options) => {
-        const events = {};
-        const stdoutHandlers = {};
-        const stderrHandlers = {};
-        childRef = {
-          stdout: {
-            setEncoding() {},
-            on(event, handler) {
-              stdoutHandlers[event] = handler;
-            },
-          },
-          stderr: {
-            setEncoding() {},
-            on(event, handler) {
-              stderrHandlers[event] = handler;
-            },
-          },
-          on(event, handler) {
-            events[event] = handler;
-          },
-          emitSuccess() {
-            stdoutHandlers.data?.('visible stdout\n');
-            stderrHandlers.data?.('visible stderr\n');
-            events.close?.(0);
-          },
-        };
-
-        return childRef;
-      },
-      stdout: { write: chunk => writes.push({ stream: 'stdout', chunk }) },
-      stderr: { write: chunk => writes.push({ stream: 'stderr', chunk }) },
-    });
-
-    const promise = backend.list([], { projectRoot: '/repo' });
-    childRef.emitSuccess();
-
-    await expect(promise).resolves.toEqual({
-      success: true,
-      operation: 'list',
-      output: '',
-      stderr: '',
-    });
-
-    expect(writes).toEqual([
-      { stream: 'stdout', chunk: 'visible stdout\n' },
-      { stream: 'stderr', chunk: 'visible stderr\n' },
-    ]);
-  });
-
-  test('default beads backend does not emit captured stdout before returning it', async () => {
-    const { createBeadsIssueBackend } = require('../lib/forge-issues');
-    const writes = [];
-    let childRef;
-
-    const backend = createBeadsIssueBackend({
-      isBeadsInitialized: () => true,
-      spawn: (_command, _args, _options) => {
-        const events = {};
-        const stdoutHandlers = {};
-        const stderrHandlers = {};
-        childRef = {
-          stdout: {
-            setEncoding() {},
-            on(event, handler) {
-              stdoutHandlers[event] = handler;
-            },
-          },
-          stderr: {
-            setEncoding() {},
-            on(event, handler) {
-              stderrHandlers[event] = handler;
-            },
-          },
-          on(event, handler) {
-            events[event] = handler;
-          },
-          emitSuccess() {
-            stdoutHandlers.data?.('captured stdout\n');
-            events.close?.(0);
-          },
-        };
-
-        return childRef;
-      },
-      stdout: { write: chunk => writes.push({ stream: 'stdout', chunk }) },
-      stderr: { write: chunk => writes.push({ stream: 'stderr', chunk }) },
-    });
-
-    const promise = backend.create(['--help'], { projectRoot: '/repo' });
-    childRef.emitSuccess();
-
-    await expect(promise).resolves.toEqual({
-      success: true,
-      operation: 'create',
-      output: 'captured stdout\n',
-      stderr: '',
-    });
-
-    expect(writes).toEqual([]);
-  });
-
-  test('runBdCommand prefers Windows exe candidates before cmd shims', async () => {
-    const { runBdCommand } = require('../lib/forge-issues');
-    const calls = [];
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-candidates-'));
-    try {
-      const cmdPath = path.join(tempDir, 'bd.cmd');
-      const exePath = path.join(tempDir, 'bd.exe');
-
-      fs.writeFileSync(cmdPath, '@echo off\r\n', 'utf8');
-      fs.writeFileSync(exePath, '', 'utf8');
-
-      const result = await runBdCommand('create', ['create', '--help'], '/repo', {
-        platform: 'win32',
-        env: { PATH: tempDir },
-        spawn: (command, _args, _options) => {
-          calls.push(command);
-          const events = {};
-          const stdoutHandlers = {};
-          const stderrHandlers = {};
-
-          queueMicrotask(() => {
-            stdoutHandlers.data?.('BD CREATE HELP\n');
-            events.close?.(0);
-          });
-
-          return {
-            stdout: {
-              setEncoding() {},
-              on(event, handler) {
-                stdoutHandlers[event] = handler;
-              },
-            },
-            stderr: {
-              setEncoding() {},
-              on(event, handler) {
-                stderrHandlers[event] = handler;
-              },
-            },
-            on(event, handler) {
-              events[event] = handler;
-            },
-          };
-        },
-      });
-
-      expect(result).toEqual({
-        code: 0,
-        stdout: 'BD CREATE HELP\n',
-        stderr: '',
-      });
-      expect(calls).toEqual([exePath]);
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+    // Removing the export is what makes the removal real — a lingering
+    // createBeadsIssueBackend/runBeadsOperation would let a caller reach bd again.
+    for (const removed of [
+      'createBeadsIssueBackend',
+      'runBeadsOperation',
+      'runBdCommand',
+      'buildBdArgs',
+      'getBdCommandCandidates',
+      'getPathEntries',
+      'resolveBeadsFallbackToKernel',
+      'resolveWindowsCommandCandidates',
+      'extractErrorMessage',
+      'getCommandErrorMessage',
+    ]) {
+      expect(forgeIssues[removed]).toBeUndefined();
     }
   });
 
-  test('getPathEntries honors Windows PATH delimiters for injected win32 behavior', () => {
-    const { getPathEntries } = require('../lib/forge-issues');
-
-    expect(getPathEntries({ PATH: 'C:\\tools;D:\\bin' }, ';')).toEqual([
-      'C:\\tools',
-      'D:\\bin',
-    ]);
+  test('the beads adapter module no longer exists', () => {
+    expect(() => require('../lib/adapters/beads-issue-adapter')).toThrow(/Cannot find module/);
   });
 
-  test('getBdCommandCandidates uses win32 path joining for injected Windows overrides off-host', () => {
-    const { getBdCommandCandidates } = require('../lib/forge-issues');
-    const seen = [];
-
-    const candidates = getBdCommandCandidates({
-      platform: 'win32',
-      env: { PATH: 'C:\\tools;D:\\bin' },
-      existsSync: candidate => {
-        seen.push(candidate);
-        return candidate === 'C:\\tools\\bd.exe';
-      },
-    });
-
-    expect(seen).toEqual([
-      'C:\\tools\\bd.exe',
-      'C:\\tools\\bd.cmd',
-      'D:\\bin\\bd.exe',
-      'D:\\bin\\bd.cmd',
-    ]);
-    expect(candidates).toEqual(['C:\\tools\\bd.exe', 'bd.exe', 'bd']);
-  });
-
-  test('getBdCommandCandidates preserves POSIX temp paths while simulating win32', () => {
-    const { getBdCommandCandidates } = require('../lib/forge-issues');
-    const seen = [];
-
-    const candidates = getBdCommandCandidates({
-      platform: 'win32',
-      env: { PATH: '/tmp/forge-bin;/tmp/other-bin' },
-      existsSync: candidate => {
-        seen.push(candidate);
-        return candidate === '/tmp/forge-bin/bd.exe';
-      },
-    });
-
-    expect(seen).toEqual([
-      '/tmp/forge-bin/bd.exe',
-      '/tmp/forge-bin/bd.cmd',
-      '/tmp/other-bin/bd.exe',
-      '/tmp/other-bin/bd.cmd',
-    ]);
-    expect(candidates).toEqual(['/tmp/forge-bin/bd.exe', 'bd.exe', 'bd']);
-  });
-
-  test('runBdCommand falls back when a Windows cmd shim is not directly spawnable', async () => {
-    const { runBdCommand } = require('../lib/forge-issues');
+  test('an explicit beads selection still dispatches to the kernel (no bd spawn)', async () => {
+    // The selector is resolved upstream (_resolve-command-opts hard-errors on the
+    // flag; env/config warn + fall back), so anything that still reaches the service
+    // layer carrying issueBackend:'beads' must land on the kernel rather than bd.
+    const { runIssueOperation } = require('../lib/forge-issues');
     const calls = [];
 
-    const result = await runBdCommand('create', ['create', '--help'], '/repo', {
-      platform: 'win32',
-      commandCandidates: ['C:\\tools\\bd.cmd', 'bd.exe'],
-      spawn: (command, _args, _options) => {
-        calls.push(command);
-        const events = {};
-        const stdoutHandlers = {};
-        const stderrHandlers = {};
-
-        queueMicrotask(() => {
-          if (command.endsWith('.cmd')) {
-            const error = new Error('spawn bd.cmd EINVAL');
-            error.code = 'EINVAL';
-            events.error?.(error);
-            return;
-          }
-
-          stdoutHandlers.data?.('BD CREATE HELP\n');
-          events.close?.(0);
-        });
-
-        return {
-          stdout: {
-            setEncoding() {},
-            on(event, handler) {
-              stdoutHandlers[event] = handler;
-            },
-          },
-          stderr: {
-            setEncoding() {},
-            on(event, handler) {
-              stderrHandlers[event] = handler;
-            },
-          },
-          on(event, handler) {
-            events[event] = handler;
-          },
-        };
+    const result = await runIssueOperation('list', ['--json'], '/repo', {
+      issueBackend: 'beads',
+      kernelBroker: {
+        async runIssueOperation(operation, args) {
+          calls.push({ operation, args });
+          return { ok: true, data: { issues: [] } };
+        },
       },
     });
 
-    expect(result).toEqual({
-      code: 0,
-      stdout: 'BD CREATE HELP\n',
-      stderr: '',
-    });
-    expect(calls).toEqual(['C:\\tools\\bd.cmd', 'bd.exe']);
+    expect(result).toEqual({ ok: true, data: { issues: [] } });
+    expect(calls).toEqual([{ operation: 'list', args: ['--json'] }]);
   });
 });
 
@@ -1131,67 +569,15 @@ describe('resolveIssueActor precedence', () => {
   });
 });
 
-describe('Beads-not-initialized graceful fallback to the kernel (7f09ae93)', () => {
-  test('resolveBeadsFallbackToKernel routes to the kernel when Beads is uninitialized but a kernel store exists', () => {
-    const { resolveBeadsFallbackToKernel } = require('../lib/forge-issues');
-
-    // Derive expectations from the same resolution the broker uses (path.resolve
-    // adds a drive letter on Windows), so the assertion is cross-platform.
-    const expectedGitCommonDir = path.resolve('/repo/.git');
-    const expectedDbPath = path.join(expectedGitCommonDir, 'forge', 'kernel.sqlite');
-
-    const checked = [];
-    const result = resolveBeadsFallbackToKernel('/repo', {
-      isBeadsInitialized: () => false,
-      gitCommonDir: '/repo/.git',
-      existsSync: (p) => {
-        checked.push(p);
-        return true;
-      },
-    });
-
-    expect(result).toEqual({
-      kernelDatabasePath: expectedDbPath,
-      gitCommonDir: expectedGitCommonDir,
-    });
-    // It probed exactly the documented kernel store location.
-    expect(checked).toEqual([expectedDbPath]);
-  });
-
-  test('resolveBeadsFallbackToKernel returns null when Beads IS initialized (honor the explicit selection)', () => {
-    const { resolveBeadsFallbackToKernel } = require('../lib/forge-issues');
-
-    const result = resolveBeadsFallbackToKernel('/repo', {
-      isBeadsInitialized: () => true,
-      gitCommonDir: '/repo/.git',
-      existsSync: () => true,
-    });
-
-    expect(result).toBeNull();
-  });
-
-  test('resolveBeadsFallbackToKernel returns null when neither Beads nor a kernel store exists', () => {
-    const { resolveBeadsFallbackToKernel } = require('../lib/forge-issues');
-
-    const result = resolveBeadsFallbackToKernel('/repo', {
-      isBeadsInitialized: () => false,
-      gitCommonDir: '/repo/.git',
-      existsSync: () => false,
-    });
-
-    expect(result).toBeNull();
-  });
-
-  test('runIssueOperation falls back to the kernel (with a one-line notice) instead of dead-ending', async () => {
+describe('no Beads dead-end (7f09ae93 superseded by the backend removal)', () => {
+  test('an uninitialized-Beads repo never dead-ends: the kernel is the only route', async () => {
+    // 7f09ae93 was a graceful Beads->Kernel fallback. With the backend removed the
+    // fallback is unconditional, so the "Beads is not initialized" dead end — and the
+    // one-line migration notice it needed — cannot occur at all.
     const { runIssueOperation } = require('../lib/forge-issues');
 
-    const notices = [];
     const calls = [];
     const result = await runIssueOperation('list', [], '/repo', {
-      isBeadsInitialized: () => false,
-      gitCommonDir: '/repo/.git',
-      existsSync: () => true,
-      warn: (msg) => notices.push(msg),
       createKernelBroker: () => ({
         async runIssueOperation(operation, args) {
           calls.push({ operation, args });
@@ -1202,22 +588,5 @@ describe('Beads-not-initialized graceful fallback to the kernel (7f09ae93)', () 
 
     expect(result.ok).toBe(true);
     expect(calls).toEqual([{ operation: 'list', args: [] }]);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('kernel');
-  });
-
-  test('runIssueOperation still returns the Beads not-initialized error when no kernel store exists', async () => {
-    const { runIssueOperation } = require('../lib/forge-issues');
-
-    const result = await runIssueOperation('list', [], '/repo', {
-      isBeadsInitialized: () => false,
-      gitCommonDir: '/repo/.git',
-      existsSync: () => false,
-    });
-
-    expect(result).toEqual({
-      success: false,
-      error: 'Beads is not initialized in this project. Run forge setup before using forge issues.',
-    });
   });
 });

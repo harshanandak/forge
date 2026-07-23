@@ -25,6 +25,14 @@ describe('stripSelectorTokens — consume + remove --kernel / --issue-backend', 
   });
 
   test('removes --issue-backend=kernel (= form)', () => {
+    const { args, flags } = stripSelectorTokens(['kap-10', '--issue-backend=kernel']);
+    expect(args).toEqual(['kap-10']);
+    expect(flags.issueBackend).toBe('kernel');
+  });
+
+  test('strips a retired backend value too (validation happens downstream)', () => {
+    // Stripping is unconditional so the value can never leak into the args as a
+    // positional issue id; resolveFlagBackend is what rejects it.
     const { args, flags } = stripSelectorTokens(['kap-10', '--issue-backend=beads']);
     expect(args).toEqual(['kap-10']);
     expect(flags.issueBackend).toBe('beads');
@@ -77,30 +85,45 @@ describe('resolveCommandOpts — issue commands', () => {
   );
 
   test(
-    'beads opt-out (--issue-backend beads) → no kernel deps, selector token stripped',
+    '--issue-backend beads (space form) is a hard error with the migrate pointer',
     async () => {
-      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--issue-backend', 'beads', '--reason=x'], {
-        env: {},
-        projectRoot: '/repo',
-      });
-      expect(commandOpts.issueBackend).toBe('beads');
-      expect(commandOpts.useKernelBroker).toBeFalsy();
-      expect(commandOpts.kernelDriver).toBeUndefined();
-      // selector token removed; the real close args remain
-      expect(args).toEqual(['kap-10', '--reason=x']);
+      await expect(
+        resolveCommandOpts('close', ['kap-10', '--issue-backend', 'beads', '--reason=x'], {
+          env: {},
+          projectRoot: '/repo',
+          buildKernelIssueDeps: () => ({ useKernelBroker: true }),
+        }),
+      ).rejects.toThrow(/forge migrate --from beads/);
     },
     TIMEOUT,
   );
 
   test(
-    'beads opt-out (FORGE_ISSUE_BACKEND=beads env) → no kernel deps',
+    '--issue-backend=BEADS (= form, any case) is a hard error with the migrate pointer',
     async () => {
+      await expect(
+        resolveCommandOpts('close', ['kap-10', '--issue-backend=BEADS'], {
+          env: {},
+          projectRoot: '/repo',
+          buildKernelIssueDeps: () => ({ useKernelBroker: true }),
+        }),
+      ).rejects.toThrow(/no longer supported[\s\S]*forge migrate --from beads/);
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'FORGE_ISSUE_BACKEND=beads env warns and still resolves to the kernel',
+    async () => {
+      // Env/config are ambient (a stale shell profile, an old .forge/config.yaml), so
+      // they warn + fall back rather than hard-fail the command.
       const { commandOpts } = await resolveCommandOpts('close', ['kap-10'], {
         env: { FORGE_ISSUE_BACKEND: 'beads' },
         projectRoot: '/repo',
+        buildKernelIssueDeps: () => ({ useKernelBroker: true, kernelDriver: { exec() {} } }),
       });
-      expect(commandOpts.issueBackend).toBe('beads');
-      expect(commandOpts.useKernelBroker).toBeFalsy();
+      expect(commandOpts.issueBackend).toBe('kernel');
+      expect(commandOpts.useKernelBroker).toBe(true);
     },
     TIMEOUT,
   );
@@ -170,9 +193,9 @@ describe('resolveCommandOpts — issue commands', () => {
     'every SUBCOMMANDS verb is in ISSUE_COMMANDS (structural drift guard)',
     () => {
       // ISSUE_COMMANDS is hand-maintained and decoupled from the SUBCOMMANDS spec in
-      // _issue.js. A verb present in SUBCOMMANDS but missing here would — post the
-      // kernel default-flip — silently route to the retired Beads backend with no
-      // failing test (the cosmetic-flip class this work fixes). Fail CI on that drift.
+      // _issue.js. A verb present in SUBCOMMANDS but missing here never gets kernel
+      // deps assembled (no driver/broker on opts), so it would fail at dispatch with
+      // no failing test to catch it. Fail CI on that drift.
       for (const verb of Object.keys(SUBCOMMANDS)) {
         expect(ISSUE_COMMANDS.has(verb)).toBe(true);
       }

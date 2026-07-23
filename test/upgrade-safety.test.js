@@ -45,16 +45,20 @@ describe('upgrade preview — beads -> kernel breaking boundary', () => {
     expect(output).toContain('forge setup');
   });
 
-  test('an explicit beads opt-in (config) does NOT flag a migration', () => {
+  test('a leftover `issueBackend: beads` config no longer suppresses the advisory', () => {
+    // The beads backend is gone, so the config value is a stale opt-in to something
+    // that no longer exists — the user still has an unmigrated store and still needs
+    // the pointer. The value is reported (so the advisory can explain it) but never
+    // silences the migration.
     const root = makeRoot({ beadsJsonl: true, configBackend: 'beads' });
     const report = buildUpgradeDryRunReport(root);
 
     expect(report.beadsMigration.jsonlPresent).toBe(true);
     expect(report.beadsMigration.configBackend).toBe('beads');
-    expect(report.beadsMigration.needsMigration).toBe(false);
+    expect(report.beadsMigration.needsMigration).toBe(true);
 
     const output = renderUpgradeDryRunReport(report);
-    expect(output).not.toContain('forge migrate --from beads');
+    expect(output).toContain('forge migrate --from beads');
   });
 
   test('a repo with no beads store shows no migration section', () => {
@@ -84,16 +88,16 @@ describe('upgrade preview — beads -> kernel breaking boundary', () => {
     expect(beadsReport.ok).toBe(cleanReport.ok);
   });
 
-  // The advisory must respect the SAME opt-in the nudge does — including the
-  // FORGE_ISSUE_BACKEND env override, not just config.
-  test('an env opt-in (FORGE_ISSUE_BACKEND=beads) suppresses the advisory', () => {
+  // With the backend removed there is no opt-out left to respect: a stale
+  // FORGE_ISSUE_BACKEND=beads resolves to the kernel, so the advisory still fires.
+  test('a stale FORGE_ISSUE_BACKEND=beads env no longer suppresses the advisory', () => {
     const root = makeRoot({ beadsJsonl: true });
 
-    const envOptIn = buildBeadsMigrationSummary(root, { FORGE_ISSUE_BACKEND: 'beads' });
-    expect(envOptIn.jsonlPresent).toBe(true);
-    expect(envOptIn.needsMigration).toBe(false);
+    const staleEnv = buildBeadsMigrationSummary(root, { FORGE_ISSUE_BACKEND: 'beads' });
+    expect(staleEnv.jsonlPresent).toBe(true);
+    expect(staleEnv.needsMigration).toBe(true);
 
-    // Same repo, default env -> the advisory fires.
+    // Same repo, default env -> the advisory fires identically.
     const defaultEnv = buildBeadsMigrationSummary(root, {});
     expect(defaultEnv.needsMigration).toBe(true);
   });
