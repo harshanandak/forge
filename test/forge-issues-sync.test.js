@@ -62,6 +62,9 @@ describe('forge issue write sync', () => {
           createService: expect.any(Function),
           enqueueGitHubProjection: expect.any(Function),
         }),
+        // Kernel-only backend: every mutation enqueues into the 'jsonl' projection
+        // outbox that `forge export` drains.
+        projectionTarget: 'jsonl',
       },
     }]);
     expect(queued).toEqual([{

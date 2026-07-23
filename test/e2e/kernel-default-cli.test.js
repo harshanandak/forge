@@ -182,14 +182,16 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel 
   );
 
   test(
-    'beads opt-out (--issue-backend beads) routes AWAY from the kernel by default-flip',
+    '--issue-backend beads is rejected outright and points at the migration',
     () => {
-      // With beads uninitialized in the temp repo, the beads-routed read must fail
-      // with a Beads-specific error (NOT the kernel contract). This proves the
-      // opt-out escape hatch still selects Beads after the default flip.
-      const { stdout } = runForgeDefault(repo, ['list', '--issue-backend', 'beads']);
+      // The opt-out escape hatch is gone: the flag must fail loudly with the migrate
+      // pointer rather than routing anywhere, and must NOT quietly emit the kernel
+      // contract as if the request had been honored.
+      const { stdout, stderr } = runForgeDefault(repo, ['list', '--issue-backend', 'beads']);
+      const combined = `${stdout}\n${stderr}`;
       expect(stdout).not.toContain('"schema_version": "forge.issue.v1"');
-      expect(stdout).toMatch(/beads|bd/i);
+      expect(combined).toContain('no longer supported');
+      expect(combined).toContain('forge migrate --from beads');
     },
     TIMEOUT,
   );
