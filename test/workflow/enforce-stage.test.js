@@ -123,7 +123,7 @@ describe('workflow enforce-stage', () => {
     }
   });
 
-  test('enforceStageEntry still blocks stage entry when beads is selected and bd is missing', async () => {
+  test('enforceStageEntry ignores the retired beads signal and still blocks on a health hard-stop', async () => {
     const prev = process.env.FORGE_ISSUE_BACKEND;
     process.env.FORGE_ISSUE_BACKEND = 'beads';
     try {
@@ -135,17 +135,19 @@ describe('workflow enforce-stage', () => {
         workflowState: createWorkflowState('validate', 'standard'),
         checkHealth: (_root, options) => {
           seenOptions = options;
-          // With beads selected, checkRuntimeHealth still hard-stops on missing bd.
+          // A hard-stop from checkRuntimeHealth must still abort stage entry.
           return {
             healthy: false,
             hardStop: true,
-            diagnostics: [{ code: 'BD_MISSING', message: 'bd required for the beads backend' }]
+            diagnostics: [{ code: 'RUNTIME_UNHEALTHY', message: 'runtime prerequisites missing' }]
           };
         }
-      })).rejects.toThrow(/BD_MISSING/);
+      })).rejects.toThrow(/RUNTIME_UNHEALTHY/);
 
       expect(seenOptions).not.toBeNull();
-      expect(seenOptions.issueBackend).toBe('beads');
+      // Beads is no longer a selectable backend: the retired env signal resolves to
+      // the kernel rather than routing a dead backend down into runtime health.
+      expect(seenOptions.issueBackend).toBe('kernel');
     } finally {
       if (prev === undefined) delete process.env.FORGE_ISSUE_BACKEND;
       else process.env.FORGE_ISSUE_BACKEND = prev;
