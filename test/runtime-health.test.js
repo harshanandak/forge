@@ -173,22 +173,28 @@ describe('runtime health checks', () => {
     expect(lefthookStatus.binaryAvailable).toBe(true);
   });
 
-  test('missing bd produces a hard-stop diagnostic when the beads backend is selected', () => {
+  test('missing bd stays advisory even when the retired beads signal is passed in', () => {
     const projectRoot = createProjectRoot();
 
     const result = checkRuntimeHealth(projectRoot, {
       _exec: createExecStub({ missing: new Set(['bd']) }),
       platform: 'linux',
       issueBackend: 'beads',
+      _canExecuteHook: () => true,
       shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
     });
 
-    expect(result.healthy).toBe(false);
-    expect(result.hardStop).toBe(true);
-    expect(result.diagnostics).toContainEqual(
+    // bd is never a prerequisite any more: the retired selector resolves to the
+    // kernel, so a missing bd must not hard-stop stage entry.
+    expect(result.hardStop).toBe(false);
+    expect(result.checks.issueBackend).toBe('kernel');
+    expect(result.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: 'BD_MISSING' })
+    );
+    expect(result.advisories).toContainEqual(
       expect.objectContaining({
         code: 'BD_MISSING',
-        severity: 'hard-stop'
+        severity: 'advisory'
       })
     );
     expect(result.checks.bd.available).toBe(false);
@@ -553,13 +559,10 @@ describe('runtime health checks', () => {
   test('configured hooksPath accepts env-prefixed hook execution commands', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
-    const beadsHooksDir = path.join(projectRoot, '.beads', 'hooks');
     fs.rmSync(hooksDir, { recursive: true, force: true });
     fs.mkdirSync(hooksDir, { recursive: true });
-    fs.mkdirSync(beadsHooksDir, { recursive: true });
     fs.writeFileSync(path.join(hooksDir, 'pre-commit'), 'FORGE_ENV=1 .forge/hooks/check-tdd.js\n');
-    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'BEADS_ENV=1 bd hooks run pre-push "$@"\n');
-    fs.writeFileSync(path.join(beadsHooksDir, 'pre-push'), 'lefthook run pre-push "$@"\n');
+    fs.writeFileSync(path.join(hooksDir, 'pre-push'), 'LEFTHOOK_ENV=1 lefthook run pre-push "$@"\n');
 
     const result = checkRuntimeHealth(projectRoot, {
       _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
@@ -571,7 +574,7 @@ describe('runtime health checks', () => {
     expect(result.checks.hooks.active).toBe(true);
     expect(result.checks.hooks.providers).toEqual({
       'pre-commit': 'forge',
-      'pre-push': 'beads->lefthook'
+      'pre-push': 'lefthook'
     });
   });
 
@@ -663,34 +666,7 @@ describe('runtime health checks', () => {
     });
   });
 
-  test('configured hooksPath accepts Beads-managed hook entries that chain to Lefthook', () => {
-    const projectRoot = createProjectRoot();
-    const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
-    const beadsHooksDir = path.join(projectRoot, '.beads', 'hooks');
-    fs.rmSync(hooksDir, { recursive: true, force: true });
-    fs.mkdirSync(hooksDir, { recursive: true });
-    fs.mkdirSync(beadsHooksDir, { recursive: true });
-    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/usr/bin/env sh\nbd hooks run pre-commit "$@"\n');
-    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/usr/bin/env sh\nbd hooks run pre-push "$@"\n');
-    fs.writeFileSync(path.join(beadsHooksDir, 'pre-commit'), '#!/usr/bin/env sh\nlefthook run pre-commit "$@"\n');
-    fs.writeFileSync(path.join(beadsHooksDir, 'pre-push'), '#!/usr/bin/env sh\nlefthook run pre-push "$@"\n');
-
-    const result = checkRuntimeHealth(projectRoot, {
-      _exec: createExecStub({ hooksPath: '.lefthook/hooks' }),
-      platform: 'win32',
-      shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
-    });
-
-    expect(result.hardStop).toBe(false);
-    expect(result.checks.hooks.active).toBe(true);
-    expect(result.checks.hooks.missingHooks).toEqual([]);
-    expect(result.checks.hooks.providers).toEqual({
-      'pre-commit': 'beads->lefthook',
-      'pre-push': 'beads->lefthook'
-    });
-  });
-
-  test('configured hooksPath rejects pure Beads hook entries when Forge enforcement is unverified', () => {
+  test('configured hooksPath rejects bd-managed hook entries (the beads chain is gone)', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.lefthook', 'hooks');
     fs.rmSync(hooksDir, { recursive: true, force: true });
@@ -706,13 +682,15 @@ describe('runtime health checks', () => {
 
     expect(result.hardStop).toBe(true);
     expect(result.checks.hooks.active).toBe(false);
+    // `bd hooks run` is no longer a recognized provider at all — it reads as an
+    // unknown command like any other, so enforcement stays unverified.
     expect(result.checks.hooks.providers).toEqual({
-      'pre-commit': 'beads-unverified',
-      'pre-push': 'beads-unverified'
+      'pre-commit': 'unknown',
+      'pre-push': 'unknown'
     });
   });
 
-  test('configured Beads hooksPath is accepted when hook files chain to Lefthook', () => {
+  test('a .beads/hooks core.hooksPath is no longer an accepted hooks location', () => {
     const projectRoot = createProjectRoot();
     const hooksDir = path.join(projectRoot, '.beads', 'hooks');
     fs.mkdirSync(hooksDir, { recursive: true });
@@ -725,12 +703,13 @@ describe('runtime health checks', () => {
       shellRuntime: { available: true, command: 'C:\\Program Files\\Git\\bin\\bash.exe', policy: 'git-bash' }
     });
 
-    expect(result.hardStop).toBe(false);
-    expect(result.checks.hooks.active).toBe(true);
-    expect(result.checks.hooks.providers).toEqual({
-      'pre-commit': 'lefthook',
-      'pre-push': 'lefthook'
-    });
+    // Lefthook is the only supported hooks location now, so pointing core.hooksPath
+    // at the retired Beads directory is reported instead of silently accepted.
+    expect(result.hardStop).toBe(true);
+    expect(result.checks.hooks.active).toBe(false);
+    // The message echoes the configured path and names lefthook as the only
+    // expected location — it no longer offers .beads/hooks as an alternative.
+    expect(result.checks.hooks.message).toContain('not ".lefthook/hooks"');
   });
 
   test('relative lefthook hooksPath is resolved from the git root', () => {

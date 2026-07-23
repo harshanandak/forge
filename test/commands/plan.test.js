@@ -2,7 +2,6 @@ const { describe, test, expect } = require('bun:test');
 const {
 	readResearchDoc,
 	detectScope,
-	createBeadsIssue,
 	createKernelIssue,
 	createFeatureBranch,
 	extractDesignDecisions,
@@ -77,37 +76,6 @@ Major architectural impact.
 			const scope = detectScope(researchContent);
 			expect(scope.type).toBe('strategic');
 			expect(scope.reason).toBeTruthy();
-		});
-	});
-
-	describe('Beads issue creation', () => {
-		test.skip('should create Beads issue for tactical scope', () => {
-			const featureName = 'fix-validation-bug';
-			const researchPath = 'docs/research/fix-validation-bug.md';
-
-			const result = createBeadsIssue(featureName, researchPath, 'tactical');
-			expect(result.issueId).toBeTruthy();
-			expect(result.issueId).toMatch(/^forge-[a-z0-9]+$/);
-			expect(result.success).toBe(true);
-		});
-
-		test.skip('should create Beads issue with design doc link for strategic (requires Beads CLI — PR #64)', () => {
-			const featureName = 'payment-integration';
-			const researchPath = 'docs/research/payment-integration.md';
-
-			const result = createBeadsIssue(featureName, researchPath, 'strategic');
-			expect(result.issueId).toBeTruthy();
-			expect(result.description.includes('docs/work')).toBeTruthy();
-			expect(result.description.endsWith('/plan.md')).toBeTruthy();
-		});
-
-		test.skip('should handle Beads command failures (requires Beads CLI — PR #64)', () => {
-			const featureName = 'test-feature';
-
-			// Mock bd command to fail
-			const result = createBeadsIssue(featureName, 'path', 'tactical');
-			expect(result.success).toBe(false);
-			expect(result.error).toBeTruthy();
 		});
 	});
 

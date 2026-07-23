@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 69 | 7 |
-| runtime | 236 | 33 |
+| command | 66 | 7 |
+| runtime | 229 | 33 |
 | docs | 395 | 47 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -21,8 +21,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 466 (bd)
 - [ ] lib/commands/migrate.js (17)
   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
-- [ ] lib/commands/plan.js (9)
-  - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 998 (bd), 1035 (bd)
+- [ ] lib/commands/plan.js (6)
+  - lines: 250 (bd), 253 (bd), 254 (bd), 501 (bd), 908 (bd), 944 (bd)
 - [ ] lib/commands/status.js (10)
   - lines: 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 245 (.beads), 247 (.beads), 368 (bd), 427 (bd)
 - [ ] lib/commands/test.js (5)
@@ -62,16 +62,16 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 23 (bd), 33 (bd)
 - [ ] lib/protected-state-surfaces.js (4)
   - lines: 43 (.beads), 50 (.beads), 51 (bd), 363 (bd)
-- [ ] lib/runtime-health.js (13)
-  - lines: 178 (bd), 219 (.beads), 278 (.beads), 336 (.beads), 508 (bd), 542 (bd), 544 (bd), 547 (bd), 548 (bd), 551 (bd), 556 (bd), 557 (bd), 600 (bd)
+- [ ] lib/runtime-health.js (7)
+  - lines: 486 (bd), 520 (bd), 521 (bd), 522 (bd), 526 (bd), 527 (bd), 569 (bd)
 - [ ] lib/status/beads-snapshot.js (1)
   - lines: 31 (.beads)
 - [ ] lib/status/snapshot.js (3)
   - lines: 160 (.beads), 177 (.beads), 184 (.beads)
 - [ ] lib/upgrade-safety.js (2)
   - lines: 70 (.beads), 182 (.beads)
-- [ ] lib/workflow/enforce-stage.js (2)
-  - lines: 390 (bd), 391 (bd)
+- [ ] lib/workflow/enforce-stage.js (1)
+  - lines: 390 (bd)
 - [ ] scripts/beads-migrate-to-dolt.sh (1)
   - lines: 7 (dolt)
 - [ ] scripts/beads-upgrade-smoke.sh (1)

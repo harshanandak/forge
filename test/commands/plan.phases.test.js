@@ -18,7 +18,7 @@
  *  - extractTasksFromResearch: section boundary (stops at next ##)
  *
  * Phase 3 (Setup):
- *  - createBeadsIssue: input validation (missing featureName, missing researchPath, invalid scope)
+ *  - createKernelIssue: input validation (missing featureName, missing researchPath, invalid scope)
  *  - createFeatureBranch: slug validation (invalid slugs rejected before any git call)
  *  - executePlan: featureName type validation (null, undefined, empty, non-string)
  *  - executePlan: missing research doc returns failure (uses real fs, file doesn't exist)
@@ -36,7 +36,7 @@ const { describe, test, expect, beforeAll, afterAll } = require('bun:test');
 const {
 	readResearchDoc,
 	detectScope,
-	createBeadsIssue,
+	createKernelIssue,
 	createFeatureBranch,
 	extractDesignDecisions,
 	extractTasksFromResearch,
@@ -447,54 +447,58 @@ describe('Plan Phase 2 — extractTasksFromResearch TDD task generation', () => 
 });
 
 // ---------------------------------------------------------------------------
-// Phase 3: createBeadsIssue — input validation (no I/O paths)
+// Phase 3: createKernelIssue — input validation (no I/O paths)
+//
+// These cases all return before the kernel broker is ever reached, so they need
+// no broker injected. They moved here from createBeadsIssue, which was deleted
+// with the beads backend; the validation contract is unchanged.
 // ---------------------------------------------------------------------------
-describe('Plan Phase 3 — createBeadsIssue input validation', () => {
-	test('should return error when featureName is empty string', () => {
-		const result = createBeadsIssue('', 'docs/research/feature.md', 'tactical');
+describe('Plan Phase 3 — createKernelIssue input validation', () => {
+	test('should return error when featureName is empty string', async () => {
+		const result = await createKernelIssue('', 'docs/research/feature.md', 'tactical');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return error when researchPath is empty string', () => {
-		const result = createBeadsIssue('My Feature', '', 'tactical');
+	test('should return error when researchPath is empty string', async () => {
+		const result = await createKernelIssue('My Feature', '', 'tactical');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return error for invalid scope value', () => {
-		const result = createBeadsIssue('My Feature', 'docs/research/feature.md', 'invalid-scope');
+	test('should return error for invalid scope value', async () => {
+		const result = await createKernelIssue('My Feature', 'docs/research/feature.md', 'invalid-scope');
 		expect(result.success).toBe(false);
 		expect(result.error.toLowerCase()).toContain('scope');
 	});
 
-	test('should return error when scope is empty string', () => {
-		const result = createBeadsIssue('My Feature', 'docs/research/feature.md', '');
+	test('should return error when scope is empty string', async () => {
+		const result = await createKernelIssue('My Feature', 'docs/research/feature.md', '');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return error when featureName is null', () => {
-		const result = createBeadsIssue(null, 'docs/research/feature.md', 'tactical');
+	test('should return error when featureName is null', async () => {
+		const result = await createKernelIssue(null, 'docs/research/feature.md', 'tactical');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return error when researchPath is null', () => {
-		const result = createBeadsIssue('My Feature', null, 'tactical');
+	test('should return error when researchPath is null', async () => {
+		const result = await createKernelIssue('My Feature', null, 'tactical');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return error when scope is Strategic (wrong case — must be lowercase)', () => {
+	test('should return error when scope is Strategic (wrong case — must be lowercase)', async () => {
 		// Case-sensitive: 'Strategic' is not accepted, only 'strategic'
-		const result = createBeadsIssue('My Feature', 'docs/research/feature.md', 'Strategic');
+		const result = await createKernelIssue('My Feature', 'docs/research/feature.md', 'Strategic');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
 
-	test('should return error when scope is Tactical (wrong case — must be lowercase)', () => {
-		const result = createBeadsIssue('My Feature', 'docs/research/feature.md', 'Tactical');
+	test('should return error when scope is Tactical (wrong case — must be lowercase)', async () => {
+		const result = await createKernelIssue('My Feature', 'docs/research/feature.md', 'Tactical');
 		expect(result.success).toBe(false);
 		expect(result.error).toBeTruthy();
 	});
