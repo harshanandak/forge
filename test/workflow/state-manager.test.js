@@ -9,8 +9,8 @@ const {
   WORKFLOW_STATE_FILENAME,
   extractWorkflowStateFromComments,
   loadState,
-  readBeadsIssue,
-  readWorkflowStateFromBeads,
+  readIssueWorkflowState,
+  readWorkflowStateFromIssue,
   saveState,
   initializeState,
   transitionStage,
@@ -80,7 +80,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('falls back to Beads comments when file missing and comments provided', () => {
+    test('falls back to issue comments when file missing and comments provided', () => {
       const dir = createTmpDir();
       try {
         const state = createWorkflowState('plan', 'standard');
@@ -90,20 +90,20 @@ describe('state-manager', () => {
         const result = loadState(dir, { comments });
         expect(result.state).not.toBeNull();
         expect(result.state.currentStage).toBe('plan');
-        expect(result.source).toBe('beads');
+        expect(result.source).toBe('issue');
       } finally {
         cleanTmpDir(dir);
       }
     });
 
-    test('file takes priority over Beads comments', () => {
+    test('file takes priority over issue comments', () => {
       const dir = createTmpDir();
       try {
         const fileState = createWorkflowState('dev', 'standard');
         writeStateFile(dir, fileState);
 
-        const beadsState = createWorkflowState('plan', 'standard');
-        const compact = JSON.stringify(JSON.parse(writeWorkflowState(beadsState)));
+        const issueState = createWorkflowState('plan', 'standard');
+        const compact = JSON.stringify(JSON.parse(writeWorkflowState(issueState)));
         const comments = `WorkflowState: ${compact}`;
 
         const result = loadState(dir, { comments });
@@ -114,7 +114,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('preferBeads falls back to file when Beads lookup throws', () => {
+    test('preferIssueLookup falls back to file when the issue lookup throws', () => {
       const dir = createTmpDir();
       try {
         const fileState = createWorkflowState('dev', 'standard');
@@ -122,15 +122,15 @@ describe('state-manager', () => {
         const throwingIssue = {};
         Object.defineProperty(throwingIssue, 'comments', {
           get() {
-            throw new Error('simulated Beads read failure');
+            throw new Error('simulated issue read failure');
           },
         });
 
         const errors = [];
         const result = loadState(dir, {
-          preferBeads: true,
+          preferIssueLookup: true,
           issue: throwingIssue,
-          onBeadsError: error => errors.push(error),
+          onIssueLookupError: error => errors.push(error),
         });
         expect(result.state.currentStage).toBe('dev');
         expect(result.source).toBe('file');
@@ -140,7 +140,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('falls back to Beads when state file is malformed', () => {
+    test('falls back to the issue when state file is malformed', () => {
       const dir = createTmpDir();
       try {
         fs.writeFileSync(path.join(dir, WORKFLOW_STATE_FILENAME), '{bad json', 'utf8');
@@ -152,13 +152,13 @@ describe('state-manager', () => {
         const result = loadState(dir, { comments });
         expect(result.state).not.toBeNull();
         expect(result.state.currentStage).toBe('dev');
-        expect(result.source).toBe('beads');
+        expect(result.source).toBe('issue');
       } finally {
         cleanTmpDir(dir);
       }
     });
 
-    test('returns null when state file is malformed and no Beads fallback', () => {
+    test('returns null when state file is malformed and no issue fallback', () => {
       const dir = createTmpDir();
       try {
         fs.writeFileSync(path.join(dir, WORKFLOW_STATE_FILENAME), '{bad json', 'utf8');
@@ -171,13 +171,13 @@ describe('state-manager', () => {
       }
     });
 
-    test('returns null when projectRoot is null and no Beads options', () => {
+    test('returns null when projectRoot is null and no issue options', () => {
       const result = loadState(null);
       expect(result.state).toBeNull();
       expect(result.source).toBeNull();
     });
 
-    test('falls back to Beads when projectRoot is null but comments provided', () => {
+    test('falls back to the issue when projectRoot is null but comments provided', () => {
       const state = createWorkflowState('dev', 'standard');
       const compact = JSON.stringify(JSON.parse(writeWorkflowState(state)));
       const comments = `WorkflowState: ${compact}`;
@@ -185,7 +185,7 @@ describe('state-manager', () => {
       const result = loadState(null, { comments });
       expect(result.state).not.toBeNull();
       expect(result.state.currentStage).toBe('dev');
-      expect(result.source).toBe('beads');
+      expect(result.source).toBe('issue');
     });
   });
 
@@ -480,15 +480,15 @@ describe('state-manager', () => {
     });
   });
 
-  describe('readWorkflowStateFromBeads', () => {
+  describe('readWorkflowStateFromIssue', () => {
     test('is exported as a function', () => {
-      expect(typeof readWorkflowStateFromBeads).toBe('function');
+      expect(typeof readWorkflowStateFromIssue).toBe('function');
     });
 
     test('returns null when issueId is falsy', () => {
-      expect(readWorkflowStateFromBeads(null)).toBeNull();
-      expect(readWorkflowStateFromBeads('')).toBeNull();
-      expect(readWorkflowStateFromBeads(undefined)).toBeNull();
+      expect(readWorkflowStateFromIssue(null)).toBeNull();
+      expect(readWorkflowStateFromIssue('')).toBeNull();
+      expect(readWorkflowStateFromIssue(undefined)).toBeNull();
     });
 
     test('parses comments when provided via options', () => {
@@ -496,15 +496,15 @@ describe('state-manager', () => {
       const compact = JSON.stringify(JSON.parse(writeWorkflowState(state)));
       const comments = `WorkflowState: ${compact}`;
 
-      const result = readWorkflowStateFromBeads('forge-test', { comments });
+      const result = readWorkflowStateFromIssue('forge-test', { comments });
       expect(result).not.toBeNull();
       expect(result.currentStage).toBe('validate');
     });
   });
 
-  describe('readBeadsIssue', () => {
+  describe('readIssueWorkflowState', () => {
     test('returns null when bd show fails', () => {
-      const result = readBeadsIssue('forge-test', {
+      const result = readIssueWorkflowState('forge-test', {
         _execFileSync: () => {
           throw new Error('bd failed');
         },

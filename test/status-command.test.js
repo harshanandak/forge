@@ -4,7 +4,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { readBeadsSnapshot } = require('../lib/status/beads-snapshot.js');
 const statusCommand = require('../lib/commands/status.js');
 
 function createWorkflowState(currentStage = 'dev') {
@@ -22,23 +21,68 @@ function createWorkflowState(currentStage = 'dev') {
   };
 }
 
-function createTempBeadsRepo(entries, options = {}) {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-beads-'));
-  const beadsDir = path.join(repoRoot, '.beads');
-  fs.mkdirSync(beadsDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(beadsDir, 'issues.jsonl'),
-    `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`,
-    'utf8'
-  );
+// Snapshot fixtures keyed by repo root. Slice C deleted the Beads reader these tests
+// used to seed via .beads/issues.jsonl; the kernel cannot replace it here because it
+// stamps its own updated_at and these tests assert exact orderings and caps. So the
+// fixture now builds the snapshot directly and the handler reads it through its
+// injectable seam (see statusFlags below). The REAL kernel read path is covered in
+// test/status/snapshot.test.js; these tests are about handler + presenter behaviour.
+const snapshotsByRepo = new Map();
 
-  // This fixture seeds the retired Beads store (.beads/issues.jsonl), so pin the repo
-  // to the Beads backend. Status now reads the Kernel by default (bug 40f35797), so
-  // without this pin these Beads fixtures would be ignored and every bucket empty.
-  // The kernel-default status path is covered separately in test/status/snapshot.test.js.
-  const forgeDir = path.join(repoRoot, '.forge');
-  fs.mkdirSync(forgeDir, { recursive: true });
-  fs.writeFileSync(path.join(forgeDir, 'config.yaml'), 'issueBackend: beads\n', 'utf8');
+function normalizeEmail(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function byUpdatedAtDesc(left, right) {
+  const parse = value => {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+  return parse(right.updated_at) - parse(left.updated_at);
+}
+
+// Mirrors the bucket semantics the deleted readBeadsSnapshot produced, so the fixture
+// entries in these tests keep their original meaning.
+function buildSnapshotFromEntries(entries, developer, options = {}) {
+  const identity = normalizeEmail(developer.email);
+  const active = entries.filter(e => e.status === 'in_progress').sort(byUpdatedAtDesc);
+  const open = entries.filter(e => e.status === 'open');
+  const now = options.now ? new Date(options.now) : null;
+  const staleAfterDays = Number(options.staleAfterDays || 0);
+  const isStale = entry => {
+    if (!now || !staleAfterDays || !entry.updated_at) return false;
+    const parsed = Date.parse(entry.updated_at);
+    if (Number.isNaN(parsed)) return false;
+    return (now.getTime() - parsed) / 86400000 >= staleAfterDays;
+  };
+
+  return {
+    developer,
+    issues: entries,
+    active,
+    activeAssigned: active.filter(e => normalizeEmail(e.owner) === identity),
+    ready: open.filter(e => Number(e.dependency_count || 0) === 0).sort(byUpdatedAtDesc),
+    blocked: open.filter(e => Number(e.dependency_count || 0) > 0).sort(byUpdatedAtDesc),
+    stale: entries.filter(isStale).sort(byUpdatedAtDesc),
+    parked: entries.filter(e => e.status === 'backlog'),
+    recentCompleted: entries.filter(e => e.status === 'closed').sort(byUpdatedAtDesc),
+    limits: [
+      'Reads Forge Kernel issue authority (ready/blocked/stale/active).',
+      'Does not read GitHub review, CI, project, or sync freshness state.',
+    ],
+  };
+}
+
+// Flags that hand the handler this repo's fixture snapshot instead of a live read.
+function statusFlags(repoRoot, extra = {}) {
+  return {
+    ...extra,
+    readStatusSnapshot: async () => snapshotsByRepo.get(repoRoot),
+  };
+}
+
+function createTempStatusRepo(entries, options = {}) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-fixture-'));
 
   execFileSync('git', ['init'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
   execFileSync('git', ['config', 'user.email', options.email || 'harshanandak@users.noreply.github.com'], {
@@ -64,8 +108,16 @@ function createTempBeadsRepo(entries, options = {}) {
   }
   if (options.clean) {
     execFileSync('git', ['add', '.'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
-    execFileSync('git', ['commit', '--no-verify', '--no-gpg-sign', '-m', 'fixture'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+    // --allow-empty: the fixture no longer writes .beads/*.jsonl or a config pin, so a
+    // repo with no workflow-state file has nothing staged. The point of `clean` is a
+    // clean working tree with a commit present, which an empty commit satisfies.
+    execFileSync('git', ['commit', '--allow-empty', '--no-verify', '--no-gpg-sign', '-m', 'fixture'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
   }
+
+  snapshotsByRepo.set(repoRoot, buildSnapshotFromEntries(entries, {
+    email: options.email || 'harshanandak@users.noreply.github.com',
+    name: options.name || 'Harsha Nanda',
+  }, options));
 
   return repoRoot;
 }
@@ -122,7 +174,7 @@ describe('status command authoritative workflow state', () => {
     expect(result.workflowDecisions.classification).toBe('standard');
   });
 
-  test('handler resolves authoritative state from Beads comments when issue id is provided', async () => {
+  test('handler resolves authoritative state from issue comments when issue id is provided', async () => {
     const comments =
       'Stage: plan complete → ready for dev\n' +
       `WorkflowState: ${JSON.stringify(createWorkflowState('dev'))}`;
@@ -222,8 +274,8 @@ describe('status command authoritative workflow state', () => {
   });
 
   test('handler does not fall back to heuristic stage detection when state is missing', async () => {
-    const repoRoot = createTempBeadsRepo([]);
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const repoRoot = createTempStatusRepo([]);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
     expect(result.missingWorkflowState).toBe(true);
     expect(result.output).toContain('Context');
     expect(result.output).toContain('You are here');
@@ -244,7 +296,7 @@ describe('status command authoritative workflow state', () => {
   test('handler falls back gracefully when bd is unavailable', async () => {
     const originalPATH = process.env.PATH;
     const originalPath = process.env.Path;
-    const repoRoot = createTempBeadsRepo([]);
+    const repoRoot = createTempStatusRepo([]);
 
     process.env.PATH = '';
     process.env.Path = '';
@@ -265,133 +317,15 @@ describe('status command authoritative workflow state', () => {
   });
 });
 
-describe('status command beads snapshot helpers', () => {
-  test('readBeadsSnapshot filters active assigned issues for the current developer', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-a', title: 'Mine active', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-10T08:00:00Z' },
-      { id: 'forge-b', title: 'Other active', status: 'in_progress', owner: 'other@example.com', updated_at: '2026-04-10T07:00:00Z' },
-      { id: 'forge-c', title: 'Mine open', status: 'open', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-10T06:00:00Z' },
-    ], {
-      clean: true,
-    });
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.developer.email).toBe('harshanandak@users.noreply.github.com');
-    expect(snapshot.activeAssigned.map(issue => issue.id)).toEqual(['forge-a']);
-  });
-
-  test('readBeadsSnapshot matches owner email case-insensitively for active assignment', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-a', title: 'Mine active', status: 'in_progress', owner: 'HarshaNandak@Users.Noreply.GitHub.com' },
-    ], {
-      email: 'harshanandak@users.noreply.github.com',
-    });
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.activeAssigned.map(issue => issue.id)).toEqual(['forge-a']);
-  });
-
-  test('readBeadsSnapshot filters ready issues to open work with no unresolved dependencies', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-ready', title: 'Ready', status: 'open', dependency_count: 0, updated_at: '2026-04-10T08:00:00Z' },
-      { id: 'forge-blocked', title: 'Blocked', status: 'open', dependency_count: 2, updated_at: '2026-04-10T07:00:00Z' },
-      { id: 'forge-active', title: 'Active', status: 'in_progress', dependency_count: 0, updated_at: '2026-04-10T06:00:00Z' },
-    ]);
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.ready.map(issue => issue.id)).toEqual(['forge-ready']);
-  });
-
-  test('readBeadsSnapshot exposes blocked and stale issue categories', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-active-old', title: 'Old active', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-01T08:00:00Z' },
-      { id: 'forge-blocked', title: 'Blocked', status: 'open', owner: 'harshanandak@users.noreply.github.com', dependency_count: 2, updated_at: '2026-04-17T08:00:00Z' },
-      { id: 'forge-ready', title: 'Ready', status: 'open', dependency_count: 0, updated_at: '2026-04-18T08:00:00Z' },
-    ]);
-
-    const snapshot = readBeadsSnapshot(repoRoot, {
-      now: new Date('2026-05-18T08:00:00Z'),
-      staleAfterDays: 14,
-    });
-
-    expect(snapshot.blocked.map(issue => issue.id)).toEqual(['forge-blocked']);
-    expect(snapshot.stale.map(issue => issue.id)).toEqual(['forge-ready', 'forge-blocked', 'forge-active-old']);
-  });
-
-  test('readBeadsSnapshot accepts string runtime options for stale classification', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-stale', title: 'Stale', status: 'open', dependency_count: 0, updated_at: '2026-04-01T08:00:00Z' },
-    ]);
-
-    const snapshot = readBeadsSnapshot(repoRoot, {
-      now: '2026-05-18T08:00:00Z',
-      staleAfterDays: '14',
-    });
-
-    expect(snapshot.stale.map(issue => issue.id)).toEqual(['forge-stale']);
-  });
-
-  test('readBeadsSnapshot sorts recent completions by updated_at descending', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-old', title: 'Older completion', status: 'closed', updated_at: '2026-04-07T08:00:00Z' },
-      { id: 'forge-new', title: 'Newer completion', status: 'closed', updated_at: '2026-04-10T08:00:00Z' },
-      { id: 'forge-open', title: 'Still open', status: 'open', updated_at: '2026-04-09T08:00:00Z' },
-    ], {
-      clean: true,
-    });
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-new', 'forge-old']);
-  });
-
-  test('readBeadsSnapshot treats missing completion timestamps as the oldest entries', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-undated', title: 'Undated completion', status: 'closed' },
-      { id: 'forge-dated', title: 'Dated completion', status: 'closed', updated_at: '2026-04-10T08:00:00Z' },
-    ]);
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-dated', 'forge-undated']);
-  });
-
-  test('readBeadsSnapshot treats invalid completion timestamps as the oldest entries', () => {
-    const repoRoot = createTempBeadsRepo([
-      { id: 'forge-invalid', title: 'Invalid completion', status: 'closed', updated_at: 'not-a-date' },
-      { id: 'forge-dated', title: 'Dated completion', status: 'closed', updated_at: '2026-04-10T08:00:00Z' },
-    ]);
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.recentCompleted.map(issue => issue.id)).toEqual(['forge-dated', 'forge-invalid']);
-  });
-
-  test('readBeadsSnapshot ignores malformed JSONL rows and keeps the latest issue record', () => {
-    const repoRoot = createTempBeadsRepo([]);
-    fs.writeFileSync(
-      path.join(repoRoot, '.beads', 'issues.jsonl'),
-      [
-        '{"id":"forge-a","title":"Old","status":"open","updated_at":"2026-04-09T08:00:00Z"}',
-        'not-json',
-        '{"id":"forge-a","title":"New","status":"in_progress","owner":"harshanandak@users.noreply.github.com","updated_at":"2026-04-10T08:00:00Z"}',
-      ].join('\n'),
-      'utf8'
-    );
-
-    const snapshot = readBeadsSnapshot(repoRoot);
-
-    expect(snapshot.issues.map(issue => issue.title)).toEqual(['New']);
-    expect(snapshot.activeAssigned.map(issue => issue.id)).toEqual(['forge-a']);
-  });
-});
+// The `status command beads snapshot helpers` suite lived here and exercised
+// readBeadsSnapshot, deleted in Slice C with lib/status/beads-snapshot.js. Its
+// surviving behaviour (activeAssigned identity matching, recentCompleted ordering,
+// blocked/stale buckets) is now asserted against the kernel reader in
+// test/status/snapshot.test.js; the JSONL-only cases went with the JSONL reader.
 
 describe('status command workflow discovery', () => {
   test('zero-arg status prefers .forge-state.json over discovered issue context', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-a',
         title: 'Discovered issue',
@@ -405,14 +339,14 @@ describe('status command workflow discovery', () => {
       workflowState: createWorkflowState('validate'),
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     expect(result.stageId).toBe('validate');
     expect(result.output).toContain('Stage 3 of 5 — Validate (standard workflow)');
   });
 
   test('zero-arg status discovers workflow from a slug-matched active issue', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-match',
         title: 'Matched issue',
@@ -435,14 +369,14 @@ describe('status command workflow discovery', () => {
       branch: 'feat/forge-status-personal-focus',
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     expect(result.stageId).toBe('dev');
     expect(result.output).toContain('Stage 2 of 5 — Dev (standard workflow)');
   });
 
   test('zero-arg status matches branch slug against exact design-path slugs only', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-plan',
         title: 'Exact slug match',
@@ -465,7 +399,7 @@ describe('status command workflow discovery', () => {
       branch: 'feat/plan',
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     expect(result.stageId).toBe('dev');
     expect(result.output).toContain('Stage 2 of 5 — Dev (standard workflow)');
@@ -473,7 +407,7 @@ describe('status command workflow discovery', () => {
   });
 
   test('zero-arg status falls back to the single active assigned issue when no slug match exists', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-only',
         title: 'Only active issue',
@@ -486,14 +420,14 @@ describe('status command workflow discovery', () => {
       branch: 'feat/no-design-match',
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     expect(result.stageId).toBe('ship');
     expect(result.output).toContain('Stage 4 of 5 — Ship (standard workflow)');
   });
 
   test('zero-arg status leaves workflow unresolved when multiple active issues are ambiguous', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-a',
         title: 'First active issue',
@@ -514,7 +448,7 @@ describe('status command workflow discovery', () => {
       branch: 'feat/ambiguous-work',
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     expect(result.missingWorkflowState).toBe(true);
     expect(result.output).toContain('No active workflow and no ready issues');
@@ -524,7 +458,7 @@ describe('status command workflow discovery', () => {
 
 describe('status command zero-arg presentation', () => {
   test('zero-arg status renders all personal status sections in order', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-active',
         title: 'Active issue',
@@ -551,7 +485,7 @@ describe('status command zero-arg presentation', () => {
       branch: 'feat/forge-status-personal-focus',
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     // One-glance order: You are here → Context → Your work → newcomer footer.
     const blocks = ['You are here', 'Context', 'Your work', 'New here?'];
@@ -572,11 +506,11 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status prints explicit empty-state lines for your-work', async () => {
-    const repoRoot = createTempBeadsRepo([], {
+    const repoRoot = createTempStatusRepo([], {
       branch: 'feat/empty-status',
     });
 
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
 
     expect(result.output).toContain('You are here');
     expect(result.output).toContain('Your work');
@@ -585,7 +519,7 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status includes blocked and stale personal focus sections', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-active-old',
         title: 'Old active issue',
@@ -606,10 +540,10 @@ describe('status command zero-arg presentation', () => {
       branch: 'feat/status-blocked-stale',
     });
 
-    const result = await statusCommand.handler(['--full'], {
+    const result = await statusCommand.handler(['--full'], statusFlags(repoRoot, {
       now: new Date('2026-05-18T08:00:00Z'),
       staleAfterDays: 14,
-    }, repoRoot);
+    }), repoRoot);
 
     // Blocked/Stale are detail sections, surfaced only under --full.
     expect(result.output).toContain('Blocked');
@@ -619,7 +553,7 @@ describe('status command zero-arg presentation', () => {
   });
 
   test('zero-arg status hides blocked/stale detail sections without --full', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-blocked',
         title: 'Blocked issue',
@@ -632,24 +566,24 @@ describe('status command zero-arg presentation', () => {
       branch: 'feat/status-hidden-detail',
     });
 
-    const result = await statusCommand.handler([], {
+    const result = await statusCommand.handler([], statusFlags(repoRoot, {
       now: new Date('2026-05-18T08:00:00Z'),
       staleAfterDays: 14,
-    }, repoRoot);
+    }), repoRoot);
 
     expect(result.output).not.toContain('Blocked');
     expect(result.output).not.toContain('Stale');
   });
 
   test('zero-arg status returns JSON for the same personal focus state', async () => {
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       { id: 'forge-active', title: 'Active issue', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-05-18T08:00:00Z' },
       { id: 'forge-blocked', title: 'Blocked issue', status: 'open', dependency_count: 1, updated_at: '2026-05-17T08:00:00Z' },
     ], {
       clean: true,
     });
 
-    const result = await statusCommand.handler(['--json'], {}, repoRoot);
+    const result = await statusCommand.handler(['--json'], statusFlags(repoRoot), repoRoot);
     const parsed = JSON.parse(result.output);
 
     expect(parsed.context.workingTree.clean).toBe(true);
@@ -672,7 +606,7 @@ describe('status command zero-arg presentation', () => {
       status: 'closed',
       updated_at: `2026-04-1${Math.min(index, 9)}T08:00:00Z`,
     }));
-    const repoRoot = createTempBeadsRepo([
+    const repoRoot = createTempStatusRepo([
       {
         id: 'forge-active',
         title: 'Active issue',
@@ -689,13 +623,13 @@ describe('status command zero-arg presentation', () => {
     });
 
     // Default one-glance view: Ready is a count + hint, not a list of ids.
-    const result = await statusCommand.handler([], {}, repoRoot);
+    const result = await statusCommand.handler([], statusFlags(repoRoot), repoRoot);
     expect(result.output).toContain('Ready: 6 more (forge issue ready)');
     expect(result.output).not.toContain('forge-ready-1');
     expect(result.output).not.toContain('Recent Completions');
 
     // --full surfaces Recent Completions, still capped at 5 with an overflow note.
-    const fullResult = await statusCommand.handler(['--full'], {}, repoRoot);
+    const fullResult = await statusCommand.handler(['--full'], statusFlags(repoRoot), repoRoot);
     expect(fullResult.output).toContain('Recent Completions');
     expect(fullResult.output).toContain('...and 1 more');
   });

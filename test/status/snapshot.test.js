@@ -168,3 +168,108 @@ describe('readStatusSnapshot — backend routing', () => {
 		expect(snapshot.limits.join(' ')).toContain('Kernel');
 	});
 });
+
+// Bucketing/sorting coverage ported from the deleted readBeadsSnapshot suite in
+// test/status-command.test.js. The BEHAVIOUR survives the reader swap — readKernelSnapshot
+// still derives activeAssigned from claims and still orders recentCompleted newest-first —
+// so the assertions move to the kernel path rather than being dropped with the JSONL reader.
+// (The JSONL-only cases — malformed rows, dependency-derived ready — die with it: the kernel
+// returns ready/blocked as authoritative ops instead of deriving them from a file.)
+describe('readKernelSnapshot — buckets and ordering', () => {
+	// readKernelSnapshot reads ready/blocked/stale/list; serve each from a fixed envelope.
+	function readerFor({ ready = [], blocked = [], stale = [], list = [] }) {
+		const byOperation = { ready, blocked, stale, list };
+		return async (operation) => ({
+			ok: true,
+			data: { issues: byOperation[operation] || [], count: (byOperation[operation] || []).length },
+		});
+	}
+
+	test('activeAssigned keeps only open claimed issues held by the current actor', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			env: { FORGE_ACTOR: 'dev@example.com' },
+			runIssueOperation: readerFor({
+				list: [
+					{ id: 'mine', status: 'open', claimed_by: 'dev@example.com', updated_at: '2026-07-20T10:00:00Z' },
+					{ id: 'theirs', status: 'open', claimed_by: 'other@example.com', updated_at: '2026-07-20T11:00:00Z' },
+					{ id: 'unclaimed', status: 'open', claimed_by: null, updated_at: '2026-07-20T12:00:00Z' },
+				],
+			}),
+		});
+
+		expect(snapshot.active.map(i => i.id)).toEqual(['theirs', 'mine']);
+		expect(snapshot.activeAssigned.map(i => i.id)).toEqual(['mine']);
+	});
+
+	test('activeAssigned matches the actor case-insensitively', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			env: { FORGE_ACTOR: 'Dev@Example.com' },
+			runIssueOperation: readerFor({
+				list: [{ id: 'mine', status: 'open', claimed_by: 'dev@example.com', updated_at: '2026-07-20T10:00:00Z' }],
+			}),
+		});
+
+		expect(snapshot.activeAssigned.map(i => i.id)).toEqual(['mine']);
+	});
+
+	test('recentCompleted sorts done issues by updated_at, newest first', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			env: {},
+			runIssueOperation: readerFor({
+				list: [
+					{ id: 'older', status: 'done', updated_at: '2026-07-18T09:00:00Z' },
+					{ id: 'newest', status: 'done', updated_at: '2026-07-21T09:00:00Z' },
+					{ id: 'middle', status: 'done', updated_at: '2026-07-20T09:00:00Z' },
+					{ id: 'still-open', status: 'open', updated_at: '2026-07-22T09:00:00Z' },
+				],
+			}),
+		});
+
+		expect(snapshot.recentCompleted.map(i => i.id)).toEqual(['newest', 'middle', 'older']);
+	});
+
+	test('missing and unparseable completion timestamps sort oldest, never crash', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			env: {},
+			runIssueOperation: readerFor({
+				list: [
+					{ id: 'dated', status: 'done', updated_at: '2026-07-21T09:00:00Z' },
+					{ id: 'undated', status: 'done' },
+					{ id: 'garbage', status: 'done', updated_at: 'not-a-date' },
+				],
+			}),
+		});
+
+		expect(snapshot.recentCompleted[0].id).toBe('dated');
+		expect(snapshot.recentCompleted.map(i => i.id).slice(1).sort()).toEqual(['garbage', 'undated']);
+	});
+
+	test('blocked and stale come from their kernel ops and are ordered newest-first', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			env: {},
+			runIssueOperation: readerFor({
+				blocked: [
+					{ id: 'blocked-old', status: 'open', updated_at: '2026-07-10T09:00:00Z' },
+					{ id: 'blocked-new', status: 'open', updated_at: '2026-07-19T09:00:00Z' },
+				],
+				stale: [{ id: 'stale-one', status: 'open', updated_at: '2026-06-01T09:00:00Z' }],
+			}),
+		});
+
+		expect(snapshot.blocked.map(i => i.id)).toEqual(['blocked-new', 'blocked-old']);
+		expect(snapshot.stale.map(i => i.id)).toEqual(['stale-one']);
+	});
+
+	test('a failing bucket read degrades to empty instead of blanking the whole snapshot', async () => {
+		const snapshot = await readKernelSnapshot('/repo', {
+			env: {},
+			runIssueOperation: async (operation) => {
+				if (operation === 'blocked') throw new Error('kernel read failed');
+				return { ok: true, data: { issues: [{ id: 'r1', status: 'open' }], count: 1 } };
+			},
+		});
+
+		expect(snapshot.blocked).toEqual([]);
+		expect(snapshot.ready.map(i => i.id)).toEqual(['r1']);
+	});
+});
