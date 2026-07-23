@@ -9,8 +9,8 @@ const {
   WORKFLOW_STATE_FILENAME,
   extractWorkflowStateFromComments,
   loadState,
-  readBeadsIssue,
-  readWorkflowStateFromBeads,
+  readIssueWorkflowState,
+  readWorkflowStateFromIssue,
   saveState,
   initializeState,
   transitionStage,
@@ -90,7 +90,7 @@ describe('state-manager', () => {
         const result = loadState(dir, { comments });
         expect(result.state).not.toBeNull();
         expect(result.state.currentStage).toBe('plan');
-        expect(result.source).toBe('beads');
+        expect(result.source).toBe('issue');
       } finally {
         cleanTmpDir(dir);
       }
@@ -114,7 +114,7 @@ describe('state-manager', () => {
       }
     });
 
-    test('preferBeads falls back to file when Beads lookup throws', () => {
+    test('preferIssueLookup falls back to file when Beads lookup throws', () => {
       const dir = createTmpDir();
       try {
         const fileState = createWorkflowState('dev', 'standard');
@@ -128,9 +128,9 @@ describe('state-manager', () => {
 
         const errors = [];
         const result = loadState(dir, {
-          preferBeads: true,
+          preferIssueLookup: true,
           issue: throwingIssue,
-          onBeadsError: error => errors.push(error),
+          onIssueLookupError: error => errors.push(error),
         });
         expect(result.state.currentStage).toBe('dev');
         expect(result.source).toBe('file');
@@ -152,7 +152,7 @@ describe('state-manager', () => {
         const result = loadState(dir, { comments });
         expect(result.state).not.toBeNull();
         expect(result.state.currentStage).toBe('dev');
-        expect(result.source).toBe('beads');
+        expect(result.source).toBe('issue');
       } finally {
         cleanTmpDir(dir);
       }
@@ -185,7 +185,7 @@ describe('state-manager', () => {
       const result = loadState(null, { comments });
       expect(result.state).not.toBeNull();
       expect(result.state.currentStage).toBe('dev');
-      expect(result.source).toBe('beads');
+      expect(result.source).toBe('issue');
     });
   });
 
@@ -480,15 +480,15 @@ describe('state-manager', () => {
     });
   });
 
-  describe('readWorkflowStateFromBeads', () => {
+  describe('readWorkflowStateFromIssue', () => {
     test('is exported as a function', () => {
-      expect(typeof readWorkflowStateFromBeads).toBe('function');
+      expect(typeof readWorkflowStateFromIssue).toBe('function');
     });
 
     test('returns null when issueId is falsy', () => {
-      expect(readWorkflowStateFromBeads(null)).toBeNull();
-      expect(readWorkflowStateFromBeads('')).toBeNull();
-      expect(readWorkflowStateFromBeads(undefined)).toBeNull();
+      expect(readWorkflowStateFromIssue(null)).toBeNull();
+      expect(readWorkflowStateFromIssue('')).toBeNull();
+      expect(readWorkflowStateFromIssue(undefined)).toBeNull();
     });
 
     test('parses comments when provided via options', () => {
@@ -496,15 +496,15 @@ describe('state-manager', () => {
       const compact = JSON.stringify(JSON.parse(writeWorkflowState(state)));
       const comments = `WorkflowState: ${compact}`;
 
-      const result = readWorkflowStateFromBeads('forge-test', { comments });
+      const result = readWorkflowStateFromIssue('forge-test', { comments });
       expect(result).not.toBeNull();
       expect(result.currentStage).toBe('validate');
     });
   });
 
-  describe('readBeadsIssue', () => {
+  describe('readIssueWorkflowState', () => {
     test('returns null when bd show fails', () => {
-      const result = readBeadsIssue('forge-test', {
+      const result = readIssueWorkflowState('forge-test', {
         _execFileSync: () => {
           throw new Error('bd failed');
         },

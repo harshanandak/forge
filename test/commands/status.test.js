@@ -8,7 +8,7 @@ const {
 	analyzeFiles,
 	analyzePR,
 	analyzeChecks,
-	analyzeBeads,
+	analyzeIssue,
 	detectRepoContext,
 	formatStatus,
 	resolveWorkflowState,
@@ -39,7 +39,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: null,
 				tests: [],
 				pr: null,
-				beadsIssue: null,
+				issueRecord: null,
 			};
 
 			const result = detectStage(context);
@@ -55,7 +55,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: null,
 				tests: [],
 				pr: null,
-				beadsIssue: { status: 'in_progress', type: 'research' },
+				issueRecord: { status: 'in_progress', type: 'research' },
 			};
 
 			const result = detectStage(context);
@@ -70,7 +70,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: null,
 				tests: [],
 				pr: null,
-				beadsIssue: null,
+				issueRecord: null,
 			};
 
 			const result = detectStage(context);
@@ -86,7 +86,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: 'docs/plans/feature.md',
 				tests: [],
 				pr: null,
-				beadsIssue: { status: 'in_progress' },
+				issueRecord: { status: 'in_progress' },
 			};
 
 			const result = detectStage(context);
@@ -102,7 +102,7 @@ describe('Status Command - Stage Detection', () => {
 				tests: ['test/feature.test.js'],
 				testsPass: false,
 				pr: null,
-				beadsIssue: { status: 'in_progress' },
+				issueRecord: { status: 'in_progress' },
 			};
 
 			const result = detectStage(context);
@@ -119,7 +119,7 @@ describe('Status Command - Stage Detection', () => {
 				testsPass: true,
 				checksPass: true,
 				pr: null,
-				beadsIssue: { status: 'in_progress' },
+				issueRecord: { status: 'in_progress' },
 			};
 
 			const result = detectStage(context);
@@ -136,7 +136,7 @@ describe('Status Command - Stage Detection', () => {
 				tests: ['test/feature.test.js'],
 				testsPass: true,
 				pr: { number: 123, state: 'open', reviews: [] },
-				beadsIssue: { status: 'in_progress' },
+				issueRecord: { status: 'in_progress' },
 			};
 
 			const result = detectStage(context);
@@ -153,7 +153,7 @@ describe('Status Command - Stage Detection', () => {
 				testsPass: true,
 				checksPass: true,
 				pr: { number: 123, state: 'open', approved: true },
-				beadsIssue: { status: 'in_progress' },
+				issueRecord: { status: 'in_progress' },
 			};
 
 			const result = detectStage(context);
@@ -168,7 +168,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: 'docs/plans/feature.md',
 				tests: ['test/feature.test.js'],
 				pr: { number: 123, state: 'merged' },
-				beadsIssue: { status: 'closed' },
+				issueRecord: { status: 'closed' },
 			};
 
 			const result = detectStage(context);
@@ -185,7 +185,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: null,
 				tests: [],
 				pr: null,
-				beadsIssue: null,
+				issueRecord: null,
 			};
 
 			const result = detectStage(context);
@@ -200,7 +200,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: 'docs/plans/feature.md', // But plan exists
 				tests: [],
 				pr: null,
-				beadsIssue: null,
+				issueRecord: null,
 			};
 
 			const result = detectStage(context);
@@ -215,7 +215,7 @@ describe('Status Command - Stage Detection', () => {
 				plan: null,
 				tests: ['test/feature.test.js'], // Tests exist but no plan?
 				pr: { number: 123, state: 'open' },
-				beadsIssue: null,
+				issueRecord: null,
 			};
 
 			const result = detectStage(context);
@@ -252,7 +252,7 @@ describe('Status Command - Stage Detection', () => {
 		});
 
 		test('should analyze Beads issue state', () => {
-			const factors = analyzeBeads({ status: 'in_progress', type: 'feature' });
+			const factors = analyzeIssue({ status: 'in_progress', type: 'feature' });
 			expect(factors.hasActiveIssue).toBe(true);
 			expect(factors.issueStatus).toBe('in_progress');
 		});
