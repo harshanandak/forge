@@ -76,4 +76,14 @@ describe('forge hooks memory-recall', () => {
   test('fail-open: malformed stdin yields no query and injects nothing', async () => {
     expect((await run(baseOpts({ readInput: () => 'not json' }))).output).toBe('');
   });
+
+  test('applies a default score floor when the caller supplies none (no floor-less path)', async () => {
+    // opts without scoreFloor -> the handler must supply DEFAULT_SCORE_FLOOR (0), which keeps
+    // token-AND bm25 matches (score <= 0) but screens a positive (non-)match. A hit scored
+    // above the floor must be excluded rather than injected.
+    const opts = baseOpts();
+    delete opts.scoreFloor;
+    opts.search = () => [{ key: 'weak', value: 'barely related', score: 0.5 }];
+    expect((await run(opts)).output).toBe('');
+  });
 });

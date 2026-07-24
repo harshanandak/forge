@@ -332,6 +332,12 @@ describe('mergeClaudeSettings (read -> merge -> write, preserve user config)', (
     const a = JSON.parse(once);
     const b = JSON.parse(twice);
     expect(b.hooks.PreToolUse.length).toBe(a.hooks.PreToolUse.length);
+    // UserPromptSubmit carries the memory-recall context hook: if isForgeCommand did not
+    // recognize `hooks memory-recall`, a re-merge would treat it as user-owned and duplicate
+    // it. Assert the group is stable AND memory-recall appears exactly once.
+    expect(b.hooks.UserPromptSubmit.length).toBe(a.hooks.UserPromptSubmit.length);
+    const recalls = JSON.stringify(b.hooks.UserPromptSubmit).match(/hooks memory-recall/g) || [];
+    expect(recalls.length).toBe(1);
   });
 
   test('throws HookConfigParseError on populated-but-unparseable settings', () => {

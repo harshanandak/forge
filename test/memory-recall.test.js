@@ -31,6 +31,13 @@ describe('memory-recall: meaningfulTokens (anaphora guard basis)', () => {
     expect(meaningfulTokens('same for it')).toEqual([]);
     expect(meaningfulTokens('do that now')).toEqual([]);
   });
+
+  test('keeps non-Latin content tokens (guard must not disable recall for non-Latin scripts)', () => {
+    // Cyrillic "fix the auth bug" — the ASCII-only split used to strip all of this to [].
+    expect(meaningfulTokens('исправь баг авторизации').length).toBeGreaterThanOrEqual(2);
+    // CJK tokens are short but inherently content — the length filter must not drop them.
+    expect(meaningfulTokens('修复 认证').length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('memory-recall: selectInjection', () => {
