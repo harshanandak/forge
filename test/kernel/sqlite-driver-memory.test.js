@@ -202,6 +202,40 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		expect(hits[0].score).toBeLessThanOrEqual(hits[1].score);
 	});
 
+	// The SCORED read is the ONLY relevance-only read (it feeds the per-turn recall hook), so it
+	// uses keyword-OR: a natural-language prompt matches a note that contains ANY of its keywords,
+	// not EVERY one. Token-AND on a raw prompt required every word in one note -> 0% recall.
+	test('searchMemoriesRankedScored matches when only SOME query tokens appear (keyword-OR)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm2', value: 'unrelated kubernetes helm chart', sourceAgent: 'Codex', tags: [] });
+
+		// A natural-language style token set: only 'auth' and 'bug' appear in m1; 'token'/'refresh'
+		// do not. Token-AND would find nothing; keyword-OR surfaces m1 (and never m2).
+		const hits = driver.searchMemoriesRankedScored('auth token refresh bug', 10);
+		expect(hits.map(h => h.key)).toEqual(['m1']);
+	});
+
+	test('searchMemoriesRankedScored quotes a non-Latin token safely (keyword-OR, unicode)', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'привет kernel memory', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm2', value: 'unrelated english note', sourceAgent: 'Codex', tags: [] });
+
+		// Only the Cyrillic token matches; it must be double-quoted so FTS5 never chokes on it.
+		const hits = driver.searchMemoriesRankedScored('привет qwerty', 10);
+		expect(hits.map(h => h.key)).toEqual(['m1']);
+	});
+
+	test('the AND path (searchMemoriesRanked) is unchanged — still token-AND, no OR leak', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
+
+		// `forge recall` keeps exact-search: a note lacking one of the tokens must NOT match.
+		expect(driver.searchMemoriesRanked('auth kubernetes', 10)).toEqual([]);
+		// Both tokens present -> still matches.
+		expect(driver.searchMemoriesRanked('auth bug', 10).map(h => h.key)).toEqual(['m1']);
+	});
+
 	test('searchMemoriesRankedScored returns [] for a no-match query — never a recency fallback', () => {
 		const driver = makeDriver();
 		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
