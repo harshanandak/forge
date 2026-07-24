@@ -49,7 +49,7 @@ This is the canonical map for Forge documentation. DeepWiki and other generated 
 - [Protected path manifest](reference/PROTECTED_PATH_MANIFEST.md) - protected path manifest schema, harness enforcement mapping, and evidence command.
 - [Patch format](reference/patch-md-format.md) - `.forge/patch.md` conventions.
 - [Upgrade safety](reference/upgrade-safety.md) - trust policy and rollback limits.
-- [Insights and recap](reference/INSIGHTS_RECAP.md) - `forge insights` and `forge recap` evidence sources, output, and limitations.
+- [Insights and recap](reference/INSIGHTS_RECAP.md) - `forge insights` and `forge recap <issue>` evidence sources, output, and limitations.
 - [Examples](reference/EXAMPLES.md) - worked examples.
 - [Test environment](reference/test-environment.md) - test harness notes.
 - [Agent permissions](reference/agent-permissions.md) - agent permission model.

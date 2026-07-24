@@ -85,20 +85,26 @@ function makeProject() {
     'Decisions must be preserved before low-priority plan text truncates.',
   ].join('\n'));
 
-  fs.mkdirSync(path.join(root, '.beads'), { recursive: true });
-  writeFile(root, '.beads/issues.jsonl', [
-    JSON.stringify({
-      _type: 'issue',
-      id: 'forge-orient.1',
-      title: 'Add bounded orientation',
-      status: 'open',
-      description: 'Issue description for scoped recap.',
-      updated_at: '2026-06-11T00:00:00.000Z',
-    }),
-  ].join('\n') + '\n');
-  writeFile(root, '.beads/interactions.jsonl', '');
-
   return root;
+}
+
+// The kernel `show` envelope: the issue summary IS `data` (ISSUE_SUMMARY_SCHEMA), not
+// `data.issue` — the nested shape belongs to the mutation envelope. Injected so the
+// recap tests exercise the read contract without opening a real kernel database.
+const KERNEL_ISSUE = {
+  id: 'forge-orient.1',
+  title: 'Add bounded orientation',
+  status: 'open',
+  description: 'Issue description for scoped recap.',
+  updated_at: '2026-06-11T00:00:00.000Z',
+};
+
+function fakeKernelShow(issue = KERNEL_ISSUE) {
+  return async (operation, operationArgs) => {
+    if (operation !== 'show') return { ok: false };
+    if (!issue || operationArgs[0] !== issue.id) return { ok: true, data: null };
+    return { ok: true, command: 'show', data: issue };
+  };
 }
 
 afterEach(() => {
@@ -159,11 +165,15 @@ describe('orient and prime commands', () => {
 describe('issue-scoped recap command', () => {
   test('forge recap <issue> --json returns issue-scoped bounded recap', async () => {
     const root = makeProject();
-    const result = await recap.handler(['forge-orient.1', '--json', '--budget', '220'], {}, root);
+    const result = await recap.handler(['forge-orient.1', '--json', '--budget', '220'], {}, root, {
+      runIssueOperation: fakeKernelShow(),
+    });
     const parsed = JSON.parse(result.output);
 
     expect(parsed.kind).toBe('issue_recap');
     expect(parsed.issue.id).toBe('forge-orient.1');
+    expect(parsed.issue.title).toBe('Add bounded orientation');
+    expect(parsed.issue.status).toBe('open');
     expect(parsed.token_budget.requested).toBe(220);
     expect(parsed.next_commands).toContain('forge show forge-orient.1 --json');
   });
@@ -182,12 +192,58 @@ describe('issue-scoped recap command', () => {
 });
 
 describe('issue recap assembly', () => {
-  test('uses the same source-backed next command contract as orientation', () => {
+  test('uses the same source-backed next command contract as orientation', async () => {
     const root = makeProject();
-    const result = buildIssueRecap(root, 'forge-orient.1', { budgetTokens: 260 });
+    const result = await buildIssueRecap(root, 'forge-orient.1', {
+      budgetTokens: 260,
+      runIssueOperation: fakeKernelShow(),
+    });
 
-    expect(result.sources.some(source => source.path === '.beads/issues.jsonl')).toBe(true);
+    expect(result.sources.some(source => source.path === 'kernel')).toBe(true);
     expect(result.next_commands).toContain('forge orient --json');
     expect(result.next_commands).toContain('forge comment forge-orient.1 "<handoff note>"');
+  });
+
+  test('reads the issue summary directly off the show envelope data', async () => {
+    const root = makeProject();
+    const result = await buildIssueRecap(root, 'forge-orient.1', {
+      budgetTokens: 400,
+      runIssueOperation: fakeKernelShow(),
+    });
+    const section = result.sections.find(item => item.id === 'issue_summary');
+
+    expect(result.issue).toEqual({
+      id: 'forge-orient.1',
+      title: 'Add bounded orientation',
+      status: 'open',
+    });
+    expect(section.content).toContain('title: Add bounded orientation');
+    expect(section.sources[0]).toMatchObject({
+      path: 'kernel',
+      source_kind: 'kernel',
+      authority: 'issue_read',
+    });
+  });
+
+  test('an unknown issue degrades to a not-found summary instead of throwing', async () => {
+    const root = makeProject();
+    const result = await buildIssueRecap(root, 'forge-missing.9', {
+      budgetTokens: 400,
+      runIssueOperation: fakeKernelShow(),
+    });
+    const section = result.sections.find(item => item.id === 'issue_summary');
+
+    expect(result.issue).toEqual({ id: 'forge-missing.9', title: null, status: 'unknown' });
+    expect(section.content).toContain('Issue not found in the kernel.');
+  });
+
+  test('a kernel read failure degrades to not-found rather than propagating', async () => {
+    const root = makeProject();
+    const result = await buildIssueRecap(root, 'forge-orient.1', {
+      budgetTokens: 400,
+      runIssueOperation: async () => { throw new Error('kernel unavailable'); },
+    });
+
+    expect(result.issue.status).toBe('unknown');
   });
 });
