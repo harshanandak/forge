@@ -8,8 +8,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 58 | 7 |
-| runtime | 226 | 32 |
-| docs | 395 | 47 |
+| runtime | 217 | 30 |
+| docs | 393 | 46 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
 
@@ -48,12 +48,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
 - [ ] lib/harness-capability-matrix.js (1)
   - lines: 160 (bd)
-- [ ] lib/insights.js (7)
-  - lines: 112 (.beads), 123 (.beads), 131 (.beads), 157 (.beads), 176 (.beads), 338 (.beads), 341 (.beads)
 - [ ] lib/migrate-dry-run.js (8)
   - lines: 171 (.beads), 174 (.beads), 178 (.beads), 204 (.beads), 212 (.beads), 213 (.beads, dolt), 226 (.beads), 227 (dolt)
-- [ ] lib/orientation.js (2)
-  - lines: 689 (.beads), 719 (.beads)
 - [ ] lib/patch-intent.js (1)
   - lines: 26 (.beads)
 - [ ] lib/plugin-catalog.js (1)
@@ -123,8 +119,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 341 (bd), 361 (bd), 368 (bd), 413 (bd), 414 (bd), 425 (bd), 428 (bd), 436 (bd)
 - [ ] docs/reference/forge-kernel-issue-command-contract.md (1)
   - lines: 159 (bd)
-- [ ] docs/reference/INSIGHTS_RECAP.md (2)
-  - lines: 22 (.beads), 23 (.beads)
 - [ ] docs/reference/PROTECTED_PATH_MANIFEST.md (1)
   - lines: 12 (bd)
 - [ ] docs/reference/protected-state-surfaces.md (3)
