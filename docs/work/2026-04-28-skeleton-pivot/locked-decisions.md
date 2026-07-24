@@ -1,10 +1,10 @@
 # Forge v3 — Locked Decisions Log
 
-**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8) -> 2026-05-08 (D43 added) -> 2026-05-29 (D44 added)
-**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D44 tracked, D41 reserved, supersedes annotated inline
+**Date**: 2026-04-28 (D1-D7) -> 2026-04-29 (D8-D42 added across iterations #3-#8) -> 2026-05-08 (D43 added) -> 2026-05-29 (D44 added) -> 2026-07-22 (D45 added)
+**Status**: Canonical decisions ledger for the v3 skeleton pivot — D1-D45 tracked, D41 reserved, supersedes annotated inline
 **Companion**: [release-plan.md](./release-plan.md), [v3-redesign-strategy.md](./v3-redesign-strategy.md), [FINAL-THESIS.md](./FINAL-THESIS.md), [LEARNINGS.md](./LEARNINGS.md)
 
-This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch). D43 records the super-skill/sub-skill runtime contract for planning and later skill surfaces. D44 records the Forge Kernel authority reset and supersedes Beads-only authority portions of earlier decisions.
+This is the single source of truth for which v3 questions are settled. Decisions D1-D7 came from the original critic loop (anti-architect / gap-finder / sequencer). D8-D14 came from the 2026-04-28 lock-in pass after the N1 moat deep dive, the v3 ecosystem audit, and the template-library design pass. D15-D20 came from the 2026-04-29 iteration #3/#4 work (Cursor capability spike, harness narrowing, agent action log, protected paths, ownership matrix). D21-D38 came from iterations #5 and #6 (memory architecture, Beads under-utilization research, efficiency audit, quality-vs-speed audit, /merge as continuous hook, /plan-as-optional, kill criteria). D39-D42 came from iteration #8 (versioned roadmap, hybrid semver/back-compat, reserved naming decision, staged launch). D43 records the super-skill/sub-skill runtime contract for planning and later skill surfaces. D44 records the Forge Kernel authority reset and supersedes Beads-only authority portions of earlier decisions. D45 retires Beads as a live feature entirely, leaving `forge migrate --from beads` as its only surface, and revises D44's "Beads remains a compatibility projection" clause.
 
 When a doc disagrees with this file, this file wins until a successor decisions log is dated and merged.
 
@@ -566,6 +566,8 @@ ACTIVE.
 
 ## D44 - Forge Kernel replaces Beads/Dolt as issue authority; Beads becomes import/export adapter
 
+**Status note (2026-07-22)**: REVISED-BY-D45 for the projection clause only. "Beads remains a migration source and optional projection/export adapter" is retired — Beads is no longer a live Forge feature and exports no longer route through it. Everything else in D44 stands unchanged and remains ACTIVE: the Kernel authority reset, the field-authority table, the conflict rule, and the supersession of Beads-only portions of D21, D22, D23, D30, D31, and D36.
+
 **Decision**: Forge adopts a native issue authority model: Forge Kernel API, local SQLite WAL broker for solo multi-worktree coordination, and optional Cloudflare team authority for multi-user mode. Beads is no longer the target runtime authority. Beads remains a migration source and optional projection/export adapter. GitHub and Linear are server-side projections, not local runtime authorities. ACTIVE - supersedes Beads-only portions of D21, D22, D23, D30, D31, and D36.
 
 **Rationale**: Forge is internal-only today, so public backward compatibility is not a constraint. The Beads/Dolt path solved early local issue storage but now creates the wrong center of gravity: direct Beads command wrapping, `.beads/issues.jsonl` snapshot reads, Dolt lifecycle concerns, and team coordination through a local issue engine. The product direction is a governed runtime: workflow assembly controls how work runs, while Forge Kernel controls what work exists, who owns it, and how state is synchronized.
@@ -579,6 +581,22 @@ ACTIVE.
 **Tradeoff considered**: Keep Beads as primary authority (less immediate code but keeps Dolt/worktree/team limitations); fork Beads (preserves concepts but inherits maintenance and Dolt/storage history); build Forge Kernel now (more work, but removes the wrong authority dependency while there are no outside users).
 
 **Anti-decision**: We explicitly reject Beads parity as a blocker, fixed heartbeat spam as the primary liveness signal, and GitHub/Linear as the local source of truth.
+
+---
+
+## D45 — Beads live-feature retirement; migration import is the only remaining surface
+
+**Date**: 2026-07-22
+
+**Decision**: The Forge Kernel is the sole issue, workflow, and run authority. Every live Beads surface is removed: the `beads` issue backend and its `--issue-backend` / `FORGE_ISSUE_BACKEND` / `issueBackend` opt-out, `forge board`, the GitHub/Beads sync scaffold, Beads setup and `bd` prerequisite checks, migration nudges, and the `.beads/issues.jsonl` snapshot readers behind status, orientation, and insights. The ONLY Beads surface Forge keeps is `forge migrate --from beads` (plus the detection and upgrade advisory that route users to it) — a one-way inbound import, not a runtime dependency. ACTIVE — revises D44's "Beads remaining a compatibility projection" clause; the rest of D44 stands.
+
+**Rationale**: D44 moved authority to the Kernel but left Beads in place as a projection, which turned out to cost more than it returned. A second backend that nothing ships on still has to be read, plumbed through every command, kept green in CI, and explained in every doc — and it kept re-establishing the wrong center of gravity that D44 was written to remove. The projection also made honesty hard: commands advertised "kernel state" while reading `.beads/` snapshots, and users could opt back into a backend we no longer supported. Removing the live surface makes the Kernel's authority provable rather than merely declared, and collapses the dual-backend test matrix.
+
+**Migration boundary**: Import fidelity is preserved and is the thing being protected, not deprecated. The kernel import path keeps its Beads-shaped columns, close-reason mapping, `beads_refs_json`, and `beads_import` provenance so an imported store round-trips faithfully. Exports are Kernel JSONL projections written by Forge itself; they no longer route through Beads.
+
+**Tradeoff considered**: Keep the backend behind a hidden flag (cheap to leave, but preserves the dual-authority surface, the CI matrix, and the opt-out that made "Kernel is authoritative" untrue in practice); delete the migration importer too (smallest footprint, but strands every existing Beads user with no on-ramp); stage the removal across a deprecation window (appropriate for public consumers, but Forge has none yet — D44's "internal-only, so back-compat is not a constraint" premise still holds).
+
+**Anti-decision**: We explicitly chose against retaining a runtime opt-out to Beads, against Beads as an export or projection target, against `bd` as a prerequisite for any Forge command, and against removing the inbound migration path.
 
 ---
 

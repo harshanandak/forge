@@ -9,7 +9,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | --- | ---: | ---: |
 | command | 58 | 7 |
 | runtime | 226 | 32 |
-| docs | 395 | 47 |
+| docs | 392 | 46 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
 
@@ -99,8 +99,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## docs
 
-- [ ] docs/guides/BEADS_GITHUB_SYNC.md (3)
-  - lines: 7 (.beads), 10 (dolt), 32 (.beads)
 - [ ] docs/guides/SETUP.md (6)
   - lines: 10 (bd), 82 (bd, dolt), 87 (bd), 88 (bd, dolt), 92 (dolt), 116 (dolt)
 - [ ] docs/guides/SUPPORT.md (26)

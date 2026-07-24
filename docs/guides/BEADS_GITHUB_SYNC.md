@@ -1,32 +1,3 @@
-# Beads/GitHub Sync Deprecation
+# Beads/GitHub Sync (Retired)
 
-Beads/GitHub workflow sync is deprecated. Forge no longer ships active `github-to-beads.yml` or `beads-to-github.yml` workflow templates, and `forge setup --sync` must not create new Beads/GitHub sync scaffolding.
-
-## Current Behavior
-
-- `.beads/` is local runtime/export state and is not committed.
-- `forge setup --sync` is retained only as a compatibility cleanup path and removes old generated Beads/GitHub sync files from existing installs when they are present.
-- Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.
-- `forge sync` may still run local Beads/Dolt sync operations while Beads compatibility remains, but it is not GitHub issue lifecycle sync.
-
-## Removed Generated Files
-
-The `forge setup --sync` compatibility cleanup removes the old generated files:
-
-```text
-.github/workflows/github-to-beads.yml
-.github/workflows/beads-to-github.yml
-.github/beads-mapping.json
-.github/beads-sync-config.json
-.github/scripts/beads-sync/*.mjs
-scripts/github-beads-sync.config.json
-scripts/github-beads-sync/*.mjs
-```
-
-Unrelated GitHub workflows are preserved.
-
-## Replacement Direction
-
-Future GitHub issue sync must use Forge Kernel/server authority. Local-only work is durable in local Kernel SQLite. Team or cross-machine issue state is serialized through server authority, then GitHub issues can be updated as a projection from that authority.
-
-Do not commit live `.beads/` files, create metadata-only PRs, or bypass protected branches to update issue tracker state.
+**Historical.** Beads/GitHub workflow sync was retired with **D45** — Beads is no longer a live Forge feature, so there is nothing left to keep in sync. Forge ships no `github-to-beads.yml` or `beads-to-github.yml` templates and never scaffolds new sync files. Bringing an existing Beads store into Forge is a one-time import, `forge migrate --from beads`; after that the Forge Kernel is the sole issue-state authority, and GitHub issue updates are a server-side projection from that authority (see [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](../work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md)). Installs that still carry old generated sync files can clear them with `forge setup --sync`, which is a cleanup path only — plain `forge setup` never touches them.
