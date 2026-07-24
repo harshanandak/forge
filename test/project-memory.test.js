@@ -29,10 +29,26 @@ function fakeStore(seed = {}) {
     listMemories() {
       return [...memories.values()];
     },
+    searchMemoriesRankedScored(query, limit) {
+      this.rankedScoredCalls = this.rankedScoredCalls || [];
+      this.rankedScoredCalls.push({ query, limit });
+      return (this.__rankedScored || []).slice(0, limit);
+    },
   };
 }
 
 describe('project memory kernel adapter', () => {
+  test('searchRankedScored forwards the query/limit to the store and returns scored hits', () => {
+    const store = fakeStore();
+    store.__rankedScored = [{ key: 'm1', value: 'x', score: -2.5 }, { key: 'm2', value: 'y', score: -1.1 }];
+
+    const hits = projectMemory.searchRankedScored(process.cwd(), 'auth bug', 5, { store });
+
+    expect(store.rankedScoredCalls).toEqual([{ query: 'auth bug', limit: 5 }]);
+    expect(hits.map(h => h.key)).toEqual(['m1', 'm2']);
+    expect(hits[0].score).toBe(-2.5);
+  });
+
   test('writes a canonical entry to the store and returns it', () => {
     const store = fakeStore();
 
