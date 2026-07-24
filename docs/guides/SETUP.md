@@ -93,13 +93,11 @@ If a feature worktree reports `database "forge" not found on Dolt server`, diagn
 
 ## Deprecated GitHub Sync Cleanup
 
-To remove old generated GitHub/Beads sync files from an existing install:
-
-```bash
-bunx forge setup --sync
-```
-
-`forge setup --sync` is deprecated. It now removes old generated Beads/GitHub sync files instead of creating new sync workflows. Future GitHub issue sync belongs to Forge Kernel/server authority, not Beads runtime files or metadata commits.
+`forge setup` removes old generated GitHub/Beads sync files from an existing
+install automatically — there is no flag for it. Only files whose content
+matches a known generated template are removed, so files you have edited
+yourself are left alone. Future GitHub issue sync belongs to Forge Kernel/server
+authority, not Beads runtime files or metadata commits.
 
 ## Validate Setup
 

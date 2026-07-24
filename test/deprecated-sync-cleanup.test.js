@@ -4,6 +4,17 @@ const os = require('node:os');
 const path = require('node:path');
 const { cleanupDeprecatedSyncFiles } = require('../lib/deprecated-sync-cleanup');
 
+// Byte-identical copy of the last generated scripts/github-beads-sync/index.mjs.
+// Forge no longer ships that script, but cleanup must still recognize the copies
+// it left in existing installs, so the bytes live here to keep matching the
+// known-generated hash in lib/deprecated-sync-cleanup.js.
+const LEGACY_SYNC_HELPER_FIXTURE = path.join(
+  __dirname,
+  'fixtures',
+  'deprecated-sync',
+  'github-beads-sync-index.mjs.fixture',
+);
+
 describe('cleanupDeprecatedSyncFiles', () => {
   let projectRoot;
 
@@ -546,7 +557,7 @@ describe('cleanupDeprecatedSyncFiles', () => {
     const customWorkflow = path.join(projectRoot, '.github', 'workflows', 'github-to-beads.yml');
     const generatedHelper = path.join(projectRoot, 'scripts', 'github-beads-sync', 'index.mjs');
     const legacyContent = fs.readFileSync(
-      path.join(__dirname, '..', 'scripts', 'github-beads-sync', 'index.mjs'),
+      LEGACY_SYNC_HELPER_FIXTURE,
       'utf8',
     );
     fs.mkdirSync(path.dirname(customWorkflow), { recursive: true });
@@ -583,7 +594,7 @@ describe('cleanupDeprecatedSyncFiles', () => {
 
   test('removes exact legacy script copies without package sources', () => {
     const legacyContent = fs.readFileSync(
-      path.join(__dirname, '..', 'scripts', 'github-beads-sync', 'index.mjs'),
+      LEGACY_SYNC_HELPER_FIXTURE,
       'utf8',
     );
     const oldFiles = [

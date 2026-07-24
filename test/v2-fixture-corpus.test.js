@@ -2,10 +2,10 @@ const { describe, expect, setDefaultTimeout, test } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { isBeadsInitialized } = require('../lib/beads-setup');
 const { checkHookInstallation } = require('../lib/runtime-health');
 
 const {
+  isLegacyBeadsRepoInitialized,
   listFixtureNames,
   materializeFixture,
   validateMaterializedFixture,
@@ -76,11 +76,11 @@ describe('v2 fixture corpus', () => {
     expect(fs.existsSync(path.join(repoRoot, '.git', 'hooks', 'pre-commit'))).toBe(false);
   });
 
-  test('dolt fixtures materialize as initialized Beads repos', () => {
+  test('dolt fixtures materialize as initialized legacy Beads repos', () => {
     for (const name of ['clean-v2-install', 'no-lefthook-installed', 'non-master-default-branch', 'stale-worktrees']) {
       const { repoRoot } = materializeFixture(name);
 
-      expect(isBeadsInitialized(repoRoot)).toBe(true);
+      expect(isLegacyBeadsRepoInitialized(repoRoot)).toBe(true);
       expect(fs.existsSync(path.join(repoRoot, '.beads', 'metadata.json'))).toBe(true);
       expect(fs.existsSync(path.join(repoRoot, '.beads', 'README.md'))).toBe(true);
     }
