@@ -24,7 +24,7 @@ which backend is active, and how to use graph memory when it is enabled.
 ## Applies to: Forge-managed memory
 
 This skill describes memory managed by **Forge's own store** — `forge remember` /
-`forge recall`, backed by the router below. If the repo you are working in ships
+`forge recall`, whose backend the Backends section (below) explains. If the repo you are working in ships
 its **own** memory system (a database, an API, a "log a decision" surface, an
 in-app memory service), **that** system is authoritative here and this skill does
 not apply — follow the repo's own memory instructions instead. When unsure, prefer
