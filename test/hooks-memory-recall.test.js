@@ -17,6 +17,7 @@ function baseOpts(extra = {}) {
     ],
     loadSeen: () => [],
     saveSeen: () => {},
+    appendShadow: () => {},
     scoreFloor: -1.0,
     ...extra,
   };
@@ -75,6 +76,37 @@ describe('forge hooks memory-recall', () => {
 
   test('fail-open: malformed stdin yields no query and injects nothing', async () => {
     expect((await run(baseOpts({ readInput: () => 'not json' }))).output).toBe('');
+  });
+
+  test('queries the search seam with meaningful tokens, not the raw prompt (keyword-OR fix)', async () => {
+    // The bug: the RAW prompt was passed to a token-AND FTS match -> 0 recall. The fix derives
+    // meaningful tokens (stopwords dropped) and hands those to the search seam.
+    const seen = [];
+    await run(baseOpts({ search: (root, query, _limit) => { seen.push(query); return []; } }));
+    expect(seen).toHaveLength(1);
+    // 'the' (stopword) is dropped; every content token is present.
+    expect(seen[0].split(/\s+/)).toEqual(['auth', 'token', 'refresh', 'bug']);
+  });
+
+  test('writes a shadow-log record (tokens, candidates, injectedKeys, floor) via the injectable seam', async () => {
+    const rows = [];
+    await run(baseOpts({ appendShadow: (root, rec) => rows.push({ root, rec }) }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].root).toBe('/repo');
+    const rec = rows[0].rec;
+    expect(rec.sessionId).toBe('sess-1');
+    expect(rec.tokens).toEqual(['auth', 'token', 'refresh', 'bug']);
+    expect(rec.candidateCount).toBe(2);
+    expect(rec.candidates).toEqual([{ key: 'm1', score: -3.2 }, { key: 'm2', score: -1.4 }]);
+    expect(rec.injectedKeys).toEqual(['m1', 'm2']);
+    expect(rec.scoreFloor).toBe(-1.0);
+  });
+
+  test('shadow-log failure is swallowed — a throwing logger never breaks injection', async () => {
+    const res = await run(baseOpts({ appendShadow: () => { throw new Error('disk full'); } }));
+    expect(res.success).toBe(true);
+    const ctx = JSON.parse(res.output).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('clock skew'); // injection still happened
   });
 
   test('applies a default score floor when the caller supplies none (no floor-less path)', async () => {
