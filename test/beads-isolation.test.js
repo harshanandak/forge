@@ -92,6 +92,7 @@ describe('beads isolation', () => {
       'scripts/github-beads-sync.config.json',
       'scripts/beads-context.sh',
       'scripts/beads-migrate-to-dolt.sh',
+      'scripts/lib/beads-migrate-to-dolt.mjs',
       'scripts/beads-upgrade-smoke.sh',
     ];
 
