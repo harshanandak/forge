@@ -8,20 +8,27 @@ const path = require('node:path');
 const recap = require('../../lib/commands/recap');
 
 function makeProject() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-recap-cmd-'));
-  fs.mkdirSync(path.join(root, '.beads'), { recursive: true });
-  fs.writeFileSync(
-    path.join(root, '.beads', 'issues.jsonl'),
-    `${JSON.stringify({
-      _type: 'issue',
-      id: 'forge-recap.1',
-      title: 'Issue-scoped recap',
-      status: 'open',
-      description: 'Summarize a single issue.',
-    })}\n`
-  );
-  return root;
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-recap-cmd-'));
 }
+
+// The kernel `show` envelope returns the issue summary directly as `data`. Injected
+// through the handler's opts seam so these tests never open a kernel database.
+const opts = {
+  runIssueOperation: async (operation, operationArgs) => (
+    operation === 'show' && operationArgs[0] === 'forge-recap.1'
+      ? {
+        ok: true,
+        command: 'show',
+        data: {
+          id: 'forge-recap.1',
+          title: 'Issue-scoped recap',
+          status: 'open',
+          description: 'Summarize a single issue.',
+        },
+      }
+      : { ok: false }
+  ),
+};
 
 describe('forge recap command', () => {
   test('exports the issue-scoped recap command', () => {
@@ -42,18 +49,19 @@ describe('forge recap command', () => {
 
   test('forge recap <issue> --json returns an issue-scoped bounded recap', async () => {
     const root = makeProject();
-    const result = await recap.handler(['forge-recap.1', '--json', '--budget', '220'], {}, root);
+    const result = await recap.handler(['forge-recap.1', '--json', '--budget', '220'], {}, root, opts);
     const parsed = JSON.parse(result.output);
 
     expect(result.success).toBe(true);
     expect(parsed.kind).toBe('issue_recap');
     expect(parsed.issue.id).toBe('forge-recap.1');
+    expect(parsed.issue.title).toBe('Issue-scoped recap');
     expect(parsed.scope.issue_id).toBe('forge-recap.1');
   });
 
   test('forge recap --budget N <issue> does not mistake the budget value for the issue', async () => {
     const root = makeProject();
-    const result = await recap.handler(['--budget', '220', 'forge-recap.1', '--json'], {}, root);
+    const result = await recap.handler(['--budget', '220', 'forge-recap.1', '--json'], {}, root, opts);
     const parsed = JSON.parse(result.output);
 
     expect(result.success).toBe(true);
@@ -62,7 +70,7 @@ describe('forge recap command', () => {
 
   test('forge recap <issue> renders human-readable issue-scoped text', async () => {
     const root = makeProject();
-    const result = await recap.handler(['forge-recap.1'], {}, root);
+    const result = await recap.handler(['forge-recap.1'], {}, root, opts);
 
     expect(result.success).toBe(true);
     expect(result.output).toContain('Issue Summary');
@@ -71,7 +79,7 @@ describe('forge recap command', () => {
 
   test('forge recap without an issue prints usage instead of throwing', async () => {
     const root = makeProject();
-    const result = await recap.handler([], {}, root);
+    const result = await recap.handler([], {}, root, opts);
 
     expect(result.success).toBe(false);
     // Usage goes on `error` (not `output`) so the CLI dispatcher prints it
