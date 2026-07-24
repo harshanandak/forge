@@ -1,6 +1,9 @@
 'use strict';
 
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect, afterEach } = require('bun:test');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const hooks = require('../lib/commands/hooks');
 
@@ -109,6 +112,78 @@ describe('forge hooks memory-recall', () => {
     expect(ctx).toContain('clock skew'); // injection still happened
   });
 
+  test('bounds the shadow record fields — a pathological prompt cannot produce a huge record', async () => {
+    // A shadow record is a tuning sample, not an archive: an adversarial prompt (hundreds of
+    // very long words) must still serialize small, so no single record can blow the log cap.
+    const words = Array.from({ length: 400 }, (_, i) => `tok${i}${'x'.repeat(500)}`);
+    const rows = [];
+    await run(baseOpts({
+      readInput: () => JSON.stringify({ session_id: 'sess-big', prompt: words.join(' ') }),
+      appendShadow: (root, rec) => rows.push(rec),
+    }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tokens.length).toBeLessThanOrEqual(32);
+    for (const tok of rows[0].tokens) expect(tok.length).toBeLessThanOrEqual(64);
+    expect(Buffer.byteLength(JSON.stringify(rows[0]), 'utf8')).toBeLessThan(8 * 1024);
+  });
+});
+
+describe('shadow log byte cap', () => {
+  const { appendShadowLog, SHADOW_LOG_MAX_BYTES } = hooks._internal;
+  const roots = [];
+
+  // Real writes go to a real tmp dir — never a fake absolute root like '/repo', which on
+  // Windows resolves to C:\repo and leaks state between runs.
+  function tmpRoot() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-shadow-'));
+    roots.push(root);
+    return root;
+  }
+
+  function logPath(root) {
+    return path.join(root, '.forge', 'memory-recall', 'shadow.jsonl');
+  }
+
+  afterEach(() => {
+    while (roots.length) fs.rmSync(roots.pop(), { recursive: true, force: true });
+  });
+
+  test('a single record larger than the cap leaves the file empty, never oversized', () => {
+    const root = tmpRoot();
+    appendShadowLog(root, { sessionId: 'small', tokens: ['a'] });
+    appendShadowLog(root, { sessionId: 'huge', pad: 'p'.repeat(SHADOW_LOG_MAX_BYTES + 1024) });
+    const body = fs.readFileSync(logPath(root), 'utf8');
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(SHADOW_LOG_MAX_BYTES);
+    expect(body).not.toContain('huge'); // the oversized record must NOT survive the trim
+    expect(body).toBe('');
+  });
+
+  test('evicts whole oldest records by bytes, keeping the newest under the cap', () => {
+    const root = tmpRoot();
+    const pad = 'p'.repeat(64 * 1024);
+    for (let i = 0; i < 12; i += 1) appendShadowLog(root, { seq: i, pad });
+    const body = fs.readFileSync(logPath(root), 'utf8');
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(SHADOW_LOG_MAX_BYTES);
+    const seqs = body.split('\n').filter(Boolean).map(line => JSON.parse(line).seq);
+    expect(seqs[seqs.length - 1]).toBe(11); // newest kept
+    expect(seqs).not.toContain(0); // oldest evicted
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b)); // whole records, still in order
+  });
+
+  test('stays under the cap across many appends without dropping the newest record', () => {
+    const root = tmpRoot();
+    const pad = 'p'.repeat(32 * 1024);
+    for (let i = 0; i < 40; i += 1) {
+      appendShadowLog(root, { seq: i, pad });
+      const size = fs.statSync(logPath(root)).size;
+      expect(size).toBeLessThanOrEqual(SHADOW_LOG_MAX_BYTES);
+    }
+    const lines = fs.readFileSync(logPath(root), 'utf8').split('\n').filter(Boolean);
+    expect(JSON.parse(lines[lines.length - 1]).seq).toBe(39);
+  });
+});
+
+describe('forge hooks memory-recall (floor)', () => {
   test('applies a default score floor when the caller supplies none (no floor-less path)', async () => {
     // opts without scoreFloor -> the handler must supply DEFAULT_SCORE_FLOOR (0), which keeps
     // token-AND bm25 matches (score <= 0) but screens a positive (non-)match. A hit scored
