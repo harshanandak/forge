@@ -185,6 +185,42 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		expect(driver.recentMemories(2).map(entry => entry.key)).toEqual(['c', 'b']);
 	});
 
+	// The SCORED variant exists for the per-turn auto-recall hook, which needs the raw
+	// bm25 score to apply a relevance FLOOR (inject nothing when nothing clears the bar).
+	// Ordinal rank alone can't do that — it would always surface top-N even for junk.
+	test('searchMemoriesRankedScored attaches a numeric bm25 score, best-first', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'm2', value: 'auth bug bug bug everywhere in auth', sourceAgent: 'Codex', tags: [] });
+
+		const hits = driver.searchMemoriesRankedScored('auth bug', 10);
+		expect(hits.map(h => h.key).sort()).toEqual(['m1', 'm2']);
+		for (const hit of hits) {
+			expect(typeof hit.score).toBe('number');
+		}
+		// bm25 returns more-negative for a stronger match; results are ordered best (lowest) first.
+		expect(hits[0].score).toBeLessThanOrEqual(hits[1].score);
+	});
+
+	test('searchMemoriesRankedScored returns [] for a no-match query — never a recency fallback', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
+
+		// Unlike searchMemoriesRanked, the scored variant is relevance-ONLY: a query that
+		// matches nothing yields nothing, so the hook injects nothing rather than recent noise.
+		expect(driver.searchMemoriesRankedScored('kubernetes helm chart', 10)).toEqual([]);
+		expect(driver.searchMemoriesRankedScored('', 10)).toEqual([]);
+	});
+
+	test('searchMemoriesRankedScored honors the top-N limit', () => {
+		const driver = makeDriver();
+		driver.recordMemory({ key: 'a', value: 'kernel note one', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'b', value: 'kernel note two', sourceAgent: 'Codex', tags: [] });
+		driver.recordMemory({ key: 'c', value: 'kernel note three', sourceAgent: 'Codex', tags: [] });
+
+		expect(driver.searchMemoriesRankedScored('kernel', 2)).toHaveLength(2);
+	});
+
 	test('countMemories returns the total row count', () => {
 		const driver = makeDriver();
 		expect(driver.countMemories()).toBe(0);

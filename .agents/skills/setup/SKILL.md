@@ -66,7 +66,7 @@ forge hooks install --global --harness codex       # scope to one harness (codex
 forge hooks install --global --dry-run             # preview
 ```
 
-`--global` is the required consent flag — it opts you into installing hooks at the user level. (The other `forge hooks` subcommands — `session-start`, `inbox-pickup`, `shepherd-events`, `capture` — are machine-facing hook emitters the harness calls, not things you run by hand.)
+`--global` is the required consent flag — it opts you into installing hooks at the user level. (The other `forge hooks` subcommands — `session-start`, `inbox-pickup`, `shepherd-events`, `memory-recall`, `capture` — are machine-facing hook emitters the harness calls, not things you run by hand.)
 
 # Undo / redo the install
 

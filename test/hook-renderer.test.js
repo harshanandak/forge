@@ -34,14 +34,15 @@ const {
 const FORGE_MARK = 'forge-native-hook.js';
 
 describe('Forge hook contract', () => {
-  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup, memory-capture) intents', () => {
+  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup, memory-recall, memory-capture) intents', () => {
     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
-    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'shepherd-events', 'memory-capture']);
+    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'memory-recall', 'shepherd-events', 'memory-capture']);
     // Each context intent routes to the `forge` CLI via a `hooks <cliAction>` marker.
     const CONTEXT_MARKERS = {
       'memory-inject': FORGE_CONTEXT_MARKER,
       'inbox-pickup': 'hooks inbox-pickup',
+      'memory-recall': 'hooks memory-recall',
       'shepherd-events': 'hooks shepherd-events',
       'memory-capture': 'hooks capture',
     };
@@ -331,6 +332,12 @@ describe('mergeClaudeSettings (read -> merge -> write, preserve user config)', (
     const a = JSON.parse(once);
     const b = JSON.parse(twice);
     expect(b.hooks.PreToolUse.length).toBe(a.hooks.PreToolUse.length);
+    // UserPromptSubmit carries the memory-recall context hook: if isForgeCommand did not
+    // recognize `hooks memory-recall`, a re-merge would treat it as user-owned and duplicate
+    // it. Assert the group is stable AND memory-recall appears exactly once.
+    expect(b.hooks.UserPromptSubmit.length).toBe(a.hooks.UserPromptSubmit.length);
+    const recalls = JSON.stringify(b.hooks.UserPromptSubmit).match(/hooks memory-recall/g) || [];
+    expect(recalls.length).toBe(1);
   });
 
   test('throws HookConfigParseError on populated-but-unparseable settings', () => {
