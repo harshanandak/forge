@@ -21,6 +21,16 @@ terminal: true
 Durable project memory for agents. This skill teaches you where a fact belongs,
 which backend is active, and how to use graph memory when it is enabled.
 
+## Applies to: Forge-managed memory
+
+This skill describes memory managed by **Forge's own store** — `forge remember` /
+`forge recall`, backed by the router below. If the repo you are working in ships
+its **own** memory system (a database, an API, a "log a decision" surface, an
+in-app memory service), **that** system is authoritative here and this skill does
+not apply — follow the repo's own memory instructions instead. When unsure, prefer
+the host repo's memory over `forge remember`; a note written to the wrong store is
+a note nobody finds.
+
 ## The one rule
 
 Persistent, project-level knowledge goes to **`forge remember`** — never to a
@@ -34,7 +44,11 @@ is a local file store, so they always work offline with zero setup.
   convention, a decision and its rationale, a non-obvious gotcha, an environment
   quirk, a "we tried X, it failed because Y". Add `--tag <label>` for retrieval.
 - **`forge recall "<query>"`** — before assuming, check what is already known.
-  Search first; do not re-derive knowledge the project already recorded.
+  Search first; do not re-derive knowledge the project already recorded. Note that
+  memory relevant to your current prompt **may already be injected automatically**
+  (a per-turn hook surfaces the best-matching notes; silent when nothing clears the
+  relevance bar). Treat auto-surfaced memory as a head start, and still `recall`
+  explicitly when you need to search for something specific it did not surface.
 - **`forge issue comment <id> "<note>"`** — progress or context that belongs to
   ONE issue's lifecycle (status, a blocker, a hand-off). Issue-scoped, not global.
 - **Rule of thumb:** would a future session on a *different* issue want this? →
