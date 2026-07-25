@@ -167,7 +167,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated 
 
 ```bash
 forge push                    # Branch protection + lint + tests, then push
-forge push --quick            # Review-cycle: lint-only push (CI runs full suite)
+forge push --quick            # Review-cycle: lint-only end to end (the pre-push hook's test job is skipped too; CI runs the full suite)
 forge worktree create <slug>  # Create a worktree
 forge test                    # Run tests with correct timeouts
 forge sync                    # Sync issue data

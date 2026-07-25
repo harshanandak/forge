@@ -50,6 +50,10 @@ pre-push:
         - run: node scripts/check-forge-token.js
 
     # 3. Test suite (cross-platform Node.js script detects package manager)
+    # `forge push --quick` sets FORGE_PUSH_LANE=quick on the git push it spawns;
+    # scripts/test.js honors that declaration and skips this job with a loud
+    # notice so the quick lane is lint-only end to end. Only this job reads it —
+    # branch protection and lint above always run, and CI runs the full matrix.
     tests:
       run: node scripts/test.js
       tags: tests

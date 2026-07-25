@@ -12,6 +12,7 @@ const { describe, test, expect } = require('bun:test');
 
 // We will require push.js once it exists — for now these tests should RED
 const pushModule = require('../../lib/commands/push.js');
+const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../../scripts/test.js');
 
 describe('Forge Push Command', () => {
 	describe('Module exports', () => {
@@ -240,6 +241,56 @@ describe('Forge Push Command', () => {
 			expect(pushCall.args).toContain('-u');
 			expect(pushCall.args).toContain('origin');
 			expect(pushCall.args).toContain('feat/slug');
+		});
+
+		test('should declare the quick lane on the spawned git push env in quick mode', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args, opts) => {
+					execCalls.push({ cmd, args: [...args], opts });
+					return '';
+				},
+			});
+
+			await pushModule.handler([], { '--quick': true }, '/fake/project', deps);
+
+			const pushCall = execCalls.find(
+				c => c.cmd === 'git' && c.args[0] === 'push',
+			);
+			expect(pushCall.opts.env[QUICK_LANE_ENV_VAR]).toBe(QUICK_LANE_VALUE);
+			// Set on the child only — the forge process env stays clean.
+			expect(process.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
+		});
+
+		test('should not declare the quick lane on a full push', async () => {
+			const execCalls = [];
+			const deps = makeDeps({
+				execFileSync: (cmd, args, opts) => {
+					execCalls.push({ cmd, args: [...args], opts });
+					return '';
+				},
+			});
+
+			await pushModule.handler([], {}, '/fake/project', deps);
+
+			const pushCall = execCalls.find(
+				c => c.cmd === 'git' && c.args[0] === 'push',
+			);
+			expect(pushCall.opts.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
+		});
+
+		test('buildPushEnv strips an inherited quick lane declaration from a full push', () => {
+			const inherited = { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: '/usr/bin' };
+
+			const fullEnv = pushModule._internal.buildPushEnv(false, inherited);
+			expect(fullEnv[QUICK_LANE_ENV_VAR]).toBeUndefined();
+			expect(fullEnv.PATH).toBe('/usr/bin');
+
+			const quickEnv = pushModule._internal.buildPushEnv(true, inherited);
+			expect(quickEnv[QUICK_LANE_ENV_VAR]).toBe(QUICK_LANE_VALUE);
+
+			// The caller's environment object is never mutated.
+			expect(inherited[QUICK_LANE_ENV_VAR]).toBe(QUICK_LANE_VALUE);
 		});
 
 		test('should not call git push when checks fail', async () => {
