@@ -11,7 +11,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | runtime | 118 | 21 |
 | docs | 386 | 45 |
 | skills | 1 | 1 |
-| hooks | 1 | 1 |
+| hooks | 0 | 0 |
 
 ## command
 
@@ -173,5 +173,4 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 ## hooks
 
-- [ ] lefthook.yml (1)
-  - lines: 24 (bd)
+No current call sites in this group.
