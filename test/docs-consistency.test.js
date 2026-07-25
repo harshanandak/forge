@@ -84,10 +84,17 @@ describe('Beads repository hygiene', () => {
     const setupGuide = readDoc('docs/guides/SETUP.md');
     const migrationGuide = readDoc('docs/guides/MIGRATION.md');
 
+    // D45 retired Beads/GitHub sync: the guide is a tombstone, and D1 deleted the
+    // --sync flag outright — cleanup is automatic on plain `forge setup` via the
+    // retained deprecated-sync-cleanup path, so NO doc may mention --sync.
     for (const doc of [syncGuide, setupGuide, migrationGuide]) {
       expect(doc).not.toContain('--sync');
     }
-    expect(syncGuide).toContain('The `forge setup` compatibility cleanup removes the old generated files:');
+    expect(syncGuide).toContain('Retired');
+    expect(syncGuide).toContain('D45');
+    expect(syncGuide).toContain('forge migrate --from beads');
+    expect(syncGuide).toContain('compatibility cleanup removes the old generated files');
+    expect(syncGuide).not.toContain('## Removed Generated Files');
     expect(setupGuide).not.toContain('To scaffold GitHub/Beads sync files:');
     expect(migrationGuide).not.toContain('It removes deprecated Beads/GitHub sync scaffolding');
   });
