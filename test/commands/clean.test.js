@@ -624,3 +624,214 @@ describe('forge clean — master auto-update', () => {
     expect(_internals.parseUntrackedOverwrites(stderr)).toEqual(['docs/new.md', 'lib/added.js']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Close-on-merge: a merged branch closes the kernel issue it was linked to
+// (kernel issue 18f1988e). `_closeLinkedIssue` is the injection seam; the real
+// path builds a kernel driver + issue runner lazily and disposes them.
+// ---------------------------------------------------------------------------
+
+const MERGED_PR = Object.freeze({
+  number: 452,
+  title: 'feat: the merged work',
+  headRefName: 'feat/linked',
+  headRefOid: 'tipsha',
+  mergeCommit: { oid: 'mergesha' },
+});
+
+/** exec mock where `feat/<name>` is merged via a gh PR whose head OID still matches. */
+function execWithMergedPr(names, removed = [], prs = [MERGED_PR]) {
+  return (cmd, args) => {
+    if (cmd === 'gh') return Buffer.from(JSON.stringify(prs));
+    if (cmd !== 'git') return Buffer.from('');
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+    if (args[0] === 'rev-parse') {
+      const pr = prs.find(p => p.headRefName === args[1]);
+      return Buffer.from(pr ? `${pr.headRefOid}\n` : '');
+    }
+    if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n');
+    if (args[0] === 'worktree' && args[1] === 'list') {
+      return Buffer.from(names.map(n => `worktree ${wt(n)}\nbranch refs/heads/feat/${n}\n`).join('\n') + '\n');
+    }
+    if (args[0] === 'merge-base') return Buffer.from(''); // no squash signal
+    if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+    return Buffer.from('');
+  };
+}
+
+describe('forge clean — close linked issues on merge', () => {
+  test('closes the linked issue and reports it, passing the PR evidence through', async () => {
+    const mod = require('../../lib/commands/clean');
+    const seen = [];
+    const closeLinked = async (params) => {
+      seen.push(params);
+      return { closed: true, issueId: 'issue-1', commented: true };
+    };
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: execWithMergedPr(['linked']),
+      _fs: fsWith(['linked']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: closeLinked,
+    });
+
+    expect(result.cleaned).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].branch).toBe('feat/linked');
+    expect(seen[0].pr).toEqual({
+      number: 452,
+      title: 'feat: the merged work',
+      mergeCommitOid: 'mergesha',
+    });
+    expect(result.closedIssues).toEqual([{ branch: 'feat/linked', issueId: 'issue-1' }]);
+    expect(result.output).toContain('issue-1');
+  });
+
+  test('an unmerged worktree never reaches the closer', async () => {
+    const mod = require('../../lib/commands/clean');
+    const seen = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('live')}\nbranch refs/heads/feat/live\n\n`);
+      }
+      if (args[0] === 'merge-base') return Buffer.from('basesha\n');
+      if (args[0] === 'rev-parse' && String(args[1]).endsWith('^{tree}')) return Buffer.from('treesha\n');
+      if (args[0] === 'commit-tree') return Buffer.from('synthsha\n');
+      if (args[0] === 'cherry') return Buffer.from('+ 89abcde still open\n');
+      return Buffer.from('');
+    };
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: mockExec,
+      _fs: fsWith(['live']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async (params) => { seen.push(params); return { closed: true }; },
+    });
+
+    expect(result.active).toBe(1);
+    expect(seen).toHaveLength(0);
+    expect(result.closedIssues).toEqual([]);
+  });
+
+  test('a dry run detects the merge but closes nothing', async () => {
+    const mod = require('../../lib/commands/clean');
+    const seen = [];
+
+    const result = await mod.handler([], { '--dry-run': true }, ROOT, {
+      _exec: execWithMergedPr(['linked']),
+      _fs: fsWith(['linked']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async (params) => { seen.push(params); return { closed: true }; },
+    });
+
+    expect(result.cleaned).toBe(1);
+    expect(seen).toHaveLength(0);
+    expect(result.closedIssues).toEqual([]);
+  });
+
+  test('a merged worktree that could not be removed still closes its issue', async () => {
+    const mod = require('../../lib/commands/clean');
+    const seen = [];
+    const exec = (cmd, args) => {
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'remove') throw new Error('locked');
+      return execWithMergedPr(['linked'])(cmd, args);
+    };
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: exec,
+      _fs: fsWith(['linked'], { rmSync: () => {}, existsSync: () => true }),
+      _syncMaster: noopSync,
+      _maxTries: 1,
+      _sleep: async () => {},
+      _closeLinkedIssue: async (params) => { seen.push(params); return { closed: true, issueId: 'issue-1' }; },
+    });
+
+    expect(result.survivors.length + result.cleaned).toBe(1);
+    expect(seen).toHaveLength(1);
+  });
+
+  // Best-effort: a broken kernel must never break worktree cleanup.
+  test('a throwing closer never fails the clean run', async () => {
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: execWithMergedPr(['linked'], removed),
+      _fs: fsWith(['linked']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async () => { throw new Error('kernel exploded'); },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.cleaned).toBe(1);
+    expect(removed).toHaveLength(1);
+    expect(result.closedIssues).toEqual([]);
+  });
+
+  test('an unlinked branch is reported as nothing closed', async () => {
+    const mod = require('../../lib/commands/clean');
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: execWithMergedPr(['linked']),
+      _fs: fsWith(['linked']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async () => ({ closed: false, reason: 'not-linked' }),
+    });
+
+    expect(result.cleaned).toBe(1);
+    expect(result.closedIssues).toEqual([]);
+    expect(result.output).not.toContain('linked issue');
+  });
+
+  test('_internals.getGhMergedPrs keys PR evidence by head branch', () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const runFile = () => Buffer.from(JSON.stringify([MERGED_PR]));
+    const map = _internals.getGhMergedPrs(runFile);
+    expect(map.get('feat/linked')).toEqual({
+      headRefOid: 'tipsha',
+      number: 452,
+      title: 'feat: the merged work',
+      mergeCommitOid: 'mergesha',
+    });
+  });
+
+  test('_internals.getGhMergedPrs degrades to an empty map when gh fails', () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const runFile = () => { throw new Error('gh: not found'); };
+    expect(_internals.getGhMergedPrs(runFile).size).toBe(0);
+  });
+
+  // buildMigratedKernelIssueDeps CREATES <git-common-dir>/forge/kernel.sqlite, so a
+  // clean run pointed at a non-repo path must never get that far.
+  test('_internals.createIssueCloser does not build a kernel outside a git repo', async () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const probed = [];
+    const runFile = (cmd, args) => {
+      probed.push([cmd, ...args].join(' '));
+      return Buffer.from(''); // rev-parse --git-common-dir yields nothing => not a repo
+    };
+    const closer = _internals.createIssueCloser(ROOT, runFile, {});
+    const outcome = await closer.close('feat/linked', null);
+
+    expect(outcome).toEqual({ closed: false, reason: 'unavailable' });
+    expect(probed.some(p => p.includes('rev-parse --git-common-dir'))).toBe(true);
+    closer.dispose();
+  });
+
+  test('_internals.createIssueCloser disposes only a driver it owns', async () => {
+    const { _internals } = require('../../lib/commands/clean');
+    let closed = 0;
+    const injectedDriver = { close: () => { closed += 1; } };
+    const closer = _internals.createIssueCloser(ROOT, () => Buffer.from(''), {
+      _kernelDriver: injectedDriver,
+      _runIssueOperation: async () => ({ ok: true, data: { status: 'done' } }),
+    });
+
+    await closer.close('feat/linked', null);
+    closer.dispose();
+    expect(closed).toBe(0);
+  });
+});
