@@ -125,6 +125,75 @@ describe('capped jsonl log', () => {
 		}
 	});
 
+	test('preserves a record appended between the trim snapshot and its rename', () => {
+		const root = createTempDir();
+		const realWriteFileSync = fs.writeFileSync;
+		const realAppendFileSync = fs.appendFileSync;
+		try {
+			const logPath = path.join(root, LOG_NAME);
+			seedJsonl(logPath, 12);
+
+			// Land records in the exact window the rename used to destroy: once after
+			// the trim writes its temp file, then again while it drains that first
+			// record across, so the drain has to loop rather than pass once.
+			let racers = 0;
+			fs.writeFileSync = (target, ...rest) => {
+				realWriteFileSync(target, ...rest);
+				if (String(target).endsWith('.tmp') && racers === 0) {
+					racers += 1;
+					realAppendFileSync(logPath, `${JSON.stringify({ seq: 'racer-1' })}\n`, 'utf8');
+				}
+			};
+			fs.appendFileSync = (target, ...rest) => {
+				realAppendFileSync(target, ...rest);
+				if (String(target).endsWith('.tmp') && racers === 1) {
+					racers += 1;
+					realAppendFileSync(logPath, `${JSON.stringify({ seq: 'racer-2' })}\n`, 'utf8');
+				}
+			};
+
+			appendCappedJsonlRecord(logPath, { seq: 'newest' }, 10);
+
+			expect(racers).toBe(2);
+			const seqs = readJsonlFile(logPath).map(record => record.seq);
+			expect(seqs).toContain('racer-1');
+			expect(seqs).toContain('racer-2');
+			// The drained records land after the kept window, in append order.
+			expect(seqs.slice(-3)).toEqual(['newest', 'racer-1', 'racer-2']);
+		} finally {
+			fs.writeFileSync = realWriteFileSync;
+			fs.appendFileSync = realAppendFileSync;
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('keeps every writer contiguous when trims run under concurrent appends', async () => {
+		const root = createTempDir();
+		try {
+			// The cap sits far below the 100 records the two writers produce, so the
+			// trim rewrite runs constantly while the other process is appending.
+			const logPath = await runConcurrentWriters(root, { count: 50, maxRecords: 15 });
+
+			const records = readJsonlFile(logPath);
+			expect(records.length).toBeGreaterThanOrEqual(15);
+
+			// A trim keeps a suffix of the log, so each writer's surviving indexes must
+			// stay contiguous. A hole means a record was appended during a trim and
+			// then dropped by the rename.
+			for (const writer of ['alpha', 'beta']) {
+				const indexes = records.filter(record => record.writer === writer).map(record => record.index);
+				const holes = indexes.filter(
+					(index, position) => position > 0 && index !== indexes[position - 1] + 1,
+				);
+				expect({ writer, holes }).toEqual({ writer, holes: [] });
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+		// Two real processes contending over one lock, so give the writers room to
+		// finish their retry sleeps on a loaded CI runner.
+	}, 60_000);
+
 	test('skips the trim instead of blocking while another writer holds the lock', () => {
 		const root = createTempDir();
 		try {
