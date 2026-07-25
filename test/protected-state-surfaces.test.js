@@ -2,19 +2,76 @@ const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const {
 	PROTECTED_SURFACES,
+	PROTECTED_STATE_AUDIT_LOG,
+	PROTECTED_STATE_AUDIT_MAX_RECORDS,
 	classifyProtectedPath,
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
 	buildProtectedStateAuditEvent,
 	recordProtectedStateAuditEvent,
+	appendCappedJsonlRecord,
 } = require('../lib/protected-state-surfaces');
+
+function readJsonlFile(logPath) {
+	return fs
+		.readFileSync(logPath, 'utf8')
+		.split('\n')
+		.filter(Boolean)
+		.map(line => JSON.parse(line));
+}
+
+function readAuditLog(root) {
+	return readJsonlFile(path.join(root, PROTECTED_STATE_AUDIT_LOG));
+}
 
 function createTempDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-protected-state-'));
+}
+
+function seedJsonl(logPath, count) {
+	fs.mkdirSync(path.dirname(logPath), { recursive: true });
+	const seeded = Array.from({ length: count }, (_, index) => JSON.stringify({ seq: index }));
+	fs.writeFileSync(logPath, `${seeded.join('\n')}\n`, 'utf8');
+}
+
+const APPEND_WORKER = `
+const { appendCappedJsonlRecord } = require(process.argv[2]);
+const [logPath, writer, count, maxRecords] = process.argv.slice(3);
+for (let index = 0; index < Number(count); index += 1) {
+	appendCappedJsonlRecord(logPath, { writer, index }, Number(maxRecords));
+}
+`;
+
+/**
+ * Two real processes appending to one log — the interleaving a pre-commit hook
+ * actually hits when parallel agents commit at the same moment.
+ */
+function runConcurrentWriters(root, { count, maxRecords }) {
+	const workerPath = path.join(root, 'append-worker.js');
+	fs.writeFileSync(workerPath, APPEND_WORKER, 'utf8');
+	const modulePath = require.resolve('../lib/protected-state-surfaces');
+	const logPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+
+	return Promise.all(
+		['alpha', 'beta'].map(
+			writer =>
+				new Promise((resolve, reject) => {
+					const child = spawn(
+						process.execPath,
+						[workerPath, modulePath, logPath, writer, String(count), String(maxRecords)],
+						{ stdio: 'ignore' },
+					);
+					child.on('error', reject);
+					child.on('exit', code =>
+						code === 0 ? resolve() : reject(new Error(`writer ${writer} exited with ${code}`)),
+					);
+				}),
+		),
+	).then(() => logPath);
 }
 
 describe('protected state surfaces', () => {
@@ -200,32 +257,143 @@ describe('protected state surfaces', () => {
 		});
 	});
 
-	test('records protected edit attempts through the existing Beads audit model when available', () => {
-		const calls = [];
-		const decision = assertProtectedWriteAllowed('.forge/config.yaml', {
-			actor: 'codex',
-			operation: 'staged_edit',
-		});
+	test('records protected edit attempts to the local audit log', () => {
+		const root = createTempDir();
+		try {
+			const decision = assertProtectedWriteAllowed('.forge/config.yaml', {
+				actor: 'codex',
+				operation: 'staged_edit',
+			});
+
+			const result = recordProtectedStateAuditEvent(decision, { cwd: root });
+
+			expect(result.success).toBe(true);
+			expect(result.logPath).toBe(path.join(root, PROTECTED_STATE_AUDIT_LOG));
+
+			const records = readAuditLog(root);
+			expect(records).toHaveLength(1);
+			expect(records[0]).toMatchObject({
+				kind: 'protected_state_write',
+				actor: 'codex',
+				path: '.forge/config.yaml',
+				operation: 'staged_edit',
+				requiredSurface: 'forge_config',
+				declaredSurface: null,
+				decision: 'blocked',
+			});
+			expect(records[0].reason).toBeTruthy();
+			expect(records[0].repairHint).toBeTruthy();
+			expect(records[0].recordedAt).toBeTruthy();
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('caps the audit log so a blocked-commit loop cannot grow it without bound', () => {
+		const root = createTempDir();
+		try {
+			const logPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+			fs.mkdirSync(path.dirname(logPath), { recursive: true });
+			const seeded = Array.from(
+				{ length: PROTECTED_STATE_AUDIT_MAX_RECORDS + 5 },
+				(_, index) => JSON.stringify({ seq: index }),
+			);
+			fs.writeFileSync(logPath, `${seeded.join('\n')}\n`, 'utf8');
+
+			const decision = assertProtectedWriteAllowed('.forge/config.yaml', { actor: 'codex' });
+			expect(recordProtectedStateAuditEvent(decision, { cwd: root }).success).toBe(true);
+
+			const records = readAuditLog(root);
+			expect(records).toHaveLength(PROTECTED_STATE_AUDIT_MAX_RECORDS);
+			// Oldest trimmed, newest kept.
+			expect(records[0].seq).toBe(6);
+			expect(records[records.length - 1].kind).toBe('protected_state_write');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('concurrent writers do not lose each other appended records', async () => {
+		const root = createTempDir();
+		try {
+			const logPath = await runConcurrentWriters(root, { count: 60, maxRecords: 10000 });
+
+			const records = readJsonlFile(logPath);
+			expect(records).toHaveLength(120);
+			expect(records.filter(record => record.writer === 'alpha')).toHaveLength(60);
+			expect(records.filter(record => record.writer === 'beta')).toHaveLength(60);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('a contended trim leaves valid JSONL and still converges to the cap', async () => {
+		const root = createTempDir();
+		try {
+			const logPath = await runConcurrentWriters(root, { count: 60, maxRecords: 25 });
+
+			// Every surviving line parses: the trim rewrites through a temp file and
+			// renames, so no writer can observe or leave a half-written log.
+			expect(() => readJsonlFile(logPath)).not.toThrow();
+
+			// A writer that loses the lock race skips its trim, so the log can sit
+			// above the cap until the next uncontended write brings it back down.
+			appendCappedJsonlRecord(logPath, { writer: 'final' }, 25);
+			expect(readJsonlFile(logPath)).toHaveLength(25);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('skips the trim instead of blocking while another writer holds the lock', () => {
+		const root = createTempDir();
+		try {
+			const logPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+			seedJsonl(logPath, 12);
+			fs.writeFileSync(`${logPath}.lock`, '', 'utf8');
+
+			// The record is still appended — only the trim is deferred.
+			expect(appendCappedJsonlRecord(logPath, { seq: 'held' }, 10)).toBe(13);
+			expect(readJsonlFile(logPath)).toHaveLength(13);
+
+			fs.unlinkSync(`${logPath}.lock`);
+			expect(appendCappedJsonlRecord(logPath, { seq: 'free' }, 10)).toBe(10);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('reclaims a trim lock left behind by a crashed writer', () => {
+		const root = createTempDir();
+		try {
+			const logPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+			const lockPath = `${logPath}.lock`;
+			seedJsonl(logPath, 12);
+			fs.writeFileSync(lockPath, '', 'utf8');
+			const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+			fs.utimesSync(lockPath, longAgo, longAgo);
+
+			expect(appendCappedJsonlRecord(logPath, { seq: 'stale' }, 10)).toBe(10);
+			expect(fs.existsSync(lockPath)).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('reports a failing audit sink instead of throwing', () => {
+		const decision = assertProtectedWriteAllowed('.forge/config.yaml', { actor: 'codex' });
 
 		const result = recordProtectedStateAuditEvent(decision, {
 			cwd: 'C:/repo',
-			runCommand: (cmd, args, options) => {
-				calls.push({ cmd, args, options });
-				return JSON.stringify({ id: 'int-protected' });
+			appendRecord: () => {
+				throw new Error('disk on fire');
 			},
 		});
 
-		expect(result.success).toBe(true);
-		expect(calls[0].cmd).toBe('bd');
-		expect(calls[0].args).toContain('protected_state_write');
-		expect(calls[0].args).toContain('--meta-json');
-		const meta = JSON.parse(calls[0].args[calls[0].args.indexOf('--meta-json') + 1]);
-		expect(meta).toMatchObject({
-			actor: 'codex',
-			path: '.forge/config.yaml',
-			decision: 'blocked',
-			requiredSurface: 'forge_config',
-		});
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('disk on fire');
+		// The event is still returned so the caller can surface it another way.
+		expect(result.event.requiredSurface).toBe('forge_config');
 	});
 });
 
@@ -248,7 +416,39 @@ describe('scripts/protected-state-check.js', () => {
 		expect(output).toContain('.beads/issues.jsonl');
 		expect(output).toContain('beads_state');
 		expect(output).toContain('Repair:');
-		expect(output).toContain('bd');
+	});
+
+	test('writes the blocked decision to the audit log without warning about a missing CLI', () => {
+		const root = createTempDir();
+		try {
+			const result = spawnSync('node', [scriptPath], {
+				cwd: root,
+				stdio: 'pipe',
+				env: {
+					...process.env,
+					FORGE_PROTECTED_STATE_STAGED_FILES: '.forge/config.yaml',
+					FORGE_PROTECTED_STATE_ACTOR: 'codex-test',
+				},
+			});
+
+			expect(result.status).toBe(1);
+			const output = `${result.stdout}${result.stderr}`;
+			// The retired bd CLI used to fail here and dump its usage text as a WARN.
+			expect(output).not.toContain('WARN: Failed to record protected-state audit');
+			expect(output).not.toMatch(/\bbd\b/);
+
+			const records = readAuditLog(root);
+			expect(records).toHaveLength(1);
+			expect(records[0]).toMatchObject({
+				actor: 'codex-test',
+				path: '.forge/config.yaml',
+				operation: 'staged_edit',
+				requiredSurface: 'forge_config',
+				decision: 'blocked',
+			});
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test('passes when staged edits do not touch protected state', () => {
