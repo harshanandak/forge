@@ -427,7 +427,7 @@ describe('assertFilesystemSafeForKernel', () => {
 			env: {},
 			warn: msg => warnings.push(msg),
 		})).not.toThrow();
-		expect(warnings.length).toBe(0);
+		expect(warnings).toHaveLength(0);
 	}, T);
 });
 
@@ -449,7 +449,7 @@ describe('assertFilesystemSafeForKernel — warning fires once per process (issu
 		for (let i = 0; i < 4; i += 1) {
 			assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
 		}
-		expect(warnings.length).toBe(1);
+		expect(warnings).toHaveLength(1);
 	}, T);
 
 	test('every assert still returns the classification, warning or not', () => {
@@ -459,14 +459,14 @@ describe('assertFilesystemSafeForKernel — warning fires once per process (issu
 		expect(first.class).toBe('unknown');
 		expect(second.class).toBe('unknown');
 		expect(second.riskTier).toBe('warn');
-		expect(warnings.length).toBe(1);
+		expect(warnings).toHaveLength(1);
 	}, T);
 
 	test('a different database path gets its own warning', () => {
 		const warnings = [];
 		assertFilesystemSafeForKernel('C:\\dev\\one\\kernel.sqlite', unknownDeps(warnings));
 		assertFilesystemSafeForKernel('C:\\dev\\two\\kernel.sqlite', unknownDeps(warnings));
-		expect(warnings.length).toBe(2);
+		expect(warnings).toHaveLength(2);
 	}, T);
 
 	test('a different class on the same path is not swallowed by the memo', () => {
@@ -477,7 +477,7 @@ describe('assertFilesystemSafeForKernel — warning fires once per process (issu
 			env: {},
 			warn: msg => warnings.push(msg),
 		});
-		expect(warnings.length).toBe(2);
+		expect(warnings).toHaveLength(2);
 	}, T);
 
 	test('the refuse-with-override warning is deduped too', () => {
@@ -489,7 +489,7 @@ describe('assertFilesystemSafeForKernel — warning fires once per process (issu
 		};
 		assertFilesystemSafeForKernel('C:\\u\\OneDrive\\k.sqlite', overrideDeps);
 		assertFilesystemSafeForKernel('C:\\u\\OneDrive\\k.sqlite', overrideDeps);
-		expect(warnings.length).toBe(1);
+		expect(warnings).toHaveLength(1);
 	}, T);
 
 	test('deduping a warning NEVER downgrades a refuse into a pass', () => {
@@ -507,7 +507,7 @@ describe('assertFilesystemSafeForKernel — warning fires once per process (issu
 		assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
 		resetFilesystemWarningMemo();
 		assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
-		expect(warnings.length).toBe(2);
+		expect(warnings).toHaveLength(2);
 	}, T);
 
 	test('a safe class never warns and never populates the memo', () => {
@@ -517,7 +517,7 @@ describe('assertFilesystemSafeForKernel — warning fires once per process (issu
 			env: {},
 			warn: msg => warnings.push(msg),
 		});
-		expect(warnings.length).toBe(0);
+		expect(warnings).toHaveLength(0);
 	}, T);
 });
 
@@ -709,7 +709,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 		};
 		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
 		// Both probes ran (net use, then PowerShell DisplayRoot).
-		expect(seenOptions.length).toBe(2);
+		expect(seenOptions).toHaveLength(2);
 		for (const options of seenOptions) {
 			expect(options.timeout).toBe(1500);
 			expect(options.killSignal).toBe('SIGKILL');
