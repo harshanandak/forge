@@ -20,11 +20,6 @@ describe('.gitattributes CRLF fix', () => {
     expect(content).toContain('* text=auto eol=lf');
   });
 
-  test('preserves existing beads merge driver', () => {
-    content = fs.readFileSync(GITATTRIBUTES, 'utf8');
-    expect(content).toContain('merge=beads');
-  });
-
   test('marks common image formats as binary', () => {
     content = fs.readFileSync(GITATTRIBUTES, 'utf8');
     expect(content).toContain('*.png binary');

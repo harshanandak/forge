@@ -148,7 +148,7 @@ Key repo evidence:
 - [`bin/forge.js`](../../../bin/forge.js) dispatches commands but does not own stage-state enforcement.
 - [`lib/commands/setup.js`](../../../lib/commands/setup.js) provisions assets and attempts hook installation, but stage gates do not reuse that logic consistently.
 - [`commands/plan.md`](../../../.claude/commands/plan.md), [`commands/dev.md`](../../../.claude/commands/dev.md), and [`commands/validate.md`](../../../.claude/commands/validate.md) still encode most hard-gate behavior.
-- [`scripts/beads-context.sh`](../../../scripts/beads-context.sh) records stage transitions as comments and validates context advisorially.
+- `scripts/beads-context.sh` (since deleted with the Beads surfaces) recorded stage transitions as comments and validated context advisorially.
 - [`lib/commands/status.js`](../../../lib/commands/status.js) infers stage heuristically from branch/files/PRs instead of authoritative stage metadata.
 
 ### Agent capability matrix
@@ -359,7 +359,7 @@ This work has a wide but manageable blast radius. Likely touch points include:
    - `lib/commands/*.js` for each stage
 
 2. Workflow state and Beads integration:
-   - [`scripts/beads-context.sh`](../../../scripts/beads-context.sh)
+   - `scripts/beads-context.sh` (since deleted with the Beads surfaces)
    - likely new JS workflow-state helpers under `lib/`
 
 3. Setup, repair, and hook enforcement:

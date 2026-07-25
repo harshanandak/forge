@@ -89,7 +89,6 @@ async function runSetup(args, cwd, env = {}) {
       VERBOSE_MODE: false,
       NON_INTERACTIVE: false,
       SYMLINK_ONLY: false,
-      SYNC_ENABLED: false,
       PKG_MANAGER: 'npm',
     });
 

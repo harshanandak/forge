@@ -93,11 +93,10 @@ describe('CI Workflow Configuration', () => {
       }
     });
 
-    test('beads integration is isolated into its own job', () => {
-      expectSection('beads-integration');
-      expect(workflowContent.includes("RUN_BEADS_INTEGRATION: '1'")).toBe(true);
-      expect(workflowContent.includes('name: Run Beads integration tests')).toBe(true);
-      expect(workflowContent.includes('scripts/beads-context.test.js')).toBe(true);
+    test('confidence lane carries no beads integration job', () => {
+      expect(workflowContent.includes('beads-integration')).toBe(false);
+      expect(workflowContent.includes('RUN_BEADS_INTEGRATION')).toBe(false);
+      expect(workflowContent.includes('scripts/beads-context.test.js')).toBe(false);
     });
   });
 
@@ -111,7 +110,7 @@ describe('CI Workflow Configuration', () => {
       expectSection('dashboard-pr');
       expect(workflowContent.includes('needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]')).toBe(true);
       expectSection('dashboard-confidence');
-      expect(workflowContent.includes('needs: [full-matrix, coverage, e2e, beads-integration]')).toBe(true);
+      expect(workflowContent.includes('needs: [full-matrix, coverage, e2e]')).toBe(true);
     });
 
     test('dashboard jobs aggregate artifacts into test-dashboard.json', () => {

@@ -95,9 +95,9 @@ describe('plugin-catalog', () => {
     const validStages = Object.values(STAGES);
     const validInstallMethods = ['npm', 'skills', 'add-mcp', 'config', 'lsp', 'go', 'binary'];
 
-    test('catalog has exactly 29 tools', () => {
+    test('catalog has exactly 28 tools', () => {
       const toolCount = Object.keys(CATALOG).length;
-      expect(toolCount).toBe(29);
+      expect(toolCount).toBe(28);
     });
 
     test('no duplicate tool IDs', () => {
@@ -175,11 +175,24 @@ describe('plugin-catalog', () => {
       }
     });
 
-    test('each stage has at least 1 free tool', () => {
+    // 'plan' lost its only entry when Beads was retired, so the catalog
+    // recommends no planning tool at any budget — tracked by kernel issue
+    // b5434f2d-511e-4677-b3c7-ef334e9c339e. Pinned here so repopulating the
+    // stage (or emptying another one) is a deliberate change, not a silent one.
+    const STAGES_WITHOUT_TOOLS = ['plan'];
+
+    test('only the known-empty stages carry no tools', () => {
+      const empty = validStages.filter(
+        (stage) => !Object.values(CATALOG).some((t) => t.stage === stage)
+      );
+      expect(empty).toEqual(STAGES_WITHOUT_TOOLS);
+    });
+
+    test('each populated stage has at least 1 free tool', () => {
       for (const stage of validStages) {
-        const freeTools = Object.values(CATALOG).filter(
-          (t) => t.stage === stage && t.tier === 'free'
-        );
+        const staged = Object.values(CATALOG).filter((t) => t.stage === stage);
+        if (staged.length === 0) continue;
+        const freeTools = staged.filter((t) => t.tier === 'free');
         expect(freeTools.length >= 1).toBeTruthy();
       }
     });

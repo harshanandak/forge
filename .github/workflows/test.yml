@@ -442,47 +442,6 @@ jobs:
           path: test-results/
           retention-days: 7
 
-  beads-integration:
-    name: Beads Integration
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    env:
-      RUN_BEADS_INTEGRATION: '1'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-      - name: Setup Node.js 24
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.12
-      - name: Install dependencies
-        run: bun install
-      - name: Ensure test-results directory
-        run: |
-          node -e "require('node:fs').mkdirSync('test-results', { recursive: true })"
-      - name: Run Beads integration tests
-        run: bun test --timeout 15000 scripts/beads-context.test.js --reporter=junit --reporter-outfile test-results/beads-integration.xml
-      - name: Build Beads integration profile
-        run: node scripts/test-profile.js --input-dir test-results --output test-results/beads-integration.profile.json --label beads-integration --integration-skipped false
-      - name: Publish Beads integration summary
-        if: always()
-        shell: bash
-        run: |
-          dashboard_json="$(node scripts/test-dashboard.js --json --profiles-dir test-results)"
-          node -e "const d = JSON.parse(process.argv[1]); const lines = ['## Beads Integration Summary', '', 'Suite duration: ' + d.suiteDurationMs + 'ms', 'Integration skipped: ' + (d.integrationSkipped ? 'yes' : 'no')]; if (d.slowestFiles.length) { lines.push('', 'Slowest files:'); for (const entry of d.slowestFiles.slice(0, 5)) lines.push('- ' + entry.file + ': ' + entry.durationMs + 'ms'); } console.log(lines.join('\n'));" "$dashboard_json" >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload Beads integration artifacts
-        uses: actions/upload-artifact@v7
-        if: always()
-        continue-on-error: true
-        with:
-          name: test-artifacts-beads-integration
-          path: test-results/
-          retention-days: 7
-
   mutation:
     name: Mutation Testing
     runs-on: ubuntu-latest
@@ -548,7 +507,7 @@ jobs:
     name: Test Dashboard (Confidence Lane)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    needs: [full-matrix, coverage, e2e, beads-integration]
+    needs: [full-matrix, coverage, e2e]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

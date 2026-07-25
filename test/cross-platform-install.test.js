@@ -1,4 +1,4 @@
-const { describe, test, expect } = require('bun:test');
+const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -41,31 +41,17 @@ describe('forge-k6p: autoInstallLefthook cross-platform', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // forge-63c: Windows Beads install must use PowerShell, not npm
 // ─────────────────────────────────────────────────────────────────────────────
-describe('forge-63c: Windows Beads install via PowerShell', () => {
-  test('autoSetupBeadsInQuickMode should detect Windows and use PowerShell', () => {
-    const fnStart = forgeSource.indexOf('function autoSetupBeadsInQuickMode()');
-    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = forgeSource.slice(fnStart, fnEnd);
-
-    expect(fnBody.includes("process.platform === 'win32'") || fnBody.includes('isWindows')).toBeTruthy();
-  });
-
-  test('autoSetupBeadsInQuickMode should use powershell for Windows beads install', () => {
-    const fnStart = forgeSource.indexOf('function autoSetupBeadsInQuickMode()');
-    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = forgeSource.slice(fnStart, fnEnd);
-
-    // Accepts either direct powershell/install.ps1 reference OR delegation to installBeadsOnWindows()
-    // (the latter is preferred as it centralises the URL via BEADS_INSTALL_PS1_URL constant)
-    expect(fnBody.includes('powershell') || fnBody.includes('install.ps1') || fnBody.includes('installBeadsOnWindows')).toBeTruthy();
-  });
-
-  test('installBeadsWithMethod should use PowerShell on Windows for global install', () => {
-    const fnStart = forgeSource.indexOf('function installBeadsWithMethod(');
-    const fnEnd = forgeSource.indexOf('\n}', fnStart) + 2;
-    const fnBody = forgeSource.slice(fnStart, fnEnd);
-
-    expect(fnBody.includes('win32') || fnBody.includes('powershell') || fnBody.includes('install.ps1')).toBeTruthy();
+describe('Beads install surfaces stay removed', () => {
+  test('the CLI no longer installs or initializes Beads', () => {
+    for (const symbol of [
+      'autoSetupBeadsInQuickMode',
+      'installBeadsWithMethod',
+      'installBeadsOnWindows',
+      'BEADS_INSTALL_PS1_URL',
+      '@beads/bd',
+    ]) {
+      expect(forgeSource).not.toContain(symbol);
+    }
   });
 });
 
@@ -73,9 +59,6 @@ describe('forge-63c: Windows Beads install via PowerShell', () => {
 // forge-jxb: Error messages must use PKG_MANAGER not hardcoded bun
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-jxb: Error messages use PKG_MANAGER', () => {
-  test('Beads install failure message should not hardcode bun add -g', () => {
-    expect(!forgeSource.includes("'  Run manually: bun add -g @beads/bd && bd init'")).toBeTruthy();
-  });
 
   test('lefthook install message should not hardcode bun add -d', () => {
     expect(!forgeSource.includes("'  Run manually: bun add -d lefthook'")).toBeTruthy();
@@ -99,13 +82,10 @@ describe('forge-92t: Skills should show message when not installed', () => {
 // forge-4zz: Post-install verification for Beads
 // ─────────────────────────────────────────────────────────────────────────────
 describe('forge-4zz: Post-install verification', () => {
-  test('should verify Beads after install by running bd version', () => {
-    // After install, should call safeExec or secureExecFileSync with bd version
-    expect(forgeSource.includes("'bd', ['version']") ||
-      forgeSource.includes('"bd", ["version"]') ||
-      forgeSource.includes("safeExec('bd version')") ||
-      forgeSource.includes('verifyBeadsInstall') ||
-      forgeSource.includes('bd version')).toBeTruthy();
+  test('should no longer probe bd after install — the kernel store needs no CLI', () => {
+    expect(forgeSource).not.toContain("'bd', ['version']");
+    expect(forgeSource).not.toContain('bd version');
+    expect(forgeSource).not.toContain('verifyBeadsInstall');
   });
 });
 

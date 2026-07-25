@@ -40,9 +40,8 @@ describe('README.md consistency', () => {
     expect(readme).toContain('--symlink');
   });
 
-  it('documents --sync deprecation', () => {
-    expect(readme).toContain('--sync');
-    expect(readme).toMatch(/deprecated/i);
+  it('no longer documents the removed --sync flag', () => {
+    expect(readme).not.toContain('--sync');
   });
 
   it('documents --agents flag', () => {
@@ -80,22 +79,23 @@ describe('Beads repository hygiene', () => {
     expect(projection).toContain('mapping, comments, sanitization, idempotency, retry, and GitHub API handling');
   });
 
-  it('documents deprecated GitHub sync cleanup behind --sync only', () => {
+  it('documents deprecated GitHub sync cleanup as automatic, with no --sync flag', () => {
     const syncGuide = readDoc('docs/guides/BEADS_GITHUB_SYNC.md');
     const setupGuide = readDoc('docs/guides/SETUP.md');
     const migrationGuide = readDoc('docs/guides/MIGRATION.md');
 
-    // D45 retired Beads/GitHub sync: the guide is a tombstone, and the only
-    // cleanup path that survives is `forge setup --sync` on existing installs.
+    // D45 retired Beads/GitHub sync: the guide is a tombstone, and D1 deleted the
+    // --sync flag outright — cleanup is automatic on plain `forge setup` via the
+    // retained deprecated-sync-cleanup path, so NO doc may mention --sync.
+    for (const doc of [syncGuide, setupGuide, migrationGuide]) {
+      expect(doc).not.toContain('--sync');
+    }
     expect(syncGuide).toContain('Retired');
     expect(syncGuide).toContain('D45');
     expect(syncGuide).toContain('forge migrate --from beads');
-    expect(syncGuide).toContain('forge setup --sync');
-    expect(syncGuide).toContain('plain `forge setup` never touches them');
+    expect(syncGuide).toContain('compatibility cleanup removes the old generated files');
     expect(syncGuide).not.toContain('## Removed Generated Files');
-    expect(setupGuide).toContain('bunx forge setup --sync');
     expect(setupGuide).not.toContain('To scaffold GitHub/Beads sync files:');
-    expect(migrationGuide).toContain('forge setup --sync');
     expect(migrationGuide).not.toContain('It removes deprecated Beads/GitHub sync scaffolding');
   });
 });
@@ -172,9 +172,9 @@ describe('docs/guides/SETUP.md consistency', () => {
     expect(setup).not.toContain('BEADS_SYNC_TOKEN');
   });
 
-  it('documents Beads sync setup deprecation with --sync flag', () => {
-    expect(setup).toContain('--sync');
-    expect(setup).toContain('deprecated');
+  it('documents deprecated sync cleanup as automatic, with no --sync flag', () => {
+    expect(setup).not.toContain('--sync');
+    expect(setup).toMatch(/removes old generated GitHub\/Beads sync files/i);
   });
 
   it('uses bun add -D for install command (dev dependency)', () => {

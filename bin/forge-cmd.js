@@ -31,6 +31,16 @@ const VALID_COMMANDS = [
 	'verify',
 ];
 
+/**
+ * Find the planning doc for a work slug under a `docs/work` tree.
+ *
+ * Recurses into dated work directories (`YYYY-MM-DD-<slug>`) and returns the
+ * first `plan.md`, `design.md`, or `tasks.md` whose directory slug matches.
+ *
+ * @param {string} dir - Directory to search (typically `docs/work`).
+ * @param {string} slug - Work slug, without the date prefix.
+ * @returns {string|null} Path to the matching doc, or null when none matches.
+ */
 function findWorkPlanDoc(dir, slug) {
 	if (!fs.existsSync(dir)) return null;
 
@@ -60,6 +70,16 @@ function legacyPlanMatchesSlug(fileName, slug) {
 	return legacySlug === slug;
 }
 
+/**
+ * Resolve the planning doc that backs a branch.
+ *
+ * Strips the conventional-commit branch prefix to get the slug, prefers a
+ * `docs/work/<date>-<slug>/` doc, and falls back to the legacy flat
+ * `docs/plans/` layout.
+ *
+ * @param {string} branch - Branch name, e.g. `feat/slice-d1-deletion`.
+ * @returns {string|null} Path to the planning doc, or null when none exists.
+ */
 function findPlanDocForBranch(branch) {
 	const slug = branch.replace(/^(feat|fix|docs|refactor)\//, '');
 	const workPlan = findWorkPlanDoc('docs/work', slug);

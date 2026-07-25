@@ -10,31 +10,38 @@ const tempRoots = [];
 function makeRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-insights-command-'));
   tempRoots.push(root);
-  fs.mkdirSync(path.join(root, '.beads'), { recursive: true });
   return root;
 }
 
-function writeJsonl(filePath, rows) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`, 'utf8');
-}
-
-function seedRepo(root) {
-  writeJsonl(path.join(root, '.beads', 'interactions.jsonl'), [1, 2, 3].map(index => ({
-    id: `int-${index}`,
-    kind: 'field_change',
-    created_at: `2026-05-${String(index).padStart(2, '0')}T12:00:00Z`,
-    issue_id: `forge-${index}`,
-    extra: {
-      field: 'status',
-      new_value: 'closed',
-      reason: 'Merged and verified on master after review',
-    },
-  })));
-  writeJsonl(path.join(root, '.beads', 'issues.jsonl'), [
-    { _type: 'issue', id: 'forge-a', title: 'Review evidence persistence', status: 'closed' },
-    { _type: 'issue', id: 'forge-b', title: 'Review evidence recap', status: 'open' },
-  ]);
+// Kernel reads are injected through the handler's opts seam, so these tests exercise the
+// command surface without opening a kernel database. Imported beads interactions live in
+// kernel_events as `beads.interaction.<kind>` with a payload_json of `{ kind, ...extra }`.
+function kernelSeams() {
+  return {
+    listRecentEvents: async () => [1, 2, 3].map(index => ({
+      id: `int-${index}`,
+      entity_id: `forge-${index}`,
+      event_type: 'beads.interaction.field_change',
+      created_at: `2026-05-${String(index).padStart(2, '0')}T12:00:00Z`,
+      payload_json: JSON.stringify({
+        kind: 'field_change',
+        field: 'status',
+        new_value: 'closed',
+        reason: 'Merged and verified on master after review',
+      }),
+    })),
+    runIssueOperation: async (operation) => (operation === 'list'
+      ? {
+        ok: true,
+        data: {
+          issues: [
+            { id: 'forge-a', title: 'Review evidence persistence', status: 'closed' },
+            { id: 'forge-b', title: 'Review evidence recap', status: 'open' },
+          ],
+        },
+      }
+      : { ok: false }),
+  };
 }
 
 afterEach(() => {
@@ -46,19 +53,17 @@ afterEach(() => {
 describe('forge insights command', () => {
   test('prints ranked candidates and accepts the review-feedback alias', async () => {
     const root = makeRepo();
-    seedRepo(root);
 
-    const result = await insightsCommand.handler(['--review-feedback', '--min-count', '2'], {}, root);
+    const result = await insightsCommand.handler(['--review-feedback', '--min-count', '2'], {}, root, kernelSeams());
 
     expect(result.success).toBe(true);
     expect(result.output).toContain('Forge insights');
     expect(result.output).toContain('Ranked candidates');
-    expect(result.output).toContain('Beads interactions and issue evidence');
+    expect(result.output).toContain('kernel events and issue evidence');
   });
 
   test('records accept and reject decisions', async () => {
     const root = makeRepo();
-    seedRepo(root);
     const writes = [];
     const memory = {
       write(_projectRoot, entry) {
@@ -93,12 +98,12 @@ describe('forge insights command', () => {
 
   test('returns JSON output when requested', async () => {
     const root = makeRepo();
-    seedRepo(root);
 
-    const result = await insightsCommand.handler(['--json', '--min-count=2'], {}, root);
+    const result = await insightsCommand.handler(['--json', '--min-count=2'], {}, root, kernelSeams());
     const parsed = JSON.parse(result.output);
 
     expect(result.success).toBe(true);
     expect(parsed.candidates.length).toBeGreaterThan(0);
+    expect(parsed.sources).toMatchObject({ interactions: 3, issues: 2 });
   });
 });

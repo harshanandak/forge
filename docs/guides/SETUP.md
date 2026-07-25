@@ -75,31 +75,25 @@ Exact generated files depend on selected agents and existing repository files. U
 
 ## Issue Backend
 
-Forge issue commands (`forge ready`, `forge show`, `forge claim`, `forge create`, `forge close`) use the built-in **kernel** backend by default. No install or initialization is required — a fresh clone can track issues immediately.
+Forge issue commands (`forge ready`, `forge show`, `forge claim`, `forge create`, `forge close`) use the built-in **kernel** backend. No install or initialization is required — a fresh clone can track issues immediately.
 
-## Beads (Opt-Out Backend)
+## Migrating From Beads
 
-Beads (`bd`) is an optional opt-out backend for teams that prefer Dolt-backed sync internals. Select it (precedence, highest first) with `--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`; only then is `bd` required. Prefer the current Beads installer documented by Beads itself and this repo's toolchain docs. On Windows, avoid stale global install examples if they hit EPERM or shim issues; use the PowerShell installer path described in [Toolchain](../reference/TOOLCHAIN.md).
+Beads is no longer a selectable backend: `--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, and `issueBackend: beads` are rejected, and `bd` is never required. An existing `.beads` directory is import-only state.
 
-When Beads is selected, health checks:
+Import it once, then use the kernel issue commands:
 
 ```bash
-bd doctor
-bd dolt status
-forge sync
+forge migrate --from beads
 ```
-
-If a feature worktree reports `database "forge" not found on Dolt server`, diagnose in the root checkout before changing issue state. This applies only to the Beads backend.
 
 ## Deprecated GitHub Sync Cleanup
 
-To remove old generated GitHub/Beads sync files from an existing install:
-
-```bash
-bunx forge setup --sync
-```
-
-`forge setup --sync` is deprecated. It now removes old generated Beads/GitHub sync files instead of creating new sync workflows. Future GitHub issue sync belongs to Forge Kernel/server authority, not Beads runtime files or metadata commits.
+`forge setup` removes old generated GitHub/Beads sync files from an existing
+install automatically — there is no flag for it. Only files whose content
+matches a known generated template are removed, so files you have edited
+yourself are left alone. Future GitHub issue sync belongs to Forge Kernel/server
+authority, not Beads runtime files or metadata commits.
 
 ## Validate Setup
 
