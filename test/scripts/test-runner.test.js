@@ -7,8 +7,11 @@ const {
   ALWAYS_RUN_RISK_TEST_TARGETS,
   DEFAULT_FULL_SUITE_TIMEOUT_MS,
   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
+  QUICK_LANE_ENV_VAR,
+  QUICK_LANE_VALUE,
   buildTestExecutionPlan,
   classifyPushTests,
+  isQuickPushLane,
   resolveCommandTimeoutMs,
   resolveFullSuiteTimeoutMs,
   runLocalValidationTests,
@@ -607,5 +610,85 @@ describe('scripts/test pre-push runner', () => {
     });
 
     expect(status).not.toBe(0);
+  });
+});
+
+describe('quick push lane', () => {
+  function captureLog(run) {
+    const lines = [];
+    const original = console.log;
+    console.log = (...args) => lines.push(args.join(' '));
+    try {
+      return { lines, result: run() };
+    } finally {
+      console.log = original;
+    }
+  }
+
+  test('isQuickPushLane recognizes only the exact quick lane declaration', () => {
+    expect(isQuickPushLane({ [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE })).toBe(true);
+    expect(isQuickPushLane({})).toBe(false);
+    expect(isQuickPushLane({ [QUICK_LANE_ENV_VAR]: '' })).toBe(false);
+    expect(isQuickPushLane({ [QUICK_LANE_ENV_VAR]: 'full' })).toBe(false);
+    expect(isQuickPushLane({ [QUICK_LANE_ENV_VAR]: '1' })).toBe(false);
+  });
+
+  test('runPrePushTests short-circuits the whole test lane when the quick lane is declared', () => {
+    const spawnSync = makeSpawnSync(0);
+    const { lines, result: status } = captureLog(() => runPrePushTests(repoRoot, {
+      env: { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: process.env.PATH || '' },
+      // Unmapped file → would otherwise take the 10-minute full-suite lane.
+      execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+      pkgManager: 'bun',
+      spawnSync,
+    }));
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(0);
+    // The skip must be loud: silently green tests would be indistinguishable
+    // from a real pass.
+    expect(lines.join('\n')).toContain('quick lane');
+    expect(lines.join('\n')).toContain('CI runs the full matrix');
+  });
+
+  test('runPrePushTests runs the full lane when the quick lane is not declared', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+  });
+
+  test('runPrePushTests runs the full lane for a non-quick value of the lane variable', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runPrePushTests(repoRoot, {
+      env: { [QUICK_LANE_ENV_VAR]: 'full', PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+  });
+
+  test('the quick lane never short-circuits local validation, only the pre-push lane', () => {
+    const spawnSync = makeSpawnSync(0);
+    const status = runLocalValidationTests(repoRoot, {
+      env: { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: process.env.PATH || '' },
+      execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+      pkgManager: 'bun',
+      spawnSync,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnSync.calls).toHaveLength(1);
+    expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 });
