@@ -545,8 +545,19 @@ describe('Status Command - Stage Detection', () => {
 				const fromArgs = await statusCommand.handler(['-v', '--json'], {}, projectRoot);
 				const fromFlags = await statusCommand.handler(['-v'], { json: true }, projectRoot);
 
-				expect(JSON.parse(fromArgs.output).kind).toBe('prime');
-				expect(JSON.parse(fromFlags.output).kind).toBe('prime');
+				const parsedArgs = JSON.parse(fromArgs.output);
+				const parsedFlags = JSON.parse(fromFlags.output);
+
+				expect(parsedArgs.kind).toBe('prime');
+				expect(parsedFlags.kind).toBe('prime');
+
+				// generated_at is a real per-call timestamp (not a stubbed clock), so two live calls
+				// a few ms apart legitimately differ there; strip it before asserting full equivalence.
+				delete parsedArgs.generated_at;
+				delete parsedArgs.orientation.generated_at;
+				delete parsedFlags.generated_at;
+				delete parsedFlags.orientation.generated_at;
+				expect(parsedArgs).toEqual(parsedFlags);
 			} finally {
 				fs.rmSync(projectRoot, { recursive: true, force: true });
 			}
