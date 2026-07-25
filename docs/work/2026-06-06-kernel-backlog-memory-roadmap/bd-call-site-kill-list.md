@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 | Group | Call sites | Files |
 | --- | ---: | ---: |
-| command | 29 | 6 |
-| runtime | 116 | 20 |
+| command | 28 | 5 |
+| runtime | 113 | 19 |
 | docs | 386 | 45 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
@@ -17,8 +17,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 
 - [ ] bin/forge.js (2)
   - lines: 2342 (bd), 3771 (bd)
-- [ ] lib/commands/dev.js (1)
-  - lines: 466 (bd)
 - [ ] lib/commands/migrate.js (17)
   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
 - [ ] lib/commands/plan.js (6)
@@ -34,8 +32,6 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 21 (.beads), 25 (.beads), 26 (.beads), 27 (bd), 127 (.beads), 128 (.beads), 145 (bd), 147 (.beads), 148 (bd), 149 (bd)
 - [ ] lib/adapters/beads-kernel-compat.js (5)
   - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 899 (.beads)
-- [ ] lib/audit-evidence.js (3)
-  - lines: 148 (bd), 214 (bd), 240 (bd)
 - [ ] lib/beads-detect.js (2)
   - lines: 29 (.beads), 38 (.beads)
 - [ ] lib/deprecated-sync-cleanup.js (4)
@@ -47,7 +43,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] lib/protected-path-manifest.js (2)
   - lines: 23 (bd), 33 (bd)
 - [ ] lib/protected-state-surfaces.js (3)
-  - lines: 51 (.beads), 58 (.beads), 59 (.beads)
+  - lines: 52 (.beads), 59 (.beads), 60 (.beads)
 - [ ] lib/runtime-health.js (7)
   - lines: 486 (bd), 520 (bd), 521 (bd), 522 (bd), 526 (bd), 527 (bd), 569 (bd)
 - [ ] lib/status/snapshot.js (1)
