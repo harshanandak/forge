@@ -512,5 +512,57 @@ describe('Status Command - Stage Detection', () => {
 			expect(statusCommand.usage).toContain('-v');
 			expect(Object.keys(statusCommand.flags)).toContain('-v, --verbose');
 		});
+
+		// The briefing renderer reads json from its args, but the short pulse also honors
+		// the flag forms — verbose mode must honor both or `-v --json` silently emits text.
+		test('verbose honors the json flag form and emits parseable JSON', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler([], { verbose: true, json: true }, projectRoot);
+
+				expect(result.success).toBe(true);
+				expect(result.output).not.toContain('Assembly:');
+				expect(JSON.parse(result.output).kind).toBe('prime');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('verbose honors the --json flag key form', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler(['-v'], { '--json': true }, projectRoot);
+
+				expect(JSON.parse(result.output).kind).toBe('prime');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('-v --json passed as arguments emits the same JSON', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const fromArgs = await statusCommand.handler(['-v', '--json'], {}, projectRoot);
+				const fromFlags = await statusCommand.handler(['-v'], { json: true }, projectRoot);
+
+				expect(JSON.parse(fromArgs.output).kind).toBe('prime');
+				expect(JSON.parse(fromFlags.output).kind).toBe('prime');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('-v without json still emits the text briefing', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler(['-v'], {}, projectRoot);
+
+				expect(result.output).toContain('Assembly:');
+				expect(result.output).toContain('Key Commands');
+				expect(() => JSON.parse(result.output)).toThrow();
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
 	});
 });
