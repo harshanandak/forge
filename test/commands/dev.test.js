@@ -15,6 +15,24 @@ const {
 	DECISION_ROUTES,
 } = require('../../lib/commands/dev.js');
 
+/** Captures the audit-evidence records a dev run appends, without touching disk. */
+function createRecorder() {
+	const records = [];
+	let minted = 0;
+	return {
+		records,
+		auditOptions: {
+			appendRecord: (_logPath, record) => {
+				records.push(record);
+			},
+			newId: () => {
+				minted += 1;
+				return `evi-${minted}`;
+			},
+		},
+	};
+}
+
 describe('Dev Command - TDD Cycle Management', () => {
 	describe('TDD phase detection', () => {
 		test('should detect RED phase (no implementation, tests exist)', () => {
@@ -213,130 +231,77 @@ describe('Dev Command - TDD Cycle Management', () => {
 		});
 
 		test('records audit evidence when enabled during dev execution', async () => {
-			const commands = [];
-			const runCommand = (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-record' });
-			};
+			const recorder = createRecorder();
 
 			const result = await executeDev('audit-feature', {
 				phase: 'RED',
 				audit: true,
-				auditOptions: {
-					runCommand,
-					metaJsonSupported: true,
-				},
+				auditOptions: recorder.auditOptions,
 			});
 
 			expect(result.success).toBe(true);
-			expect(result.auditEvidence.record.entryId).toBe('int-record');
-			expect(commands.length).toBe(1);
-			expect(commands[0].cmd).toBe('bd');
-			expect(commands[0].args).toContain('record');
-			expect(commands[0].args).toContain('llm_call');
+			expect(result.auditEvidence.record.entryId).toBe('evi-1');
+			expect(recorder.records.length).toBe(1);
+			expect(recorder.records[0].kind).toBe('forge.auditEvidence');
+			expect(JSON.parse(recorder.records[0].prompt).content).toBe('forge dev audit-feature RED');
 		});
 
-		test('fails dev execution when audit evidence persistence fails', async () => {
+		test('keeps dev execution successful when audit evidence persistence fails', async () => {
 			const result = await executeDev('audit-feature', {
 				phase: 'RED',
 				audit: true,
 				auditOptions: {
-					runCommand: () => 'missing-json-id',
-					metaJsonSupported: true,
-				},
-			});
-
-			expect(result.success).toBe(false);
-			expect(result.error).toMatch(/Audit evidence persistence failed/);
-			expect(result.auditEvidence.record.success).toBe(false);
-			expect(result.auditEvidence.record.entryId).toBe(null);
-		});
-
-		test('keeps dev execution successful when audit command is unavailable', async () => {
-			const missingBd = new Error('bd not found');
-			missingBd.code = 'ENOENT';
-
-			const result = await executeDev('audit-feature', {
-				phase: 'RED',
-				audit: true,
-				auditOptions: {
-					runCommand: () => {
-						throw missingBd;
+					appendRecord: () => {
+						throw new Error('disk unavailable');
 					},
 				},
 			});
 
 			expect(result.success).toBe(true);
-			expect(result.auditEvidence.success).toBe(false);
-			expect(result.auditEvidence.skipped).toBe(true);
-			expect(result.auditEvidence.error).toBe('bd not found');
+			expect(result.error).toBeUndefined();
+			expect(result.auditEvidence.record.success).toBe(false);
+			expect(result.auditEvidence.record.entryId).toBe(null);
+			expect(result.auditEvidence.record.error).toBe('disk unavailable');
 		});
 
 		test('records failed GREEN audit evidence with the concrete error response', async () => {
-			const commands = [];
-			const runCommand = (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-record' });
-			};
+			const recorder = createRecorder();
 
 			const result = await executeDev('audit-feature', {
 				phase: 'GREEN',
 				audit: true,
 				runTests: async () => ({ success: false, error: 'unit tests failed hard' }),
-				auditOptions: {
-					runCommand,
-					metaJsonSupported: true,
-				},
+				auditOptions: recorder.auditOptions,
 			});
 
-			const responseIndex = commands[0].args.indexOf('--response');
-			const response = JSON.parse(commands[0].args[responseIndex + 1]);
 			expect(result.success).toBe(false);
-			expect(response.content).toBe('unit tests failed hard');
+			expect(JSON.parse(recorder.records[0].response).content).toBe('unit tests failed hard');
 		});
 
 		test('handler parses issue-id flags before emitting audit evidence', async () => {
-			const commands = [];
-			const runCommand = (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-record' });
-			};
+			const recorder = createRecorder();
 
 			const result = await handler(['audit-feature', '--issue-id', 'forge-besw.20', 'RED'], {
-				auditOptions: {
-					runCommand,
-					metaJsonSupported: true,
-				},
+				auditOptions: recorder.auditOptions,
 			});
 
 			expect(result.success).toBe(true);
 			expect(result.phase).toBe('RED');
-			expect(commands[0].args).toContain('--issue-id');
-			expect(commands[0].args).toContain('forge-besw.20');
-			const promptIndex = commands[0].args.indexOf('--prompt');
-			expect(JSON.parse(commands[0].args[promptIndex + 1]).content).toBe('forge dev audit-feature RED');
+			expect(recorder.records[0].issueId).toBe('forge-besw.20');
+			expect(JSON.parse(recorder.records[0].prompt).content).toBe('forge dev audit-feature RED');
 		});
 
 		test('handler parses issue-id equals flags before emitting audit evidence', async () => {
-			const commands = [];
-			const runCommand = (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-record' });
-			};
+			const recorder = createRecorder();
 
 			const result = await handler(['audit-feature', '--issue-id=forge-besw.20', 'RED'], {
-				auditOptions: {
-					runCommand,
-					metaJsonSupported: true,
-				},
+				auditOptions: recorder.auditOptions,
 			});
 
 			expect(result.success).toBe(true);
 			expect(result.phase).toBe('RED');
-			expect(commands[0].args).toContain('--issue-id');
-			expect(commands[0].args).toContain('forge-besw.20');
-			const promptIndex = commands[0].args.indexOf('--prompt');
-			expect(JSON.parse(commands[0].args[promptIndex + 1]).content).toBe('forge dev audit-feature RED');
+			expect(recorder.records[0].issueId).toBe('forge-besw.20');
+			expect(JSON.parse(recorder.records[0].prompt).content).toBe('forge dev audit-feature RED');
 		});
 
 		test('handler rejects missing issue-id and phase flag values', async () => {
@@ -362,26 +327,18 @@ describe('Dev Command - TDD Cycle Management', () => {
 		});
 
 		test('records audit evidence when REFACTOR is blocked by failing tests', async () => {
-			const commands = [];
+			const recorder = createRecorder();
 			const result = await executeDev('feature', {
 				phase: 'REFACTOR',
 				testsPassing: false,
 				audit: true,
-				auditOptions: {
-					runCommand: (cmd, args) => {
-						commands.push({ cmd, args });
-						return JSON.stringify({ id: 'int-record' });
-					},
-					metaJsonSupported: true,
-				},
+				auditOptions: recorder.auditOptions,
 			});
 
 			expect(result.success).toBe(false);
-			expect(result.auditEvidence.record.entryId).toBe('int-record');
-			expect(commands.length).toBe(1);
-			expect(commands[0].args).toContain('record');
-			const responseIndex = commands[0].args.indexOf('--response');
-			const response = JSON.parse(commands[0].args[responseIndex + 1]);
+			expect(result.auditEvidence.record.entryId).toBe('evi-1');
+			expect(recorder.records.length).toBe(1);
+			const response = JSON.parse(recorder.records[0].response);
 			expect(response.verdict).toBe('FAIL');
 			expect(response.content).toMatch(/Cannot proceed to REFACTOR phase/);
 		});
@@ -548,19 +505,8 @@ describe('Dev Command - TDD Cycle Management', () => {
 	});
 
 	describe('/dev audit evidence helpers', () => {
-		function createRunner() {
-			const commands = [];
-			return {
-				commands,
-				runCommand: (cmd, args) => {
-					commands.push({ cmd, args });
-					return JSON.stringify({ id: commands.length === 1 ? 'int-record' : 'int-label' });
-				},
-			};
-		}
-
-		test('emits implementer evidence through bd audit record', () => {
-			const runner = createRunner();
+		test('emits implementer evidence into the forge log', () => {
+			const recorder = createRecorder();
 			const result = emitImplementerAuditEvidence({
 				issueId: 'forge-besw.20',
 				phase: 'GREEN',
@@ -568,47 +514,38 @@ describe('Dev Command - TDD Cycle Management', () => {
 				taskTitle: 'Implement audit helper',
 				prompt: 'implement prompt',
 				response: 'implementation complete',
-			}, {
-				runCommand: runner.runCommand,
-				metaJsonSupported: true,
-			});
+			}, recorder.auditOptions);
 
-			expect(result.record.entryId).toBe('int-record');
+			expect(result.record.entryId).toBe('evi-1');
 			expect(result.label.skipped).toBe(true);
-			expect(runner.commands.length).toBe(1);
-			expect(runner.commands[0].args).toContain('record');
-			expect(runner.commands[0].args).toContain('forge-besw.20');
-			expect(runner.commands[0].args.join(' ')).toContain('llm_call');
+			expect(recorder.records.length).toBe(1);
+			expect(recorder.records[0].kind).toBe('forge.auditEvidence');
+			expect(recorder.records[0].role).toBe('implementer');
+			expect(recorder.records[0].issueId).toBe('forge-besw.20');
 		});
 
 		test('emits implementer evidence with a default event object', () => {
-			const runner = createRunner();
-			const result = emitImplementerAuditEvidence(undefined, {
-				runCommand: runner.runCommand,
-				metaJsonSupported: true,
-			});
+			const recorder = createRecorder();
+			const result = emitImplementerAuditEvidence(undefined, recorder.auditOptions);
 
-			expect(result.record.entryId).toBe('int-record');
+			expect(result.record.entryId).toBe('evi-1');
 			expect(result.label.skipped).toBe(true);
-			expect(runner.commands.length).toBe(1);
-			expect(runner.commands[0].args).toContain('record');
+			expect(recorder.records.length).toBe(1);
+			expect(recorder.records[0].kind).toBe('forge.auditEvidence');
 		});
 
 		test('emits implementer evidence with a null event object', () => {
-			const runner = createRunner();
-			const result = emitImplementerAuditEvidence(null, {
-				runCommand: runner.runCommand,
-				metaJsonSupported: true,
-			});
+			const recorder = createRecorder();
+			const result = emitImplementerAuditEvidence(null, recorder.auditOptions);
 
-			expect(result.record.entryId).toBe('int-record');
+			expect(result.record.entryId).toBe('evi-1');
 			expect(result.label.skipped).toBe(true);
-			expect(runner.commands.length).toBe(1);
-			expect(runner.commands[0].args).toContain('record');
+			expect(recorder.records.length).toBe(1);
+			expect(recorder.records[0].kind).toBe('forge.auditEvidence');
 		});
 
 		test('emits spec reviewer PASS evidence and labels it good', () => {
-			const runner = createRunner();
+			const recorder = createRecorder();
 			const result = emitSpecReviewerAuditEvidence({
 				issueId: 'forge-besw.20',
 				taskId: 'task-1',
@@ -616,56 +553,39 @@ describe('Dev Command - TDD Cycle Management', () => {
 				prompt: 'spec prompt',
 				response: 'PASS',
 				verdict: 'PASS',
-			}, {
-				runCommand: runner.runCommand,
-				metaJsonSupported: true,
-			});
+			}, recorder.auditOptions);
 
-			expect(result.record.entryId).toBe('int-record');
+			expect(result.record.entryId).toBe('evi-1');
 			expect(result.label.label).toBe('good');
-			expect(runner.commands[1].args).toEqual([
-				'audit',
-				'label',
-				'int-record',
-				'--json',
-				'--label',
-				'good',
-				'--reason',
-				'spec_reviewer verdict: PASS',
-			]);
+			expect(recorder.records[1].kind).toBe('forge.auditEvidenceLabel');
+			expect(recorder.records[1].entryId).toBe('evi-1');
+			expect(recorder.records[1].label).toBe('good');
+			expect(recorder.records[1].reason).toBe('spec_reviewer verdict: PASS');
 		});
 
 		test('keeps reviewer helper phases pinned to reviewer roles', () => {
-			const specRunner = createRunner();
-			const qualityRunner = createRunner();
+			const specRecorder = createRecorder();
+			const qualityRecorder = createRecorder();
 
 			emitSpecReviewerAuditEvidence({
 				phase: 'GREEN',
 				prompt: 'spec prompt',
 				response: 'PASS',
 				verdict: 'PASS',
-			}, {
-				runCommand: specRunner.runCommand,
-				metaJsonSupported: true,
-			});
+			}, specRecorder.auditOptions);
 			emitQualityReviewerAuditEvidence({
 				phase: 'GREEN',
 				prompt: 'quality prompt',
 				response: 'FAIL',
 				verdict: 'FAIL',
-			}, {
-				runCommand: qualityRunner.runCommand,
-				metaJsonSupported: true,
-			});
+			}, qualityRecorder.auditOptions);
 
-			const specPromptIndex = specRunner.commands[0].args.indexOf('--prompt');
-			const qualityPromptIndex = qualityRunner.commands[0].args.indexOf('--prompt');
-			expect(JSON.parse(specRunner.commands[0].args[specPromptIndex + 1]).phase).toBe('SPEC');
-			expect(JSON.parse(qualityRunner.commands[0].args[qualityPromptIndex + 1]).phase).toBe('QUALITY');
+			expect(JSON.parse(specRecorder.records[0].prompt).phase).toBe('SPEC');
+			expect(JSON.parse(qualityRecorder.records[0].prompt).phase).toBe('QUALITY');
 		});
 
 		test('emits quality reviewer FAIL evidence and labels it bad', () => {
-			const runner = createRunner();
+			const recorder = createRecorder();
 			const result = emitQualityReviewerAuditEvidence({
 				issueId: 'forge-besw.20',
 				taskId: 'task-2',
@@ -673,19 +593,16 @@ describe('Dev Command - TDD Cycle Management', () => {
 				prompt: 'quality prompt',
 				response: 'FAIL',
 				verdict: 'FAIL',
-			}, {
-				runCommand: runner.runCommand,
-				metaJsonSupported: true,
-			});
+			}, recorder.auditOptions);
 
-			expect(result.record.entryId).toBe('int-record');
+			expect(result.record.entryId).toBe('evi-1');
 			expect(result.label.label).toBe('bad');
-			expect(runner.commands[1].args).toContain('bad');
-			expect(runner.commands[1].args).toContain('quality_reviewer verdict: FAIL');
+			expect(recorder.records[1].label).toBe('bad');
+			expect(recorder.records[1].reason).toBe('quality_reviewer verdict: FAIL');
 		});
 
 		test('does not label reviewer events with unknown verdicts', () => {
-			const runner = createRunner();
+			const recorder = createRecorder();
 			const result = emitQualityReviewerAuditEvidence({
 				issueId: 'forge-besw.20',
 				taskId: 'task-3',
@@ -693,14 +610,11 @@ describe('Dev Command - TDD Cycle Management', () => {
 				prompt: 'quality prompt',
 				response: 'needs more data',
 				verdict: 'UNKNOWN',
-			}, {
-				runCommand: runner.runCommand,
-				metaJsonSupported: true,
-			});
+			}, recorder.auditOptions);
 
-			expect(result.record.entryId).toBe('int-record');
+			expect(result.record.entryId).toBe('evi-1');
 			expect(result.label.skipped).toBe(true);
-			expect(runner.commands.length).toBe(1);
+			expect(recorder.records.length).toBe(1);
 		});
 	});
 });
