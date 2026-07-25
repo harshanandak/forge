@@ -227,6 +227,34 @@ describe('forge worktree create — verifies the install and self-heals a stale 
     }
   });
 
+  // A killed child reports status null with a signal set. Probe-less yarn has no
+  // verification behind it, so a swallowed kill would return installed: true.
+  test('a signal-killed install throws instead of reporting a successful install', () => {
+    const f = makeFixture('yarn.lock');
+    try {
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: null, signal: 'SIGTERM' }),
+        fsApi: fs,
+        platform: 'linux',
+      })).toThrow(/SIGTERM/);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('install failure messages carry the stderr detail', () => {
+    const f = makeFixture();
+    try {
+      expect(() => setupWorktreeDeps(f.worktreePath, f.projectRoot, {
+        spawnFn: () => ({ status: 1, stderr: Buffer.from('error: lockfile had changes, but lockfile is frozen\n') }),
+        fsApi: fs,
+        platform: 'linux',
+      })).toThrow(/lockfile is frozen/);
+    } finally {
+      fs.rmSync(f.tmp, { recursive: true, force: true });
+    }
+  });
+
   test('surfaces the heal in the create output so it is not silent', async () => {
     const f = makeFixture();
     try {
