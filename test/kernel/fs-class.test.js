@@ -1,6 +1,6 @@
 'use strict';
 
-const { describe, expect, test } = require('bun:test');
+const { beforeEach, describe, expect, test } = require('bun:test');
 
 const {
 	classifyFromSignals,
@@ -11,6 +11,7 @@ const {
 	defaultProbeDriveType,
 	parseNetUseDriveType,
 	parseDisplayRoot,
+	resetFilesystemWarningMemo,
 	REMEDIATION,
 } = require('../../lib/kernel/fs-class');
 
@@ -384,6 +385,10 @@ describe('every Classification has a resolvable remediation', () => {
 });
 
 describe('assertFilesystemSafeForKernel', () => {
+	// The warning memo is process-global, so clear it between tests: otherwise a
+	// case that warns first would silence an identical case that runs later.
+	beforeEach(() => resetFilesystemWarningMemo());
+
 	const refuseDeps = {
 		classifyFilesystem: () => ({ class: 'onedrive', riskTier: 'refuse', signal: 'env', remediationKey: 'onedrive' }),
 	};
@@ -422,6 +427,96 @@ describe('assertFilesystemSafeForKernel', () => {
 			env: {},
 			warn: msg => warnings.push(msg),
 		})).not.toThrow();
+		expect(warnings.length).toBe(0);
+	}, T);
+});
+
+// Kernel issue 83a06824: the gate re-runs on every broker instance, and a single
+// command builds several (`forge status` and `forge prime` build four), so the
+// same advisory printed four times per command. The advisory is per-process
+// information, not per-broker, so it is memoized per (tier, class, path).
+describe('assertFilesystemSafeForKernel — warning fires once per process (issue 83a06824)', () => {
+	beforeEach(() => resetFilesystemWarningMemo());
+
+	const unknownDeps = warnings => ({
+		classifyFilesystem: () => ({ class: 'unknown', riskTier: 'warn', signal: 'probe', remediationKey: 'unknown' }),
+		env: {},
+		warn: msg => warnings.push(msg),
+	});
+
+	test('four asserts for the same path emit ONE warning (the 4x spam repro)', () => {
+		const warnings = [];
+		for (let i = 0; i < 4; i += 1) {
+			assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
+		}
+		expect(warnings.length).toBe(1);
+	}, T);
+
+	test('every assert still returns the classification, warning or not', () => {
+		const warnings = [];
+		const first = assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
+		const second = assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
+		expect(first.class).toBe('unknown');
+		expect(second.class).toBe('unknown');
+		expect(second.riskTier).toBe('warn');
+		expect(warnings.length).toBe(1);
+	}, T);
+
+	test('a different database path gets its own warning', () => {
+		const warnings = [];
+		assertFilesystemSafeForKernel('C:\\dev\\one\\kernel.sqlite', unknownDeps(warnings));
+		assertFilesystemSafeForKernel('C:\\dev\\two\\kernel.sqlite', unknownDeps(warnings));
+		expect(warnings.length).toBe(2);
+	}, T);
+
+	test('a different class on the same path is not swallowed by the memo', () => {
+		const warnings = [];
+		assertFilesystemSafeForKernel('/repo/kernel.sqlite', unknownDeps(warnings));
+		assertFilesystemSafeForKernel('/repo/kernel.sqlite', {
+			classifyFilesystem: () => ({ class: 'wsl-cross', riskTier: 'warn', signal: 'wsl', remediationKey: 'wsl-cross' }),
+			env: {},
+			warn: msg => warnings.push(msg),
+		});
+		expect(warnings.length).toBe(2);
+	}, T);
+
+	test('the refuse-with-override warning is deduped too', () => {
+		const warnings = [];
+		const overrideDeps = {
+			classifyFilesystem: () => ({ class: 'onedrive', riskTier: 'refuse', signal: 'env', remediationKey: 'onedrive' }),
+			env: { FORGE_KERNEL_ALLOW_UNSAFE_FS: '1' },
+			warn: msg => warnings.push(msg),
+		};
+		assertFilesystemSafeForKernel('C:\\u\\OneDrive\\k.sqlite', overrideDeps);
+		assertFilesystemSafeForKernel('C:\\u\\OneDrive\\k.sqlite', overrideDeps);
+		expect(warnings.length).toBe(1);
+	}, T);
+
+	test('deduping a warning NEVER downgrades a refuse into a pass', () => {
+		const refuseDeps = {
+			classifyFilesystem: () => ({ class: 'onedrive', riskTier: 'refuse', signal: 'env', remediationKey: 'onedrive' }),
+			env: {},
+		};
+		expect(() => assertFilesystemSafeForKernel('C:\\u\\OneDrive\\k.sqlite', refuseDeps)).toThrow();
+		// The second call must still throw — the memo governs warnings only.
+		expect(() => assertFilesystemSafeForKernel('C:\\u\\OneDrive\\k.sqlite', refuseDeps)).toThrow();
+	}, T);
+
+	test('resetFilesystemWarningMemo re-arms the warning', () => {
+		const warnings = [];
+		assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
+		resetFilesystemWarningMemo();
+		assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', unknownDeps(warnings));
+		expect(warnings.length).toBe(2);
+	}, T);
+
+	test('a safe class never warns and never populates the memo', () => {
+		const warnings = [];
+		assertFilesystemSafeForKernel('C:\\dev\\repo\\kernel.sqlite', {
+			classifyFilesystem: () => ({ class: 'local-ok', riskTier: 'safe', signal: 'none', remediationKey: 'local-ok' }),
+			env: {},
+			warn: msg => warnings.push(msg),
+		});
 		expect(warnings.length).toBe(0);
 	}, T);
 });
