@@ -31,6 +31,31 @@ const ALLOWED_IMPORTERS = new Set([
 
 const BEADS_REQUIRE = /require\(\s*['"]([^'"]*beads[^'"]*)['"]\s*\)/g;
 
+/**
+ * Spawning the retired `bd` binary is the same live dependency as importing a
+ * beads module, just through the process boundary instead of the module graph.
+ * Matched on the argument shape (`'bd'` as argv[0] followed by an args list)
+ * rather than on a list of child_process function names, so an injected or
+ * renamed runner — `runCommand('bd', args)` — cannot smuggle one back in.
+ */
+const BD_SPAWN = /\(\s*['"]bd['"]\s*,/g;
+
+/**
+ * `forge migrate --from beads` shells out to `bd export` to read a legacy store —
+ * the sanctioned inbound migration path, which is why it is also an allowed
+ * importer above.
+ *
+ * The rest are pre-existing spawns this guard found on introduction, each held
+ * open by a filed issue. They are a shrinking baseline, not an exemption: the
+ * guard still fails closed for any NEW spawn.
+ */
+const ALLOWED_SPAWNERS = new Set([
+  'lib/commands/migrate.js',
+  'lib/audit-evidence.js', // dd8e5526-fd40-4e0d-bafe-56230e8f5068
+  'lib/commands/status.js', // 9ee29231-66ee-441d-a5df-d82e9ae1ab60
+  'lib/runtime-health.js', // 5b02dbd6-2c68-4c69-b0ee-fc1f05666f3c
+]);
+
 function collectJsFiles(dir, acc = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules') continue;
@@ -73,6 +98,27 @@ describe('beads isolation', () => {
       const source = fs.readFileSync(file, 'utf8');
       for (const match of source.matchAll(BEADS_REQUIRE)) {
         violations.push(`${repoPath} requires ${match[1]}`);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  test('no runtime module or script outside the migration path spawns the bd CLI', () => {
+    const files = [
+      ...collectJsFiles(path.join(ROOT, 'lib')),
+      ...collectJsFiles(path.join(ROOT, 'bin')),
+      ...collectJsFiles(path.join(ROOT, 'scripts')),
+    ];
+
+    const violations = [];
+    for (const file of files) {
+      const repoPath = toRepoPath(file);
+      if (ALLOWED_SPAWNERS.has(repoPath)) continue;
+
+      const source = fs.readFileSync(file, 'utf8');
+      for (const match of source.matchAll(BD_SPAWN)) {
+        violations.push(`${repoPath} spawns ${match[0]}`);
       }
     }
 

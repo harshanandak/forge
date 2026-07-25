@@ -6,12 +6,22 @@ const { spawnSync } = require('node:child_process');
 
 const {
 	PROTECTED_SURFACES,
+	PROTECTED_STATE_AUDIT_LOG,
+	PROTECTED_STATE_AUDIT_MAX_RECORDS,
 	classifyProtectedPath,
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
 	buildProtectedStateAuditEvent,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
+
+function readAuditLog(root) {
+	return fs
+		.readFileSync(path.join(root, PROTECTED_STATE_AUDIT_LOG), 'utf8')
+		.split('\n')
+		.filter(Boolean)
+		.map(line => JSON.parse(line));
+}
 
 function createTempDir() {
 	return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-protected-state-'));
@@ -200,32 +210,76 @@ describe('protected state surfaces', () => {
 		});
 	});
 
-	test('records protected edit attempts through the existing Beads audit model when available', () => {
-		const calls = [];
-		const decision = assertProtectedWriteAllowed('.forge/config.yaml', {
-			actor: 'codex',
-			operation: 'staged_edit',
-		});
+	test('records protected edit attempts to the local audit log', () => {
+		const root = createTempDir();
+		try {
+			const decision = assertProtectedWriteAllowed('.forge/config.yaml', {
+				actor: 'codex',
+				operation: 'staged_edit',
+			});
+
+			const result = recordProtectedStateAuditEvent(decision, { cwd: root });
+
+			expect(result.success).toBe(true);
+			expect(result.logPath).toBe(path.join(root, PROTECTED_STATE_AUDIT_LOG));
+
+			const records = readAuditLog(root);
+			expect(records).toHaveLength(1);
+			expect(records[0]).toMatchObject({
+				kind: 'protected_state_write',
+				actor: 'codex',
+				path: '.forge/config.yaml',
+				operation: 'staged_edit',
+				requiredSurface: 'forge_config',
+				declaredSurface: null,
+				decision: 'blocked',
+			});
+			expect(records[0].reason).toBeTruthy();
+			expect(records[0].repairHint).toBeTruthy();
+			expect(records[0].recordedAt).toBeTruthy();
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('caps the audit log so a blocked-commit loop cannot grow it without bound', () => {
+		const root = createTempDir();
+		try {
+			const logPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+			fs.mkdirSync(path.dirname(logPath), { recursive: true });
+			const seeded = Array.from(
+				{ length: PROTECTED_STATE_AUDIT_MAX_RECORDS + 5 },
+				(_, index) => JSON.stringify({ seq: index }),
+			);
+			fs.writeFileSync(logPath, `${seeded.join('\n')}\n`, 'utf8');
+
+			const decision = assertProtectedWriteAllowed('.forge/config.yaml', { actor: 'codex' });
+			expect(recordProtectedStateAuditEvent(decision, { cwd: root }).success).toBe(true);
+
+			const records = readAuditLog(root);
+			expect(records).toHaveLength(PROTECTED_STATE_AUDIT_MAX_RECORDS);
+			// Oldest trimmed, newest kept.
+			expect(records[0].seq).toBe(6);
+			expect(records[records.length - 1].kind).toBe('protected_state_write');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('reports a failing audit sink instead of throwing', () => {
+		const decision = assertProtectedWriteAllowed('.forge/config.yaml', { actor: 'codex' });
 
 		const result = recordProtectedStateAuditEvent(decision, {
 			cwd: 'C:/repo',
-			runCommand: (cmd, args, options) => {
-				calls.push({ cmd, args, options });
-				return JSON.stringify({ id: 'int-protected' });
+			appendRecord: () => {
+				throw new Error('disk on fire');
 			},
 		});
 
-		expect(result.success).toBe(true);
-		expect(calls[0].cmd).toBe('bd');
-		expect(calls[0].args).toContain('protected_state_write');
-		expect(calls[0].args).toContain('--meta-json');
-		const meta = JSON.parse(calls[0].args[calls[0].args.indexOf('--meta-json') + 1]);
-		expect(meta).toMatchObject({
-			actor: 'codex',
-			path: '.forge/config.yaml',
-			decision: 'blocked',
-			requiredSurface: 'forge_config',
-		});
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('disk on fire');
+		// The event is still returned so the caller can surface it another way.
+		expect(result.event.requiredSurface).toBe('forge_config');
 	});
 });
 
@@ -248,7 +302,39 @@ describe('scripts/protected-state-check.js', () => {
 		expect(output).toContain('.beads/issues.jsonl');
 		expect(output).toContain('beads_state');
 		expect(output).toContain('Repair:');
-		expect(output).toContain('bd');
+	});
+
+	test('writes the blocked decision to the audit log without warning about a missing CLI', () => {
+		const root = createTempDir();
+		try {
+			const result = spawnSync('node', [scriptPath], {
+				cwd: root,
+				stdio: 'pipe',
+				env: {
+					...process.env,
+					FORGE_PROTECTED_STATE_STAGED_FILES: '.forge/config.yaml',
+					FORGE_PROTECTED_STATE_ACTOR: 'codex-test',
+				},
+			});
+
+			expect(result.status).toBe(1);
+			const output = `${result.stdout}${result.stderr}`;
+			// The retired bd CLI used to fail here and dump its usage text as a WARN.
+			expect(output).not.toContain('WARN: Failed to record protected-state audit');
+			expect(output).not.toMatch(/\bbd\b/);
+
+			const records = readAuditLog(root);
+			expect(records).toHaveLength(1);
+			expect(records[0]).toMatchObject({
+				actor: 'codex-test',
+				path: '.forge/config.yaml',
+				operation: 'staged_edit',
+				requiredSurface: 'forge_config',
+				decision: 'blocked',
+			});
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test('passes when staged edits do not touch protected state', () => {
