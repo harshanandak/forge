@@ -173,9 +173,14 @@ describe('forge test command', () => {
 	});
 
 	describe('issue-store independence', () => {
-		test('never probes bd and never sets BEADS_SKIP_TESTS', async () => {
+		test('never probes bd and never injects BEADS_SKIP_TESTS', async () => {
 			const spawnSpy = makeSpawnSync();
-			const execSpy = makeExecFileSync({ bdFails: true });
+			const inner = makeExecFileSync({ bdFails: true });
+			const commands = [];
+			const execSpy = (cmd, args, opts) => {
+				commands.push(cmd);
+				return inner(cmd, args, opts);
+			};
 			const result = await testCommand.handler([], {}, '/fake/root', {
 				fs: makeFsStub(),
 				execFileSync: execSpy,
@@ -183,7 +188,33 @@ describe('forge test command', () => {
 			});
 
 			expect(result).not.toHaveProperty('beadsSkipped');
+			expect(commands).not.toContain('bd');
 			expect(spawnSpy.calls[0].opts.env.BEADS_SKIP_TESTS).toBeUndefined();
+		});
+
+		test('leaves an inherited BEADS_SKIP_TESTS untouched', async () => {
+			const sentinel = 'sentinel-do-not-touch';
+			const previous = process.env.BEADS_SKIP_TESTS;
+			process.env.BEADS_SKIP_TESTS = sentinel;
+			try {
+				const spawnSpy = makeSpawnSync();
+				await testCommand.handler([], {}, '/fake/root', {
+					fs: makeFsStub(),
+					execFileSync: makeExecFileSync({ bdFails: true }),
+					spawnSync: spawnSpy,
+				});
+
+				// The child env is inherited verbatim: the handler must neither
+				// rewrite the caller's value nor mutate the parent process env.
+				expect(spawnSpy.calls[0].opts.env.BEADS_SKIP_TESTS).toBe(sentinel);
+				expect(process.env.BEADS_SKIP_TESTS).toBe(sentinel);
+			} finally {
+				if (previous === undefined) {
+					delete process.env.BEADS_SKIP_TESTS;
+				} else {
+					process.env.BEADS_SKIP_TESTS = previous;
+				}
+			}
 		});
 	});
 

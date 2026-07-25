@@ -2975,7 +2975,7 @@ async function promptSkillsSetup(question) {
 }
 
 // Interactive setup for Skills
-async function setupProjectTools(rl, question) {
+async function setupProjectTools(_rl, question) {
   console.log('');
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  STEP 2: Project Tools (Recommended)');
