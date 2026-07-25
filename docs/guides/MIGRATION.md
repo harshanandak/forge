@@ -26,7 +26,7 @@ Use both entry points correctly:
 
 - `forge init` creates the `.forge/` adoption skeleton.
 - `forge setup` installs agent instructions, skills, harness files, local Beads compatibility, and optional setup material.
-- `forge setup --sync` is deprecated and retained only to remove old generated Beads/GitHub sync scaffolding when present.
+- `forge setup` also removes old generated Beads/GitHub sync scaffolding when present, with no flag needed.
 
 ## From Singular Agent Flags
 

@@ -2,10 +2,41 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { isBeadsInitialized } = require('../../../lib/beads-setup');
 const { checkHookInstallation } = require('../../../lib/runtime-health');
 
 const CORPUS_ROOT = __dirname;
+
+/**
+ * Recognize a legacy Beads repo layout in a materialized fixture.
+ *
+ * The live Beads surfaces are gone; these fixtures exist only to describe the
+ * on-disk shapes that `forge migrate --from beads` and the upgrade advisory
+ * must still recognize, so the predicate lives with the fixtures rather than
+ * in Forge runtime code.
+ *
+ * @param {string} repoRoot - Absolute path to a materialized fixture repo.
+ * @returns {boolean} true when repoRoot carries initialized legacy Beads state.
+ */
+function isLegacyBeadsRepoInitialized(repoRoot) {
+  const beadsDir = path.join(repoRoot, '.beads');
+  const configPath = path.join(beadsDir, 'config.yaml');
+
+  if (!fs.existsSync(beadsDir)) return false;
+  if (!fs.existsSync(configPath)) return false;
+
+  const configContent = fs.readFileSync(configPath, 'utf8');
+  if (!configContent.includes('issue-prefix:')) return false;
+
+  const hasLegacyState = ['issues.jsonl', 'backup', 'bd.db', 'beads.db', 'db.sqlite']
+    .some(entry => fs.existsSync(path.join(beadsDir, entry)));
+  const hasDoltState =
+    fs.existsSync(path.join(beadsDir, 'metadata.json')) &&
+    ['README.md', 'hooks', 'redirect'].some(entry => fs.existsSync(path.join(beadsDir, entry)));
+
+  if (configContent.includes('backend: sqlite')) return hasLegacyState;
+  if (configContent.includes('backend: dolt')) return hasDoltState;
+  return hasLegacyState || hasDoltState;
+}
 const REPOS_ROOT = path.join(CORPUS_ROOT, 'repos');
 const WORKFLOW_STAGE_MATRIX = {
   critical: ['plan', 'dev', 'validate', 'ship', 'review', 'premerge', 'verify'],
@@ -281,7 +312,7 @@ function validateMaterializedFixture(repoRoot, manifest) {
     if (!config.includes(`backend: ${manifest.expectations.beadsBackend}`)) {
       failures.push(`expected Beads backend ${manifest.expectations.beadsBackend}`);
     }
-    if (manifest.expectations.beadsBackend === 'dolt' && !isBeadsInitialized(repoRoot)) {
+    if (manifest.expectations.beadsBackend === 'dolt' && !isLegacyBeadsRepoInitialized(repoRoot)) {
       failures.push('expected initialized Dolt-backed Beads state');
     }
   }
@@ -337,6 +368,7 @@ if (require.main === module) {
 
 module.exports = {
   CORPUS_ROOT,
+  isLegacyBeadsRepoInitialized,
   listFixtureNames,
   readManifest,
   materializeFixture,

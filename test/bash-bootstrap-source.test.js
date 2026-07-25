@@ -9,8 +9,6 @@ const helperPath = path.join(repoRoot, 'scripts', 'bootstrap-windows-tools.sh');
 
 const entrypointPaths = [
   'install.sh',
-  'scripts/beads-context.sh',
-  'scripts/beads-upgrade-smoke.sh',
   'scripts/behavioral-judge.sh',
   'scripts/conflict-detect.sh',
   'scripts/dep-guard.sh',

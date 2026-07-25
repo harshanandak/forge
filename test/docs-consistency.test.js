@@ -40,9 +40,8 @@ describe('README.md consistency', () => {
     expect(readme).toContain('--symlink');
   });
 
-  it('documents --sync deprecation', () => {
-    expect(readme).toContain('--sync');
-    expect(readme).toMatch(/deprecated/i);
+  it('no longer documents the removed --sync flag', () => {
+    expect(readme).not.toContain('--sync');
   });
 
   it('documents --agents flag', () => {
@@ -80,17 +79,16 @@ describe('Beads repository hygiene', () => {
     expect(projection).toContain('mapping, comments, sanitization, idempotency, retry, and GitHub API handling');
   });
 
-  it('documents deprecated GitHub sync cleanup behind --sync only', () => {
+  it('documents deprecated GitHub sync cleanup as automatic, with no --sync flag', () => {
     const syncGuide = readDoc('docs/guides/BEADS_GITHUB_SYNC.md');
     const setupGuide = readDoc('docs/guides/SETUP.md');
     const migrationGuide = readDoc('docs/guides/MIGRATION.md');
 
-    expect(syncGuide).toContain('forge setup --sync');
-    expect(syncGuide).toContain('Plain `forge setup` does not perform Beads/GitHub sync cleanup as a side effect.');
-    expect(syncGuide).toContain('The `forge setup --sync` compatibility cleanup removes the old generated files:');
-    expect(setupGuide).toContain('bunx forge setup --sync');
+    for (const doc of [syncGuide, setupGuide, migrationGuide]) {
+      expect(doc).not.toContain('--sync');
+    }
+    expect(syncGuide).toContain('The `forge setup` compatibility cleanup removes the old generated files:');
     expect(setupGuide).not.toContain('To scaffold GitHub/Beads sync files:');
-    expect(migrationGuide).toContain('forge setup --sync');
     expect(migrationGuide).not.toContain('It removes deprecated Beads/GitHub sync scaffolding');
   });
 });
@@ -167,9 +165,9 @@ describe('docs/guides/SETUP.md consistency', () => {
     expect(setup).not.toContain('BEADS_SYNC_TOKEN');
   });
 
-  it('documents Beads sync setup deprecation with --sync flag', () => {
-    expect(setup).toContain('--sync');
-    expect(setup).toContain('deprecated');
+  it('documents deprecated sync cleanup as automatic, with no --sync flag', () => {
+    expect(setup).not.toContain('--sync');
+    expect(setup).toMatch(/removes old generated GitHub\/Beads sync files/i);
   });
 
   it('uses bun add -D for install command (dev dependency)', () => {

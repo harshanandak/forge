@@ -80,10 +80,8 @@ const { firstPositionalIndex } = require('../lib/global-flags');
 const contextMerge = require('../lib/context-merge');
 const projectDiscovery = require('../lib/project-discovery');
 
-// Load lib modules for symlink, beads, and PAT setup
+// Load lib modules for symlink setup
 const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require('../lib/symlink-utils');
-const beadsSetupLib = require('../lib/beads-setup');
-const { scaffoldBeadsSync } = require('../lib/beads-sync-scaffold');
 
 // Load incremental setup modules
 const { detectEnvironment } = require('../lib/detect-agent');
@@ -113,7 +111,6 @@ let FORCE_MODE = false;
 let VERBOSE_MODE = false;
 let NON_INTERACTIVE = false;
 let SYMLINK_ONLY = false;   // --symlink: fail instead of copy fallback
-let SYNC_ENABLED = false;   // --sync: scaffold Beads GitHub sync workflows
 let actionLog = new SetupActionLog();
 
 // Detected package manager
@@ -429,7 +426,7 @@ Use these default-template commands via \`/command-name\`:
 - \`/validate\` - Type check, lint, security, tests (HARD-GATE)
 - \`/ship\` - Push and create PR with design doc reference
 - \`/review\` - Handle ALL PR issues (Actions, Greptile, SonarCloud)
-- \`/verify\` - Post-merge health check (CI on main, close Beads)
+- \`/verify\` - Post-merge health check (CI on main, close kernel issues)
 
 Pre-merge gate (not a numbered stage): finish docs + confirm CI green + hand off the PR — embedded in the /ship and /review stages.
 
@@ -706,9 +703,7 @@ async function detectProjectStatus() {
     agentsMdLines: 0,
     claudeMdLines: 0,
     // Project tools status
-    hasBeads: isBeadsInitialized(),
     hasSkills: isSkillsInitialized(),
-    beadsInstallType: checkForBeads(),
     skillsInstallType: checkForSkills(),
     // Enhanced: Auto-detected project context
     autoDetected: null
@@ -2196,15 +2191,6 @@ function displaySetupSummary(selectedAgents) {
   console.log('Project Tools Status:');
   console.log('');
 
-  // Beads status
-  if (isBeadsInitialized()) {
-    console.log('  ✓ Beads initialized - Track work: forge ready');
-  } else if (checkForBeads()) {
-    console.log('  ! Beads available - Run: bd init');
-  } else {
-    console.log(`  - Beads not installed - Run: ${PKG_MANAGER} install -g @beads/bd && bd init`);
-  }
-
   // Skills status
   if (isSkillsInitialized()) {
     console.log('  ✓ Skills initialized - Manage skills: skills list');
@@ -2351,7 +2337,6 @@ function parseFlags() {
     verbose: false,   // Show file-by-file detail in setup summary
     dryRun: false,    // Preview planned actions without writing files
     symlink: false,   // Create CLAUDE.md as symlink to AGENTS.md (--symlink)
-    sync: false,      // Scaffold Beads GitHub sync workflows (--sync)
   };
 
   // Issue passthrough commands delegate all flags to bd.
@@ -2416,9 +2401,6 @@ function parseFlags() {
       i++;
     } else if (arg === '--symlink') {
       flags.symlink = true;
-      i++;
-    } else if (arg === '--sync') {
-      flags.sync = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -2835,121 +2817,6 @@ function checkForLefthook() {
   return status;
 }
 
-// Check if Beads is installed (global, local, or bunx-capable)
-function checkForBeads() {
-  // Try global install first
-  try {
-    secureExecFileSync('bd', ['version'], { stdio: 'ignore' });
-    return 'global';
-  } catch (err) {
-    // Not global
-    console.warn('Beads not found globally:', err.message);
-  }
-
-  // Check if bunx can run it
-  try {
-    secureExecFileSync('bunx', ['@beads/bd', 'version'], { stdio: 'ignore' });
-    return 'bunx';
-  } catch (err) {
-    // Not bunx-capable
-    console.warn('Beads not available via bunx:', err.message);
-  }
-
-  // Check local project installation
-  const pkgPath = path.join(projectRoot, 'package.json');
-  if (!fs.existsSync(pkgPath)) return null;
-
-  try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    const isInstalled = pkg.devDependencies?.['@beads/bd'] || pkg.dependencies?.['@beads/bd'];
-    return isInstalled ? 'local' : null;
-  } catch (err) {
-    console.warn('Failed to check Beads in package.json:', err.message);
-    return null;
-  }
-}
-// Check if Beads is initialized in project — delegates to lib/beads-setup
-function isBeadsInitialized() {
-  return beadsSetupLib.isBeadsInitialized(projectRoot);
-}
-
-function migrateExistingBeadsLocalState() {
-  if (!fs.existsSync(path.join(projectRoot, '.beads'))) {
-    return;
-  }
-
-  try {
-    beadsSetupLib.ensureBeadsGitExclude(projectRoot);
-  } catch (err) {
-    console.warn(`  Warning: failed to migrate Beads local state: ${err.message}`);
-  }
-}
-
-// Initialize Beads in the project using the defensive safeBeadsInit wrapper
-// Handles config/gitignore writes, hook snapshot/restore, and JSONL pre-seeding
-function initializeBeads(installType) {
-  console.log('Initializing Beads in project...');
-
-  // Build the execBdInit function based on installType
-  const execBdInit = (root) => {
-    // SECURITY: execFileSync with hardcoded commands
-    if (installType === 'global') {
-      secureExecFileSync('bd', ['init'], { stdio: 'inherit', cwd: root });
-    } else if (installType === 'bunx') {
-      secureExecFileSync('bunx', ['@beads/bd', 'init'], { stdio: 'inherit', cwd: root });
-    } else if (installType === 'local') {
-      secureExecFileSync('npx', ['bd', 'init'], { stdio: 'inherit', cwd: root });
-    }
-  };
-
-  // Derive prefix from package.json name or directory name
-  let prefix;
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
-    prefix = pkg.name || path.basename(projectRoot);
-  } catch (_e) {
-    prefix = path.basename(projectRoot);
-  }
-
-  try {
-    const result = beadsSetupLib.safeBeadsInit(projectRoot, {
-      prefix,
-      execBdInit,
-      restoreLefthook: (root) => {
-        try {
-          secureExecFileSync('lefthook', ['install'], { stdio: 'ignore', cwd: root });
-        } catch (_e) {
-          // lefthook may not be installed yet — non-fatal
-        }
-      }
-    });
-
-    if (result.skipped) {
-      console.log('  ✓ Beads already initialized');
-      return true;
-    }
-
-    if (!result.success) {
-      for (const e of result.errors) {
-        console.log(`  ⚠ ${e}`);
-      }
-      console.log('  Run manually: bd init');
-      return false;
-    }
-
-    for (const w of result.warnings) {
-      console.warn(`  ⚠ ${w}`);
-    }
-    console.log('  ✓ Beads initialized');
-
-    return true;
-  } catch (err) {
-    console.log('  ⚠ Failed to initialize Beads:', err.message);
-    console.log('  Run manually: bd init');
-    return false;
-  }
-}
-
 // Check if Skills CLI is installed
 function checkForSkills() {
   // Try global install first
@@ -3006,60 +2873,6 @@ function initializeSkills(installType) {
   }
 }
 
-// Prompt for Beads setup - extracted to reduce cognitive complexity
-async function promptBeadsSetup(question) {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('Beads Setup (Recommended)');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('');
-
-  const beadsInitialized = isBeadsInitialized();
-  const beadsStatus = checkForBeads();
-
-  if (beadsInitialized) {
-    migrateExistingBeadsLocalState();
-    console.log('✓ Beads is already initialized in this project');
-    console.log('');
-    return;
-  }
-
-  if (beadsStatus) {
-    // Already installed, just need to initialize
-    console.log(`ℹ Beads is installed (${beadsStatus}), but not initialized`);
-    const initBeads = await question('Initialize Beads in this project? (y/n): ');
-
-    if (initBeads.toLowerCase() === 'y') {
-      initializeBeads(beadsStatus);
-    } else {
-      console.log('Skipped Beads initialization. Run manually: bd init');
-    }
-    console.log('');
-    return;
-  }
-
-  // Not installed
-  console.log('ℹ Beads is not installed');
-  const installBeads = await question('Install Beads? (y/n): ');
-
-  if (installBeads.toLowerCase() !== 'y') {
-    console.log('Skipped Beads installation');
-    console.log('');
-    return;
-  }
-
-  console.log('');
-  console.log('Choose installation method:');
-  console.log('  1. Global (recommended) - Available system-wide');
-  console.log('  2. Local - Project-specific devDependency');
-  console.log('  3. Bunx - Use via bunx (requires bun)');
-  console.log('');
-  const method = await question('Choose method (1-3): ');
-
-  console.log('');
-  installBeadsWithMethod(method);
-  console.log('');
-}
-
 // Helper: Install tool via bunx - extracted to reduce cognitive complexity
 function installViaBunx(packageName, versionArgs, initFn, toolName) {
   console.log('Testing bunx capability...');
@@ -3070,68 +2883,6 @@ function installViaBunx(packageName, versionArgs, initFn, toolName) {
   } catch (err) {
     console.warn(`${toolName} bunx test failed:`, err.message);
     console.log('  ⚠ Bunx not available. Install bun first: curl -fsSL https://bun.sh/install | bash');
-  }
-}
-
-// Helper: Install Beads with chosen method - extracted to reduce cognitive complexity
-// SECURITY NOTE: Downloads and executes a remote PowerShell script.
-// The npm @beads/bd package is broken on Windows (GitHub Issue #1031, closed "not planned"),
-// so the official PowerShell installer is the only supported path.
-// Mitigations: HTTPS transport (prevents MITM), official beads repo, user-visible URL.
-// TODO: Pin to a versioned release tag once beads publishes tagged releases (e.g. v0.49.1).
-const BEADS_INSTALL_PS1_URL = 'https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1';
-
-function installBeadsOnWindows() {
-  console.log('  (Windows detected: using PowerShell installer)');
-  console.log(`  Downloading: ${BEADS_INSTALL_PS1_URL}`);
-  secureExecFileSync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command',
-    `irm ${BEADS_INSTALL_PS1_URL} | iex`
-  ], { stdio: 'inherit' });
-}
-
-function installBeadsWithMethod(method) {
-  try {
-    // SECURITY: secureExecFileSync with hardcoded commands
-    if (method === '1') {
-      console.log('Installing Beads globally...');
-      if (process.platform === 'win32') {
-        installBeadsOnWindows();
-      } else {
-        const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-        secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
-      }
-      console.log('  ✓ Beads installed globally');
-      initializeBeads('global');
-    } else if (method === '2') {
-      console.log('Installing Beads locally...');
-      // On Windows, npm postinstall for @beads/bd runs Expand-Archive which has EPERM file-locking
-      // (GitHub Issue #1031, closed "not planned") — same root cause as global install.
-      // Redirect Windows users to the global PowerShell installer instead.
-      if (process.platform === 'win32') {
-        console.log('  ⚠ Local install not supported on Windows (npm @beads/bd EPERM issue).');
-        console.log('  Falling back to global PowerShell installer...');
-        installBeadsOnWindows();
-      } else {
-        const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-        secureExecFileSync(pkgManager, ['install', '-D', '@beads/bd'], { stdio: 'inherit', cwd: projectRoot });
-      }
-      console.log('  ✓ Beads installed');
-      // On Windows the fallback was global (PowerShell installer), so init as 'global'
-      initializeBeads(process.platform === 'win32' ? 'global' : 'local');
-    } else if (method === '3') {
-      installViaBunx('@beads/bd', ['version'], initializeBeads, 'Beads');
-    } else {
-      console.log('Invalid choice. Skipping Beads installation.');
-    }
-  } catch (err) {
-    console.warn('Beads installation failed:', err.message);
-    console.log('  ⚠ Failed to install Beads:', err.message);
-    if (process.platform === 'win32') {
-      console.log(`  Run manually: irm ${BEADS_INSTALL_PS1_URL} | iex`);
-    } else {
-      console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @beads/bd && bd init`);
-    }
   }
 }
 
@@ -3223,66 +2974,21 @@ async function promptSkillsSetup(question) {
   console.log('');
 }
 
-// Interactive setup for Beads and Skills
-async function setupProjectTools(rl, question) {
+// Interactive setup for Skills
+async function setupProjectTools(_rl, question) {
   console.log('');
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  STEP 2: Project Tools (Recommended)');
   console.log('═══════════════════════════════════════════════════════════');
   console.log('');
-  console.log('Forge recommends three tools for enhanced workflows:');
-  console.log('');
-  console.log('• Beads - Git-backed issue tracking');
-  console.log('  Persists tasks across sessions, tracks dependencies.');
-  console.log('  Command: forge ready, forge create, forge close');
+  console.log('Forge recommends the following tool for enhanced workflows:');
   console.log('');
   console.log('• Skills - Universal SKILL.md management');
   console.log('  Manage AI agent skills across all agents.');
   console.log('  Command: skills create, skills list, skills sync');
   console.log('');
 
-  // Use helper functions to reduce complexity
-  await promptBeadsSetup(question);
   await promptSkillsSetup(question);
-}
-
-// Auto-setup Beads in quick mode - extracted to reduce cognitive complexity
-function autoSetupBeadsInQuickMode() {
-  const beadsStatus = checkForBeads();
-  const beadsInitialized = isBeadsInitialized();
-
-  if (beadsInitialized) {
-    migrateExistingBeadsLocalState();
-  }
-
-  if (!beadsInitialized && beadsStatus) {
-    console.log('📦 Initializing Beads...');
-    initializeBeads(beadsStatus);
-    console.log('');
-  } else if (!beadsInitialized && !beadsStatus) {
-    console.log('📦 Installing Beads globally...');
-    try {
-      // SECURITY: use PowerShell on Windows (npm @beads/bd is broken on Windows - Issue #1031)
-      if (process.platform === 'win32') {
-        installBeadsOnWindows();
-      } else {
-        const pkgManager = PKG_MANAGER === 'bun' ? 'bun' : 'npm';
-        secureExecFileSync(pkgManager, ['install', '-g', '@beads/bd'], { stdio: 'inherit' });
-      }
-      console.log('  ✓ Beads installed globally');
-      initializeBeads('global');
-    } catch (err) {
-      // Installation failed - provide manual instructions
-      console.log('  ⚠ Could not install Beads automatically');
-      console.log(`    Error: ${err.message}`);
-      if (process.platform === 'win32') {
-        console.log(`  Run manually: irm ${BEADS_INSTALL_PS1_URL} | iex`);
-      } else {
-        console.log(`  Run manually: ${PKG_MANAGER === 'bun' ? 'bun add -g' : 'npm install -g'} @beads/bd && bd init`);
-      }
-    }
-    console.log('');
-  }
 }
 
 // Helper: Auto-install lefthook if not present - extracted to reduce cognitive complexity
@@ -3340,26 +3046,9 @@ function autoInstallLefthook() {
 }
 
 // Helper: Verify a tool is callable after install - extracted to reduce cognitive complexity
-function verifyToolInstall(command, args, toolName) {
-  try {
-    secureExecFileSync(command, args, { stdio: 'ignore' });
-    return true;
-  } catch (_err) { // NOSONAR - S2486: Intentionally ignored; verification failure is handled by caller
-    console.log(`  ⚠ ${toolName} installed but not callable. Check your PATH.`);
-    return false;
-  }
-}
 
 // Helper: Auto-setup tools (Skills) in quick mode - extracted to reduce cognitive complexity
 function autoSetupToolsInQuickMode() {
-  // Beads: auto-install or initialize
-  autoSetupBeadsInQuickMode();
-
-  // Post-install verification for Beads
-  if (isBeadsInitialized()) {
-    verifyToolInstall('bd', ['version'], 'Beads');
-  }
-
   // Skills: only initialize if already installed (recommended tool)
   const skillsStatus = checkForSkills();
   if (skillsStatus && !isSkillsInitialized()) {
@@ -3421,7 +3110,7 @@ async function quickSetup(selectedAgents, skipExternal) {
   // Auto-install lefthook if missing
   autoInstallLefthook();
 
-  // Auto-setup project tools (Beads, Skills)
+  // Auto-setup project tools (Skills)
   autoSetupToolsInQuickMode();
 
   // Setup Claude first if selected, then remaining agents
@@ -3439,11 +3128,6 @@ async function quickSetup(selectedAgents, skipExternal) {
 
   // Configure external services with defaults (unless skipped)
   configureDefaultExternalServices(skipExternal);
-
-  // --sync flag: scaffold Beads GitHub sync workflows without prompting
-  if (SYNC_ENABLED) {
-    await handleSyncScaffold();
-  }
 
   // Progressive setup summary
   console.log('');
@@ -3862,8 +3546,6 @@ async function executeSetup(config) {
   checkPrerequisites();
   console.log('');
 
-  migrateExistingBeadsLocalState();
-
   // Copy AGENTS.md (only if not exists — preserve user customizations; actionLog tracks it)
   const agentsDest = path.join(projectRoot, 'AGENTS.md');
   if (fs.existsSync(agentsDest)) {
@@ -3894,30 +3576,10 @@ async function executeSetup(config) {
   // External services (unless skipped)
   await handleExternalServices(skipExternal, agents);
 
-  // --sync flag: scaffold Beads GitHub sync workflows without prompting
-  if (SYNC_ENABLED) {
-    await handleSyncScaffold();
-  }
-
   // Progressive setup summary
   console.log('');
   console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE));
   console.log('');
-}
-
-// Helper: Scaffold Beads GitHub sync when --sync flag is provided
-async function handleSyncScaffold() {
-  console.log('');
-  console.log('Beads GitHub sync scaffolding is deprecated (--sync).');
-  try {
-    const result = scaffoldBeadsSync(projectRoot, packageDir);
-    console.log(`  ${result.message}`);
-    for (const f of result.filesRemoved || []) {
-      console.log(`  Removed deprecated sync file: ${f}`);
-    }
-  } catch (err) {
-    console.error(`  Error scaffolding GitHub-Beads sync: ${err.message}`);
-  }
 }
 
 // Helper: Handle setup command in non-quick mode
@@ -3938,7 +3600,6 @@ async function handleSetupCommand(selectedAgents, flags) {
 }
 
 async function runInteractiveSetupFallback(flags, interactiveSetup = interactiveSetupWithFlags) {
-  migrateExistingBeadsLocalState();
   return interactiveSetup(flags);
 }
 
@@ -3989,7 +3650,6 @@ async function main() {
   VERBOSE_MODE = flags.verbose;
   NON_INTERACTIVE = flags.nonInteractive || flags.yes || isNonInteractive();
   SYMLINK_ONLY = flags.symlink;
-  SYNC_ENABLED = flags.sync;
   actionLog = new SetupActionLog();
 
   // The non-interactive agent-selection notice is DEBUG-ONLY (kernel issue
@@ -4213,12 +3873,6 @@ async function main() {
         selectedAgents = Object.keys(AGENTS);
       }
       await quickSetup(selectedAgents, flags.skipExternal);
-      return;
-    }
-
-    if (flags.sync && selectedAgents.length === 0) {
-      migrateExistingBeadsLocalState();
-      await handleSyncScaffold();
       return;
     }
 
@@ -4621,20 +4275,6 @@ function checkGitWorkingDirectory() {
   }
 }
 
-// Helper: Update Beads issue after PR rollback
-function updateBeadsIssue(commitMessage) {
-  const issueMatch = commitMessage.match(/#(\d+)/);
-  if (!issueMatch) return;
-
-  try {
-    const { execFileSync } = require('node:child_process');
-    execFileSync('bd', ['update', issueMatch[1], '--status', 'reverted', '--comment', 'PR reverted'], { stdio: 'inherit' });
-    console.log(`     Updated Beads issue #${issueMatch[1]} to 'reverted'`);
-  } catch {
-    // Beads not installed - silently continue
-  }
-}
-
 // Helper: Handle commit rollback
 function handleCommitRollback(target, dryRun, execSync) {
   if (dryRun) {
@@ -4656,10 +4296,6 @@ function handlePrRollback(target, dryRun, execSync) {
     files.trim().split('\n').forEach(f => console.log(`       - ${f}`));
   } else {
     execSync(`git revert -m 1 --no-edit ${target}`, { stdio: 'inherit' });
-
-    // Update Beads issue if linked
-    const commitMsg = execSync(`git log -1 --format=%B ${target}`, { encoding: 'utf-8' });
-    updateBeadsIssue(commitMsg);
   }
 }
 

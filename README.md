@@ -261,7 +261,6 @@ Use `bunx forge ...` (or `npx forge ...`) until the `forge` bin is on your PATH.
 | `--dry-run` | Preview planned writes without touching the repo. |
 | `--symlink` | Link instruction files instead of copying, where supported. |
 | `--merge smart\|preserve\|replace` | Choose how setup handles existing instruction files. |
-| `--sync` | Deprecated. Removes old generated Beads/GitHub sync files; future issue sync belongs to Kernel/server authority. |
 
 ## What you get
 

@@ -105,8 +105,7 @@ describe('bin/forge.js structure', () => {
   });
 
   test('should use installViaBunx in install methods', () => {
-    // Verify installBeadsWithMethod and installSkillsWithMethod use the shared helper
-    expect(source.includes("installViaBunx('@beads/bd'")).toBeTruthy();
+    // Verify installSkillsWithMethod uses the shared helper
     expect(source.includes("installViaBunx('@forge/skills'")).toBeTruthy();
   });
 

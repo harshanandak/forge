@@ -48,7 +48,7 @@ describe('scripts/test-full-suite.js', () => {
   });
 
   test('listAllFullSuiteTests includes repo-level script tests', () => {
-    expect(listAllFullSuiteTests()).toContain('scripts/beads-context.test.js');
+    expect(listAllFullSuiteTests()).toContain('scripts/release-asset.test.js');
   });
 
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {

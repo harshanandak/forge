@@ -127,14 +127,25 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
       'lib/symlink-utils.js',
       'lib/lefthook-check.js',
       'lib/husky-migration.js',
-      'lib/beads-setup.js',
-      'lib/beads-sync-scaffold.js',
-      'lib/pat-setup.js',
+      'lib/git-defaults.js',
     ];
 
     for (const libFile of requiredLibModules) {
       it(`includes ${libFile}`, () => {
         expect(packFiles).toContain(libFile);
+      });
+    }
+
+    // Retired with the live Beads surfaces; must never ship again.
+    const removedLibModules = [
+      'lib/beads-setup.js',
+      'lib/beads-sync-scaffold.js',
+      'lib/pat-setup.js',
+    ];
+
+    for (const libFile of removedLibModules) {
+      it(`does NOT include ${libFile}`, () => {
+        expect(packFiles).not.toContain(libFile);
       });
     }
   });
