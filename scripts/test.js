@@ -4,6 +4,13 @@
  *
  * It runs only the tests affected by known changes when possible and falls back
  * to the full suite for package-level or unknown-file changes.
+ *
+ * Quick lane: `forge push --quick` sets FORGE_PUSH_LANE=quick on the `git push`
+ * it spawns, declaring the lint-only review-cycle lane. The pre-push entry point
+ * honors that declaration and skips the test run with a loud notice, so --quick
+ * is quick end to end instead of only in the step push.js controls. This is not
+ * a hook bypass: branch protection and lint still run, local validation
+ * (`--validate`) ignores the variable entirely, and CI runs the full matrix.
  */
 
 const { execFileSync: defaultExecFileSync, spawnSync: defaultSpawnSync } = require('node:child_process');
@@ -63,6 +70,21 @@ const DEFAULT_FULL_SUITE_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Conventional shell exit code for a command terminated by a timeout.
 const TIMEOUT_EXIT_CODE = 124;
+
+// Lane declaration set by `forge push --quick` on the spawned `git push`.
+// Only this exact value opts into the lint-only lane.
+const QUICK_LANE_ENV_VAR = 'FORGE_PUSH_LANE';
+const QUICK_LANE_VALUE = 'quick';
+
+/**
+ * Reports whether the environment declares the lint-only quick push lane.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env] Environment to inspect.
+ * @returns {boolean} True when the quick lane is explicitly declared.
+ */
+function isQuickPushLane(env = process.env) {
+  return env[QUICK_LANE_ENV_VAR] === QUICK_LANE_VALUE;
+}
 
 /**
  * Reads and validates the FORGE_TEST_TIMEOUT_MS override, if any.
@@ -407,6 +429,14 @@ function runTestExecutionPlan(plan, deps = {}) {
  * @returns {number} Exit status for pre-push tests.
  */
 function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
+  if (isQuickPushLane(deps.env || process.env)) {
+    console.log('');
+    console.log('  quick lane: tests skipped locally — CI runs the full matrix');
+    console.log('  Run `forge push` (no --quick) to test before merge.');
+    console.log('');
+    return 0;
+  }
+
   const execFileSync = deps.execFileSync || defaultExecFileSync;
   const plan = classifyPushTests(projectRoot, execFileSync);
   return runTestExecutionPlan(plan, { ...deps, label: 'pre-push tests' });
@@ -436,9 +466,12 @@ module.exports = {
   ALWAYS_RUN_RISK_TEST_TARGETS,
   DEFAULT_FULL_SUITE_TIMEOUT_MS,
   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
+  QUICK_LANE_ENV_VAR,
+  QUICK_LANE_VALUE,
   buildTestExecutionPlan,
   classifyPushTests,
   detectPackageManager,
+  isQuickPushLane,
   resolveCommandTimeoutMs,
   resolveFullSuiteTimeoutMs,
   runLocalValidationTests,
