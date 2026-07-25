@@ -207,4 +207,67 @@ describe('ensureBackingIssue', () => {
     expect(k.createLog.length).toBe(0);
     expect(k.driver.getWorktreeLinkage({ path: BASE.worktreePath }).issue_id).toBe('kap-7');
   }, TIMEOUT);
+
+  // Redundant-stub minting (18f1988e). Kernel issue ids are UUIDs, but the encoded-id
+  // probe only recognised the Beads-era `kap-7` key shape — so a branch carrying a real
+  // kernel UUID minted a SECOND, redundant stub while every other Forge surface
+  // (resolveActiveIssueId / currentBranchIssueFromDriver) correctly bound to the real
+  // issue. These branches must dedupe to the issue they already name.
+  describe('a branch naming an existing kernel issue mints no stub', () => {
+    const UUID = '18f1988e-d59d-4257-85a7-431c687a1574';
+
+    for (const [label, branch] of [
+      ['bare uuid branch', `feat/${UUID}`],
+      ['uuid with a trailing slug', `feat/${UUID}-close-on-merge`],
+      ['uuid without a branch prefix', UUID],
+    ]) {
+      test(label, async () => {
+        const k = makeFakeKernel();
+        k.issues.set(UUID, { id: UUID, labels: [] });
+        const result = await ensureBackingIssue({
+          ...BASE,
+          branch,
+          driver: k.driver,
+          broker: k.broker,
+          generateId: () => 'should-not-be-used',
+        });
+
+        expect(result.issueId).toBe(UUID);
+        expect(result.created).toBe(false);
+        expect(result.existed).toBe(true);
+        expect(k.createLog.length).toBe(0);
+        expect(k.driver.getWorktreeLinkage({ path: BASE.worktreePath }).issue_id).toBe(UUID);
+      }, TIMEOUT);
+    }
+
+    // Never bind to a phantom: an id that does not exist in the kernel is NOT a link,
+    // so the auto-file rail still does its job and files the work.
+    test('still mints a stub when the encoded uuid does not exist in the kernel', async () => {
+      const k = makeFakeKernel();
+      const result = await ensureBackingIssue({
+        ...BASE,
+        branch: `feat/${UUID}-ghost`,
+        driver: k.driver,
+        broker: k.broker,
+        generateId: () => 'issue-fresh',
+      });
+
+      expect(result.issueId).toBe('issue-fresh');
+      expect(result.created).toBe(true);
+      expect(k.createLog).toEqual(['issue-fresh']);
+    }, TIMEOUT);
+
+    test('a branch with no encoded id is unaffected', async () => {
+      const k = makeFakeKernel();
+      const result = await ensureBackingIssue({
+        ...BASE,
+        branch: 'feat/plain-slug',
+        driver: k.driver,
+        broker: k.broker,
+        generateId: () => 'issue-plain',
+      });
+      expect(result.created).toBe(true);
+      expect(result.issueId).toBe('issue-plain');
+    }, TIMEOUT);
+  });
 });
