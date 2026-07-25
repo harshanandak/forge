@@ -53,8 +53,8 @@ forge plan "<feature description>"
 forge dev [--issue-id <id>] [--phase red|green|refactor]
 forge validate
 forge ship <feature-slug> [<title>] [--dry-run]
-forge status [--full] [--json]
-forge prime [--budget N] [--json]
+forge status [-v|--verbose] [--full] [--json]
+forge prime [--budget N] [--json]   # deprecated alias for `forge status -v`
 forge orient [--budget N] [--json]
 forge recap <issue> [--budget N] [--json]
 forge recall [query] [--limit N] [--all] [--json]
@@ -66,8 +66,9 @@ forge skill for "<situation>" [--json]
 - `forge dev` runs the TDD development stage with RED/GREEN/REFACTOR phase guidance; `--issue-id` scopes it to a specific kernel issue and `--phase` overrides auto-detection.
 - `forge validate` runs the validation orchestration pipeline (conflict markers, type check, lint, security, tests) with no arguments — see also `bun run check` under Validation And Packaging.
 - `forge ship` creates the pull request from validated feature work (wraps `gh pr create`); `--dry-run` previews without creating a PR.
-- `forge status` is the one-glance orientation command: where you are, what to run next, and your active work; `--full` also shows blocked/stale/recently-completed issues.
-- `forge prime` emits the bounded session-entry orientation envelope agents read at the start of a session; it now leads with a bounded (<=20-line) **live-state** block — current stage, claimed issue(s), ready-work count, enabled gates/rails, and one progressive-adoption nudge — collected best-effort (never blocks, honest fallbacks) before the deterministic orientation.
+- `forge status` is the one-glance orientation command: where you are, what to run next, and your active work; `--full` also shows blocked/stale/recently-completed issues. `-v`/`--verbose` prints the full session-entry briefing instead of the short pulse (git-status-v semantics).
+- `forge status -v` emits the bounded session-entry orientation envelope agents read at the start of a session; it leads with a bounded (<=20-line) **live-state** block — current stage, claimed issue(s), ready-work count, enabled gates/rails, and one progressive-adoption nudge — collected best-effort (never blocks, honest fallbacks) before the deterministic orientation.
+- `forge prime` is a **deprecated** alias for `forge status -v`. It still works and its stdout is byte-identical (session-start hooks consume it as context), but it prints a one-line deprecation notice on stderr.
 - `forge skill for "<situation>"` is the deterministic intent-to-skill router: it reads the canonical skill catalog and prints the best-fit Forge skill(s) plus why, as the reasoning fallback for harnesses without a SessionStart hook that auto-injects the `using-forge` dispatch skill. `--json` emits the machine-readable routing result. The `forge skill` noun is structured so later waves can add `forge skill eval` / `forge skill scores`.
 - `forge orient` emits bounded project orientation from deterministic source files (broader than `prime`, still token-budgeted via `--budget`).
 - `forge recap <issue>` is the issue-scoped counterpart to `forge orient`/`forge prime` — it summarizes a single issue from the same deterministic file assembly instead of the whole project. Requires an issue id; running it with no id (or `--help`) prints usage only.
