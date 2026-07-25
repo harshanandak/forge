@@ -42,7 +42,7 @@ describe('protected state surfaces', () => {
 		expect(decision.allowed).toBe(false);
 		expect(decision.decision).toBe('blocked');
 		expect(decision.requiredSurface).toBe('beads_state');
-		expect(decision.repairHint).toContain('bd');
+		expect(decision.repairHint).toContain('forge migrate --from beads');
 		expect(decision.reason).toContain('Direct edits');
 	});
 

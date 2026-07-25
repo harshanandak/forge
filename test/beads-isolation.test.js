@@ -18,22 +18,16 @@ const DELETED_MODULES = [
  * The ONLY runtime modules allowed to require a beads-named module.
  *
  * Beads survives exclusively as an inbound migration path
- * (`forge migrate --from beads`) plus the detect/advisory and cleanup helpers
- * that remove stale Beads artifacts from existing installs. Anything else
- * requiring a beads-* module means a live Beads surface came back.
+ * (`forge migrate --from beads`), the upgrade-time advisory that detects stale
+ * Beads artifacts, and the kernel's JSONL projection compat writer. Every
+ * entry is named individually — a directory-wide exemption would let any new
+ * module under it reintroduce a live Beads surface without failing this test.
  */
 const ALLOWED_IMPORTERS = new Set([
   'lib/commands/migrate.js',
-  'lib/commands/init.js',
-  'lib/migrate-dry-run.js',
   'lib/upgrade-safety.js',
-  'lib/deprecated-sync-cleanup.js',
-  'lib/setup.js',
-  'lib/reset.js',
+  'lib/kernel/projection-jsonl-writer.js',
 ]);
-
-/** Directory prefixes whose files may require beads-named modules (kernel import path). */
-const ALLOWED_IMPORTER_PREFIXES = ['lib/kernel/', 'lib/adapters/'];
 
 const BEADS_REQUIRE = /require\(\s*['"]([^'"]*beads[^'"]*)['"]\s*\)/g;
 
@@ -55,15 +49,14 @@ function toRepoPath(absolute) {
 }
 
 function isAllowedImporter(repoPath) {
-  return (
-    ALLOWED_IMPORTERS.has(repoPath) ||
-    ALLOWED_IMPORTER_PREFIXES.some(prefix => repoPath.startsWith(prefix))
-  );
+  return ALLOWED_IMPORTERS.has(repoPath);
 }
 
 describe('beads isolation', () => {
   test.each(DELETED_MODULES)('%s no longer exists', modulePath => {
-    expect(() => require(modulePath)).toThrow(/Cannot find module/);
+    // require.resolve, not require: a restored module that throws its own
+    // "Cannot find module" would otherwise satisfy this assertion.
+    expect(() => require.resolve(modulePath)).toThrow(/Cannot find module/);
   });
 
   test('no runtime module outside the migration path requires a beads module', () => {
