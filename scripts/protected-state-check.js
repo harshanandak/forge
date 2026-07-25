@@ -92,7 +92,7 @@ function main() {
 		console.error(`    Repair: ${decision.repairHint}`);
 	}
 	console.error('');
-	console.error('Use the owning Forge or Beads API surface, then stage the generated result if that command explicitly owns it.');
+	console.error('Use the owning Forge API surface, then stage the generated result if that command explicitly owns it.');
 	process.exit(1);
 }
 

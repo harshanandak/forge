@@ -8,7 +8,7 @@ The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is 
 
 | Surface | Examples | Required write surface |
 | --- | --- | --- |
-| `beads_state` | `.beads/issues.jsonl`, `.beads/config.yaml` | `bd` or Forge issue commands |
+| `beads_state` | `.beads/issues.jsonl`, `.beads/config.yaml` | `forge migrate --from beads`, then Forge issue commands |
 | `forge_config` | `.forge/config.yaml`, `.forge/protected-paths.yaml` | Forge config/setup API |
 | `generated_harness` | `AGENTS.md`, `.claude/skills/`, `.codex/skills/`, `.cursor/rules/` | `forge setup` or harness generator |
 | `memory_projection` | `docs/sessions/`, `docs/memory/`, `.forge/memory/` | Forge memory projection writer |
@@ -25,11 +25,11 @@ The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is 
 - Allowed Forge API writes must declare the matching required surface. For example, a Forge config writer must call the protected writer with `surface: "forge_config"` and `viaForgeApi: true`.
 - Forge-owned commands that intentionally stage generated protected changes can set `FORGE_PROTECTED_STATE_ALLOWED_SURFACES` to the comma-separated surfaces they own for that command invocation.
 - Blocked decisions include actor, path, decision, required surface, reason, and repair hint.
-- Audit-ready events use kind `protected_state_write` and are recorded through Beads audit when available.
+- Audit-ready events use kind `protected_state_write` and are appended as JSON lines to `.forge/protected-state-audit.jsonl` (git-ignored, capped at the newest 500 records). The write is best-effort: a failing audit sink never blocks the check.
 
 ## Repair Hint
 
-Every blocked path prints a repair hint. A repair hint is specific guidance such as using `bd update` for `beads_state`, `forge setup` for generated harness files, or the package manager for `lockfiles`.
+Every blocked path prints a repair hint. A repair hint is specific guidance such as importing a legacy store with `forge migrate --from beads` for `beads_state`, `forge setup` for generated harness files, or the package manager for `lockfiles`.
 
 Example blocked output shape:
 
