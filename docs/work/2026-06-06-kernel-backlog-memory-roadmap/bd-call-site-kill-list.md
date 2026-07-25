@@ -8,8 +8,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 | Group | Call sites | Files |
 | --- | ---: | ---: |
 | command | 29 | 6 |
-| runtime | 117 | 20 |
-| docs | 387 | 45 |
+| runtime | 116 | 20 |
+| docs | 386 | 45 |
 | skills | 1 | 1 |
 | hooks | 0 | 0 |
 
@@ -46,8 +46,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 26 (.beads)
 - [ ] lib/protected-path-manifest.js (2)
   - lines: 23 (bd), 33 (bd)
-- [ ] lib/protected-state-surfaces.js (4)
-  - lines: 43 (.beads), 50 (.beads), 51 (.beads), 363 (bd)
+- [ ] lib/protected-state-surfaces.js (3)
+  - lines: 51 (.beads), 58 (.beads), 59 (.beads)
 - [ ] lib/runtime-health.js (7)
   - lines: 486 (bd), 520 (bd), 521 (bd), 522 (bd), 526 (bd), 527 (bd), 569 (bd)
 - [ ] lib/status/snapshot.js (1)
@@ -97,8 +97,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
   - lines: 159 (bd)
 - [ ] docs/reference/PROTECTED_PATH_MANIFEST.md (1)
   - lines: 12 (bd)
-- [ ] docs/reference/protected-state-surfaces.md (3)
-  - lines: 11 (bd, .beads), 20 (.beads), 32 (bd)
+- [ ] docs/reference/protected-state-surfaces.md (2)
+  - lines: 11 (.beads), 20 (.beads)
 - [ ] docs/reference/RESEARCH_TEMPLATE.md (1)
   - lines: 264 (bd)
 - [ ] docs/reference/ROADMAP.md (2)
