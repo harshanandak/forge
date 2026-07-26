@@ -14,6 +14,7 @@ const {
 	resolveWorkflowState,
 	extractDesignSlugs,
 } = require('../../lib/commands/status.js');
+const statusCommand = require('../../lib/commands/status.js');
 
 function createTempRepo(options = {}) {
 	const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-context-'));
@@ -438,6 +439,141 @@ describe('Status Command - Stage Detection', () => {
 			].join('\n'));
 
 			expect(slugs).toEqual(['user-auth', 'api-v2']);
+		});
+	});
+
+	describe('verbose briefing', () => {
+		const emptySnapshotFlags = { readStatusSnapshot: async () => ({}) };
+
+		// Plain temp dir, no git init: the briefing reads project files only, and a
+		// non-repo root keeps the short pulse on its honest-unknown context path.
+		function createTempProject() {
+			const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-verbose-'));
+			fs.writeFileSync(
+				path.join(projectRoot, 'package.json'),
+				JSON.stringify({ name: 'temp-project', version: '0.0.0' }, null, 2),
+				'utf8'
+			);
+			return projectRoot;
+		}
+
+		test('bare status stays the short pulse', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler([], emptySnapshotFlags, projectRoot);
+
+				expect(result.success).toBe(true);
+				expect(result.output).toContain('You are here');
+				expect(result.output).not.toContain('Key Commands');
+				expect(result.output).not.toContain('Forge prime');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('-v renders the full briefing including the post-ship loop', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler(['-v'], {}, projectRoot);
+
+				expect(result.success).toBe(true);
+				expect(result.output).toContain('Key Commands');
+				expect(result.output).toContain('forge shepherd watch <pr>');
+				expect(result.output).toContain('forge merge --auto <pr>');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('--verbose renders the same briefing as -v', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const long = await statusCommand.handler(['--verbose'], {}, projectRoot);
+				const short = await statusCommand.handler(['-v'], {}, projectRoot);
+
+				expect(long.output).toBe(short.output);
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('the global --verbose flag also renders the briefing', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler([], { verbose: true }, projectRoot);
+
+				expect(result.output).toContain('Key Commands');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('help documents the verbose flag', () => {
+			expect(statusCommand.usage).toContain('-v');
+			expect(Object.keys(statusCommand.flags)).toContain('-v, --verbose');
+		});
+
+		// The briefing renderer reads json from its args, but the short pulse also honors
+		// the flag forms — verbose mode must honor both or `-v --json` silently emits text.
+		test('verbose honors the json flag form and emits parseable JSON', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler([], { verbose: true, json: true }, projectRoot);
+
+				expect(result.success).toBe(true);
+				expect(result.output).not.toContain('Assembly:');
+				expect(JSON.parse(result.output).kind).toBe('prime');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('verbose honors the --json flag key form', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler(['-v'], { '--json': true }, projectRoot);
+
+				expect(JSON.parse(result.output).kind).toBe('prime');
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('-v --json passed as arguments emits the same JSON', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const fromArgs = await statusCommand.handler(['-v', '--json'], {}, projectRoot);
+				const fromFlags = await statusCommand.handler(['-v'], { json: true }, projectRoot);
+
+				const parsedArgs = JSON.parse(fromArgs.output);
+				const parsedFlags = JSON.parse(fromFlags.output);
+
+				expect(parsedArgs.kind).toBe('prime');
+				expect(parsedFlags.kind).toBe('prime');
+
+				// generated_at is a real per-call timestamp (not a stubbed clock), so two live calls
+				// a few ms apart legitimately differ there; strip it before asserting full equivalence.
+				delete parsedArgs.generated_at;
+				delete parsedArgs.orientation.generated_at;
+				delete parsedFlags.generated_at;
+				delete parsedFlags.orientation.generated_at;
+				expect(parsedArgs).toEqual(parsedFlags);
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
+		});
+
+		test('-v without json still emits the text briefing', async () => {
+			const projectRoot = createTempProject();
+			try {
+				const result = await statusCommand.handler(['-v'], {}, projectRoot);
+
+				expect(result.output).toContain('Assembly:');
+				expect(result.output).toContain('Key Commands');
+				expect(() => JSON.parse(result.output)).toThrow();
+			} finally {
+				fs.rmSync(projectRoot, { recursive: true, force: true });
+			}
 		});
 	});
 });

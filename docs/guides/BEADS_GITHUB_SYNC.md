@@ -1,31 +1,3 @@
-# Beads/GitHub Sync Deprecation
+# Beads/GitHub Sync (Retired)
 
-Beads/GitHub workflow sync is removed. Forge no longer ships `github-to-beads.yml` or `beads-to-github.yml` workflow templates, and there is no longer any way to scaffold Beads/GitHub sync.
-
-## Current Behavior
-
-- `.beads/` is legacy import-only state and is not committed. Import it with `forge migrate --from beads`.
-- `forge setup` removes old generated Beads/GitHub sync files from existing installs automatically. The cleanup is no longer opt-in behind a flag.
-- Only files whose content matches a known generated template are removed, so files you have edited yourself are preserved.
-
-## Removed Generated Files
-
-The `forge setup` compatibility cleanup removes the old generated files:
-
-```text
-.github/workflows/github-to-beads.yml
-.github/workflows/beads-to-github.yml
-.github/beads-mapping.json
-.github/beads-sync-config.json
-.github/scripts/beads-sync/*.mjs
-scripts/github-beads-sync.config.json
-scripts/github-beads-sync/*.mjs
-```
-
-Unrelated GitHub workflows are preserved.
-
-## Replacement Direction
-
-Future GitHub issue sync must use Forge Kernel/server authority. Local-only work is durable in local Kernel SQLite. Team or cross-machine issue state is serialized through server authority, then GitHub issues can be updated as a projection from that authority.
-
-Do not commit live `.beads/` files, create metadata-only PRs, or bypass protected branches to update issue tracker state.
+**Historical.** Beads/GitHub workflow sync was retired with **D45** — Beads is no longer a live Forge feature, so there is nothing left to keep in sync. Forge ships no `github-to-beads.yml` or `beads-to-github.yml` templates and never scaffolds new sync files. Bringing an existing Beads store into Forge is a one-time import, `forge migrate --from beads`; after that the Forge Kernel is the sole issue-state authority, and GitHub issue updates are a server-side projection from that authority (see [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](../work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md)). Installs that still carry old generated sync files are cleaned automatically: the `forge setup` compatibility cleanup removes the old generated files, with no flag required.

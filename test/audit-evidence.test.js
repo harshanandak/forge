@@ -1,27 +1,56 @@
-const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { afterEach, describe, test, expect } = require('bun:test');
 const {
+	AUDIT_EVIDENCE_LOG,
+	AUDIT_EVIDENCE_MAX_RECORDS,
 	buildSubagentAuditPayload,
 	recordSubagentAuditEvent,
 	labelSubagentAuditEvent,
 	recordAndLabelSubagentAuditEvent,
-	hasAuditMetaJsonSupport,
 	VERDICT_LABELS,
 } = require('../lib/audit-evidence');
 
-function createFsDouble() {
-	const writes = [];
-	const dirs = [];
+function createSinkDouble() {
+	const appends = [];
 	return {
-		writes,
-		dirs,
-		mkdirSync: (dir, options) => {
-			dirs.push({ dir, options });
-		},
-		appendFileSync: (file, data) => {
-			writes.push({ file, data });
+		appends,
+		appendRecord: (logPath, record, maxRecords) => {
+			appends.push({ logPath, record, maxRecords });
 		},
 	};
 }
+
+function createIdSequence(prefix = 'evi') {
+	let next = 0;
+	return () => {
+		next += 1;
+		return `${prefix}-${next}`;
+	};
+}
+
+const tempRoots = [];
+
+function createTempRepo() {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-audit-evidence-'));
+	tempRoots.push(root);
+	return root;
+}
+
+function readLog(root) {
+	return fs
+		.readFileSync(path.join(root, AUDIT_EVIDENCE_LOG), 'utf8')
+		.split('\n')
+		.filter(Boolean)
+		.map(line => JSON.parse(line));
+}
+
+afterEach(() => {
+	while (tempRoots.length > 0) {
+		fs.rmSync(tempRoots.pop(), { recursive: true, force: true });
+	}
+});
 
 describe('audit evidence adapter', () => {
 	test('builds redaction-safe implementer event payloads', () => {
@@ -91,13 +120,9 @@ describe('audit evidence adapter', () => {
 		expect(serialized).not.toMatch(/\d+=\[REDACTED\]/);
 	});
 
-	test('records subagent calls through bd audit record and writes fallback metadata without replacing Beads', () => {
-		const commands = [];
-		const fsDouble = createFsDouble();
-		const runCommand = (cmd, args) => {
-			commands.push({ cmd, args });
-			return JSON.stringify({ id: 'int-test123', kind: 'llm_call', schema_version: 1 });
-		};
+	test('records subagent calls into the capped forge log', () => {
+		const sink = createSinkDouble();
+		const root = createTempRepo();
 
 		const result = recordSubagentAuditEvent({
 			command: 'dev',
@@ -110,216 +135,160 @@ describe('audit evidence adapter', () => {
 			response: 'review response',
 			metadata: { rubric: 'quality', token: 'hide-me', 'api key': 'spaced-meta-key' },
 		}, {
-			cwd: 'C:/repo',
-			fs: fsDouble,
-			runCommand,
-			metaJsonSupported: false,
+			cwd: root,
+			appendRecord: sink.appendRecord,
+			newId: createIdSequence(),
+			now: '2026-07-25T00:00:00.000Z',
 		});
 
 		expect(result.success).toBe(true);
-		expect(result.entryId).toBe('int-test123');
-		expect(commands[0].cmd).toBe('bd');
-		expect(commands[0].args).toEqual([
-			'audit',
-			'record',
-			'--json',
-			'--kind',
-			'llm_call',
-			'--issue-id',
-			'forge-besw.20',
-			'--model',
-			'unknown',
-			'--prompt',
-			expect.any(String),
-			'--response',
-			expect.any(String),
+		expect(result.entryId).toBe('evi-1');
+		expect(sink.appends).toHaveLength(1);
+		expect(sink.appends[0].logPath).toBe(path.resolve(root, AUDIT_EVIDENCE_LOG));
+		expect(sink.appends[0].maxRecords).toBe(AUDIT_EVIDENCE_MAX_RECORDS);
+
+		const record = sink.appends[0].record;
+		expect(record.kind).toBe('forge.auditEvidence');
+		expect(record.sourceOfTruth).toBe('forge_log');
+		expect(record.entryId).toBe('evi-1');
+		expect(record.recordedAt).toBe('2026-07-25T00:00:00.000Z');
+		expect(record.command).toBe('dev');
+		expect(record.issueId).toBe('forge-besw.20');
+		expect(record.role).toBe('quality_reviewer');
+		expect(record.phase).toBe('QUALITY');
+		expect(record.model).toBe('unknown');
+		expect(JSON.parse(record.prompt).content).toBe('review prompt');
+		expect(JSON.parse(record.response).content).toBe('review response');
+		expect(record.metadata.rubric).toBe('quality');
+
+		const serialized = JSON.stringify(record);
+		expect(serialized).not.toContain('hide-me');
+		expect(serialized).not.toContain('spaced-meta-key');
+		expect(serialized).not.toContain('correct horse battery staple');
+		expect(record.taskTitle).toContain('password is [REDACTED]');
+	});
+
+	test('mints a distinct entry id for every record', () => {
+		const sink = createSinkDouble();
+		const event = { command: 'dev', role: 'implementer', prompt: 'prompt', response: 'response' };
+
+		const first = recordSubagentAuditEvent(event, { appendRecord: sink.appendRecord });
+		const second = recordSubagentAuditEvent(event, { appendRecord: sink.appendRecord });
+
+		expect(first.entryId).toMatch(/^[0-9a-f-]{36}$/);
+		expect(second.entryId).not.toBe(first.entryId);
+		expect(sink.appends.map(append => append.record.entryId)).toEqual([
+			first.entryId,
+			second.entryId,
 		]);
-		expect(fsDouble.dirs[0].dir).toBe('C:/repo/.forge');
-		expect(fsDouble.writes[0].file).toBe('C:/repo/.forge/log.jsonl');
-		const fallback = JSON.parse(fsDouble.writes[0].data);
-		expect(fallback.kind).toBe('forge.auditEvidence');
-		expect(fallback.sourceOfTruth).toBe('beads');
-		expect(fallback.beadsEntryId).toBe('int-test123');
-		expect(JSON.stringify(fallback)).not.toContain('hide-me');
-		expect(JSON.stringify(fallback)).not.toContain('spaced-meta-key');
-		expect(JSON.stringify(fallback)).not.toContain('correct horse battery staple');
-		expect(fallback.taskTitle).toContain('password is [REDACTED]');
 	});
 
-	test('keeps fallback metadata best-effort after Beads recording succeeds', () => {
-		const result = recordSubagentAuditEvent({
-			command: 'dev',
-			role: 'quality_reviewer',
-			phase: 'QUALITY',
-			prompt: 'review prompt',
-			response: 'review response',
-			metadata: { files: ['test/audit-evidence.test.js'] },
-		}, {
-			cwd: 'C:/repo',
-			fs: {
-				mkdirSync: () => {
-					throw new Error('disk unavailable');
-				},
-				appendFileSync: () => {
-					throw new Error('should not write');
-				},
-			},
-			runCommand: () => JSON.stringify({ id: 'int-test123', kind: 'llm_call', schema_version: 1 }),
-			metaJsonSupported: false,
-		});
-
-		expect(result.success).toBe(true);
-		expect(result.entryId).toBe('int-test123');
-		expect(result.fallback.skipped).toBe(true);
-		expect(result.fallback.error).toBe('disk unavailable');
-	});
-
-	test('requires JSON ids from bd audit record output', () => {
+	test('reports a failed record write instead of throwing', () => {
 		const result = recordSubagentAuditEvent({
 			command: 'dev',
 			role: 'implementer',
 			prompt: 'prompt',
 			response: 'response',
 		}, {
-			runCommand: () => 'help text with int-fallback',
-			metaJsonSupported: true,
+			appendRecord: () => {
+				throw new Error('disk unavailable');
+			},
 		});
 
 		expect(result.success).toBe(false);
 		expect(result.entryId).toBe(null);
-		expect(result.fallback).toBe(null);
+		expect(result.error).toBe('disk unavailable');
 	});
 
-	test('normalizes malformed metadata before audit recording', () => {
-		const commands = [];
+	test('normalizes malformed metadata before recording', () => {
+		const sink = createSinkDouble();
+
 		const result = recordSubagentAuditEvent({
 			command: 'dev',
 			role: 'implementer',
 			prompt: 'prompt',
 			response: 'response',
 			metadata: 'token=should-not-be-meta-json',
-		}, {
-			runCommand: (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-record' });
-			},
-			metaJsonSupported: true,
-		});
+		}, { appendRecord: sink.appendRecord });
 
 		expect(result.success).toBe(true);
 		expect(result.payload.metadata).toEqual({});
-		expect(commands[0].args).not.toContain('--meta-json');
-	});
-
-	test('skips fallback metadata when upstream meta-json support is present', () => {
-		const commands = [];
-		const fsDouble = createFsDouble();
-		const result = recordSubagentAuditEvent({
-			command: 'dev',
-			issueId: 'forge-besw.20',
-			role: 'implementer',
-			phase: 'RED',
-			prompt: 'prompt',
-			response: 'response',
-			metadata: { files: ['test/audit-evidence.test.js'] },
-		}, {
-			fs: fsDouble,
-			runCommand: (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-meta' });
-			},
-			metaJsonSupported: true,
-		});
-
-		expect(result.entryId).toBe('int-meta');
-		expect(commands[0].args).toContain('--meta-json');
-		const metaIndex = commands[0].args.indexOf('--meta-json');
-		expect(JSON.parse(commands[0].args[metaIndex + 1])).toEqual({
-			files: ['test/audit-evidence.test.js'],
-		});
-		expect(fsDouble.writes.length).toBe(0);
+		expect(sink.appends[0].record.metadata).toEqual({});
 	});
 
 	test('labels reviewer PASS and FAIL verdicts as good and bad', () => {
-		const commands = [];
-		const runCommand = (cmd, args) => {
-			commands.push({ cmd, args });
-			return JSON.stringify({ id: args[2] });
-		};
+		const sink = createSinkDouble();
 
-		const pass = labelSubagentAuditEvent('int-pass', {
+		const pass = labelSubagentAuditEvent('evi-pass', {
 			role: 'spec_reviewer',
 			verdict: 'PASS',
-		}, { runCommand });
-		const fail = labelSubagentAuditEvent('int-fail', {
+		}, { appendRecord: sink.appendRecord, now: '2026-07-25T00:00:00.000Z' });
+		const fail = labelSubagentAuditEvent('evi-fail', {
 			role: 'quality_reviewer',
 			verdict: 'FAIL',
-		}, { runCommand });
+		}, { appendRecord: sink.appendRecord });
 
 		expect(pass.label).toBe('good');
 		expect(pass.success).toBe(true);
-		expect(pass.entryId).toBe('int-pass');
+		expect(pass.entryId).toBe('evi-pass');
 		expect(fail.label).toBe('bad');
 		expect(fail.success).toBe(true);
-		expect(fail.entryId).toBe('int-fail');
-		expect(commands[0].args).toEqual([
-			'audit',
-			'label',
-			'int-pass',
-			'--json',
-			'--label',
-			'good',
-			'--reason',
-			'spec_reviewer verdict: PASS',
-		]);
-		expect(commands[1].args).toContain('bad');
+		expect(fail.entryId).toBe('evi-fail');
+		expect(sink.appends[0].record).toEqual({
+			kind: 'forge.auditEvidenceLabel',
+			sourceOfTruth: 'forge_log',
+			entryId: 'evi-pass',
+			recordedAt: '2026-07-25T00:00:00.000Z',
+			role: 'spec_reviewer',
+			verdict: 'PASS',
+			label: 'good',
+			reason: 'spec_reviewer verdict: PASS',
+		});
+		expect(sink.appends[1].record.label).toBe('bad');
+		expect(sink.appends[1].record.reason).toBe('quality_reviewer verdict: FAIL');
 	});
 
-	test('reports label failures when bd output is invalid or the command fails', () => {
-		const invalid = labelSubagentAuditEvent('int-pass', {
+	test('reports a failed label write instead of throwing', () => {
+		const result = labelSubagentAuditEvent('evi-pass', {
 			role: 'spec_reviewer',
 			verdict: 'PASS',
 		}, {
-			runCommand: () => 'help text with int-pass',
-		});
-		const thrown = labelSubagentAuditEvent('int-fail', {
-			role: 'quality_reviewer',
-			verdict: 'FAIL',
-		}, {
-			runCommand: () => {
-				throw new Error('bd label failed');
+			appendRecord: () => {
+				throw new Error('label write failed');
 			},
 		});
 
-		expect(invalid.success).toBe(false);
-		expect(invalid.entryId).toBe(null);
-		expect(thrown.success).toBe(false);
-		expect(thrown.error).toBe('bd label failed');
+		expect(result.success).toBe(false);
+		expect(result.entryId).toBe(null);
+		expect(result.label).toBe('good');
+		expect(result.error).toBe('label write failed');
 	});
 
 	test('does not label implementer or unknown verdict events', () => {
-		const commands = [];
-		const runCommand = (cmd, args) => {
-			commands.push({ cmd, args });
-			return '{}';
-		};
+		const sink = createSinkDouble();
 
-		const implementer = labelSubagentAuditEvent('int-impl', {
+		const implementer = labelSubagentAuditEvent('evi-impl', {
 			role: 'implementer',
 			verdict: 'PASS',
-		}, { runCommand });
-		const unknown = labelSubagentAuditEvent('int-unknown', {
+		}, { appendRecord: sink.appendRecord });
+		const unknown = labelSubagentAuditEvent('evi-unknown', {
 			role: 'quality_reviewer',
 			verdict: 'UNKNOWN',
-		}, { runCommand });
+		}, { appendRecord: sink.appendRecord });
+		const unrecorded = labelSubagentAuditEvent(null, {
+			role: 'spec_reviewer',
+			verdict: 'PASS',
+		}, { appendRecord: sink.appendRecord });
 
 		expect(implementer.skipped).toBe(true);
 		expect(unknown.skipped).toBe(true);
-		expect(commands.length).toBe(0);
+		expect(unrecorded.skipped).toBe(true);
+		expect(sink.appends).toHaveLength(0);
 	});
 
 	test('records then labels reviewer events', () => {
-		const commands = [];
+		const sink = createSinkDouble();
+
 		const result = recordAndLabelSubagentAuditEvent({
 			command: 'dev',
 			issueId: 'forge-besw.20',
@@ -328,24 +297,49 @@ describe('audit evidence adapter', () => {
 			prompt: 'prompt',
 			response: 'response',
 			verdict: 'PASS',
-		}, {
-			runCommand: (cmd, args) => {
-				commands.push({ cmd, args });
-				return JSON.stringify({ id: 'int-record' });
-			},
-			metaJsonSupported: true,
-		});
+		}, { appendRecord: sink.appendRecord, newId: createIdSequence() });
 
-		expect(result.record.entryId).toBe('int-record');
+		expect(result.record.entryId).toBe('evi-1');
 		expect(result.label.label).toBe('good');
 		expect(result.label.success).toBe(true);
-		expect(commands.length).toBe(2);
+		expect(sink.appends.map(append => append.record.kind)).toEqual([
+			'forge.auditEvidence',
+			'forge.auditEvidenceLabel',
+		]);
+		expect(sink.appends[1].record.entryId).toBe('evi-1');
 	});
 
-	test('detects whether bd audit record exposes meta-json support', () => {
-		expect(hasAuditMetaJsonSupport(() => 'Usage: bd audit record --meta-json string')).toBe(true);
-		expect(hasAuditMetaJsonSupport(() => 'Usage: bd audit record --prompt string')).toBe(false);
-		expect(() => hasAuditMetaJsonSupport(() => { throw new Error('missing bd'); })).toThrow('missing bd');
+	test('appends real records to the capped forge log', () => {
+		const root = createTempRepo();
+
+		const result = recordAndLabelSubagentAuditEvent({
+			command: 'dev',
+			role: 'spec_reviewer',
+			phase: 'SPEC',
+			prompt: 'spec prompt',
+			response: 'PASS',
+			verdict: 'PASS',
+		}, { cwd: root });
+
+		const lines = readLog(root);
+		expect(result.record.success).toBe(true);
+		expect(result.record.logPath).toBe(path.resolve(root, AUDIT_EVIDENCE_LOG));
+		expect(lines.map(line => line.kind)).toEqual([
+			'forge.auditEvidence',
+			'forge.auditEvidenceLabel',
+		]);
+		expect(lines.every(line => line.entryId === result.record.entryId)).toBe(true);
+	});
+
+	test('caps the forge log so a long run cannot grow it unbounded', () => {
+		const root = createTempRepo();
+		const event = { command: 'dev', role: 'implementer', prompt: 'prompt', response: 'response' };
+
+		for (let index = 0; index < 6; index += 1) {
+			recordSubagentAuditEvent(event, { cwd: root, maxRecords: 3 });
+		}
+
+		expect(readLog(root)).toHaveLength(3);
 	});
 
 	test('exports verdict label map', () => {

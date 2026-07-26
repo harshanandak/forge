@@ -115,9 +115,7 @@ Task 2: Validation logic
 
 ## State Management (Single Source of Truth)
 
-> GitHub issue lifecycle may sync to Beads via CI -- see [docs/guides/BEADS_GITHUB_SYNC.md](docs/guides/BEADS_GITHUB_SYNC.md).
-
-**Current implementation**: The Forge Kernel is the default issue-state authority; issue commands read and write the kernel store unless Beads is explicitly selected (`--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`), where it serves as an import/export/projection compatibility layer. **Direction (D44)**: continue consolidating issue/workflow/run authority in the Kernel with Beads remaining a compatibility projection. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
+**Current implementation**: The Forge Kernel is the sole issue-state authority — every issue command reads and writes the kernel store, with no backend to select. Beads exists only as an inbound migration path: `forge migrate --from beads` imports an existing Beads store into the kernel once, and no Forge command depends on Beads at runtime. **Direction (D45)**: the Kernel owns issue/workflow/run authority outright; Beads is retired as a live feature. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
 
 ```json
 {
@@ -169,7 +167,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated 
 
 ```bash
 forge push                    # Branch protection + lint + tests, then push
-forge push --quick            # Review-cycle: lint-only push (CI runs full suite)
+forge push --quick            # Review-cycle: lint-only end to end (the pre-push hook's test job is skipped too; CI runs the full suite)
 forge worktree create <slug>  # Create a worktree
 forge test                    # Run tests with correct timeouts
 forge sync                    # Sync issue data
@@ -231,7 +229,7 @@ See [.mcp.json.example](.mcp.json.example) for configuration (Claude Code: copy 
 
 **Forge v3 / Kernel Plan (active design):**
 - [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) — canonical Forge Kernel authority reset plan for issue authority, local broker, team authority, adapters, storage, and gates
-- [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D44 decisions ledger with rationale + tradeoffs + anti-decisions; D44 supersedes Beads-only authority portions of earlier decisions
+- [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D45 decisions ledger with rationale + tradeoffs + anti-decisions; D44 supersedes Beads-only authority portions of earlier decisions, and D45 retires Beads as a live feature
 - [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its legacy default-substrate language over D44
 - See [docs/INDEX.md](docs/INDEX.md) for the full reading order across the v3 design folder
 
