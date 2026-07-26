@@ -164,6 +164,9 @@ describe('capped jsonl log', () => {
 			expect(seqs).toContain('racer-2');
 			// The drained records land after the kept window, in append order.
 			expect(seqs.slice(-3)).toEqual(['newest', 'racer-1', 'racer-2']);
+			// Draining widens the rewrite past the cap, so the trim has to come back
+			// down before it returns — nothing else is guaranteed to write again.
+			expect(seqs).toHaveLength(10);
 		} finally {
 			fs.writeFileSync = realWriteFileSync;
 			fs.appendFileSync = realAppendFileSync;
