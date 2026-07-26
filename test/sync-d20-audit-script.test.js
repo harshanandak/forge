@@ -13,9 +13,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { AUDIT_ARTIFACT } = require('../lib/release-readiness');
-const { run, parseStagedNameStatus } = require('../scripts/sync-d20-audit');
-
-const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
+const { run, parseStagedNameStatus, stagedPaths } = require('../scripts/sync-d20-audit');
 
 function deps(overrides = {}) {
   const calls = { wrote: 0, staged: [], logs: [] };
@@ -70,21 +68,73 @@ describe('sync-d20-audit run() — changed-path gate', () => {
   });
 });
 
+// `--name-status -z` emits a flat NUL-delimited token stream: a status token, then one
+// path (two for R/C). Line/tab splitting could not represent a pathname containing a tab
+// or a newline, and git's non-z output would hand those over in its quoted, backslash-
+// escaped form. Either way the hook would mis-read a census-impacting path and silently
+// skip the regen — the exact failure this auto-heal exists to prevent.
 describe('sync-d20-audit parseStagedNameStatus', () => {
   test('reads added/modified/deleted paths', () => {
-    expect(parseStagedNameStatus('A\tlib/a.js\nM\tlib/b.js\nD\tlib/c.js\n'))
+    expect(parseStagedNameStatus('A\0lib/a.js\0M\0lib/b.js\0D\0lib/c.js\0'))
       .toEqual(['lib/a.js', 'lib/b.js', 'lib/c.js']);
   });
 
   // A rename changes the census on BOTH sides — the old path leaves it, the new one may
   // not enter it — so --name-only (destination only) would miss half the shift.
   test('reads both sides of a rename or copy', () => {
-    expect(parseStagedNameStatus('R096\tlib/old.js\tlib/new.js\n'))
+    expect(parseStagedNameStatus('R096\0lib/old.js\0lib/new.js\0'))
       .toEqual(['lib/old.js', 'lib/new.js']);
   });
 
-  test('ignores blank lines', () => {
-    expect(parseStagedNameStatus('\n\nM\tlib/a.js\n\n')).toEqual(['lib/a.js']);
+  test('keeps the status/path pairing across a rename in the middle of the stream', () => {
+    expect(parseStagedNameStatus('A\0lib/a.js\0R100\0lib/old.js\0lib/new.js\0M\0lib/b.js\0'))
+      .toEqual(['lib/a.js', 'lib/old.js', 'lib/new.js', 'lib/b.js']);
+  });
+
+  test('reads a pathname containing a space', () => {
+    expect(parseStagedNameStatus('M\0lib/with space.js\0'))
+      .toEqual(['lib/with space.js']);
+  });
+
+  // Nothing may trim a pathname: leading/trailing whitespace is legal in git, and a
+  // trimmed path stops matching the census predicate.
+  test('preserves whitespace and embedded tabs/newlines in pathnames', () => {
+    expect(parseStagedNameStatus('A\0lib/ padded .js\0M\0lib/tab\there.js\0D\0lib/new\nline.js\0'))
+      .toEqual(['lib/ padded .js', 'lib/tab\there.js', 'lib/new\nline.js']);
+  });
+
+  test('handles empty output and the trailing NUL', () => {
+    expect(parseStagedNameStatus('')).toEqual([]);
+    expect(parseStagedNameStatus('\0')).toEqual([]);
+  });
+});
+
+// The exec seam is injected the way the rest of the repo does it (`exec = execFileSync`),
+// so the argv the hook depends on is asserted without needing a real repo.
+describe('sync-d20-audit stagedPaths', () => {
+  function fakeExec(output) {
+    const calls = [];
+    const exec = (file, args) => {
+      calls.push({ file, args });
+      return output;
+    };
+    return { exec, calls };
+  }
+
+  test('asks git for NUL-delimited output', () => {
+    const { exec, calls } = fakeExec('');
+
+    stagedPaths('/project', exec);
+
+    expect(calls[0].file).toBe('git');
+    expect(calls[0].args).toContain('-z');
+    expect(calls[0].args).toContain('--name-status');
+  });
+
+  test('returns the parsed paths, deduplicated', () => {
+    const { exec } = fakeExec('M\0lib/a.js\0A\0lib/a.js\0D\0lib/b.js\0');
+
+    expect(stagedPaths('/project', exec)).toEqual(['lib/a.js', 'lib/b.js']);
   });
 });
 
@@ -105,7 +155,11 @@ describe('lefthook wiring', () => {
   });
 });
 
-describe.if(gitAvailable)('sync-d20-audit in a real git repo', () => {
+// Unconditional, like the sibling real-git suite in test/release-readiness-tracked.test.js:
+// git is a hard prerequisite of this repo (the hooks, the census's own `git ls-files`, the
+// push workflow), so a suite that silently vanished without it would only ever hide a
+// broken environment.
+describe('sync-d20-audit in a real git repo', () => {
   let repo;
 
   beforeEach(() => {

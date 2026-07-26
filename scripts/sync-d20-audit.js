@@ -23,9 +23,9 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { AUDIT_ARTIFACT, isBdCensusPath, writeAuditArtifact } = require('../lib/release-readiness');
 
-function repoRoot() {
+function repoRoot(exec = execFileSync) {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+    return exec('git', ['rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
@@ -35,29 +35,37 @@ function repoRoot() {
 }
 
 /**
- * Both sides of a rename shift the census — the old path leaves it and the new one may
- * not enter it — so this reads --name-status rather than --name-only, which would report
- * the destination alone.
+ * Parses `git diff --cached --name-status -z`: a flat NUL-delimited token stream of a
+ * status followed by its path — `A\0path\0`, and `R100\0old\0new\0` for a rename or copy,
+ * which is read from both sides because both shift the census (the old path leaves it and
+ * the new one may not enter it).
+ *
+ * NUL delimiting is what makes this safe. Git's default output quotes and backslash-
+ * escapes pathnames with non-ASCII or special characters, and no line/tab split can
+ * represent a pathname that itself contains a tab or a newline. Under -z the pathnames are
+ * verbatim, so nothing here may trim them — a mis-read path silently drops a
+ * census-impacting change and skips the regen this hook exists to perform.
  */
 function parseStagedNameStatus(output) {
+  const tokens = output.split('\0');
   const files = [];
-  for (const line of output.split(/\r?\n/)) {
-    const parts = line.trim().split('\t').filter(Boolean);
-    if (parts.length < 2) {
+
+  for (let index = 0; index < tokens.length; index++) {
+    const status = tokens[index];
+    if (status.length === 0) {
       continue;
     }
-    if (/^[RC]/.test(parts[0])) {
-      files.push(...parts.slice(1, 3));
-    } else {
-      files.push(parts[1]);
-    }
+    const pathCount = /^[RC]/.test(status) ? 2 : 1;
+    files.push(...tokens.slice(index + 1, index + 1 + pathCount).filter(Boolean));
+    index += pathCount;
   }
+
   return [...new Set(files)];
 }
 
-function stagedPaths(projectRoot) {
+function stagedPaths(projectRoot, exec = execFileSync) {
   return parseStagedNameStatus(
-    execFileSync('git', ['-C', projectRoot, 'diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
+    exec('git', ['-C', projectRoot, 'diff', '--cached', '--name-status', '-z', '--diff-filter=ACMRDT'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }),
