@@ -149,6 +149,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated 
 - Offers guided recovery (add tests now, skip with tech debt tracking, emergency override)
 - No AI decision required - automatic validation
 - **Strong default, not a hard floor.** The TDD gate is the default-ON `rail.tdd_intent` rail; turn it off with `forge gate disable rail.tdd_intent` (the `minimal` adoption profile ships it off). The installed hooks read the resolved config at run time, so a disabled rail makes them genuinely inert — enforcement honestly follows your config.
+- **Defers to a gate you already have.** If your repo already runs a TDD / source-test coupling check on pre-commit (any runner: lefthook, husky, the `pre-commit` framework, a raw `.git/hooks/pre-commit`), `forge setup` detects it, does **not** install a second gate on the same commit, turns `rail.tdd_intent` off, and says so. Prefer Forge's gate? Remove yours and run `forge gate enable rail.tdd_intent` — an explicit setting is never overwritten by a later setup.
 
 **Pre-push hook validates tests:**
 - Branch protection: blocks direct push to `main`/`master`

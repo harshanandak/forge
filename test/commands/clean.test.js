@@ -399,6 +399,134 @@ describe('forge clean — squash-merge aware detection', () => {
     expect(result.active).toBe(0);
   });
 
+  // -------------------------------------------------------------------------
+  // Unstarted branches (kernel c5ab529e). A branch created but never committed to
+  // has its tip ON the default branch, so every git-only tier reads "merged".
+  // That is UNSTARTED work, not finished work: never remove it, never close it.
+  // -------------------------------------------------------------------------
+
+  test('_internals.detectMerged rejects a zero-commit branch even when ancestry lists it', () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const runFile = (_cmd, args) => {
+      // Fresh branch: no commits of its own ahead of main.
+      if (args[0] === 'rev-list' && args[1] === '--count') return Buffer.from('0\n');
+      return Buffer.from('');
+    };
+    const ctx = {
+      defaultBranch: 'main',
+      mergedBranches: ['fix/fresh', 'main'], // ancestry tier WOULD say merged
+      ghMergedPrs: new Map(),
+      runFile,
+    };
+    expect(_internals.detectMerged('fix/fresh', ctx)).toBe(false);
+  });
+
+  test('_internals.detectMerged still accepts a branch with commits of its own', () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const runFile = (_cmd, args) => {
+      if (args[0] === 'rev-list' && args[1] === '--count') return Buffer.from('4\n');
+      return Buffer.from('');
+    };
+    const ctx = {
+      defaultBranch: 'main',
+      mergedBranches: ['feat/real', 'main'],
+      ghMergedPrs: new Map(),
+      runFile,
+    };
+    expect(_internals.detectMerged('feat/real', ctx)).toBe(true);
+  });
+
+  test('a freshly created worktree with no commits is neither removed nor closed', async () => {
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    const closed = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      // The branch tip IS a main commit, so git lists it as merged...
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  fix/fresh\n  main\n');
+      // ...and it has contributed nothing.
+      if (args[0] === 'rev-list' && args[1] === '--count') return Buffer.from('0\n');
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('fresh')}\nbranch refs/heads/fix/fresh\n\n`);
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: mockExec,
+      _fs: fsWith(['fresh']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async (params) => { closed.push(params); return { closed: true, issueId: 'issue-fresh' }; },
+    });
+
+    expect(result.cleaned).toBe(0);
+    expect(result.active).toBe(1);
+    expect(removed).toHaveLength(0);
+    expect(closed).toHaveLength(0);
+    expect(result.closedIssues).toEqual([]);
+  });
+
+  test('a squash-merged branch with commits of its own is still removed and closed', async () => {
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    const closed = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from('[]');
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n');
+      if (args[0] === 'rev-list' && args[1] === '--count') return Buffer.from('7\n'); // real work
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('sq')}\nbranch refs/heads/feat/sq\n\n`);
+      }
+      if (args[0] === 'merge-base') return Buffer.from('basesha\n');
+      if (args[0] === 'rev-parse' && String(args[1]).endsWith('^{tree}')) return Buffer.from('treesha\n');
+      if (args[0] === 'commit-tree') return Buffer.from('synthsha\n');
+      if (args[0] === 'cherry') return Buffer.from('- 1234567 squashed change\n');
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: mockExec,
+      _fs: fsWith(['sq']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async (params) => { closed.push(params); return { closed: true, issueId: 'issue-sq' }; },
+    });
+
+    expect(result.cleaned).toBe(1);
+    expect(removed[0]).toBe(wt('sq'));
+    expect(closed).toHaveLength(1);
+    expect(result.closedIssues).toEqual([{ branch: 'feat/sq', issueId: 'issue-sq' }]);
+  });
+
+  test('a merged PR whose head OID matches still wins over the zero-commit guard', async () => {
+    // A non-squash merge leaves the branch tip an ancestor of main (0 commits
+    // ahead). A merged PR pinned to that exact tip is direct evidence, not a
+    // git-topology guess, so it must still clean up.
+    const mod = require('../../lib/commands/clean');
+    const removed = [];
+    const mockExec = (cmd, args) => {
+      if (cmd === 'gh') return Buffer.from(JSON.stringify([{ headRefName: 'feat/ff', headRefOid: 'tipsha' }]));
+      if (cmd !== 'git') return Buffer.from('');
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
+      if (args[0] === 'rev-parse' && args[1] === 'feat/ff') return Buffer.from('tipsha\n');
+      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  main\n');
+      if (args[0] === 'rev-list' && args[1] === '--count') return Buffer.from('0\n'); // merged, so 0 ahead
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return Buffer.from(`worktree ${wt('ff')}\nbranch refs/heads/feat/ff\n\n`);
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
+      return Buffer.from('');
+    };
+    const result = await mod.handler([], {}, ROOT, { _exec: mockExec, _fs: fsWith(['ff']), _syncMaster: noopSync });
+    expect(result.cleaned).toBe(1);
+    expect(removed[0]).toBe(wt('ff'));
+  });
+
   test('_internals.isSquashMerged returns true only when cherry emits a "-" line', () => {
     const { _internals } = require('../../lib/commands/clean');
     const runMerged = (cmd, args) => {
@@ -752,6 +880,53 @@ describe('forge clean — close linked issues on merge', () => {
 
     expect(result.survivors.length + result.cleaned).toBe(1);
     expect(seen).toHaveLength(1);
+  });
+
+  // Removal and closing must flow from ONE decision (kernel c5ab529e): clean
+  // skipped these worktrees as dirty and then closed their issues anyway, which
+  // is irreversible — `done` is terminal.
+  test('a worktree skipped as dirty does NOT get its issue closed', async () => {
+    const mod = require('../../lib/commands/clean');
+    const seen = [];
+    const removed = [];
+    const base = execWithMergedPr(['linked'], removed);
+    const exec = (cmd, args) => {
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'status') return Buffer.from(' M lib/wip.js\n');
+      return base(cmd, args);
+    };
+
+    const result = await mod.handler([], {}, ROOT, {
+      _exec: exec,
+      _fs: fsWith(['linked']),
+      _syncMaster: noopSync,
+      _closeLinkedIssue: async (params) => { seen.push(params); return { closed: true, issueId: 'issue-1' }; },
+    });
+
+    expect(result.dirty).toHaveLength(1);
+    expect(removed).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+    expect(result.closedIssues).toEqual([]);
+  });
+
+  test('_internals.cleanWorktree reports the close decision alongside the removal outcome', async () => {
+    const { _internals } = require('../../lib/commands/clean');
+    const map = new Map([[_internals.normalizeWorktreeKey(wt('d')), 'feat/d']]);
+    const dirtyRun = (_cmd, args) => {
+      if (args[0] === '-C' && args[2] === 'status') return Buffer.from(' M a.js\n');
+      return Buffer.from('');
+    };
+    const dirty = await _internals.cleanWorktree(
+      'd', map, () => true, path.resolve(ROOT, '.worktrees'), false, dirtyRun, fsWith(['d']), {},
+    );
+    expect(dirty.status).toBe('dirty');
+    expect(dirty.closeIssue).toBe(false);
+
+    const cleanRun = () => Buffer.from('');
+    const cleaned = await _internals.cleanWorktree(
+      'd', map, () => true, path.resolve(ROOT, '.worktrees'), false, cleanRun, fsWith(['d']), {},
+    );
+    expect(cleaned.status).toBe('cleaned');
+    expect(cleaned.closeIssue).toBe(true);
   });
 
   // Best-effort: a broken kernel must never break worktree cleanup.
