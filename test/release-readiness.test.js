@@ -9,6 +9,7 @@ const {
   AUDIT_ARTIFACT,
   auditBdCallSites,
   buildReadinessReport,
+  isBdCensusPath,
   renderBdCallSiteAuditMarkdown,
   writeAuditArtifact,
 } = require('../lib/release-readiness');
@@ -2320,5 +2321,121 @@ describe('release readiness target — prerelease acceptance (3f83ca6c)', () => 
     const report = buildReadinessReport(root, { target: '9.9.9' });
     expect(report.success).toBe(false);
     expect(report.blockers.find(blocker => blocker.id === 'unsupported-target')).toBeDefined();
+  });
+});
+
+// The pre-commit auto-heal hook (scripts/sync-d20-audit.js) must only do work when a
+// staged path actually shifts the census. That predicate has to be DERIVED from the
+// same scan roots / skip rules / text-file rules auditBdCallSites walks — a hand-kept
+// list would silently drift from the gate and reintroduce the stale-artifact reds.
+describe('isBdCensusPath — the pre-commit auto-heal predicate', () => {
+  test('counts a file the audit actually scans', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+
+    expect(isBdCensusPath(root, 'lib/commands/_issue.js')).toBe(true);
+    const audit = auditBdCallSites(root, { scanRoots: ['lib'] });
+    expect(audit.groups.command.files.map(file => file.path)).toContain('lib/commands/_issue.js');
+  });
+
+  test('rejects a path outside every scan root', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, 'notes/scratch.md')).toBe(false);
+  });
+
+  test('rejects file types the audit never reads (binary, .test.js)', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, 'lib/logo.png')).toBe(false);
+    expect(isBdCensusPath(root, 'lib/release-flow.test.js')).toBe(false);
+  });
+
+  test('rejects the audit artifact itself, so regenerating it cannot re-trigger the hook', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, AUDIT_ARTIFACT)).toBe(false);
+  });
+
+  test('rejects paths the audit walk skips (node_modules, test dirs)', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, 'packages/skills/node_modules/chalk/index.js')).toBe(false);
+    expect(isBdCensusPath(root, 'lib/test/helpers.js')).toBe(false);
+  });
+
+  test('rejects paths that escape the project root', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, '../elsewhere/lib/x.js')).toBe(false);
+    expect(isBdCensusPath(root, '')).toBe(false);
+  });
+
+  test('matches a scan root that is itself a file', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, 'lefthook.yml')).toBe(true);
+    expect(isBdCensusPath(root, 'AGENTS.md')).toBe(true);
+  });
+
+  // A scan root can arrive with a trailing separator — a plugin manifest directory entry,
+  // or an explicit scanRoots option. walkFiles joins it away and scans the whole tree, so
+  // a predicate that keeps it builds `root//` and rejects every descendant the census just
+  // counted. The auto-heal would then skip exactly the commits it exists to heal.
+  test('a trailing-separator scan root still counts its descendants', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+
+    const audit = auditBdCallSites(root, { scanRoots: ['lib/'] });
+    expect(audit.groups.command.files.map(file => file.path)).toContain('lib/commands/_issue.js');
+    expect(isBdCensusPath(root, 'lib/commands/_issue.js', { scanRoots: ['lib/'] })).toBe(true);
+  });
+
+  test('resolves redundant scan-root spellings to the same root the census walks', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+
+    for (const scanRoot of ['lib//', './lib/', 'lib\\']) {
+      expect(isBdCensusPath(root, 'lib/commands/_issue.js', { scanRoots: [scanRoot] })).toBe(true);
+    }
+  });
+
+  // Derivation, not duplication: skill roots come from lib/agents/*.plugin.json, so a
+  // manifest-declared root must count without the predicate naming it.
+  test('follows manifest-declared skill roots', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/agents/acme.plugin.json', JSON.stringify({
+      directories: { skills: '.acme/skills' },
+    }));
+
+    expect(isBdCensusPath(root, '.acme/skills/plan/SKILL.md')).toBe(true);
+  });
+
+  // Same for .forge/sync-manifest.json, which getScanRoots folds in at run time.
+  test('follows sync-manifest scan roots', () => {
+    const root = makeRepo();
+    writeFile(root, '.forge/sync-manifest.json', JSON.stringify({
+      files: ['docs/adopted/handbook.md'],
+    }));
+
+    expect(isBdCensusPath(root, 'docs/adopted/handbook.md')).toBe(true);
+  });
+
+  test('honours explicit scanRoots options, like the audit does', () => {
+    const root = makeRepo();
+    expect(isBdCensusPath(root, 'lib/commands/_issue.js', { scanRoots: ['docs'] })).toBe(false);
+    expect(isBdCensusPath(root, 'docs/guides/x.md', { scanRoots: ['docs'] })).toBe(true);
+  });
+});
+
+// The local auto-heal is an addition, never a replacement: the release gate stays the
+// backstop for anything committed without the hook (CI, --no-verify, other harnesses).
+describe('d20-audit-artifact-current stays a release blocker (backstop)', () => {
+  test('still fails on a genuinely stale artifact', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+    const audit = auditBdCallSites(root, { scanRoots: ['lib'] });
+    writeFile(root, AUDIT_ARTIFACT, renderBdCallSiteAuditMarkdown(audit));
+
+    // A new bd call-site lands without a regen — exactly the builder mistake the
+    // pre-commit hook now heals locally.
+    writeFile(root, 'lib/commands/sync.js', "spawnSync('bd', ['sync']);\n");
+
+    const report = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
+    expect(report.blockers.map(blocker => blocker.id)).toContain('d20-audit-artifact-current');
   });
 });
