@@ -234,7 +234,17 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
       'test/commands/upgrade.test.js',
+      // The suites below assert on the CONTENT of the changed markdown, so a docs change
+      // must select them (see lib/doc-assertions.js). Listing them explicitly is deliberate:
+      // adding a new markdown-reading test breaks this expectation, which is the signal that
+      // the new suite has entered doc-asserting selection.
+      'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
+      'test/kernel-issue-command-contract-docs.test.js',
+      'test/kernel-schema-docs.test.js',
+      'test/kernel/conflict-evaluator-docs.test.js',
+      'test/protected-path-manifest.test.js',
+      'test/protected-state-docs.test.js',
       ...riskTargets,
     ]);
   });
@@ -255,7 +265,17 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/agents-md-convention.test.js',
+      'test/commands/preflight-rename.test.js',
+      'test/commands/validate.test.js',
+      'test/coverage-config.test.js',
+      'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
+      'test/docs-shepherd.test.js',
+      'test/forge-commands.test.js',
+      'test/rules-sync.test.js',
+      'test/stage-naming.test.js',
+      'test/workflows/size-check.test.js',
       ...riskTargets,
     ]);
   });
@@ -286,6 +306,7 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/commands/preflight-rename.test.js',
       'test/docs-consistency.test.js',
       ...riskTargets,
     ]);
