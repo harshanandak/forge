@@ -2372,6 +2372,28 @@ describe('isBdCensusPath — the pre-commit auto-heal predicate', () => {
     expect(isBdCensusPath(root, 'AGENTS.md')).toBe(true);
   });
 
+  // A scan root can arrive with a trailing separator — a plugin manifest directory entry,
+  // or an explicit scanRoots option. walkFiles joins it away and scans the whole tree, so
+  // a predicate that keeps it builds `root//` and rejects every descendant the census just
+  // counted. The auto-heal would then skip exactly the commits it exists to heal.
+  test('a trailing-separator scan root still counts its descendants', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+
+    const audit = auditBdCallSites(root, { scanRoots: ['lib/'] });
+    expect(audit.groups.command.files.map(file => file.path)).toContain('lib/commands/_issue.js');
+    expect(isBdCensusPath(root, 'lib/commands/_issue.js', { scanRoots: ['lib/'] })).toBe(true);
+  });
+
+  test('resolves redundant scan-root spellings to the same root the census walks', () => {
+    const root = makeRepo();
+    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
+
+    for (const scanRoot of ['lib//', './lib/', 'lib\\']) {
+      expect(isBdCensusPath(root, 'lib/commands/_issue.js', { scanRoots: [scanRoot] })).toBe(true);
+    }
+  });
+
   // Derivation, not duplication: skill roots come from lib/agents/*.plugin.json, so a
   // manifest-declared root must count without the predicate naming it.
   test('follows manifest-declared skill roots', () => {
