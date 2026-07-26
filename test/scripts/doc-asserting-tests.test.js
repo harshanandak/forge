@@ -1,0 +1,132 @@
+'use strict';
+
+/**
+ * Unit tests for the CI entry point of the doc-asserting lane.
+ *
+ * `.github/workflows/required-checks-bypass.yml` runs this script INSTEAD of the
+ * test matrix for a markdown-only PR, and its exit status becomes the required
+ * "Test Suite" check. Untested, it is the same single point of failure the echo it
+ * replaced was (kernel issue 63556816) — so its argument parsing, base resolution,
+ * change detection and, above all, its failure-to-status mapping are pinned here.
+ */
+
+const { describe, expect, test } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const {
+	changedFilesSince,
+	parseChangedFiles,
+	parseArgs,
+	resolveBase,
+	resolveSpawnStatus,
+} = require('../../scripts/doc-asserting-tests.js');
+
+const REPO_ROOT = path.resolve(__dirname, '../..');
+
+describe('parseArgs', () => {
+	test('defaults to no explicit base and run mode', () => {
+		expect(parseArgs([])).toEqual({ base: null, list: false });
+	});
+
+	test('reads the value that follows --base', () => {
+		expect(parseArgs(['--base', 'origin/master'])).toEqual({ base: 'origin/master', list: false });
+	});
+
+	test('treats a trailing --base with no value as no base', () => {
+		expect(parseArgs(['--base'])).toEqual({ base: null, list: false });
+	});
+
+	test('recognizes --list in any position', () => {
+		expect(parseArgs(['--list'])).toEqual({ base: null, list: true });
+		expect(parseArgs(['--list', '--base', 'HEAD~2'])).toEqual({ base: 'HEAD~2', list: true });
+	});
+
+	test('ignores unrelated flags rather than failing', () => {
+		expect(parseArgs(['--verbose'])).toEqual({ base: null, list: false });
+	});
+});
+
+describe('resolveBase', () => {
+	test('an explicit base wins over any discovered ref', () => {
+		expect(resolveBase('feature/some-branch')).toBe('feature/some-branch');
+	});
+
+	test('falls back to a ref this checkout can actually diff against', () => {
+		const base = resolveBase(null);
+		expect(['origin/master', 'origin/main', 'HEAD~1']).toContain(base);
+	});
+});
+
+describe('changedFilesSince', () => {
+	// Asserted against parseChangedFiles rather than a live `HEAD~1` diff: CI checks out
+	// shallow, so HEAD~1 does not resolve on the runner and the old form of this test was
+	// green locally and red in every Full Matrix job.
+	test('returns repository-relative paths, trimmed and without blanks', () => {
+		const files = parseChangedFiles('docs/INDEX.md\n  lib/doc-assertions.js  \n\n\t\nREADME.md\n');
+
+		expect(files).toEqual(['docs/INDEX.md', 'lib/doc-assertions.js', 'README.md']);
+		for (const file of files) {
+			expect(file).toBe(file.trim());
+			expect(file.length).toBeGreaterThan(0);
+			expect(path.isAbsolute(file)).toBe(false);
+		}
+	});
+
+	test('a range with no differences yields an empty list, not a blank entry', () => {
+		expect(changedFilesSince('HEAD')).toEqual([]);
+	});
+
+	test('throws for an unresolvable base so the caller can fail closed', () => {
+		expect(() => changedFilesSince('definitely-not-a-ref-9f2c41d7')).toThrow();
+	});
+
+	test('reads the diff of this checkout, not the process working directory', () => {
+		// The script pins cwd to REPO_ROOT. Asserting that from INSIDE the repo proves
+		// nothing, so actually leave it: the parent of the checkout is not a git repo, and
+		// a cwd-dependent implementation would fail there.
+		expect(REPO_ROOT).toBe(path.resolve(__dirname, '../..'));
+
+		// NOT path.dirname(REPO_ROOT): when this checkout is a git WORKTREE, its parent is
+		// `<repo>/.worktrees`, still inside the repository — so a cwd-dependent implementation
+		// would keep working there and the test would pass vacuously. Use a fresh temp dir,
+		// which is genuinely outside any repository.
+		const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-not-a-repo-'));
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(outside);
+			expect(() => changedFilesSince('HEAD')).not.toThrow();
+		} finally {
+			process.chdir(originalCwd);
+			fs.rmSync(outside, { force: true, recursive: true });
+		}
+	});
+});
+
+describe('resolveSpawnStatus', () => {
+	test('passes a real zero exit through as success', () => {
+		expect(resolveSpawnStatus({ status: 0 })).toBe(0);
+	});
+
+	test('passes a real non-zero exit through unchanged', () => {
+		expect(resolveSpawnStatus({ status: 3 })).toBe(3);
+	});
+
+	// The regression that matters: a lane that never ran the tests must NOT be green.
+	test('a spawn error is a failure, never a silent zero', () => {
+		expect(resolveSpawnStatus({ error: new Error('spawn bun ENOENT'), status: null })).toBe(1);
+	});
+
+	test('a signal-killed run with a null status is a failure', () => {
+		expect(resolveSpawnStatus({ signal: 'SIGKILL', status: null })).toBe(1);
+	});
+
+	test('a timed-out run with an undefined status is a failure', () => {
+		expect(resolveSpawnStatus({})).toBe(1);
+	});
+
+	test('a missing result is a failure', () => {
+		expect(resolveSpawnStatus(undefined)).toBe(1);
+	});
+});

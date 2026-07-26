@@ -99,10 +99,20 @@ describe('scripts/test pre-push runner', () => {
     }));
 
     // .claude/commands/ is not in KNOWN_TARGETABLE_PREFIXES (removed in A0d).
-    // hasUnmappedFiles → shouldRunFullSuite → testTargets is affectedTestTargets (empty).
+    // hasUnmappedFiles → shouldRunFullSuite, which subsumes the targets below.
     expect(plan.runFullSuite).toBe(true);
     expect(plan.hasUnmappedFiles).toBe(true);
-    expect(plan.testTargets).toEqual([]);
+    // The changed file is markdown, so the suites that DISCOVER markdown by traversal
+    // are affected (lib/doc-assertions.js). They are listed explicitly here and below:
+    // a newly added markdown-scanning suite breaks the expectation, which is the signal
+    // that it has entered doc-asserting selection.
+    expect(plan.testTargets).toEqual([
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
+      'test/setup-workflow-removal.test.js',
+    ]);
   });
 
   test('classifyPushTests maps mirrored agent assets without forcing a full suite', () => {
@@ -114,7 +124,12 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
       'test/agent-gaps.test.js',
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
       'test/scripts/check-agents.test.js',
+      'test/setup-workflow-removal.test.js',
       'test/structural/skills-sync-drift.test.js',
       ...riskTargets,
     ]);
@@ -144,7 +159,12 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.mode).toBe('targeted');
     expect(plan.reason).toBe('known changes mapped to targeted tests');
     expect(plan.testTargets).toEqual([
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
       'test/scripts/behavioral-judge.test.js',
+      'test/setup-workflow-removal.test.js',
       'test/structural/agentic-workflow-sync.test.js',
       ...riskTargets,
     ]);
@@ -166,11 +186,16 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
       'test/lefthook-check.test.js',
       'test/runtime-health.test.js',
       'test/scripts/preflight.test.js',
       'test/scripts/test-runner.test.js',
+      'test/setup-workflow-removal.test.js',
       ...riskTargets,
     ]);
   });
@@ -232,9 +257,23 @@ describe('scripts/test pre-push runner', () => {
 
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
+    // The suites below either assert on the CONTENT of the changed markdown or discover
+    // markdown by traversal, so a docs change must select them (see lib/doc-assertions.js).
+    // Listing them explicitly is deliberate: adding a new markdown-reading test breaks this
+    // expectation, which is the signal that the new suite has entered doc-asserting selection.
     expect(plan.testTargets).toEqual([
+      'test/cleanup/dropped-agent-docs.test.js',
       'test/commands/upgrade.test.js',
+      'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
+      'test/kernel-issue-command-contract-docs.test.js',
+      'test/kernel-schema-docs.test.js',
+      'test/kernel/conflict-evaluator-docs.test.js',
+      'test/protected-path-manifest.test.js',
+      'test/protected-state-docs.test.js',
+      'test/setup-workflow-removal.test.js',
       ...riskTargets,
     ]);
   });
@@ -255,7 +294,20 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/agents-md-convention.test.js',
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/commands/preflight-rename.test.js',
+      'test/commands/validate.test.js',
+      'test/coverage-config.test.js',
+      'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
+      'test/docs-shepherd.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
+      'test/rules-sync.test.js',
+      'test/setup-workflow-removal.test.js',
+      'test/stage-naming.test.js',
+      'test/workflows/size-check.test.js',
       ...riskTargets,
     ]);
   });
@@ -269,7 +321,12 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
       'test/agent-gaps.test.js',
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
       'test/scripts/check-agents.test.js',
+      'test/setup-workflow-removal.test.js',
       'test/structural/skills-sync-drift.test.js',
       ...riskTargets,
     ]);
@@ -286,7 +343,13 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(false);
     expect(plan.hasUnmappedFiles).toBe(false);
     expect(plan.testTargets).toEqual([
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/commands/preflight-rename.test.js',
+      'test/doc-assertions.test.js',
       'test/docs-consistency.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
+      'test/setup-workflow-removal.test.js',
       ...riskTargets,
     ]);
   });
@@ -322,7 +385,15 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.runFullSuite).toBe(true);
     expect(plan.runTestEnv).toBe(false);
     expect(plan.runE2E).toBe(false);
-    expect(plan.testTargets).toEqual([]);
+    // Unmapped, but still markdown — the traversal-based markdown scanners are affected.
+    // The full suite runs anyway and subsumes them.
+    expect(plan.testTargets).toEqual([
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
+      'test/setup-workflow-removal.test.js',
+    ]);
   });
 
   test('buildTestExecutionPlan falls back to the full suite when known changes resolve zero runnable tests', () => {
@@ -477,7 +548,12 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual([
       'run',
       'test',
+      'test/cleanup/dropped-agent-docs.test.js',
+      'test/doc-assertions.test.js',
+      'test/embedded-assets-drift.test.js',
+      'test/forge-commands.test.js',
       'test/scripts/behavioral-judge.test.js',
+      'test/setup-workflow-removal.test.js',
       'test/structural/agentic-workflow-sync.test.js',
       ...riskTargets,
     ]);
