@@ -270,4 +270,46 @@ describe('installGitHooks — adopter repo with a pre-existing coupling gate', (
     expect(fs.readFileSync(path.join(root, '.husky', 'pre-commit'), 'utf8'))
       .toContain('check-source-test-coupling.mjs');
   });
+
+  // Qodo finding on PR #458: the wiring was keyed off `existingGate.found` while the config
+  // write was keyed off the deferral, so a user who explicitly chose Forge's gate got config
+  // saying "enabled" and no hook installed — making `forge gate enable rail.tdd_intent` a
+  // no-op in exactly the repos this feature exists for.
+  test('an explicit rail.tdd_intent choice still gets Forge hook wiring installed', () => {
+    write('.forge/config.yaml', 'workflow:\n  gates:\n    rail.tdd_intent:\n      enabled: true\n');
+
+    const messages = [];
+    const restore = [console.log, console.warn, console.info, console.error];
+    console.log = console.warn = console.info = console.error = (...args) => messages.push(args.join(' '));
+    try {
+      setup.installGitHooks();
+    } finally {
+      [console.log, console.warn, console.info, console.error] = restore;
+    }
+    const output = messages.join('\n');
+
+    // Config and wiring must agree: the gate stays enabled AND the job is actually wired.
+    expect(setup.resolveHookEnforcementState(root).tddActive).toBe(true);
+    const lefthookYml = path.join(root, 'lefthook.yml');
+    if (fs.existsSync(lefthookYml)) {
+      expect(fs.readFileSync(lefthookYml, 'utf8')).toContain('check-tdd.js');
+    }
+
+    // And we must not claim a deferral that did not happen.
+    expect(output).not.toContain('Forge did NOT install its own TDD gate');
+    expect(output).toContain('did NOT defer');
+  });
+
+  // Qodo finding on PR #458: setConfigOverride was unguarded, so a malformed .forge/config.yaml
+  // made `forge setup` fail outright purely because an existing gate was detected.
+  test('a malformed .forge/config.yaml does not make the deferral throw', () => {
+    write('.forge/config.yaml', 'workflow:\n  gates:\n   : : not: valid: yaml: [\n');
+
+    let result;
+    expect(() => {
+      result = setup.applyExistingGateDeferral(root, detectExistingTddGate(root));
+    }).not.toThrow();
+    expect(result.deferred).toBe(false);
+    expect(result.reason).toBe('config-write-failed');
+  });
 });
