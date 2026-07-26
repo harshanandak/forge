@@ -11,6 +11,8 @@
  */
 
 const { describe, expect, test } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const {
@@ -76,9 +78,24 @@ describe('changedFilesSince', () => {
 	});
 
 	test('reads the diff of this checkout, not the process working directory', () => {
-		// The script pins cwd to REPO_ROOT; a suite run from elsewhere must still work.
+		// The script pins cwd to REPO_ROOT. Asserting that from INSIDE the repo proves
+		// nothing, so actually leave it: the parent of the checkout is not a git repo, and
+		// a cwd-dependent implementation would fail there.
 		expect(REPO_ROOT).toBe(path.resolve(__dirname, '../..'));
-		expect(() => changedFilesSince('HEAD')).not.toThrow();
+
+		// NOT path.dirname(REPO_ROOT): when this checkout is a git WORKTREE, its parent is
+		// `<repo>/.worktrees`, still inside the repository — so a cwd-dependent implementation
+		// would keep working there and the test would pass vacuously. Use a fresh temp dir,
+		// which is genuinely outside any repository.
+		const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-not-a-repo-'));
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(outside);
+			expect(() => changedFilesSince('HEAD')).not.toThrow();
+		} finally {
+			process.chdir(originalCwd);
+			fs.rmSync(outside, { force: true, recursive: true });
+		}
 	});
 });
 

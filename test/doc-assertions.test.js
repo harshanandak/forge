@@ -126,6 +126,25 @@ describe('suites that discover markdown dynamically', () => {
 		}
 	});
 
+	// Regression: `glob.sync(...)` has a `.` where DIRECTORY_SCAN_CALL expected `(`, so the
+	// `.sync` member form slipped past the scanner and the suite was under-selected.
+	test('a suite that scans markdown via glob.sync is selected', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doc-scan-'));
+		try {
+			fs.mkdirSync(path.join(root, 'test'), { recursive: true });
+			fs.writeFileSync(path.join(root, 'test', 'globbed.test.js'), [
+				"const glob = require('glob');",
+				"const docs = glob.sync('**/*.md');",
+				'module.exports = docs;',
+			].join('\n'));
+
+			expect(docAssertions.selectDocAssertingTests(['README.md'], root, fs))
+				.toEqual(['test/globbed.test.js']);
+		} finally {
+			fs.rmSync(root, { force: true, recursive: true });
+		}
+	});
+
 	test('a suite that lists directories without touching markdown is not selected', () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doc-scan-'));
 		try {
