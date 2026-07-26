@@ -71,7 +71,12 @@ forge clean                      # remove worktrees whose branches merged; FF th
 forge clean --dry-run            # show what would be removed, change nothing
 ```
 
-`forge clean` is **squash-aware** — it detects branches that merged via squash, not just fast-forward merges.
+`forge clean` is **squash-aware** — it detects branches that merged via squash, not just fast-forward merges. Removing a merged worktree also closes the kernel issue the branch was linked to, citing the merge as evidence.
+
+Two things it will never touch, because closing an issue is irreversible (`done` is terminal):
+
+- **A branch with no commits of its own.** A freshly created worktree points at a default-branch commit, which git alone reads as "merged". That is unstarted work — it is kept, and its issue stays open.
+- **A worktree it skipped.** Uncommitted changes hold a worktree back, and a held-back worktree never has its issue closed.
 
 ### `forge clean` footguns
 
