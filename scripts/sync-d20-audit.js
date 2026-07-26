@@ -17,6 +17,13 @@
  * The predicate is `isBdCensusPath`, exported by the gate's own module, so the hook and
  * the gate always agree on which files count. The artifact itself is not a census path,
  * so re-staging it cannot re-trigger the hook.
+ *
+ * The guarantee, stated honestly: the auto-heal applies when the counted staged paths
+ * match the working tree. It decides from the index but regenerates from the working tree
+ * (`auditBdCallSites` walks the filesystem), so those two agree only when the counted paths
+ * are staged whole. When any of them is partially staged the hook regenerates nothing, says
+ * so on stderr, and defers to a manual `forge release regen-audit` plus the
+ * `d20-audit-artifact-current` release gate — which still fails a genuinely stale artifact.
  */
 
 const { execFileSync } = require('node:child_process');
@@ -72,6 +79,32 @@ function stagedPaths(projectRoot, exec = execFileSync) {
   );
 }
 
+/**
+ * Parses a bare NUL-delimited path list (`git diff --name-only -z`). Same rule as
+ * parseStagedNameStatus: under -z the pathnames are verbatim, so nothing here may trim them.
+ */
+function parseNulPaths(output) {
+  return output.split('\0').filter(Boolean);
+}
+
+/**
+ * Of the given paths, the ones whose working-tree content differs from their staged content.
+ * `git diff` without `--cached` is index-vs-worktree, which is exactly the question the
+ * auto-heal must answer before regenerating an artifact it builds from the working tree.
+ */
+function worktreeModifiedPaths(projectRoot, paths, exec = execFileSync) {
+  if (paths.length === 0) {
+    return [];
+  }
+
+  return parseNulPaths(
+    exec('git', ['-C', projectRoot, 'diff', '--name-only', '-z', '--', ...paths], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }),
+  );
+}
+
 function stageArtifact(projectRoot, relativePath) {
   execFileSync('git', ['-C', projectRoot, 'add', '--', relativePath], {
     stdio: ['ignore', 'ignore', 'inherit'],
@@ -79,17 +112,30 @@ function stageArtifact(projectRoot, relativePath) {
 }
 
 function run(deps) {
-  const { projectRoot, staged, isCensusPath, writeArtifact, stage, log } = deps;
+  const { projectRoot, staged, worktreeModified, isCensusPath, writeArtifact, stage, log, warn } = deps;
 
   const triggers = staged().filter(filePath => isCensusPath(projectRoot, filePath));
   if (triggers.length === 0) {
-    return { regenerated: false, triggers: [] };
+    return { regenerated: false, triggers: [], partiallyStaged: [] };
+  }
+
+  const partiallyStaged = worktreeModified(projectRoot, triggers);
+  if (partiallyStaged.length > 0) {
+    warn(
+      `sync-d20-audit: SKIPPED — the index is partially staged, so ${AUDIT_ARTIFACT} was NOT regenerated.\n` +
+      `  Staged and separately modified in the working tree: ${partiallyStaged.join(', ')}\n` +
+      '  The artifact is built from the working tree, so regenerating it now would commit a\n' +
+      '  census of content this commit does not contain.\n' +
+      `  Run \`forge release regen-audit\` and stage ${AUDIT_ARTIFACT} yourself if this commit\n` +
+      '  shifts the bd call-site census; the d20-audit-artifact-current gate checks it either way.',
+    );
+    return { regenerated: false, triggers, partiallyStaged };
   }
 
   writeArtifact(projectRoot);
   stage(projectRoot, AUDIT_ARTIFACT);
   log(`sync-d20-audit: regenerated ${AUDIT_ARTIFACT} (census paths staged: ${triggers.join(', ')})`);
-  return { regenerated: true, triggers };
+  return { regenerated: true, triggers, partiallyStaged: [] };
 }
 
 function main() {
@@ -98,10 +144,12 @@ function main() {
     run({
       projectRoot,
       staged: () => stagedPaths(projectRoot),
+      worktreeModified: (root, paths) => worktreeModifiedPaths(root, paths),
       isCensusPath: isBdCensusPath,
       writeArtifact: root => writeAuditArtifact(root),
       stage: stageArtifact,
       log: message => console.log(message),
+      warn: message => console.error(message),
     });
   } catch (error) {
     console.error(`sync-d20-audit: failed to regenerate ${AUDIT_ARTIFACT} — ${error.message}`);
@@ -114,4 +162,11 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { run, parseStagedNameStatus, stagedPaths, repoRoot };
+module.exports = {
+  run,
+  parseStagedNameStatus,
+  parseNulPaths,
+  stagedPaths,
+  worktreeModifiedPaths,
+  repoRoot,
+};

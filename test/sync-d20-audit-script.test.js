@@ -13,17 +13,25 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { AUDIT_ARTIFACT } = require('../lib/release-readiness');
-const { run, parseStagedNameStatus, stagedPaths } = require('../scripts/sync-d20-audit');
+const {
+  run,
+  parseStagedNameStatus,
+  parseNulPaths,
+  stagedPaths,
+  worktreeModifiedPaths,
+} = require('../scripts/sync-d20-audit');
 
 function deps(overrides = {}) {
-  const calls = { wrote: 0, staged: [], logs: [] };
+  const calls = { wrote: 0, staged: [], logs: [], warnings: [], modifiedQueries: [] };
   const wired = {
     projectRoot: '/repo',
     staged: () => [],
+    worktreeModified: (_root, paths) => { calls.modifiedQueries.push(paths); return []; },
     isCensusPath: (_root, filePath) => filePath.startsWith('lib/'),
     writeArtifact: () => { calls.wrote += 1; },
     stage: (_root, filePath) => calls.staged.push(filePath),
     log: message => calls.logs.push(message),
+    warn: message => calls.warnings.push(message),
     ...overrides,
   };
   return { wired, calls };
@@ -65,6 +73,70 @@ describe('sync-d20-audit run() — changed-path gate', () => {
     run(wired);
 
     expect(calls.logs.join('\n')).toContain('lib/a.js');
+  });
+});
+
+// The regen reads the LIVE WORKING TREE (auditBdCallSites walks the filesystem), while the
+// decision to regen reads the INDEX. Those agree only when the counted staged paths are
+// staged whole. Under partial staging (`git add -p`, or stage-then-edit) the artifact would
+// describe content that is not in the commit — a generated file lying about its own source.
+// Reading staged blobs instead would mean re-implementing the census against `git cat-file`,
+// recreating the predicate/census divergence this PR just fixed; so the hook defers instead.
+describe('sync-d20-audit run() — partial staging', () => {
+  test('skips the regen when a counted staged path also has unstaged changes', () => {
+    const { wired, calls } = deps({
+      staged: () => ['lib/commands/sync.js'],
+      worktreeModified: () => ['lib/commands/sync.js'],
+    });
+
+    const result = run(wired);
+
+    expect(result.regenerated).toBe(false);
+    expect(result.partiallyStaged).toEqual(['lib/commands/sync.js']);
+    expect(calls.wrote).toBe(0);
+    expect(calls.staged).toEqual([]);
+  });
+
+  test('tells the committer exactly how to finish the job', () => {
+    const { wired, calls } = deps({
+      staged: () => ['lib/commands/sync.js'],
+      worktreeModified: () => ['lib/commands/sync.js'],
+    });
+
+    run(wired);
+
+    const notice = calls.warnings.join('\n');
+    expect(notice).toContain('partially staged');
+    expect(notice).toContain('lib/commands/sync.js');
+    expect(notice).toContain('forge release regen-audit');
+    expect(notice).toContain(AUDIT_ARTIFACT);
+  });
+
+  test('still regenerates when the counted staged paths match the working tree', () => {
+    const { wired, calls } = deps({
+      staged: () => ['lib/commands/sync.js'],
+      worktreeModified: () => [],
+    });
+
+    expect(run(wired).regenerated).toBe(true);
+    expect(calls.wrote).toBe(1);
+    expect(calls.warnings).toEqual([]);
+  });
+
+  // Only the counted paths gate the regen: an unrelated file left half-staged says nothing
+  // about whether the census the artifact describes is the one being committed.
+  test('ignores partial staging of a path outside the census', () => {
+    const { wired, calls } = deps({
+      staged: () => ['lib/commands/sync.js', 'notes/scratch.md'],
+      worktreeModified: (_root, paths) => {
+        calls.modifiedQueries.push(paths);
+        return paths.includes('notes/scratch.md') ? ['notes/scratch.md'] : [];
+      },
+    });
+
+    expect(run(wired).regenerated).toBe(true);
+    expect(calls.modifiedQueries).toEqual([['lib/commands/sync.js']]);
+    expect(calls.wrote).toBe(1);
   });
 });
 
@@ -135,6 +207,39 @@ describe('sync-d20-audit stagedPaths', () => {
     const { exec } = fakeExec('M\0lib/a.js\0A\0lib/a.js\0D\0lib/b.js\0');
 
     expect(stagedPaths('/project', exec)).toEqual(['lib/a.js', 'lib/b.js']);
+  });
+});
+
+describe('sync-d20-audit worktreeModifiedPaths', () => {
+  test('parses NUL-delimited paths without trimming them', () => {
+    expect(parseNulPaths('lib/ padded .js\0lib/tab\there.js\0')).toEqual([
+      'lib/ padded .js',
+      'lib/tab\there.js',
+    ]);
+    expect(parseNulPaths('')).toEqual([]);
+    expect(parseNulPaths('\0')).toEqual([]);
+  });
+
+  // `git diff` with no --cached is index-vs-worktree, which is exactly the question asked:
+  // does the staged content of this counted path match what the regen would read?
+  test('asks git for the worktree-vs-index diff of the given paths only', () => {
+    const calls = [];
+    const exec = (file, args) => { calls.push({ file, args }); return ''; };
+
+    worktreeModifiedPaths('/project', ['lib/a.js', 'lib/b.js'], exec);
+
+    expect(calls[0].args).toContain('--name-only');
+    expect(calls[0].args).toContain('-z');
+    expect(calls[0].args).not.toContain('--cached');
+    expect(calls[0].args.slice(calls[0].args.indexOf('--') + 1)).toEqual(['lib/a.js', 'lib/b.js']);
+  });
+
+  test('does not shell out at all when there are no paths to check', () => {
+    const calls = [];
+    const exec = (file, args) => { calls.push({ file, args }); return ''; };
+
+    expect(worktreeModifiedPaths('/project', [], exec)).toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
 
@@ -211,5 +316,19 @@ describe('sync-d20-audit in a real git repo', () => {
     expect(result.status).toBe(0);
     expect(fs.existsSync(path.join(repo, ...AUDIT_ARTIFACT.split('/')))).toBe(false);
     expect(stagedPaths()).toEqual(['notes/scratch.txt']);
+  });
+
+  // Stage-then-edit is the reachable half of partial staging without driving `git add -p`.
+  test('defers with a notice when a staged census path is edited again in the worktree', () => {
+    write('lib/commands/sync.js', "spawnSync('bd', ['sync']);\n");
+    spawnSync('git', ['-C', repo, 'add', 'lib/commands/sync.js']);
+    write('lib/commands/sync.js', "spawnSync('bd', ['sync']);\n// edited after staging\n");
+
+    const result = runScript();
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('partially staged');
+    expect(fs.existsSync(path.join(repo, ...AUDIT_ARTIFACT.split('/')))).toBe(false);
+    expect(stagedPaths()).toEqual(['lib/commands/sync.js']);
   });
 });
