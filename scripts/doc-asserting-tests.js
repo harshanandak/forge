@@ -66,6 +66,20 @@ function resolveBase(explicitBase) {
 }
 
 /**
+ * Parses `git diff --name-only` output into repository-relative paths.
+ *
+ * Split out so the parsing contract (trimmed, no blanks) is testable without a live
+ * repository: CI checks out shallow, so a test that reaches for `HEAD~1` passes locally
+ * and fails on the runner.
+ *
+ * @param {string} output Raw `git diff --name-only` stdout.
+ * @returns {string[]} Changed file paths.
+ */
+function parseChangedFiles(output) {
+	return output.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+/**
  * Lists repository-relative paths changed against the base ref.
  *
  * @param {string} base Base git ref.
@@ -77,7 +91,7 @@ function changedFilesSince(base) {
 		encoding: 'utf8',
 		timeout: 15000,
 	});
-	return output.split('\n').map((line) => line.trim()).filter(Boolean);
+	return parseChangedFiles(output);
 }
 
 /**
@@ -141,4 +155,4 @@ if (require.main === module) {
 	process.exit(main());
 }
 
-module.exports = { changedFilesSince, parseArgs, resolveBase, resolveSpawnStatus };
+module.exports = { changedFilesSince, parseArgs, parseChangedFiles, resolveBase, resolveSpawnStatus };

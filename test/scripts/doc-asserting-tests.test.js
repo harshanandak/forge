@@ -17,6 +17,7 @@ const path = require('node:path');
 
 const {
 	changedFilesSince,
+	parseChangedFiles,
 	parseArgs,
 	resolveBase,
 	resolveSpawnStatus,
@@ -59,9 +60,13 @@ describe('resolveBase', () => {
 });
 
 describe('changedFilesSince', () => {
+	// Asserted against parseChangedFiles rather than a live `HEAD~1` diff: CI checks out
+	// shallow, so HEAD~1 does not resolve on the runner and the old form of this test was
+	// green locally and red in every Full Matrix job.
 	test('returns repository-relative paths, trimmed and without blanks', () => {
-		const files = changedFilesSince('HEAD~1');
-		expect(Array.isArray(files)).toBe(true);
+		const files = parseChangedFiles('docs/INDEX.md\n  lib/doc-assertions.js  \n\n\t\nREADME.md\n');
+
+		expect(files).toEqual(['docs/INDEX.md', 'lib/doc-assertions.js', 'README.md']);
 		for (const file of files) {
 			expect(file).toBe(file.trim());
 			expect(file.length).toBeGreaterThan(0);
