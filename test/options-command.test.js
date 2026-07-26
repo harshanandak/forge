@@ -6,12 +6,23 @@ const { afterAll, describe, expect, test } = require('bun:test');
 const optionsCommand = require('../lib/commands/options');
 const explainCommand = require('../lib/commands/explain');
 const { createCliSandboxes, runForgeIn } = require('./helpers/cli-subprocess');
+const { rmrfWithRetry } = require('./helpers/kernel-project-root');
 
 const sandboxes = createCliSandboxes('forge-options-cli-');
-afterAll(() => sandboxes.cleanup());
+// makeProject() roots are tracked alongside the CLI sandboxes so both are drained;
+// untracked, they leaked a temp dir per call on every run.
+const projectRoots = [];
+
+afterAll(() => {
+  sandboxes.cleanup();
+  while (projectRoots.length > 0) {
+    rmrfWithRetry(projectRoots.pop());
+  }
+});
 
 function makeProject(configBody) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-options-'));
+  projectRoots.push(root);
   fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
   if (configBody !== null) {
     fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), configBody);

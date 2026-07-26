@@ -20,6 +20,7 @@
  */
 
 const { execFileSync } = require('node:child_process');
+const { setDefaultTimeout } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -34,6 +35,25 @@ const FORGE_BIN = path.join(__dirname, '..', '..', 'bin', 'forge.js');
 // leaving the inner limit strictly lower, so a timeout surfaces as a timeout.
 const CLI_TIMEOUT_MS = 30_000;
 const CASE_TIMEOUT_MS = 45_000;
+
+// Sandbox setup shells out to git; bound it well under the spawn budget so a
+// wedged `git init` reports as itself rather than eating the CLI's time.
+const GIT_INIT_TIMEOUT_MS = 10_000;
+
+// The inner spawn limit is only meaningful if the case outlives it — otherwise
+// bun kills the case first and the diagnostic thrown below never runs. Suites
+// invoke bun with --timeout 15000 (scripts/test-ci-shard.js) or 30000
+// (scripts/test-full-suite.js), both <= CLI_TIMEOUT_MS, so raising the case
+// timeout is not optional bookkeeping a suite can forget. Doing it here at
+// import time makes the invariant structural: importing this harness IS opting
+// into the matching case budget.
+if (CLI_TIMEOUT_MS >= CASE_TIMEOUT_MS) {
+  throw new Error(
+    `cli-subprocess: inner CLI timeout (${CLI_TIMEOUT_MS}ms) must be strictly `
+    + `lower than the case timeout (${CASE_TIMEOUT_MS}ms)`
+  );
+}
+setDefaultTimeout(CASE_TIMEOUT_MS);
 
 /**
  * Build the base child environment: the ambient env minus anything that would
@@ -50,6 +70,35 @@ function baseEnv() {
   }
   delete env.INIT_CWD;
   return env;
+}
+
+/**
+ * Merge the child environment, collapsing PATH to exactly one key.
+ *
+ * Windows resolves environment names case-insensitively, but a JS object does
+ * not: spreading `process.env` yields `Path`, so an override that sets `PATH`
+ * leaves BOTH keys in the object and which one the child actually reads is
+ * platform-dependent. Callers overriding PATH (to hide a binary, or to plant a
+ * fake one) would silently get the real ambient PATH instead.
+ *
+ * @param {string} cwd - Sandbox directory, also used as INIT_CWD
+ * @param {Record<string, string>} envOverrides - Caller overrides, applied last
+ * @returns {Record<string, string>} Merged env with a single PATH key
+ */
+function mergeEnv(cwd, envOverrides) {
+  const merged = { ...baseEnv(), INIT_CWD: cwd, ...envOverrides };
+
+  const isPathKey = (key) => /^path$/i.test(key);
+  const pathKeys = Object.keys(merged).filter(isPathKey);
+  if (pathKeys.length > 0) {
+    // An explicit override wins over whatever casing the ambient env used.
+    const overrideKey = Object.keys(envOverrides).find(isPathKey);
+    const value = overrideKey === undefined ? merged[pathKeys[0]] : envOverrides[overrideKey];
+    for (const key of pathKeys) delete merged[key];
+    merged[process.platform === 'win32' ? 'Path' : 'PATH'] = value;
+  }
+
+  return merged;
 }
 
 /**
@@ -73,7 +122,7 @@ function createCliSandboxes(prefix) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     dirs.push(dir);
     fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Test project\n', 'utf8');
-    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: 10_000 });
+    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: GIT_INIT_TIMEOUT_MS });
     return dir;
   }
 
@@ -106,7 +155,7 @@ function runForgeIn(cwd, cliArgs, { env: envOverrides = {}, timeoutMs = CLI_TIME
       encoding: 'utf8',
       timeout: timeoutMs,
       cwd,
-      env: { ...baseEnv(), INIT_CWD: cwd, ...envOverrides },
+      env: mergeEnv(cwd, envOverrides),
     });
     return { stdout, stderr: '', status: 0 };
   } catch (err) {
@@ -128,8 +177,10 @@ function runForgeIn(cwd, cliArgs, { env: envOverrides = {}, timeoutMs = CLI_TIME
 module.exports = {
   CASE_TIMEOUT_MS,
   CLI_TIMEOUT_MS,
+  GIT_INIT_TIMEOUT_MS,
   FORGE_BIN,
   baseEnv,
   createCliSandboxes,
+  mergeEnv,
   runForgeIn,
 };
