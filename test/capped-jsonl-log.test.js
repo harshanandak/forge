@@ -105,7 +105,9 @@ describe('capped jsonl log', () => {
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
-	});
+		// Spawning two real processes costs more than the default per-test budget on
+		// a loaded runner, and this test is about lost records, not latency.
+	}, 60_000);
 
 	test('a contended trim leaves valid JSONL and still converges to the cap', async () => {
 		const root = createTempDir();
@@ -123,7 +125,9 @@ describe('capped jsonl log', () => {
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
-	});
+		// Two real processes contending over one lock, so give the writers room to
+		// finish their retry sleeps on a loaded CI runner.
+	}, 60_000);
 
 	test('preserves a record appended between the trim snapshot and its rename', () => {
 		const root = createTempDir();
