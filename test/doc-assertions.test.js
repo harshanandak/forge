@@ -24,6 +24,7 @@
 
 const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -33,7 +34,7 @@ const { getAffectedTestFiles } = require('../lib/commands/test.js');
 
 /** Builds an execFileSync stub whose `git diff --name-only` returns `files`. */
 function makeGitStub(files) {
-	return (command, args) => {
+	return (_command, args) => {
 		const argv = Array.isArray(args) ? args : [];
 		if (argv.includes('diff') && argv.includes('--name-only')) {
 			return `${files.join('\n')}\n`;
@@ -89,6 +90,56 @@ describe('selectDocAssertingTests', () => {
 	test('returns a sorted, de-duplicated selection', () => {
 		const selected = docAssertions.selectDocAssertingTests(['AGENTS.md', 'README.md'], REPO_ROOT, fs);
 		expect(selected).toEqual([...new Set(selected)].sort());
+	});
+});
+
+describe('suites that discover markdown dynamically', () => {
+	// A suite that walks a directory and filters on `.md` names no markdown file, so
+	// there is nothing to attribute it to. Attributing nothing means selecting nothing
+	// — the exact false-green this index exists to remove.
+
+	test('a real traversal-based suite is selected for a docs/ markdown change', () => {
+		// test/cleanup/dropped-agent-docs.test.js reads every .md under docs/work via
+		// readdirSync + `entry.endsWith('.md')`, with no literal per file.
+		const selected = docAssertions.selectDocAssertingTests(
+			['docs/work/2026-07-24-example/plan.md'],
+			REPO_ROOT,
+			fs,
+		);
+		expect(selected).toContain('test/cleanup/dropped-agent-docs.test.js');
+	});
+
+	test('a suite that globs markdown is selected without naming a single file', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doc-scan-'));
+		try {
+			fs.mkdirSync(path.join(root, 'test'), { recursive: true });
+			fs.writeFileSync(path.join(root, 'test', 'traversal.test.js'), [
+				"const { readdirSync } = require('node:fs');",
+				"const docs = readdirSync(process.cwd()).filter((entry) => entry.endsWith('.md'));",
+				'module.exports = docs;',
+			].join('\n'));
+
+			expect(docAssertions.selectDocAssertingTests(['README.md'], root, fs))
+				.toEqual(['test/traversal.test.js']);
+		} finally {
+			fs.rmSync(root, { force: true, recursive: true });
+		}
+	});
+
+	test('a suite that lists directories without touching markdown is not selected', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doc-scan-'));
+		try {
+			fs.mkdirSync(path.join(root, 'test'), { recursive: true });
+			fs.writeFileSync(path.join(root, 'test', 'sources.test.js'), [
+				"const { readdirSync } = require('node:fs');",
+				"const sources = readdirSync(process.cwd()).filter((entry) => entry.endsWith('.js'));",
+				'module.exports = sources;',
+			].join('\n'));
+
+			expect(docAssertions.selectDocAssertingTests(['README.md'], root, fs)).toEqual([]);
+		} finally {
+			fs.rmSync(root, { force: true, recursive: true });
+		}
 	});
 });
 

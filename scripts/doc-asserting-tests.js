@@ -80,6 +80,21 @@ function changedFilesSince(base) {
 	return output.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+/**
+ * Turns a `spawnSync` result into a process exit status.
+ *
+ * A spawn that never produced a status (`error`, or killed by a signal so `status`
+ * is null) MUST report FAILURE. Reporting 0 there would re-create the bug this lane
+ * exists to remove: a required check reporting green without running the tests.
+ *
+ * @param {{status: number|null, error?: Error}} result Result of `spawnSync`.
+ * @returns {number} Exit status; non-zero whenever the run did not demonstrably pass.
+ */
+function resolveSpawnStatus(result) {
+	if (!result || result.error) return 1;
+	return result.status ?? 1;
+}
+
 function main() {
 	const { base: explicitBase, list } = parseArgs(process.argv.slice(2));
 	const base = resolveBase(explicitBase);
@@ -118,13 +133,12 @@ function main() {
 
 	if (result.error) {
 		console.error(`Failed to run doc-asserting suites: ${result.error.message}`);
-		return 1;
 	}
-	return result.status ?? 1;
+	return resolveSpawnStatus(result);
 }
 
 if (require.main === module) {
 	process.exit(main());
 }
 
-module.exports = { changedFilesSince, parseArgs, resolveBase };
+module.exports = { changedFilesSince, parseArgs, resolveBase, resolveSpawnStatus };
