@@ -73,21 +73,6 @@ const ALLOWED_BD_CALL_SITES = new Map([
     'lib/commands/migrate.js',
     [{ signature: "const stdout = exec('bd', ['export', '--all'], {", count: 1 }],
   ],
-  // dd8e5526-fd40-4e0d-bafe-56230e8f5068
-  [
-    'lib/audit-evidence.js',
-    [
-      {
-        signature: "const output = runCommand('bd', ['audit', 'record', '--help'], options);",
-        count: 1,
-      },
-      {
-        signature: "const output = runCommand('bd', args, { cwd: options.cwd || process.cwd() });",
-        count: 1,
-      },
-      { signature: "output = runCommand('bd', [", count: 1 },
-    ],
-  ],
   // 9ee29231-66ee-441d-a5df-d82e9ae1ab60
   [
     'lib/commands/status.js',
@@ -352,11 +337,11 @@ describe('beads isolation', () => {
   });
 
   test('a new bd spawn inside an allowlisted file still fails the guard', () => {
-    const repoPath = 'lib/audit-evidence.js';
+    const repoPath = 'lib/commands/migrate.js';
     const source = `${fs.readFileSync(path.join(ROOT, repoPath), 'utf8')}\nrunCommand('bd', ['close', issueId]);\n`;
 
     expect(collectBdViolations([{ repoPath, source, shell: false }])).toEqual([
-      "lib/audit-evidence.js: new bd call site `runCommand('bd', ['close', issueId]);`",
+      "lib/commands/migrate.js: new bd call site `runCommand('bd', ['close', issueId]);`",
     ]);
   });
 
