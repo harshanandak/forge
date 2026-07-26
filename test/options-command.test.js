@@ -1,11 +1,14 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
-const { describe, expect, test } = require('bun:test');
+const { afterAll, describe, expect, test } = require('bun:test');
 
 const optionsCommand = require('../lib/commands/options');
 const explainCommand = require('../lib/commands/explain');
+const { createCliSandboxes, runForgeIn } = require('./helpers/cli-subprocess');
+
+const sandboxes = createCliSandboxes('forge-options-cli-');
+afterAll(() => sandboxes.cleanup());
 
 function makeProject(configBody) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-options-'));
@@ -22,12 +25,9 @@ async function run(args, projectRoot = makeProject(null)) {
 
 describe('forge options command', () => {
   test('CLI --json output is parseable without non-interactive banner', () => {
-    const output = execFileSync(process.execPath, ['bin/forge.js', 'options', 'stages', '--json'], {
-      cwd: path.resolve(__dirname, '..'),
-      encoding: 'utf8',
-    });
+    const { stdout } = runForgeIn(sandboxes.makeSandbox(), ['options', 'stages', '--json']);
 
-    expect(JSON.parse(output).kind).toBe('stages');
+    expect(JSON.parse(stdout).kind).toBe('stages');
   });
 
   test('CLI lint --json failure output remains parseable JSON', () => {
@@ -35,10 +35,10 @@ describe('forge options command', () => {
 protectedPaths:
   - "**/*"
 `);
-    const result = spawnSync(process.execPath, ['bin/forge.js', 'options', 'lint', '--json', '--path', projectRoot], {
-      cwd: path.resolve(__dirname, '..'),
-      encoding: 'utf8',
-    });
+    const result = runForgeIn(
+      sandboxes.makeSandbox(),
+      ['options', 'lint', '--json', '--path', projectRoot]
+    );
     const output = `${result.stdout}${result.stderr}`.trim();
 
     expect(result.status).toBe(1);
@@ -46,12 +46,9 @@ protectedPaths:
   });
 
   test('CLI explain --json output is parseable without non-interactive banner', () => {
-    const output = execFileSync(process.execPath, ['bin/forge.js', 'explain', 'gate.ship-entry', '--json'], {
-      cwd: path.resolve(__dirname, '..'),
-      encoding: 'utf8',
-    });
+    const { stdout } = runForgeIn(sandboxes.makeSandbox(), ['explain', 'gate.ship-entry', '--json']);
 
-    expect(JSON.parse(output).item.id).toBe('gate.ship-entry');
+    expect(JSON.parse(stdout).item.id).toBe('gate.ship-entry');
   });
 
   test('prints stages, gates, and adapters as JSON over graph primitives', async () => {
