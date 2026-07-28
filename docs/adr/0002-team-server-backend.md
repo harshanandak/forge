@@ -99,8 +99,9 @@ Litestream remains rejected as the team server. It asynchronously copies SQLite
 WAL changes to a replica for disaster recovery; it does not provide the
 authenticated, serialized multi-client write authority, project namespaces, or
 conflict handling Forge requires. Its default S3 sync interval also leaves an
-approximately one-second catastrophic-loss window, and multiple writers sharing
-one replica path can make restoration impossible.
+approximately one-second catastrophic-loss window, and multiple applications or
+replication processes targeting the same bucket and path can make restoration
+impossible.
 
 This does not rule out a later opt-in local-backup integration. Forge's local
 Kernel already uses WAL mode and a five-second busy timeout, which match
