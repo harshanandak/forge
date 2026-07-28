@@ -61,14 +61,14 @@ setDefaultTimeout(CASE_TIMEOUT_MS);
  * critical one — bin/forge.js prefers it over cwd, so an inherited value sends
  * the child at the ambient repo no matter which cwd we pass.
  *
+ * @param {Record<string, string|undefined>} [sourceEnv=process.env] Environment to scrub
  * @returns {Record<string, string>} Scrubbed environment
  */
-function baseEnv() {
-  const env = { ...process.env };
+function baseEnv(sourceEnv = process.env) {
+  const env = { ...sourceEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith('FORGE_')) delete env[key];
+    if (/^FORGE_/i.test(key) || /^INIT_CWD$/i.test(key)) delete env[key];
   }
-  delete env.INIT_CWD;
   return env;
 }
 

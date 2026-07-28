@@ -44,6 +44,18 @@ describe('cli-subprocess baseEnv', () => {
     const forgeKeys = Object.keys(baseEnv()).filter((key) => key.startsWith('FORGE_'));
     expect(forgeKeys).toEqual([]);
   });
+
+  test('drops mixed-case Forge and INIT_CWD keys', () => {
+    const env = baseEnv({
+      Forge_API_TOKEN: 'ambient-token',
+      init_cwd: '/ambient-repo',
+      SAFE_VALUE: 'kept',
+    });
+
+    expect(Object.keys(env).filter((key) => /^forge_/i.test(key))).toEqual([]);
+    expect(Object.keys(env).filter((key) => /^init_cwd$/i.test(key))).toEqual([]);
+    expect(env.SAFE_VALUE).toBe('kept');
+  });
 });
 
 describe('cli-subprocess mergeEnv', () => {
