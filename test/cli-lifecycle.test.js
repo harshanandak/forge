@@ -1,49 +1,41 @@
-const { describe, test, expect } = require('bun:test');
-const { execFileSync } = require('child_process');
+const { afterAll, describe, test, expect, setDefaultTimeout } = require('bun:test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const {
+  CASE_TIMEOUT_MS,
+  CLI_TIMEOUT_MS,
+  createCliSandboxes,
+  runForgeIn,
+} = require('./helpers/cli-subprocess');
 
-const forgeBin = path.resolve(__dirname, '..', 'bin', 'forge.js');
+setDefaultTimeout(CASE_TIMEOUT_MS);
+
+const sandboxes = createCliSandboxes('cli-lifecycle-test-');
+afterAll(() => sandboxes.cleanup());
 
 /**
  * Helper: run forge CLI and capture stdout+stderr.
- * Uses a temp dir with AGENTS.md so the first-run check passes.
+ * Runs in a private sandbox (AGENTS.md present so the first-run check passes),
+ * with a scrubbed env so no ambient INIT_CWD/FORGE_* repoints the child.
  *
  * @param {string[]} args - CLI args to pass to forge
  * @param {Object} [options]
- * @param {string} [options.cwd] - Working directory (defaults to a new temp dir)
- * @param {number} [options.timeoutMs=10000] - Inner execFileSync timeout. Increase
+ * @param {string} [options.cwd] - Caller-owned working directory (defaults to a fresh sandbox)
+ * @param {number} [options.timeoutMs] - Inner execFileSync timeout. Increase
  *   for commands that do heavy I/O on Windows (e.g. `forge reinstall --force`
  *   which chains resetHard + full setup).
  */
-function runForge(args, { cwd, timeoutMs = 10000 } = {}) {
-  const tmpDir = cwd || fs.mkdtempSync(path.join(os.tmpdir(), 'cli-lifecycle-test-'));
+function runForge(args, { cwd, timeoutMs = CLI_TIMEOUT_MS } = {}) {
+  const tmpDir = cwd || sandboxes.makeSandbox();
 
-  // Create AGENTS.md so first-run detection doesn't block us
+  // Caller-supplied dirs still need AGENTS.md so first-run detection doesn't block us.
   if (!fs.existsSync(path.join(tmpDir, 'AGENTS.md'))) {
     fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# Test', 'utf-8');
   }
 
-  try {
-    const result = execFileSync('node', [forgeBin, ...args], {
-      cwd: tmpDir,
-      encoding: 'utf-8',
-      timeout: timeoutMs,
-      env: { ...process.env, INIT_CWD: tmpDir },
-    });
-    return { stdout: result, stderr: '', exitCode: 0 };
-  } catch (error) {
-    return {
-      stdout: error.stdout || '',
-      stderr: error.stderr || '',
-      exitCode: error.status || 1,
-    };
-  } finally {
-    if (!cwd) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  }
+  const { stdout, stderr, status } = runForgeIn(tmpDir, args, { timeoutMs });
+  return { stdout, stderr, exitCode: status };
 }
 
 describe('CLI lifecycle commands', () => {
