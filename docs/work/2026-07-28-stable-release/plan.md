@@ -22,7 +22,7 @@ Stable does not promise every roadmap feature. It promises that the supported co
 
 ## 2. Verified planning baseline
 
-- The Kernel currently contains 407 open issues: 18 P0, 86 P1, 247 P2, 50 P3, and 6 P4. These cannot all be stable blockers.
+- The Kernel currently contains 407 open issues: 32 P0, 77 P1, 242 P2, 50 P3, and 6 P4 after promoting the 13 S0 issues and terminal release task. The full backlog still cannot be a stable blocker set.
 - The exact stable cohort is evidence-selected across priorities; P0 roadmap epics can defer while a P2 trigger or test-safety defect can block stable.
 - `forge release check --target 0.1.0-beta.5 --json` currently returns success with no structural blockers. This proves the existing static release gate passes; it does not prove the stable user journey.
 - Eighteen squash commits have landed since `v0.1.0-beta.4`, covering Kernel authority, Beads retirement, status/orientation, memory recall, setup, worktree cleanup, CI selection, audit repair, and test isolation.
@@ -166,6 +166,19 @@ Exit evidence: changed-file resolution fails closed, the publication workflow co
 
 Lifecycle trust lands first because every other lane depends on truthful writes, setup, and process cleanup. Lanes A and B may then proceed independently. A small integration tail wires skill and memory routing into hooks. Lane D owns the exact release commit and lands release metadata/version/tag last. If two lanes need the same canonical source, the next-at-bat PR owns it; update only that branch, not every active branch.
 
+### Three-hour merge cadence
+
+The operating target is **four merged PRs per three-hour cycle**:
+
+1. At cycle start, `forge ready` supplies unblocked S0 work and the coordinator chooses up to four issues with disjoint canonical files.
+2. Each issue gets one claimed Forge worktree and one accountable owner. No agent edits the shared checkout.
+3. Implementation, focused tests, review response, push, CI, current-head thread verification, merge, Kernel close, and worktree cleanup occur inside the same cycle.
+4. The coordinator keeps the next cycle preloaded with test preparation and investigation for blocked work, but only four implementation PRs remain active.
+5. If one lane blocks, replace its slot with another non-colliding ready S0/S1 reliability issue; do not make the other three lanes wait.
+6. Track planned, opened, green, merged, cycle time, review-turn count, and blocker cause for every slot. Repeated blocker causes become Forge improvements.
+
+The 13 S0 issues plus one integration PR and one beta.5 release PR imply about 15 PRs: four cycles, approximately 12 active delivery hours, with calendar allowance for CI/review. The release plan therefore targets feature-complete beta.5 on 2026-07-31 rather than 2026-08-07.
+
 ### Dogfood improvement loop
 
 Every merged stable issue runs two reviews:
@@ -183,10 +196,10 @@ The issue receives a stage-exit comment containing evidence, decisions, artifact
 4. **Run skills and memory independently:** Lane A (`588e6973`, `6bc72f4f`, `d362bd71`, `c81eb263`) and Lane B (`36461e50`).
 5. **Land the integration tail:** hook wiring makes skill, memory, insights, and diagnostic routing automatic, bounded, explainable, and measured.
 6. **Close test/release evidence:** `10a6f241` and `af79e102`; make publication consume same-SHA full evidence.
-7. **Cut feature-complete beta.5 by 2026-08-07:** all S0 work merged; repair beta.4 changelog history and release reference, update version/notes, publish under npm `beta`, verify provenance, and run 48-hour postpublish smoke. No new stable-surface feature follows beta.5.
-8. **Cut RC1 by 2026-08-14:** after seven days of beta.5 soak, repeat the same-SHA matrix and publish `0.1.0-rc.1` under the prerelease `beta` dist-tag.
-9. **Cut RC2 by 2026-08-21:** only release-stopper fixes may differ from RC1; repeat clean install, upgrade, rollback, automatic-context, and process-lifecycle evidence.
-10. **Promote by 2026-08-28:** require seven clean days after RC2 and at least 14 cumulative RC soak days; reset the RC clock for schema/storage migration, new commands/features, breaking default output, or any stopper.
+7. **Cut feature-complete beta.5 by 2026-07-31:** all S0 work merged; repair beta.4 changelog history and release reference, update version/notes, publish under npm `beta`, verify provenance, and run 48-hour postpublish smoke. No new stable-surface feature follows beta.5.
+8. **Cut RC1 by 2026-08-07:** after seven days of beta.5 soak, repeat the same-SHA matrix and publish `0.1.0-rc.1` under the prerelease `beta` dist-tag.
+9. **Cut RC2 by 2026-08-14:** only release-stopper fixes may differ from RC1; repeat clean install, upgrade, rollback, automatic-context, and process-lifecycle evidence.
+10. **Promote by 2026-08-21:** require seven clean days after RC2 and at least 14 cumulative RC soak days; reset the RC clock for schema/storage migration, new commands/features, breaking default output, or any stopper.
 
 ## 8. Release-candidate gates
 
@@ -207,23 +220,23 @@ A release candidate is eligible only when all are true on the same commit:
 
 ## 9. Schedule
 
-### 2026-07-28 through 2026-08-06 — S0 delivery
+### 2026-07-28 through 2026-07-30 — S0 delivery
 
 Land lifecycle trust first. Run skill/diagnostic selection and automatic memory in parallel worktrees. Land the small hook-integration tail, then close test and publication evidence. No non-S0 roadmap implementation enters this window.
 
-### 2026-08-07 — feature-complete beta.5
+### 2026-07-31 — feature-complete beta.5
 
 Every S0 is merged and re-read done. Repair release history/docs, publish under npm `beta`, verify provenance and packed contents, and start 48-hour postpublish plus seven-day clean-install/upgrade soak.
 
-### 2026-08-14 — RC1
+### 2026-08-07 — RC1
 
 Repeat the same-SHA matrix after beta.5 soak, publish RC1 under the prerelease `beta` dist-tag, and continue Windows/Linux install, upgrade, rollback, skill/memory holdout, and orphan-process evidence.
 
-### 2026-08-21 — RC2
+### 2026-08-14 — RC2
 
 Only release-stopper fixes may differ from RC1. Repeat the complete matrix and reset affected evidence whenever behavior changed.
 
-### 2026-08-28 — stable target
+### 2026-08-21 — stable target
 
 Publish `0.1.0` only after seven clean days following RC2 and at least 14 cumulative RC soak days, with every S0 verified done. Extend rather than weaken a gate. Do not extend for roadmap work.
 

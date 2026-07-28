@@ -24,6 +24,21 @@ Each implementation task gets its own Kernel issue, Forge worktree, RED→GREEN�
 - [x] Record verified ordering edges: `f0385fa1 → c81eb263 → d362bd71`; `588e6973 → d362bd71`; `6bc72f4f → d362bd71`; `8606ea93 → cb8c7ab6`.
 - [ ] Lock measurable thresholds for automatic-context precision, recall, miss rate, latency, and token cost before enabling it.
 
+## Three-hour cycle board
+
+Each cycle carries at most four non-colliding PRs from implementation through merge and cleanup.
+
+| Cycle | Slot A | Slot B | Slot C | Slot D | Target |
+|---|---|---|---|---|---|
+| 1 | Lifecycle trust | Worktree trust | Process reaping | Automatic memory | 4 merged PRs |
+| 2 | Setup/config trust | Worktree linkage | Skill trigger surface | Test fail-closed | 4 merged PRs |
+| 3 | Skills-only adoption | Packaged dispatch | Release publication gate | Remaining S0 | 4 merged PRs |
+| 4 | Behavioral holdout gate | Hook integration | Beta release evidence | Contingency/stopper | Feature-complete beta.5 |
+
+- [ ] At each cycle start, record issue ID, owner, worktree, files owned, dependency state, and expected tests for all four slots.
+- [ ] At cycle end, record opened/green/merged counts, median cycle time, review turns, blocker cause, Kernel close verification, and worktree cleanup.
+- [ ] Replace a blocked slot with another non-colliding ready issue instead of idling the other lanes.
+
 ## Phase 2 — four parallel S0 lanes
 
 ### Lane A: automatic skill and diagnostic selection
@@ -59,7 +74,7 @@ Each implementation task gets its own Kernel issue, Forge worktree, RED→GREEN�
 - [ ] Make publication consume same-SHA full release evidence, including package-skills and environment coverage.
 - [ ] Build clean/upgrade/rollback Windows and Linux release journeys.
 
-## Phase 3 — feature-complete beta.5 (2026-08-07)
+## Phase 3 — feature-complete beta.5 (2026-07-31)
 
 - [ ] Verify all 13 S0 issues are merged, closed, and re-read from the Kernel.
 - [ ] Create the beta.5 release issue/worktree from the final S0 head.
@@ -79,11 +94,11 @@ Each implementation task gets its own Kernel issue, Forge worktree, RED→GREEN�
 - [ ] Test supported Claude, Codex, and Hermes discovery/invocation paths where the repository advertises support.
 - [ ] Run automatic-context holdouts and inspect misses, false positives, stale retrievals, and token use.
 - [ ] Run rollback to beta.5 in a disposable project.
-- [ ] Publish RC1 on 2026-08-14 only after seven days of beta.5 soak.
+- [ ] Publish RC1 on 2026-08-07 only after seven days of beta.5 soak.
 - [ ] Allow only reproduced release-stopper fixes after RC1.
-- [ ] Publish RC2 on 2026-08-21, repeat the full matrix, and reset affected evidence for every behavioral change.
+- [ ] Publish RC2 on 2026-08-14, repeat the full matrix, and reset affected evidence for every behavioral change.
 
-## Phase 5 — stable promotion (2026-08-28)
+## Phase 5 — stable promotion (2026-08-21)
 
 - [ ] Fix only reproduced S0 defects from RC1.
 - [ ] Verify RC2 has seven clean days and the program has at least 14 cumulative RC soak days.
