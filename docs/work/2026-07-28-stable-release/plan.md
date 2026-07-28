@@ -22,7 +22,7 @@ Stable does not promise every roadmap feature. It promises that the supported co
 
 ## 2. Verified planning baseline
 
-- The Kernel currently contains 407 open issues: 32 P0, 77 P1, 242 P2, 50 P3, and 6 P4 after promoting the 13 S0 issues and terminal release task. The full backlog still cannot be a stable blocker set.
+- The Kernel currently contains 407 open issues: 32 P0, 77 P1, 242 P2, 50 P3, and 6 P4 after promoting the 14 S0 issues and terminal release task. The full backlog still cannot be a stable blocker set.
 - The exact stable cohort is evidence-selected across priorities; P0 roadmap epics can defer while a P2 trigger or test-safety defect can block stable.
 - `forge release check --target 0.1.0-beta.5 --json` currently returns success with no structural blockers. This proves the existing static release gate passes; it does not prove the stable user journey.
 - Eighteen squash commits have landed since `v0.1.0-beta.4`, covering Kernel authority, Beads retirement, status/orientation, memory recall, setup, worktree cleanup, CI selection, audit repair, and test isolation.
@@ -49,7 +49,7 @@ The beta-readiness epic, its 21 recorded children, all open issues, current rele
 |---|---|---|
 | Skills | `588e6973` description hygiene | Skill descriptions exceed the model trigger surface, so reliable automatic selection cannot be claimed. |
 | Skills | `6bc72f4f` packaged dispatch pointer | Packaged `AGENTS.md` lacks the agent-agnostic Forge dispatch pointer, so Codex-style installs miss Forge routing. |
-| Skills | `d362bd71` behavioral holdout loop | Stable needs measured trigger precision, recall, variance, and regression evidence. |
+| Skills | `d362bd71` behavioral holdout and hook-integration loop | Stable needs one owned integration tail plus measured trigger precision, recall, variance, and regression evidence. |
 | Skills | `c81eb263` skills-only/no-hooks | Users cannot adopt Forge skills without accepting unrelated enforcement. |
 | Memory | `36461e50` ctx-grade federated recall | Automatic project-scoped, budgeted recall/injection, SessionStart hooks, provenance, and telemetry are not yet a dependable floor. |
 | Setup | `f0385fa1` preserve `CLAUDE.md` | Setup can overwrite user-owned harness instructions. |
@@ -61,6 +61,7 @@ The beta-readiness epic, its 21 recorded children, all open issues, current rele
 | Process lifecycle | `87a8394e` orphaned shards and claims | Stopped pre-push hooks can leave test processes and claims alive after the worktree is gone. |
 
 | Release safety | `af79e102` publication test coverage | The GitHub Release workflow tests only `test/`, excluding package-skills, environment, and full-suite coverage before Trusted Publishing. |
+| PR lifecycle | `49f438f0` automatic Shepherd attachment | Active open or draft PRs are not automatically owned by Shepherd, so agents can silently fall back to manual polling and miss Forge's authoritative lifecycle. |
 
 ### Explicit post-stable scope
 
@@ -136,7 +137,7 @@ S0: `588e6973`, `6bc72f4f`, `d362bd71`, `c81eb263`.
 
 Primary surfaces: canonical skill descriptions, packaged dispatch rules, skills-only adoption, routing/evaluation fixtures. Existing capabilities such as `status`, `insights`, `doctor`, `recommend`, and `upgrade` must become agent-triggerable from evidence rather than requiring the user to name them.
 
-Exit evidence: positive and confusing-neighbor holdouts select the correct skill/diagnostic without explicit naming, irrelevant prompts stay quiet, packaging preserves the dispatch pointer, and skills-only mode installs no unrelated enforcement.
+Exit evidence: positive and confusing-neighbor holdouts select the correct skill/diagnostic without explicit naming, irrelevant prompts stay quiet, packaging preserves the dispatch pointer, and skills-only mode installs no unrelated enforcement. `d362bd71` owns the final cross-lane hook integration and cannot close until the memory lane has landed and the combined routing envelope passes selection, rejection, latency, token-budget, and error-telemetry gates.
 
 ### Lane B — automatic memory
 
@@ -156,15 +157,15 @@ Exit evidence: user instructions survive setup; default gates remain truthful; r
 
 ### Lane D — test and release evidence
 
-S0: `10a6f241`, `af79e102`.
+S0: `10a6f241`, `af79e102`, `49f438f0`.
 
-Primary surfaces: affected-test selection, release readiness, npm workflow, package inspection, clean/upgrade/rollback journey fixtures.
+Primary surfaces: affected-test selection, automatic Shepherd attachment/containment, release readiness, npm workflow, package inspection, clean/upgrade/rollback journey fixtures.
 
-Exit evidence: changed-file resolution fails closed, the publication workflow consumes same-SHA full release evidence, package-skills and environment tests are covered, and Windows/Linux install/upgrade/rollback journeys pass.
+Exit evidence: every active open or draft PR automatically acquires a contained Shepherd monitor; `gh pr view` remains an allowed instantaneous detail check but never becomes the lifecycle owner; changed-file resolution fails closed; publication consumes same-SHA full release evidence; package-skills and environment tests are covered; Windows/Linux install/upgrade/rollback journeys pass.
 
 ### Collision and merge rule
 
-Lifecycle trust lands first because every other lane depends on truthful writes, setup, and process cleanup. Lanes A and B may then proceed independently. A small integration tail wires skill and memory routing into hooks. Lane D owns the exact release commit and lands release metadata/version/tag last. If two lanes need the same canonical source, the next-at-bat PR owns it; update only that branch, not every active branch.
+Lifecycle trust lands first because every other lane depends on truthful writes, setup, and process cleanup. Lanes A and B may proceed independently until their outputs are ready. The existing S0 issue `d362bd71` owns the integration tail and is blocked by `588e6973`, `6bc72f4f`, `c81eb263`, and `36461e50`; it wires skill, memory, insights, and diagnostic routing into one bounded hook envelope. Because terminal release task `8e634347` already depends on `d362bd71`, the release cannot unblock without accepted integration evidence. Lane D owns the exact release candidate and publication evidence. If two lanes need the same canonical source, the next-at-bat PR owns it; update only that branch, not every active branch.
 
 ### Three-hour merge cadence
 
@@ -176,8 +177,9 @@ The operating target is **four merged PRs per three-hour cycle**:
 4. The coordinator keeps the next cycle preloaded with test preparation and investigation for blocked work, but only four implementation PRs remain active.
 5. If one lane blocks, replace its slot with another non-colliding ready S0/S1 reliability issue; do not make the other three lanes wait.
 6. Track planned, opened, green, merged, cycle time, review-turn count, and blocker cause for every slot. Repeated blocker causes become Forge improvements.
+7. Use the installed Codex plugin for bounded, independent implementation, test, log-analysis, and triage slots when it preserves context and throughput. Codex workers still receive isolated Forge worktrees and cannot own merge/dependency decisions.
 
-The 13 S0 issues plus one integration PR and one beta.5 release PR imply about 15 PRs: four cycles, approximately 12 active delivery hours, with calendar allowance for CI/review. The release plan therefore targets feature-complete beta.5 on 2026-07-31 rather than 2026-08-07.
+The 14 S0 issues, including hook integration inside `d362bd71`, plus one beta.5 release PR imply about 15 PRs: four merge cycles, approximately 12 active delivery hours, with calendar allowance for CI/review. The release plan therefore targets feature-complete beta.5 on 2026-07-31 rather than 2026-08-07.
 
 ### Dogfood improvement loop
 
@@ -186,20 +188,22 @@ Every merged stable issue runs two reviews:
 1. **Work:** Did the implementation satisfy the issue, stable contract, edge cases, and future composition?
 2. **Process:** What did Forge fail to surface, automatically trigger, retrieve, enforce, diagnose, or clean up while the issue was being delivered?
 
-The issue receives a stage-exit comment containing evidence, decisions, artifacts, next work, and process friction. Repeated or structural friction is filed or linked immediately, then ranked when it improves the substrate for later issues. The program must dogfood Forge worktrees, Kernel dependencies, memory, skill/diagnostic routing, shepherd, merge, close, insights, and cleanup rather than relying on an invisible parallel process.
+The issue receives one structured stage-exit comment with non-empty labeled `Summary`, `Decisions`, `Artifacts`, and `Next` fields; `Evidence` and `Process friction` remain additional labeled fields when applicable. Repeated or structural friction is filed or linked immediately, then ranked when it improves the substrate for later issues. The program must dogfood Forge worktrees, Kernel dependencies, memory, skill/diagnostic routing, shepherd, merge, close, insights, and cleanup rather than relying on an invisible parallel process.
 
 ## 7. Merge and dependency order
 
 1. **Stabilize the baseline:** merge PR `#460` after current-head checks, zero unresolved threads, mergeability, and quiet-time gates pass. Resolve or deliberately defer PR `#461`; a dependency-only PR does not block stable unless it exposes a real release failure.
-2. **Freeze the exact cohort in the Kernel:** reconcile `068374e5` children, retain the 13 verified S0 issues, and classify all remaining work S1/R/D without implementing it. Terminal release task `8e634347` is P0 and blocked by every S0 issue.
+2. **Freeze the exact cohort in the Kernel:** reconcile `068374e5` children, retain the 14 verified S0 issues, and classify all remaining work S1/R/D without implementing it. Terminal release task `8e634347` is P0 and blocked by every S0 issue.
 3. **Land lifecycle trust first:** `f0385fa1`, `183d38fc`, `940b904b`, `8606ea93`, `cb8c7ab6`, `87a8394e`.
 4. **Run skills and memory independently:** Lane A (`588e6973`, `6bc72f4f`, `d362bd71`, `c81eb263`) and Lane B (`36461e50`).
-5. **Land the integration tail:** hook wiring makes skill, memory, insights, and diagnostic routing automatic, bounded, explainable, and measured.
-6. **Close test/release evidence:** `10a6f241` and `af79e102`; make publication consume same-SHA full evidence.
-7. **Cut feature-complete beta.5 by 2026-07-31:** all S0 work merged; repair beta.4 changelog history and release reference, update version/notes, publish under npm `beta`, verify provenance, and run 48-hour postpublish smoke. No new stable-surface feature follows beta.5.
-8. **Cut RC1 by 2026-08-07:** after seven days of beta.5 soak, repeat the same-SHA matrix and publish `0.1.0-rc.1` under the prerelease `beta` dist-tag.
-9. **Cut RC2 by 2026-08-14:** only release-stopper fixes may differ from RC1; repeat clean install, upgrade, rollback, automatic-context, and process-lifecycle evidence.
-10. **Promote by 2026-08-21:** require seven clean days after RC2 and at least 14 cumulative RC soak days; reset the RC clock for schema/storage migration, new commands/features, breaking default output, or any stopper.
+5. **Land the integration tail under `d362bd71`:** after its three skill dependencies and `36461e50` land, the issue wires skill, memory, insights, and diagnostic routing into one automatic, bounded, explainable, and measured hook envelope. The terminal release task remains blocked by `d362bd71`.
+6. **Make PR ownership automatic:** `49f438f0` attaches contained Shepherd monitoring whenever an active open or draft PR exists; agents may use `gh pr view` for instant detail but never as the continuing monitor.
+7. **Close test/release evidence:** `10a6f241` and `af79e102`; make publication consume same-SHA full evidence.
+8. **Cut feature-complete beta.5 by 2026-07-31:** all S0 work merged; repair beta.4 changelog history and release reference, update version/notes, publish under npm `beta`, verify provenance, and run 48-hour postpublish smoke. No new stable-surface feature follows beta.5.
+9. **Cut RC1 by 2026-08-07:** after seven days of beta.5 soak, repeat the same-SHA matrix and publish `0.1.0-rc.1` under the prerelease `beta` dist-tag.
+10. **Cut RC2 by 2026-08-14:** any behavior change after RC1 requires RC2. Only reproduced release-stopper fixes may differ; repeat clean install, upgrade, rollback, automatic-context, and process-lifecycle evidence and reset every affected gate.
+11. **Prepare and soak the exact stable SHA:** immediately after RC2 publishes, merge a metadata-only promotion PR whose package/changelog/release notes already say `0.1.0`, run the complete same-SHA matrix, and record the resulting `master` SHA as the stable candidate. Any later commit creates a new candidate and restarts its seven-day clock.
+12. **Promote by 2026-08-21:** after the exact stable-candidate SHA has seven clean days and the program has two weekly RC gates plus at least 14 cumulative RC soak days, tag that unchanged SHA `v0.1.0`. No last-minute version or documentation commit is permitted.
 
 ## 8. Release-candidate gates
 
@@ -210,13 +214,16 @@ A release candidate is eligible only when all are true on the same commit:
 - release readiness returns no blockers;
 - `npm pack --dry-run` contains only intended public files;
 - install and uninstall/disable journeys pass on clean Windows and Linux environments;
+- Claude, Codex, Cursor, and Hermes clean-install, skill discovery/invocation, projection, activation, and hook-delivery paths pass wherever support is advertised;
 - existing `CLAUDE.md`/agent instructions and user hooks survive setup;
 - minimal/standard/full and skills-only choices behave as advertised;
 - automatic skill/memory holdout evaluation meets the locked thresholds established during shadowing;
 - Kernel dependency, concurrency, worktree cleanup, and check-after-write negative cases pass;
-- shepherd evaluates the current head and cannot report CLEAN on stale evidence;
+- every active open or draft PR automatically acquires a contained Shepherd monitor, and Shepherd evaluates the current head without reporting CLEAN on stale evidence;
 - no deterministic failing test is waived as a flake;
 - rollback to the prior beta/stable package is documented and exercised.
+
+Stable publication uses an exact-SHA promotion gate. Immediately after RC2, the final metadata-only `0.1.0` commit is merged to `master`, the full matrix and package checks run on that resulting SHA, and that same SHA soaks for seven clean days. The `v0.1.0` tag is then applied to the unchanged candidate. A metadata or behavior change creates a new candidate; a behavior change additionally requires a new RC2 and resets the affected RC evidence.
 
 ## 9. Schedule
 
@@ -234,11 +241,11 @@ Repeat the same-SHA matrix after beta.5 soak, publish RC1 under the prerelease `
 
 ### 2026-08-14 — RC2
 
-Only release-stopper fixes may differ from RC1. Repeat the complete matrix and reset affected evidence whenever behavior changed.
+Any behavior change after RC1 requires RC2. Only reproduced release-stopper fixes may differ; repeat the complete matrix and reset every affected evidence gate. After RC2 publishes, merge and validate the final metadata-only `0.1.0` promotion commit, record the resulting `master` SHA, and begin its seven-day exact-SHA soak.
 
 ### 2026-08-21 — stable target
 
-Publish `0.1.0` only after seven clean days following RC2 and at least 14 cumulative RC soak days, with every S0 verified done. Extend rather than weaken a gate. Do not extend for roadmap work.
+Tag the unchanged stable-candidate `master` SHA as `v0.1.0` only after that exact SHA has seven clean days, the program has passed two weekly RC gates and at least 14 cumulative RC soak days, and every S0 is verified done. Any intervening commit restarts the stable-candidate clock. Extend rather than weaken a gate. Do not extend for roadmap work.
 
 ## 10. Stop and rollback conditions
 
