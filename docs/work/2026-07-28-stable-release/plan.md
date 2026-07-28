@@ -177,16 +177,16 @@ The issue receives a stage-exit comment containing evidence, decisions, artifact
 
 ## 7. Merge and dependency order
 
-1. **Stabilize the baseline:** merge PR `#460` after current-head checks, zero unresolved threads, mergeability, and quiet-time gates pass. Resolve or deliberately defer PR `#461`; a dependency-only PR does not block beta.5 unless it exposes a real release failure.
-2. **Cut beta.5 by 2026-08-07:** repair the missing beta.4 changelog history, update version/release notes, complete release evidence, publish the GitHub prerelease, verify npm `beta`, and run a fresh-install smoke.
-3. **Freeze the exact cohort in the Kernel:** reconcile `068374e5` children, record the 13 verified S0 issues, and classify all remaining work S1/R/D without implementing it. Terminal release task `8e634347` is P0 and blocked by every S0 issue.
-4. **Land lifecycle trust first:** `f0385fa1`, `183d38fc`, `940b904b`, `8606ea93`, `cb8c7ab6`, `87a8394e`.
-5. **Run skills and memory independently:** Lane A (`588e6973`, `6bc72f4f`, `d362bd71`, `c81eb263`) and Lane B (`36461e50`).
-6. **Land the integration tail:** hook wiring makes skill, memory, and diagnostic routing automatic, bounded, explainable, and measured.
-7. **Close test/release evidence:** `10a6f241` and the release-workflow coverage issue; make the publication path consume same-SHA full evidence.
-8. **Cut RC1 by 2026-08-14:** freeze stable scope; only S0 fixes enter.
-9. **Cut RC2 by 2026-08-21 only if behavior changed:** otherwise continue soak on RC1.
-10. **Promote by 2026-08-28:** require two weekly RC gates and at least 14 cumulative soak days; reset the RC clock for schema/storage migration, new commands/features, breaking default output, or any stopper.
+1. **Stabilize the baseline:** merge PR `#460` after current-head checks, zero unresolved threads, mergeability, and quiet-time gates pass. Resolve or deliberately defer PR `#461`; a dependency-only PR does not block stable unless it exposes a real release failure.
+2. **Freeze the exact cohort in the Kernel:** reconcile `068374e5` children, retain the 13 verified S0 issues, and classify all remaining work S1/R/D without implementing it. Terminal release task `8e634347` is P0 and blocked by every S0 issue.
+3. **Land lifecycle trust first:** `f0385fa1`, `183d38fc`, `940b904b`, `8606ea93`, `cb8c7ab6`, `87a8394e`.
+4. **Run skills and memory independently:** Lane A (`588e6973`, `6bc72f4f`, `d362bd71`, `c81eb263`) and Lane B (`36461e50`).
+5. **Land the integration tail:** hook wiring makes skill, memory, insights, and diagnostic routing automatic, bounded, explainable, and measured.
+6. **Close test/release evidence:** `10a6f241` and `af79e102`; make publication consume same-SHA full evidence.
+7. **Cut feature-complete beta.5 by 2026-08-07:** all S0 work merged; repair beta.4 changelog history and release reference, update version/notes, publish under npm `beta`, verify provenance, and run 48-hour postpublish smoke. No new stable-surface feature follows beta.5.
+8. **Cut RC1 by 2026-08-14:** after seven days of beta.5 soak, repeat the same-SHA matrix and publish `0.1.0-rc.1` under the prerelease `beta` dist-tag.
+9. **Cut RC2 by 2026-08-21:** only release-stopper fixes may differ from RC1; repeat clean install, upgrade, rollback, automatic-context, and process-lifecycle evidence.
+10. **Promote by 2026-08-28:** require seven clean days after RC2 and at least 14 cumulative RC soak days; reset the RC clock for schema/storage migration, new commands/features, breaking default output, or any stopper.
 
 ## 8. Release-candidate gates
 
@@ -207,25 +207,25 @@ A release candidate is eligible only when all are true on the same commit:
 
 ## 9. Schedule
 
-### 2026-08-07 — beta.5 checkpoint
+### 2026-07-28 through 2026-08-06 — S0 delivery
 
-Merge the test-isolation baseline, resolve/defer the dependency PR, repair release history/docs, publish under `beta`, and run clean-install smoke tests.
+Land lifecycle trust first. Run skill/diagnostic selection and automatic memory in parallel worktrees. Land the small hook-integration tail, then close test and publication evidence. No non-S0 roadmap implementation enters this window.
 
-### 2026-08-08 through 2026-08-13 — S0 delivery
+### 2026-08-07 — feature-complete beta.5
 
-Land lifecycle trust first. Run skill/diagnostic selection and automatic memory in parallel worktrees. Land the small hook-integration tail, then close test/release evidence.
+Every S0 is merged and re-read done. Repair release history/docs, publish under npm `beta`, verify provenance and packed contents, and start 48-hour postpublish plus seven-day clean-install/upgrade soak.
 
 ### 2026-08-14 — RC1
 
-Freeze stable scope, publish RC1, and start Windows/Linux clean-install, upgrade, rollback, skill/memory holdout, and orphan-process soak evidence.
+Repeat the same-SHA matrix after beta.5 soak, publish RC1 under the prerelease `beta` dist-tag, and continue Windows/Linux install, upgrade, rollback, skill/memory holdout, and orphan-process evidence.
 
-### 2026-08-21 — RC2 gate
+### 2026-08-21 — RC2
 
-If behavior changed after RC1, publish RC2 and reset the affected soak evidence. If no behavior changed, keep the same candidate and record the second weekly gate.
+Only release-stopper fixes may differ from RC1. Repeat the complete matrix and reset affected evidence whenever behavior changed.
 
 ### 2026-08-28 — stable target
 
-Publish `0.1.0` only when the exact commit has passed two weekly RC gates and at least 14 cumulative soak days, with every S0 verified done. Extend rather than weaken a gate. Do not extend for roadmap work.
+Publish `0.1.0` only after seven clean days following RC2 and at least 14 cumulative RC soak days, with every S0 verified done. Extend rather than weaken a gate. Do not extend for roadmap work.
 
 ## 10. Stop and rollback conditions
 

@@ -2,16 +2,12 @@
 
 Each implementation task gets its own Kernel issue, Forge worktree, RED→GREEN→REFACTOR evidence, review settlement, and close-after-merge verification. Work starts only when its issue is S0 and unblocked. After every merge, record both implementation evidence and the Forge process friction exposed while delivering it; structural friction is immediately linked or filed and ranked so working on Forge continuously improves Forge itself.
 
-## Phase 0 — stabilize and publish beta.5
+## Phase 0 — stabilize the baseline
 
 - [ ] Gate and merge PR #460 at its current head; verify CI, mergeability, zero unresolved threads, and review quiet time.
 - [ ] Reproduce `test/v2-fixture-corpus.test.js` failure from PR #461's pre-push lane.
 - [ ] Fix the fixture failure if deterministic; otherwise prove the external transient mechanism before rerun.
 - [ ] Push the frozen-lockfile fix or defer/close PR #461 with the dependency issue still tracked.
-- [ ] Create the beta.5 release issue/worktree.
-- [ ] Update `package.json` and `CHANGELOG.md` for `0.1.0-beta.5`.
-- [ ] Run lint, full parallel tests, release readiness, package dry-run, and supported-platform smoke tests.
-- [ ] Merge the release PR, create `v0.1.0-beta.5`, verify OIDC publication and npm `beta`, then test a fresh install.
 
 ## Phase 1 — freeze the stable blocker cohort
 
@@ -63,21 +59,34 @@ Each implementation task gets its own Kernel issue, Forge worktree, RED→GREEN�
 - [ ] Make publication consume same-SHA full release evidence, including package-skills and environment coverage.
 - [ ] Build clean/upgrade/rollback Windows and Linux release journeys.
 
-## Phase 3 — RC1
+## Phase 3 — feature-complete beta.5 (2026-08-07)
 
-- [ ] Merge every foundation PR in dependency order; update only the next-at-bat branch.
-- [ ] Freeze user-facing stable scope and reject roadmap additions.
+- [ ] Verify all 13 S0 issues are merged, closed, and re-read from the Kernel.
+- [ ] Create the beta.5 release issue/worktree from the final S0 head.
+- [ ] Add the missing beta.4 changelog history and replace the stale v0.0.11 release reference with the current beta-to-stable and registry rollback procedure.
+- [ ] Update `package.json`, `CHANGELOG.md`, release notes, and public version references for `0.1.0-beta.5`.
+- [ ] Run lint, full parallel tests, release readiness, package dry-run, install-from-tarball, and supported-platform journey tests on one SHA.
+- [ ] Merge the release PR, create `v0.1.0-beta.5`, verify OIDC/provenance publication and npm `beta`, then run fresh-install and upgrade smoke tests.
+- [ ] Begin 48-hour postpublish and seven-day beta.5 soak. No new command, feature, schema, setup footprint, or breaking default enters after this point.
+
+## Phase 4 — RC1 and RC2
+
+- [ ] Verify beta.5 completed seven days of feature-frozen soak with no open release stopper.
+- [ ] Reject roadmap additions; any new feature, command, schema, setup footprint, or breaking default resets to a new beta.
 - [ ] Run the complete release-candidate gate on one commit.
 - [ ] Publish `0.1.0-rc.1` under a prerelease dist-tag.
 - [ ] Test clean and existing repositories on Windows and Linux.
 - [ ] Test supported Claude, Codex, and Hermes discovery/invocation paths where the repository advertises support.
 - [ ] Run automatic-context holdouts and inspect misses, false positives, stale retrievals, and token use.
 - [ ] Run rollback to beta.5 in a disposable project.
+- [ ] Publish RC1 on 2026-08-14 only after seven days of beta.5 soak.
+- [ ] Allow only reproduced release-stopper fixes after RC1.
+- [ ] Publish RC2 on 2026-08-21, repeat the full matrix, and reset affected evidence for every behavioral change.
 
-## Phase 4 — stable promotion
+## Phase 5 — stable promotion (2026-08-28)
 
 - [ ] Fix only reproduced S0 defects from RC1.
-- [ ] Cut RC2 only if behavior changed materially; otherwise promote the verified RC commit.
+- [ ] Verify RC2 has seven clean days and the program has at least 14 cumulative RC soak days.
 - [ ] Update version/changelog/release notes together.
 - [ ] Run release readiness and `npm pack --dry-run` on the exact release commit.
 - [ ] Merge with zero unresolved threads and all required checks green.
