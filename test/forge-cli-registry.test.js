@@ -7,42 +7,37 @@
  * Uses subprocess spawning to test the actual CLI entry point.
  */
 
-const { describe, test, expect, setDefaultTimeout } = require('bun:test');
-const { execFileSync } = require('node:child_process');
+const { afterAll, describe, test, expect, setDefaultTimeout } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { loadCommands } = require('../lib/commands/_registry');
+const {
+  CASE_TIMEOUT_MS,
+  FORGE_BIN: forgePath,
+  createCliSandboxes,
+  runForgeIn,
+} = require('./helpers/cli-subprocess');
 
-const forgePath = path.join(__dirname, '..', 'bin', 'forge.js');
+setDefaultTimeout(CASE_TIMEOUT_MS);
 
-setDefaultTimeout(15000);
+const sandboxes = createCliSandboxes('forge-cli-registry-');
+afterAll(() => sandboxes.cleanup());
 
 /**
  * Helper: run forge CLI with given args, return { stdout, stderr, status }.
- * Merges env so AGENTS.md check is bypassed (postinstall lifecycle).
+ *
+ * Each call gets a fresh private sandbox as cwd AND project root, so the spawned
+ * CLI reads/writes only its own `.forge/` state. It previously ran with the repo
+ * checkout as cwd, which made these tests observe (and mutate) state shared with
+ * every concurrently-running shard.
  *
  * @param {string[]} cliArgs - Arguments to pass to forge
  * @param {object} [envOverrides] - Extra environment variables
  * @returns {{ stdout: string, stderr: string, status: number }}
  */
 function runForge(cliArgs, envOverrides = {}) {
-  try {
-    const stdout = execFileSync(process.execPath, [forgePath, ...cliArgs], {
-      encoding: 'utf8',
-      timeout: 10_000,
-      env: { ...process.env, ...envOverrides },
-      // Use repo root as cwd so AGENTS.md exists (avoids FORGE_SETUP_REQUIRED)
-      cwd: path.join(__dirname, '..'),
-    });
-    return { stdout, stderr: '', status: 0 };
-  } catch (err) {
-    return {
-      stdout: err.stdout || '',
-      stderr: err.stderr || '',
-      status: err.status ?? 1,
-    };
-  }
+  return runForgeIn(sandboxes.makeSandbox(), cliArgs, { env: envOverrides });
 }
 
 /**
