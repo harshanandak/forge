@@ -93,6 +93,28 @@ Do not lock this ADR to `accepted` until the verify-before-lock checklist passes
   SQL rewrite and break the broker's SQLite error-substring contract; not
   local-first.
 
+### Litestream re-evaluation (2026-07-28)
+
+Litestream remains rejected as the team server. It asynchronously copies SQLite
+WAL changes to a replica for disaster recovery; it does not provide the
+authenticated, serialized multi-client write authority, project namespaces, or
+conflict handling Forge requires. Its default S3 sync interval also leaves an
+approximately one-second catastrophic-loss window, and multiple writers sharing
+one replica path can make restoration impossible.
+
+This does not rule out a later opt-in local-backup integration. Forge's local
+Kernel already uses WAL mode and a five-second busy timeout, which match
+Litestream's prerequisites. Any such integration must use a unique replica path
+per Kernel database and prove checkpoint, restore, and integrity-check behavior.
+It would supplement local durability, not replace the libSQL team-server target.
+
+Sources:
+
+- [Litestream: How it works](https://litestream.io/how-it-works/)
+- [Litestream: Data loss window](https://litestream.io/tips/#data-loss-window)
+- [Litestream: Multiple applications replicating into one location](https://litestream.io/tips/#multiple-applications-replicating-into-location-can-corrupt)
+- [Litestream: Restore command](https://litestream.io/reference/restore/)
+
 ## Verify-before-lock checklist
 
 Move to `accepted` only after:

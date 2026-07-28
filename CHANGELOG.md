@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (`746d839d`)
+
 ## [0.1.0-beta.3] - 2026-07-17
 
 The **adoption-unblocking wave** — the changes beta testers hit on their very first real session. `forge ship`, the hook-enforcement verdict, and `forge worktree create` no longer dead-end a fresh or in-flight branch, and the PR shepherd now arms itself for any agent. Every change below was adversarially reviewed before merge.
