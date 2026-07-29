@@ -151,6 +151,30 @@ describe('resolveChangeSet — strict base detection (B2)', () => {
     // The diff must use the merge-base of the resolved base, not a re-resolved ref.
     expect(calls.some((c) => c.startsWith('diff --name-only abc123...HEAD'))).toBe(true);
   });
+
+  test('git diff failure leaves the change set unresolved and preflight fails closed', async () => {
+    const exec = (_cmd, args) => {
+      const command = args.join(' ');
+      if (command.includes('origin/HEAD')) return 'main\n';
+      if (command.startsWith('merge-base HEAD main')) return 'abc123\n';
+      if (command.startsWith('diff --name-only abc123...HEAD')) {
+        throw new Error('git diff timed out');
+      }
+      throw new Error(`unexpected git: ${command}`);
+    };
+    const changeSet = resolveChangeSet(exec, {});
+    let built = false;
+    const res = await preflight.handler([], {}, '/x', {
+      log: () => {},
+      resolveChangeSet: () => changeSet,
+      buildGates: () => { built = true; return []; },
+    });
+
+    expect(changeSet.resolved).toBe(false);
+    expect(changeSet.reason).toMatch(/git diff/i);
+    expect(res.success).toBe(false);
+    expect(built).toBe(false);
+  });
 });
 
 // 45a63715: a fully-pushed feature branch's own @{upstream} points AT HEAD, so
