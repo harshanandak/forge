@@ -253,6 +253,7 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
 		expect(() => executor.fireAndForget({
 			projectRoot: '/repo',
 			gitCommonDir: '/repo/.git',
+			env: {},
 			kernelInitialized: () => true, // reach the tick so the throw-swallow is actually exercised
 			tick: () => { throw new Error('boom in tick'); },
 		})).not.toThrow();
@@ -280,6 +281,7 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
 		const ctx = {
 			projectRoot: repo,
 			gitCommonDir,
+			env: {},
 			kernelInitialized: () => true, // bypass the no-lazy-create guard for this arbitration test
 			acquire,
 			release: () => {}, // keep the winner's lock in place so the loser truly loses
@@ -420,10 +422,12 @@ describe('launchDaemon — capability classification + detached spawn options', 
 			unref: () => { unrefed = true; },
 		};
 		const res = executor.launchDaemon({
-			projectRoot: '/repo',
+			projectRoot: '/repo/.worktrees/feature',
+			gitCommonDir: '/repo/.git',
 			spawnProcess: (_bin, _args, o) => { opts = o; return fakeChild; },
 		});
 		expect(res.via).toBe('detached');
+		expect(opts.cwd).toBe('/repo');
 		expect(opts.detached).toBe(true);
 		expect(opts.stdio).toBe('ignore');
 		expect(opts.windowsHide).toBe(true); // containment: never flash a console
@@ -613,6 +617,7 @@ describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', () 
 		let acquired = false; const launches = [];
 		executor.fireAndForget({
 			projectRoot: '/repo', gitCommonDir: '/g',
+			env: {},
 			kernelInitialized: () => true, // isolate the RAIL gate — else the kernel guard short-circuits first (vacuous pass)
 			railEnabled: () => false,
 			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
@@ -628,6 +633,7 @@ describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', () 
 		let acquired = false;
 		executor.fireAndForget({
 			projectRoot: '/repo', gitCommonDir: '/g',
+			env: {},
 			kernelInitialized: () => true, // isolate the RAIL gate from the kernel-exists guard
 			railEnabled: () => true,
 			acquire: () => { acquired = true; return { ok: false }; },
