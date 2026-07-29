@@ -143,6 +143,44 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
     }
   });
 
+  test('preserves an existing @AGENTS.md import byte-for-byte', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      const existingImport = '\uFEFF  @AGENTS.md\r\n';
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.writeFileSync(linkPath, existingImport);
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('existing-import');
+      expect(fs.readFileSync(linkPath)).toEqual(Buffer.from(existingImport));
+    } finally {
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('does not overwrite an existing non-import file', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      const userContent = '# User instructions\nKeep this content.\n';
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.writeFileSync(linkPath, userContent);
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
+    } finally {
+      cleanTmpDir(tmpDir);
+    }
+  });
+
   test('HEADER_COMMENT constant is exported', () => {
     const { HEADER_COMMENT } = require('../lib/symlink-utils');
     expect(typeof HEADER_COMMENT).toBe('string');
