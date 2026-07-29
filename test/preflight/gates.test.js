@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 const {
@@ -132,7 +133,7 @@ describe('runAffectedTests — real runner (injected)', () => {
     let received;
     const first = runAffectedTests({
       projectRoot: '/x',
-      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js', '  '],
+      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js', ''],
       resolveTests: (changedFiles) => {
         received = changedFiles;
         return [];
@@ -154,6 +155,25 @@ describe('runAffectedTests — real runner (injected)', () => {
     expect(first.inputFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(second.inputFingerprint).toBe(first.inputFingerprint);
     expect(changed.inputFingerprint).not.toBe(first.inputFingerprint);
+  });
+
+  test('preserves whitespace-bearing Git filenames through selection and fingerprinting', () => {
+    const filename = ' test/fixture.test.js ';
+    let received;
+    const spaced = runAffectedTests({
+      projectRoot: '/x',
+      changedFiles: [filename],
+      resolveTests: (changedFiles) => {
+        received = changedFiles;
+        return [];
+      },
+    });
+    const expectedFingerprint = crypto.createHash('sha256')
+      .update(JSON.stringify([filename]))
+      .digest('hex');
+
+    expect(received).toEqual([filename]);
+    expect(spaced.inputFingerprint).toBe(expectedFingerprint);
   });
 
   test('default selection maps the supplied snapshot without resolving Git again', () => {
