@@ -106,7 +106,7 @@ seconds and cancel-in-progress. The shepherd itself never waits in-process.
 
 ## Automatic singleton attachment (`rail.auto_shepherd`)
 
-Successful session start, push, and non-dry-run ship operations wake the
+Successful supported session start, push, and non-dry-run ship operations wake the
 repository-wide singleton. Push never requires a locally resolved PR number:
 the daemon owns GitHub enumeration, so even a push with no local open-PR match
 still fires and can adopt open or draft PRs created elsewhere. Push and ship no
