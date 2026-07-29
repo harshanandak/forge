@@ -43,8 +43,8 @@ The external `.remember` miss is intentionally not repaired in S0. Live headings
    ```
 
 5. `kernel_memories.key` remains `memory_id`; the contract is derived from existing fields. No schema migration is added.
-6. Scope, trust, staleness, already-seen, and supersession eligibility are SQL predicates applied before BM25 ordering and the candidate `LIMIT`.
-7. More than one candidate-window of stronger foreign rows cannot hide an eligible local result.
+6. The prompt handler loads the current session's seen keys before search and passes them as SQL exclusions. Scope, trust, staleness, already-seen, and supersession eligibility are predicates applied before BM25 ordering and the candidate `LIMIT`.
+7. More than one candidate-window of stronger foreign or already-seen rows cannot hide an eligible unseen local result.
 8. Trust follows one executable precedence: explicit `trust:confirmed`; auto-capture suggested; legacy import suggested; typed machine suggested; otherwise an exact human `forge remember` string confirmed; unknown forms suggested.
 9. Type follows one executable precedence: recognized `type:` tag, then recognized structured `value.category`, then `machine-record` for other structured values. Plain human strings remain `note`.
 10. Suggested context is visibly labeled as non-authoritative and requires verification. Stale suggested context is manual-recall only.
@@ -142,15 +142,17 @@ Confirmed records can enter SessionStart and prompt context when eligible and re
 
 The candidate query must perform these operations in order:
 
-1. FTS `MATCH`.
-2. Same-project/null-local scope predicate.
-3. Allowed trust and suggested-freshness predicates.
-4. Already-seen exclusion.
-5. Eligible-superseder `NOT EXISTS` predicate.
-6. `ORDER BY bm25(...)` plus deterministic secondary ordering.
-7. Candidate `LIMIT`.
+1. The prompt hook loads bounded seen keys for the current project/session before invoking search.
+2. It passes those keys into the ranked-search API as exclusions rather than filtering hook results afterward.
+3. SQL applies FTS `MATCH`.
+4. SQL applies same-project/null-local scope.
+5. SQL applies allowed trust and suggested freshness.
+6. SQL excludes the passed seen keys.
+7. SQL applies the eligible-superseder `NOT EXISTS` predicate.
+8. Only then SQL applies `ORDER BY bm25(...)` plus deterministic secondary ordering.
+9. Finally SQL applies the candidate `LIMIT`.
 
-Eligibility cannot be applied after the limit. The regression fixture must insert at least 26 stronger foreign rows—more than the current 25-row candidate cap—and prove the eligible local match is still returned.
+Eligibility cannot be applied after the limit. One regression fixture must insert at least 26 stronger foreign rows—more than the current 25-row candidate cap—and prove the eligible local match is still returned. A second must insert at least 26 stronger already-seen rows and prove an unseen eligible local result survives. Post-search seen-key filtering does not satisfy this contract.
 
 ## Supersession semantics
 
@@ -215,7 +217,7 @@ Omit query correlation by default. If implementation evidence proves it necessar
 - FTS unavailable/corrupt: no substring or recency fallback on automatic prompt recall.
 - Equal scores/timestamps: deterministic `memory_id` tie-break.
 - Oversized single result: skip and continue; one record cannot starve the budget.
-- Repeated prompt/session: existing seen-key dedupe remains bounded and project/session scoped.
+- Repeated prompt/session: load bounded project/session seen keys before search and exclude them in SQL before BM25/limit.
 - Worktree path: normalize the canonical Git common-directory real path so sibling worktrees share project memory without crossing repositories.
 - User-global `.remember`: never read, index, or inject in S0.
 - Unsupported harness: no fabricated success; expose fallback and record `unsupported`.
@@ -226,15 +228,16 @@ At minimum:
 
 1. Positive confirmed project-local holdout injects the right memory without an explicit memory command.
 2. At least 26 stronger foreign rows are filtered in SQL before BM25 order/limit, leaving the eligible local result.
-3. Foreign, stale suggested, and validly superseded records remain absent even with stronger BM25 scores.
-4. Ineligible/foreign superseders cannot erase local memory; suggested superseders cannot erase confirmed memory.
-5. Type precedence preserves recognized `type:` tags, then recognized `value.category`, then `machine-record`.
-6. Fresh suggested memory is separately labeled and never rendered as confirmed truth.
-7. Token budgets hold for many hits and one oversized hit.
-8. Missing hook installation is repaired without changing user hooks.
-9. Kernel, FTS, telemetry, and deadline failures fail open with visible content-free outcomes.
-10. Serialized telemetry contains no prompt text/terms, memory bodies/snippets, or fingerprint key/salt.
-11. Claude receives lifecycle context; Codex, Cursor, and Hermes report real fallback/unsupported state.
+3. At least 26 stronger already-seen rows are excluded in SQL before BM25 order/limit, leaving an unseen eligible result.
+4. Foreign, stale suggested, and validly superseded records remain absent even with stronger BM25 scores.
+5. Ineligible/foreign superseders cannot erase local memory; suggested superseders cannot erase confirmed memory.
+6. Type precedence preserves recognized `type:` tags, then recognized `value.category`, then `machine-record`.
+7. Fresh suggested memory is separately labeled and never rendered as confirmed truth.
+8. Token budgets hold for many hits and one oversized hit.
+9. Missing hook installation is repaired without changing user hooks.
+10. Kernel, FTS, telemetry, and deadline failures fail open with visible content-free outcomes.
+11. Serialized telemetry contains no prompt text/terms, memory bodies/snippets, or fingerprint key/salt.
+12. Claude receives lifecycle context; Codex, Cursor, and Hermes report real fallback/unsupported state.
 
 ## Ambiguity policy
 

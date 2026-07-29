@@ -2,13 +2,13 @@
 
 Issue: `36461e50-da2e-43e4-bb4a-ae58aac08591`
 
-All six tasks are sequential RED → GREEN slices. Do not begin `/dev` until the plan is approved.
+Tasks 1–5 are sequential RED → GREEN slices. Task 6 is the final acceptance gate and does not invent an expected RED state. Ownership transfers in task order; repeated files are touched sequentially, never concurrently. Do not begin `/dev` until the plan is approved.
 
 ## Wave 1 — trustworthy project-local retrieval
 
 ### Task 1: Enforce normalized SQL eligibility before rank
 
-OWNS: `lib/project-memory.js`, `lib/kernel/sqlite-driver.js`, `lib/memory-recall.js`, `test/project-memory.test.js`, `test/kernel/sqlite-driver-memory.test.js`, `test/memory-recall.test.js`
+OWNS: `lib/project-memory.js`, `lib/kernel/sqlite-driver.js`, `lib/memory-recall.js`, `lib/commands/hooks.js` (prompt-recall path), `test/project-memory.test.js`, `test/kernel/sqlite-driver-memory.test.js`, `test/memory-recall.test.js`, `test/hooks-memory-recall.test.js`, `test/e2e/memory-recall-holdout.test.js`, `test/fixtures/memory-recall-holdouts.json`
 
 What to implement:
 
@@ -17,19 +17,21 @@ What to implement:
 - Resolve null scope only to the current per-project store.
 - Lock trust precedence: explicit `trust:confirmed`; auto-capture suggested; legacy import suggested; typed machine suggested; otherwise exact human `forge remember` string confirmed; unknown suggested.
 - Lock type precedence: recognized `type:` tag, then recognized structured `value.category`, then `machine-record` for other structured values.
-- Apply same-project scope, trust, suggested freshness, already-seen, and eligible-superseder predicates in SQL before BM25 order and the candidate limit.
+- Load bounded project/session seen keys in the prompt hook before search and pass them into the ranked-search API.
+- Apply same-project scope, trust, suggested freshness, passed seen-key exclusions, and eligible-superseder predicates in SQL before BM25 order and the candidate limit. Post-search seen-key filtering is not sufficient.
 - Suppress a record only through an eligible same-project superseder. A suggested superseder cannot suppress a confirmed record.
 - Keep BM25 primary; use source/trust/updated time and `memory_id` only as deterministic secondary ordering.
 
 TDD steps:
 
 1. Add RED fixtures with at least 26 stronger foreign rows against the current 25-row cap.
-2. Add RED denial-of-memory fixtures for a foreign/ineligible superseder and a suggested superseder targeting confirmed memory.
-3. Add RED trust/type precedence fixtures, including explicit confirmation and `value.category`.
-4. Run the three owned suites and capture leaked/crowded-out ids.
-5. Implement the smallest normalizer and SQL eligibility predicate in the existing driver/facade/selection path.
-6. Re-run owned suites; prove eligibility and supersession occur before BM25 order/limit.
-7. Commit: `feat(memory): enforce scoped recall eligibility`
+2. Add a separate RED prompt-hook regression with at least 26 stronger already-seen rows and one unseen eligible row; prove the unseen row is currently crowded out.
+3. Add RED denial-of-memory fixtures for a foreign/ineligible superseder and a suggested superseder targeting confirmed memory.
+4. Add RED trust/type precedence fixtures, including explicit confirmation and `value.category`.
+5. Run the focused driver, selection, hook, and end-to-end suites and capture leaked/crowded-out ids.
+6. Implement the smallest normalizer and SQL eligibility predicate, then load and pass seen-key exclusions from the prompt hook before search.
+7. Re-run owned suites; prove scope, trust, freshness, seen-key exclusion, and supersession occur before BM25 order/limit.
+8. Commit: `feat(memory): enforce scoped recall eligibility`
 
 Expected output: normalized ranked hits contain `memory_id/type/content/scope/trust_status/provenance-or-source-ref/updated_at`; ineligible rows cannot crowd out or erase eligible memory.
 
@@ -46,11 +48,11 @@ What to implement:
 
 TDD steps:
 
-1. Add RED tests proving the retired project-local JSONL importer retains deterministic scope/trust/type metadata.
-2. Add a denial fixture proving apparently relevant `.remember` files and `unknown` headings are not consumed.
-3. Run `test/memory/router.test.js` and capture any lost metadata.
+1. Add a baseline-green characterization proving apparently relevant `.remember` files and `unknown` headings are not read or consumed by the current router.
+2. Add RED tests only for any deterministic scope/trust/type metadata that the retired project-local JSONL importer currently loses.
+3. Run `test/memory/router.test.js`; retain the green non-reading characterization and capture only genuine metadata failures as RED.
 4. Make the smallest project-local importer adjustment, with no `.remember` reader or producer change.
-5. Re-run the suite; prove project-local import remains idempotent and user-global files remain untouched.
+5. Re-run the suite; prove project-local import remains idempotent and the baseline-green `.remember` characterization stays green.
 6. Commit: `fix(memory): preserve project-local recall metadata`
 
 Expected output: eligible project-local imported notes are FTS5-recallable with deterministic provenance; `.remember` never reaches `kernel_memories`.
@@ -127,24 +129,24 @@ TDD steps:
 
 Expected output: every retrieval path leaves bounded operational evidence without storing query or memory content.
 
-### Task 6: Lock isolation, holdout, and performance evidence
+### Task 6: Run the isolation, holdout, and performance acceptance gate
 
-OWNS: `test/e2e/memory-recall-holdout.test.js`, `test/fixtures/memory-recall-holdouts.json`
+OWNS: validation commands and acceptance evidence only. Product and test-file changes remain with Tasks 1–5.
 
-What to implement:
+What to validate:
 
-- Add project-local positive, confusing-neighbor, 26+ stronger foreign-row, superseded, stale-suggested, ineligible-superseder, suggested-over-confirmed, duplicate, oversized, disabled-rail, and Kernel-failure holdouts.
+- Run the project-local positive, confusing-neighbor, 26+ stronger foreign-row, 26+ stronger already-seen-row, superseded, stale-suggested, ineligible-superseder, suggested-over-confirmed, duplicate, oversized, disabled-rail, and Kernel-failure cases authored by Tasks 1–5.
 - Prove the automatic path from project-local `forge remember` storage to Claude `additionalContext`; do not seed or consume `.remember`.
-- Lock deterministic worktree-normalized identity and type/trust precedence in end-to-end fixtures.
-- Measure latency and token budgets without combining corpus work with telemetry implementation.
+- Verify deterministic worktree-normalized identity, type/trust precedence, privacy, latency, and token budgets as one release acceptance matrix.
+- Make no product or fixture changes in this gate. A failure returns to the earlier task that owns the behavior.
 
-TDD steps:
+Acceptance steps:
 
-1. Add end-to-end holdouts against the real Kernel/FTS5/hook seams.
-2. Confirm RED for the missing isolation matrix, especially candidate-window crowd-out and denial by an ineligible superseder.
-3. Make only fixture/harness adjustments needed to exercise completed implementation; return any product gap to its earlier owning task.
-4. Run holdouts twice on Windows and once in Linux CI; prove deterministic selection/omission, in-process FTS p95 ≤250 ms on 1,000 records, and hook budgets/deadlines.
-5. Commit: `test(memory): prove automatic recall isolation`
+1. Run the assembled holdouts against the real Kernel/FTS5/hook seams; do not claim an expected RED state.
+2. If any case fails, stop the gate and return it to Task 1, 2, 3, 4, or 5 according to file/behavior ownership.
+3. After all focused cases pass, run the holdouts twice on Windows and once in Linux CI.
+4. Record deterministic selection/omission, in-process FTS p95 ≤250 ms on 1,000 records, and hook budgets/deadlines as acceptance evidence.
+5. Add no gate-only commit unless evidence documentation is explicitly requested.
 
 Expected output: the implicit holdout prompt selects confirmed project-local Kernel memory; stronger foreign rows cannot crowd it out and ineligible superseders cannot erase it.
 
