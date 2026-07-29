@@ -1,7 +1,9 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { describe, test, expect } = require('bun:test');
 const preflight = require('../../lib/commands/preflight');
+const { buildGates } = require('../../lib/preflight/gates');
 
 describe('forge preflight command — contract', () => {
   test('exports a valid registry command interface', () => {
@@ -31,6 +33,24 @@ describe('forge preflight command — contract', () => {
     expect(res.success).toBe(false);
     expect(lines.join('\n')).toContain('[FAIL] broken');
     expect(lines.join('\n')).toContain('preflight FAILED');
+  });
+
+  test('returns the exact input fingerprint supplied by an executed gate', async () => {
+    const inputFingerprint = crypto.createHash('sha256').update('[]').digest('hex');
+    const res = await preflight.handler([], {}, '/x', {
+      log: () => {},
+      resolveChangedFiles: () => [],
+      buildGates: (options) => buildGates({
+        ...options,
+        deps: {
+          eslint: () => ({ ok: true }),
+          structural: () => ({ ok: true }),
+          sonar: () => ({ ok: true }),
+        },
+      }),
+    });
+
+    expect(res.results[3].inputFingerprint).toBe(inputFingerprint);
   });
 
   test('--all flag forces whole-tree scope through to buildGates', async () => {

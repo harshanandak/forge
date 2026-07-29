@@ -24,6 +24,7 @@ describe('runGates — fast-fail gate runner', () => {
     expect(results[0]).toMatchObject({ name: 'a', ok: true, skipped: false });
     expect(results[1]).toMatchObject({ name: 'b', ok: false, skipped: false });
     expect(results[2]).toMatchObject({ name: 'c', skipped: true });
+    expect(results[2]).not.toHaveProperty('inputFingerprint');
   });
 
   test('a throwing gate is caught and treated as a failure', async () => {
@@ -54,13 +55,23 @@ describe('runGates — fast-fail gate runner', () => {
 describe('runGates — skipped outcome honored (B2)', () => {
   test('a skipped gate passes through and later gates still run', async () => {
     const ran = [];
+    const inputFingerprint = 'b'.repeat(64);
     const gates = [
-      { name: 'a', run: async () => ({ ok: true, skipped: true, summary: 'not applicable' }) },
+      {
+        name: 'a',
+        run: async () => ({
+          ok: true,
+          skipped: true,
+          summary: 'not applicable',
+          inputFingerprint,
+        }),
+      },
       { name: 'b', run: async () => { ran.push('b'); return { ok: true, summary: 'ok' }; } },
     ];
     const { ok, results } = await runGates(gates);
     expect(ok).toBe(true);
     expect(results[0].skipped).toBe(true);
+    expect(results[0].inputFingerprint).toBe(inputFingerprint);
     expect(ran).toContain('b');
   });
 
