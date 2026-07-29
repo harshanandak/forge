@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const executor = require('../../lib/pr-monitor/reconcile-executor');
 const shepherdLease = require('../../lib/pr-monitor/shepherd-lease');
@@ -12,6 +13,27 @@ function tmpRepo() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws4b-exec-'));
 	return dir;
 }
+
+test('claim markers share one path across worktrees with the same common dir', () => {
+	const base = tmpRepo();
+	const gitCommonDir = path.join(base, 'main', '.git');
+	const mainRoot = path.join(base, 'main');
+	const worktreeRoot = path.join(base, 'feature');
+	executor.writeClaimMarker(mainRoot, 'forge', 42, 'stamp', gitCommonDir);
+	expect(executor.readClaimMarker(worktreeRoot, 'forge', 42, gitCommonDir)).toBe('stamp');
+	const kills = [];
+	expect(executor.verifiedKill(
+		{ repo: 'forge', pr: 42, pid: 1234, startedAt: 'stamp' },
+		{
+			projectRoot: worktreeRoot,
+			gitCommonDir,
+			isAlive: () => true,
+			kill: (pid) => kills.push(pid),
+		},
+	)).toBe(true);
+	expect(kills).toEqual([1234]);
+	fs.rmSync(base, { recursive: true, force: true });
+});
 
 describe('execute — watcher lifecycle', () => {
 	test('startWatcher spawns a watcher and records a {pr,repo,pid,startedAt} entry + start-time marker', async () => {
@@ -161,10 +183,12 @@ describe('runDaemon — singleton lease lifecycle', () => {
 	test('acquire {ok:false} (live foreign lease) → daemon exits, spawns NOTHING, no heartbeat', async () => {
 		let heartbeatStarted = false;
 		let converged = false;
+		let exited = false;
 		const res = await executor.runDaemon('/repo', {
 			gitCommonDir: '/repo/.git',
 			acquire: () => ({ ok: false, held: { pid: 4242 } }),
 			startHeartbeat: () => { heartbeatStarted = true; return {}; },
+			exit: (code) => { exited = code === 0; },
 			once: true,
 			gatherDesired: async () => { converged = true; return { openPrs: [], gitCommonDir: '/repo/.git' }; },
 		});
@@ -172,11 +196,13 @@ describe('runDaemon — singleton lease lifecycle', () => {
 		expect(res.reason).toBe('foreign-lease');
 		expect(heartbeatStarted).toBe(false);
 		expect(converged).toBe(false);
+		expect(exited).toBe(true);
 	});
 
 	test('acquire winner with no open PRs → converges once then self-retires (release + stopHeartbeat)', async () => {
 		let released = false;
 		let heartbeatStopped = false;
+		const diagnostics = [];
 		const res = await executor.runDaemon('/repo', {
 			gitCommonDir: '/repo/.git',
 			once: true,
@@ -188,10 +214,125 @@ describe('runDaemon — singleton lease lifecycle', () => {
 			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
 			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
 			updateWatchers: () => true,
+			recordDiagnostic: (entry) => diagnostics.push(entry),
 		});
 		expect(res.ok).toBe(true);
 		expect(released).toBe(true);
 		expect(heartbeatStopped).toBe(true);
+		expect(diagnostics.some((entry) => entry.kind === 'retired-no-open-prs')).toBe(true);
+	});
+
+	test('real isolated lease is removed after no-open self-retirement', async () => {
+		const gitCommonDir = tmpRepo();
+		await executor.runDaemon(gitCommonDir, {
+			gitCommonDir,
+			once: true,
+			broker: { listOpenPrs: async () => [] },
+			gatherDesired: async () => ({ openPrs: [], gitCommonDir }),
+			gatherObserved: async () => ({
+				lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [],
+			}),
+		});
+		expect(fs.existsSync(shepherdLease.lockFilePath(gitCommonDir, { gitCommonDir }))).toBe(false);
+		fs.rmSync(gitCommonDir, { recursive: true, force: true });
+	});
+
+	test('foreign-lease loser exits even when another ref-ed handle would keep Bun alive', () => {
+		const modulePath = path.join(__dirname, '..', '..', 'lib', 'pr-monitor', 'reconcile-executor.js');
+		const script = [
+			`const { runDaemon } = require(${JSON.stringify(modulePath)});`,
+			'setInterval(() => {}, 1000);',
+			"runDaemon('/repo', { gitCommonDir: '/repo/.git', acquire: () => ({ ok: false }) });",
+		].join('\n');
+		const child = spawnSync(process.execPath, ['-e', script], {
+			encoding: 'utf8',
+			timeout: 1000,
+			windowsHide: true,
+		});
+		expect(child.error).toBeUndefined();
+		expect(child.status).toBe(0);
+	});
+
+	test('a failed converge pass records its failure and leaves the cadence alive for retry', async () => {
+		const diagnostics = [];
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/repo/.git',
+			acquire: () => ({ ok: true, token: 'tok' }),
+			startHeartbeat: () => null,
+			stopHeartbeat: () => {},
+			release: () => {},
+			buildBroker: async () => { throw new Error('kernel unavailable'); },
+			convergeOnce: async () => { throw new Error('gh unavailable'); },
+			recordDiagnostic: (entry) => diagnostics.push(entry),
+			exit: false,
+			intervalMs: 60000,
+		});
+		clearInterval(res.timer);
+		expect(diagnostics).toContainEqual(expect.objectContaining({
+			kind: 'converge-failed',
+			detail: 'gh unavailable',
+		}));
+	});
+
+	test('a throwing converge cannot keep the daemon alive after its lease is lost', async () => {
+		let owned = true;
+		let passes = 0;
+		let exited = false;
+		const diagnostics = [];
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/repo/.git',
+			acquire: () => ({ ok: true, token: 'tok' }),
+			ownsLease: () => owned,
+			startHeartbeat: () => null,
+			stopHeartbeat: () => {},
+			release: () => {},
+			buildBroker: async () => { throw new Error('kernel unavailable'); },
+			convergeOnce: async () => {
+				passes += 1;
+				if (passes === 2) owned = false;
+				throw new Error('gh unavailable');
+			},
+			recordDiagnostic: (entry) => diagnostics.push(entry),
+			exit: (code) => { exited = code === 0; },
+			intervalMs: 10,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(passes).toBe(2);
+		expect(exited).toBe(true);
+		expect(diagnostics.some((entry) => entry.kind === 'lease-lost')).toBe(true);
+		clearInterval(res.timer);
+	});
+
+	test('a 30s blocked listing that loses ownership exits even when listingOk is false', async () => {
+		let ownershipChecks = 0;
+		let clock = 0;
+		let exited = false;
+		const diagnostics = [];
+		const res = await executor.runDaemon('/repo', {
+			gitCommonDir: '/repo/.git',
+			acquire: () => ({ ok: true, token: 'old-token' }),
+			ownsLease: () => {
+				ownershipChecks += 1;
+				return ownershipChecks === 1;
+			},
+			startHeartbeat: () => null,
+			stopHeartbeat: () => {},
+			release: () => {},
+			buildBroker: async () => { throw new Error('kernel unavailable'); },
+			convergeOnce: async () => {
+				clock += 30000;
+				return {
+					actions: [], watchers: [], desiredCount: null, listingOk: false,
+				};
+			},
+			now: () => clock,
+			recordDiagnostic: (entry) => diagnostics.push(entry),
+			exit: (code) => { exited = code === 0; },
+		});
+		expect(res.retired).toBe(true);
+		expect(clock).toBe(30000);
+		expect(exited).toBe(true);
+		expect(diagnostics.some((entry) => entry.kind === 'lease-lost')).toBe(true);
 	});
 });
 
@@ -229,6 +370,7 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
 	test('daemon self-exits when superseded (updateWatchers rejects its stale token)', async () => {
 		let exited = false;
 		let released = false;
+		const diagnostics = [];
 		const res = await executor.runDaemon('/repo', {
 			gitCommonDir: '/repo/.git',
 			acquire: () => ({ ok: true, token: 'stale' }),
@@ -241,10 +383,12 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
 			writeClaim: () => {}, // inject the FS seam — no real watch.startedat marker written to /repo
 			updateWatchers: () => false, // superseded on the immediate converge
 			exit: () => { exited = true; },
+			recordDiagnostic: (entry) => diagnostics.push(entry),
 		});
 		expect(exited).toBe(true);
 		expect(res.retired).toBe(true);
 		expect(released).toBe(true); // retire ran (release is token-guarded in prod, so harmless to the new owner)
+		expect(diagnostics.some((entry) => entry.kind === 'lease-lost')).toBe(true);
 	});
 });
 
@@ -444,6 +588,49 @@ describe('launchDaemon — capability classification + detached spawn options', 
 		});
 		expect(res.via).toBe('detached');
 		expect(spawned).toBe(true);
+	});
+
+	test('failed detached spawn records a durable launch-failed diagnostic', () => {
+		const diagnostics = [];
+		const res = executor.launchDaemon({
+			projectRoot: '/repo',
+			gitCommonDir: '/repo/.git',
+			spawnProcess: () => { throw new Error('spawn denied'); },
+			recordDiagnostic: (entry) => diagnostics.push(entry),
+		});
+		expect(res.launched).toBe(false);
+		expect(diagnostics).toContainEqual(expect.objectContaining({
+			kind: 'launch-failed',
+			detail: 'spawn denied',
+		}));
+	});
+});
+
+describe('daemon lifecycle diagnostics', () => {
+	test('writes diagnostic content without moving the reconcile throttle mtime', () => {
+		const gitCommonDir = tmpRepo();
+		const forgeDir = path.join(gitCommonDir, 'forge');
+		const sentinel = path.join(forgeDir, 'shepherd.reconcile');
+		const status = path.join(forgeDir, 'shepherd.status.json');
+		fs.mkdirSync(forgeDir, { recursive: true });
+		fs.writeFileSync(sentinel, '');
+		const fixed = new Date('2026-07-29T00:00:00.000Z');
+		fs.utimesSync(sentinel, fixed, fixed);
+
+		executor.writeDaemonDiagnostic(gitCommonDir, {
+			kind: 'lease-lost',
+			detail: 'token superseded',
+		}, { now: () => Date.parse('2026-07-29T01:00:00.000Z'), pid: 123 });
+
+		const written = JSON.parse(fs.readFileSync(status, 'utf8'));
+		expect(written).toMatchObject({
+			kind: 'lease-lost',
+			detail: 'token superseded',
+			pid: 123,
+			at: '2026-07-29T01:00:00.000Z',
+		});
+		expect(fs.statSync(sentinel).mtimeMs).toBe(fixed.getTime());
+		fs.rmSync(gitCommonDir, { recursive: true, force: true });
 	});
 });
 

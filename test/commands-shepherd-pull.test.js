@@ -15,7 +15,10 @@ function makeAdapter(spec = {}) {
       };
     },
     async readRequiredChecks() { return spec.required || []; },
-    async readDivergence() { return { behind: 0, ahead: 1 }; },
+    async readDivergence(args) {
+      if (spec.divergenceReads) spec.divergenceReads.push(args);
+      return spec.divergence ? spec.divergence(args) : { behind: 0, ahead: 1 };
+    },
     async rerunFailedChecks() {},
     async replyToThread() {},
     async readComments() { return spec.threads || []; },
@@ -75,5 +78,22 @@ describe('forge shepherd --pull handler path', () => {
     );
     expect(bundleRan).toBe(false);
     expect(result.pull).toBeDefined();
+  });
+
+  test('--pull compares against the PR head when the stable root HEAD is different', async () => {
+    const divergenceReads = [];
+    const adapter = makeAdapter({
+      divergenceReads,
+      divergence: ({ headRef }) => headRef === 'sha-1'
+        ? { behind: 0, ahead: 6 }
+        : { behind: 4, ahead: 0 },
+    });
+    const result = await shepherdCmd.handler(
+      ['123', '--pull', '--json'], {}, '/stable/root',
+      { adapter, buildContext, gh: () => '' },
+    );
+    expect(result.success).toBe(true);
+    expect(result.pull.behind).toBeUndefined();
+    expect(divergenceReads.some((read) => read.headRef === 'sha-1')).toBe(true);
   });
 });

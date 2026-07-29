@@ -466,6 +466,63 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     expect(payload.reviewThreads[0].author).toBe('coderabbitai');
   });
 
+  test('forwards the authoritative state head to divergence and conflict reads', async () => {
+    const reads = [];
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() {
+        return {
+          headSha: 'pr-head-sha', state: 'OPEN', mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN', checks: [], threads: [],
+        };
+      },
+      async readRequiredChecks() { return []; },
+      async readDivergence(args) {
+        reads.push({ method: 'divergence', ...args });
+        return { behind: 0, ahead: 6 };
+      },
+      async detectConflicts(args) {
+        reads.push({ method: 'conflicts', ...args });
+        return { supported: true, conflicted: false, files: [] };
+      },
+      async readComments() { return []; },
+    };
+    await gatherPullSignal({
+      pr: '464', owner: 'o', repo: 'r', base: 'master',
+      baseRef: 'origin/master', cwd: '/stable/root',
+      adapter, runGh: () => '', self: 'me',
+    });
+    expect(reads.find((r) => r.method === 'divergence').headRef).toBe('pr-head-sha');
+    expect(reads.find((r) => r.method === 'conflicts').headRef).toBe('pr-head-sha');
+  });
+
+  test('an unavailable authoritative head fails closed instead of comparing checkout HEAD', async () => {
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() {
+        return {
+          headSha: 'missing-pr-head', state: 'OPEN', mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN', checks: [], threads: [],
+        };
+      },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { throw new Error('bad object missing-pr-head'); },
+      async detectConflicts() { throw new Error('bad object missing-pr-head'); },
+      async readComments() { return []; },
+    };
+    const payload = await gatherPullSignal({
+      pr: '464', owner: 'o', repo: 'r', base: 'master',
+      baseRef: 'origin/master', cwd: '/stable/root',
+      adapter, runGh: () => '', self: 'me',
+    });
+    expect(payload.verdict).toBe('UNKNOWN');
+    expect(payload.state).toBe('UNKNOWN');
+    expect(payload.degraded).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'divergence', error: 'bad object missing-pr-head' }),
+      expect.objectContaining({ source: 'conflicts', error: 'bad object missing-pr-head' }),
+    ]));
+  });
+
   test('only fetches logs for FAILED checks (never for green ones)', async () => {
     const { adapter, runGh, runPass, ghCalls } = makeCtx();
     await gatherPullSignal({

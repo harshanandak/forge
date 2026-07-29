@@ -42,12 +42,14 @@ describe('startPrWatcherDetached', () => {
 
   test('is a no-op when a live watcher already owns the PR (spawn not called)', () => {
     let spawned = false;
+    let journalArgs;
     const res = startPrWatcherDetached({
       prNumber: 7,
-      cwd: '/repo',
+      cwd: '/repo/.worktrees/feature',
+      gitCommonDir: '/repo/.GIT',
       resolveSlug: () => 'forge',
       journal: {
-        journalDir: () => '/repo/.forge/pr-monitor/forge-7',
+        journalDir: (args) => { journalArgs = args; return '/repo/.forge/pr-monitor/forge-7'; },
         watcherRunning: () => true,
       },
       spawn: () => { spawned = true; return fakeChild(); },
@@ -55,6 +57,7 @@ describe('startPrWatcherDetached', () => {
     expect(res.started).toBe(false);
     expect(res.reason).toBe('already-running');
     expect(spawned).toBe(false);
+    expect(journalArgs.gitCommonDir).toBe('/repo/.GIT');
   });
 
   test('spawns when the slug resolves but no watcher is live yet', () => {
@@ -62,6 +65,7 @@ describe('startPrWatcherDetached', () => {
     const res = startPrWatcherDetached({
       prNumber: 8,
       cwd: '/repo',
+      resolveGitCommonDir: () => '/repo/.git',
       resolveSlug: () => 'forge',
       journal: {
         journalDir: () => '/repo/.forge/pr-monitor/forge-8',

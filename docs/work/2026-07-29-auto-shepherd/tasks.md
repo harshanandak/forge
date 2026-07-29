@@ -31,3 +31,16 @@
 - [x] Remove the W-S4c “planned follow-up” wording only after the behavior is
   proven.
 - [x] Run lint and the repository validation suite.
+
+## Task 4 — Repair P0 lifecycle and current-head regressions
+
+- [x] RED: reproduce a foreign-lease loser retained by a ref-ed handle and a
+  lease owner that loses ownership while convergence fails.
+- [x] GREEN: exit on acquisition loss and verify ownership before, after, and
+  on failure of every pass; keep the status file separate from debounce state.
+- [x] RED/GREEN: compare divergence and conflicts against `state.headSha`, with
+  legacy `HEAD` defaults and fail-closed handling for a missing explicit object.
+- [x] RED/GREEN: centralize journal and claim paths through the Git common dir
+  so all worktrees share one cursor authority.
+- [x] Verify the 90-second TTL margin, 30-second blocked-listing takeover,
+  no-open lease cleanup, shared events path, and focused regression suite.

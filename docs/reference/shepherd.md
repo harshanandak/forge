@@ -42,8 +42,8 @@ verb:
   cursor; **`forge shepherd <pr> --pull --json` / `--bundle`** read the kernel verdict
   + rollup without taking any action.
 
-Session start automatically wakes the daemon. When a harness background-shell
-capability is supplied, Forge uses it so the process is reaped with the session;
+Session start automatically wakes the daemon. When an embedding caller supplies
+an executable harness background-shell capability, Forge uses it so the process is reaped with the session;
 bare CLI use falls back to a detached launch from the stable common repository
 root, never a disposable worktree cwd. No liveness check is needed first — the
 O_EXCL singleton lease makes a duplicate start a clean no-op.

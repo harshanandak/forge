@@ -35,3 +35,43 @@ changing their requirements or implementation scope.
   every successful push as a trigger whose daemon enumerates repository PRs,
   without local PR resolution. `r3671850213` is addressed by defining the
   injected environment predicate and its precedence before all side effects.
+
+## Decision 2
+
+**Date**: 2026-07-29
+**Task**: P0 current-head correctness repair
+**Gap**: The adapter API did not identify the authoritative PR head when the
+daemon ran from the stable root checkout.
+**Score**: 4 / 14
+**Route**: SPEC-REVIEWER
+**Choice made**: Add optional `headRef` inputs that default to `HEAD`, and have
+existing consumers pass `state.headSha` to divergence and conflict prediction.
+An unavailable explicit object fails closed to `UNKNOWN`; no build-context
+contract was expanded.
+**Status**: RESOLVED
+
+## Decision 3
+
+**Date**: 2026-07-29
+**Task**: P0 shared journal authority repair
+**Gap**: Daemon writers and worktree readers could select different
+`.forge/pr-monitor` roots.
+**Score**: 4 / 14
+**Route**: SPEC-REVIEWER
+**Choice made**: Resolve the existing journal from the shared Git common dir,
+with legacy per-root fallback when common-dir resolution is unavailable and a
+shared metadata fallback for nonstandard common dirs. No new store or migration.
+**Status**: RESOLVED
+
+## P0 repair evidence
+
+- RED reproduced a lease-less Bun process kept alive by an unrelated ref-ed
+  handle, false `behind=4` from stable-root `HEAD`, and split worktree journals.
+- GREEN adds explicit loser exit, pre/post/catch token validation, a 90-second
+  lease margin over the 30-second synchronous listing, separate lifecycle
+  status, authoritative PR-head comparisons, and shared journal/claim paths.
+- The focused 10-file suite passes 245 tests with 0 failed.
+- The globally installed `forge.exe` is `forge-workflow@0.1.0-beta.2`; it does
+  not contain this branch. Auto-trigger verification therefore uses branch-local
+  `bun bin/forge.js` in controlled contexts rather than treating global
+  `forge push --quick` as branch proof.

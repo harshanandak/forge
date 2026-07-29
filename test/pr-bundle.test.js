@@ -170,6 +170,13 @@ describe('gatherPrBundle — complete PR-state gather', () => {
     expect(reqCall.base).not.toBe('origin/master');
   });
 
+  test('uses the authoritative PR head for divergence and conflict prediction', async () => {
+    const { adapter, calls } = makeAdapter({ headSha: 'pr-head-sha', required: [] });
+    await gatherPrBundle({ ...BASE_CTX, adapter });
+    expect(calls.find((c) => c.method === 'readDivergence').headRef).toBe('pr-head-sha');
+    expect(calls.find((c) => c.method === 'detectConflicts').headRef).toBe('pr-head-sha');
+  });
+
   test('degrades gracefully when readComments / detectConflicts are absent', async () => {
     const { adapter } = makeAdapter({ noComments: true, noConflicts: true });
     const bundle = await gatherPrBundle({ ...BASE_CTX, adapter });

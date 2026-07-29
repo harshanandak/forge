@@ -127,6 +127,24 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
     expect(shepherdCmd.parseSince(['events', '1'])).toBe(0);
   });
 
+  test('events resolves the shared journal owned by the git common dir', async () => {
+    const mainRoot = path.join(root, 'main');
+    const worktreeRoot = path.join(root, 'feature');
+    const gitCommonDir = path.join(mainRoot, '.git');
+    const { PrStateAdapter } = require('../../lib/adapters/pr-state-adapter');
+    const adapter = new PrStateAdapter({ gh: () => '', git: () => '' });
+    const built = await shepherdCmd.buildMonitorContext('1', worktreeRoot, {
+      adapter,
+      buildContext: async () => ({
+        pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      }),
+      resolveGitCommonDir: () => gitCommonDir,
+    });
+    expect(built.dir).toBe(journal.journalDir({
+      root: mainRoot, gitCommonDir, repo: 'r', pr: '1',
+    }));
+  });
+
   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
       dir, gather: async () => snap(), now, watcherRunning: () => false,

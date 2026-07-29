@@ -250,7 +250,7 @@ describe('runShepherdPass — bounded pass state machine', () => {
   });
 
   // 7d — cwd from the context is threaded into the divergence read.
-  test('ctx.cwd is passed through to readDivergence', async () => {
+  test('ctx.cwd and the authoritative starting head are passed through to readDivergence', async () => {
     const { adapter, actions } = makeAdapter({
       required: ['unit'],
       checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
@@ -259,6 +259,7 @@ describe('runShepherdPass — bounded pass state machine', () => {
     await runShepherdPass({ ...BASE_CTX, adapter, cwd: '/work/tree' });
     const div = actions.find((a) => a.type === 'readDivergence');
     expect(div.cwd).toBe('/work/tree');
+    expect(div.headRef).toBe('sha-1');
   });
 
   // 8
