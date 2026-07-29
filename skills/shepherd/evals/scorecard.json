@@ -3,8 +3,8 @@
   "fixtures": "present",
   "static": {
     "token_cost": {
-      "desc_chars": 997,
-      "body_lines": 86,
+      "desc_chars": 987,
+      "body_lines": 92,
       "score": 43
     },
     "caps": {
