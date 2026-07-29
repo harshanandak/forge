@@ -21,18 +21,18 @@ forge shepherd events <pr-number> --since <seq>  # read new journal events back
 There are two ways to run the shepherd, both under the single `forge shepherd`
 verb:
 
-- **`forge shepherd daemon` — the singleton reconcile daemon (W-S4b), the default
+- **`forge shepherd daemon` — the singleton reconcile daemon, the default
   ownership model.** It acquires the machine-wide shepherd lease for this repo
   (exiting immediately as a clean no-op if a live daemon already owns it),
   heartbeats, and converges the *entire* PR world every ~60s: self-registering
   hand-opened PRs, restarting killed watchers, reaping verified orphan watchers,
   converging CI check state into kernel verdicts, and retiring merged/closed PRs.
   It **self-retires** — releases the lease, kills its verified children, exits —
-  once no PRs remain open. Today it is started explicitly — in a harness
-  background shell at session start, or `forge shepherd daemon` — not run by hand
-  as a detached process; automatic per-command launch (W-S4c) is a planned
-  follow-up, not yet wired. Once running, an agent does not poll: the daemon owns
-  the convergence loop.
+  once no PRs remain open. Forge wakes it automatically after a successful
+  supported session start, every successful push, and every successful
+  non-dry-run ship. These are the only automatic firing seams; ordinary commands
+  do not launch it. Once running, an agent does not poll: the daemon owns the
+  convergence loop.
 - **`forge shepherd <pr>` — one bounded pass.** Reads one PR's state, takes at
   most one Tier-A action, exits. The point-in-time surface for a single PR (see
   *Bounded-pass model* below).
@@ -42,9 +42,11 @@ verb:
   cursor; **`forge shepherd <pr> --pull --json` / `--bundle`** read the kernel verdict
   + rollup without taking any action.
 
-Session start: if the repo has open PRs, start `forge shepherd daemon` in the
-harness background shell so it is reaped with the session. No liveness check is
-needed first — the O_EXCL singleton lease makes a duplicate start a clean no-op.
+Session start automatically wakes the daemon. When an embedding caller supplies
+an executable harness background-shell capability, Forge uses it so the process is reaped with the session;
+bare CLI use falls back to a detached launch from the stable common repository
+root, never a disposable worktree cwd. No liveness check is needed first — the
+O_EXCL singleton lease makes a duplicate start a clean no-op.
 (A `forge prime` open-PR + daemon-liveness line is a planned follow-up — W-S5 —
 not yet wired.)
 
@@ -102,22 +104,23 @@ up from there.
 a `/loop`) that re-invokes the bounded pass with a debounce of at least 60
 seconds and cancel-in-progress. The shepherd itself never waits in-process.
 
-## Auto-start on ship (`rail.auto_shepherd`)
+## Automatic singleton attachment (`rail.auto_shepherd`)
 
-`forge shepherd watch <pr>` is the constant, self-stopping local monitor loop
-(≈60 s jittered cadence; appends events to the per-PR NDJSON journal under
-`.forge/pr-monitor/<repo>-<pr>/`; self-stops on `PR_MERGED`/`PR_CLOSED`). On a
-successful `forge ship`, the new PR's watcher is **auto-started detached** so a
-shipped PR is tended without a manual trigger. The spawn is best-effort and
-**never fails ship** (a spawn or config-read error degrades to "not started"),
-and it is idempotent — the watch-lifecycle PID/journal lock prevents a second
-watcher for the same PR.
+Successful supported session start, push, and non-dry-run ship operations wake the
+repository-wide singleton. Push never requires a locally resolved PR number:
+the daemon owns GitHub enumeration, so even a push with no local open-PR match
+still fires and can adopt open or draft PRs created elsewhere. Push and ship no
+longer start separate per-PR detached watchers.
 
 This auto-start is governed by the default-ON, unlocked **`rail.auto_shepherd`**
 rail. Opt out with `forge gate disable rail.auto_shepherd` (re-enable with
-`forge gate enable rail.auto_shepherd`); when disabled, `forge ship` skips the
-auto-start. This keeps the behavior honestly toggleable through the same config
-surface as every other rail.
+`forge gate enable rail.auto_shepherd`). `FORGE_SHEPHERD_DISABLE=1` is the
+environment kill-switch. CI/test detection is deterministic and injectable via
+the trigger environment: `NODE_ENV=test`, `BUN_ENV=test`, or a set `CI`,
+`GITHUB_ACTIONS`, or `GITLAB_CI` disables automatic fire. These environment
+guards run before repository initialization, lease, Kernel-state, or process
+work; dry-run, uninitialized repositories, and a disabled rail are likewise
+zero-side-effect paths. The manual `forge shepherd` surface remains available.
 
 ## Surfacing events back to the agent (`forge hooks shepherd-events`)
 
@@ -212,8 +215,8 @@ the secret is the maintainer's responsibility** — Forge never fabricates a tok
 
 ## Per-harness behavior
 
-- **Claude Code / Codex:** invoke `forge shepherd <pr>` directly; an external
-  scheduler may drive repeated bounded passes.
+- **Claude Code / Codex:** automatic session-start attachment wakes the singleton;
+  invoke `forge shepherd <pr>` directly for a bounded point-in-time read.
 - **Cursor:** manually-invoked only — run it from a terminal. No polling-loop
   affordance and no hook reliance on this surface.
 

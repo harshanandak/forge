@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
 const { EventEmitter } = require('node:events');
 
 const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
-const { maybeStartPrWatcher } = require('../../lib/commands/ship');
+const { maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
 
 /** A fake detached child: records unref() and reports a pid. */
 function fakeChild(pid = 4242) {
@@ -42,12 +42,14 @@ describe('startPrWatcherDetached', () => {
 
   test('is a no-op when a live watcher already owns the PR (spawn not called)', () => {
     let spawned = false;
+    let journalArgs;
     const res = startPrWatcherDetached({
       prNumber: 7,
-      cwd: '/repo',
+      cwd: '/repo/.worktrees/feature',
+      gitCommonDir: '/repo/.GIT',
       resolveSlug: () => 'forge',
       journal: {
-        journalDir: () => '/repo/.forge/pr-monitor/forge-7',
+        journalDir: (args) => { journalArgs = args; return '/repo/.forge/pr-monitor/forge-7'; },
         watcherRunning: () => true,
       },
       spawn: () => { spawned = true; return fakeChild(); },
@@ -55,6 +57,7 @@ describe('startPrWatcherDetached', () => {
     expect(res.started).toBe(false);
     expect(res.reason).toBe('already-running');
     expect(spawned).toBe(false);
+    expect(journalArgs.gitCommonDir).toBe('/repo/.GIT');
   });
 
   test('spawns when the slug resolves but no watcher is live yet', () => {
@@ -62,6 +65,7 @@ describe('startPrWatcherDetached', () => {
     const res = startPrWatcherDetached({
       prNumber: 8,
       cwd: '/repo',
+      resolveGitCommonDir: () => '/repo/.git',
       resolveSlug: () => 'forge',
       journal: {
         journalDir: () => '/repo/.forge/pr-monitor/forge-8',
@@ -124,37 +128,36 @@ describe('defaultResolveSlug', () => {
   });
 });
 
-describe('maybeStartPrWatcher (ship wiring)', () => {
-  test('starts the watcher with the PR number after a real PR is created', () => {
+describe('maybeTriggerShepherdAfterShip (ship wiring)', () => {
+  test('triggers the singleton after a real PR is created', () => {
     const calls = [];
-    const res = maybeStartPrWatcher({
-      dryRun: false, prNumber: 373,
-      startWatcher: (opts) => { calls.push(opts); return { started: true, pid: 1 }; },
+    const res = maybeTriggerShepherdAfterShip({
+      dryRun: false, projectRoot: '/repo',
+      fireAndForget: (opts) => calls.push(opts),
     });
     expect(res.started).toBe(true);
     expect(calls).toHaveLength(1);
-    expect(calls[0].prNumber).toBe(373);
-    expect(typeof calls[0].cwd).toBe('string');
+    expect(calls[0]).toEqual({ projectRoot: '/repo', dryRun: false });
   });
 
   test('does NOT start on a dry run', () => {
     let called = false;
-    const res = maybeStartPrWatcher({ dryRun: true, prNumber: 5, startWatcher: () => { called = true; } });
+    const res = maybeTriggerShepherdAfterShip({ dryRun: true, projectRoot: '/repo', fireAndForget: () => { called = true; } });
     expect(called).toBe(false);
     expect(res.started).toBe(false);
   });
 
-  test('does NOT start when there is no PR number', () => {
+  test('does not select a PR before triggering', () => {
     let called = false;
-    const res = maybeStartPrWatcher({ dryRun: false, prNumber: undefined, startWatcher: () => { called = true; } });
-    expect(called).toBe(false);
-    expect(res.started).toBe(false);
+    const res = maybeTriggerShepherdAfterShip({ dryRun: false, projectRoot: '/repo', fireAndForget: () => { called = true; } });
+    expect(called).toBe(true);
+    expect(res.started).toBe(true);
   });
 
-  test('never fails ship even if the watcher start throws', () => {
-    const res = maybeStartPrWatcher({
-      dryRun: false, prNumber: 9,
-      startWatcher: () => { throw new Error('boom'); },
+  test('never fails ship even if the singleton trigger throws', () => {
+    const res = maybeTriggerShepherdAfterShip({
+      dryRun: false, projectRoot: '/repo',
+      fireAndForget: () => { throw new Error('boom'); },
     });
     // Swallowed → ship continues; the throw never propagates.
     expect(res.started).toBe(false);

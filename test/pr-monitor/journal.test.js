@@ -16,6 +16,28 @@ beforeEach(() => {
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('journal', () => {
+  test('two worktrees with one git common dir resolve the same journal authority', () => {
+    const commonDir = path.join(root, 'main', '.GIT');
+    const mainRoot = path.join(root, 'main');
+    const worktreeRoot = path.join(root, 'feature-worktree');
+    const fromMain = journal.journalDir({
+      root: mainRoot, gitCommonDir: commonDir, repo: 'acme/forge', pr: '7',
+    });
+    const fromWorktree = journal.journalDir({
+      root: worktreeRoot, gitCommonDir: commonDir, repo: 'acme/forge', pr: '7',
+    });
+    expect(fromMain).toBe(fromWorktree);
+    expect(fromMain).toBe(path.join(mainRoot, '.forge', 'pr-monitor', 'acme-forge-7'));
+  });
+
+  test('journal authority preserves fallback compatibility and centralizes nonstandard common dirs', () => {
+    const fallback = journal.resolveJournalRoot({ root });
+    expect(fallback).toBe(path.join(root, '.forge', 'pr-monitor'));
+    const separate = path.join(root, 'shared-git-metadata');
+    expect(journal.resolveJournalRoot({ root, gitCommonDir: separate }))
+      .toBe(path.join(separate, 'forge', 'pr-monitor'));
+  });
+
   test('journalDir sanitizes the repo slug and creates the dir', () => {
     expect(fs.existsSync(dir)).toBe(true);
     expect(dir).toContain('acme-forge-1');

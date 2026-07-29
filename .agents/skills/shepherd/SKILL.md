@@ -6,8 +6,8 @@ description: >
   open PR, converges CI check state into kernel verdicts, re-runs flaky required
   checks, reaps orphan watchers, and self-retires when no PRs remain; one-shot
   passes (forge shepherd <pr>) exist for a single bounded check. Use when a PR was
-  just opened or shipped; when a session starts with open PRs (start the daemon in
-  a background shell — the singleton lease makes a duplicate start a safe no-op);
+  just opened or shipped; when a session starts with open PRs (Forge automatically
+  wakes the singleton; the lease makes a duplicate start a safe no-op);
   when the user asks "why isn't my PR merging", "what's
   blocking the PR", "is the PR ready", "did a check fail / go red"; when asked to
   "keep watching / keep an eye on / babysit my PRs"; or to read PR verdicts
@@ -34,15 +34,18 @@ Forge owns your open PRs. A singleton daemon converges every open PR toward merg
 - User asks about **one PR, right now** ("is #212 ready?", "why is this blocked?") → **one-shot** (`forge shepherd <pr> --pull`).
 - Anything **ongoing** — "keep", "until it merges", "watch", "babysit", multiple PRs, or a session that starts with PRs already open → **ensure the daemon is running**.
 
-## Session-start ritual
+## Automatic attachment
 
-When a session starts and the repo has open PRs, ensure the daemon is running:
+Forge wakes the singleton after a successful supported session start, every
+successful push, and every successful non-dry-run ship. Push does not require a
+locally resolved PR number; the daemon enumerates all open and draft PRs itself.
+Ordinary commands do not launch it.
 
-```bash
-forge shepherd daemon    # start it in the HARNESS BACKGROUND SHELL
-```
-
-The daemon is a **repo singleton** guarded by an O_EXCL lease, so you do NOT need a liveness check first — a second start when one is already running simply exits (the lease is already held). Start it in the harness background shell (Claude Code / Codex background-shell) so it is session-scoped and reaped with the session. NEVER launch a detached spawn from the agent: the detached path is Forge's bare-CLI fallback only. (Automatic per-command launch and a `forge prime` daemon-liveness line are planned follow-ups — W-S4c/W-S5 — not yet wired; until then you start the daemon explicitly as above.)
+The daemon is a **repo singleton** guarded by an O_EXCL lease, so no liveness
+check is needed first. Forge prefers a supplied harness background shell; its
+bare-CLI detached fallback launches from the stable common repository root, not
+the current disposable worktree. Agents never launch a detached spawn directly.
+(A `forge prime` daemon-liveness line remains the separate W-S5 follow-up.)
 
 ## Reading verdicts (the common case)
 
@@ -69,8 +72,8 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence 
 
 | Situation | Command |
 | --- | --- |
-| PR just opened / shipped | ensure `forge shepherd daemon` running |
-| Session starts, open PRs exist, daemon dead | `forge shepherd daemon` (background shell) |
+| PR just opened / shipped | automatic singleton wake; read with `forge shepherd <pr> --pull` |
+| Session starts with open PRs | automatic singleton wake |
 | "Why isn't my PR merging / what's blocking it" | `forge shepherd <pr> --pull` |
 | "Is the PR ready?" | `forge shepherd <pr> --pull` (read `MERGE_READY`) |
 | "A check failed / went red" | `forge shepherd <pr> --pull --json` (read `failures[]`) |
@@ -95,11 +98,14 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence 
 ## Kill-switches
 
 ```bash
-FORGE_SHEPHERD_DISABLE=1        # env: makes the shepherd trigger inert (once the auto-fire wiring lands, W-S4c)
-forge gate disable rail.auto_shepherd   # config gate honored by the trigger + ship/push arming
+FORGE_SHEPHERD_DISABLE=1              # env: makes automatic firing inert
+forge gate disable rail.auto_shepherd # config gate honored by every automatic seam
 ```
 
-Both leave the manual `forge shepherd` surface usable; they only stop the automatic daemon fire.
+CI/test (`NODE_ENV=test`, `BUN_ENV=test`, `CI`, `GITHUB_ACTIONS`, or
+`GITLAB_CI`), dry-run, uninitialized repositories, and disabled paths return
+before lease, Kernel-state, or process work. All leave the manual
+`forge shepherd` surface usable; they only stop automatic daemon fire.
 
 ## State
 

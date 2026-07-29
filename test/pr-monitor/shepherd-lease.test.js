@@ -23,6 +23,10 @@ function readHolder() {
 }
 
 describe('shepherd-lease', () => {
+  test('stale TTL has margin above the longest 30s synchronous daemon read', () => {
+    expect(lease.STALE_MS).toBeGreaterThanOrEqual(90000);
+  });
+
   test('first acquire writes payload with pid/token/startedAt/heartbeatAt/watchers', () => {
     const res = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
     expect(res.ok).toBe(true);

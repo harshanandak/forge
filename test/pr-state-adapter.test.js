@@ -199,6 +199,25 @@ describe('PrStateAdapter', () => {
     const call = calls.find((c) => c.args.join(' ').includes('rev-list'));
     expect(call.args.join(' ')).toContain('--left-right');
     expect(call.args.join(' ')).toContain('--count');
+    expect(call.args.join(' ')).toContain('origin/master...HEAD');
+  });
+
+  test('readDivergence compares the base to an explicit authoritative PR head', async () => {
+    const { run, calls } = makeRunner([
+      ['rev-list --left-right --count', '0\t6\n'],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const d = await adapter.readDivergence({
+      baseRef: 'origin/master',
+      headRef: '671a63580b46fc77eaf8fddf6ece0b9a73ae3331',
+      cwd: '/stable/root',
+    });
+
+    expect(d).toEqual({ behind: 0, ahead: 6 });
+    const call = calls.find((c) => c.args.join(' ').includes('rev-list'));
+    expect(call.args.join(' ')).toContain(
+      'origin/master...671a63580b46fc77eaf8fddf6ece0b9a73ae3331',
+    );
   });
 
   test('readDivergence threads cwd through to the git runner', async () => {
@@ -225,6 +244,20 @@ describe('PrStateAdapter', () => {
 
     const call = calls.find((c) => c.args.join(' ').includes('rev-list'));
     expect(call.opts === undefined || call.opts.cwd === undefined).toBe(true);
+  });
+
+  test('detectConflicts compares the base to an explicit authoritative PR head', async () => {
+    const { run, calls } = makeRunner([['merge-tree --write-tree', 'tree\n']]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const result = await adapter.detectConflicts({
+      baseRef: 'origin/master',
+      headRef: 'pr-head-sha',
+      cwd: '/stable/root',
+    });
+    expect(result).toEqual({ supported: true, conflicted: false, files: [] });
+    const call = calls.find((c) => c.args[0] === 'merge-tree');
+    expect(call.args).toContain('pr-head-sha');
+    expect(call.args).not.toContain('HEAD');
   });
 
   test('rerunFailedChecks shells out to gh run rerun --failed', async () => {
