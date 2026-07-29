@@ -143,6 +143,327 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
     }
   });
 
+  test('preserves an existing @AGENTS.md import byte-for-byte', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      const existingImport = '\uFEFF  @AGENTS.md\r\n';
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.writeFileSync(linkPath, existingImport);
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('existing-import');
+      expect(fs.readFileSync(linkPath)).toEqual(Buffer.from(existingImport));
+    } finally {
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('treats an existing symlink to the target as already linked', () => {
+    const tmpDir = makeTmpDir();
+    const originalLstatSync = fs.lstatSync;
+    const originalReadlinkSync = fs.readlinkSync;
+    const originalWarn = console.warn;
+    const warnings = [];
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.lstatSync = file => file === linkPath
+        ? {
+            isDirectory: () => false,
+            isFile: () => false,
+            isSymbolicLink: () => true,
+          }
+        : originalLstatSync(file);
+      fs.readlinkSync = file => file === linkPath
+        ? path.relative(path.dirname(linkPath), targetPath)
+        : originalReadlinkSync(file);
+      console.warn = message => warnings.push(message);
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('linked');
+      expect(warnings).toEqual([]);
+    } finally {
+      fs.lstatSync = originalLstatSync;
+      fs.readlinkSync = originalReadlinkSync;
+      console.warn = originalWarn;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('does not overwrite an existing non-import file', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      const userContent = '# User instructions\nKeep this content.\n';
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.writeFileSync(linkPath, userContent);
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
+    } finally {
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('preserves a file created during symlink creation', () => {
+    const tmpDir = makeTmpDir();
+    const originalSymlinkSync = fs.symlinkSync;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      const userContent = '# Created concurrently\n';
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.symlinkSync = function () {
+        fs.writeFileSync(linkPath, userContent);
+        const err = new Error('File exists');
+        err.code = 'EEXIST';
+        throw err;
+      };
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
+    } finally {
+      fs.symlinkSync = originalSymlinkSync;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('retries symlink creation when an EEXIST destination disappears', () => {
+    const tmpDir = makeTmpDir();
+    const originalLstatSync = fs.lstatSync;
+    const originalSymlinkSync = fs.symlinkSync;
+    let symlinkAttempts = 0;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.lstatSync = file => {
+        if (file !== linkPath) return originalLstatSync(file);
+        const err = new Error('No such file');
+        err.code = 'ENOENT';
+        throw err;
+      };
+      fs.symlinkSync = function () {
+        symlinkAttempts += 1;
+        if (symlinkAttempts === 1) {
+          const err = new Error('File exists');
+          err.code = 'EEXIST';
+          throw err;
+        }
+      };
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('linked');
+      expect(symlinkAttempts).toBe(2);
+    } finally {
+      fs.lstatSync = originalLstatSync;
+      fs.symlinkSync = originalSymlinkSync;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('warns when repeated EEXIST races exhaust creation retries', () => {
+    const tmpDir = makeTmpDir();
+    const originalLstatSync = fs.lstatSync;
+    const originalSymlinkSync = fs.symlinkSync;
+    const originalWarn = console.warn;
+    const warnings = [];
+    let symlinkAttempts = 0;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.lstatSync = file => {
+        if (file !== linkPath) return originalLstatSync(file);
+        const err = new Error('No such file');
+        err.code = 'ENOENT';
+        throw err;
+      };
+      fs.symlinkSync = function () {
+        symlinkAttempts += 1;
+        const err = new Error('File exists');
+        err.code = 'EEXIST';
+        throw err;
+      };
+      console.warn = message => warnings.push(message);
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(symlinkAttempts).toBe(2);
+      expect(warnings).toEqual([
+        `  ⚠ Could not create ${linkPath} after repeated conflicts; please re-run setup.`,
+      ]);
+    } finally {
+      fs.lstatSync = originalLstatSync;
+      fs.symlinkSync = originalSymlinkSync;
+      console.warn = originalWarn;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('preserves a file created during copy fallback', () => {
+    const tmpDir = makeTmpDir();
+    const originalSymlinkSync = fs.symlinkSync;
+    const originalWriteFileSync = fs.writeFileSync;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      const userContent = '# Created concurrently\n';
+      originalWriteFileSync(targetPath, '# Forge Workflow\n');
+      fs.symlinkSync = function () {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      };
+      fs.writeFileSync = function (file, content, options) {
+        if (file === linkPath) {
+          originalWriteFileSync(linkPath, userContent);
+        }
+        return originalWriteFileSync(file, content, options);
+      };
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
+    } finally {
+      fs.symlinkSync = originalSymlinkSync;
+      fs.writeFileSync = originalWriteFileSync;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('retries copy fallback when an EEXIST destination disappears', () => {
+    const tmpDir = makeTmpDir();
+    const originalLstatSync = fs.lstatSync;
+    const originalSymlinkSync = fs.symlinkSync;
+    const originalWriteFileSync = fs.writeFileSync;
+    let copyAttempts = 0;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      originalWriteFileSync(targetPath, '# Forge Workflow\n');
+      fs.lstatSync = file => {
+        if (file !== linkPath) return originalLstatSync(file);
+        const err = new Error('No such file');
+        err.code = 'ENOENT';
+        throw err;
+      };
+      fs.symlinkSync = function () {
+        const err = new Error('Operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      };
+      fs.writeFileSync = function (file, content, options) {
+        if (file === linkPath) {
+          copyAttempts += 1;
+          if (copyAttempts === 1) {
+            const err = new Error('File exists');
+            err.code = 'EEXIST';
+            throw err;
+          }
+        }
+        return originalWriteFileSync(file, content, options);
+      };
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('copied');
+      expect(copyAttempts).toBe(2);
+    } finally {
+      fs.lstatSync = originalLstatSync;
+      fs.symlinkSync = originalSymlinkSync;
+      fs.writeFileSync = originalWriteFileSync;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('does not copy when symlink creation fails unexpectedly', () => {
+    const tmpDir = makeTmpDir();
+    const originalSymlinkSync = fs.symlinkSync;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.symlinkSync = function () {
+        const err = new Error('I/O error');
+        err.code = 'EIO';
+        throw err;
+      };
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(fs.existsSync(linkPath)).toBe(false);
+    } finally {
+      fs.symlinkSync = originalSymlinkSync;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
+  test('uses lstat to detect a dangling symlink destination', () => {
+    const tmpDir = makeTmpDir();
+    const originalExistsSync = fs.existsSync;
+    const originalLstatSync = fs.lstatSync;
+    const originalReadlinkSync = fs.readlinkSync;
+    const originalSymlinkSync = fs.symlinkSync;
+    let symlinkAttempts = 0;
+    try {
+      const targetPath = path.join(tmpDir, 'AGENTS.md');
+      const linkPath = path.join(tmpDir, 'CLAUDE.md');
+      fs.writeFileSync(targetPath, '# Forge Workflow\n');
+      fs.existsSync = file => file === linkPath ? false : originalExistsSync(file);
+      fs.lstatSync = file => file === linkPath
+        ? {
+            isDirectory: () => false,
+            isFile: () => false,
+            isSymbolicLink: () => true,
+          }
+        : originalLstatSync(file);
+      fs.readlinkSync = file => file === linkPath ? 'missing-target' : originalReadlinkSync(file);
+      fs.symlinkSync = function () {
+        symlinkAttempts += 1;
+        const err = new Error('File exists');
+        err.code = 'EEXIST';
+        throw err;
+      };
+
+      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
+      const result = createSymlinkOrCopy(targetPath, linkPath);
+
+      expect(result).toBe('');
+      expect(symlinkAttempts).toBe(0);
+      expect(originalExistsSync(linkPath)).toBe(false);
+    } finally {
+      fs.existsSync = originalExistsSync;
+      fs.lstatSync = originalLstatSync;
+      fs.readlinkSync = originalReadlinkSync;
+      fs.symlinkSync = originalSymlinkSync;
+      cleanTmpDir(tmpDir);
+    }
+  });
+
   test('HEADER_COMMENT constant is exported', () => {
     const { HEADER_COMMENT } = require('../lib/symlink-utils');
     expect(typeof HEADER_COMMENT).toBe('string');
