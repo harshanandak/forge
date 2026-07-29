@@ -9,14 +9,15 @@ draft pull request during an active Forge session without relying on an agent to
 remember a polling command. Preserve the existing disable controls and prevent
 test runs or disposable worktrees from leaking detached processes.
 
-## Current flow
+## Implemented flow
 
 - `lib/pr-monitor/reconcile-executor.js` already owns repository-wide discovery,
   singleton lease arbitration, watcher restart/reaping, Kernel PR state, verdicts,
   events, and self-retirement.
-- Its `fireAndForget()` trigger is implemented and tested but intentionally has no
-  production caller.
-- `forge push` and `forge ship` currently start separate detached per-PR watchers.
+- Its `fireAndForget()` trigger is called only after successful session-start,
+  push, and non-dry-run ship operations.
+- `forge push` and `forge ship` wake the repository-wide singleton instead of
+  starting separate detached per-PR watchers.
 - `bin/forge.js` explicitly rejects an every-command dispatch-finally trigger.
 - `forge hooks session-start` is the existing automatic session entry seam.
 
@@ -40,6 +41,24 @@ Use one ownership mechanism: the existing singleton reconcile daemon.
    disposable feature-worktree cwd; retain singleton lease arbitration,
    `windowsHide`, `unref`, verified child cleanup, and self-retirement.
 
+### Review clarifications
+
+- **Every successful push fires.** The push seam does not run `gh pr view` or
+  require a locally resolvable PR number. It calls `fireAndForget()` after
+  `git push` succeeds; the singleton daemon then enumerates every open or draft
+  PR itself. A push with no locally resolved open PR therefore still wakes the
+  repository-wide reconciler.
+- **Containment is injected and ordered.** `fireAndForget()` evaluates
+  `ctx.env || process.env` first. It returns inert when
+  `FORGE_SHEPHERD_DISABLE` is set, `NODE_ENV` or `BUN_ENV` equals `test`, or any
+  of `CI`, `GITHUB_ACTIONS`, or `GITLAB_CI` is set. It then checks, in order:
+  project root, dry-run, existing Kernel initialization, and
+  `rail.auto_shepherd`. Only after every guard passes may it resolve repository
+  state, arbitrate the lease, or launch a background/detached process. The same
+  zero-side-effect contract applies at all three approved seams: no lease,
+  Kernel state, child process, or detached-child cleanup is created on a
+  disabled path.
+
 ## Boundaries
 
 - Shepherd still never merges and never resolves review threads.
@@ -51,8 +70,9 @@ Use one ownership mechanism: the existing singleton reconcile daemon.
 
 - An open or draft PR fixture is registered and monitored after session start
   without an explicit Shepherd command.
-- Successful push and ship trigger the singleton reconciler, not an additional
-  per-PR detached watcher.
+- Every successful push (including when no open PR resolves locally) and every
+  successful non-dry-run ship trigger the singleton reconciler, not an
+  additional per-PR detached watcher.
 - Ordinary commands do not launch Shepherd.
 - CI/test, dry-run, uninitialized, environment-disabled, and rail-disabled paths
   create no lease, Kernel state, or child process.
@@ -61,4 +81,3 @@ Use one ownership mechanism: the existing singleton reconcile daemon.
   daemon self-retires when no PR remains.
 - The detached fallback does not hold a disposable worktree as its cwd.
 - Focused Shepherd tests, lint, and the repository validation suite pass.
-
