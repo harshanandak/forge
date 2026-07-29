@@ -22,6 +22,8 @@ changing their requirements or implementation scope.
   4 skipped, and 0 failed. It covers trigger containment, stable-root fallback,
   singleton lease behavior, open-PR reconciliation (including drafts), watcher
   restart and cleanup, current-head events, orphan reaping, and self-retirement.
+  Every disabled containment scenario explicitly asserts both that no lease is
+  acquired and that the injected daemon launcher is not called.
 - **Task 3**: The canonical shepherd reference and skill now document the exact
   automatic singleton contract, including the no-local-PR push case and
   zero-side-effect containment precedence. `node scripts/sync-agent-skills.js`

@@ -13,6 +13,7 @@ describe('automatic singleton trigger containment', () => {
 		['rail disabled', { env: {}, rail: false }],
 	])('%s context is inert before lease/process work', (_name, scenario) => {
 		let acquired = false;
+		let launched = false;
 		fireAndForget({
 			projectRoot: '/repo',
 			gitCommonDir: '/repo/.git',
@@ -21,8 +22,10 @@ describe('automatic singleton trigger containment', () => {
 			kernelInitialized: () => scenario.initialized !== false,
 			railEnabled: () => scenario.rail !== false,
 			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
+			launch: () => { launched = true; },
 			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
 		});
 		expect(acquired).toBe(false);
+		expect(launched).toBe(false);
 	});
 });
