@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('node:crypto');
+const path = require('node:path');
 const { describe, test, expect } = require('bun:test');
 const {
   buildGates,
@@ -53,6 +55,25 @@ describe('buildGates — composition', () => {
 
     const all = buildGates({ projectRoot: '/x', changedFiles: changed, runAll: true, deps });
     expect((await all[0].run()).summary).toBe('lint:null');
+  });
+
+  test('normalizes changed files once and passes the immutable snapshot to affected tests', async () => {
+    let received;
+    const gates = buildGates({
+      projectRoot: '/x',
+      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js'],
+      deps: {
+        ...deps,
+        affected: (changedFiles) => {
+          received = changedFiles;
+          return { ok: true };
+        },
+      },
+    });
+
+    await gates[3].run();
+    expect(received).toEqual(['lib/a.js', 'lib/b.js']);
+    expect(Object.isFrozen(received)).toBe(true);
   });
 });
 
@@ -108,6 +129,70 @@ describe('runSonar — real runner (injected spawn)', () => {
 });
 
 describe('runAffectedTests — real runner (injected)', () => {
+  test('consumes one normalized immutable changed-file snapshot and fingerprints it', () => {
+    let received;
+    const first = runAffectedTests({
+      projectRoot: '/x',
+      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js', ''],
+      resolveTests: (changedFiles) => {
+        received = changedFiles;
+        return [];
+      },
+    });
+    const second = runAffectedTests({
+      projectRoot: '/x',
+      changedFiles: ['lib/a.js', 'lib/b.js'],
+      resolveTests: () => [],
+    });
+    const changed = runAffectedTests({
+      projectRoot: '/x',
+      changedFiles: ['lib/c.js'],
+      resolveTests: () => [],
+    });
+
+    expect(received).toEqual(['lib/a.js', 'lib/b.js']);
+    expect(Object.isFrozen(received)).toBe(true);
+    expect(first.inputFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(second.inputFingerprint).toBe(first.inputFingerprint);
+    expect(changed.inputFingerprint).not.toBe(first.inputFingerprint);
+  });
+
+  test('preserves whitespace-bearing Git filenames through selection and fingerprinting', () => {
+    const filename = ' test/fixture.test.js ';
+    let received;
+    const spaced = runAffectedTests({
+      projectRoot: '/x',
+      changedFiles: [filename],
+      resolveTests: (changedFiles) => {
+        received = changedFiles;
+        return [];
+      },
+    });
+    const expectedFingerprint = crypto.createHash('sha256')
+      .update(JSON.stringify([filename]))
+      .digest('hex');
+
+    expect(received).toEqual([filename]);
+    expect(spaced.inputFingerprint).toBe(expectedFingerprint);
+  });
+
+  test('default selection maps the supplied snapshot without resolving Git again', () => {
+    const calls = [];
+    const projectRoot = path.resolve(__dirname, '../..');
+    const res = runAffectedTests({
+      projectRoot,
+      changedFiles: ['test/commands/preflight.test.js'],
+      spawn: (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 0 };
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain('test/commands/preflight.test.js');
+  });
+
   test('no affected tests → fast-lane pass without spawning', () => {
     let called = false;
     const spawn = () => { called = true; return { status: 0 }; };
@@ -200,6 +285,7 @@ describe('buildGates --all — no vacuous green gates (R2)', () => {
     });
     const out = await gates[3].run(); // affected-tests gate
     expect(out.skipped).toBe(true);
+    expect(out.inputFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(affectedCalled).toBe(false);
     expect(out.summary).toMatch(/--all|full suite/i);
   });

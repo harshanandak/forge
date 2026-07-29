@@ -1,7 +1,9 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { describe, test, expect } = require('bun:test');
 const preflight = require('../../lib/commands/preflight');
+const { buildGates } = require('../../lib/preflight/gates');
 
 describe('forge preflight command — contract', () => {
   test('exports a valid registry command interface', () => {
@@ -31,6 +33,24 @@ describe('forge preflight command — contract', () => {
     expect(res.success).toBe(false);
     expect(lines.join('\n')).toContain('[FAIL] broken');
     expect(lines.join('\n')).toContain('preflight FAILED');
+  });
+
+  test('returns the exact input fingerprint supplied by an executed gate', async () => {
+    const inputFingerprint = crypto.createHash('sha256').update('[]').digest('hex');
+    const res = await preflight.handler([], {}, '/x', {
+      log: () => {},
+      resolveChangedFiles: () => [],
+      buildGates: (options) => buildGates({
+        ...options,
+        deps: {
+          eslint: () => ({ ok: true }),
+          structural: () => ({ ok: true }),
+          sonar: () => ({ ok: true }),
+        },
+      }),
+    });
+
+    expect(res.results[3].inputFingerprint).toBe(inputFingerprint);
   });
 
   test('--all flag forces whole-tree scope through to buildGates', async () => {
@@ -130,6 +150,30 @@ describe('resolveChangeSet — strict base detection (B2)', () => {
     expect(cs.changedFiles).toEqual(['lib/x.js', 'lib/y.js']);
     // The diff must use the merge-base of the resolved base, not a re-resolved ref.
     expect(calls.some((c) => c.startsWith('diff --name-only abc123...HEAD'))).toBe(true);
+  });
+
+  test('git diff failure leaves the change set unresolved and preflight fails closed', async () => {
+    const exec = (_cmd, args) => {
+      const command = args.join(' ');
+      if (command.includes('origin/HEAD')) return 'main\n';
+      if (command.startsWith('merge-base HEAD main')) return 'abc123\n';
+      if (command.startsWith('diff --name-only abc123...HEAD')) {
+        throw new Error('git diff timed out');
+      }
+      throw new Error(`unexpected git: ${command}`);
+    };
+    const changeSet = resolveChangeSet(exec, {});
+    let built = false;
+    const res = await preflight.handler([], {}, '/x', {
+      log: () => {},
+      resolveChangeSet: () => changeSet,
+      buildGates: () => { built = true; return []; },
+    });
+
+    expect(changeSet.resolved).toBe(false);
+    expect(changeSet.reason).toMatch(/git diff/i);
+    expect(res.success).toBe(false);
+    expect(built).toBe(false);
   });
 });
 
