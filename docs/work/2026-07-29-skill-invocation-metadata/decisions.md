@@ -13,10 +13,11 @@
   6. Auth, permissions, or data exposure: 0
   7. Hard to reverse: 0
   Total: 2/14
-- Mandatory overrides: none.
-- Route: PROCEED.
-- Decision: Run the existing deterministic `forge skill eval --static` generator, then
-  regenerate the committed `.agents/skills` mirror. Do not hand-edit scorecards or change
-  scorer behavior.
+- Mandatory override: affects a task already implemented and committed.
+- Route: BLOCKED.
+- Status: PENDING-DEVELOPER-INPUT.
+- Recommendation: Approve retaining the deterministic scorecards produced by the existing
+  `forge skill eval --static` generator and committed mirror generator. They contain no
+  hand-edited data and do not change scorer behavior.
 - Evidence: The focused freshness test reported only the three changed skills as stale in
   both canonical and mirror locations.
