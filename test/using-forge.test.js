@@ -146,6 +146,13 @@ describe('parseFrontmatter', () => {
   test.each([
     ['invocation: model', 'model'],
     ['invocation: user', 'user'],
+    ['invocation: "model"', 'model'],
+    ["invocation: 'user'", 'user'],
+    ['invocation: "model', '"model'],
+    ['invocation: model"', 'model"'],
+    ["invocation: 'user", "'user"],
+    ["invocation: user'", "user'"],
+    [`invocation: "model'`, `"model'`],
     [null, 'model'],
     ['invocation:', ''],
     ['invocation: Model', 'Model'],
