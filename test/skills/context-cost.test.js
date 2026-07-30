@@ -68,6 +68,11 @@ describe('skill context cost', () => {
     for (const skill of skills) assertValidInvocation(skill);
   });
 
+  test('only explicit-use workflow skills are user-invoked', () => {
+    expect(skills.filter((skill) => skill.invocation === 'user').map((skill) => skill.name))
+      .toEqual(['review', 'rollback', 'ship']);
+  });
+
   test('invalid invocation fails visibly', () => {
     expect(() => assertValidInvocation({ name: 'invalid', invocation: 'automatic' }))
       .toThrow('invalid invocation');

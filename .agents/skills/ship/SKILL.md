@@ -1,18 +1,10 @@
 ---
 name: ship
+invocation: user
 description: >
-  Forge SHIP stage: push the validated feature branch and open a PR populated from the
-  project's OWN PR template (design-doc link, Forge issue IDs, real test/commit data), then
-  hand off for MANUAL merge; never merges or auto-merges. Use once /validate passes and you
-  want a PR on the board. Triggers: "ship it", "ship this branch", "open the PR", "push and
-  open a PR", "gh pr create", "checks passed, now cut the PR". Runs branch-freshness +
-  parallel-PR merge-sim checks, force-with-lease push, records the ship->review handoff, then
-  stops. One stage only; not for: the whole plan->dev->validate->ship->review pipeline or
-  drive-to-done (smith); type-check/lint/tests/security first (validate); addressing PR
-  comments or resolving Greptile/SonarCloud/CodeRabbit threads on an existing PR (review);
-  babysitting an open PR toward merge (shepherd); post-merge CI health check + closing issues
-  (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
-  not the skill.
+  Push a validated feature branch and open its PR from the project's template, then stop for
+  manual merge. Use only when the user asks to ship or open the PR after validation; never
+  merges, auto-merges, reviews an existing PR, or replaces end-to-end Smith.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 next: review
 terminal: false
