@@ -85,6 +85,8 @@ current router and byte-identical projection architecture.
 Implementation and approved generated follow-ups may change only these files unless an
 ambiguity gate stops the task first:
 
+- `AGENTS.md`
+- `CHANGELOG.md`
 - `docs/work/2026-07-29-skill-invocation-metadata/plan.md`
 - `docs/work/2026-07-29-skill-invocation-metadata/tasks.md`
 - `docs/work/2026-07-29-skill-invocation-metadata/decisions.md`

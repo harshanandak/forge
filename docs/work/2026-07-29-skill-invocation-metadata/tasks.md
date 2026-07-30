@@ -5,6 +5,8 @@ approved plan. No implementation starts until the plan is approved.
 
 Workflow-owned artifacts:
 
+- `AGENTS.md`
+- `CHANGELOG.md`
 - `docs/work/2026-07-29-skill-invocation-metadata/plan.md`
 - `docs/work/2026-07-29-skill-invocation-metadata/tasks.md`
 - `docs/work/2026-07-29-skill-invocation-metadata/decisions.md`
