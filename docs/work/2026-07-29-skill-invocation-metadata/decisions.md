@@ -15,7 +15,11 @@
   Total: 2/14
 - Mandatory override: affects a task already implemented and committed.
 - Route: BLOCKED.
-- Status: PENDING-DEVELOPER-INPUT.
+- Choice made: Accept the generated canonical and `.agents` scorecards because they are
+  deterministic consequences of the approved skill descriptions.
+- Status: RESOLVED.
+- Approval: On 2026-07-30, the user replied `continue` to the surfaced
+  `PENDING-DEVELOPER-INPUT` checkpoint.
 - Recommendation: Approve retaining the deterministic scorecards produced by the existing
   `forge skill eval --static` generator and committed mirror generator. They contain no
   hand-edited data and do not change scorer behavior.
