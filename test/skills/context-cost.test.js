@@ -65,7 +65,9 @@ describe('skill context cost', () => {
   });
 
   test('every skill has an effective model or user invocation', () => {
-    for (const skill of skills) assertValidInvocation(skill);
+    expect(() => {
+      for (const skill of skills) assertValidInvocation(skill);
+    }).not.toThrow();
   });
 
   test('only explicit-use workflow skills are user-invoked', () => {
