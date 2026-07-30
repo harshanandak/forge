@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const addCommand = require('../../lib/commands/add');
 const upgradeCommand = require('../../lib/commands/upgrade');
+const { FORGE_HOOK_CONTRACT, mergeClaudeSettings } = require('../../lib/hook-renderer');
 
 const tempRoots = [];
 
@@ -97,6 +98,18 @@ describe('forge upgrade command', () => {
     }
   });
 
+  test('self-heal leaves semantically complete compact Claude settings unchanged', async () => {
+    const root = makeRepo();
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const compact = JSON.stringify(JSON.parse(mergeClaudeSettings('', FORGE_HOOK_CONTRACT)));
+    fs.writeFileSync(settingsPath, compact);
+
+    await upgradeCommand.handler(['--self-heal'], {}, root);
+
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(compact);
+  });
+
   test('self-heal backs up malformed Claude settings without overwriting them', async () => {
     const root = makeRepo();
     const settingsPath = path.join(root, '.claude', 'settings.json');
@@ -109,6 +122,9 @@ describe('forge upgrade command', () => {
     expect(result.success).toBe(true);
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(malformed);
     expect(fs.existsSync(`${settingsPath}.bak`)).toBe(true);
+
+    await upgradeCommand.handler(['--self-heal'], {}, root);
+    expect(fs.existsSync(`${settingsPath}.bak.1`)).toBe(false);
   });
 
   test('honors parsed kebab-case dry-run flags', async () => {

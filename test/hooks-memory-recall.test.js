@@ -127,6 +127,22 @@ describe('forge hooks memory-recall', () => {
     expect(saved).toBe(false);
   });
 
+  test('does not await seen persistence after the injection decision', async () => {
+    let saveStarted = false;
+    const startedAt = Date.now();
+    const res = await run(baseOpts({
+      saveSeen: () => {
+        saveStarted = true;
+        return new Promise(() => {});
+      },
+      promptRecallDeadlineMs: 25,
+    }));
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(saveStarted).toBe(true);
+    expect(res.reason).toBeUndefined();
+    expect(JSON.parse(res.output).hookSpecificOutput.additionalContext).toContain('clock skew');
+  });
+
   test('fail-open: a throwing search never breaks the prompt', async () => {
     const res = await run(baseOpts({ search: () => { throw new Error('kernel down'); } }));
     expect(res).toEqual({ success: true, output: '' });
