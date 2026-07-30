@@ -3,6 +3,12 @@
 These slices are sequential. Each leaves a runnable regression check and maps directly to the
 approved plan. No implementation starts until the plan is approved.
 
+Workflow-owned artifacts:
+
+- `docs/work/2026-07-29-skill-invocation-metadata/plan.md`
+- `docs/work/2026-07-29-skill-invocation-metadata/tasks.md`
+- `docs/work/2026-07-29-skill-invocation-metadata/decisions.md`
+
 ## Task 1: Lock the effective invocation metadata contract
 
 Wave: 1
@@ -110,11 +116,17 @@ Wave: 3
 OWNS:
 
 - `skills/ship/SKILL.md`
+- `skills/ship/evals/scorecard.json`
 - `skills/review/SKILL.md`
+- `skills/review/evals/scorecard.json`
 - `skills/rollback/SKILL.md`
+- `skills/rollback/evals/scorecard.json`
 - `.agents/skills/ship/SKILL.md`
+- `.agents/skills/ship/evals/scorecard.json`
 - `.agents/skills/review/SKILL.md`
+- `.agents/skills/review/evals/scorecard.json`
 - `.agents/skills/rollback/SKILL.md`
+- `.agents/skills/rollback/evals/scorecard.json`
 
 Verification-only:
 
@@ -122,13 +134,15 @@ Verification-only:
 - `test/skills/stage-skills.test.js`
 - `test/structural/skills-sync-drift.test.js`
 - `test/agents-skills-repo-discovery.test.js`
+- `test/skill-eval.test.js`
 
 What to implement:
 
 Add `invocation: user` to exactly `ship`, `review`, and `rollback`. Trim only their
 frontmatter descriptions to concise purpose and explicit-use cues while preserving authority
 boundaries and stop conditions. Do not change bodies or any model-invoked skill. Regenerate
-the committed `.agents/skills` copies from canonical source; never hand-diverge the mirror.
+the deterministic canonical scorecards with `forge skill eval --static`, then regenerate the
+committed `.agents/skills` copies from canonical source; never hand-edit generated artifacts.
 
 TDD steps:
 
@@ -144,10 +158,13 @@ TDD steps:
 4. RED — run:
    `bun test test/structural/skills-sync-drift.test.js`
    and confirm the committed `.agents/skills` mirror is reported stale after canonical edits.
-5. GREEN — regenerate `.agents/skills` through `scripts/sync-agent-skills.js` (or the same
+5. GREEN — refresh the three canonical scorecards through `forge skill eval --static`, then
+   regenerate `.agents/skills` through `scripts/sync-agent-skills.js` (or the same
    `populateCodexRepoSkills` path it calls), then rerun:
    `bun test test/structural/skills-sync-drift.test.js test/agents-skills-repo-discovery.test.js`
-6. REFACTOR — inspect the diff and remove any body, model-skill, or unrelated mirror change;
+   and `bun test test/skill-eval.test.js -t "committed scorecards stay fresh"`.
+6. REFACTOR — inspect the diff and remove any body, model-skill, unrelated mirror, or
+   non-generated scorecard change;
    rerun all focused tests from Tasks 1–3.
 7. Commit: `feat(skills): mark explicit invocation skills`
 
@@ -157,6 +174,7 @@ Expected output:
 - Every other skill has effective invocation `model`.
 - All descriptions remain non-empty and within 1024 characters.
 - Canonical and generated harness mirrors are byte-identical.
+- Canonical and mirrored scorecards equal the deterministic recomputation.
 - Router behavior remains unchanged.
 
 Requirement anchors: success criteria 3, 4, 5, 7, and 8; fixed classification and
@@ -168,6 +186,7 @@ Run:
 
 ```text
 bun test test/using-forge.test.js test/skills/context-cost.test.js test/skills/skills-sync.test.js test/skills/stage-skills.test.js test/structural/skills-sync-drift.test.js test/agents-skills-repo-discovery.test.js packages/skills/test/sync.test.js
+bun test test/skill-eval.test.js -t "committed scorecards stay fresh"
 node scripts/check-agents.js
 ```
 
@@ -176,7 +195,7 @@ Expected:
 - All focused tests pass.
 - `check-agents` reports no skill drift.
 - `git diff --check` is clean.
-- No files outside the owned list changed.
+- No files outside Task `OWNS` and the workflow-owned artifacts changed.
 
 ## YAGNI review
 

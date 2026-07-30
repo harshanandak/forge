@@ -6,8 +6,8 @@
 - Date: 2026-07-29
 - Classification: Standard
 - Forge issue: `588e6973-842c-47aa-aff3-77434e0ccdcc`
-- Status: Awaiting plan approval
-- Planning path: `plan.final_lock` only
+- Status: Approved on 2026-07-30; implementation complete
+- Planning path: `plan.final_lock` completed
 
 ## External planner evidence
 
@@ -80,11 +80,14 @@ current router and byte-identical projection architecture.
 - Generated mirror content must remain byte-identical to canonical content, aside from the
   drift check's existing CRLF normalization.
 
-## Affected canonical files
+## Owned implementation and generated files
 
-Implementation may change only these source/test surfaces unless an ambiguity gate stops the
-task first:
+Implementation and approved generated follow-ups may change only these files unless an
+ambiguity gate stops the task first:
 
+- `docs/work/2026-07-29-skill-invocation-metadata/plan.md`
+- `docs/work/2026-07-29-skill-invocation-metadata/tasks.md`
+- `docs/work/2026-07-29-skill-invocation-metadata/decisions.md`
 - `lib/using-forge.js`
 - `lib/skills-sync.js`
 - `test/using-forge.test.js`
@@ -92,17 +95,24 @@ task first:
 - `test/skills/skills-sync.test.js`
 - `packages/skills/test/sync.test.js`
 - `skills/ship/SKILL.md`
+- `skills/ship/evals/scorecard.json`
 - `skills/review/SKILL.md`
+- `skills/review/evals/scorecard.json`
 - `skills/rollback/SKILL.md`
+- `skills/rollback/evals/scorecard.json`
 - `.agents/skills/ship/SKILL.md`
+- `.agents/skills/ship/evals/scorecard.json`
 - `.agents/skills/review/SKILL.md`
+- `.agents/skills/review/evals/scorecard.json`
 - `.agents/skills/rollback/SKILL.md`
+- `.agents/skills/rollback/evals/scorecard.json`
 
 Existing verification-only surfaces:
 
 - `test/skills/stage-skills.test.js`
 - `test/structural/skills-sync-drift.test.js`
 - `test/agents-skills-repo-discovery.test.js`
+- `test/skill-eval.test.js`
 - `scripts/sync-agent-skills.js`
 - `packages/skills/src/commands/sync.js`
 
@@ -167,7 +177,7 @@ Those are design changes beyond this lock, not implementation details.
   architecture.
 - `plan.synthesis`: skipped as a separate node; the approved artifacts already provide the
   synthesis used by this lock.
-- `plan.final_lock`: completed pending user approval of this plan and `tasks.md`.
+- `plan.final_lock`: completed; the plan and `tasks.md` were approved before implementation.
 - Full baseline suite: skipped for this partial planning lock; the focused live context-cost
   baseline passed.
 
