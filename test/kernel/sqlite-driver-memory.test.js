@@ -8,6 +8,7 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { performance } = require('node:perf_hooks');
 
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
@@ -147,6 +148,36 @@ describe('Kernel SQLite driver — project-memory read model', () => {
 });
 
 describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read layer)', () => {
+	test('keeps 1,000-record scored recall p95 within the prompt budget', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		for (let index = 0; index < 1_000; index += 1) {
+			driver.recordMemory({
+				key: `performance-${index}`,
+				value: `auth token policy record ${index}`,
+				sourceAgent: 'forge remember',
+				scope: projectId,
+				tags: [],
+				timestamp: '2026-07-30T00:00:00.000Z',
+			});
+		}
+		const search = () => driver.searchMemoriesRankedScored('auth token', 25, {
+			projectId,
+			now: '2026-07-30T12:00:00.000Z',
+		});
+		for (let index = 0; index < 10; index += 1) search();
+		const samples = [];
+		for (let index = 0; index < 100; index += 1) {
+			const startedAt = performance.now();
+			const hits = search();
+			samples.push(performance.now() - startedAt);
+			expect(hits).toHaveLength(25);
+		}
+		samples.sort((left, right) => left - right);
+		const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+		expect(p95).toBeLessThanOrEqual(250);
+	}, 20_000);
+
 	test('filters foreign and already-seen rows before the scored candidate limit', () => {
 		const driver = makeDriver();
 		const projectId = 'c:/repo/.git';
