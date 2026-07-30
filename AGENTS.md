@@ -333,6 +333,7 @@ runtime rail. Turn it off only deliberately: `forge gate disable rail.kernel_tra
 - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
 - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
 - **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. `.agents/skills` (Codex's repo-local discovery path) is committed so a fresh clone gets discovery without `forge setup` — a pre-commit hook keeps it byte-identical to `skills/` and the drift gate enforces it. The other mirrors (`.claude/skills`, `.codex/skills`, `.cursor/skills`, `.hermes/skills`) are gitignored and regenerated at `forge setup`. Never hand-edit a generated mirror — edit the canonical `skills/` source.
+- **Skill invocation metadata**: Canonical skill frontmatter may declare `invocation: model|user`; omission means `model`. Only `ship`, `review`, and `rollback` are currently user-invoked. Keep the field harness-neutral and preserve it byte-identically in every generated mirror.
 
 ## Session Completion
 
