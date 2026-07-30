@@ -146,12 +146,15 @@ describe('parseFrontmatter', () => {
   test.each([
     ['invocation: model', 'model'],
     ['invocation: user', 'user'],
-    ['', 'model'],
+    [null, 'model'],
+    ['invocation:', ''],
+    ['invocation: Model', 'Model'],
+    ['invocation: true', 'true'],
+    ['invocation: [model]', '[model]'],
     ['invocation: automatic', 'automatic'],
   ])('exposes effective invocation for %j', (line, expected) => {
-    const raw = ['---', 'name: demo', line, 'description: Demo skill', '---', '# body']
-      .filter(Boolean)
-      .join('\n');
+    const raw = ['---', 'name: demo', ...(line === null ? [] : [line]),
+      'description: Demo skill', '---', '# body'].join('\n');
     expect(parseFrontmatter(raw).invocation).toBe(expected);
   });
 

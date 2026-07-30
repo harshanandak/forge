@@ -73,8 +73,13 @@ describe('skill context cost', () => {
       .toEqual(['review', 'rollback', 'ship']);
   });
 
-  test('invalid invocation fails visibly', () => {
-    expect(() => assertValidInvocation({ name: 'invalid', invocation: 'automatic' }))
+  test.each(['invocation:', 'invocation: Model', 'invocation: true',
+    'invocation: [model]', 'invocation: automatic'])
+  ('invalid invocation fails visibly for %j', (line) => {
+    const invocation = parseFrontmatter(
+      `---\nname: invalid\n${line}\ndescription: Invalid\n---\n# Invalid\n`,
+    ).invocation;
+    expect(() => assertValidInvocation({ name: 'invalid', invocation }))
       .toThrow('invalid invocation');
   });
 

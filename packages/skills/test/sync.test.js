@@ -252,24 +252,31 @@ describe('Sync Command', () => {
   });
 
   test('syncCommand reads skills from root skills/ directory', async () => {
-    mkdirSync('.cursor', { recursive: true });
+    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
+      mkdirSync(harness, { recursive: true });
+    }
     mkdirSync('skills/root-skill', { recursive: true });
     const source = '---\nname: root-skill\ninvocation: user\ndescription: A root skill\n---\n\n# Root Skill';
     writeFileSync('skills/root-skill/SKILL.md', source);
     await syncCommand({});
-    expect(readFileSync('.cursor/skills/root-skill/SKILL.md', 'utf8')).toBe(source);
+    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
+      expect(readFileSync(`${harness}/skills/root-skill/SKILL.md`, 'utf8')).toBe(source);
+    }
   });
 
   test('syncCommand deduplicates: .skills/ takes priority over skills/', async () => {
-    mkdirSync('.cursor', { recursive: true });
+    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
+      mkdirSync(harness, { recursive: true });
+    }
     mkdirSync('skills/test-skill', { recursive: true });
     writeFileSync('skills/test-skill/SKILL.md',
       '---\nname: test-skill\ninvocation: model\ndescription: Root version\n---\n\n# Root Version');
     const shadow = '---\nname: test-skill\ninvocation: user\ndescription: Shadow version\n---\n\n# Test Skill';
     writeFileSync('.skills/test-skill/SKILL.md', shadow);
     await syncCommand({});
-    const content = readFileSync('.cursor/skills/test-skill/SKILL.md', 'utf8');
-    expect(content).toBe(shadow);
+    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
+      expect(readFileSync(`${harness}/skills/test-skill/SKILL.md`, 'utf8')).toBe(shadow);
+    }
   });
 
   test('syncCommand updates registry with sync timestamp', async () => {
