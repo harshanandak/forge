@@ -63,6 +63,54 @@ describe('forge upgrade command', () => {
     expect(second.output).toContain('No self-heal actions needed');
   });
 
+  test('self-heal restores missing Claude lifecycle groups without replacing user hooks', async () => {
+    const root = makeRepo();
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      model: 'sonnet',
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: 'node user-welcome.js' }] }],
+      },
+    }, null, 2));
+
+    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const commands = event => settings.hooks[event].flatMap(group => group.hooks.map(hook => hook.command));
+
+    expect(result.success).toBe(true);
+    expect(settings.model).toBe('sonnet');
+    expect(commands('SessionStart')).toContain('node user-welcome.js');
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop']) {
+      expect(commands(event).filter(command => command.includes('forge.js')).length).toBeGreaterThan(0);
+    }
+
+    await upgradeCommand.handler(['--self-heal'], {}, root);
+    const twice = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop']) {
+      expect(twice.hooks[event].filter(group =>
+        group.hooks.some(hook => hook.command.includes('forge.js')))).toHaveLength(1);
+      const forgeCommands = twice.hooks[event]
+        .flatMap(group => group.hooks.map(hook => hook.command))
+        .filter(command => command.includes('forge.js'));
+      expect(new Set(forgeCommands).size).toBe(forgeCommands.length);
+    }
+  });
+
+  test('self-heal backs up malformed Claude settings without overwriting them', async () => {
+    const root = makeRepo();
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const malformed = '{ // user JSONC\n "hooks": {}\n}\n';
+    fs.writeFileSync(settingsPath, malformed);
+
+    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(malformed);
+    expect(fs.existsSync(`${settingsPath}.bak`)).toBe(true);
+  });
+
   test('honors parsed kebab-case dry-run flags', async () => {
     const root = makeRepo();
 

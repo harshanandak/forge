@@ -100,6 +100,31 @@ describe('forge hooks memory-recall', () => {
   test('non-claude harness -> injects nothing (substrate-solved, never re-solved here)', async () => {
     const res = await hooks.handler(['memory-recall', '--harness', 'codex'], {}, '/repo', baseOpts());
     expect(res.output).toBe('');
+    expect(res.reason).toBe('global-config');
+  });
+
+  test('fails open by its prompt deadline', async () => {
+    const startedAt = Date.now();
+    const res = await run(baseOpts({
+      search: () => new Promise(() => {}),
+      promptRecallDeadlineMs: 25,
+    }));
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(res).toEqual({ success: true, output: '', reason: 'timeout' });
+  });
+
+  test('a result arriving after the deadline is not marked as injected', async () => {
+    let saved = false;
+    const res = await run(baseOpts({
+      search: () => new Promise(resolve => setTimeout(() => resolve([
+        { key: 'late', value: 'late auth token memory', score: -2 },
+      ]), 40)),
+      saveSeen: () => { saved = true; },
+      promptRecallDeadlineMs: 10,
+    }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(res.reason).toBe('timeout');
+    expect(saved).toBe(false);
   });
 
   test('fail-open: a throwing search never breaks the prompt', async () => {
