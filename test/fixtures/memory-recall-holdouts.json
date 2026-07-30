@@ -1,0 +1,11 @@
+{
+  "projectLocal": {
+    "prompt": "auth token failure",
+    "memoryId": "local-auth",
+    "content": "Auth token failures use the project-local clock-skew fix."
+  },
+  "foreign": {
+    "scope": "c:/foreign/.git",
+    "count": 26
+  }
+}

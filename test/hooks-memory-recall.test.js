@@ -54,6 +54,36 @@ describe('forge hooks memory-recall', () => {
     expect(ctx).toContain('Redis'); // m2 still injected
   });
 
+  test('loads bounded seen keys before search and passes them into SQL eligibility', async () => {
+    const calls = [];
+    await run(baseOpts({
+      loadSeen: () => {
+        calls.push('seen');
+        return Array.from({ length: 26 }, (_, index) => `seen-${index}`);
+      },
+      search: (_root, _query, _limit, options) => {
+        calls.push({ search: options });
+        return [{
+          memory_id: 'unseen',
+          type: 'note',
+          content: 'Auth token unseen local result.',
+          scope: 'project',
+          trust_status: 'confirmed',
+          provenance: { source_agent: 'forge remember', source_refs: [] },
+          updated_at: '2026-07-30T00:00:00.000Z',
+          score: -2,
+        }];
+      },
+    }));
+
+    expect(calls[0]).toBe('seen');
+    expect(calls[1]).toEqual({
+      search: {
+        excludeKeys: Array.from({ length: 26 }, (_, index) => `seen-${index}`),
+      },
+    });
+  });
+
   test('rail disabled -> injects nothing', async () => {
     expect((await run(baseOpts({ railEnabled: () => false }))).output).toBe('');
   });

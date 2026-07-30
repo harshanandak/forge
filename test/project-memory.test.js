@@ -29,23 +29,79 @@ function fakeStore(seed = {}) {
     listMemories() {
       return [...memories.values()];
     },
-    searchMemoriesRankedScored(query, limit) {
+    searchMemoriesRankedScored(query, limit, options) {
       this.rankedScoredCalls = this.rankedScoredCalls || [];
-      this.rankedScoredCalls.push({ query, limit });
+      this.rankedScoredCalls.push(options
+        ? { query, limit, options }
+        : { query, limit });
       return (this.__rankedScored || []).slice(0, limit);
     },
   };
 }
 
 describe('project memory kernel adapter', () => {
+  test('normalizes ranked hits and derives one project id for sibling worktrees', () => {
+    const store = fakeStore();
+    store.__rankedScored = [{
+      key: 'decision.auth',
+      value: { category: 'decision', data: 'Use short-lived auth tokens.' },
+      sourceAgent: 'forge remember',
+      tags: ['type:gotcha', 'trust:confirmed'],
+      timestamp: '2026-07-30T00:00:00.000Z',
+      beadsRefs: ['forge-auth'],
+      score: -2.5,
+    }];
+    const realpath = value => String(value).replaceAll('\\', '/').toLowerCase();
+    const options = {
+      store,
+      gitCommonDir: 'C:\\Repo\\.git',
+      realpath,
+      platform: 'win32',
+      excludeKeys: ['seen'],
+      now: '2026-07-30T01:00:00.000Z',
+    };
+
+    const hits = projectMemory.searchRankedScored('C:\\Repo\\worktree-a', 'auth token', 5, options);
+
+    expect(store.rankedScoredCalls).toEqual([{
+      query: 'auth token',
+      limit: 5,
+      options: {
+        projectId: 'c:/repo/.git',
+        excludeKeys: ['seen'],
+        now: '2026-07-30T01:00:00.000Z',
+      },
+    }]);
+    expect(hits).toEqual([{
+      memory_id: 'decision.auth',
+      type: 'gotcha',
+      content: '{"category":"decision","data":"Use short-lived auth tokens."}',
+      scope: 'c:/repo/.git',
+      trust_status: 'confirmed',
+      provenance: {
+        source_agent: 'forge remember',
+        source_refs: ['forge-auth'],
+      },
+      updated_at: '2026-07-30T00:00:00.000Z',
+      score: -2.5,
+    }]);
+  });
+
   test('searchRankedScored forwards the query/limit to the store and returns scored hits', () => {
     const store = fakeStore();
     store.__rankedScored = [{ key: 'm1', value: 'x', score: -2.5 }, { key: 'm2', value: 'y', score: -1.1 }];
 
     const hits = projectMemory.searchRankedScored(process.cwd(), 'auth bug', 5, { store });
 
-    expect(store.rankedScoredCalls).toEqual([{ query: 'auth bug', limit: 5 }]);
-    expect(hits.map(h => h.key)).toEqual(['m1', 'm2']);
+    expect(store.rankedScoredCalls).toEqual([{
+      query: 'auth bug',
+      limit: 5,
+      options: {
+        projectId: projectMemory.resolveProjectId(process.cwd()),
+        excludeKeys: [],
+      },
+    }]);
+    expect(hits.map(h => h.memory_id)).toEqual(['m1', 'm2']);
     expect(hits[0].score).toBe(-2.5);
   });
 
