@@ -137,6 +137,31 @@ describe('forge upgrade command', () => {
       .toContain('node user-notify.js');
   });
 
+  test('self-heal preserves user commands sharing a stale Forge group', async () => {
+    const root = makeRepo();
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const settings = JSON.parse(mergeClaudeSettings('', FORGE_HOOK_CONTRACT));
+    const promptGroup = settings.hooks.UserPromptSubmit[0];
+    promptGroup.hooks.push(structuredClone(promptGroup.hooks[0]));
+    promptGroup.hooks.push({ type: 'command', command: 'node user-prompt-audit.js' });
+    settings.hooks.UserPromptSubmit.push({
+      hooks: [{ type: 'command', command: 'node user-separate-audit.js' }],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+
+    await upgradeCommand.handler(['--self-heal'], {}, root);
+
+    const repaired = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const promptCommands = repaired.hooks.UserPromptSubmit
+      .flatMap(group => group.hooks.map(hook => hook.command));
+    expect(promptCommands).toContain('node user-prompt-audit.js');
+    expect(promptCommands).toContain('node user-separate-audit.js');
+    for (const action of ['inbox-pickup', 'shepherd-events', 'memory-recall']) {
+      expect(promptCommands.filter(command => command.includes(`hooks ${action}`))).toHaveLength(1);
+    }
+  });
+
   test('self-heal backs up malformed Claude settings without overwriting them', async () => {
     const root = makeRepo();
     const settingsPath = path.join(root, '.claude', 'settings.json');
