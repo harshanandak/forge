@@ -48,6 +48,28 @@ describe('skills-sync: listCanonicalSkills', () => {
   test('returns [] when skills/ is absent', () => {
     expect(listCanonicalSkills(tmp)).toEqual([]);
   });
+
+  test('reports effective invocation without filtering either mode', () => {
+    const omitted = '---\nname: omitted\ndescription: Omitted\n---\n# Omitted\n';
+    const model = '---\nname: model\ninvocation: model\ndescription: Model\n---\n# Model\n';
+    const user = '---\nname: user\ninvocation: user\ndescription: User\n---\n# User\n';
+    write('skills/omitted/SKILL.md', omitted);
+    write('skills/model/SKILL.md', model);
+    write('skills/user/SKILL.md', user);
+
+    const skills = listCanonicalSkills(tmp);
+    expect(skills.map(({ name, invocation }) => ({ name, invocation }))).toEqual([
+      { name: 'model', invocation: 'model' },
+      { name: 'omitted', invocation: 'model' },
+      { name: 'user', invocation: 'user' },
+    ]);
+
+    const target = path.join(tmp, '.codex/skills');
+    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
+    expect(fs.readFileSync(path.join(target, 'model/SKILL.md'), 'utf8')).toBe(model);
+    expect(fs.readFileSync(path.join(target, 'omitted/SKILL.md'), 'utf8')).toBe(omitted);
+    expect(fs.readFileSync(path.join(target, 'user/SKILL.md'), 'utf8')).toBe(user);
+  });
 });
 
 describe('skills-sync: populateAgentSkills', () => {
