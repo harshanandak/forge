@@ -233,6 +233,52 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
 });
 
 describe('memory-router: one-time JSONL import onto the kernel', () => {
+  test('ignores user-global .remember content and unknown markdown headings', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    const fakeHome = makeProjectRoot();
+    fs.writeFileSync(
+      path.join(fakeHome, '.remember'),
+      '# Global memory\n\n## Unknown heading\nNever import this user-global note.\n',
+      'utf8',
+    );
+
+    const result = router.recall(projectRoot, {}, { store, homeDir: fakeHome });
+
+    expect(result.total).toBe(0);
+    expect(result.notes).toEqual([]);
+  });
+
+  test('preserves legacy type and suggested-trust metadata in deterministic ids', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    writeLegacyJsonl(projectRoot, [
+      {
+        note: 'same legacy note',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        tags: ['old'],
+        type: 'decision',
+      },
+      {
+        note: 'same legacy note',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        tags: ['old'],
+        type: 'gotcha',
+      },
+    ]);
+
+    router.migrateJsonlNotesOnce(projectRoot, { store });
+    const imported = store.listMemories();
+
+    expect(imported).toHaveLength(2);
+    expect(imported.map(entry => entry.key).sort()[0]).not.toBe(imported.map(entry => entry.key).sort()[1]);
+    expect(imported.map(entry => entry.tags).sort()).toEqual([
+      ['old', 'type:decision', 'trust:suggested'],
+      ['old', 'type:gotcha', 'trust:suggested'],
+    ]);
+    expect(imported.every(entry => entry.sourceAgent === 'forge remember (imported)')).toBe(true);
+  });
+
   test('imports a legacy notes.jsonl on first use and renames it so it never re-imports', () => {
     const projectRoot = makeProjectRoot();
     const store = makeStore(projectRoot);
