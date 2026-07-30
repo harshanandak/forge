@@ -3,9 +3,9 @@
   "fixtures": "present",
   "static": {
     "token_cost": {
-      "desc_chars": 988,
+      "desc_chars": 261,
       "body_lines": 476,
-      "score": 4
+      "score": 40
     },
     "caps": {
       "desc_within": true,
@@ -37,5 +37,5 @@
     "variance": null,
     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
   },
-  "composite": 71
+  "composite": 82
 }
