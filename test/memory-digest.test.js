@@ -18,6 +18,39 @@ const READY = [{ id: 'r1', title: 'Wire auto-file rail' }];
 const CLAIMED = [{ id: 'c1', title: 'Memory push hook' }];
 
 describe('buildMemoryDigest (pure, bounded)', () => {
+  test('separates confirmed and suggested notes with labels and skips oversized entries', () => {
+    const notes = [
+      {
+        note: `oversized ${'x'.repeat(3000)}`,
+        sourceAgent: 'forge remember',
+        timestamp: '2026-07-31T00:00:00.000Z',
+        tags: [],
+      },
+      {
+        note: 'confirmed note',
+        sourceAgent: 'forge remember',
+        timestamp: '2026-07-30T00:00:00.000Z',
+        tags: [],
+      },
+      {
+        note: 'suggested note',
+        sourceAgent: 'forge remember (imported)',
+        timestamp: '2026-07-29T00:00:00.000Z',
+        tags: ['trust:suggested'],
+      },
+    ];
+
+    const { text, tokens } = buildMemoryDigest({ notes, ready: [], claimed: [] });
+
+    expect(text).toContain('Confirmed memory');
+    expect(text).toContain('Suggested memory — verify before relying');
+    expect(text).toContain('source=forge remember');
+    expect(text).toContain('trust=confirmed');
+    expect(text).toContain('updated=2026-07-30');
+    expect(text).not.toContain('oversized ');
+    expect(tokens).toBeLessThanOrEqual(400);
+  });
+
   test('formats remembered notes + ready/claimed issues under a header', () => {
     const { text, empty } = buildMemoryDigest({ notes: NOTES, ready: READY, claimed: CLAIMED });
     expect(empty).toBe(false);

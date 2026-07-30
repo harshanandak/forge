@@ -21,6 +21,43 @@ afterEach(() => {
 });
 
 describe('forge recall command', () => {
+  test('labels trust/source/update, separates suggestions, and skips an oversized note', async () => {
+    const projectRoot = makeProjectRoot();
+    projectMemory.write(projectRoot, {
+      key: 'small-confirmed',
+      value: 'small confirmed memory',
+      sourceAgent: 'forge remember',
+      tags: [],
+      timestamp: '2026-07-30T00:00:00.000Z',
+    });
+    projectMemory.write(projectRoot, {
+      key: 'small-suggested',
+      value: 'small suggested memory',
+      sourceAgent: 'forge remember (imported)',
+      tags: ['trust:suggested'],
+      timestamp: '2026-07-29T00:00:00.000Z',
+    });
+    projectMemory.write(projectRoot, {
+      key: 'oversized',
+      value: `oversized ${'x'.repeat(6000)}`,
+      sourceAgent: 'forge remember',
+      tags: [],
+      timestamp: '2026-07-31T00:00:00.000Z',
+    });
+
+    const result = await recall.handler([], {}, projectRoot);
+
+    expect(result.output).toContain('Confirmed memory');
+    expect(result.output).toContain('Suggested memory — verify before relying');
+    expect(result.output).toContain('source=forge remember');
+    expect(result.output).toContain('trust=confirmed');
+    expect(result.output).toContain('updated=2026-07-30');
+    expect(result.output).toContain('small confirmed memory');
+    expect(result.output).toContain('small suggested memory');
+    expect(result.output).not.toContain('oversized ');
+    expect(Math.ceil(result.output.length / 4)).toBeLessThanOrEqual(1200);
+  });
+
   test('exports the registry command contract', () => {
     expect(recall.name).toBe('recall');
     expect(typeof recall.description).toBe('string');
