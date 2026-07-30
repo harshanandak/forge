@@ -74,8 +74,7 @@ describe('skill context cost', () => {
   });
 
   test.each(['invocation:', 'invocation: Model', 'invocation: true',
-    'invocation: [model]', 'invocation: automatic'])
-  ('invalid invocation fails visibly for %j', (line) => {
+    'invocation: [model]', 'invocation: automatic'])('invalid invocation fails visibly for %j', (line) => {
     const invocation = parseFrontmatter(
       `---\nname: invalid\n${line}\ndescription: Invalid\n---\n# Invalid\n`,
     ).invocation;
