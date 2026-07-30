@@ -1,6 +1,7 @@
 const { describe, test, expect } = require('bun:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const { parseFrontmatter } = require('../../lib/using-forge');
 
 // ─── skill context-cost gate (progressive-disclosure budget) ──────────────────
 //
@@ -45,7 +46,14 @@ function parseSkill(name) {
   const m = fm.match(/description:\s*([\s\S]*?)(?:\n[A-Za-z_-]+:|$)/);
   const description = m ? m[1].replace(/^>\s*/, '').replace(/\s+/g, ' ').trim() : '';
   const bodyLines = lines.length - (fmEnd + 1);
-  return { name, description, descLen: description.length, bodyLines };
+  const { invocation } = parseFrontmatter(text);
+  return { name, description, descLen: description.length, bodyLines, invocation };
+}
+
+function assertValidInvocation(skill) {
+  if (!['model', 'user'].includes(skill.invocation)) {
+    throw new Error(`${skill.name}/SKILL.md: invalid invocation ${JSON.stringify(skill.invocation)}`);
+  }
 }
 
 describe('skill context cost', () => {
@@ -54,6 +62,15 @@ describe('skill context cost', () => {
   test('every skill has a non-empty description', () => {
     const empty = skills.filter((s) => s.descLen === 0).map((s) => s.name);
     expect(empty).toEqual([]);
+  });
+
+  test('every skill has an effective model or user invocation', () => {
+    for (const skill of skills) assertValidInvocation(skill);
+  });
+
+  test('invalid invocation fails visibly', () => {
+    expect(() => assertValidInvocation({ name: 'invalid', invocation: 'automatic' }))
+      .toThrow('invalid invocation');
   });
 
   test('every skill description is within the 1024-char Anthropic cap', () => {
