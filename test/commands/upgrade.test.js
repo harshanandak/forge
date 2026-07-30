@@ -110,6 +110,33 @@ describe('forge upgrade command', () => {
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(compact);
   });
 
+  test('self-heal deduplicates canonical lifecycle groups and commands only', async () => {
+    const root = makeRepo();
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const settings = JSON.parse(mergeClaudeSettings('', FORGE_HOOK_CONTRACT));
+    settings.hooks.SessionStart.push(structuredClone(settings.hooks.SessionStart[0]));
+    settings.hooks.UserPromptSubmit[0].hooks.push(
+      structuredClone(settings.hooks.UserPromptSubmit[0].hooks[0]),
+    );
+    settings.hooks.Stop.unshift({
+      hooks: [{ type: 'command', command: 'node user-notify.js' }],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+
+    await upgradeCommand.handler(['--self-heal'], {}, root);
+
+    const repaired = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const forgeGroups = event => repaired.hooks[event].filter(group =>
+      group.hooks.some(hook => hook.command.includes('forge.js')));
+    expect(forgeGroups('SessionStart')).toHaveLength(1);
+    expect(forgeGroups('UserPromptSubmit')).toHaveLength(1);
+    const promptCommands = forgeGroups('UserPromptSubmit')[0].hooks.map(hook => hook.command);
+    expect(new Set(promptCommands).size).toBe(promptCommands.length);
+    expect(repaired.hooks.Stop.flatMap(group => group.hooks.map(hook => hook.command)))
+      .toContain('node user-notify.js');
+  });
+
   test('self-heal backs up malformed Claude settings without overwriting them', async () => {
     const root = makeRepo();
     const settingsPath = path.join(root, '.claude', 'settings.json');
