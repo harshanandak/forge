@@ -7,5 +7,18 @@
   "foreign": {
     "scope": "c:/foreign/.git",
     "count": 26
+  },
+  "authorityDenial": {
+    "prompt": "deploy rollback policy",
+    "confirmed": "Confirmed deploy rollback policy.",
+    "suggested": "Suggested deploy rollback candidate.",
+    "stale": "Stale deploy rollback candidate.",
+    "superseded": "Old deploy rollback policy.",
+    "replacement": "Current deploy rollback policy."
+  },
+  "privacy": {
+    "prompt": "secret deployment token",
+    "body": "Never persist this secret deployment token body.",
+    "sessionId": "C:/Users/private/session"
   }
 }

@@ -3,6 +3,8 @@
 const { describe, test, expect } = require('bun:test');
 
 const {
+  estimateTokens,
+  memoryTrustStatus,
   parseHookInput,
   meaningfulTokens,
   selectInjection,
@@ -94,16 +96,83 @@ describe('memory-recall: selectInjection', () => {
       query: 'auth token bug',
       hits: [hit('a', -3, big), hit('b', -2.9, big), hit('c', -2.8, big)],
       scoreFloor: -1.0,
-      tokenBudget: 120, // room for ~1 body
+      tokenBudget: 180, // room for ~1 fully labeled and fenced body
       excludeKeys: [],
     });
     expect(out.injectedKeys.length).toBeLessThan(3);
     expect(out.injectedKeys.length).toBeGreaterThanOrEqual(1);
   });
 
+  test('skips an oversized best hit and packs a later fitting hit with trust and provenance labels', () => {
+    const out = selectInjection({
+      query: 'auth token bug',
+      hits: [
+        { memory_id: 'oversized', content: 'x'.repeat(2_000), score: -3, trust_status: 'confirmed' },
+        {
+          memory_id: 'fits',
+          content: 'Use the clock-skew fix.',
+          score: -2,
+          trust_status: 'suggested',
+          provenance: { source_agent: 'forge insights' },
+          updated_at: '2026-07-30T00:00:00.000Z',
+        },
+      ],
+      scoreFloor: -1,
+      tokenBudget: 100,
+    });
+
+    expect(out.injectedKeys).toEqual(['fits']);
+    expect(out.entries[0].trust).toBe('suggested');
+    expect(out.entries[0].line).toContain('trust=suggested');
+    expect(out.entries[0].line).toContain('source=forge insights');
+    expect(estimateTokens(
+      `Suggested memory — verify before relying\n${out.entries[0].line}`,
+    )).toBeLessThanOrEqual(100);
+  });
+
   test('no hits -> inject nothing (empty, not a throw)', () => {
     const out = selectInjection({ query: 'auth token bug', hits: [], excludeKeys: [] });
     expect(out.lines).toEqual([]);
     expect(out.injectedKeys).toEqual([]);
+  });
+});
+
+describe('memory-recall: trust precedence', () => {
+  test('explicit suggested and machine markers override the human-string fallback', () => {
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge remember',
+      value: 'candidate',
+      tags: ['trust:suggested'],
+    })).toBe('suggested');
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge remember',
+      value: 'ambiguous',
+      tags: ['trust:unknown'],
+    })).toBe('suggested');
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge remember',
+      value: 'captured',
+      tags: ['forge:auto-capture'],
+    })).toBe('suggested');
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge remember (imported)',
+      value: 'legacy',
+      tags: [],
+    })).toBe('suggested');
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge remember',
+      value: { category: 'decision', data: 'machine' },
+      tags: [],
+    })).toBe('suggested');
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge remember',
+      value: 'human note',
+      tags: [],
+    })).toBe('confirmed');
+    expect(memoryTrustStatus({
+      sourceAgent: 'forge insights',
+      value: 'candidate',
+      tags: ['trust:confirmed'],
+    })).toBe('confirmed');
   });
 });

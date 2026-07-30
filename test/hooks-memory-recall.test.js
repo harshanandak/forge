@@ -15,8 +15,20 @@ function baseOpts(extra = {}) {
     railEnabled: () => true,
     readInput: () => QUERY,
     search: () => [
-      { key: 'm1', value: 'Auth tokens refresh every 15 min; the bug was a clock skew.', score: -3.2 },
-      { key: 'm2', value: 'Token store is Redis, keyed by tenant.', score: -1.4 },
+      {
+        key: 'm1',
+        value: 'Auth tokens refresh every 15 min; the bug was a clock skew.',
+        score: -3.2,
+        trust_status: 'confirmed',
+        provenance: { source_agent: 'forge remember' },
+      },
+      {
+        key: 'm2',
+        value: 'Token store is Redis, keyed by tenant.',
+        score: -1.4,
+        trust_status: 'confirmed',
+        provenance: { source_agent: 'forge remember' },
+      },
     ],
     loadSeen: () => [],
     saveSeen: () => {},
@@ -38,6 +50,24 @@ describe('forge hooks memory-recall', () => {
     const payload = JSON.parse(res.output);
     expect(payload.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
     expect(payload.hookSpecificOutput.additionalContext).toContain('clock skew');
+    expect(payload.hookSpecificOutput.additionalContext).toContain('Confirmed memory');
+    expect(payload.hookSpecificOutput.additionalContext).toContain('trust=confirmed');
+  });
+
+  test('renders suggested hits in a separate non-authoritative section', async () => {
+    const res = await run(baseOpts({
+      search: () => [{
+        memory_id: 'suggestion',
+        content: 'Try the candidate clock-skew fix.',
+        score: -3,
+        trust_status: 'suggested',
+        provenance: { source_agent: 'forge insights' },
+        updated_at: '2026-07-30T00:00:00.000Z',
+      }],
+    }));
+    const context = JSON.parse(res.output).hookSpecificOutput.additionalContext;
+    expect(context).toContain('Suggested memory — verify before relying');
+    expect(context).not.toContain('Confirmed memory');
   });
 
   test('records the injected keys for cross-turn dedupe', async () => {
@@ -81,6 +111,7 @@ describe('forge hooks memory-recall', () => {
     expect(calls[1]).toEqual({
       search: {
         excludeKeys: Array.from({ length: 26 }, (_, index) => `seen-${index}`),
+        busyTimeoutMs: 2500,
       },
     });
   });
@@ -163,18 +194,19 @@ describe('forge hooks memory-recall', () => {
     expect(seen[0].split(/\s+/)).toEqual(['auth', 'token', 'refresh', 'bug']);
   });
 
-  test('writes a shadow-log record (tokens, candidates, injectedKeys, floor) via the injectable seam', async () => {
+  test('writes only privacy-safe aggregate tuning evidence to the shadow log', async () => {
     const rows = [];
     await run(baseOpts({ appendShadow: (root, rec) => rows.push({ root, rec }) }));
     expect(rows).toHaveLength(1);
     expect(rows[0].root).toBe('/repo');
     const rec = rows[0].rec;
-    expect(rec.sessionId).toBe('sess-1');
-    expect(rec.tokens).toEqual(['auth', 'token', 'refresh', 'bug']);
     expect(rec.candidateCount).toBe(2);
-    expect(rec.candidates).toEqual([{ key: 'm1', score: -3.2 }, { key: 'm2', score: -1.4 }]);
-    expect(rec.injectedKeys).toEqual(['m1', 'm2']);
+    expect(rec.injectedCount).toBe(2);
     expect(rec.scoreFloor).toBe(-1.0);
+    expect(JSON.stringify(rec)).not.toContain('sess-1');
+    expect(JSON.stringify(rec)).not.toContain('auth');
+    expect(JSON.stringify(rec)).not.toContain('m1');
+    expect(JSON.stringify(rec)).not.toContain('clock skew');
   });
 
   test('shadow-log failure is swallowed — a throwing logger never breaks injection', async () => {
@@ -194,9 +226,8 @@ describe('forge hooks memory-recall', () => {
       appendShadow: (root, rec) => rows.push(rec),
     }));
     expect(rows).toHaveLength(1);
-    expect(rows[0].tokens.length).toBeLessThanOrEqual(32);
-    for (const tok of rows[0].tokens) expect(tok.length).toBeLessThanOrEqual(64);
     expect(Buffer.byteLength(JSON.stringify(rows[0]), 'utf8')).toBeLessThan(8 * 1024);
+    expect(JSON.stringify(rows[0])).not.toContain(words[0]);
   });
 });
 

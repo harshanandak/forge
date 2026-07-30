@@ -300,6 +300,59 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		expect(typeof hit.score).toBe('number');
 	});
 
+	test('explicit suggested and machine-marked forge remember rows stay suggested in SQL and JS', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		for (const entry of [
+			{ key: 'explicit-suggested', value: 'auth token explicit', tags: ['trust:suggested'] },
+			{ key: 'unknown-trust', value: 'auth token ambiguous', tags: ['trust:unknown'] },
+			{ key: 'auto-capture', value: 'auth token captured', tags: ['forge:auto-capture'] },
+			{ key: 'typed-machine', value: { category: 'decision', data: 'auth token typed' }, tags: [] },
+			{ key: 'human', value: 'auth token human', tags: [] },
+		]) {
+			driver.recordMemory({ ...entry, sourceAgent: 'forge remember', scope: projectId });
+		}
+		const trust = Object.fromEntries(driver.searchMemoriesRankedScored('auth token', 25, {
+			projectId,
+			now: new Date().toISOString(),
+		}).map(hit => [hit.memory_id, hit.trust_status]));
+		expect(trust).toEqual({
+			'auto-capture': 'suggested',
+			'explicit-suggested': 'suggested',
+			human: 'confirmed',
+			'typed-machine': 'suggested',
+			'unknown-trust': 'suggested',
+		});
+	});
+
+	test('ranked recall bounds a real SQLite lock wait and restores the normal busy timeout', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-kernel-memory-lock-'));
+		tmpDirs.push(dir);
+		const databasePath = path.join(dir, 'kernel.sqlite');
+		const locker = createBuiltinSQLiteDriver({ databasePath });
+		const reader = createBuiltinSQLiteDriver({ databasePath });
+		drivers.push(locker, reader);
+		locker.recordMemory({
+			key: 'locked',
+			value: 'auth token locked',
+			sourceAgent: 'forge remember',
+			scope: LOCAL_PROJECT_ID,
+			tags: [],
+		});
+		reader.countMemories();
+		await locker.exec('PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
+		const startedAt = performance.now();
+		expect(() => reader.searchMemoriesRankedScored('auth token', 25, {
+			projectId: LOCAL_PROJECT_ID,
+			busyTimeoutMs: 50,
+		})).toThrow();
+		const elapsedMs = performance.now() - startedAt;
+		expect(elapsedMs).toBeLessThan(500);
+		await locker.exec('ROLLBACK;');
+		const [{ timeout }] = await reader.queryAll('PRAGMA busy_timeout;');
+		expect(Number(timeout)).toBe(5_000);
+	});
+
 	test('searchMemoriesRanked matches all tokens via FTS BM25 (token-AND, any order)', () => {
 		const driver = makeDriver();
 		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
