@@ -1,17 +1,10 @@
 ---
 name: review
+invocation: user
 description: >
-  Forge REVIEW stage — drives an already-open PR to all-green by resolving EVERY piece of
-  feedback: failing GitHub Actions / CI checks, Greptile and CodeRabbit inline comments and
-  summaries, and the SonarCloud quality gate. It fixes the code, replies to each thread and
-  marks it resolved until checks pass, then runs the pre-merge doc gate and hands the PR off
-  for MANUAL merge — never runs `gh pr merge`. Use whenever a PR has review feedback or red
-  checks: "address the review comments on PR #123", "the bots flagged issues / Greptile score
-  is low", "fix the failing checks and resolve the threads", "CodeRabbit and SonarCloud left
-  comments", "get my PR merge-ready". This MUTATING feedback-resolution stage is distinct from
-  shepherd (only WATCHES an open PR, changes nothing), verify (POST-merge CI health check +
-  closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
-  type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
+  Drive an already-open PR's feedback and failing checks to all-green, resolve every thread,
+  run the pre-merge doc gate, then stop for manual merge. Use only when the user asks to
+  address PR feedback or checks; never merges or substitutes for Shepherd monitoring.
 allowed-tools: Bash, Read, Edit, Grep, Glob
 next: verify
 terminal: false

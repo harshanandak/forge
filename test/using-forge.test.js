@@ -142,4 +142,45 @@ describe('parseFrontmatter', () => {
     expect(fm.name).toBe('demo');
     expect(fm.description).toBe('first line second line');
   });
+
+  test.each([
+    ['invocation: model', 'model'],
+    ['invocation: user', 'user'],
+    ['invocation: "model"', 'model'],
+    ["invocation: 'user'", 'user'],
+    ['invocation: "model', '"model'],
+    ['invocation: model"', 'model"'],
+    ["invocation: 'user", "'user"],
+    ["invocation: user'", "user'"],
+    [`invocation: "model'`, `"model'`],
+    [null, 'model'],
+    ['invocation:', ''],
+    ['invocation: Model', 'Model'],
+    ['invocation: true', 'true'],
+    ['invocation: [model]', '[model]'],
+    ['invocation: automatic', 'automatic'],
+  ])('exposes effective invocation for %j', (line, expected) => {
+    const raw = ['---', 'name: demo', ...(line === null ? [] : [line]),
+      'description: Demo skill', '---', '# body'].join('\n');
+    expect(parseFrontmatter(raw).invocation).toBe(expected);
+  });
+
+  test('keeps user-invoked skills in the catalog without changing routing', () => {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'using-forge-invocation-'));
+    try {
+      const dir = path.join(root, 'skills', 'manual');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'SKILL.md'),
+        '---\nname: manual\ninvocation: user\ndescription: Manual only\n---\n# Manual\n',
+      );
+      const fixtureCatalog = loadSkillCatalog(root);
+      expect(fixtureCatalog.map((skill) => skill.name)).toEqual(['manual']);
+      expect(routeSkill('open a PR', { catalog }).best).toBe('ship');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

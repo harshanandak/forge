@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
 - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
 
 ## [0.1.0-beta.3] - 2026-07-17
