@@ -21,6 +21,7 @@ function baseOpts(extra = {}) {
     loadSeen: () => [],
     saveSeen: () => {},
     appendShadow: () => {},
+    recordRecallEvent: () => {},
     scoreFloor: -1.0,
     ...extra,
   };
