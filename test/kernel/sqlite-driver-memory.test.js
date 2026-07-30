@@ -308,7 +308,7 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 			{ key: 'unknown-trust', value: 'auth token ambiguous', tags: ['trust:unknown'] },
 			{ key: 'auto-capture', value: 'auth token captured', tags: ['forge:auto-capture'] },
 			{ key: 'typed-machine', value: { category: 'decision', data: 'auth token typed' }, tags: [] },
-			{ key: 'human', value: 'auth token human', tags: [] },
+			{ key: 'human', value: 'auth token human', tags: ['type:decision'] },
 		]) {
 			driver.recordMemory({ ...entry, sourceAgent: 'forge remember', scope: projectId });
 		}

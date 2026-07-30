@@ -167,7 +167,7 @@ describe('memory-recall: trust precedence', () => {
     expect(memoryTrustStatus({
       sourceAgent: 'forge remember',
       value: 'human note',
-      tags: [],
+      tags: ['type:decision'],
     })).toBe('confirmed');
     expect(memoryTrustStatus({
       sourceAgent: 'forge insights',
