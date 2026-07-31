@@ -7,6 +7,7 @@ const {
   buildRecallEventPayload,
   launchMemoryRecallEvent,
   recordMemoryRecallEvent,
+  recordMemoryRecallPayload,
 } = require('../lib/memory-recall-events');
 const hooks = require('../lib/commands/hooks');
 const projectMemory = require('../lib/project-memory');
@@ -178,6 +179,15 @@ describe('memory.recall.observed events', () => {
     });
 
     expect(result).toEqual({ recorded: false, reason: 'kernel unavailable' });
+  });
+
+  test.each([
+    ['null', null],
+    ['malformed', { get outcome() { throw new Error('malformed payload'); } }],
+  ])('direct %s payload failure is best-effort', async (_name, payload) => {
+    const result = await recordMemoryRecallPayload('/project', payload);
+
+    expect(result).toEqual({ recorded: false, reason: expect.any(String) });
   });
 
   test('the prompt hook reports selected ids and aggregate mix without prompt content', async () => {
