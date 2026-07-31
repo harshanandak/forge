@@ -1,11 +1,13 @@
 'use strict';
 
 const { afterEach, describe, test, expect } = require('bun:test');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const router = require('../../lib/memory/router');
+const projectMemory = require('../../lib/project-memory');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
 const tempDirs = [];
@@ -233,6 +235,42 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
 });
 
 describe('memory-router: one-time JSONL import onto the kernel', () => {
+  test('ignores user-global .remember content and unknown markdown headings', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    const fakeHome = makeProjectRoot();
+    fs.writeFileSync(
+      path.join(fakeHome, '.remember'),
+      '# Global memory\n\n## Unknown heading\nNever import this user-global note.\n',
+      'utf8',
+    );
+
+    const result = router.recall(projectRoot, {}, { store, homeDir: fakeHome });
+
+    expect(result.total).toBe(0);
+    expect(result.notes).toEqual([]);
+  });
+
+  test('preserves legacy type and suggested-trust metadata on imported entries', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    writeLegacyJsonl(projectRoot, [
+      {
+        note: 'same legacy note',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        tags: ['old'],
+        type: 'decision',
+      },
+    ]);
+
+    router.migrateJsonlNotesOnce(projectRoot, { store });
+    const imported = store.listMemories();
+
+    expect(imported).toHaveLength(1);
+    expect(imported[0].tags).toEqual(['old', 'type:decision', 'trust:suggested']);
+    expect(imported.every(entry => entry.sourceAgent === 'forge remember (imported)')).toBe(true);
+  });
+
   test('imports a legacy notes.jsonl on first use and renames it so it never re-imports', () => {
     const projectRoot = makeProjectRoot();
     const store = makeStore(projectRoot);
@@ -302,5 +340,37 @@ describe('memory-router: one-time JSONL import onto the kernel', () => {
     router.migrateJsonlNotesOnce(projectRoot, { store });
 
     expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+  });
+
+  test('an id-less record reuses its pre-enrichment key after a failed rename', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    const record = {
+      note: 'legacy key remains stable',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      tags: ['old', 42],
+      type: 'decision',
+    };
+    const oldKeyBasis = JSON.stringify({
+      note: record.note,
+      timestamp: record.timestamp,
+      tags: ['old'],
+    });
+    const oldKey = `import:${crypto.createHash('sha256').update(oldKeyBasis).digest('hex').slice(0, 32)}`;
+
+    projectMemory.write(projectRoot, {
+      key: oldKey,
+      value: record.note,
+      sourceAgent: 'forge remember (imported)',
+      timestamp: record.timestamp,
+      tags: ['old'],
+    }, { store });
+    writeLegacyJsonl(projectRoot, [record]);
+    router.migrateJsonlNotesOnce(projectRoot, { store });
+
+    const imported = store.listMemories();
+    expect(imported).toHaveLength(1);
+    expect(imported[0].key).toBe(oldKey);
+    expect(imported[0].tags).toEqual(['old', 'type:decision', 'trust:suggested']);
   });
 });

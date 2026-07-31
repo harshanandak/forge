@@ -5,6 +5,7 @@ const { afterEach, describe, test, expect } = require('bun:test');
 const recall = require('../../lib/commands/recall');
 const remember = require('../../lib/commands/remember');
 const projectMemory = require('../../lib/project-memory');
+const { OPEN, CLOSE } = require('../../lib/untrusted-content');
 const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
 
 // recall reads the kernel store, whose default path resolves from the git common dir — so
@@ -21,6 +22,43 @@ afterEach(() => {
 });
 
 describe('forge recall command', () => {
+  test('labels trust/source/update, separates suggestions, and skips an oversized note', async () => {
+    const projectRoot = makeProjectRoot();
+    projectMemory.write(projectRoot, {
+      key: 'small-confirmed',
+      value: 'small confirmed memory',
+      sourceAgent: 'forge remember',
+      tags: [],
+      timestamp: '2026-07-30T00:00:00.000Z',
+    });
+    projectMemory.write(projectRoot, {
+      key: 'small-suggested',
+      value: 'small suggested memory',
+      sourceAgent: 'forge remember (imported)',
+      tags: ['trust:suggested'],
+      timestamp: '2026-07-29T00:00:00.000Z',
+    });
+    projectMemory.write(projectRoot, {
+      key: 'oversized',
+      value: `oversized ${'x'.repeat(6000)}`,
+      sourceAgent: 'forge remember',
+      tags: [],
+      timestamp: '2026-07-31T00:00:00.000Z',
+    });
+
+    const result = await recall.handler([], {}, projectRoot);
+
+    expect(result.output).toContain('Confirmed memory');
+    expect(result.output).toContain('Suggested memory — verify before relying');
+    expect(result.output).toContain('source=forge remember');
+    expect(result.output).toContain('trust=confirmed');
+    expect(result.output).toContain('updated=2026-07-30');
+    expect(result.output).toContain('small confirmed memory');
+    expect(result.output).toContain('small suggested memory');
+    expect(result.output).not.toContain('oversized ');
+    expect(Math.ceil(result.output.length / 4)).toBeLessThanOrEqual(1200);
+  });
+
   test('exports the registry command contract', () => {
     expect(recall.name).toBe('recall');
     expect(typeof recall.description).toBe('string');
@@ -105,6 +143,26 @@ describe('forge recall command', () => {
 
     const result = await recall.handler(['--limit', '2'], {}, projectRoot);
     expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
+  });
+
+  test('fences budgeted notes after truncation and reports only rendered entries', async () => {
+    const projectRoot = makeProjectRoot();
+    for (let index = 0; index < 3; index += 1) {
+      projectMemory.write(projectRoot, {
+        key: `budgeted-${index}`,
+        value: `note ${index} ${'x'.repeat(2400)}`,
+        sourceAgent: 'forge remember',
+        tags: [],
+        timestamp: `2026-07-${30 - index}T00:00:00.000Z`,
+      });
+    }
+
+    const result = await recall.handler([], {}, projectRoot);
+
+    expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
+    expect((result.output.match(new RegExp(OPEN, 'g')) || [])).toHaveLength(4);
+    expect((result.output.match(new RegExp(CLOSE, 'g')) || [])).toHaveLength(4);
+    expect((result.output.match(/END UNTRUSTED/g) || [])).toHaveLength(2);
   });
 
   test('finds a note by its tag (tags are indexed for recall)', async () => {

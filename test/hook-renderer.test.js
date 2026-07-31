@@ -1,6 +1,9 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   FORGE_HOOK_CONTRACT,
@@ -296,6 +299,127 @@ describe('renderHookConfig — global-config harnesses are honestly skipped, nev
     expect(res.skipped).toBe(true);
     expect(res.wrote).toBe(false);
     expect(res.scope).toBe('global-config');
+  });
+});
+
+describe('renderHookConfig — malformed project config safety', () => {
+  test('skips unreadable backup candidates while preserving the malformed source', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    try {
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      fs.writeFileSync(settingsPath, '{ malformed json\n');
+      fs.mkdirSync(`${settingsPath}.bak`);
+
+      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
+
+      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ malformed json\n');
+      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not reuse a symlinked backup candidate with matching contents', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    try {
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      fs.writeFileSync(settingsPath, '{ malformed json\n');
+      try {
+        fs.symlinkSync(settingsPath, `${settingsPath}.bak`, 'file');
+      } catch (error) {
+        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
+        throw error;
+      }
+
+      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
+
+      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
+      expect(fs.lstatSync(`${settingsPath}.bak`).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses hardlinked malformed settings before creating a backup', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    try {
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      fs.writeFileSync(settingsPath, '{ malformed json\n');
+      try {
+        fs.linkSync(settingsPath, `${settingsPath}.bak`);
+      } catch (error) {
+        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
+        throw error;
+      }
+
+      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/hardlink/i);
+      expect(fs.statSync(`${settingsPath}.bak`)).toMatchObject({
+        dev: fs.statSync(settingsPath).dev,
+        ino: fs.statSync(settingsPath).ino,
+      });
+      expect(fs.existsSync(`${settingsPath}.bak.1`)).toBe(false);
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ malformed json\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses a settings file symlinked outside the project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-outside-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    const outsideSettings = path.join(outside, 'settings.json');
+    const original = '{"model":"outside"}\n';
+    try {
+      fs.writeFileSync(outsideSettings, original);
+      try {
+        if (process.platform === 'win32') {
+          fs.symlinkSync(outside, path.dirname(settingsPath), 'junction');
+        } else {
+          fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+          fs.symlinkSync(outsideSettings, settingsPath);
+        }
+      } catch (error) {
+        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
+        throw error;
+      }
+
+      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/symlink|outside project/i);
+      expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses a hardlinked settings file', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-outside-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    const outsideSettings = path.join(outside, 'settings.json');
+    const original = '{"model":"outside"}\n';
+    try {
+      fs.writeFileSync(outsideSettings, original);
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      try {
+        fs.linkSync(outsideSettings, settingsPath);
+      } catch (error) {
+        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
+        throw error;
+      }
+
+      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/hardlink/i);
+      expect(fs.statSync(settingsPath).nlink).toBeGreaterThan(1);
+      expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 

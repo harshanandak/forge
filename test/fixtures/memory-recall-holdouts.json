@@ -1,0 +1,50 @@
+{
+  "projectLocal": {
+    "prompt": "auth token failure",
+    "memoryId": "local-auth",
+    "content": "Auth token failures use the project-local clock-skew fix."
+  },
+  "foreign": {
+    "scope": "c:/foreign/.git",
+    "count": 26
+  },
+  "authorityDenial": {
+    "prompt": "deploy rollback policy",
+    "confirmed": "Confirmed deploy rollback policy.",
+    "suggested": "Suggested deploy rollback candidate.",
+    "stale": "Stale deploy rollback candidate.",
+    "superseded": "Old deploy rollback policy.",
+    "replacement": "Current deploy rollback policy."
+  },
+  "privacy": {
+    "prompt": "secret deployment token",
+    "body": "Never persist this secret deployment token body.",
+    "sessionId": "C:/Users/private/session"
+  },
+  "seen": {
+    "prompt": "cache eviction policy",
+    "count": 26,
+    "eligibleId": "unseen-cache-policy",
+    "eligibleContent": "Use the unseen project-local cache eviction policy."
+  },
+  "supersession": {
+    "prompt": "release rollback guard",
+    "foreignProtected": "Local release rollback guard survives a foreign superseder.",
+    "confirmedProtected": "Confirmed release rollback guard survives a suggested superseder."
+  },
+  "oversized": {
+    "prompt": "database retry policy",
+    "fitting": "Use the bounded database retry policy."
+  },
+  "precedence": {
+    "prompt": "worker lease policy",
+    "humanTyped": "Human-authored typed worker lease policy.",
+    "explicitConfirmed": "Explicitly confirmed worker lease machine policy."
+  },
+  "performance": {
+    "prompt": "routing cache policy",
+    "count": 1000,
+    "samples": 100,
+    "p95LimitMs": 250
+  }
+}

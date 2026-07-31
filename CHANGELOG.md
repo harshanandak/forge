@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic project-local memory recall for Claude Code.** Forge now repairs and reuses its existing `SessionStart` and `UserPromptSubmit` lifecycle hooks to inject bounded Kernel memory automatically. Confirmed memories are presented as project truth; fresh suggested memories are separated and labeled for verification. Scope, staleness, supersession, and seen-key filtering happen before ranking, and privacy-safe recall telemetry records only bounded identifiers and aggregates—not prompt terms or memory bodies. (`36461e50`)
+
 ### Changed
 
 - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)

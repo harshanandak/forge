@@ -8,11 +8,20 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { performance } = require('node:perf_hooks');
 
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
 const tmpDirs = [];
 const drivers = [];
+const LOCAL_PROJECT_ID = 'c:/repo/.git';
+
+function scored(driver, query, limit) {
+	return driver.searchMemoriesRankedScored(query, limit, {
+		projectId: LOCAL_PROJECT_ID,
+		now: '2026-07-30T00:00:00.000Z',
+	});
+}
 
 function makeDriver() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-kernel-memory-'));
@@ -139,6 +148,217 @@ describe('Kernel SQLite driver — project-memory read model', () => {
 });
 
 describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read layer)', () => {
+	test('keeps 1,000-record scored recall p95 within the prompt budget', async () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		await driver.exec('BEGIN;');
+		try {
+			for (let index = 0; index < 1_000; index += 1) {
+				driver.recordMemory({
+					key: `performance-${index}`,
+					value: `auth token policy record ${index}`,
+					sourceAgent: 'forge remember',
+					scope: projectId,
+					tags: [],
+					timestamp: '2026-07-30T00:00:00.000Z',
+				});
+			}
+		} catch (error) {
+			await driver.exec('ROLLBACK;');
+			throw error;
+		}
+		await driver.exec('COMMIT;');
+		const search = () => driver.searchMemoriesRankedScored('auth token', 25, {
+			projectId,
+			now: '2026-07-30T12:00:00.000Z',
+		});
+		for (let index = 0; index < 10; index += 1) search();
+		const samples = [];
+		for (let index = 0; index < 100; index += 1) {
+			const startedAt = performance.now();
+			const hits = search();
+			samples.push(performance.now() - startedAt);
+			expect(hits).toHaveLength(25);
+		}
+		samples.sort((left, right) => left - right);
+		const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+		expect(p95).toBeLessThanOrEqual(250);
+	}, 20_000);
+
+	test('filters foreign and already-seen rows before the scored candidate limit', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		for (let index = 0; index < 26; index += 1) {
+			driver.recordMemory({
+				key: `foreign-${index}`,
+				value: `auth token ${'auth '.repeat(20)}`,
+				sourceAgent: 'forge remember',
+				scope: 'c:/other/.git',
+				tags: [],
+			});
+			driver.recordMemory({
+				key: `seen-${index}`,
+				value: `auth token ${'token '.repeat(20)}`,
+				sourceAgent: 'forge remember',
+				scope: projectId,
+				tags: [],
+			});
+		}
+		driver.recordMemory({
+			key: 'eligible-local',
+			value: 'auth token local',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+		});
+
+		const hits = driver.searchMemoriesRankedScored('auth token', 25, {
+			projectId,
+			excludeKeys: Array.from({ length: 26 }, (_, index) => `seen-${index}`),
+			now: '2026-07-30T00:00:00.000Z',
+		});
+
+		expect(hits.map(hit => hit.memory_id)).toEqual(['eligible-local']);
+	});
+
+	test('only an eligible superseder suppresses and suggested cannot erase confirmed memory', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		const now = '2026-07-30T00:00:00.000Z';
+		driver.recordMemory({
+			key: 'confirmed-base',
+			value: 'auth token confirmed base',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+		});
+		driver.recordMemory({
+			key: 'suggested-superseder',
+			value: 'auth token suggested replacement',
+			sourceAgent: 'forge insights',
+			scope: projectId,
+			tags: [],
+			supersedes: ['confirmed-base'],
+			timestamp: now,
+		});
+		driver.recordMemory({
+			key: 'foreign-base',
+			value: 'auth token local survives foreign superseder',
+			sourceAgent: 'forge remember',
+			scope: projectId,
+			tags: [],
+		});
+		driver.recordMemory({
+			key: 'foreign-superseder',
+			value: 'auth token foreign replacement',
+			sourceAgent: 'forge remember',
+			scope: 'c:/other/.git',
+			tags: [],
+			supersedes: ['foreign-base'],
+		});
+		driver.recordMemory({
+			key: 'suggested-old',
+			value: 'auth token stale suggestion',
+			sourceAgent: 'forge insights',
+			scope: projectId,
+			tags: [],
+			timestamp: '2026-07-01T00:00:00.000Z',
+		});
+
+		const ids = driver.searchMemoriesRankedScored('auth token', 25, { projectId, now })
+			.map(hit => hit.memory_id);
+
+		expect(ids).toContain('confirmed-base');
+		expect(ids).toContain('foreign-base');
+		expect(ids).not.toContain('foreign-superseder');
+		expect(ids).not.toContain('suggested-old');
+	});
+
+	test('returns the normalized hit contract with locked trust and type precedence', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		driver.recordMemory({
+			key: 'typed',
+			value: { category: 'decision', data: 'auth token policy' },
+			sourceAgent: 'forge insights',
+			scope: projectId,
+			tags: ['type:gotcha', 'trust:confirmed'],
+			beadsRefs: ['forge-1'],
+			timestamp: '2026-07-30T00:00:00.000Z',
+		});
+
+		const [hit] = driver.searchMemoriesRankedScored('auth token', 25, {
+			projectId,
+			now: '2026-07-30T01:00:00.000Z',
+		});
+
+		expect(hit).toMatchObject({
+			memory_id: 'typed',
+			type: 'gotcha',
+			content: '{"category":"decision","data":"auth token policy"}',
+			scope: projectId,
+			trust_status: 'confirmed',
+			provenance: {
+				source_agent: 'forge insights',
+				source_refs: ['forge-1'],
+			},
+			updated_at: '2026-07-30T00:00:00.000Z',
+		});
+		expect(typeof hit.score).toBe('number');
+	});
+
+	test('explicit suggested and machine-marked forge remember rows stay suggested in SQL and JS', () => {
+		const driver = makeDriver();
+		const projectId = 'c:/repo/.git';
+		for (const entry of [
+			{ key: 'explicit-suggested', value: 'auth token explicit', tags: ['trust:suggested'] },
+			{ key: 'unknown-trust', value: 'auth token ambiguous', tags: ['trust:unknown'] },
+			{ key: 'auto-capture', value: 'auth token captured', tags: ['forge:auto-capture'] },
+			{ key: 'typed-machine', value: { category: 'decision', data: 'auth token typed' }, tags: [] },
+			{ key: 'human', value: 'auth token human', tags: ['type:decision'] },
+		]) {
+			driver.recordMemory({ ...entry, sourceAgent: 'forge remember', scope: projectId });
+		}
+		const trust = Object.fromEntries(driver.searchMemoriesRankedScored('auth token', 25, {
+			projectId,
+			now: new Date().toISOString(),
+		}).map(hit => [hit.memory_id, hit.trust_status]));
+		expect(trust).toEqual({
+			'auto-capture': 'suggested',
+			'explicit-suggested': 'suggested',
+			human: 'confirmed',
+			'typed-machine': 'suggested',
+			'unknown-trust': 'suggested',
+		});
+	});
+
+	test('ranked recall bounds a real SQLite lock wait and restores the normal busy timeout', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-kernel-memory-lock-'));
+		tmpDirs.push(dir);
+		const databasePath = path.join(dir, 'kernel.sqlite');
+		const locker = createBuiltinSQLiteDriver({ databasePath });
+		const reader = createBuiltinSQLiteDriver({ databasePath });
+		drivers.push(locker, reader);
+		locker.recordMemory({
+			key: 'locked',
+			value: 'auth token locked',
+			sourceAgent: 'forge remember',
+			scope: LOCAL_PROJECT_ID,
+			tags: [],
+		});
+		await locker.exec('PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
+		const startedAt = performance.now();
+		expect(() => reader.searchMemoriesRankedScored('auth token', 25, {
+			projectId: LOCAL_PROJECT_ID,
+			busyTimeoutMs: 50,
+		})).toThrow();
+		const elapsedMs = performance.now() - startedAt;
+		expect(elapsedMs).toBeLessThan(500);
+		await locker.exec('ROLLBACK;');
+		const [{ timeout }] = await reader.queryAll('PRAGMA busy_timeout;');
+		expect(Number(timeout)).toBe(5_000);
+	});
+
 	test('searchMemoriesRanked matches all tokens via FTS BM25 (token-AND, any order)', () => {
 		const driver = makeDriver();
 		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
@@ -193,8 +413,8 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		driver.recordMemory({ key: 'm1', value: 'auth bug in the login flow', sourceAgent: 'Codex', tags: [] });
 		driver.recordMemory({ key: 'm2', value: 'auth bug bug bug everywhere in auth', sourceAgent: 'Codex', tags: [] });
 
-		const hits = driver.searchMemoriesRankedScored('auth bug', 10);
-		expect(hits.map(h => h.key).sort()).toEqual(['m1', 'm2']);
+		const hits = scored(driver, 'auth bug', 10);
+		expect(hits.map(h => h.memory_id).sort()).toEqual(['m1', 'm2']);
 		for (const hit of hits) {
 			expect(typeof hit.score).toBe('number');
 		}
@@ -212,8 +432,8 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 
 		// A natural-language style token set: only 'auth' and 'bug' appear in m1; 'token'/'refresh'
 		// do not. Token-AND would find nothing; keyword-OR surfaces m1 (and never m2).
-		const hits = driver.searchMemoriesRankedScored('auth token refresh bug', 10);
-		expect(hits.map(h => h.key)).toEqual(['m1']);
+		const hits = scored(driver, 'auth token refresh bug', 10);
+		expect(hits.map(h => h.memory_id)).toEqual(['m1']);
 	});
 
 	test('searchMemoriesRankedScored quotes a non-Latin token safely (keyword-OR, unicode)', () => {
@@ -222,8 +442,8 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		driver.recordMemory({ key: 'm2', value: 'unrelated english note', sourceAgent: 'Codex', tags: [] });
 
 		// Only the Cyrillic token matches; it must be double-quoted so FTS5 never chokes on it.
-		const hits = driver.searchMemoriesRankedScored('привет qwerty', 10);
-		expect(hits.map(h => h.key)).toEqual(['m1']);
+		const hits = scored(driver, 'привет qwerty', 10);
+		expect(hits.map(h => h.memory_id)).toEqual(['m1']);
 	});
 
 	test('the AND path (searchMemoriesRanked) is unchanged — still token-AND, no OR leak', () => {
@@ -242,8 +462,8 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 
 		// Unlike searchMemoriesRanked, the scored variant is relevance-ONLY: a query that
 		// matches nothing yields nothing, so the hook injects nothing rather than recent noise.
-		expect(driver.searchMemoriesRankedScored('kubernetes helm chart', 10)).toEqual([]);
-		expect(driver.searchMemoriesRankedScored('', 10)).toEqual([]);
+		expect(scored(driver, 'kubernetes helm chart', 10)).toEqual([]);
+		expect(scored(driver, '', 10)).toEqual([]);
 	});
 
 	test('searchMemoriesRankedScored honors the top-N limit', () => {
@@ -252,7 +472,7 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 		driver.recordMemory({ key: 'b', value: 'kernel note two', sourceAgent: 'Codex', tags: [] });
 		driver.recordMemory({ key: 'c', value: 'kernel note three', sourceAgent: 'Codex', tags: [] });
 
-		expect(driver.searchMemoriesRankedScored('kernel', 2)).toHaveLength(2);
+		expect(scored(driver, 'kernel', 2)).toHaveLength(2);
 	});
 
 	test('countMemories returns the total row count', () => {

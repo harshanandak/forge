@@ -33,6 +33,32 @@ const NOTES = [
 ];
 
 describe('buildMemorySection (orientation MEMORY / remembered notes)', () => {
+  test('labels and separates confirmed from suggested memory', () => {
+    const root = tempRoot();
+    const entries = [
+      ...NOTES,
+      {
+        key: 'suggested',
+        value: 'Verify imported memory',
+        sourceAgent: 'forge remember (imported)',
+        timestamp: '2026-07-09T09:00:00.000Z',
+        tags: ['trust:suggested'],
+      },
+    ];
+
+    const sections = buildMemorySection(root, { store: fakeStore(entries) });
+
+    expect(sections.map(section => section.title)).toEqual([
+      'Confirmed Memory',
+      'Suggested Memory — Verify Before Relying',
+    ]);
+    expect(sections[0].content).toContain('source=forge remember');
+    expect(sections[0].content).toContain('trust=confirmed');
+    expect(sections[0].content).toContain('updated=2026-07-10');
+    expect(sections[1].content).toContain('Verify imported memory');
+    expect(sections[1].content).toContain('trust=suggested');
+  });
+
   test('surfaces the newest remembered notes as a bounded section', () => {
     const root = tempRoot();
     const sections = buildMemorySection(root, { store: fakeStore(NOTES) });

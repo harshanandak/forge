@@ -15,12 +15,25 @@ function baseOpts(extra = {}) {
     railEnabled: () => true,
     readInput: () => QUERY,
     search: () => [
-      { key: 'm1', value: 'Auth tokens refresh every 15 min; the bug was a clock skew.', score: -3.2 },
-      { key: 'm2', value: 'Token store is Redis, keyed by tenant.', score: -1.4 },
+      {
+        key: 'm1',
+        value: 'Auth tokens refresh every 15 min; the bug was a clock skew.',
+        score: -3.2,
+        trust_status: 'confirmed',
+        provenance: { source_agent: 'forge remember' },
+      },
+      {
+        key: 'm2',
+        value: 'Token store is Redis, keyed by tenant.',
+        score: -1.4,
+        trust_status: 'confirmed',
+        provenance: { source_agent: 'forge remember' },
+      },
     ],
     loadSeen: () => [],
     saveSeen: () => {},
     appendShadow: () => {},
+    recordRecallEvent: () => {},
     scoreFloor: -1.0,
     ...extra,
   };
@@ -37,6 +50,24 @@ describe('forge hooks memory-recall', () => {
     const payload = JSON.parse(res.output);
     expect(payload.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
     expect(payload.hookSpecificOutput.additionalContext).toContain('clock skew');
+    expect(payload.hookSpecificOutput.additionalContext).toContain('Confirmed memory');
+    expect(payload.hookSpecificOutput.additionalContext).toContain('trust=confirmed');
+  });
+
+  test('renders suggested hits in a separate non-authoritative section', async () => {
+    const res = await run(baseOpts({
+      search: () => [{
+        memory_id: 'suggestion',
+        content: 'Try the candidate clock-skew fix.',
+        score: -3,
+        trust_status: 'suggested',
+        provenance: { source_agent: 'forge insights' },
+        updated_at: '2026-07-30T00:00:00.000Z',
+      }],
+    }));
+    const context = JSON.parse(res.output).hookSpecificOutput.additionalContext;
+    expect(context).toContain('Suggested memory — verify before relying');
+    expect(context).not.toContain('Confirmed memory');
   });
 
   test('records the injected keys for cross-turn dedupe', async () => {
@@ -52,6 +83,37 @@ describe('forge hooks memory-recall', () => {
     const ctx = JSON.parse(res.output).hookSpecificOutput.additionalContext;
     expect(ctx).not.toContain('clock skew'); // m1 excluded
     expect(ctx).toContain('Redis'); // m2 still injected
+  });
+
+  test('loads bounded seen keys before search and passes them into SQL eligibility', async () => {
+    const calls = [];
+    await run(baseOpts({
+      loadSeen: () => {
+        calls.push('seen');
+        return Array.from({ length: 26 }, (_, index) => `seen-${index}`);
+      },
+      search: (_root, _query, _limit, options) => {
+        calls.push({ search: options });
+        return [{
+          memory_id: 'unseen',
+          type: 'note',
+          content: 'Auth token unseen local result.',
+          scope: 'project',
+          trust_status: 'confirmed',
+          provenance: { source_agent: 'forge remember', source_refs: [] },
+          updated_at: '2026-07-30T00:00:00.000Z',
+          score: -2,
+        }];
+      },
+    }));
+
+    expect(calls[0]).toBe('seen');
+    expect(calls[1]).toEqual({
+      search: {
+        excludeKeys: Array.from({ length: 26 }, (_, index) => `seen-${index}`),
+        busyTimeoutMs: 2500,
+      },
+    });
   });
 
   test('rail disabled -> injects nothing', async () => {
@@ -70,6 +132,71 @@ describe('forge hooks memory-recall', () => {
   test('non-claude harness -> injects nothing (substrate-solved, never re-solved here)', async () => {
     const res = await hooks.handler(['memory-recall', '--harness', 'codex'], {}, '/repo', baseOpts());
     expect(res.output).toBe('');
+    expect(res.reason).toBe('global-config');
+  });
+
+  test('fails open by its prompt deadline', async () => {
+    const startedAt = Date.now();
+    const res = await run(baseOpts({
+      search: () => new Promise(() => {}),
+      promptRecallDeadlineMs: 25,
+    }));
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(res).toEqual({ success: true, output: '', reason: 'timeout' });
+  });
+
+  test('does not schedule a telemetry timer after a prompt', async () => {
+    const originalSetTimeout = global.setTimeout;
+    const originalClearTimeout = global.clearTimeout;
+    const delays = [];
+    global.setTimeout = (_callback, delay) => {
+      delays.push(delay);
+      return null;
+    };
+    global.clearTimeout = () => {};
+
+    try {
+      const opts = baseOpts();
+      delete opts.recordRecallEvent;
+      let launches = 0;
+      opts.launchRecallEvent = () => { launches += 1; };
+      await run(opts);
+      expect(delays).toEqual([4500]);
+      expect(launches).toBe(1);
+    } finally {
+      global.setTimeout = originalSetTimeout;
+      global.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  test('a result arriving after the deadline is not marked as injected', async () => {
+    let saved = false;
+    const res = await run(baseOpts({
+      search: () => new Promise(resolve => setTimeout(() => resolve([
+        { key: 'late', value: 'late auth token memory', score: -2 },
+      ]), 40)),
+      saveSeen: () => { saved = true; },
+      promptRecallDeadlineMs: 10,
+    }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(res.reason).toBe('timeout');
+    expect(saved).toBe(false);
+  });
+
+  test('does not await seen persistence after the injection decision', async () => {
+    let saveStarted = false;
+    const startedAt = Date.now();
+    const res = await run(baseOpts({
+      saveSeen: () => {
+        saveStarted = true;
+        return new Promise(() => {});
+      },
+      promptRecallDeadlineMs: 25,
+    }));
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(saveStarted).toBe(true);
+    expect(res.reason).toBeUndefined();
+    expect(JSON.parse(res.output).hookSpecificOutput.additionalContext).toContain('clock skew');
   });
 
   test('fail-open: a throwing search never breaks the prompt', async () => {
@@ -91,18 +218,19 @@ describe('forge hooks memory-recall', () => {
     expect(seen[0].split(/\s+/)).toEqual(['auth', 'token', 'refresh', 'bug']);
   });
 
-  test('writes a shadow-log record (tokens, candidates, injectedKeys, floor) via the injectable seam', async () => {
+  test('writes only privacy-safe aggregate tuning evidence to the shadow log', async () => {
     const rows = [];
     await run(baseOpts({ appendShadow: (root, rec) => rows.push({ root, rec }) }));
     expect(rows).toHaveLength(1);
     expect(rows[0].root).toBe('/repo');
     const rec = rows[0].rec;
-    expect(rec.sessionId).toBe('sess-1');
-    expect(rec.tokens).toEqual(['auth', 'token', 'refresh', 'bug']);
     expect(rec.candidateCount).toBe(2);
-    expect(rec.candidates).toEqual([{ key: 'm1', score: -3.2 }, { key: 'm2', score: -1.4 }]);
-    expect(rec.injectedKeys).toEqual(['m1', 'm2']);
+    expect(rec.injectedCount).toBe(2);
     expect(rec.scoreFloor).toBe(-1.0);
+    expect(JSON.stringify(rec)).not.toContain('sess-1');
+    expect(JSON.stringify(rec)).not.toContain('auth');
+    expect(JSON.stringify(rec)).not.toContain('m1');
+    expect(JSON.stringify(rec)).not.toContain('clock skew');
   });
 
   test('shadow-log failure is swallowed — a throwing logger never breaks injection', async () => {
@@ -122,9 +250,8 @@ describe('forge hooks memory-recall', () => {
       appendShadow: (root, rec) => rows.push(rec),
     }));
     expect(rows).toHaveLength(1);
-    expect(rows[0].tokens.length).toBeLessThanOrEqual(32);
-    for (const tok of rows[0].tokens) expect(tok.length).toBeLessThanOrEqual(64);
     expect(Buffer.byteLength(JSON.stringify(rows[0]), 'utf8')).toBeLessThan(8 * 1024);
+    expect(JSON.stringify(rows[0])).not.toContain(words[0]);
   });
 });
 

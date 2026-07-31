@@ -12,6 +12,39 @@ function run(args, opts) {
 }
 
 describe('forge hooks session-start (context hook — memory push)', () => {
+  test('runs independent project reads concurrently', async () => {
+    const starts = [];
+    const slow = name => async () => {
+      starts.push(name);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return [];
+    };
+    const startedAt = Date.now();
+    await run(['session-start', '--harness', 'claude'], {
+      loadDispatchText: () => '',
+      fetchNotes: slow('notes'),
+      fetchIssues: async (_root, kind) => slow(kind)(),
+      fetchInbox: slow('inbox'),
+      sessionStartDeadlineMs: 200,
+    });
+    expect(starts.sort()).toEqual(['in_progress', 'inbox', 'notes', 'ready']);
+    expect(Date.now() - startedAt).toBeLessThan(90);
+  });
+
+  test('fails open by its internal deadline while preserving dispatch bootstrap', async () => {
+    const never = () => new Promise(() => {});
+    const startedAt = Date.now();
+    const res = await run(['session-start', '--harness', 'claude'], {
+      loadDispatchText: () => 'dispatch survives',
+      fetchNotes: never,
+      fetchIssues: never,
+      fetchInbox: never,
+      sessionStartDeadlineMs: 25,
+    });
+    expect(Date.now() - startedAt).toBeLessThan(150);
+    expect(JSON.parse(res.output).hookSpecificOutput.additionalContext).toContain('dispatch survives');
+  });
+
   test('claude emits SessionStart JSON with the digest as additionalContext', async () => {
     const res = await run(['session-start', '--harness', 'claude'], {
       fetchNotes: () => NOTES,
@@ -43,6 +76,7 @@ describe('forge hooks session-start (context hook — memory push)', () => {
     });
     expect(res.success).toBe(true);
     expect(res.output).toBe('');
+    expect(res.reason).toBe('delivered-via-rule-surface');
   });
 
   test('fail-open: a throwing fetcher never errors the hook', async () => {
