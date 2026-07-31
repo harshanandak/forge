@@ -1,6 +1,9 @@
 'use strict';
 
 const { describe, test, expect } = require('bun:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   FORGE_HOOK_CONTRACT,
@@ -296,6 +299,26 @@ describe('renderHookConfig — global-config harnesses are honestly skipped, nev
     expect(res.skipped).toBe(true);
     expect(res.wrote).toBe(false);
     expect(res.scope).toBe('global-config');
+  });
+});
+
+describe('renderHookConfig — malformed project config safety', () => {
+  test('skips unreadable backup candidates while preserving the malformed source', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    try {
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      fs.writeFileSync(settingsPath, '{ malformed json\n');
+      fs.mkdirSync(`${settingsPath}.bak`);
+
+      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
+
+      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ malformed json\n');
+      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

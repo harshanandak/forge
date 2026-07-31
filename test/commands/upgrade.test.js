@@ -58,6 +58,7 @@ describe('forge upgrade command', () => {
     expect(first.success).toBe(true);
     expect(first.output).toContain('Self-heal applied');
     expect(fs.existsSync(path.join(root, '.forge', 'log.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(root, '.claude'))).toBe(false);
 
     const second = await upgradeCommand.handler(['--self-heal'], {}, root);
     expect(second.success).toBe(true);
