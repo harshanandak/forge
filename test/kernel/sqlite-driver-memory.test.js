@@ -346,7 +346,6 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
 			scope: LOCAL_PROJECT_ID,
 			tags: [],
 		});
-		reader.countMemories();
 		await locker.exec('PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
 		const startedAt = performance.now();
 		expect(() => reader.searchMemoriesRankedScored('auth token', 25, {

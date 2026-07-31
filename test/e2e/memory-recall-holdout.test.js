@@ -243,7 +243,6 @@ describe('project-local memory recall holdout', () => {
       sourceAgent: 'forge remember',
       tags: [],
     }, { store: locker });
-    reader.countMemories();
     await locker.exec('PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
     const startedAt = performance.now();
     const result = await hooks.handler(['memory-recall', '--harness', 'claude'], {}, root, {
