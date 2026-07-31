@@ -56,6 +56,14 @@ describe('project memory kernel adapter', () => {
     })).toBe('/repo/.git');
   });
 
+  test('falls back to the resolved path when the git directory cannot be canonicalized', () => {
+    expect(projectMemory.resolveProjectId('C:\\Repo\\worktree-a', {
+      gitCommonDir: 'C:\\Repo\\missing-git-dir',
+      realpath: () => { throw new Error('ENOENT'); },
+      platform: 'win32',
+    })).toBe('c:/repo/missing-git-dir');
+  });
+
   test('normalizes ranked hits and derives one project id for sibling worktrees', () => {
     const store = fakeStore();
     store.__rankedScored = [{
@@ -119,6 +127,17 @@ describe('project memory kernel adapter', () => {
     }]);
     expect(hits.map(h => h.memory_id)).toEqual(['m1', 'm2']);
     expect(hits[0].score).toBe(-2.5);
+  });
+
+  test('searchRankedScored forwards a caller-supplied SQLite busy timeout', () => {
+    const store = fakeStore();
+
+    projectMemory.searchRankedScored(process.cwd(), 'auth bug', 5, {
+      store,
+      busyTimeoutMs: 50,
+    });
+
+    expect(store.rankedScoredCalls[0].options.busyTimeoutMs).toBe(50);
   });
 
   test('writes a canonical entry to the store and returns it', () => {

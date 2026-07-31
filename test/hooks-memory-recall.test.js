@@ -145,6 +145,27 @@ describe('forge hooks memory-recall', () => {
     expect(res).toEqual({ success: true, output: '', reason: 'timeout' });
   });
 
+  test('does not schedule a telemetry timer after a prompt', async () => {
+    const originalSetTimeout = global.setTimeout;
+    const originalClearTimeout = global.clearTimeout;
+    const delays = [];
+    global.setTimeout = (_callback, delay) => {
+      delays.push(delay);
+      return null;
+    };
+    global.clearTimeout = () => {};
+
+    try {
+      const opts = baseOpts();
+      delete opts.recordRecallEvent;
+      await run(opts);
+      expect(delays).toEqual([4500]);
+    } finally {
+      global.setTimeout = originalSetTimeout;
+      global.clearTimeout = originalClearTimeout;
+    }
+  });
+
   test('a result arriving after the deadline is not marked as injected', async () => {
     let saved = false;
     const res = await run(baseOpts({
