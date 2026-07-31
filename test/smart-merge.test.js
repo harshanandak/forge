@@ -94,6 +94,27 @@ describe('smartMergeAgentsMd', () => {
     });
   });
 
+  describe('Forge markers only', () => {
+    it('updates Forge content without wrapping it as USER content or duplicating it', () => {
+      const existing = [
+        '# AGENTS.md',
+        '',
+        '<!-- FORGE:START - Do not edit below -->',
+        '## Old Forge Content',
+        'This is outdated.',
+        '<!-- FORGE:END -->',
+      ].join('\\n');
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result).not.toContain('This is outdated.');
+      expect(result).toContain('Some forge content here.');
+      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+      expect(result).not.toMatch(/<!-- USER:START -->[\\s\\S]*<!-- USER:END -->/);
+    });
+  });
+
   describe('empty existing content', () => {
     it('returns only FORGE section (no empty USER block)', () => {
       const existing = '';
