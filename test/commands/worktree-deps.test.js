@@ -263,8 +263,9 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       fs.rmSync(f.worktreePath, { recursive: true, force: true });
       const addingGitStub = (cmd, args) => {
         if (cmd === 'git' && args.includes('--show-toplevel')) return Buffer.from(`${f.projectRoot}\n`);
-        if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
-        if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        if (cmd === 'git' && args.includes('branch') && args.includes('--list')) return Buffer.from('');
+        const worktreeIndex = args.indexOf('worktree');
+        if (cmd === 'git' && worktreeIndex >= 0 && args[worktreeIndex + 1] === 'add') {
           fs.mkdirSync(f.worktreePath, { recursive: true });
           fs.writeFileSync(path.join(f.worktreePath, 'package.json'), JSON.stringify({ name: 'wt', dependencies: { 'left-pad': '^1.0.0' } }));
         }
