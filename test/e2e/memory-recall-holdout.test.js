@@ -428,15 +428,22 @@ describe('project-local memory recall holdout', () => {
     expect(output).toContain('Suggested memory');
   });
 
-  test('assembled 1,000-row recall keeps 100-sample p95 within 250ms', () => {
+  test('assembled 1,000-row recall keeps 100-sample p95 within 250ms', async () => {
     const context = createRecallContext('forge-memory-performance-');
-    for (let index = 0; index < fixture.performance.count; index += 1) {
-      writeMemory(context, {
-        key: `performance-${index}`,
-        value: `routing cache policy record ${index}`,
-        timestamp: '2026-07-30T00:00:00.000Z',
-      });
+    await context.store.exec('BEGIN;');
+    try {
+      for (let index = 0; index < fixture.performance.count; index += 1) {
+        writeMemory(context, {
+          key: `performance-${index}`,
+          value: `routing cache policy record ${index}`,
+          timestamp: '2026-07-30T00:00:00.000Z',
+        });
+      }
+    } catch (error) {
+      await context.store.exec('ROLLBACK;');
+      throw error;
     }
+    await context.store.exec('COMMIT;');
     const search = () => projectMemory.searchRankedScored(
       context.root,
       fixture.performance.prompt,

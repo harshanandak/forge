@@ -148,19 +148,26 @@ describe('Kernel SQLite driver — project-memory read model', () => {
 });
 
 describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read layer)', () => {
-	test('keeps 1,000-record scored recall p95 within the prompt budget', () => {
+	test('keeps 1,000-record scored recall p95 within the prompt budget', async () => {
 		const driver = makeDriver();
 		const projectId = 'c:/repo/.git';
-		for (let index = 0; index < 1_000; index += 1) {
-			driver.recordMemory({
-				key: `performance-${index}`,
-				value: `auth token policy record ${index}`,
-				sourceAgent: 'forge remember',
-				scope: projectId,
-				tags: [],
-				timestamp: '2026-07-30T00:00:00.000Z',
-			});
+		await driver.exec('BEGIN;');
+		try {
+			for (let index = 0; index < 1_000; index += 1) {
+				driver.recordMemory({
+					key: `performance-${index}`,
+					value: `auth token policy record ${index}`,
+					sourceAgent: 'forge remember',
+					scope: projectId,
+					tags: [],
+					timestamp: '2026-07-30T00:00:00.000Z',
+				});
+			}
+		} catch (error) {
+			await driver.exec('ROLLBACK;');
+			throw error;
 		}
+		await driver.exec('COMMIT;');
 		const search = () => driver.searchMemoriesRankedScored('auth token', 25, {
 			projectId,
 			now: '2026-07-30T12:00:00.000Z',
