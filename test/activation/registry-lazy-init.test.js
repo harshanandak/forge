@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const YAML = require('yaml');
 const { afterEach, describe, expect, test } = require('bun:test');
 
 const { executeCommand } = require('../../lib/commands/_registry');
@@ -39,6 +40,28 @@ describe('executeCommand lazy .forge/ home', () => {
 
     expect(result.success).toBe(true);
     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
+  });
+
+  test('issue-create-like dispatch creates the default-enabled enforcement config', async () => {
+    const root = makeBareRepo();
+    let handlerRan = false;
+    const commands = makeCommands({
+      create: {
+        handler: async () => {
+          handlerRan = true;
+          return { success: true };
+        },
+      },
+    });
+
+    const result = await executeCommand(commands, 'create', ['issue title'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(handlerRan).toBe(true);
+    const config = YAML.parse(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8'));
+    const gates = config?.workflow?.gates ?? {};
+    expect(config?.template?.profile).toBe('standard');
+    expect(Object.values(gates).every(gate => gate?.enabled === true)).toBe(true);
   });
 
   test('a read-only verb writes NOTHING in a bare repo', async () => {

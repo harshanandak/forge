@@ -4,9 +4,11 @@ const path = require('node:path');
 const YAML = require('yaml');
 const { afterEach, describe, expect, test } = require('bun:test');
 
+const { renderAdoptionConfigYaml } = require('../../lib/adoption-profiles');
 const {
   ensureForgeHome,
   isMutatingVerb,
+  renderDefaultConfig,
   renderMinimalConfig,
   MUTATING_VERBS,
 } = require('../../lib/activation/ensure-forge-home');
@@ -38,7 +40,7 @@ describe('ensureForgeHome', () => {
     expect(result.configPath).toBe(configPath);
   });
 
-  test('writes a gates-disabled config (bare minimum, not full setup)', () => {
+  test('writes the canonical standard config with enforcement enabled', () => {
     const root = makeBareRepo();
 
     ensureForgeHome(root);
@@ -46,9 +48,50 @@ describe('ensureForgeHome', () => {
     const config = YAML.parse(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8'));
     const gates = config?.workflow?.gates ?? {};
     const gateStates = Object.values(gates).map(g => g?.enabled);
-    // Every declared gate must be disabled — the CuraPod "clean, gates disabled"
-    // baseline. An empty gate map is also acceptable (nothing enabled).
-    expect(gateStates.every(enabled => enabled === false)).toBe(true);
+    expect(config?.template?.profile).toBe('standard');
+    expect(gateStates.length).toBeGreaterThan(0);
+    expect(gateStates.every(enabled => enabled === true)).toBe(true);
+  });
+
+  test('preserves an explicitly selected minimal profile without overwriting it', () => {
+    const root = makeBareRepo();
+    const configPath = path.join(root, '.forge', 'config.yaml');
+    const minimalConfig = renderAdoptionConfigYaml('minimal');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, minimalConfig, 'utf8');
+
+    const result = ensureForgeHome(root);
+
+    expect(result.created).toBe(false);
+    expect(result.reason).toBe('config-exists');
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(minimalConfig);
+    const config = YAML.parse(minimalConfig);
+    const gates = config?.workflow?.gates ?? {};
+    expect(config?.template?.profile).toBe('minimal');
+    expect(Object.values(gates).every(gate => gate?.enabled === false)).toBe(true);
+  });
+
+  test('preserves explicit gate and rail disables in an existing config', () => {
+    const root = makeBareRepo();
+    const configPath = path.join(root, '.forge', 'config.yaml');
+    const userConfig = [
+      'workflow:',
+      '  gates:',
+      '    gate.plan-exit:',
+      '      enabled: false',
+      '    rail.tdd_intent:',
+      '      enabled: false',
+      'user: sacred',
+      '',
+    ].join('\n');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, userConfig, 'utf8');
+
+    const result = ensureForgeHome(root);
+
+    expect(result.created).toBe(false);
+    expect(result.reason).toBe('config-exists');
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(userConfig);
   });
 
   test('creates NO hooks, protected-paths, lefthook, or scripts tree', () => {
@@ -158,8 +201,12 @@ describe('isMutatingVerb', () => {
   });
 });
 
-describe('renderMinimalConfig', () => {
+describe('renderDefaultConfig', () => {
   test('honors an injected renderer (no hard dependency on the profile)', () => {
-    expect(renderMinimalConfig({ renderConfig: () => 'stub: true\n' })).toBe('stub: true\n');
+    expect(renderDefaultConfig({ renderConfig: () => 'stub: true\n' })).toBe('stub: true\n');
+  });
+
+  test('retains renderMinimalConfig as a deprecated compatibility alias', () => {
+    expect(renderMinimalConfig).toBe(renderDefaultConfig);
   });
 });
