@@ -94,8 +94,8 @@ describe('smartMergeAgentsMd', () => {
     });
   });
 
-  describe('Forge markers only', () => {
-    it('updates Forge content without wrapping it as USER content or duplicating it', () => {
+  describe('Forge markers without USER markers', () => {
+    it('updates Forge-only content without creating a USER block or duplicating it', () => {
       const existing = [
         '# AGENTS.md',
         '',
@@ -103,7 +103,7 @@ describe('smartMergeAgentsMd', () => {
         '## Old Forge Content',
         'This is outdated.',
         '<!-- FORGE:END -->',
-      ].join('\\n');
+      ].join('\n');
 
       const result = smartMergeAgentsMd(existing, newContent);
 
@@ -111,7 +111,41 @@ describe('smartMergeAgentsMd', () => {
       expect(result).toContain('Some forge content here.');
       expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
       expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
-      expect(result).not.toMatch(/<!-- USER:START -->[\\s\\S]*<!-- USER:END -->/);
+      expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+    });
+
+    it('preserves unmarked content surrounding the Forge block as USER content', () => {
+      const existing = [
+        'Project-specific instructions',
+        '',
+        '<!-- FORGE:START - Do not edit below -->',
+        '## Old Forge Content',
+        'This is outdated.',
+        '<!-- FORGE:END -->',
+        '',
+        'Additional project instructions',
+      ].join('\n');
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result).toContain('<!-- USER:START -->');
+      expect(result).toContain('Project-specific instructions');
+      expect(result).toContain('Additional project instructions');
+      expect(result).toContain('<!-- USER:END -->');
+      expect(result).not.toContain('This is outdated.');
+      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+    });
+
+    it('keeps generated wrapper content idempotent across repeated smart merges', () => {
+      const first = smartMergeAgentsMd('', newContent);
+      const second = smartMergeAgentsMd(first, newContent);
+      const third = smartMergeAgentsMd(second, newContent);
+
+      expect(third.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(third.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+      expect(third.match(/## Improving This Workflow/g)).toHaveLength(1);
+      expect(third).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
     });
   });
 
