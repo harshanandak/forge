@@ -261,11 +261,14 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       // handleCreate reuses an existing worktree dir, so let the git stub create
       // it the way `git worktree add` would.
       fs.rmSync(f.worktreePath, { recursive: true, force: true });
+      const gitCalls = [];
       const addingGitStub = (cmd, args) => {
+        gitCalls.push({ cmd, args: [...args] });
         if (cmd === 'git' && args.includes('--show-toplevel')) return Buffer.from(`${f.projectRoot}\n`);
-        if (cmd === 'git' && args.includes('branch') && args.includes('--list')) return Buffer.from('');
+        const rooted = cmd === 'git' && args[0] === '-C' && args[1] === f.projectRoot;
+        if (rooted && args[2] === 'branch' && args[3] === '--list') return Buffer.from('');
         const worktreeIndex = args.indexOf('worktree');
-        if (cmd === 'git' && worktreeIndex >= 0 && args[worktreeIndex + 1] === 'add') {
+        if (rooted && worktreeIndex >= 0 && args[worktreeIndex + 1] === 'add') {
           fs.mkdirSync(f.worktreePath, { recursive: true });
           fs.writeFileSync(path.join(f.worktreePath, 'package.json'), JSON.stringify({ name: 'wt', dependencies: { 'left-pad': '^1.0.0' } }));
         }
@@ -280,6 +283,12 @@ describe('forge worktree create — verifies the install and self-heals a stale 
       expect(result.success).toBe(true);
       expect(result.depsHealed).toBe(true);
       expect(result.output).toMatch(/healed dependencies \(store was stale\)/i);
+      expect(gitCalls.some(({ cmd, args }) => cmd === 'git'
+        && args[0] === '-C' && args[1] === f.projectRoot
+        && args[2] === 'branch' && args[3] === '--list')).toBe(true);
+      expect(gitCalls.some(({ cmd, args }) => cmd === 'git'
+        && args[0] === '-C' && args[1] === f.projectRoot
+        && args.includes('worktree') && args.includes('add'))).toBe(true);
     } finally {
       fs.rmSync(f.tmp, { recursive: true, force: true });
     }
