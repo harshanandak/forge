@@ -8,6 +8,7 @@ const {
 	PROTECTED_SURFACES,
 	PROTECTED_STATE_AUDIT_LOG,
 	PROTECTED_STATE_AUDIT_MAX_RECORDS,
+	assertNoSymlinkEscape,
 	classifyProtectedPath,
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
@@ -111,6 +112,20 @@ describe('protected state surfaces', () => {
 			expect(dotSegmentDecision.path).toBe('.forge/config.yaml');
 			expect(dotSegmentDecision.requiredSurface).toBe('forge_config');
 		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('allows a missing parent beneath an aliased project root', () => {
+		const root = createTempDir();
+		const canonicalRoot = path.join(root, 'canonical-root');
+		const realpathSync = fs.realpathSync;
+		try {
+			fs.realpathSync = candidate => (candidate === root ? canonicalRoot : realpathSync(candidate));
+
+			expect(assertNoSymlinkEscape(root, path.join(root, '.claude', 'settings.json'))).toBeNull();
+		} finally {
+			fs.realpathSync = realpathSync;
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
