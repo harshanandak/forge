@@ -6,7 +6,7 @@ Issue: `36461e50-da2e-43e4-bb4a-ae58aac08591`
 
 Branch: `feat/memory-recall-s0`
 
-Status: awaiting plan approval
+Status: ship stage active; PR #468 open
 
 ## Purpose
 

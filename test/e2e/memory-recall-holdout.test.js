@@ -85,7 +85,7 @@ describe('project-local memory recall holdout', () => {
     for (let index = 0; index < fixture.foreign.count; index += 1) {
       projectMemory.write(root, {
         key: `foreign-${index}`,
-        value: `auth token ${'auth '.repeat(20)}`,
+        value: `FOREIGN-RECALL-LEAK-MARKER auth token ${'auth '.repeat(20)}`,
         sourceAgent: 'forge remember',
         scope: fixture.foreign.scope,
         tags: [],
@@ -130,7 +130,7 @@ describe('project-local memory recall holdout', () => {
     const context = JSON.parse(result.output).hookSpecificOutput.additionalContext;
     expect(projectId).not.toBe(fixture.foreign.scope);
     expect(context).toContain(fixture.projectLocal.content);
-    expect(context).not.toContain('foreign-');
+    expect(context).not.toContain('FOREIGN-RECALL-LEAK-MARKER');
   });
 
   test('keeps suggested authority separate and denies stale or superseded memories', async () => {
