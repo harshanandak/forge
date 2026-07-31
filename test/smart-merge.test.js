@@ -147,6 +147,27 @@ describe('smartMergeAgentsMd', () => {
       expect(third.match(/## Improving This Workflow/g)).toHaveLength(1);
       expect(third).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
     });
+
+    it('removes the generated footer before preserving trailing user text', () => {
+      const generated = smartMergeAgentsMd('', newContent);
+      const existing = `${generated}\nProject instructions after the generated footer`;
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result).toContain('<!-- USER:START -->');
+      expect(result).toContain('Project instructions after the generated footer');
+      expect(result).toContain('<!-- USER:END -->');
+      expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
+    });
+
+    it('recognizes generated wrapper content with CRLF line endings', () => {
+      const existing = smartMergeAgentsMd('', newContent).replace(/\n/g, '\r\n');
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
+      expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+    });
   });
 
   describe('empty existing content', () => {
