@@ -89,6 +89,11 @@ truth through `forge status`, `forge prime`, and `forge orient` — so a session
 that dies at 2am resumes cleanly the next morning, on any device, with any
 agent.
 
+In Claude Code, Forge also recalls relevant project-local memory automatically
+through its existing lifecycle hooks. Confirmed memories arrive as project
+truth; suggested memories are visibly separated and require verification.
+Every injected memory is scope-checked, budgeted, and provenance-labeled.
+
 ### 🧹 A lifecycle that cleans up after itself
 
 Merged a PR with squash-merge? `forge clean` still knows the worktree is done —
