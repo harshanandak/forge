@@ -40,6 +40,22 @@ function fakeStore(seed = {}) {
 }
 
 describe('project memory kernel adapter', () => {
+  test('resolves project ids with the requested platform path semantics', () => {
+    const realpath = value => value;
+
+    expect(projectMemory.resolveProjectId('C:\\Repo\\worktree-a', {
+      gitCommonDir: 'C:\\Repo\\.git',
+      realpath,
+      platform: 'win32',
+    })).toBe('c:/repo/.git');
+
+    expect(projectMemory.resolveProjectId('/repo/worktree-a', {
+      gitCommonDir: '/repo/.git',
+      realpath,
+      platform: 'linux',
+    })).toBe('/repo/.git');
+  });
+
   test('normalizes ranked hits and derives one project id for sibling worktrees', () => {
     const store = fakeStore();
     store.__rankedScored = [{
