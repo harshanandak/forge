@@ -5,6 +5,7 @@ const { afterEach, describe, test, expect } = require('bun:test');
 const recall = require('../../lib/commands/recall');
 const remember = require('../../lib/commands/remember');
 const projectMemory = require('../../lib/project-memory');
+const { OPEN, CLOSE } = require('../../lib/untrusted-content');
 const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
 
 // recall reads the kernel store, whose default path resolves from the git common dir — so
@@ -142,6 +143,26 @@ describe('forge recall command', () => {
 
     const result = await recall.handler(['--limit', '2'], {}, projectRoot);
     expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
+  });
+
+  test('fences budgeted notes after truncation and reports only rendered entries', async () => {
+    const projectRoot = makeProjectRoot();
+    for (let index = 0; index < 3; index += 1) {
+      projectMemory.write(projectRoot, {
+        key: `budgeted-${index}`,
+        value: `note ${index} ${'x'.repeat(2400)}`,
+        sourceAgent: 'forge remember',
+        tags: [],
+        timestamp: `2026-07-${30 - index}T00:00:00.000Z`,
+      });
+    }
+
+    const result = await recall.handler([], {}, projectRoot);
+
+    expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
+    expect((result.output.match(new RegExp(OPEN, 'g')) || [])).toHaveLength(4);
+    expect((result.output.match(new RegExp(CLOSE, 'g')) || [])).toHaveLength(4);
+    expect((result.output.match(/END UNTRUSTED/g) || [])).toHaveLength(2);
   });
 
   test('finds a note by its tag (tags are indexed for recall)', async () => {
