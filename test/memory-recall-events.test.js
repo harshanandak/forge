@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const {
   buildRecallEventPayload,
+  launchMemoryRecallEvent,
   recordMemoryRecallEvent,
 } = require('../lib/memory-recall-events');
 const hooks = require('../lib/commands/hooks');
@@ -22,6 +23,32 @@ afterEach(() => {
 });
 
 describe('memory.recall.observed events', () => {
+  test('launches the sanitized event writer detached from the prompt process', () => {
+    const calls = [];
+    let errorListener = null;
+    let unrefed = false;
+    const child = {
+      on: (event, listener) => { if (event === 'error') errorListener = listener; },
+      unref: () => { unrefed = true; },
+    };
+
+    const result = launchMemoryRecallEvent('/project', {
+      outcome: 'selected',
+      selectedIds: ['memory-1'],
+      prompt: 'private prompt terms must not leave the hook',
+    }, {
+      spawn: (...args) => { calls.push(args); return child; },
+    });
+
+    expect(result).toEqual({ launched: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0][2]).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: true });
+    expect(calls[0][0]).toBe(process.execPath);
+    expect(calls[0][1].join(' ')).not.toContain('private prompt terms');
+    expect(unrefed).toBe(true);
+    expect(typeof errorListener).toBe('function');
+  });
+
   test.each(['selected', 'empty', 'filtered', 'unsupported', 'timeout', 'error'])(
     'persists the bounded %s outcome through the real non-projecting event seam',
     async outcome => {

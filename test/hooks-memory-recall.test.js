@@ -158,8 +158,11 @@ describe('forge hooks memory-recall', () => {
     try {
       const opts = baseOpts();
       delete opts.recordRecallEvent;
+      let launches = 0;
+      opts.launchRecallEvent = () => { launches += 1; };
       await run(opts);
       expect(delays).toEqual([4500]);
+      expect(launches).toBe(1);
     } finally {
       global.setTimeout = originalSetTimeout;
       global.clearTimeout = originalClearTimeout;
