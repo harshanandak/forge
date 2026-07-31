@@ -25,9 +25,9 @@ const stubOpts = () => ({
   _ensureBackingIssue: async () => null,
 });
 
-// `git worktree add` runs in process.cwd(); production always invokes the handler
-// with projectRoot === cwd. Replicate that invariant so the real git commands
-// target the temp repo, then restore.
+// Most base-ref scenarios do not need to vary ambient cwd, so this helper keeps
+// cwd at the temporary repo for their setup and restores it afterward. Production
+// Git operations are anchored independently to the resolved projectRoot.
 async function createIn(root, args) {
   const mod = require('../../lib/commands/worktree');
   const prev = process.cwd();
@@ -40,6 +40,7 @@ async function createIn(root, args) {
 }
 
 const roots = [];
+const ambientDirs = [];
 
 function initRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-base-'));
@@ -58,9 +59,44 @@ afterEach(() => {
     const root = roots.pop();
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_e) { /* best-effort temp cleanup */ }
   }
+  while (ambientDirs.length) {
+    const ambient = ambientDirs.pop();
+    try { fs.rmSync(ambient, { recursive: true, force: true }); } catch (_e) { /* best-effort temp cleanup */ }
+  }
 });
 
 describe('forge worktree create — base ref (B2)', () => {
+  test('creates the worktree from projectRoot when ambient cwd is unrelated', async () => {
+    const root = initRepo();
+    const ambient = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-ambient-'));
+    ambientDirs.push(ambient);
+    const worktreePath = path.join(root, '.worktrees', 'outside-cwd');
+    const previousCwd = process.cwd();
+    const previousInitCwd = process.env.INIT_CWD;
+
+    process.env.INIT_CWD = root;
+    try {
+      process.chdir(ambient);
+      let result;
+      try {
+        result = await require('../../lib/commands/worktree').handler(
+          ['create', 'outside-cwd'], {}, root, stubOpts()
+        );
+      } catch (error) {
+        throw new Error(`worktree create failed from unrelated cwd: ${error.message}`);
+      }
+
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(worktreePath)).toBe(true);
+      expect(git(root, 'branch', '--list', 'feat/outside-cwd').trim()).toContain('feat/outside-cwd');
+    } finally {
+      process.chdir(previousCwd);
+      if (previousInitCwd === undefined) delete process.env.INIT_CWD;
+      else process.env.INIT_CWD = previousInitCwd;
+      try { git(root, 'worktree', 'remove', '--force', worktreePath); } catch (_e) { /* best-effort cleanup */ }
+    }
+  });
+
   test('bases the new branch off the default branch, NOT the current checked-out branch', async () => {
     const root = initRepo();
     const defaultHead = git(root, 'rev-parse', 'HEAD').trim();
