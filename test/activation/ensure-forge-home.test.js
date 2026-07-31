@@ -135,6 +135,25 @@ describe('ensureForgeHome', () => {
     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
   });
 
+  test('preserves a config created after the existence check instead of clobbering it', () => {
+    const root = makeBareRepo();
+    const configPath = path.join(root, '.forge', 'config.yaml');
+    const racingFs = {
+      existsSync: fs.existsSync,
+      mkdirSync: fs.mkdirSync,
+      writeFileSync: (file, data, options) => {
+        fs.writeFileSync(file, 'user configuration\\n', 'utf8');
+        return fs.writeFileSync(file, data, options);
+      },
+    };
+
+    const result = ensureForgeHome(root, { fs: racingFs });
+
+    expect(result.created).toBe(false);
+    expect(result.reason).toBe('config-exists');
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('user configuration\\n');
+  });
+
   test('a write failure after mkdir leaves a RETRYABLE state, not a stuck half-init', () => {
     const root = makeBareRepo();
     let throwOnce = true;
