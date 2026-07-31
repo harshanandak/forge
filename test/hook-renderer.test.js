@@ -320,6 +320,34 @@ describe('renderHookConfig — malformed project config safety', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('refuses a settings file symlinked outside the project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-outside-'));
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    const outsideSettings = path.join(outside, 'settings.json');
+    const original = '{"model":"outside"}\n';
+    try {
+      fs.writeFileSync(outsideSettings, original);
+      try {
+        if (process.platform === 'win32') {
+          fs.symlinkSync(outside, path.dirname(settingsPath), 'junction');
+        } else {
+          fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+          fs.symlinkSync(outsideSettings, settingsPath);
+        }
+      } catch (error) {
+        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
+        throw error;
+      }
+
+      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/symlink|outside project/i);
+      expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('mergeClaudeSettings (read -> merge -> write, preserve user config)', () => {

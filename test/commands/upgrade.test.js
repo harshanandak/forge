@@ -180,6 +180,33 @@ describe('forge upgrade command', () => {
     expect(fs.existsSync(`${settingsPath}.bak.1`)).toBe(false);
   });
 
+  test('self-heal does not inspect or rewrite Claude settings symlinked outside the project', async () => {
+    const root = makeRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-upgrade-outside-'));
+    tempRoots.push(outside);
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    const outsideSettings = path.join(outside, 'settings.json');
+    const original = '{"model":"outside"}\n';
+    fs.writeFileSync(outsideSettings, original);
+    try {
+      if (process.platform === 'win32') {
+        fs.symlinkSync(outside, path.dirname(settingsPath), 'junction');
+      } else {
+        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+        fs.symlinkSync(outsideSettings, settingsPath);
+      }
+    } catch (error) {
+      if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
+      throw error;
+    }
+
+    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
+
+    expect(result.success).toBe(true);
+    expect(result.output).not.toContain('Merge missing Forge-owned Claude lifecycle hooks');
+    expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
+  });
+
   test('honors parsed kebab-case dry-run flags', async () => {
     const root = makeRepo();
 
