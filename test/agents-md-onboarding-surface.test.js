@@ -69,9 +69,13 @@ describe('onboarding surface: setup-generated AGENTS.md', () => {
       expect(content).toContain('Skill Dispatch');
       expect(content).toContain('using-forge');
       expect(content).toContain('forge skill for');
+      expect(content).toContain('1% chance');
+      expect(content).toContain('Using [skill] to [purpose]');
+      expect(content).toContain('never branch on harness identity');
       expect(content).not.toContain('<EXTREMELY-IMPORTANT>');
     } finally {
       rmrf(repo);
     }
   }, 60000);
+
 });

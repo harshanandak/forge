@@ -1,3 +1,4 @@
+<!-- FORGE:START -->
 # Project Workflow Instructions
 
 ## Default TDD-First Workflow Template
@@ -365,3 +366,5 @@ runtime rail. Turn it off only deliberately: `forge gate disable rail.kernel_tra
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 - After fixing review feedback, always push the changes and resolve the related GitHub review threads via the GraphQL API before considering the work complete
+
+<!-- FORGE:END -->
