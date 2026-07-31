@@ -4,6 +4,10 @@
 
 This project ships a **default TDD-first workflow template** with 6 workflow stages plus a composable **research** skill (a phase of `/plan` and usable standalone). In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it. Pre-merge is an embedded gate in `/ship` and `/review` (not a numbered stage); `/status` and `/shepherd` are utilities (not stages).
 
+## Skill Dispatch (auto-trigger)
+
+Before ANY response — including clarifying questions or exploring the codebase — if there is even a 1% chance a Forge skill applies, invoke it, then announce `Using [skill] to [purpose]`. Invoke the `using-forge` dispatch skill (auto-discovered from your agent's own skills — Forge setup installs it into each harness's skills dir; it carries the 1%-rule and routing table), or run `forge skill for "<situation>"` for the deterministic best-fit skill. This is agent-agnostic — never branch on harness identity.
+
 | Stage | Command     | Purpose                                                   | Required For |
 |-------|-------------|-----------------------------------------------------------|--------------|
 | 1     | `/plan`     | Design intent → research → branch + worktree + task list | Critical, Standard, Refactor |

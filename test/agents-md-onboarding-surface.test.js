@@ -63,6 +63,13 @@ describe('onboarding surface: setup-generated AGENTS.md', () => {
       expect(content).toContain('forge upgrade');
       expect(content).toContain('forge gate');
       expect(content).toContain('forge role');
+
+      // Packaged/setup AGENTS.md must bootstrap model agents into the shared
+      // using-forge dispatch skill without copying its dynamic policy body.
+      expect(content).toContain('Skill Dispatch');
+      expect(content).toContain('using-forge');
+      expect(content).toContain('forge skill for');
+      expect(content).not.toContain('<EXTREMELY-IMPORTANT>');
     } finally {
       rmrf(repo);
     }
