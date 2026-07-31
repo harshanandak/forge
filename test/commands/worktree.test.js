@@ -78,7 +78,7 @@ describe('forge worktree command', () => {
     const mockExec = (cmd, args, opts) => {
       calls.push({ cmd, args, opts });
       // git branch --list returns empty => branch does not exist
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') {
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') {
         return Buffer.from('');
       }
       // bd --version succeeds
@@ -112,7 +112,7 @@ describe('forge worktree command', () => {
     // Should have called mkdir for .worktrees
     expect(mkdirCalls.some(c => c.path.includes('.worktrees'))).toBe(true);
     // Should have called git worktree add with -b
-    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[0] === 'worktree' && c.args[1] === 'add');
+    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[2] === 'worktree' && c.args[3] === 'add');
     expect(wtAdd).toBeTruthy();
     expect(wtAdd.args).toContain('-b');
     expect(wtAdd.args).toContain('feat/my-feature');
@@ -123,7 +123,7 @@ describe('forge worktree command', () => {
     const mod = require('../../lib/commands/worktree');
     const mkdirCalls = [];
     const mockExec = (cmd, args, _opts) => {
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') return Buffer.from('');
       return Buffer.from('');
     };
     const mockSpawn = () => ({ status: 0 });
@@ -152,7 +152,7 @@ describe('forge worktree command', () => {
     const mockExec = (cmd, args, _opts) => {
       calls.push({ cmd, args });
       // git branch --list returns matching branch => branch exists
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') {
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') {
         return Buffer.from('  feat/existing\n');
       }
       if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
@@ -172,7 +172,7 @@ describe('forge worktree command', () => {
       { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
     );
 
-    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[0] === 'worktree' && c.args[1] === 'add');
+    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[2] === 'worktree' && c.args[3] === 'add');
     expect(wtAdd).toBeTruthy();
     expect(wtAdd.args).not.toContain('-b');
     expect(wtAdd.args).toContain('feat/existing');
@@ -182,7 +182,7 @@ describe('forge worktree command', () => {
   test('create returns reuse message when worktree path already exists', async () => {
     const mod = require('../../lib/commands/worktree');
     const mockExec = (cmd, args, _opts) => {
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') return Buffer.from('');
       return Buffer.from('');
     };
     const mockSpawn = () => ({ status: 0 });
@@ -274,7 +274,7 @@ describe('forge worktree command', () => {
     const calls = [];
     const mockExec = (cmd, args, _opts) => {
       calls.push({ cmd, args });
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') return Buffer.from('');
       if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
       return Buffer.from('');
     };
@@ -292,7 +292,7 @@ describe('forge worktree command', () => {
       { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
     );
 
-    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[0] === 'worktree' && c.args[1] === 'add');
+    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[2] === 'worktree' && c.args[3] === 'add');
     expect(wtAdd).toBeTruthy();
     expect(wtAdd.args).toContain('fix/custom-branch');
   });
@@ -302,7 +302,7 @@ describe('forge worktree command', () => {
     const calls = [];
     const mockExec = (cmd, args, _opts) => {
       calls.push({ cmd, args });
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') return Buffer.from('');
       if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
       return Buffer.from('');
     };
@@ -320,7 +320,7 @@ describe('forge worktree command', () => {
       { _exec: mockExec, _spawn: mockSpawn, _fs: mockFs, _platform: 'linux' }
     );
 
-    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[0] === 'worktree' && c.args[1] === 'add');
+    const wtAdd = calls.find(c => c.cmd === 'git' && c.args[2] === 'worktree' && c.args[3] === 'add');
     expect(wtAdd).toBeTruthy();
     expect(wtAdd.args).toContain('fix/custom-branch');
     expect(wtAdd.args).not.toContain('feat/custom');
@@ -339,7 +339,7 @@ describe('forge worktree command', () => {
     const mod = require('../../lib/commands/worktree');
     const spawnCalls = [];
     const mockExec = (cmd, args, _opts) => {
-      if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+      if (cmd === 'git' && args[0] === '-C' && args[2] === 'branch' && args[3] === '--list') return Buffer.from('');
       if (cmd === 'bd') return Buffer.from('beads 1.0.0\n');
       return Buffer.from('');
     };
