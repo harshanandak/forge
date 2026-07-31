@@ -1,11 +1,13 @@
 'use strict';
 
 const { afterEach, describe, test, expect } = require('bun:test');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const router = require('../../lib/memory/router');
+const projectMemory = require('../../lib/project-memory');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
 
 const tempDirs = [];
@@ -249,7 +251,7 @@ describe('memory-router: one-time JSONL import onto the kernel', () => {
     expect(result.notes).toEqual([]);
   });
 
-  test('preserves legacy type and suggested-trust metadata in deterministic ids', () => {
+  test('preserves legacy type and suggested-trust metadata on imported entries', () => {
     const projectRoot = makeProjectRoot();
     const store = makeStore(projectRoot);
     writeLegacyJsonl(projectRoot, [
@@ -259,23 +261,13 @@ describe('memory-router: one-time JSONL import onto the kernel', () => {
         tags: ['old'],
         type: 'decision',
       },
-      {
-        note: 'same legacy note',
-        timestamp: '2026-01-01T00:00:00.000Z',
-        tags: ['old'],
-        type: 'gotcha',
-      },
     ]);
 
     router.migrateJsonlNotesOnce(projectRoot, { store });
     const imported = store.listMemories();
 
-    expect(imported).toHaveLength(2);
-    expect(imported.map(entry => entry.key).sort()[0]).not.toBe(imported.map(entry => entry.key).sort()[1]);
-    expect(imported.map(entry => entry.tags).sort()).toEqual([
-      ['old', 'type:decision', 'trust:suggested'],
-      ['old', 'type:gotcha', 'trust:suggested'],
-    ]);
+    expect(imported).toHaveLength(1);
+    expect(imported[0].tags).toEqual(['old', 'type:decision', 'trust:suggested']);
     expect(imported.every(entry => entry.sourceAgent === 'forge remember (imported)')).toBe(true);
   });
 
@@ -348,5 +340,37 @@ describe('memory-router: one-time JSONL import onto the kernel', () => {
     router.migrateJsonlNotesOnce(projectRoot, { store });
 
     expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+  });
+
+  test('an id-less record reuses its pre-enrichment key after a failed rename', () => {
+    const projectRoot = makeProjectRoot();
+    const store = makeStore(projectRoot);
+    const record = {
+      note: 'legacy key remains stable',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      tags: ['old', 42],
+      type: 'decision',
+    };
+    const oldKeyBasis = JSON.stringify({
+      note: record.note,
+      timestamp: record.timestamp,
+      tags: ['old'],
+    });
+    const oldKey = `import:${crypto.createHash('sha256').update(oldKeyBasis).digest('hex').slice(0, 32)}`;
+
+    projectMemory.write(projectRoot, {
+      key: oldKey,
+      value: record.note,
+      sourceAgent: 'forge remember (imported)',
+      timestamp: record.timestamp,
+      tags: ['old'],
+    }, { store });
+    writeLegacyJsonl(projectRoot, [record]);
+    router.migrateJsonlNotesOnce(projectRoot, { store });
+
+    const imported = store.listMemories();
+    expect(imported).toHaveLength(1);
+    expect(imported[0].key).toBe(oldKey);
+    expect(imported[0].tags).toEqual(['old', 'type:decision', 'trust:suggested']);
   });
 });
