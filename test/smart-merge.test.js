@@ -166,6 +166,8 @@ describe('smartMergeAgentsMd', () => {
       const result = smartMergeAgentsMd(existing, newContent);
 
       expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
       expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
     });
   });
