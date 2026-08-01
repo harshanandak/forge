@@ -53,6 +53,7 @@ const ROLLUP_REQUIRED_JSON = JSON.stringify({
           target: {
             statusCheckRollup: {
               contexts: {
+                pageInfo: { hasNextPage: false, endCursor: null },
                 nodes: [
                   { __typename: 'CheckRun', name: 'unit', isRequired: true },
                   { __typename: 'CheckRun', name: 'optional-bench', isRequired: false },
@@ -109,6 +110,25 @@ describe('PrStateAdapter', () => {
     expect(apiCall.args.join(' ')).toContain('repos/o/r/branches/master/protection/required_status_checks');
   });
 
+  test('readRequiredCheckPolicy preserves app identity while the compatibility API returns names', async () => {
+    const payload = JSON.stringify({
+      contexts: ['unit', 'lint'],
+      checks: [
+        { context: 'unit', app_id: 15368 },
+        { context: 'lint', app_id: null },
+      ],
+    });
+    const { run } = makeRunner([['protection/required_status_checks', payload]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+
+    expect(await adapter.readRequiredCheckPolicy({ owner: 'o', repo: 'r', base: 'master' })).toEqual([
+      { context: 'unit', appId: 15368 },
+      { context: 'lint', appId: null },
+    ]);
+    expect(adapter.lastRequiredSource).toBe('protection');
+    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' })).toEqual(['unit', 'lint']);
+  });
+
   test('readRequiredChecks returns null for an unexpected payload shape (not [])', async () => {
     // A malformed/changed protection payload must NOT look like "no required
     // checks" — that would let the shepherd compute merge readiness from bad data.
@@ -119,6 +139,74 @@ describe('PrStateAdapter', () => {
     const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
 
     expect(result).toBeNull();
+  });
+
+  test('readRequiredChecks fails closed when contexts and app-scoped checks disagree', async () => {
+    const { run } = makeRunner([
+      ['protection/required_status_checks', JSON.stringify({
+        contexts: ['unit'],
+        checks: [{ context: 'different', app_id: 123 }],
+      })],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
+
+    expect(result).toBeNull();
+  });
+
+  test('readRequiredChecks fails closed on malformed app identity', async () => {
+    const { run } = makeRunner([
+      ['protection/required_status_checks', JSON.stringify({
+        checks: [{ context: 'unit', app_id: 'not-an-integer' }],
+      })],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
+
+    expect(result).toBeNull();
+  });
+
+  test('readRequiredCheckPolicy rejects missing or conflicting application identity', async () => {
+    for (const checks of [
+      [{ context: 'ci' }],
+      [{ context: 'ci', app_id: 12 }, { context: 'ci', app_id: 13 }],
+    ]) {
+      const { run } = makeRunner([[
+        'protection/required_status_checks', JSON.stringify({ contexts: ['ci'], checks }),
+      ]]);
+      const adapter = new PrStateAdapter({ gh: run, git: run });
+      expect(await adapter.readRequiredCheckPolicy({ owner: 'o', repo: 'r', base: 'master' })).toBeNull();
+    }
+  });
+
+  test('readRequiredCheckPolicy deduplicates exact duplicate identities', async () => {
+    const { run } = makeRunner([[
+      'protection/required_status_checks',
+      JSON.stringify({
+        contexts: ['ci'],
+        checks: [{ context: 'ci', app_id: 12 }, { context: 'ci', app_id: 12 }],
+      }),
+    ]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    expect(await adapter.readRequiredCheckPolicy({ owner: 'o', repo: 'r', base: 'master' }))
+      .toEqual([{ context: 'ci', appId: 12 }]);
+    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' }))
+      .toEqual(['ci']);
+  });
+
+  test('readRequiredChecks rejects wrong-typed dual policy fields instead of using the other field', async () => {
+    for (const payload of [
+      { contexts: ['unit'], checks: {} },
+      { contexts: {}, checks: [{ context: 'unit', app_id: 123 }] },
+      { contexts: ['   '] },
+    ]) {
+      const { run } = makeRunner([
+        ['protection/required_status_checks', JSON.stringify(payload)],
+      ]);
+      const adapter = new PrStateAdapter({ gh: run, git: run });
+      const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
+      expect(result).toBeNull();
+    }
   });
 
   test('readRequiredChecks returns [] for a valid empty contexts payload', async () => {
@@ -160,6 +248,67 @@ describe('PrStateAdapter', () => {
     // Only required contexts, deduped across matrix duplicates, from both node types.
     expect(required).toEqual(['unit', 'deploy/ok']);
     expect(adapter.lastRequiredSource).toBe('rollup');
+  });
+
+  test('rollup fallback rejects GraphQL errors, missing pagination, and malformed nodes', async () => {
+    const protectionError = new Error('403');
+    protectionError.stderr = 'HTTP 403: Resource not accessible by integration';
+    const validData = JSON.parse(ROLLUP_REQUIRED_JSON);
+    const malformedPayloads = [
+      { ...validData, errors: [{ message: 'partial' }] },
+      (() => {
+        const value = JSON.parse(ROLLUP_REQUIRED_JSON);
+        delete value.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.pageInfo;
+        return value;
+      })(),
+      (() => {
+        const value = JSON.parse(ROLLUP_REQUIRED_JSON);
+        value.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.pageInfo = {
+          hasNextPage: true, endCursor: null,
+        };
+        return value;
+      })(),
+      (() => {
+        const value = JSON.parse(ROLLUP_REQUIRED_JSON);
+        value.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.nodes = [
+          { __typename: 'CheckRun', name: 'unit' },
+        ];
+        return value;
+      })(),
+    ];
+    for (const payload of malformedPayloads) {
+      const { run } = makeRunner([
+        ['protection/required_status_checks', () => { throw protectionError; }],
+        ['api graphql', JSON.stringify(payload)],
+      ]);
+      const adapter = new PrStateAdapter({ gh: run, git: run });
+      expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
+        .toBeNull();
+    }
+  });
+
+  test('rollup fallback consumes every cursor page before projecting required names', async () => {
+    const protectionError = new Error('403');
+    protectionError.stderr = 'HTTP 403: Resource not accessible by integration';
+    let page = 0;
+    const pagePayload = (nodes, hasNextPage, endCursor) => JSON.stringify({
+      data: { repository: { pullRequest: { headRef: { target: { statusCheckRollup: {
+        contexts: { nodes, pageInfo: { hasNextPage, endCursor } },
+      } } } } } },
+    });
+    const { run } = makeRunner([
+      ['protection/required_status_checks', () => { throw protectionError; }],
+      ['api graphql', () => {
+        page += 1;
+        return page === 1
+          ? pagePayload([{ __typename: 'CheckRun', name: 'unit', isRequired: true }], true, 'NEXT')
+          : pagePayload([{ __typename: 'StatusContext', context: 'lint', isRequired: true }], false, null);
+      }],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
+      .toEqual(['unit', 'lint']);
+    expect(page).toBe(2);
   });
 
   test('readRequiredChecks stamps requiredSource=protection when protection is readable', async () => {
@@ -308,10 +457,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
 
   test('readComments surfaces threadId, path and line per thread', async () => {
     const graphqlJson = JSON.stringify({
-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
+      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
         {
           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
-          comments: { nodes: [{ author: { login: 'coderabbitai' }, body: 'nit' }] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '1', author: { login: 'coderabbitai' }, body: 'nit' }] },
         },
       ] } } } },
     });
@@ -331,10 +480,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
 
   test('readComments surfaces the REST commentId (fullDatabaseId) for replies', async () => {
     const graphqlJson = JSON.stringify({
-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
+      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
         {
           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
-          comments: { nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
         },
       ] } } } },
     });
@@ -350,8 +499,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
 
   test('readComments coerces a missing line to null', async () => {
     const graphqlJson = JSON.stringify({
-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
-        { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { nodes: [] } },
+      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+        { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } },
       ] } } } },
     });
     const { run } = makeRunner([['api graphql', graphqlJson]]);
@@ -367,7 +516,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: true, endCursor: 'C1' },
         nodes: [{
           id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'bot' }, body: 'a1' }] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '11', author: { login: 'bot' }, body: 'a1' }] },
         }],
       } } } },
     });
@@ -377,13 +526,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: false, endCursor: 'C1' },
         nodes: [{
           id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
-          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ author: { login: 'bot' }, body: 'b1' }] },
+          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '21', author: { login: 'bot' }, body: 'b1' }] },
         }],
       } } } },
     });
     // Remaining comments of thread B, fetched by node id.
     const innerCommentsPage = JSON.stringify({
-      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'human' }, body: 'b2' }] } } },
+      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '22', author: { login: 'human' }, body: 'b2' }] } } },
     });
     // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
     const { run, calls } = makeRunner([
@@ -464,9 +613,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
           // With fullDatabaseId → the stable REST id is used as the monitor key.
-          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
-          // Without fullDatabaseId → falls back to `${author}:${createdAt}`.
-          { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
+          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
+          { fullDatabaseId: '1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
         ],
       } } } },
     });
@@ -475,8 +623,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
     expect(comments).toHaveLength(2);
     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
-    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
-    expect(comments[1].id).toBe('a-human:2026-07-12T11:00:00Z');
+    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' });
+    expect(comments[1].id).toBe('1000');
     expect(comments[1].authorTypename).toBe('User');
     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
   });
@@ -487,9 +635,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
           // Oldest→newest: coderabbitai's second review supersedes its first.
-          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
-          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
-          { author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
+          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
+          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
         ],
       } } } },
     });
@@ -500,7 +648,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
     // Latest-per-author: coderabbitai collapses to its newer (second) review.
     expect(reviews).toHaveLength(2);
     const cr = reviews.find((r) => r.author === 'coderabbitai');
-    expect(cr).toEqual({ author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
+    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
     const alice = reviews.find((r) => r.author === 'alice');
     expect(alice.commitOid).toBe('head-sha');
     expect(alice.authorTypename).toBe('User');
@@ -519,12 +667,12 @@ describe('PrStateAdapter — bundle gather fields', () => {
       if (call === 1) {
         return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
           pageInfo: { hasNextPage: true, endCursor: 'CUR' },
-          nodes: [{ author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
         } } } } });
       }
       return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
         pageInfo: { hasNextPage: false, endCursor: null },
-        nodes: [{ author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
       } } } } });
     };
     const adapter = new PrStateAdapter({ gh: run, git: run });

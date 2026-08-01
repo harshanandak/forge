@@ -47,6 +47,16 @@ const EQUIVALENT_INVOCATIONS = [
   { name: 'shepherd --pull --json (flag passthrough)', bare: ['shepherd', '999999', '--pull', '--json'], noun: ['pr', 'shepherd', '999999', '--pull', '--json'] },
   { name: 'shepherd events (subcommand shape passthrough)', bare: ['shepherd', 'events', '999999', '--since', '1', '--json'], noun: ['pr', 'shepherd', 'events', '999999', '--since', '1', '--json'] },
   { name: 'merge --auto (fail-closed preview)', bare: ['merge', '--auto', '999999'], noun: ['pr', 'merge', '--auto', '999999'] },
+  {
+    name: 'guarded merge leases (byte-identical passthrough)',
+    bare: ['merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
+    noun: ['pr', 'merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
+  },
+  {
+    name: 'guarded merge with global flag between noun and subcommand',
+    bare: ['merge', '--path', '.', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
+    noun: ['pr', '--path', '.', 'merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
+  },
 ];
 
 describe('pr noun CLI dispatch — byte-identical back-compat (6ab3f30c)', () => {
@@ -60,6 +70,18 @@ describe('pr noun CLI dispatch — byte-identical back-compat (6ab3f30c)', () =>
       expect(n.err).toBe(b.err);
     }, 60000);
   }
+
+  test('guarded merge global-path forms are parsed rather than rejected as usage', () => {
+    for (const argv of [
+      ['merge', '--path', '.', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
+      ['pr', '--path', '.', 'merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
+    ]) {
+      const result = run(argv);
+      expect(result.status).toBe(0);
+      expect(result.out).not.toMatch(/^Usage: forge merge/m);
+      expect(result.err).not.toMatch(/^Usage: forge merge/m);
+    }
+  }, 60000);
 
   test('gate doc == doc-gate (folds under the gate noun)', () => {
     const b = run(['doc-gate', 'detect']);

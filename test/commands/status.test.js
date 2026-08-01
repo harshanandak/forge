@@ -478,8 +478,8 @@ describe('Status Command - Stage Detection', () => {
 
 				expect(result.success).toBe(true);
 				expect(result.output).toContain('Key Commands');
-				expect(result.output).toContain('forge shepherd watch <pr>');
-				expect(result.output).toContain('forge merge --auto <pr>');
+				expect(result.output).toContain('forge shepherd <pr> --pull --json');
+				expect(result.output).toContain('forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id>');
 			} finally {
 				fs.rmSync(projectRoot, { recursive: true, force: true });
 			}

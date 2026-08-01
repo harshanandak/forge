@@ -11,6 +11,35 @@ const mergeCmd = require('../../lib/commands/merge');
 const { validateCommand } = require('../../lib/commands/_registry');
 
 const tempRoots = [];
+const HEAD = 'a'.repeat(40);
+const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
+
+function mergeArgs(pr) {
+  return [String(pr), '--auto', '--expect-head', HEAD, '--issue', ISSUE];
+}
+
+function authorizedContext(overrides = {}) {
+  return {
+    number: 42,
+    repository: 'acme/forge',
+    state: 'OPEN',
+    headSha: HEAD,
+    isDraft: false,
+    conflicting: false,
+    unresolvedThreads: 0,
+    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
+    requiredChecks: ['ci'],
+    requiredCheckSource: 'protection',
+    requiredChecksKnown: true,
+    ...overrides,
+  };
+}
+
+const AUTHORITY_DEPS = {
+  env: { FORGE_ACTOR: 'release-actor' },
+  verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
+  verifyPrIssueBinding: async () => ({ bound: true }),
+};
 
 /** Create an isolated temp project; when `configObj` is given, write it to `.forge/config.yaml`. */
 function makeProject(configObj) {
@@ -64,8 +93,9 @@ describe('merge command — opt-in conditional auto-merge', () => {
   test('does NOTHING (no merge) when a configured rule is unmet', async () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:10'] } } });
     let mergeCalled = false;
-    const out = await mergeCmd.handler(['9', '--auto'], {}, root, {
-      fetchPrContext: async () => ({
+    const out = await mergeCmd.handler(mergeArgs('9'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => authorizedContext({
         comments: [{ author: 'x', at: '2026-07-04T11:58:00Z' }], // 2 min before `now`
         now: Date.parse('2026-07-04T12:00:00Z'),
       }),
@@ -80,12 +110,9 @@ describe('merge command — opt-in conditional auto-merge', () => {
   test('MERGES when enabled and every rule passes', async () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green', 'threads_resolved'] } } });
     let mergedPr = null;
-    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
-      fetchPrContext: async () => ({
-        checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
-        requiredChecksKnown: true,
-        unresolvedThreads: 0,
-      }),
+    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => authorizedContext(),
       mergePr: async ({ pr }) => { mergedPr = pr; return { merged: true }; },
     });
     expect(out.success).toBe(true);
@@ -115,7 +142,8 @@ describe('merge command — opt-in conditional auto-merge', () => {
   test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
     let mergeCalled = false;
-    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
+    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+      ...AUTHORITY_DEPS,
       fetchPrContext: async () => ({ state: 'MERGED' }),
       mergePr: async () => { mergeCalled = true; },
     });
@@ -129,20 +157,21 @@ describe('merge command — opt-in conditional auto-merge', () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: ['no_conflicts'] } } });
     let mergeCalled = false;
     let call = 0;
-    const out = await mergeCmd.handler(['77', '--auto'], {}, root, {
+    const out = await mergeCmd.handler(mergeArgs('77'), {}, root, {
+      ...AUTHORITY_DEPS,
       // 1st fetch: allowed (no conflicts). 2nd (pre-merge) fetch: now conflicting.
       fetchPrContext: async () => {
         call += 1;
         return call === 1
-          ? { state: 'OPEN', conflicting: false }
-          : { state: 'OPEN', conflicting: true };
+          ? authorizedContext({ conflicting: false })
+          : authorizedContext({ conflicting: true });
       },
       mergePr: async () => { mergeCalled = true; return { merged: true }; },
     });
     expect(call).toBe(2);
+    expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
-    expect(out.allowed).toBe(false);
     expect(mergeCalled).toBe(false);
-    expect(out.reason).toMatch(/state changed|re-check/i);
+    expect(out.error).toMatch(/conflict/i);
   });
 });

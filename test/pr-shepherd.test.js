@@ -322,9 +322,11 @@ describe('isFailed covers StatusContext error states (Vercel/Netlify)', () => {
     expect(isFailed({ conclusion: 'STARTUP_FAILURE' })).toBe(true);
     expect(isFailed({ conclusion: 'FAILURE' })).toBe(true);
   });
-  test('SUCCESS / PENDING are not failures', () => {
+  test('only SUCCESS is green; NEUTRAL and SKIPPED remain non-authorizing', () => {
     expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
     expect(isFailed({ conclusion: 'PENDING' })).toBe(false);
     expect(isGreen({ conclusion: 'SUCCESS' })).toBe(true);
+    expect(isGreen({ conclusion: 'NEUTRAL' })).toBe(false);
+    expect(isGreen({ conclusion: 'SKIPPED' })).toBe(false);
   });
 });

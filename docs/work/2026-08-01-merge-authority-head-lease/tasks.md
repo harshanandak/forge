@@ -1,0 +1,30 @@
+# Tasks
+
+- [x] Create/claim P0 issue `36230258-7b64-4de0-8683-fd8b8eabab51` under actor `forge-release-gate-bootstrap`.
+- [x] Create isolated stable-base worktree at `78f2b7aae98e1e05b0e6729d6af19f5be2d65494`.
+- [x] Verify installed GitHub CLI supports `--match-head-commit`.
+- [x] Verify live `master` protection endpoint exposes six required contexts and app IDs.
+- [x] Run four-role read-only design/threat review.
+- [x] Retain RED evidence: 0 pass / 9 fail for missing authority behavior.
+- [x] Implement exact-head parsing, double-read comparison, and server lease.
+- [x] Implement initial/final Kernel ownership proof.
+- [x] Implement mandatory authoritative protected-context evaluation.
+- [x] Harden protection payload parsing against malformed/conflicting fields.
+- [x] Add mandatory draft/conflict/thread gates.
+- [x] Update help, orientation, README, AGENTS, and noun passthrough.
+- [x] Focused affected validation before final parser regression: 245 tests / 696 expectations passed; targeted ESLint and `git diff --check` passed.
+- [x] Re-run affected validation after final parser regression: 246 tests / 699 expectations passed; targeted ESLint and `git diff --check` passed.
+- [x] Reconcile exact-SHA review of `85239037`: `REQUEST_CHANGES`; do not push or install the rejected candidate.
+- [x] Retain remediation RED evidence: 0 pass / 7 fail across selector, lifecycle, ownership, issue-linkage, thread-envelope, app-identity, and contradictory-state regressions.
+- [x] Implement explicit-OPEN lifecycle authority, strict ownership, double PR↔issue linkage, validated thread pagination, app-scoped protected policy, paginated exact-head check runs, and repository-bound mutation.
+- [x] Validate remediated tree after final cursor/page-total hardening: 239 tests / 749 expectations across 11 affected suites; targeted ESLint, syntax checks, and `git diff --check` passed.
+- [x] Reconcile exact-SHA review of `7a88c3e3`: two `REQUEST_CHANGES` lanes and one `PASS`; do not push or install the rejected candidate.
+- [x] Retain reviewer-remediation RED evidence: 4 authority failures plus real-CLI exit-1 usage failure across malformed terminal cursors, partial shared-adapter evidence, repository drift, malformed Kernel PR numbers, and global-flag dispatch.
+- [x] Remediate canonical Kernel row identity, two-read repository leasing, complete terminal cursors, strict shared adapter pagination, and global-flag merge parsing.
+- [x] Validate the expanded affected scope: 331 tests / 995 expectations across 18 files with zero failures; targeted ESLint, syntax checks, and `git diff --check` passed.
+- [x] Reconcile exact-SHA review of `d33b65f4`: explicit `REQUEST_CHANGES`; do not push or install the rejected candidate.
+- [x] Remediate leased thread repository propagation, frozen ownership actor identity, complete observation validation, conflicting app-qualified policy, strict rollup/shared GraphQL collections, SUCCESS-only green semantics, and deterministic cleanup of command-owned Kernel drivers.
+- [x] Validate the final replacement tree: focused authority gate 76 tests / 270 expectations; final affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
+- [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+- [ ] Push/open PR only after PASS.
+- [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

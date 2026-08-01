@@ -156,7 +156,7 @@ so a claim can't quietly outrun the code. What's not delivered yet says
 | --- | --- |
 | Knowledge-graph memory (Graphiti) | `memory.backend: graphiti` in `.forge/config.yaml` — temporal, relational recall ([guide](docs/guides/memory-backends.md)) |
 | Global hooks for Codex/Hermes | `forge hooks install --global` (consent-guarded, `--dry-run` first) |
-| Conditional auto-merge | `forge merge --auto <pr>` — off by default, merges only when configured rules pass |
+| Conditional auto-merge | `forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id>` — off by default; requires exact-head and active issue-ownership leases plus protected checks |
 
 ## A workflow you own
 

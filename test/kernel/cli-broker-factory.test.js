@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
 
 const {
   buildKernelIssueDeps,
+  buildMigratedKernelIssueDeps,
   ensureKernelMigrated,
   resolveKernelDatabasePath,
 } = require('../../lib/kernel/cli-broker-factory');
@@ -29,6 +30,30 @@ function fakeRuntime() {
     close() {}
   }
   return { kind: 'bun', module: { Database: FakeDb } };
+}
+
+function failingRuntime(state) {
+  class FakeDb {
+    constructor() {
+      state.opened += 1;
+    }
+    exec() {
+      throw new Error('migration failed');
+    }
+    query() {
+      return { all: () => [], get: () => undefined, run: () => ({}) };
+    }
+    close() {
+      state.closed += 1;
+    }
+  }
+  return {
+    id: 'bun:sqlite',
+    module: { Database: FakeDb },
+    databaseClassName: 'Database',
+    nativeCompileDependency: false,
+    experimental: false,
+  };
 }
 
 describe('buildKernelIssueDeps', () => {
@@ -80,6 +105,23 @@ describe('buildKernelIssueDeps', () => {
           requireModule: missing,
         }),
       ).toThrow(/sqlite|runtime/i);
+    },
+    TIMEOUT,
+  );
+});
+
+describe('buildMigratedKernelIssueDeps', () => {
+  test(
+    'closes its driver when broker initialization fails',
+    async () => {
+      const state = { opened: 0, closed: 0 };
+      await expect(buildMigratedKernelIssueDeps({
+        projectRoot: '/repo',
+        gitCommonDir: '/repo/.git',
+        databasePath: ':memory:',
+        runtime: failingRuntime(state),
+      })).rejects.toThrow('migration failed');
+      expect(state).toEqual({ opened: 1, closed: 1 });
     },
     TIMEOUT,
   );
