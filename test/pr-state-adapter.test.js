@@ -107,6 +107,10 @@ describe('PrStateAdapter', () => {
         headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
         statusCheckRollup: [{ __typename: 'CheckRun', name: 'optional' }],
       },
+      {
+        headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
+        mergeStateStatus: 'BOGUS', statusCheckRollup: [],
+      },
     ]) {
       const { run } = makeRunner([['pr view', JSON.stringify(payload)]]);
       const state = await new PrStateAdapter({ gh: run, git: run }).readState('123');

@@ -31,6 +31,8 @@
 - [x] Reconcile terminal exact-SHA review of `3274e04cf71c24c255360fc70007e4dbd4e9687c`: all three lanes returned `REQUEST_CHANGES`; reject the candidate and retain its concrete counterexamples.
 - [x] Add focused RED coverage for aggregate activity settle, optional rollup CheckRuns, strict policy/check/ownership identity, injected binding-driver ownership, full final-head evidence, canonical GraphQL selectors, nested actor type, and Shepherd malformed-provider escalation.
 - [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+- [x] Reconcile terminal exact-SHA review of `331943cce424ed57ef9afcd5dc773a89692fc41b`: Kernel/CLI passed; reject for later review updates missing from settle and unknown merge-state enums remaining readable.
+- [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

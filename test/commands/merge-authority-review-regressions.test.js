@@ -121,6 +121,31 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(fetched.comments[0].at).toBe(editedAt);
   });
 
+  test('uses a later review update for mandatory settle evidence', async () => {
+    const updatedAt = new Date(NOW - 60_000).toISOString();
+    const fetched = await mergeCmd.defaultFetchPrContext({
+      pr: '42',
+      now: NOW,
+      gh: makeGh(validThreads, {
+        reviews: [{
+          author: { login: 'reviewer' },
+          state: 'COMMENTED',
+          createdAt: new Date(NOW - 40 * 60_000).toISOString(),
+          submittedAt: new Date(NOW - 30 * 60_000).toISOString(),
+          updatedAt,
+        }],
+      }),
+    });
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => fetched,
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(fetched.lastActivityAt).toBe(Date.parse(updatedAt));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
   test('uses recent PR or review activity for mandatory settle without comments', async () => {
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
