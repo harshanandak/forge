@@ -48,6 +48,8 @@ Candidate `331943cce424ed57ef9afcd5dc773a89692fc41b` is rejected after two termi
 
 Candidate `66d7b4d18d58ac007ce66ac8c31471111419bbc2` is rejected after the shared-projection lane proved that GitHub's explicit `UNKNOWN` enum and recognized `BLOCKED` state could still reach Shepherd `MERGE_READY`. The adapter now treats explicit `UNKNOWN` as non-readable authority evidence. At Shepherd's terminal handoff seam, only `CLEAN`, `HAS_HOOKS`, or `UNSTABLE` provider merge states may produce `MERGE_READY`; `UNKNOWN`, `BLOCKED`, `DRAFT`, inconsistent `BEHIND`, malformed values, and conflicts remain non-authorizing. The exact counterexamples were RED before the change and GREEN afterward; the bounded affected manifest remained green.
 
+Candidate `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a` is rejected after a predecessor review result proved its settle evidence still relied on the lossy `gh pr view --json reviews` projection, which omits review creation/edit timestamps. Merge authority now reads fully paginated GraphQL review evidence with mandatory `createdAt`, `updatedAt`, and `submittedAt`, preserves the latest activity across every review per author while retaining latest-submission semantics, and computes settle freshness from that source. Review authority is permanently agent/vendor agnostic: human and automated reviewers are governed by identical mechanism-based thread, submission, timestamp, head-binding, and resolution evidence; no name allowlists or vendor-specific trust exist.
+
 ## Bounded residuals
 
 GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.

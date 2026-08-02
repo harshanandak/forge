@@ -300,6 +300,14 @@ describe('merge command — mandatory release authority', () => {
         }] }]);
       }
       if (argv[0] === 'api' && argv[1] === 'graphql') {
+        const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
+        if (queryArg.includes('reviews(first')) {
+          return JSON.stringify({
+            data: { repository: { pullRequest: { reviews: {
+              nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+            } } } },
+          });
+        }
         return JSON.stringify({
           data: { repository: { pullRequest: { reviewThreads: {
             nodes: [], pageInfo: { hasNextPage: false, endCursor: null },

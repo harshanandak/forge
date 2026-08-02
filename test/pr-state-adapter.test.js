@@ -715,9 +715,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
           // Oldest→newest: coderabbitai's second review supersedes its first.
-          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
-          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
-          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T12:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
+          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
+          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', createdAt: '2026-07-12T10:59:00Z', updatedAt: '2026-07-12T11:00:00Z', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
         ],
       } } } },
     });
@@ -728,12 +728,14 @@ describe('PrStateAdapter — bundle gather fields', () => {
     // Latest-per-author: coderabbitai collapses to its newer (second) review.
     expect(reviews).toHaveLength(2);
     const cr = reviews.find((r) => r.author === 'coderabbitai');
-    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
+    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', activityAt: '2026-07-12T12:00:00.000Z', commitOid: 'head-sha', body: 'second pass' });
     const alice = reviews.find((r) => r.author === 'alice');
     expect(alice.commitOid).toBe('head-sha');
     expect(alice.authorTypename).toBe('User');
     // A GraphQL request was constructed (not a `gh pr view`).
     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+    const query = calls.find((c) => c.args.join(' ').includes('reviews(first')).args.join(' ');
+    expect(query).toContain('createdAt updatedAt submittedAt');
   });
 
   test('readReviews paginates until hasNextPage is false', async () => {
@@ -747,12 +749,12 @@ describe('PrStateAdapter — bundle gather fields', () => {
       if (call === 1) {
         return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
           pageInfo: { hasNextPage: true, endCursor: 'CUR' },
-          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
         } } } } });
       }
       return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
         pageInfo: { hasNextPage: false, endCursor: null },
-        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
       } } } } });
     };
     const adapter = new PrStateAdapter({ gh: run, git: run });

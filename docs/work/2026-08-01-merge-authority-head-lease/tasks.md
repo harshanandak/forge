@@ -35,6 +35,8 @@
 - [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
 - [x] Reconcile exact-SHA review of `66d7b4d18d58ac007ce66ac8c31471111419bbc2`: reject after explicit `UNKNOWN` and recognized `BLOCKED` merge states reached Shepherd `MERGE_READY`.
 - [x] Require an authorizing provider merge state at Shepherd's terminal handoff; add RED/GREEN coverage and rerun the bounded affected manifest once.
+- [x] Reconcile the late predecessor review finding against `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a`: reject because `gh pr view` omits review edit timestamps.
+- [x] Move settle authority to fully paginated, agent-agnostic GraphQL review evidence; require creation/update/submission timestamps and retain latest activity per author.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

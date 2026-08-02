@@ -48,7 +48,7 @@ function deps(overrides = {}) {
 function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
   return (argv) => {
     if (argv[0] === 'pr' && argv[1] === 'view') {
-      return JSON.stringify({
+      const payload = {
         number: 42,
         headRefOid: HEAD,
         baseRefName: 'master',
@@ -61,7 +61,15 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
         comments: [],
         updatedAt: '2026-08-01T00:00:00Z',
         ...viewOverrides,
-      });
+      };
+      // Match the real `gh pr view --json reviews` projection: review edit and
+      // creation timestamps are not exported on this surface.
+      payload.reviews = (viewOverrides.reviews || []).map((review) => ({
+        author: review.author,
+        state: review.state,
+        submittedAt: review.submittedAt,
+      }));
+      return JSON.stringify(payload);
     }
     if (argv[0] === 'repo' && argv[1] === 'view') {
       return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
@@ -80,7 +88,28 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
         }];
       return JSON.stringify([{ total_count: runs.length, check_runs: runs }]);
     }
-    if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(threadPayload);
+    if (argv[0] === 'api' && argv[1] === 'graphql') {
+      const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
+      if (queryArg.includes('reviews(first')) {
+        const nodes = (viewOverrides.reviews || []).map((review, index) => ({
+          id: review.id || `R-${index + 1}`,
+          author: {
+            __typename: review.author?.__typename || 'User',
+            login: review.author?.login || 'reviewer',
+          },
+          state: review.state || 'COMMENTED',
+          createdAt: review.createdAt || review.submittedAt,
+          updatedAt: review.updatedAt || review.submittedAt,
+          submittedAt: review.submittedAt,
+          commit: review.commit || { oid: HEAD },
+          body: review.body || '',
+        }));
+        return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+          nodes, pageInfo: { hasNextPage: false, endCursor: null },
+        } } } } });
+      }
+      return JSON.stringify(threadPayload);
+    }
     throw new Error(`unexpected gh call: ${argv.join(' ')}`);
   };
 }
