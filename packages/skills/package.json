@@ -26,8 +26,8 @@
     "chalk": "^6.0.0",
     "commander": "^15.0.0",
     "inquirer": "^14.0.2",
-    "js-yaml": "^5.1.0",
-    "markdown-it": "^14.1.1"
+    "js-yaml": "^5.2.2",
+    "markdown-it": "^14.1.2"
   },
   "devDependencies": {},
   "engines": {
