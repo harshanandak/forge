@@ -784,6 +784,26 @@ describe('PrStateAdapter — bundle gather fields', () => {
     }
   });
 
+  test('readReviews rejects malformed stable ids and authors before normalization', async () => {
+    for (const identity of [
+      { id: { value: 'R-OBJECT' }, author: { __typename: 'Bot', login: 'review-agent[bot]' } },
+      { id: 'R-EMPTY-AUTHOR', author: { __typename: 'Bot', login: '[bot]' } },
+    ]) {
+      const page = JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{
+          ...identity,
+          state: 'CHANGES_REQUESTED',
+          createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z',
+          submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'a'.repeat(40) }, body: '',
+        }],
+      } } } } });
+      const { run } = makeRunner([['reviews(first', page]]);
+      const adapter = new PrStateAdapter({ gh: run, git: run });
+      await expect(adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/review/i);
+    }
+  });
+
   test('readHeadCommitTime parses the head commit committedDate to epoch ms', async () => {
     const iso = '2026-07-12T10:00:00Z';
     const { run, calls } = makeRunner([['.commits[-1].committedDate', iso]]);

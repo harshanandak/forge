@@ -39,6 +39,8 @@
 - [x] Move settle authority to fully paginated, agent-agnostic GraphQL review evidence; require creation/update/submission timestamps and retain latest activity per author.
 - [x] Reconcile exact-SHA review of `23f5854f069ccfb22324d1266f132b930745a9a3`: reject because merge authority discarded normalized actor/state/commit-head review evidence.
 - [x] Make complete normalized review evidence a mandatory initial/fresh exact-head gate; reject unknown states, malformed OIDs, stale active reviews, changes requested, and pending reviews without vendor-specific handling.
+- [x] Reconcile exact-SHA review of `0b79eba52b99d37ec1579ffb2a15c20721e83d13`: reject pre-validation identity coercion and falsely readable skipped review collection.
+- [x] Require typed nonempty review IDs/logins before normalization, nonempty canonical authors after normalization, and truthful review-evidence readability.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

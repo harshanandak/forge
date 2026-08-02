@@ -52,6 +52,8 @@ Candidate `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a` is rejected after a predece
 
 Candidate `23f5854f069ccfb22324d1266f132b930745a9a3` is rejected after its agent-agnostic lane proved the merge path consumed timestamps but discarded normalized actor, state, and commit-head evidence. The GraphQL adapter now accepts only provider-defined review states and full 40-character commit OIDs, selects latest review state by submission time while retaining maximum activity across all reviews per author, and exposes complete normalized evidence to merge authority. Both initial and fresh mandatory gates now require readable review evidence, recognized actor types, valid timestamps, known states, exact-head binding for every active latest review, and no `CHANGES_REQUESTED` or `PENDING` latest state. `DISMISSED` review history is non-authorizing and may remain bound to an earlier head. These rules are mechanism-based and vendor-neutral.
 
+Candidate `0b79eba52b99d37ec1579ffb2a15c20721e83d13` is rejected after exact-delta review found that pre-validation string coercion could turn object IDs into `"[object Object]"` and normalize a `[bot]` login to an empty author, silently dropping a blocking review. Review IDs and logins must now be nonempty strings before normalization, normalized authors must remain nonempty, and review evidence is marked readable only when repository identity allowed the GraphQL collection to run.
+
 ## Bounded residuals
 
 GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.

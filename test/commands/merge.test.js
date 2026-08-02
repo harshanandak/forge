@@ -63,6 +63,32 @@ afterEach(() => {
 });
 
 describe('merge command — opt-in conditional auto-merge', () => {
+  test('default fetch marks review evidence unreadable when repository identity is unavailable', async () => {
+    const gh = (args) => {
+      const joined = args.join(' ');
+      if (joined.startsWith('pr view')) {
+        return JSON.stringify({
+          number: 42,
+          headRefOid: HEAD,
+          baseRefName: 'master',
+          state: 'OPEN',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN',
+          statusCheckRollup: [],
+          comments: [],
+          updatedAt: '2026-08-02T12:00:00Z',
+        });
+      }
+      if (joined.startsWith('repo view')) return JSON.stringify({});
+      return '';
+    };
+
+    const context = await mergeCmd.defaultFetchPrContext({ pr: '42', gh });
+    expect(context.reviews).toEqual([]);
+    expect(context.reviewEvidenceReadable).toBe(false);
+  });
+
   test('satisfies the _registry { name, description, handler } contract', () => {
     expect(validateCommand(mergeCmd)).toEqual({ valid: true });
     expect(mergeCmd.name).toBe('merge');
