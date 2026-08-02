@@ -189,7 +189,8 @@ describe('merge authority — exact reviewer regressions', () => {
       { reviewEvidenceReadable: false },
       { reviews: [{ ...valid, state: 'BOGUS' }] },
       { reviews: [{ ...valid, commitOid: 'short' }] },
-      { reviews: [{ ...valid, commitOid: 'b'.repeat(40) }] },
+      { reviews: [{ ...valid, state: 'APPROVED', commitOid: 'b'.repeat(40) }] },
+      { reviews: [{ ...valid, state: 'CHANGES_REQUESTED', commitOid: 'b'.repeat(40) }] },
       { reviews: [{ ...valid, state: 'CHANGES_REQUESTED' }] },
     ]) {
       let merges = 0;
@@ -203,6 +204,30 @@ describe('merge authority — exact reviewer regressions', () => {
     }
   });
 
+
+  test('treats stale COMMENTED review history as non-authorizing and non-vetoing', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({
+        reviews: [{
+          id: 'R-commented-stale',
+          author: 'reviewer',
+          authorTypename: 'User',
+          state: 'COMMENTED',
+          createdAt: '2026-08-01T10:00:00Z',
+          updatedAt: '2026-08-01T10:00:00Z',
+          submittedAt: '2026-08-01T10:00:00Z',
+          activityAt: '2026-08-01T10:00:00.000Z',
+          commitOid: 'b'.repeat(40),
+          body: '',
+        }],
+      }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.success).toBe(true);
+    expect(out.merged).toBe(true);
+    expect(merges).toBe(1);
+  });
   test('uses recent PR or review activity for mandatory settle without comments', async () => {
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
