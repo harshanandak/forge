@@ -33,6 +33,8 @@
 - [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
 - [x] Reconcile terminal exact-SHA review of `331943cce424ed57ef9afcd5dc773a89692fc41b`: Kernel/CLI passed; reject for later review updates missing from settle and unknown merge-state enums remaining readable.
 - [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
+- [x] Reconcile exact-SHA review of `66d7b4d18d58ac007ce66ac8c31471111419bbc2`: reject after explicit `UNKNOWN` and recognized `BLOCKED` merge states reached Shepherd `MERGE_READY`.
+- [x] Require an authorizing provider merge state at Shepherd's terminal handoff; add RED/GREEN coverage and rerun the bounded affected manifest once.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

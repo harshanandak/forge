@@ -46,6 +46,8 @@ The terminal amendment validates every REST and rollup observation before policy
 
 Candidate `331943cce424ed57ef9afcd5dc773a89692fc41b` is rejected after two terminal review counterexamples; its Kernel/CLI lane passed. Review freshness now takes the maximum of every review's creation, update, and submission timestamps rather than preferring submission and discarding a later edit. The shared PR-state adapter now treats an unknown `mergeStateStatus` enum as unreadable evidence, normalizes its projection to `UNKNOWN`, and therefore routes Shepherd to `ESCALATE` rather than `MERGE_READY`. Both exact regressions were RED before implementation and GREEN afterward; the bounded affected manifest remained green.
 
+Candidate `66d7b4d18d58ac007ce66ac8c31471111419bbc2` is rejected after the shared-projection lane proved that GitHub's explicit `UNKNOWN` enum and recognized `BLOCKED` state could still reach Shepherd `MERGE_READY`. The adapter now treats explicit `UNKNOWN` as non-readable authority evidence. At Shepherd's terminal handoff seam, only `CLEAN`, `HAS_HOOKS`, or `UNSTABLE` provider merge states may produce `MERGE_READY`; `UNKNOWN`, `BLOCKED`, `DRAFT`, inconsistent `BEHIND`, malformed values, and conflicts remain non-authorizing. The exact counterexamples were RED before the change and GREEN afterward; the bounded affected manifest remained green.
+
 ## Bounded residuals
 
 GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.

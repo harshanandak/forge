@@ -78,6 +78,20 @@ describe('runShepherdPass — bounded pass state machine', () => {
     expect(out.state).toBe('ESCALATE');
   });
 
+  test('non-authorizing provider merge states never reach MERGE_READY', async () => {
+    for (const mergeStateStatus of ['UNKNOWN', 'BLOCKED', 'DRAFT', 'BEHIND']) {
+      const { adapter } = makeAdapter({
+        providerEvidenceReadable: true,
+        mergeStateStatus,
+        required: ['unit'],
+        checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        behind: 0,
+      });
+      const out = await runShepherdPass({ ...BASE_CTX, adapter });
+      expect(out.state).toBe('ESCALATE');
+    }
+  });
+
   test('malformed non-auth state or protection reads escalate instead of throwing', async () => {
     for (const spec of [
       { stateAuthError: new Error('malformed GraphQL envelope') },
