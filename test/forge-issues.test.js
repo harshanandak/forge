@@ -242,6 +242,19 @@ describe('forge issue service contract', () => {
     }
   });
 
+  test('does not close an injected Kernel broker needed by same-command grounding', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    let closed = 0;
+    const broker = {
+      async runIssueOperation() { return { success: true, output: [] }; },
+      async close() { closed += 1; },
+    };
+    await expect(runIssueOperation('show', ['issue-1'], '/repo', { kernelBroker: broker }))
+      .resolves.toEqual({ success: true, output: [] });
+    expect(closed).toBe(0);
+    await expect(broker.runIssueOperation('show', ['issue-1'])).resolves.toEqual({ success: true, output: [] });
+  });
+
   test('threads session_id, worktree_id, and lease TTL into the claim mutation context (kernel d71a824b)', async () => {
     const { runIssueOperation } = require('../lib/forge-issues');
     let captured;

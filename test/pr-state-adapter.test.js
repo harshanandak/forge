@@ -29,12 +29,14 @@ function makeRunner(responses) {
 }
 
 const PR_VIEW_JSON = JSON.stringify({
-  headRefOid: 'abc123',
+  headRefOid: 'a'.repeat(40),
+  state: 'OPEN',
+  isDraft: false,
   mergeStateStatus: 'BLOCKED',
   statusCheckRollup: [
-    { name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
-    { name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
-    { name: 'optional-bench', status: 'COMPLETED', conclusion: 'FAILURE' },
+    { __typename: 'CheckRun', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+    { __typename: 'CheckRun', name: 'optional-bench', status: 'COMPLETED', conclusion: 'FAILURE' },
   ],
   reviewThreads: [],
 });
@@ -91,10 +93,25 @@ describe('PrStateAdapter', () => {
     const adapter = new PrStateAdapter({ gh: run, git: run });
     const state = await adapter.readState('123');
 
-    expect(state.headSha).toBe('abc123');
+    expect(state.headSha).toBe('a'.repeat(40));
+    expect(state.providerEvidenceReadable).toBe(true);
     expect(state.mergeStateStatus).toBe('BLOCKED');
     expect(state.checks).toHaveLength(3);
     expect(state.checks.find((c) => c.name === 'lint').conclusion).toBe('FAILURE');
+  });
+
+  test('readState marks missing lifecycle fields and malformed optional rollup unreadable', async () => {
+    for (const payload of [
+      { headRefOid: 'a'.repeat(40), statusCheckRollup: [], isDraft: false },
+      {
+        headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
+        statusCheckRollup: [{ __typename: 'CheckRun', name: 'optional' }],
+      },
+    ]) {
+      const { run } = makeRunner([['pr view', JSON.stringify(payload)]]);
+      const state = await new PrStateAdapter({ gh: run, git: run }).readState('123');
+      expect(state.providerEvidenceReadable).toBe(false);
+    }
   });
 
   test('readRequiredChecks calls the branch protection API and returns required contexts', async () => {
@@ -179,6 +196,20 @@ describe('PrStateAdapter', () => {
     }
   });
 
+  test('malformed protection cannot fall through to a valid rollup', async () => {
+    const { run } = makeRunner([
+      ['protection/required_status_checks', JSON.stringify({
+        contexts: ['ci'],
+        checks: [{ context: 'ci', app_id: 12 }, { context: 'ci', app_id: 13 }],
+      })],
+      ['api graphql', ROLLUP_REQUIRED_JSON],
+    ]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
+      .toBeNull();
+    expect(adapter.lastRequiredSource).toBeNull();
+  });
+
   test('readRequiredCheckPolicy deduplicates exact duplicate identities', async () => {
     const { run } = makeRunner([[
       'protection/required_status_checks',
@@ -231,7 +262,7 @@ describe('PrStateAdapter', () => {
     expect(result).toBeNull(); // null = "cannot determine required set"
   });
 
-  test('readRequiredChecks falls back to rollup isRequired when protection is unreadable (403)', async () => {
+  test('rollup evidence remains diagnostic and cannot authorize when protection is unreadable', async () => {
     // The real bug: the Actions GITHUB_TOKEN can NEVER read branch protection
     // (admin scope), so protection 403s in CI and the required set was permanently
     // null → verdict UNKNOWN. The rollup `isRequired` fallback is readable with the
@@ -245,8 +276,7 @@ describe('PrStateAdapter', () => {
     const adapter = new PrStateAdapter({ gh: run, git: run });
     const required = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' });
 
-    // Only required contexts, deduped across matrix duplicates, from both node types.
-    expect(required).toEqual(['unit', 'deploy/ok']);
+    expect(required).toBeNull();
     expect(adapter.lastRequiredSource).toBe('rollup');
   });
 
@@ -307,8 +337,23 @@ describe('PrStateAdapter', () => {
     ]);
     const adapter = new PrStateAdapter({ gh: run, git: run });
     expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
-      .toEqual(['unit', 'lint']);
+      .toBeNull();
     expect(page).toBe(2);
+  });
+
+  test('rollup evidence rejects non-canonical PR selectors before GraphQL', async () => {
+    for (const pr of ['42e0', '042', '42.0', '-1', '0']) {
+      let graphqlCalls = 0;
+      const protectionError = new Error('403');
+      protectionError.stderr = 'HTTP 403: Resource not accessible by integration';
+      const { run } = makeRunner([
+        ['protection/required_status_checks', () => { throw protectionError; }],
+        ['api graphql', () => { graphqlCalls += 1; return ROLLUP_REQUIRED_JSON; }],
+      ]);
+      const adapter = new PrStateAdapter({ gh: run, git: run });
+      expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr })).toBeNull();
+      expect(graphqlCalls).toBe(0);
+    }
   });
 
   test('readRequiredChecks stamps requiredSource=protection when protection is readable', async () => {
@@ -460,7 +505,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
         {
           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '1', author: { login: 'coderabbitai' }, body: 'nit' }] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '1', author: { __typename: 'Bot', login: 'coderabbitai' }, body: 'nit' }] },
         },
       ] } } } },
     });
@@ -483,7 +528,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
         {
           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '987654321', author: { __typename: 'Bot', login: 'coderabbitai' }, body: 'nit' }] },
         },
       ] } } } },
     });
@@ -495,6 +540,24 @@ describe('PrStateAdapter — bundle gather fields', () => {
     // the GraphQL query must actually request the comment database id
     const q = calls.find((c) => c.args.join(' ').includes('graphql')).args.join(' ');
     expect(q).toContain('fullDatabaseId');
+    expect(q).toContain('__typename');
+  });
+
+  test('readComments rejects nested authors without a complete actor type', async () => {
+    const graphqlJson = JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{
+          id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+            { fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' },
+          ] },
+        }],
+      } } } },
+    });
+    const { run } = makeRunner([['api graphql', graphqlJson]]);
+    const adapter = new PrStateAdapter({ gh: run, git: run });
+    await expect(adapter.readComments({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/author identity/i);
   });
 
   test('readComments coerces a missing line to null', async () => {
@@ -516,7 +579,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: true, endCursor: 'C1' },
         nodes: [{
           id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '11', author: { login: 'bot' }, body: 'a1' }] },
+          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '11', author: { __typename: 'Bot', login: 'bot' }, body: 'a1' }] },
         }],
       } } } },
     });
@@ -526,13 +589,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: false, endCursor: 'C1' },
         nodes: [{
           id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
-          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '21', author: { login: 'bot' }, body: 'b1' }] },
+          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '21', author: { __typename: 'Bot', login: 'bot' }, body: 'b1' }] },
         }],
       } } } },
     });
     // Remaining comments of thread B, fetched by node id.
     const innerCommentsPage = JSON.stringify({
-      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '22', author: { login: 'human' }, body: 'b2' }] } } },
+      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '22', author: { __typename: 'User', login: 'human' }, body: 'b2' }] } } },
     });
     // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
     const { run, calls } = makeRunner([

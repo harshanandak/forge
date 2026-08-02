@@ -8,6 +8,7 @@ const { PrStateAdapter } = require('../../lib/adapters/pr-state-adapter');
 const HEAD = 'a'.repeat(40);
 const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
 const ENABLED = { merge: { auto: { enabled: true, rules: ['checks_green'] } } };
+const NOW = Date.parse('2026-08-01T12:00:00Z');
 
 function args(pr = '42') {
   return [pr, '--auto', '--expect-head', HEAD, '--issue', ISSUE];
@@ -26,6 +27,8 @@ function context(overrides = {}) {
     requiredChecks: [{ context: 'ci', appId: 123 }],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
+    comments: [],
+    now: NOW,
     ...overrides,
   };
 }
@@ -42,7 +45,7 @@ function deps(overrides = {}) {
   };
 }
 
-function makeGh(threadPayload) {
+function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
   return (argv) => {
     if (argv[0] === 'pr' && argv[1] === 'view') {
       return JSON.stringify({
@@ -57,6 +60,7 @@ function makeGh(threadPayload) {
         reviews: [],
         comments: [],
         updatedAt: '2026-08-01T00:00:00Z',
+        ...viewOverrides,
       });
     }
     if (argv[0] === 'repo' && argv[1] === 'view') {
@@ -66,17 +70,15 @@ function makeGh(threadPayload) {
       return JSON.stringify({ contexts: ['ci'], checks: [{ context: 'ci', app_id: 123 }] });
     }
     if (argv[0] === 'api' && argv.includes('--paginate') && argv.includes('--slurp')) {
-      return JSON.stringify([{
-        total_count: 1,
-        check_runs: [{
+      const runs = checkRuns || [{
           id: 7,
           name: 'ci',
           head_sha: HEAD,
           status: 'completed',
           conclusion: 'success',
           app: { id: 123 },
-        }],
-      }]);
+        }];
+      return JSON.stringify([{ total_count: runs.length, check_runs: runs }]);
     }
     if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(threadPayload);
     throw new Error(`unexpected gh call: ${argv.join(' ')}`);
@@ -90,6 +92,84 @@ const validThreads = {
 };
 
 describe('merge authority — exact reviewer regressions', () => {
+  test('enforces the mandatory ten-minute settle even when config omits settle_min', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({
+        comments: [{ author: 'reviewer', at: new Date(NOW - 60_000).toISOString() }],
+      }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+    expect(out.error || out.reason).toMatch(/settle|quiet|10.minute/i);
+  });
+
+  test('uses the later edited timestamp for settle evidence', async () => {
+    const editedAt = new Date(NOW - 60_000).toISOString();
+    const fetched = await mergeCmd.defaultFetchPrContext({
+      pr: '42',
+      now: NOW,
+      gh: makeGh(validThreads, {
+        comments: [{
+          author: { login: 'reviewer' },
+          createdAt: new Date(NOW - 30 * 60_000).toISOString(),
+          updatedAt: editedAt,
+        }],
+      }),
+    });
+    expect(fetched.comments[0].at).toBe(editedAt);
+  });
+
+  test('rejects a malformed optional StatusContext before protected evaluation', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({
+        checks: [
+          { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', appId: 123 },
+          { name: 'optional-status', appId: null, state: '' },
+        ],
+      }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+    expect(out.error).toMatch(/observation|malformed/i);
+  });
+
+  test('default provider collection rejects unknown optional check-run enums', async () => {
+    const fetched = await mergeCmd.defaultFetchPrContext({
+      pr: '42',
+      now: NOW,
+      gh: makeGh(validThreads, {}, [
+        { id: 7, name: 'ci', head_sha: HEAD, status: 'completed', conclusion: 'success', app: { id: 123 } },
+        { id: 8, name: 'optional', head_sha: HEAD, status: 'garbage', conclusion: 'success', app: { id: 999 } },
+      ]),
+    });
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => fetched,
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
+  test('optional NEUTRAL and SKIPPED checks block the mutation seam', async () => {
+    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
+      let merges = 0;
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+        fetchPrContext: async () => context({ checks: [
+          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { name: 'optional', appId: 999, status: 'COMPLETED', conclusion },
+        ] }),
+        mergePr: async () => { merges += 1; return { merged: true }; },
+      }));
+      expect(out.merged).toBe(false);
+      expect(merges).toBe(0);
+    }
+  });
+
   test('requires a canonical positive-decimal PR number', () => {
     for (const selector of ['-R=evil/other', '--repo=evil/other', '0', '-1', '1.5', 'https://github.com/acme/forge/pull/42', '', ' 42']) {
       const parsed = mergeCmd.parseMergeArgs(args(selector));

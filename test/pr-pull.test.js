@@ -1,5 +1,7 @@
 'use strict';
 
+const FULL_HEAD = 'a'.repeat(40);
+
 const { describe, test, expect } = require('bun:test');
 
 const {
@@ -420,7 +422,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     };
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
       async readRequiredChecks() { return overrides.required || ['test (ubuntu, 20)', 'test (windows, 20)']; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async readComments() {
@@ -472,7 +474,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
       id: 'fake', kind: 'pr-state',
       async readState() {
         return {
-          headSha: 'pr-head-sha', state: 'OPEN', mergeable: 'MERGEABLE',
+          headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE',
           mergeStateStatus: 'CLEAN', checks: [], threads: [],
         };
       },
@@ -492,8 +494,8 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
       baseRef: 'origin/master', cwd: '/stable/root',
       adapter, runGh: () => '', self: 'me',
     });
-    expect(reads.find((r) => r.method === 'divergence').headRef).toBe('pr-head-sha');
-    expect(reads.find((r) => r.method === 'conflicts').headRef).toBe('pr-head-sha');
+    expect(reads.find((r) => r.method === 'divergence').headRef).toBe(FULL_HEAD);
+    expect(reads.find((r) => r.method === 'conflicts').headRef).toBe(FULL_HEAD);
   });
 
   test('an unavailable authoritative head fails closed instead of comparing checkout HEAD', async () => {
@@ -523,6 +525,32 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     ]));
   });
 
+  test('a malformed but stable head oid cannot produce a clean verdict', async () => {
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() {
+        return {
+          headSha: 'short-head', state: 'OPEN', mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN', checks: [], threads: [],
+        };
+      },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
+      async readComments() { return []; },
+      async readIssueComments() { return []; },
+      async readReviews() { return []; },
+      async readHeadCommitTime() { return Date.parse('2026-08-01T11:30:00Z'); },
+    };
+    const payload = await gatherPullSignal({
+      pr: '464', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', self: 'me', now: Date.parse('2026-08-01T12:00:00Z'),
+      settleWindowMs: 10 * 60_000,
+    });
+    expect(payload.verdict).toBe('UNKNOWN');
+    expect(payload.state).toBe('UNKNOWN');
+  });
+
   test('only fetches logs for FAILED checks (never for green ones)', async () => {
     const { adapter, runGh, runPass, ghCalls } = makeCtx();
     await gatherPullSignal({
@@ -543,7 +571,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     ];
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
       async readRequiredChecks() { return ['unit']; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async readComments() { return []; },
@@ -607,7 +635,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     ];
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: null, isDraft: false, checks, threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: null, isDraft: false, checks, threads: [] }; },
       async readRequiredChecks() { return ['CodeQL', 'Cross-OS Gate']; },
       async readDivergence() { return { behind: 0, ahead: 2 }; },
       async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
@@ -630,7 +658,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
   test('behind base → a behind blocker with the commit count', async () => {
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', checks: [], threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', checks: [], threads: [] }; },
       async readRequiredChecks() { return []; },
       async readDivergence() { return { behind: 5, ahead: 1 }; },
       async readComments() { return []; },
@@ -646,7 +674,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
   test('predicted merge conflicts → a conflict blocker listing the files', async () => {
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [], threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [], threads: [] }; },
       async readRequiredChecks() { return []; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async detectConflicts() { return { supported: true, conflicted: true, files: ['lib/a.js', 'lib/b.js'] }; },
@@ -667,7 +695,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     ];
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
       async readRequiredChecks() { return ['CodeQL', 'Cross-OS Gate']; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async readComments() { return []; },
@@ -690,7 +718,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     ];
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
       async readRequiredChecks() { return ['Vercel', 'unit']; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async readComments() { return []; },
@@ -708,7 +736,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     // NOT a resolvable review thread — the thread path never sees it.
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks: [], threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks: [], threads: [] }; },
       async readRequiredChecks() { return []; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async readComments() { return []; },
@@ -729,7 +757,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
   test('a bot whose LATEST comment is a success does NOT surface (superseded)', async () => {
     const adapter = {
       id: 'fake', kind: 'pr-state',
-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: [], threads: [] }; },
+      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: [], threads: [] }; },
       async readRequiredChecks() { return []; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
       async readComments() { return []; },

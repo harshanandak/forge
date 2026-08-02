@@ -27,10 +27,12 @@ function authorizedContext(overrides = {}) {
     isDraft: false,
     conflicting: false,
     unresolvedThreads: 0,
-    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
+    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
     requiredChecks: ['ci'],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
+    comments: [],
+    now: Date.parse('2026-08-01T12:00:00Z'),
     ...overrides,
   };
 }
@@ -91,12 +93,12 @@ describe('merge command — opt-in conditional auto-merge', () => {
   });
 
   test('does NOTHING (no merge) when a configured rule is unmet', async () => {
-    const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:10'] } } });
+    const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:20'] } } });
     let mergeCalled = false;
     const out = await mergeCmd.handler(mergeArgs('9'), {}, root, {
       ...AUTHORITY_DEPS,
       fetchPrContext: async () => authorizedContext({
-        comments: [{ author: 'x', at: '2026-07-04T11:58:00Z' }], // 2 min before `now`
+        comments: [{ author: 'x', at: '2026-07-04T11:49:00Z' }], // mandatory 10m passes; configured 20m fails
         now: Date.parse('2026-07-04T12:00:00Z'),
       }),
       mergePr: async () => { mergeCalled = true; },

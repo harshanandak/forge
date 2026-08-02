@@ -22,10 +22,12 @@ function context(overrides = {}) {
     isDraft: false,
     conflicting: false,
     unresolvedThreads: 0,
-    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
+    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
     requiredChecks: ['ci'],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
+    comments: [],
+    now: Date.parse('2026-08-01T12:00:00Z'),
     ...overrides,
   };
 }
@@ -126,10 +128,10 @@ describe('merge command — mandatory release authority', () => {
   test('blocks missing, pending, failed, and skipped required checks', async () => {
     for (const checks of [
       [],
-      [{ name: 'ci', conclusion: 'IN_PROGRESS' }],
-      [{ name: 'ci', conclusion: 'FAILURE' }],
-      [{ name: 'ci', conclusion: 'SKIPPED' }],
-      [{ name: 'ci', conclusion: 'NEUTRAL' }],
+      [{ name: 'ci', status: 'IN_PROGRESS', conclusion: null }],
+      [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }],
+      [{ name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' }],
+      [{ name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' }],
     ]) {
       let mergeCalls = 0;
       const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({

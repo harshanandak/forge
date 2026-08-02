@@ -24,7 +24,10 @@
 - [x] Validate the expanded affected scope: 331 tests / 995 expectations across 18 files with zero failures; targeted ESLint, syntax checks, and `git diff --check` passed.
 - [x] Reconcile exact-SHA review of `d33b65f4`: explicit `REQUEST_CHANGES`; do not push or install the rejected candidate.
 - [x] Remediate leased thread repository propagation, frozen ownership actor identity, complete observation validation, conflicting app-qualified policy, strict rollup/shared GraphQL collections, SUCCESS-only green semantics, and deterministic cleanup of command-owned Kernel drivers.
-- [x] Validate the final replacement tree: focused authority gate 76 tests / 270 expectations; final affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
+- [x] Validate candidate `7d02625888820f9afa83737cc30fbf1d20f955c5`: focused authority gate 76 tests / 270 expectations; affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
+- [x] Reconcile both exact-SHA review batches for `7d02625888820f9afa83737cc30fbf1d20f955c5`: required lanes returned `REQUEST_CHANGES`; reject the candidate and do not push or install it.
+- [x] Retain final convergence RED evidence for mandatory settle/edit freshness, malformed optional observations, shared SUCCESS-only semantics, full head OIDs, authoritative-protection no-fallback, provider lifecycle readability, canonical selectors, nested actor identity, and injected Kernel broker lifetime.
+- [x] Validate the replacement worktree: focused 232 tests / 772 expectations across 8 files; bounded 311 tests / 973 expectations across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

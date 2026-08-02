@@ -28,6 +28,7 @@ function makeAdapter(spec = {}) {
           mergeStateStatus: spec.mergeStateStatus || 'CLEAN',
           checks: spec.checks || [],
           threads: spec.threads || [],
+          providerEvidenceReadable: spec.providerEvidenceReadable,
         };
       },
       async readRequiredChecks() {
@@ -60,6 +61,19 @@ function makeAdapter(spec = {}) {
 const BASE_CTX = { pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' };
 
 describe('runShepherdPass — bounded pass state machine', () => {
+  test('IN_PROGRESS plus SUCCESS is not green', () => {
+    expect(isGreen({ status: 'IN_PROGRESS', conclusion: 'SUCCESS' })).toBe(false);
+  });
+
+  test('malformed provider evidence escalates before required-check evaluation', async () => {
+    const { adapter } = makeAdapter({
+      providerEvidenceReadable: false,
+      required: [],
+    });
+    const out = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(out.state).toBe('ESCALATE');
+  });
+
   // 1
   test('all required green + behind=0 → MERGE_READY, NO merge emitted', async () => {
     const { adapter, actions } = makeAdapter({

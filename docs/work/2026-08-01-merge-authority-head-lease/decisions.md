@@ -34,6 +34,12 @@ Kernel PR linkage accepts only positive safe integers or canonical positive-deci
 
 Global CLI flags are stripped before guarded merge argument parsing. Both `forge merge --path ...` and `forge pr --path ... merge` reach the same authority path rather than failing with usage or interpreting a global flag as a merge selector.
 
+## Exact-SHA review convergence
+
+Candidate `7d02625888820f9afa83737cc30fbf1d20f955c5` is rejected. Required review lanes found missing mandatory settle, edited-comment freshness, malformed optional observation handling, shared nonterminal/success contradictions, incomplete head OIDs, protection-policy fallback, success-like optional conclusions, provider lifecycle defaults, non-canonical selectors, incomplete nested actor identity, and premature disposal of an injected Kernel broker. No review verdict for that SHA authorizes its replacement.
+
+The replacement enforces an unconditional minimum ten-minute quiet period using the newest creation/edit/submission timestamp. Check-run and status-context collections validate provider enums collection-wide; only terminal `SUCCESS` is green, while optional `NEUTRAL`, `SKIPPED`, unknown, missing, or contradictory evidence blocks mutation. Pull requires full 40-character head OIDs. Authoritative protection parse failure never falls back to rollup-derived authorization; rollup data remains diagnostic only and accepts only canonical positive-decimal PR selectors. Shared provider state carries an explicit readability signal so missing lifecycle fields or malformed rollup members produce `ESCALATE`/`UNKNOWN`, and nested thread authors require a valid GraphQL actor type. Injected Kernel brokers retain caller ownership for same-command grounding; only internally created brokers are disposed by the issue-operation layer.
+
 ## Bounded residuals
 
 GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
