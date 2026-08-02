@@ -13,7 +13,7 @@ const { runShepherdPass } = require('../lib/pr-shepherd');
 const shepherdCmd = require('../lib/commands/shepherd');
 const { loadCommands, executeCommand } = require('../lib/commands/_registry');
 
-const HEAD = 'head-sha';
+const HEAD = 'a'.repeat(40);
 const NOW = Date.now();
 const SETTLED = NOW - 3600 * 1000; // 1h ago → outside the 600s settle window
 const GREEN_CLASS = { missing: [], skipped: [], pending: [], failing: [], unreadable: false };
@@ -281,7 +281,7 @@ describe('gatherPullSignal verdict integration', () => {
 
   // (e) torn read — head oid moves across the gather.
   test('(e) head oid changes across gather → not CLEAN (UNKNOWN)', async () => {
-    const payload = await gather({ headSha: (n) => `sha-${n}`, mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi });
+    const payload = await gather({ headSha: (n) => (n === 1 ? 'b'.repeat(40) : 'c'.repeat(40)), mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi });
     expect(payload.verdict).not.toBe('CLEAN-MERGEABLE');
     expect(payload.verdict).toBe('UNKNOWN');
     expect(payload.evidence.tornRead).toBe(true);

@@ -8,7 +8,7 @@ describe('gather — normalizeSnapshot mapping', () => {
   test('classifyCheck reuses the verdict-core predicates', () => {
     expect(classifyCheck({ conclusion: 'FAILURE' })).toBe('failed');
     expect(classifyCheck({ conclusion: 'STALE' })).toBe('failed'); // A5 gap filled
-    expect(classifyCheck({ conclusion: 'SUCCESS' })).toBe('green');
+    expect(classifyCheck({ status: 'COMPLETED', conclusion: 'SUCCESS' })).toBe('green');
     expect(classifyCheck({ conclusion: '', status: 'IN_PROGRESS' })).toBe('pending');
   });
 

@@ -285,7 +285,7 @@ describe('PrStateAdapter', () => {
     const required = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' });
 
     expect(required).toBeNull();
-    expect(adapter.lastRequiredSource).toBe('rollup');
+    expect(adapter.lastRequiredSource).toBeNull();
   });
 
   test('rollup fallback rejects GraphQL errors, missing pagination, and malformed nodes', async () => {

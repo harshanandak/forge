@@ -33,7 +33,7 @@ function scriptedAdapter(steps) {
       async readState() {
         const s = cur();
         return {
-          headSha: typeof s.headSha === 'function' ? s.headSha() : (s.headSha || 'sha-1'),
+          headSha: typeof s.headSha === 'function' ? s.headSha() : (s.headSha || 'a'.repeat(40)),
           state: s.state || 'OPEN',
           mergeStateStatus: s.mergeStateStatus || 'CLEAN',
           checks: s.checks || [],
@@ -69,10 +69,10 @@ describe('shepherd acceptance §5', () => {
   // §5.1 — Happy path to READY, zero manual steps, never merges, never resolves.
   test('§5.1 flaky required + behind → rerun → escalate (human rebase) → MERGE_READY', async () => {
     const s = scriptedAdapter([
-      { required: ['unit'], checks: [{ name: 'unit', conclusion: 'FAILURE', databaseId: '1' }], behind: 2,
+      { required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', databaseId: '1' }], behind: 2,
         threads: [{ id: 't1', commentId: 'c1', resolved: false }] },
-      { required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }], behind: 2 },
-      { required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }], behind: 0 },
+      { required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 2 },
+      { required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 },
     ]);
 
     const p1 = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter, rerunBudget: 3, rerunsUsed: 0 });
@@ -94,14 +94,14 @@ describe('shepherd acceptance §5', () => {
   // §5.2 — autoRebase path; lease reject → escalate, no retry.
   test('§5.2 autoRebase rebases; lease reject → ESCALATE with no retry', async () => {
     const ok = scriptedAdapter([
-      { required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }], behind: 2 },
+      { required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 2 },
     ]);
     const okRes = await runShepherdPass({ ...BASE_CTX, adapter: ok.adapter, autoRebase: true, cleanTree: true });
     expect(okRes.state).toBe('PENDING');
     expect(ok.actions.filter((a) => a.type === 'rebase')).toHaveLength(1);
 
     const lease = scriptedAdapter([
-      { required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }], behind: 2, leaseReject: true },
+      { required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 2, leaseReject: true },
     ]);
     const leaseRes = await runShepherdPass({ ...BASE_CTX, adapter: lease.adapter, autoRebase: true, cleanTree: true });
     expect(leaseRes.state).toBe('ESCALATE');
@@ -111,7 +111,7 @@ describe('shepherd acceptance §5', () => {
   // §5.3 — caps honored.
   test('§5.3 rerun budget exhausted → ESCALATE, no extra rerun', async () => {
     const s = scriptedAdapter([
-      { required: ['unit'], checks: [{ name: 'unit', conclusion: 'FAILURE', databaseId: '1' }], behind: 0 },
+      { required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', databaseId: '1' }], behind: 0 },
     ]);
     const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter, rerunBudget: 2, rerunsUsed: 2 });
     expect(res.state).toBe('ESCALATE');
@@ -121,9 +121,9 @@ describe('shepherd acceptance §5', () => {
   // §5.4 — never auto-merge in any branch.
   test('§5.4 gh pr merge / --auto never appear in any side-effect log', async () => {
     const specs = [
-      { required: ['u'], checks: [{ name: 'u', conclusion: 'SUCCESS' }], behind: 0 },
-      { required: ['u'], checks: [{ name: 'u', conclusion: 'FAILURE', databaseId: '1' }], behind: 0 },
-      { required: ['u'], checks: [{ name: 'u', conclusion: 'SUCCESS' }], behind: 3 },
+      { required: ['u'], checks: [{ name: 'u', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 },
+      { required: ['u'], checks: [{ name: 'u', status: 'COMPLETED', conclusion: 'FAILURE', databaseId: '1' }], behind: 0 },
+      { required: ['u'], checks: [{ name: 'u', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 3 },
       { required: null, checks: [], behind: 0 },
       { mergeStateStatus: 'DIRTY', required: ['u'], checks: [], behind: 0 },
     ];
@@ -143,7 +143,7 @@ describe('shepherd acceptance §5', () => {
     const protRes = await runShepherdPass({ ...BASE_CTX, adapter: prot.adapter });
     expect(protRes.state).toBe('HARD_STOP'); // insufficient scope on protection read
 
-    const unreadable = scriptedAdapter([{ required: null, checks: [{ name: 'u', conclusion: 'SUCCESS' }], behind: 0 }]);
+    const unreadable = scriptedAdapter([{ required: null, checks: [{ name: 'u', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 }]);
     const unreadableRes = await runShepherdPass({ ...BASE_CTX, adapter: unreadable.adapter });
     expect(unreadableRes.state).toBe('ESCALATE');
 
@@ -219,8 +219,8 @@ describe('shepherd acceptance §5', () => {
       id: 'head-move', kind: 'pr-state',
       async readState() {
         reads += 1;
-        return { headSha: reads === 1 ? 'sha-1' : 'sha-2', mergeStateStatus: 'CLEAN',
-          checks: [{ name: 'unit', conclusion: 'FAILURE', databaseId: '1' }], threads: [] };
+        return { headSha: reads === 1 ? 'a'.repeat(40) : 'b'.repeat(40), mergeStateStatus: 'CLEAN',
+          checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', databaseId: '1' }], threads: [] };
       },
       async readRequiredChecks() { return ['unit']; },
       async readDivergence() { return { behind: 0, ahead: 1 }; },
@@ -233,7 +233,7 @@ describe('shepherd acceptance §5', () => {
 
   // Command-level happy/handoff: one invocation = one pass, no merge in actions.
   test('command handler runs one pass and never carries a merge action', async () => {
-    const s = scriptedAdapter([{ required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }], behind: 0 }]);
+    const s = scriptedAdapter([{ required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 }]);
     const out = await shepherdCmd.handler(['123'], {}, ROOT, {
       adapter: s.adapter,
       buildContext: async () => BASE_CTX,
@@ -245,7 +245,7 @@ describe('shepherd acceptance §5', () => {
   // Lifecycle — a merged/closed PR is terminal so the external scheduler stops
   // re-invoking it (previously the pass would keep returning MERGE_READY).
   test('lifecycle: merged PR → MERGED terminal, no merge action', async () => {
-    const s = scriptedAdapter([{ state: 'MERGED', required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }] }]);
+    const s = scriptedAdapter([{ state: 'MERGED', required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }] }]);
     const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
     expect(res.state).toBe('MERGED');
     expect(noMerge(res.actions)).toBe(true);
@@ -262,7 +262,7 @@ describe('shepherd acceptance §5', () => {
   // shepherd detects + hands off to /review and NEVER resolves threads.
   test('comments: unresolved human comment → NEEDS_REVIEW (never resolves)', async () => {
     const s = scriptedAdapter([{
-      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
       comments: [{ author: 'alice', body: 'please fix X', isResolved: false }],
     }]);
     const res = await runShepherdPass({ ...BASE_CTX, adapter: s.adapter });
@@ -275,7 +275,7 @@ describe('shepherd acceptance §5', () => {
   // non-actionable — author is irrelevant. All-resolved/outdated → MERGE_READY.
   test('comments: only resolved / outdated threads → not actionable (MERGE_READY)', async () => {
     const s = scriptedAdapter([{
-      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
       comments: [
         { author: 'bob', body: 'done', isResolved: true },
         { author: 'coderabbitai', body: 'stale', isOutdated: true },
@@ -291,7 +291,7 @@ describe('shepherd acceptance §5', () => {
   test('comments: ANY unresolved thread → NEEDS_REVIEW (author-agnostic, fail-closed)', async () => {
     for (const author of ['coderabbitai', 'github-actions', 'somenewbot[bot]']) {
       const s = scriptedAdapter([{
-        required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+        required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
         comments: [{ author, body: 'open finding', isResolved: false }],
       }]);
       const res = await runShepherdPass({ ...BASE_CTX, self: 'me-bot', adapter: s.adapter });
@@ -316,7 +316,7 @@ describe('shepherd acceptance §5', () => {
   // first comment's author).
   test('comments: bot-opened thread with a later human reply → NEEDS_REVIEW', async () => {
     const s = scriptedAdapter([{
-      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+      required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
       comments: [{ isResolved: false, comments: [
         { author: 'coderabbitai', body: 'nit: rename' },
         { author: 'carol', body: 'good catch — also fix Y' },

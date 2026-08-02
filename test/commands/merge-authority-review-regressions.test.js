@@ -30,6 +30,7 @@ function context(overrides = {}) {
     reviewEvidenceReadable: true,
     reviews: [],
     comments: [],
+    lastActivityAt: NOW - 60 * 60_000,
     now: NOW,
     ...overrides,
   };

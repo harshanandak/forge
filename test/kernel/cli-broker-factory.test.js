@@ -32,7 +32,7 @@ function fakeRuntime() {
   return { kind: 'bun', module: { Database: FakeDb } };
 }
 
-function failingRuntime(state) {
+function failingRuntime(state, closeError) {
   class FakeDb {
     constructor() {
       state.opened += 1;
@@ -45,6 +45,7 @@ function failingRuntime(state) {
     }
     close() {
       state.closed += 1;
+      if (closeError) throw closeError;
     }
   }
   return {
@@ -120,6 +121,20 @@ describe('buildMigratedKernelIssueDeps', () => {
         gitCommonDir: '/repo/.git',
         databasePath: ':memory:',
         runtime: failingRuntime(state),
+      })).rejects.toThrow('migration failed');
+      expect(state).toEqual({ opened: 1, closed: 1 });
+    },
+    TIMEOUT,
+  );
+  test(
+    'preserves the migration error when closing the failed driver also fails',
+    async () => {
+      const state = { opened: 0, closed: 0 };
+      await expect(buildMigratedKernelIssueDeps({
+        projectRoot: '/repo',
+        gitCommonDir: '/repo/.git',
+        databasePath: ':memory:',
+        runtime: failingRuntime(state, new Error('close failed')),
       })).rejects.toThrow('migration failed');
       expect(state).toEqual({ opened: 1, closed: 1 });
     },

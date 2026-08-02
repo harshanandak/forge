@@ -29,6 +29,7 @@ function context(overrides = {}) {
     reviewEvidenceReadable: true,
     reviews: [],
     comments: [],
+    lastActivityAt: '2026-08-01T11:00:00Z',
     now: Date.parse('2026-08-01T12:00:00Z'),
     ...overrides,
   };
@@ -184,6 +185,17 @@ describe('merge command — mandatory release authority', () => {
       expect(out.merged).toBe(false);
       expect(mergeCalls).toBe(0);
     }
+  });
+
+  test('blocks when no activity timestamp can prove the mandatory settle window', async () => {
+    let mergeCalls = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ lastActivityAt: undefined }),
+      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+    }));
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/settle activity evidence/i);
+    expect(mergeCalls).toBe(0);
   });
 
   test('passes the immutable head and issue through the injected merge seam', async () => {

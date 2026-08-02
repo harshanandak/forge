@@ -242,6 +242,23 @@ describe('forge issue service contract', () => {
     }
   });
 
+  test('owned cleanup failures do not mask the operation result or error', async () => {
+    const { runIssueOperation } = require('../lib/forge-issues');
+    for (const shouldFail of [false, true]) {
+      const run = runIssueOperation('list', [], '/repo', {
+        createKernelBroker: () => ({
+          async runIssueOperation() {
+            if (shouldFail) throw new Error('read failed');
+            return { success: true, output: [] };
+          },
+          async close() { throw new Error('close failed'); },
+        }),
+      });
+      if (shouldFail) await expect(run).rejects.toThrow('read failed');
+      else await expect(run).resolves.toEqual({ success: true, output: [] });
+    }
+  });
+
   test('does not close an injected Kernel broker needed by same-command grounding', async () => {
     const { runIssueOperation } = require('../lib/forge-issues');
     let closed = 0;
