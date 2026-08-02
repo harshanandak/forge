@@ -27,6 +27,8 @@ function context(overrides = {}) {
     requiredChecks: [{ context: 'ci', appId: 123 }],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
+    reviewEvidenceReadable: true,
+    reviews: [],
     comments: [],
     now: NOW,
     ...overrides,
@@ -173,6 +175,31 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(fetched.lastActivityAt).toBe(Date.parse(updatedAt));
     expect(out.merged).toBe(false);
     expect(merges).toBe(0);
+  });
+
+  test('review authority rejects unreadable, malformed, stale, and blocking latest evidence', async () => {
+    const valid = {
+      id: 'R-1', author: 'reviewer', authorTypename: 'User', state: 'COMMENTED',
+      createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T10:00:00Z',
+      submittedAt: '2026-08-01T10:00:00Z', activityAt: '2026-08-01T10:00:00.000Z',
+      commitOid: HEAD, body: '',
+    };
+    for (const overrides of [
+      { reviewEvidenceReadable: false },
+      { reviews: [{ ...valid, state: 'BOGUS' }] },
+      { reviews: [{ ...valid, commitOid: 'short' }] },
+      { reviews: [{ ...valid, commitOid: 'b'.repeat(40) }] },
+      { reviews: [{ ...valid, state: 'CHANGES_REQUESTED' }] },
+    ]) {
+      let merges = 0;
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+        fetchPrContext: async () => context(overrides),
+        mergePr: async () => { merges += 1; return { merged: true }; },
+      }));
+      expect(out.merged).toBe(false);
+      expect(merges).toBe(0);
+      expect(out.error || out.reason).toMatch(/review/i);
+    }
   });
 
   test('uses recent PR or review activity for mandatory settle without comments', async () => {

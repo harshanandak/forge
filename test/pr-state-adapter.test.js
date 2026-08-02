@@ -715,9 +715,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
         pageInfo: { hasNextPage: false, endCursor: null },
         nodes: [
           // Oldest→newest: coderabbitai's second review supersedes its first.
-          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T12:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
-          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
-          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', createdAt: '2026-07-12T10:59:00Z', updatedAt: '2026-07-12T11:00:00Z', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T12:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'a'.repeat(40) }, body: 'first pass' },
+          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'b'.repeat(40) }, body: 'second pass' },
+          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', createdAt: '2026-07-12T10:59:00Z', updatedAt: '2026-07-12T11:00:00Z', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'b'.repeat(40) }, body: 'lgtm' },
         ],
       } } } },
     });
@@ -728,9 +728,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
     // Latest-per-author: coderabbitai collapses to its newer (second) review.
     expect(reviews).toHaveLength(2);
     const cr = reviews.find((r) => r.author === 'coderabbitai');
-    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', activityAt: '2026-07-12T12:00:00.000Z', commitOid: 'head-sha', body: 'second pass' });
+    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', activityAt: '2026-07-12T12:00:00.000Z', commitOid: 'b'.repeat(40), body: 'second pass' });
     const alice = reviews.find((r) => r.author === 'alice');
-    expect(alice.commitOid).toBe('head-sha');
+    expect(alice.commitOid).toBe('b'.repeat(40));
     expect(alice.authorTypename).toBe('User');
     // A GraphQL request was constructed (not a `gh pr view`).
     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
@@ -749,12 +749,12 @@ describe('PrStateAdapter — bundle gather fields', () => {
       if (call === 1) {
         return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
           pageInfo: { hasNextPage: true, endCursor: 'CUR' },
-          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'a'.repeat(40) }, body: '' }],
         } } } } });
       }
       return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
         pageInfo: { hasNextPage: false, endCursor: null },
-        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'b'.repeat(40) }, body: '' }],
       } } } } });
     };
     const adapter = new PrStateAdapter({ gh: run, git: run });
@@ -763,6 +763,25 @@ describe('PrStateAdapter — bundle gather fields', () => {
     // The second page request must actually forward the returned cursor.
     expect(calls[1].args).toContain('after=CUR');
     expect(reviews.map((r) => r.author).sort()).toEqual(['bot-a', 'bot-b']);
+  });
+
+  test('readReviews rejects unknown states and non-full commit OIDs', async () => {
+    for (const review of [
+      { state: 'BOGUS', commit: { oid: 'a'.repeat(40) } },
+      { state: 'COMMENTED', commit: { oid: 'short' } },
+    ]) {
+      const page = JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{
+          id: 'R-INVALID', author: { __typename: 'Bot', login: 'review-agent' },
+          createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z',
+          submittedAt: '2026-07-12T09:00:00Z', body: '', ...review,
+        }],
+      } } } } });
+      const { run } = makeRunner([['reviews(first', page]]);
+      const adapter = new PrStateAdapter({ gh: run, git: run });
+      await expect(adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/review/i);
+    }
   });
 
   test('readHeadCommitTime parses the head commit committedDate to epoch ms', async () => {

@@ -26,6 +26,8 @@ function context(overrides = {}) {
     requiredChecks: [{ context: 'ci', appId: null }],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
+    reviewEvidenceReadable: true,
+    reviews: [],
     comments: [],
     now: Date.parse('2026-08-01T12:00:00Z'),
     ...overrides,

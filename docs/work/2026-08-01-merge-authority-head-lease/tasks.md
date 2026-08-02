@@ -37,6 +37,8 @@
 - [x] Require an authorizing provider merge state at Shepherd's terminal handoff; add RED/GREEN coverage and rerun the bounded affected manifest once.
 - [x] Reconcile the late predecessor review finding against `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a`: reject because `gh pr view` omits review edit timestamps.
 - [x] Move settle authority to fully paginated, agent-agnostic GraphQL review evidence; require creation/update/submission timestamps and retain latest activity per author.
+- [x] Reconcile exact-SHA review of `23f5854f069ccfb22324d1266f132b930745a9a3`: reject because merge authority discarded normalized actor/state/commit-head review evidence.
+- [x] Make complete normalized review evidence a mandatory initial/fresh exact-head gate; reject unknown states, malformed OIDs, stale active reviews, changes requested, and pending reviews without vendor-specific handling.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
