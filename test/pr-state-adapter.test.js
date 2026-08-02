@@ -523,6 +523,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(q).toContain('path line');
   });
 
+  test('readComments rejects non-canonical PR selectors before GraphQL', async () => {
+    let calls = 0;
+    const adapter = new PrStateAdapter({ gh: () => { calls += 1; return '{}'; }, git: () => '' });
+    await expect(adapter.readComments({ owner: 'o', repo: 'r', pr: '042' })).rejects.toThrow(/PR selector/i);
+    expect(calls).toBe(0);
+  });
+
   test('readComments surfaces the REST commentId (fullDatabaseId) for replies', async () => {
     const graphqlJson = JSON.stringify({
       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
@@ -615,6 +622,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
     expect(firstGraphql.args.join(' ')).not.toContain('after=');
     // The query declares the cursor variable + pageInfo on both connections.
     expect(firstGraphql.args.join(' ')).toContain('pageInfo{hasNextPage endCursor}');
+    const innerGraphql = calls.find((c) => c.args.join(' ').includes('id=PRRT_B'));
+    expect(innerGraphql.args.join(' ')).toContain('author{__typename login}');
   });
 
   test('detectConflicts reports a clean merge when merge-tree exits 0', async () => {

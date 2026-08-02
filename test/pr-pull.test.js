@@ -551,6 +551,32 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
     expect(payload.state).toBe('UNKNOWN');
   });
 
+  test('a missing final head read cannot fall back to the valid starting head', async () => {
+    let reads = 0;
+    const adapter = {
+      id: 'fake', kind: 'pr-state',
+      async readState() {
+        reads += 1;
+        return reads === 1 ? {
+          headSha: FULL_HEAD, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN', checks: [], threads: [],
+        } : null;
+      },
+      async readRequiredChecks() { return []; },
+      async readDivergence() { return { behind: 0, ahead: 1 }; },
+      async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
+      async readComments() { return []; },
+      async readIssueComments() { return []; },
+      async readReviews() { return []; },
+      async readHeadCommitTime() { return Date.parse('2026-08-01T11:30:00Z'); },
+    };
+    const payload = await gatherPullSignal({
+      pr: '464', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+      adapter, runGh: () => '', self: 'me', now: Date.parse('2026-08-01T12:00:00Z'),
+    });
+    expect(payload.verdict).toBe('UNKNOWN');
+  });
+
   test('only fetches logs for FAILED checks (never for green ones)', async () => {
     const { adapter, runGh, runPass, ghCalls } = makeCtx();
     await gatherPullSignal({
@@ -932,7 +958,7 @@ describe('legacyStateFor (terminal lifecycle wins over the verdict projection)',
 // or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
 // pr-verdict label falsely reads `behind` on a PR GitHub considers up-to-date.
 describe('BEHIND verdict reconciles with mergeStateStatus (5291f2d2)', () => {
-  const settled = { headOidStart: 'h', headOidEnd: 'h' };
+  const settled = { headOidStart: FULL_HEAD, headOidEnd: FULL_HEAD };
 
   test('behind-count>0 but mss=UNSTABLE (the #402 case) is NOT BEHIND', () => {
     const { verdict } = computeVerdict({ mergeStateStatus: 'UNSTABLE', behind: 25, ...settled });

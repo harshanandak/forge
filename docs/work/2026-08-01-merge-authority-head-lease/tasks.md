@@ -28,6 +28,9 @@
 - [x] Reconcile both exact-SHA review batches for `7d02625888820f9afa83737cc30fbf1d20f955c5`: required lanes returned `REQUEST_CHANGES`; reject the candidate and do not push or install it.
 - [x] Retain final convergence RED evidence for mandatory settle/edit freshness, malformed optional observations, shared SUCCESS-only semantics, full head OIDs, authoritative-protection no-fallback, provider lifecycle readability, canonical selectors, nested actor identity, and injected Kernel broker lifetime.
 - [x] Validate the replacement worktree: focused 232 tests / 772 expectations across 8 files; bounded 311 tests / 973 expectations across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+- [x] Reconcile terminal exact-SHA review of `3274e04cf71c24c255360fc70007e4dbd4e9687c`: all three lanes returned `REQUEST_CHANGES`; reject the candidate and retain its concrete counterexamples.
+- [x] Add focused RED coverage for aggregate activity settle, optional rollup CheckRuns, strict policy/check/ownership identity, injected binding-driver ownership, full final-head evidence, canonical GraphQL selectors, nested actor type, and Shepherd malformed-provider escalation.
+- [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
 - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
 - [ ] Push/open PR only after PASS.
 - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

@@ -36,7 +36,7 @@ function context(overrides = {}) {
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
-    verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
+    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
     verifyPrIssueBinding: async () => ({ bound: true }),
     env: { FORGE_ACTOR: 'release-actor' },
     fetchPrContext: async () => context(),
@@ -121,6 +121,17 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(fetched.comments[0].at).toBe(editedAt);
   });
 
+  test('uses recent PR or review activity for mandatory settle without comments', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({ comments: [], lastActivityAt: NOW - 60_000 }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+    expect(out.error || out.reason).toMatch(/settle|quiet|10.minute/i);
+  });
+
   test('rejects a malformed optional StatusContext before protected evaluation', async () => {
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -145,6 +156,25 @@ describe('merge authority — exact reviewer regressions', () => {
         { id: 7, name: 'ci', head_sha: HEAD, status: 'completed', conclusion: 'success', app: { id: 123 } },
         { id: 8, name: 'optional', head_sha: HEAD, status: 'garbage', conclusion: 'success', app: { id: 999 } },
       ]),
+    });
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => fetched,
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
+  test('default provider collection does not drop nonterminal optional rollup CheckRuns', async () => {
+    const fetched = await mergeCmd.defaultFetchPrContext({
+      pr: '42',
+      now: NOW,
+      gh: makeGh(validThreads, {
+        statusCheckRollup: [{
+          __typename: 'CheckRun', name: 'optional', status: 'IN_PROGRESS', conclusion: 'SUCCESS',
+        }],
+      }),
     });
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -225,6 +255,47 @@ describe('merge authority — exact reviewer regressions', () => {
         }),
       });
       expect(out.owned).toBe(false);
+    }
+  });
+
+  test('both ownership probes require explicit actor and claimedBy identity', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      verifyIssueOwnership: async () => ({ owned: true, expired: false }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(false);
+    expect(merges).toBe(0);
+  });
+
+  test('injected Kernel binding drivers remain caller-owned', async () => {
+    let closes = 0;
+    const driver = { close() { closes += 1; } };
+    const broker = { listOpenPrs: async () => [{ repo: 'acme/forge', number: 42, state: 'open', issue_id: ISSUE }] };
+    const result = await mergeCmd.defaultVerifyPrIssueBinding({
+      issueId: ISSUE,
+      pr: '42',
+      projectRoot: process.cwd(),
+      prContext: context(),
+      buildBroker: async () => ({ broker, driver, gitCommonDir: 'C:/repo/.git' }),
+    });
+    expect(result.bound).toBe(true);
+    expect(closes).toBe(0);
+    expect(await broker.listOpenPrs()).toHaveLength(1);
+  });
+
+  test('missing policy application identity or check-run status is non-authorizing', async () => {
+    for (const overrides of [
+      { requiredChecks: [{ context: 'ci' }] },
+      { checks: [{ name: 'ci', appId: 123, conclusion: 'SUCCESS' }] },
+    ]) {
+      let merges = 0;
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+        fetchPrContext: async () => context(overrides),
+        mergePr: async () => { merges += 1; return { merged: true }; },
+      }));
+      expect(out.merged).toBe(false);
+      expect(merges).toBe(0);
     }
   });
 

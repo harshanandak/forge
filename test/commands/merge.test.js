@@ -27,8 +27,8 @@ function authorizedContext(overrides = {}) {
     isDraft: false,
     conflicting: false,
     unresolvedThreads: 0,
-    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
-    requiredChecks: ['ci'],
+    checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' }],
+    requiredChecks: [{ context: 'ci', appId: null }],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
     comments: [],
@@ -39,7 +39,7 @@ function authorizedContext(overrides = {}) {
 
 const AUTHORITY_DEPS = {
   env: { FORGE_ACTOR: 'release-actor' },
-  verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
+  verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
   verifyPrIssueBinding: async () => ({ bound: true }),
 };
 

@@ -22,8 +22,8 @@ function context(overrides = {}) {
     isDraft: false,
     conflicting: false,
     unresolvedThreads: 0,
-    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
-    requiredChecks: ['ci'],
+    checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' }],
+    requiredChecks: [{ context: 'ci', appId: null }],
     requiredCheckSource: 'protection',
     requiredChecksKnown: true,
     comments: [],
@@ -35,7 +35,7 @@ function context(overrides = {}) {
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
-    verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
+    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
     verifyPrIssueBinding: async () => ({ bound: true }),
     env: { FORGE_ACTOR: 'release-actor' },
     fetchPrContext: async () => context(),
@@ -128,10 +128,10 @@ describe('merge command — mandatory release authority', () => {
   test('blocks missing, pending, failed, and skipped required checks', async () => {
     for (const checks of [
       [],
-      [{ name: 'ci', status: 'IN_PROGRESS', conclusion: null }],
-      [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }],
-      [{ name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' }],
-      [{ name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' }],
+      [{ name: 'ci', appId: 123, status: 'IN_PROGRESS', conclusion: null }],
+      [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' }],
+      [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SKIPPED' }],
+      [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'NEUTRAL' }],
     ]) {
       let mergeCalls = 0;
       const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
@@ -140,7 +140,7 @@ describe('merge command — mandatory release authority', () => {
       }));
       expect(out.success).toBe(false);
       expect(out.merged).toBe(false);
-      expect(out.error).toMatch(/required check/i);
+      expect(out.error).toMatch(/required check|observation/i);
       expect(mergeCalls).toBe(0);
     }
   });
@@ -152,8 +152,8 @@ describe('merge command — mandatory release authority', () => {
       verifyIssueOwnership: async () => {
         ownershipCalls += 1;
         return ownershipCalls === 1
-          ? { owned: true, claimedBy: 'release-actor', expired: false }
-          : { owned: false, claimedBy: 'other', expired: false };
+          ? { owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }
+          : { owned: false, actor: 'other', claimedBy: 'other', expired: false };
       },
       mergePr: async () => { mergeCalls += 1; return { merged: true }; },
     }));
@@ -265,7 +265,9 @@ describe('merge command — mandatory release authority', () => {
           isDraft: false,
           mergeable: 'MERGEABLE',
           mergeStateStatus: 'CLEAN',
-          statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS' }],
+          statusCheckRollup: [{
+            __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS',
+          }],
           reviews: [],
           comments: [],
           updatedAt: '2026-08-01T00:00:00Z',

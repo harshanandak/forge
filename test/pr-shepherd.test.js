@@ -65,6 +65,10 @@ describe('runShepherdPass — bounded pass state machine', () => {
     expect(isGreen({ status: 'IN_PROGRESS', conclusion: 'SUCCESS' })).toBe(false);
   });
 
+  test('missing status plus SUCCESS is not green', () => {
+    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(false);
+  });
+
   test('malformed provider evidence escalates before required-check evaluation', async () => {
     const { adapter } = makeAdapter({
       providerEvidenceReadable: false,
@@ -72,6 +76,17 @@ describe('runShepherdPass — bounded pass state machine', () => {
     });
     const out = await runShepherdPass({ ...BASE_CTX, adapter });
     expect(out.state).toBe('ESCALATE');
+  });
+
+  test('malformed non-auth state or protection reads escalate instead of throwing', async () => {
+    for (const spec of [
+      { stateAuthError: new Error('malformed GraphQL envelope') },
+      { requiredAuthError: new Error('malformed protection payload') },
+    ]) {
+      const { adapter } = makeAdapter(spec);
+      const out = await runShepherdPass({ ...BASE_CTX, adapter });
+      expect(out.state).toBe('ESCALATE');
+    }
   });
 
   // 1
@@ -339,7 +354,7 @@ describe('isFailed covers StatusContext error states (Vercel/Netlify)', () => {
   test('only SUCCESS is green; NEUTRAL and SKIPPED remain non-authorizing', () => {
     expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
     expect(isFailed({ conclusion: 'PENDING' })).toBe(false);
-    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(true);
+    expect(isGreen({ status: 'COMPLETED', conclusion: 'SUCCESS' })).toBe(true);
     expect(isGreen({ conclusion: 'NEUTRAL' })).toBe(false);
     expect(isGreen({ conclusion: 'SKIPPED' })).toBe(false);
   });
