@@ -35,6 +35,22 @@ function context(overrides = {}) {
   };
 }
 
+function reviewEvidence(state, commitOid = HEAD, overrides = {}) {
+  return {
+    id: `review-${state.toLowerCase()}`,
+    author: 'reviewer',
+    authorTypename: 'User',
+    state,
+    commitOid,
+    body: `${state} review`,
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: '2026-08-01T00:00:00Z',
+    submittedAt: '2026-08-01T00:00:00Z',
+    activityAt: '2026-08-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
 function deps(overrides = {}) {
   return {
     loadConfig: () => ENABLED,
@@ -198,6 +214,65 @@ describe('merge command — mandatory release authority', () => {
     expect(mergeCalls).toBe(0);
   });
 
+
+  test('treats a stale COMMENTED review as non-authorizing history that does not veto', async () => {
+    let mergeCalls = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({
+        reviews: [reviewEvidence('COMMENTED', OTHER_HEAD)],
+      }),
+      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+    }));
+    expect(out.success).toBe(true);
+    expect(out.merged).toBe(true);
+    expect(mergeCalls).toBe(1);
+  });
+
+  test('keeps stale APPROVED and CHANGES_REQUESTED reviews fail-closed', async () => {
+    for (const state of ['APPROVED', 'CHANGES_REQUESTED']) {
+      let mergeCalls = 0;
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+        fetchPrContext: async () => context({
+          reviews: [reviewEvidence(state, OTHER_HEAD)],
+        }),
+        mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+      }));
+      expect(out.success).toBe(false);
+      expect(out.merged).toBe(false);
+      expect(out.error).toMatch(/stale/i);
+      expect(mergeCalls).toBe(0);
+    }
+  });
+
+  test('keeps current-head PENDING and CHANGES_REQUESTED reviews blocking', async () => {
+    for (const state of ['PENDING', 'CHANGES_REQUESTED']) {
+      let mergeCalls = 0;
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+        fetchPrContext: async () => context({
+          reviews: [reviewEvidence(state)],
+        }),
+        mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+      }));
+      expect(out.success).toBe(false);
+      expect(out.merged).toBe(false);
+      expect(out.error).toMatch(/review state|authorize/i);
+      expect(mergeCalls).toBe(0);
+    }
+  });
+
+  test('keeps malformed stale COMMENTED review evidence blocking', async () => {
+    let mergeCalls = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => context({
+        reviews: [reviewEvidence('COMMENTED', OTHER_HEAD, { body: null })],
+      }),
+      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+    }));
+    expect(out.success).toBe(false);
+    expect(out.merged).toBe(false);
+    expect(out.error).toMatch(/malformed/i);
+    expect(mergeCalls).toBe(0);
+  });
   test('passes the immutable head and issue through the injected merge seam', async () => {
     let mutation;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
