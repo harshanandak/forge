@@ -19,6 +19,7 @@ function mergeArgs(pr) {
 }
 
 function authorizedContext(overrides = {}) {
+  const now = overrides.now ?? Date.parse('2026-08-01T12:00:00Z');
   return {
     number: 42,
     repository: 'acme/forge',
@@ -34,7 +35,8 @@ function authorizedContext(overrides = {}) {
     reviewEvidenceReadable: true,
     reviews: [],
     comments: [],
-    now: Date.parse('2026-08-01T12:00:00Z'),
+    lastActivityAt: now - 60 * 60_000,
+    now,
     ...overrides,
   };
 }
