@@ -63,8 +63,46 @@ describe('onboarding surface: setup-generated AGENTS.md', () => {
       expect(content).toContain('forge upgrade');
       expect(content).toContain('forge gate');
       expect(content).toContain('forge role');
+
+      // Packaged/setup AGENTS.md must bootstrap model agents into the shared
+      // using-forge dispatch skill without copying its dynamic policy body.
+      expect(content).toContain('Skill Dispatch');
+      expect(content).toContain('using-forge');
+      expect(content).toContain('forge skill for');
+      expect(content).toContain('1% chance');
+      expect(content).toContain('Using [skill] to [purpose]');
+      expect(content).toContain('never branch on harness identity');
+      expect(content).not.toContain('<EXTREMELY-IMPORTANT>');
     } finally {
       rmrf(repo);
     }
   }, 60000);
+
+  test('preserves the dispatch contract when setup is rerun', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-onboarding-rerun-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: repo });
+      spawnSync('git', ['-c', 'user.email=a@a.com', '-c', 'user.name=a', 'commit', '-q', '-m', 'init', '--allow-empty'], { cwd: repo });
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = spawnSync(process.execPath, [FORGE_BIN, 'setup', '--yes', '--agent=claude'], {
+          cwd: repo,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 60000,
+        });
+        expect(result.status).toBe(0);
+      }
+
+      const content = fs.readFileSync(path.join(repo, 'AGENTS.md'), 'utf8');
+      expect(content).toContain('Skill Dispatch');
+      expect(content).toContain('using-forge');
+      expect(content).toContain('forge skill for');
+      expect(content.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(content.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+    } finally {
+      rmrf(repo);
+    }
+  }, 120000);
+
 });

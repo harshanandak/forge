@@ -94,6 +94,84 @@ describe('smartMergeAgentsMd', () => {
     });
   });
 
+  describe('Forge markers without USER markers', () => {
+    it('updates Forge-only content without creating a USER block or duplicating it', () => {
+      const existing = [
+        '# AGENTS.md',
+        '',
+        '<!-- FORGE:START - Do not edit below -->',
+        '## Old Forge Content',
+        'This is outdated.',
+        '<!-- FORGE:END -->',
+      ].join('\n');
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result).not.toContain('This is outdated.');
+      expect(result).toContain('Some forge content here.');
+      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+      expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+    });
+
+    it('preserves unmarked content surrounding the Forge block as USER content', () => {
+      const existing = [
+        'Project-specific instructions',
+        '',
+        '<!-- FORGE:START - Do not edit below -->',
+        '## Old Forge Content',
+        'This is outdated.',
+        '<!-- FORGE:END -->',
+        '',
+        'Additional project instructions',
+      ].join('\n');
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result).toContain('<!-- USER:START -->');
+      expect(result).toContain('Project-specific instructions');
+      expect(result).toContain('Additional project instructions');
+      expect(result).toContain('<!-- USER:END -->');
+      expect(result).not.toContain('This is outdated.');
+      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+    });
+
+    it('keeps generated wrapper content idempotent across repeated smart merges', () => {
+      const first = smartMergeAgentsMd('', newContent);
+      const second = smartMergeAgentsMd(first, newContent);
+      const third = smartMergeAgentsMd(second, newContent);
+
+      expect(third.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(third.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+      expect(third.match(/## Improving This Workflow/g)).toHaveLength(1);
+      expect(third).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+    });
+
+    it('removes the generated footer before preserving trailing user text', () => {
+      const generated = smartMergeAgentsMd('', newContent);
+      const existing = `${generated}\nProject instructions after the generated footer`;
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result).toContain('<!-- USER:START -->');
+      expect(result).toContain('Project instructions after the generated footer');
+      expect(result).toContain('<!-- USER:END -->');
+      expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
+    });
+
+    it('recognizes generated wrapper content with CRLF line endings', () => {
+      const existing = smartMergeAgentsMd('', newContent).replace(/\n/g, '\r\n');
+
+      const result = smartMergeAgentsMd(existing, newContent);
+
+      expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
+      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+      expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+    });
+  });
+
   describe('empty existing content', () => {
     it('returns only FORGE section (no empty USER block)', () => {
       const existing = '';
