@@ -14,8 +14,8 @@ const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
 function greenContext(overrides = {}) {
   return {
     checks: [
-      { name: 'ci', conclusion: 'SUCCESS' },
-      { name: 'lint', conclusion: 'SUCCESS' },
+      { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
     ],
     requiredChecksKnown: true,
     unresolvedThreads: 0,
@@ -114,11 +114,23 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
     expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
   });
 
+  test('checks_green requires COMPLETED plus SUCCESS and rejects success-like conclusions', () => {
+    for (const check of [
+      { name: 'ci', conclusion: 'SUCCESS' },
+      { name: 'ci', status: 'IN_PROGRESS', conclusion: 'SUCCESS' },
+      { name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' },
+      { name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' },
+      { name: 'ci', status: 'COMPLETED', conclusion: 'PASS' },
+    ]) {
+      expect(evaluateMergeRules(greenContext({ checks: [check] }), ['checks_green']).allowed).toBe(false);
+    }
+  });
+
   test('checks_green { ignore } exempts a named failing check but still blocks on OTHER failures', () => {
     const oneBadIgnored = greenContext({
       checks: [
         { name: 'coverage', conclusion: 'FAILURE' },
-        { name: 'ci', conclusion: 'SUCCESS' },
+        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
       ],
     });
     // coverage is exempt; every other check (ci) is green → allowed.
@@ -143,7 +155,7 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
   test('checks_green { only } requires ONLY the listed checks to be SUCCESS', () => {
     const ctx = greenContext({
       checks: [
-        { name: 'ci', conclusion: 'SUCCESS' },
+        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
         { name: 'coverage', conclusion: 'FAILURE' },
       ],
     });

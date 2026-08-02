@@ -220,13 +220,13 @@ describe('gatherPrBundle — complete PR-state gather', () => {
 });
 
 describe('buildCi / toUnresolvedComment helpers', () => {
-  test('buildCi treats NEUTRAL/SKIPPED as green (not failing, not pending)', () => {
+  test('buildCi treats NEUTRAL/SKIPPED as non-authorizing pending observations', () => {
     const ci = buildCi([
       { name: 'a', conclusion: 'NEUTRAL' },
       { name: 'b', conclusion: 'SKIPPED' },
     ], ['a']);
     expect(ci.failing).toHaveLength(0);
-    expect(ci.pending).toHaveLength(0);
+    expect(ci.pending.map((check) => check.name)).toEqual(['a', 'b']);
   });
 
   test('toUnresolvedComment uses the thread opener and tolerates missing fields', () => {

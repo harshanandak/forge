@@ -28,6 +28,7 @@ function makeAdapter(spec = {}) {
           mergeStateStatus: spec.mergeStateStatus || 'CLEAN',
           checks: spec.checks || [],
           threads: spec.threads || [],
+          providerEvidenceReadable: spec.providerEvidenceReadable,
         };
       },
       async readRequiredChecks() {
@@ -60,6 +61,48 @@ function makeAdapter(spec = {}) {
 const BASE_CTX = { pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' };
 
 describe('runShepherdPass — bounded pass state machine', () => {
+  test('IN_PROGRESS plus SUCCESS is not green', () => {
+    expect(isGreen({ status: 'IN_PROGRESS', conclusion: 'SUCCESS' })).toBe(false);
+  });
+
+  test('missing status plus SUCCESS is not green', () => {
+    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(false);
+  });
+
+  test('malformed provider evidence escalates before required-check evaluation', async () => {
+    const { adapter } = makeAdapter({
+      providerEvidenceReadable: false,
+      required: [],
+    });
+    const out = await runShepherdPass({ ...BASE_CTX, adapter });
+    expect(out.state).toBe('ESCALATE');
+  });
+
+  test('non-authorizing provider merge states never reach MERGE_READY', async () => {
+    for (const mergeStateStatus of ['UNKNOWN', 'BLOCKED', 'DRAFT', 'BEHIND']) {
+      const { adapter } = makeAdapter({
+        providerEvidenceReadable: true,
+        mergeStateStatus,
+        required: ['unit'],
+        checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        behind: 0,
+      });
+      const out = await runShepherdPass({ ...BASE_CTX, adapter });
+      expect(out.state).toBe('ESCALATE');
+    }
+  });
+
+  test('malformed non-auth state or protection reads escalate instead of throwing', async () => {
+    for (const spec of [
+      { stateAuthError: new Error('malformed GraphQL envelope') },
+      { requiredAuthError: new Error('malformed protection payload') },
+    ]) {
+      const { adapter } = makeAdapter(spec);
+      const out = await runShepherdPass({ ...BASE_CTX, adapter });
+      expect(out.state).toBe('ESCALATE');
+    }
+  });
+
   // 1
   test('all required green + behind=0 → MERGE_READY, NO merge emitted', async () => {
     const { adapter, actions } = makeAdapter({
@@ -322,9 +365,11 @@ describe('isFailed covers StatusContext error states (Vercel/Netlify)', () => {
     expect(isFailed({ conclusion: 'STARTUP_FAILURE' })).toBe(true);
     expect(isFailed({ conclusion: 'FAILURE' })).toBe(true);
   });
-  test('SUCCESS / PENDING are not failures', () => {
+  test('only SUCCESS is green; NEUTRAL and SKIPPED remain non-authorizing', () => {
     expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
     expect(isFailed({ conclusion: 'PENDING' })).toBe(false);
-    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(true);
+    expect(isGreen({ status: 'COMPLETED', conclusion: 'SUCCESS' })).toBe(true);
+    expect(isGreen({ conclusion: 'NEUTRAL' })).toBe(false);
+    expect(isGreen({ conclusion: 'SKIPPED' })).toBe(false);
   });
 });

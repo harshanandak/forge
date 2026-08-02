@@ -1,0 +1,46 @@
+# Tasks
+
+- [x] Create/claim P0 issue `36230258-7b64-4de0-8683-fd8b8eabab51` under actor `forge-release-gate-bootstrap`.
+- [x] Create isolated stable-base worktree at `78f2b7aae98e1e05b0e6729d6af19f5be2d65494`.
+- [x] Verify installed GitHub CLI supports `--match-head-commit`.
+- [x] Verify live `master` protection endpoint exposes six required contexts and app IDs.
+- [x] Run four-role read-only design/threat review.
+- [x] Retain RED evidence: 0 pass / 9 fail for missing authority behavior.
+- [x] Implement exact-head parsing, double-read comparison, and server lease.
+- [x] Implement initial/final Kernel ownership proof.
+- [x] Implement mandatory authoritative protected-context evaluation.
+- [x] Harden protection payload parsing against malformed/conflicting fields.
+- [x] Add mandatory draft/conflict/thread gates.
+- [x] Update help, orientation, README, AGENTS, and noun passthrough.
+- [x] Focused affected validation before final parser regression: 245 tests / 696 expectations passed; targeted ESLint and `git diff --check` passed.
+- [x] Re-run affected validation after final parser regression: 246 tests / 699 expectations passed; targeted ESLint and `git diff --check` passed.
+- [x] Reconcile exact-SHA review of `85239037`: `REQUEST_CHANGES`; do not push or install the rejected candidate.
+- [x] Retain remediation RED evidence: 0 pass / 7 fail across selector, lifecycle, ownership, issue-linkage, thread-envelope, app-identity, and contradictory-state regressions.
+- [x] Implement explicit-OPEN lifecycle authority, strict ownership, double PR↔issue linkage, validated thread pagination, app-scoped protected policy, paginated exact-head check runs, and repository-bound mutation.
+- [x] Validate remediated tree after final cursor/page-total hardening: 239 tests / 749 expectations across 11 affected suites; targeted ESLint, syntax checks, and `git diff --check` passed.
+- [x] Reconcile exact-SHA review of `7a88c3e3`: two `REQUEST_CHANGES` lanes and one `PASS`; do not push or install the rejected candidate.
+- [x] Retain reviewer-remediation RED evidence: 4 authority failures plus real-CLI exit-1 usage failure across malformed terminal cursors, partial shared-adapter evidence, repository drift, malformed Kernel PR numbers, and global-flag dispatch.
+- [x] Remediate canonical Kernel row identity, two-read repository leasing, complete terminal cursors, strict shared adapter pagination, and global-flag merge parsing.
+- [x] Validate the expanded affected scope: 331 tests / 995 expectations across 18 files with zero failures; targeted ESLint, syntax checks, and `git diff --check` passed.
+- [x] Reconcile exact-SHA review of `d33b65f4`: explicit `REQUEST_CHANGES`; do not push or install the rejected candidate.
+- [x] Remediate leased thread repository propagation, frozen ownership actor identity, complete observation validation, conflicting app-qualified policy, strict rollup/shared GraphQL collections, SUCCESS-only green semantics, and deterministic cleanup of command-owned Kernel drivers.
+- [x] Validate candidate `7d02625888820f9afa83737cc30fbf1d20f955c5`: focused authority gate 76 tests / 270 expectations; affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
+- [x] Reconcile both exact-SHA review batches for `7d02625888820f9afa83737cc30fbf1d20f955c5`: required lanes returned `REQUEST_CHANGES`; reject the candidate and do not push or install it.
+- [x] Retain final convergence RED evidence for mandatory settle/edit freshness, malformed optional observations, shared SUCCESS-only semantics, full head OIDs, authoritative-protection no-fallback, provider lifecycle readability, canonical selectors, nested actor identity, and injected Kernel broker lifetime.
+- [x] Validate the replacement worktree: focused 232 tests / 772 expectations across 8 files; bounded 311 tests / 973 expectations across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+- [x] Reconcile terminal exact-SHA review of `3274e04cf71c24c255360fc70007e4dbd4e9687c`: all three lanes returned `REQUEST_CHANGES`; reject the candidate and retain its concrete counterexamples.
+- [x] Add focused RED coverage for aggregate activity settle, optional rollup CheckRuns, strict policy/check/ownership identity, injected binding-driver ownership, full final-head evidence, canonical GraphQL selectors, nested actor type, and Shepherd malformed-provider escalation.
+- [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+- [x] Reconcile terminal exact-SHA review of `331943cce424ed57ef9afcd5dc773a89692fc41b`: Kernel/CLI passed; reject for later review updates missing from settle and unknown merge-state enums remaining readable.
+- [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
+- [x] Reconcile exact-SHA review of `66d7b4d18d58ac007ce66ac8c31471111419bbc2`: reject after explicit `UNKNOWN` and recognized `BLOCKED` merge states reached Shepherd `MERGE_READY`.
+- [x] Require an authorizing provider merge state at Shepherd's terminal handoff; add RED/GREEN coverage and rerun the bounded affected manifest once.
+- [x] Reconcile the late predecessor review finding against `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a`: reject because `gh pr view` omits review edit timestamps.
+- [x] Move settle authority to fully paginated, agent-agnostic GraphQL review evidence; require creation/update/submission timestamps and retain latest activity per author.
+- [x] Reconcile exact-SHA review of `23f5854f069ccfb22324d1266f132b930745a9a3`: reject because merge authority discarded normalized actor/state/commit-head review evidence.
+- [x] Make complete normalized review evidence a mandatory initial/fresh exact-head gate; reject unknown states, malformed OIDs, stale active reviews, changes requested, and pending reviews without vendor-specific handling.
+- [x] Reconcile exact-SHA review of `0b79eba52b99d37ec1579ffb2a15c20721e83d13`: reject pre-validation identity coercion and falsely readable skipped review collection.
+- [x] Require typed nonempty review IDs/logins before normalization, nonempty canonical authors after normalization, and truthful review-evidence readability.
+- [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+- [ ] Push/open PR only after PASS.
+- [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.

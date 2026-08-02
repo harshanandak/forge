@@ -302,7 +302,7 @@ forge insights                 # Detect recurring evidence patterns, suggest con
 forge upgrade                  # Preview and self-heal safe Forge upgrade readiness
 forge gate <verb> <gate-id>    # Toggle a workflow gate, or record/query human-gate approval events
 forge role <role> --use <skill> # Bind a role to a skill/ideology in .forge/config.yaml
-forge merge --auto <pr>        # Opt-in conditional auto-merge — merges only when configured rules pass (OFF by default)
+forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id>  # Opt-in guarded merge; exact head + owned issue required (OFF by default)
 ```
 
 ### Rules

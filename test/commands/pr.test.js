@@ -113,11 +113,17 @@ describe('forge pr command surface (6ab3f30c)', () => {
     expect(calls[0][0]).toEqual(['events', '123', '--since', '5', '--json']);
   });
 
-  test('pr merge --auto <pr> forwards to the merge handler', async () => {
+  test('pr merge forwards exact-head and issue leases byte-identically', async () => {
+    const head = 'a'.repeat(40);
+    const issue = '36230258-7b64-4de0-8683-fd8b8eabab51';
     const calls = await withSpy(merge, async () => {
-      await pr.handler(['merge', '--auto', '456'], {}, '/root');
+      await pr.handler([
+        'merge', '--auto', '456', '--expect-head', head, '--issue', issue,
+      ], {}, '/root');
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0][0]).toEqual(['--auto', '456']);
+    expect(calls[0][0]).toEqual([
+      '--auto', '456', '--expect-head', head, '--issue', issue,
+    ]);
   });
 });
