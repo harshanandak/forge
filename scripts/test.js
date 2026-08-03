@@ -20,6 +20,7 @@ const {
   getAffectedTestFiles,
   getChangedFiles,
 } = require('../lib/commands/test');
+const { createProcessTree, signalExitCode } = require('./process-tree');
 
 const PACKAGE_LEVEL_PATHS = new Set([
   'package.json',
@@ -344,14 +345,16 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
  * @returns {number} Process exit status, or 1 when no status is reported.
  */
 function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
+  const { processTree, ...spawnOptions } = options;
   const result = spawnSync(command, args, {
     stdio: 'inherit',
     shell: isWindows,
-    ...options,
+    ...spawnOptions,
   });
 
   if (result.error) {
     if (result.error.code === 'ETIMEDOUT') {
+      processTree?.cleanup?.('SIGKILL');
       console.error('');
       console.error('Test lane exceeded its wall-clock ceiling and was terminated.');
       console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
@@ -377,13 +380,29 @@ function runTestExecutionPlan(plan, deps = {}) {
   const spawnSync = deps.spawnSync || defaultSpawnSync;
   const pkgManager = deps.pkgManager || detectPackageManager();
   const env = deps.env || stripGitHookEnv(process.env);
+  const processTree = deps.processTree || createProcessTree({
+    env,
+    platform: deps.platform,
+  });
+  let signal = null;
+  const removeSignalHandlers = typeof processTree.installSignalHandlers === 'function'
+    ? processTree.installSignalHandlers((received) => {
+      signal = received;
+    })
+    : () => {};
+  const childEnv = typeof processTree.envFor === 'function' ? processTree.envFor(env) : env;
   const bunCommand = deps.bunCommand || env.BUN_EXE || process.env.BUN_EXE || 'bun';
   const label = deps.label || 'tests';
   const timeout = resolveCommandTimeoutMs(env);
-  const laneOptions = { env, killSignal: 'SIGKILL', timeout };
+  const laneOptions = { env: childEnv, killSignal: 'SIGKILL', timeout, processTree };
   // The full-suite fallback gets a larger, validation-aligned budget so a
   // healthy-but-slow full run is not failed fast by the targeted-lane ceiling.
-  const fullSuiteOptions = { env, killSignal: 'SIGKILL', timeout: resolveFullSuiteTimeoutMs(env) };
+  const fullSuiteOptions = {
+    env: childEnv,
+    killSignal: 'SIGKILL',
+    timeout: resolveFullSuiteTimeoutMs(env),
+    processTree,
+  };
 
   console.log(`Running ${label} (${pkgManager})...`);
 
@@ -412,12 +431,15 @@ function runTestExecutionPlan(plan, deps = {}) {
     }
 
     console.log('Relevant tests passed');
-    return 0;
+    return signal ? signalExitCode(signal) : 0;
   } catch (error) {
     console.error('');
     console.error(`Failed to run ${label}: ${error.message}`);
     console.error('');
-    return 1;
+    return signal ? signalExitCode(signal) : 1;
+  } finally {
+    removeSignalHandlers();
+    processTree.cleanup?.(signal ? 'SIGKILL' : 'SIGTERM');
   }
 }
 

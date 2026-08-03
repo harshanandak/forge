@@ -687,6 +687,36 @@ describe('scripts/test pre-push runner', () => {
 
     expect(status).not.toBe(0);
   });
+
+  test('a timed-out lane reaps its owned process tree with SIGKILL', () => {
+    const events = [];
+    const processTree = {
+      envFor: (env) => env,
+      installSignalHandlers: () => () => {},
+      cleanup: (signal) => events.push(signal),
+    };
+    const status = runTestExecutionPlan({
+      changedFiles: ['lib/commands/ship.js'],
+      mode: 'targeted',
+      reason: 'known changes mapped to targeted tests',
+      runE2E: false,
+      runFullSuite: false,
+      runTestEnv: false,
+      testTargets: ['test/commands/ship.test.js'],
+    }, {
+      env: { PATH: process.env.PATH || '' },
+      pkgManager: 'bun',
+      processTree,
+      spawnSync: () => ({
+        error: Object.assign(new Error('spawnSync bun ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+        signal: 'SIGKILL',
+        status: null,
+      }),
+    });
+
+    expect(status).toBe(124);
+    expect(events).toContain('SIGKILL');
+  });
 });
 
 describe('quick push lane', () => {

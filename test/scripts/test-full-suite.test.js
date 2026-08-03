@@ -53,9 +53,11 @@ describe('scripts/test-full-suite.js', () => {
 
   test('runFullSuiteInParallel spawns one process per shard and succeeds when all shards pass', async () => {
     const calls = [];
+    let pid = 9000;
     const spawn = (_command, args) => {
       calls.push(args);
       const child = new EventEmitter();
+      child.pid = pid++;
       process.nextTick(() => child.emit('close', 0));
       return child;
     };
@@ -79,10 +81,53 @@ describe('scripts/test-full-suite.js', () => {
     expect(calls[0]).toContain('30000');
   });
 
+  test('registers each shard and starts it in an owned process group while preserving stdio', async () => {
+    const events = [];
+    const processTree = {
+      reserveChild: (metadata) => {
+        events.push(['reserve', metadata.label]);
+        return { id: metadata.label };
+      },
+      registerChild: (reservation, child) => events.push(['register', reservation.id, child.pid]),
+      unregisterChild: (reservation) => events.push(['unregister', reservation.id]),
+      installSignalHandlers: () => () => {},
+      cleanup: () => {},
+    };
+    let pid = 9100;
+    const calls = [];
+    const spawn = (_command, args, options) => {
+      calls.push({ args, options });
+      const child = new EventEmitter();
+      child.pid = pid++;
+      process.nextTick(() => child.emit('close', 0));
+      return child;
+    };
+
+    const status = await runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 2 }, {
+      allTests: ['test/a.test.js', 'test/b.test.js'],
+      durationMap: new Map([
+        ['test/a.test.js', 2000],
+        ['test/b.test.js', 1000],
+      ]),
+      processTree,
+      platform: 'linux',
+      spawn,
+    });
+
+    expect(status).toBe(0);
+    expect(events[0][0]).toBe('reserve');
+    expect(events.filter((event) => event[0] === 'register')).toHaveLength(2);
+    expect(calls.every(({ options }) => options.detached === true)).toBe(true);
+    expect(calls.every(({ options }) => options.windowsHide === true)).toBe(true);
+    expect(calls.every(({ options }) => options.stdio === 'inherit')).toBe(true);
+  });
+
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {
     let index = 0;
+    let pid = 9200;
     const spawn = () => {
       const child = new EventEmitter();
+      child.pid = pid++;
       const code = index === 0 ? 0 : 1;
       index += 1;
       process.nextTick(() => child.emit('close', code));
