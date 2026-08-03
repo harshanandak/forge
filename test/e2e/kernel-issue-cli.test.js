@@ -53,7 +53,7 @@ async function loadIssueStatus(dbPath, id) {
   return withReadDriver(dbPath, async (driver) => {
     const response = await driver.issueOperation('show', [id], {}, {});
     if (!response || response.ok === false || !response.data) return null;
-    return { status: response.data.status };
+    return { status: response.data.status, revision: response.data.revision };
   });
 }
 
@@ -155,6 +155,39 @@ describe('kernel issue CLI — multi-id close E2E', () => {
       const output = runForge(repo, ['close', 'solo-1', 'solo-2', '--reason=done', '--kernel']);
       expect(output).toContain('solo-1');
       expect(output).toContain('solo-2');
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'forge issue close --status done matches bare close and exits 0',
+    async () => {
+      runForge(repo, ['create', '--id', 'explicit-done', '--title', 'Explicit done', '--type', 'task']);
+
+      runForge(repo, ['issue', 'close', 'explicit-done', '--status', 'done']);
+
+      const issue = await loadIssueStatus(dbPath, 'explicit-done');
+      expect(issue).toEqual({ status: 'done', revision: 1 });
+    },
+    TIMEOUT,
+  );
+
+  test(
+    'an illegal close status exits non-zero and leaves the issue untouched',
+    async () => {
+      runForge(repo, ['create', '--id', 'explicit-illegal', '--title', 'Explicit illegal', '--type', 'task']);
+
+      let thrown;
+      try {
+        runForge(repo, ['issue', 'close', 'explicit-illegal', '--status', 'review']);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeTruthy();
+      expect(thrown.status).not.toBe(0);
+      const issue = await loadIssueStatus(dbPath, 'explicit-illegal');
+      expect(issue).toEqual({ status: 'open', revision: 0 });
     },
     TIMEOUT,
   );
