@@ -141,6 +141,74 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', () 
     expect(stale.worktrees).toHaveLength(0);
     expect(stale.output).toBe('No worktrees registered.');
   }, TIMEOUT);
+
+  test('keeps a missing work-folder untouched, then repairs its marker on reuse idempotently', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    const worktreePath = path.resolve(root, '.worktrees', 'late-folder');
+    const workFolder = 'docs/work/2026-07-05-late';
+    const markerPath = path.join(root, workFolder, '.forge-issue');
+    const args = ['create', 'late-folder', '--branch', 'feat/late-folder', '--issue', 'forge-late', '--work-folder', workFolder];
+    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
+
+    const first = await worktree.handler(args, {}, root, opts);
+    expect(first.success).toBe(true);
+    expect(fs.existsSync(path.join(root, workFolder))).toBe(false);
+    expect(fs.existsSync(markerPath)).toBe(false);
+
+    const firstRow = (await driver.queryAll('SELECT * FROM kernel_worktrees'))[0];
+    expect(firstRow.issue_id).toBe('forge-late');
+    expect(firstRow.work_folder).toBe(workFolder);
+
+    fs.mkdirSync(path.join(root, workFolder), { recursive: true });
+    fs.mkdirSync(worktreePath, { recursive: true });
+
+    const repaired = await worktree.handler(args, {}, root, opts);
+    expect(repaired.success).toBe(true);
+    expect(repaired.reused).toBe(true);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-late');
+
+    const rerun = await worktree.handler(args, {}, root, opts);
+    expect(rerun.success).toBe(true);
+    expect(rerun.reused).toBe(true);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-late');
+    const rows = await driver.queryAll('SELECT * FROM kernel_worktrees');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].issue_id).toBe('forge-late');
+    expect(rows[0].work_folder).toBe(workFolder);
+  }, TIMEOUT);
+
+  test('rejects mismatched issue or work-folder on reuse without rewriting linkage', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    const worktreePath = path.resolve(root, '.worktrees', 'mismatch');
+    const workFolder = 'docs/work/2026-07-06-owned';
+    const otherFolder = 'docs/work/2026-07-06-other';
+    const markerPath = path.join(root, workFolder, '.forge-issue');
+    fs.mkdirSync(path.join(root, workFolder), { recursive: true });
+    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
+    const original = ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-owned', '--work-folder', workFolder];
+
+    const first = await worktree.handler(original, {}, root, opts);
+    expect(first.success).toBe(true);
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const before = await driver.queryAll('SELECT * FROM kernel_worktrees');
+
+    const issueMismatch = await worktree.handler(
+      ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-other', '--work-folder', workFolder],
+      {}, root, opts,
+    );
+    expect(issueMismatch.success).toBe(false);
+    expect(issueMismatch.error).toMatch(/mismatch/i);
+
+    const folderMismatch = await worktree.handler(
+      ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-owned', '--work-folder', otherFolder],
+      {}, root, opts,
+    );
+    expect(folderMismatch.success).toBe(false);
+    expect(folderMismatch.error).toMatch(/mismatch/i);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-owned');
+    expect(fs.existsSync(path.join(root, otherFolder))).toBe(false);
+    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
+  }, TIMEOUT);
 });
 
 describe('P0 kernel linkage: orientation resolves work-folder via the kernel', () => {
