@@ -2563,7 +2563,7 @@ function showHelp() {
   console.log('  --type <type>        Set workflow profile type manually');
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
   console.log('  --dry-run            Preview planned actions without writing any files');
-  console.log('  --skills-only        Install skills without Git, Forge-native, or harness hooks');
+  console.log('  --skills-only        Install skills without Git hooks, Forge-native, or harness hooks');
   console.log('                       Alias: --no-hooks');
   console.log('  --interview          Force context interview (gather project information)');
   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');

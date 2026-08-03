@@ -9,6 +9,9 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const FORGE_BIN = path.join(__dirname, '..', 'bin', 'forge.js');
 const tempDirs = [];
 const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
+const gitRequiredTest = gitAvailable
+  ? test
+  : (name, _callback, timeout) => test.skip(`${name} (requires a Git executable)`, () => {}, timeout);
 
 function makeTempRepo() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-only-'));
@@ -39,8 +42,7 @@ afterEach(() => {
 });
 
 describe('forge setup --skills-only', () => {
-  test('installs skills while leaving Git, Forge-native, and Claude hooks absent', () => {
-    if (!gitAvailable) return;
+  gitRequiredTest('installs skills while leaving Git, Forge-native, and Claude hooks absent', () => {
     const repo = makeTempRepo();
     const result = runSetup(repo, '--skills-only');
     const output = `${result.stdout || ''}${result.stderr || ''}`;
@@ -56,8 +58,7 @@ describe('forge setup --skills-only', () => {
     expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).hooks).toBeUndefined();
   }, 120000);
 
-  test('keeps default setup hook installation unchanged and reruns safely', () => {
-    if (!gitAvailable) return;
+  gitRequiredTest('keeps default setup hook installation unchanged and reruns safely', () => {
     const repo = makeTempRepo();
     const first = runSetup(repo);
     const second = runSetup(repo);
@@ -71,8 +72,7 @@ describe('forge setup --skills-only', () => {
     expect(fs.readFileSync(path.join(repo, '.claude', 'settings.json'), 'utf8')).toContain('hooks');
   }, 120000);
 
-  test('accepts --no-hooks as an alias for --skills-only', () => {
-    if (!gitAvailable) return;
+  gitRequiredTest('accepts --no-hooks as an alias for --skills-only', () => {
     const repo = makeTempRepo();
     const result = runSetup(repo, '--no-hooks');
 
@@ -80,5 +80,40 @@ describe('forge setup --skills-only', () => {
     expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'plan', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(false);
     expect(fs.existsSync(path.join(repo, '.forge', 'hooks'))).toBe(false);
+  }, 120000);
+
+  gitRequiredTest('preserves existing hooks and harness settings on a skills-only rerun', () => {
+    const repo = makeTempRepo();
+    const initial = runSetup(repo);
+    const preservedPaths = [
+      path.join(repo, '.git', 'hooks', 'pre-commit'),
+      path.join(repo, '.forge', 'hooks', 'check-tdd.js'),
+      path.join(repo, '.forge', 'hooks', 'forge-native-hook.js'),
+      path.join(repo, '.claude', 'settings.json'),
+    ];
+
+    expect(initial.status).toBe(0);
+    preservedPaths.forEach((filePath) => expect(fs.existsSync(filePath)).toBe(true));
+    const before = new Map(
+      preservedPaths.map(filePath => [filePath, fs.readFileSync(filePath, 'utf8')]),
+    );
+
+    const rerun = runSetup(repo, '--skills-only');
+
+    expect(rerun.status).toBe(0);
+    preservedPaths.forEach((filePath) => {
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(before.get(filePath));
+    });
+  }, 120000);
+
+  gitRequiredTest('rejects skills-only profile shortcuts before init installs hooks', () => {
+    const repo = makeTempRepo();
+    const result = runSetup(repo, '--skills-only', '--minimal');
+    const output = `${result.stdout || ''}${result.stderr || ''}`;
+
+    expect(result.status).toBe(1);
+    expect(output).toContain('--skills-only cannot be combined with --minimal');
+    expect(fs.existsSync(path.join(repo, '.forge', 'config.yaml'))).toBe(false);
+    expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(false);
   }, 120000);
 });
