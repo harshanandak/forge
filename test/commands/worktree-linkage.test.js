@@ -24,6 +24,7 @@ const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-fa
 
 const TIMEOUT = 15000;
 const cleanups = [];
+const DIRECTORY_LINK_UNSUPPORTED_ERRORS = new Set(['EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 
 function probeDirectoryLinkSupport() {
   const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-link-probe-'));
@@ -32,7 +33,7 @@ function probeDirectoryLinkSupport() {
     fs.symlinkSync(probeRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
     return true;
   } catch (error) {
-    if (error.code === 'EPERM') return false;
+    if (DIRECTORY_LINK_UNSUPPORTED_ERRORS.has(error.code)) return false;
     throw error;
   } finally {
     try { fs.rmSync(probeRoot, { recursive: true, force: true }); } catch { /* best effort */ }
