@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+const { ISSUE_COMMAND_EXIT_CODES } = require('../../lib/kernel/issue-command-contract');
 
 // Kernel-parity regression suite. Three confirmed divergences from the Beads
 // behavior the Kernel replaced:
@@ -386,7 +387,7 @@ describe('Kernel parity bugs', () => {
 		);
 
 		expect(result.ok).toBe(false);
-		expect(result.error.exit_code).toBe(6);
+		expect(result.error.exit_code).toBe(ISSUE_COMMAND_EXIT_CODES.validation);
 		const shown = await driver.issueOperation('show', ['close-illegal-1'], {}, config);
 		expect(shown.data.status).toBe('open');
 		expect(shown.data.revision).toBe(0);
