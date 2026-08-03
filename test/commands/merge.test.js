@@ -218,7 +218,7 @@ describe('merge command — opt-in conditional auto-merge', () => {
 
     expect(out.success).toBe(false);
     expect(out.merged).toBe(false);
-    expect(out.error).toMatch(/check-run|successful/i);
+    expect(out.error).toMatch(/safe terminal conclusion.*SUCCESS.*NEUTRAL.*SKIPPED/i);
     expect(mergeCalled).toBe(false);
   });
 
