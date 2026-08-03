@@ -153,6 +153,101 @@ describe('merge command — opt-in conditional auto-merge', () => {
     expect(mergedPr).toBe('42');
   });
 
+  test('allows exact-name ignored NEUTRAL and SKIPPED optional checks', async () => {
+    const root = makeProject({
+      merge: { auto: { enabled: true, rules: [{ checks_green: { ignore: ['forge/pr-monitor', 'docs-only'] } }] } },
+    });
+    let mergeCalled = false;
+    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => authorizedContext({
+        checks: [
+          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { name: 'forge/pr-monitor', appId: 456, status: 'COMPLETED', conclusion: 'NEUTRAL' },
+          { name: 'docs-only', appId: 457, status: 'COMPLETED', conclusion: 'SKIPPED' },
+        ],
+        providerObservations: [
+          { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { name: 'forge/pr-monitor', status: 'COMPLETED', conclusion: 'NEUTRAL' },
+          { name: 'docs-only', status: 'COMPLETED', conclusion: 'SKIPPED' },
+        ],
+      }),
+      mergePr: async () => { mergeCalled = true; return { merged: true }; },
+    });
+
+    expect(out.merged).toBe(true);
+    expect(mergeCalled).toBe(true);
+  });
+
+  test('bare checks_green still refuses optional NEUTRAL and SKIPPED checks', async () => {
+    const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
+    let mergeCalled = false;
+    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => authorizedContext({
+        checks: [
+          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { name: 'forge/pr-monitor', appId: 456, status: 'COMPLETED', conclusion: 'NEUTRAL' },
+          { name: 'docs-only', appId: 457, status: 'COMPLETED', conclusion: 'SKIPPED' },
+        ],
+      }),
+      mergePr: async () => { mergeCalled = true; },
+    });
+
+    expect(out.merged).toBe(false);
+    expect(out.allowed).toBe(false);
+    expect(out.unmet[0].rule).toBe('checks_green');
+    expect(mergeCalled).toBe(false);
+  });
+
+  test('ignored FAILURE remains a mandatory preflight refusal', async () => {
+    const root = makeProject({
+      merge: { auto: { enabled: true, rules: [{ checks_green: { ignore: ['forge/pr-monitor'] } }] } },
+    });
+    let mergeCalled = false;
+    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => authorizedContext({
+        checks: [
+          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { name: 'forge/pr-monitor', appId: 456, status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
+      }),
+      mergePr: async () => { mergeCalled = true; },
+    });
+
+    expect(out.success).toBe(false);
+    expect(out.merged).toBe(false);
+    expect(out.error).toMatch(/check-run|successful/i);
+    expect(mergeCalled).toBe(false);
+  });
+
+  test('protected required checks must be SUCCESS even when configured ignored', async () => {
+    const root = makeProject({
+      merge: { auto: { enabled: true, rules: [{ checks_green: { ignore: ['forge/pr-monitor'] } }] } },
+    });
+    let mergeCalled = false;
+    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => authorizedContext({
+        checks: [
+          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { name: 'forge/pr-monitor', appId: 456, status: 'COMPLETED', conclusion: 'NEUTRAL' },
+        ],
+        requiredChecks: [
+          { context: 'ci', appId: null },
+          { context: 'forge/pr-monitor', appId: 456 },
+        ],
+      }),
+      mergePr: async () => { mergeCalled = true; },
+    });
+
+    expect(out.success).toBe(false);
+    expect(out.merged).toBe(false);
+    expect(out.error).toMatch(/Protected required checks.*not successful/i);
+    expect(mergeCalled).toBe(false);
+  });
+
   test('refuses (fail-closed) when opted in with an empty ruleset', async () => {
     const root = makeProject({ merge: { auto: { enabled: true, rules: [] } } });
     let mergeCalled = false;
@@ -205,5 +300,32 @@ describe('merge command — opt-in conditional auto-merge', () => {
     expect(out.merged).toBe(false);
     expect(mergeCalled).toBe(false);
     expect(out.error).toMatch(/conflict/i);
+  });
+
+  test('TOCTOU: re-check refuses an ignored optional check that later fails', async () => {
+    const root = makeProject({
+      merge: { auto: { enabled: true, rules: [{ checks_green: { ignore: ['forge/pr-monitor'] } }] } },
+    });
+    let mergeCalled = false;
+    let call = 0;
+    const out = await mergeCmd.handler(mergeArgs('77'), {}, root, {
+      ...AUTHORITY_DEPS,
+      fetchPrContext: async () => {
+        call += 1;
+        return authorizedContext({
+          checks: [
+            { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'forge/pr-monitor', appId: 456, status: 'COMPLETED', conclusion: call === 1 ? 'NEUTRAL' : 'FAILURE' },
+          ],
+        });
+      },
+      mergePr: async () => { mergeCalled = true; },
+    });
+
+    expect(call).toBe(2);
+    expect(out.success).toBe(false);
+    expect(out.merged).toBe(false);
+    expect(out.error).toMatch(/check-run|successful/i);
+    expect(mergeCalled).toBe(false);
   });
 });
