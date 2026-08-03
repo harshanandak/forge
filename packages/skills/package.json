@@ -27,7 +27,7 @@
     "commander": "^15.0.0",
     "inquirer": "^14.0.2",
     "js-yaml": "^5.2.2",
-    "markdown-it": "^14.1.2"
+    "markdown-it": "^15.0.0"
   },
   "devDependencies": {},
   "engines": {
