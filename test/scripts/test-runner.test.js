@@ -717,6 +717,53 @@ describe('scripts/test pre-push runner', () => {
     expect(status).toBe(124);
     expect(events).toContain('SIGKILL');
   });
+
+  test('captured SIGINT and SIGTERM override nonzero targeted and E2E lane statuses', () => {
+    for (const [received, expected] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+      for (const plan of [
+        {
+          runE2E: false,
+          runFullSuite: false,
+          runTestEnv: false,
+          testTargets: ['test/commands/ship.test.js'],
+        },
+        {
+          runE2E: true,
+          runFullSuite: false,
+          runTestEnv: false,
+          testTargets: [],
+        },
+      ]) {
+        const cleanupSignals = [];
+        let notifySignal;
+        const processTree = {
+          envFor: (env) => env,
+          installSignalHandlers: (notify) => {
+            notifySignal = notify;
+            return () => {};
+          },
+          cleanup: (signal) => cleanupSignals.push(signal),
+        };
+        const status = runTestExecutionPlan({
+          changedFiles: ['lib/commands/ship.js'],
+          mode: 'targeted',
+          reason: 'known changes mapped to targeted tests',
+          ...plan,
+        }, {
+          env: { PATH: process.env.PATH || '' },
+          pkgManager: 'bun',
+          processTree,
+          spawnSync: () => {
+            notifySignal(received);
+            return { status: 7 };
+          },
+        });
+
+        expect(status).toBe(expected);
+        expect(cleanupSignals).toEqual(['SIGKILL']);
+      }
+    }
+  });
 });
 
 describe('quick push lane', () => {

@@ -38,7 +38,11 @@ function isValidManifestEntry(entry) {
   if (!nonEmptyString(entry.id) || !nonEmptyString(entry.token)) return false;
   if (!['reserved', 'running'].includes(entry.status)) return false;
   if (!nonEmptyString(entry.startedAt)) return false;
-  if (entry.status === 'reserved') return entry.pid == null && entry.identity == null;
+  if (entry.status === 'reserved') {
+    if (entry.pid == null) return entry.identity == null;
+    return normalizePid(entry.pid) === entry.pid
+      && (entry.identity == null || normalizeIdentity(entry.identity) !== null);
+  }
   return normalizePid(entry.pid) === entry.pid && normalizeIdentity(entry.identity) !== null;
 }
 
@@ -387,6 +391,9 @@ function createProcessTree(options = {}) {
         && isVerifiableEntry(finalManifest, entry)
         && (options.isAlive || defaultIsAlive)(entry.pid, processApi),
     );
+    const hasOutstandingReservation = finalManifest?.children.some(
+      (entry) => entry.status === 'reserved',
+    );
     const hasFailedLiveEntry = finalManifest?.children.some(
       (entry) => entry.status === 'running'
         && isVerifiableEntry(finalManifest, entry)
@@ -395,6 +402,7 @@ function createProcessTree(options = {}) {
     );
     const safeToRemove = finalManifest
       && !hasUnverifiableRunningEntry
+      && !hasOutstandingReservation
       && !hasFailedLiveEntry
       && (force || !hasLiveRunningEntry);
     if (safeToRemove && finalManifest.token === token) {
@@ -419,11 +427,9 @@ function createProcessTree(options = {}) {
       killSucceeded = false;
     }
 
-    unregisterChild(reservation);
-    // The child handle above is the exact process returned by spawn, so a
-    // direct signal is safe even when registration could not capture start
-    // evidence. Remove an empty marker after the reservation is released.
-    if (killSucceeded || !normalizePid(child && child.pid)) {
+    const pid = normalizePid(child && child.pid);
+    if (killSucceeded || !pid) {
+      unregisterChild(reservation);
       cleanup('SIGKILL');
       return killSucceeded;
     }
@@ -435,7 +441,28 @@ function createProcessTree(options = {}) {
         return true;
       }
     })();
-    if (!alive) cleanup('SIGKILL');
+    if (!alive) {
+      unregisterChild(reservation);
+      cleanup('SIGKILL');
+      return killSucceeded;
+    }
+
+    const latest = currentManifest();
+    const id = reservation && reservation.id;
+    const entry = latest?.children.find((candidate) => candidate.id === id);
+    if (latest && entry && entry.token === token && entry.status === 'reserved') {
+      const identity = captureIdentity(pid);
+      entry.pid = pid;
+      entry.identity = identity;
+      if (identity) {
+        entry.status = 'running';
+        entry.registeredAt = nowIso();
+      }
+      persist(latest);
+      // If identity evidence was available, cleanup can attempt a verified
+      // tree kill. Otherwise retain the reservation for later reconciliation.
+      cleanup('SIGKILL');
+    }
     return killSucceeded;
   }
 

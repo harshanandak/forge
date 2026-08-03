@@ -410,23 +410,27 @@ function runTestExecutionPlan(plan, deps = {}) {
     if (plan.runFullSuite) {
       console.log(`  Mode: full suite (${plan.reason})`);
       const status = runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawnSync);
+      if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     } else if (plan.testTargets.length > 0) {
       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
       const command = pkgManager === 'bun' ? bunCommand : pkgManager;
       const status = runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawnSync);
+      if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     }
 
     if (plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
       const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawnSync);
+      if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     }
 
     if (!plan.runFullSuite && plan.runTestEnv) {
       console.log('  Extra: running affected edge-case tests');
       const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawnSync);
+      if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     }
 

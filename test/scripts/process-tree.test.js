@@ -223,6 +223,30 @@ describe('scripts/process-tree.js', () => {
     expect(fs.existsSync(manifestPath)).toBe(false);
   });
 
+  test('retains ownership when a Windows child kill fails while the child remains alive', () => {
+    const manifestPath = path.join(makeTempDir(), 'run.json');
+    const tree = createProcessTree({
+      manifestPath,
+      token: 'windows-abort-token',
+      platform: 'win32',
+      processApi: { pid: 9000 },
+      isAlive: () => true,
+      getProcessIdentity: () => null,
+      spawnSync: () => ({ status: 1 }),
+    });
+    const reservation = tree.reserveChild({ kind: 'shard', label: 'unit-0' });
+    const child = { pid: 9017, kill: () => false };
+
+    expect(tree.registerChild(reservation, child)).toBeNull();
+    tree.abortChild(reservation, child);
+
+    const retained = readProcessManifest(manifestPath);
+    expect(retained).toBeTruthy();
+    expect(retained.children).toHaveLength(1);
+    expect(retained.children[0].status).toBe('reserved');
+    expect(retained.children[0].pid).toBe(9017);
+  });
+
   test('startup reconciliation reaps only owned orphan manifests with a dead owner', () => {
     const manifestDir = makeTempDir();
     const orphanPath = path.join(manifestDir, 'orphan.json');
