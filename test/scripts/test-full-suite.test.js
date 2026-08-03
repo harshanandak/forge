@@ -122,6 +122,34 @@ describe('scripts/test-full-suite.js', () => {
     expect(calls.every(({ options }) => options.stdio === 'inherit')).toBe(true);
   });
 
+  test('kills a child immediately when process registration fails after spawn', async () => {
+    const killed = [];
+    const processTree = {
+      reserveChild: () => ({ id: 'failed-registration' }),
+      registerChild: () => null,
+      abortChild: (_reservation, child) => child.kill('SIGKILL'),
+      unregisterChild: () => {},
+      installSignalHandlers: () => () => {},
+      cleanup: () => {},
+    };
+    const spawn = () => {
+      const child = new EventEmitter();
+      child.pid = 9300;
+      child.kill = (signal) => killed.push(signal);
+      return child;
+    };
+
+    await expect(runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 1 }, {
+      allTests: ['test/a.test.js'],
+      durationMap: new Map([['test/a.test.js', 1000]]),
+      processTree,
+      platform: 'linux',
+      spawn,
+    })).rejects.toThrow(/registered/);
+
+    expect(killed).toEqual(['SIGKILL']);
+  });
+
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {
     let index = 0;
     let pid = 9200;

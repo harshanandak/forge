@@ -144,7 +144,15 @@ function spawnShard(shard, options = {}) {
         windowsHide: true,
       });
       if (!processTree.registerChild(reservation, child)) {
-        processTree.unregisterChild(reservation);
+        if (typeof processTree.abortChild === 'function') {
+          processTree.abortChild(reservation, child);
+        } else {
+          try {
+            child.kill?.('SIGKILL');
+          } finally {
+            processTree.unregisterChild(reservation);
+          }
+        }
         reject(new Error('test shard process could not be registered'));
         return;
       }
