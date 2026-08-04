@@ -136,6 +136,7 @@ describe('scripts/test-full-suite.js', () => {
       const child = new EventEmitter();
       child.pid = 9300;
       child.kill = (signal) => killed.push(signal);
+      process.nextTick(() => child.emit('error', new Error('spawn failed')));
       return child;
     };
 

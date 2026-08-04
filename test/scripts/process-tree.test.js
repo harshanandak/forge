@@ -8,6 +8,7 @@ const { afterEach, describe, expect, test } = require('bun:test');
 const {
   MANIFEST_ENV,
   MANIFEST_VERSION,
+  INSTANCE_ENV,
   TOKEN_ENV,
   createProcessTree,
   reconcileProcessManifests,
@@ -88,7 +89,10 @@ describe('scripts/process-tree.js', () => {
       token: 'windows-token',
       platform: 'win32',
       processApi: { pid: 9000 },
-      spawnSync: (...args) => calls.push(args),
+      spawnSync: (...args) => {
+        calls.push(args);
+        return { status: 0 };
+      },
       isAlive: () => true,
       getProcessIdentity: () => 'child-start',
     });
@@ -102,11 +106,12 @@ describe('scripts/process-tree.js', () => {
       [TOKEN_ENV]: 'windows-token',
     }));
 
-    tree.cleanup('SIGTERM');
+    const result = tree.cleanup('SIGTERM');
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toBe('taskkill');
     expect(calls[0][1]).toEqual(['/PID', '9012', '/T', '/F']);
     expect(calls[0][2]).toEqual(expect.objectContaining({ windowsHide: true, stdio: 'ignore' }));
+    expect(result.killed).toEqual([9012]);
   });
 
   test('escalates a signal cleanup to timeout cleanup without double-killing', () => {
@@ -204,6 +209,29 @@ describe('scripts/process-tree.js', () => {
     expect(JSON.parse(fs.readFileSync(foreignPath, 'utf8'))).toEqual(foreign);
   });
 
+  test('captures identity before abort and reaps the owned process group first', () => {
+    const manifestPath = path.join(makeTempDir(), 'run.json');
+    const groupKills = [];
+    const directKills = [];
+    let identityCalls = 0;
+    const tree = createProcessTree({
+      manifestPath,
+      token: 'group-abort-token',
+      platform: 'linux',
+      processApi: { pid: 9000, kill: (pid, signal) => groupKills.push({ pid, signal }) },
+      isAlive: () => true,
+      getProcessIdentity: () => (identityCalls++ < 2 ? null : 'child-start'),
+    });
+    const reservation = tree.reserveChild({ kind: 'shard', label: 'unit-0' });
+    const child = { pid: 9019, kill: (signal) => { directKills.push(signal); return true; } };
+
+    expect(tree.registerChild(reservation, child)).toBeNull();
+    expect(tree.abortChild(reservation, child)).toBe(true);
+    expect(groupKills).toEqual([{ pid: -9019, signal: 'SIGKILL' }]);
+    expect(directKills).toEqual([]);
+    expect(fs.existsSync(manifestPath)).toBe(false);
+  });
+
   test('abortChild kills a newly spawned child when identity registration fails', () => {
     const manifestPath = path.join(makeTempDir(), 'run.json');
     const killed = [];
@@ -214,7 +242,7 @@ describe('scripts/process-tree.js', () => {
       getProcessIdentity: () => null,
     });
     const reservation = tree.reserveChild({ kind: 'shard', label: 'unit-0' });
-    const child = { pid: 9016, kill: (signal) => killed.push(signal) };
+    const child = { pid: 9016, kill: (signal) => { killed.push(signal); return true; } };
 
     expect(tree.registerChild(reservation, child)).toBeNull();
     tree.abortChild(reservation, child);
@@ -243,8 +271,63 @@ describe('scripts/process-tree.js', () => {
     const retained = readProcessManifest(manifestPath);
     expect(retained).toBeTruthy();
     expect(retained.children).toHaveLength(1);
-    expect(retained.children[0].status).toBe('reserved');
+    expect(retained.children[0].status).toBe('running');
+    expect(retained.children[0].identity).toBe('unverified:9017');
     expect(retained.children[0].pid).toBe(9017);
+  });
+
+  test('strips foreign manifest markers when an environment tree is unusable', () => {
+    const manifestPath = path.join(makeTempDir(), 'foreign.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      version: MANIFEST_VERSION,
+      token: 'foreign-token',
+      owner: { pid: 9001, identity: 'owner-start', startedAt: '2026-08-03T00:00:00.000Z' },
+      children: [],
+    }));
+    const tree = createProcessTree({
+      env: { [MANIFEST_ENV]: manifestPath, [TOKEN_ENV]: 'new-token', [INSTANCE_ENV]: 'foreign-instance' },
+      token: 'new-token',
+      processApi: { pid: 9000 },
+    });
+    expect(tree.envFor({ [MANIFEST_ENV]: manifestPath, [TOKEN_ENV]: 'new-token', [INSTANCE_ENV]: 'foreign-instance' }))
+      .toEqual({});
+  });
+
+  test('uses per-instance reservation ids and does not clean another instance', () => {
+    const manifestPath = path.join(makeTempDir(), 'run.json');
+    const first = createProcessTree({ manifestPath, token: 'shared-token', instanceId: 'first', processApi: { pid: 9000 }, getProcessIdentity: () => 'owner' });
+    const second = createProcessTree({
+      env: first.envFor({ PATH: 'test-path' }),
+      processApi: { pid: 9001 },
+      getProcessIdentity: () => 'owner',
+    });
+    const firstReservation = first.reserveChild();
+    const secondReservation = second.reserveChild();
+    expect(second.instanceId).not.toBe(first.instanceId);
+    expect(second.envFor({})[MANIFEST_ENV]).toBe(manifestPath);
+    expect(firstReservation.id).not.toBe(secondReservation.id);
+    expect(second.unregisterChild(firstReservation)).toBe(false);
+    expect(readProcessManifest(manifestPath).children).toHaveLength(2);
+  });
+
+  test('removes dead unverifiable entries during cleanup', () => {
+    const manifestPath = path.join(makeTempDir(), 'run.json');
+    const tree = createProcessTree({
+      manifestPath,
+      token: 'unverified-token',
+      processApi: { pid: 9000 },
+      isAlive: () => false,
+      getProcessIdentity: () => null,
+    });
+    const reservation = tree.reserveChild();
+    const manifest = readProcessManifest(manifestPath);
+    manifest.children[0] = {
+      ...manifest.children[0], pid: 9018, status: 'running', identity: 'unverified:9018',
+    };
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    tree.cleanup('SIGKILL');
+    expect(fs.existsSync(manifestPath)).toBe(false);
+    expect(reservation).toBeTruthy();
   });
 
   test('startup reconciliation reaps only owned orphan manifests with a dead owner', () => {

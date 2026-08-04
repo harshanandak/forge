@@ -8,6 +8,7 @@ const { spawnSync: defaultSpawnSync } = require('node:child_process');
 
 const MANIFEST_ENV = 'FORGE_TEST_PROCESS_MANIFEST';
 const TOKEN_ENV = 'FORGE_TEST_PROCESS_TOKEN';
+const INSTANCE_ENV = 'FORGE_TEST_PROCESS_INSTANCE';
 const MANIFEST_VERSION = 1;
 const DEFAULT_MANIFEST_DIR = path.join(os.tmpdir(), 'forge-test-processes');
 
@@ -38,6 +39,7 @@ function isValidManifestEntry(entry) {
   if (!nonEmptyString(entry.id) || !nonEmptyString(entry.token)) return false;
   if (!['reserved', 'running'].includes(entry.status)) return false;
   if (!nonEmptyString(entry.startedAt)) return false;
+  if (entry.instanceId != null && !nonEmptyString(entry.instanceId)) return false;
   if (entry.status === 'reserved') {
     if (entry.pid == null) return entry.identity == null;
     return normalizePid(entry.pid) === entry.pid
@@ -51,6 +53,7 @@ function isValidManifest(manifest) {
     manifest
       && manifest.version === MANIFEST_VERSION
       && nonEmptyString(manifest.token)
+      && (manifest.instanceId == null || nonEmptyString(manifest.instanceId))
       && manifest.owner
       && typeof manifest.owner === 'object'
       && normalizePid(manifest.owner.pid) === manifest.owner.pid
@@ -95,64 +98,56 @@ function defaultIsAlive(pid, processApi) {
   }
 }
 
+function readProcIdentity(pid, fsApi) {
+  try {
+    const stat = fsApi.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const closeParen = stat.lastIndexOf(')');
+    if (closeParen >= 0) {
+      const startTime = nonEmptyString(stat.slice(closeParen + 2).trim().split(/\s+/)[19]);
+      if (startTime) return `proc:${startTime}`;
+    }
+  } catch {
+    // Fall through to ps on platforms without procfs.
+  }
+  return null;
+}
+
+function readPsIdentity(pid, spawnSync) {
+  try {
+    const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      shell: false, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', windowsHide: true,
+    });
+    const value = result && !result.error && result.status === 0
+      ? normalizeIdentity(result.stdout) : null;
+    return value ? `ps:${value}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function readWindowsIdentity(pid, spawnSync) {
+  try {
+    const result = spawnSync('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `(Get-Process -Id ${String(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+    ], { shell: false, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', windowsHide: true });
+    const value = result && !result.error && result.status === 0
+      ? normalizeIdentity(result.stdout) : null;
+    return value ? `windows:${value}` : null;
+  } catch {
+    return null;
+  }
+}
+
 function defaultGetProcessIdentity(pid, options = {}) {
   const normalizedPid = normalizePid(pid);
   if (!normalizedPid) return null;
   const platform = options.platform || process.platform;
   const fsApi = options.fsApi || fs;
   const spawnSync = options.spawnSync || defaultSpawnSync;
-
-  if (platform !== 'win32') {
-    try {
-      const stat = fsApi.readFileSync(`/proc/${normalizedPid}/stat`, 'utf8');
-      const closeParen = stat.lastIndexOf(')');
-      if (closeParen >= 0) {
-        const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
-        const startTime = nonEmptyString(fields[19]);
-        if (startTime) return `proc:${startTime}`;
-      }
-    } catch {
-      // Fall through to ps on platforms without procfs.
-    }
-
-    try {
-      const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(normalizedPid)], {
-        shell: false,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        encoding: 'utf8',
-        windowsHide: true,
-      });
-      if (result && !result.error && result.status === 0) {
-        const value = normalizeIdentity(result.stdout);
-        if (value) return `ps:${value}`;
-      }
-    } catch {
-      // Unavailable identity evidence is treated as unverifiable.
-    }
-    return null;
-  }
-
-  try {
-    const result = spawnSync('powershell.exe', [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `(Get-Process -Id ${String(normalizedPid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
-    ], {
-      shell: false,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    if (result && !result.error && result.status === 0) {
-      const value = normalizeIdentity(result.stdout);
-      if (value) return `windows:${value}`;
-    }
-  } catch {
-    // Unavailable identity evidence is treated as unverifiable.
-  }
-  return null;
+  if (platform !== 'win32') return readProcIdentity(normalizedPid, fsApi)
+    || readPsIdentity(normalizedPid, spawnSync);
+  return readWindowsIdentity(normalizedPid, spawnSync);
 }
 
 function signalExitCode(signal) {
@@ -161,7 +156,7 @@ function signalExitCode(signal) {
   return 1;
 }
 
-function createInitialManifest(token, processApi, getProcessIdentity) {
+function createInitialManifest(token, processApi, getProcessIdentity, instanceId) {
   const ownerPid = normalizePid(processApi.pid);
   let ownerIdentity;
   try {
@@ -172,6 +167,7 @@ function createInitialManifest(token, processApi, getProcessIdentity) {
   return {
     version: MANIFEST_VERSION,
     token,
+    instanceId,
     owner: {
       pid: ownerPid,
       identity: ownerIdentity,
@@ -187,6 +183,8 @@ function createProcessTree(options = {}) {
   const platform = options.platform || process.platform;
   const spawnSync = options.spawnSync || defaultSpawnSync;
   const env = options.env || process.env;
+  const allInstances = options.allInstances === true;
+  const instanceId = allInstances ? null : String(options.instanceId || randomUUID());
   const hasCustomIdentity = typeof options.getProcessIdentity === 'function';
   const getProcessIdentity = options.getProcessIdentity || ((pid) => defaultGetProcessIdentity(pid, {
     platform,
@@ -220,6 +218,7 @@ function createProcessTree(options = {}) {
       processApi,
       spawnSync,
       getProcessIdentity,
+      allInstances: true,
     });
   }
 
@@ -233,9 +232,15 @@ function createProcessTree(options = {}) {
   const usable = !markerExists || (existing && existing.token === token);
   let manifest = existing && existing.token === token
     ? existing
-    : (usable ? createInitialManifest(token, processApi, getProcessIdentity) : null);
+    : (usable ? createInitialManifest(token, processApi, getProcessIdentity, instanceId) : null);
   let sequence = manifest ? manifest.children.length : 0;
   let cleanupSignal = null;
+  let cleanupComplete = false;
+
+  function ownsEntry(entry, latest = manifest) {
+    return Boolean(allInstances || (entry && entry.instanceId === instanceId)
+      || (entry && entry.instanceId == null && latest?.instanceId === instanceId));
+  }
 
   if (usable) {
     try {
@@ -272,8 +277,9 @@ function createProcessTree(options = {}) {
     const latest = currentManifest();
     if (!latest) return null;
     const entry = {
-      id: `${token}:${sequence++}`,
+      id: `${token}:${sequence++}:${randomUUID()}`,
       token,
+      instanceId,
       kind: metadata.kind || 'child',
       label: metadata.label || null,
       command: metadata.command || null,
@@ -293,7 +299,7 @@ function createProcessTree(options = {}) {
     const pid = normalizePid(child && child.pid);
     if (!latest || typeof id !== 'string' || !pid) return null;
     const entry = latest.children.find((candidate) => candidate.id === id);
-    if (!entry || entry.token !== token || entry.status !== 'reserved') return null;
+    if (!entry || !ownsEntry(entry, latest) || entry.token !== token || entry.status !== 'reserved') return null;
     const identity = captureIdentity(pid);
     if (!identity) return null;
     entry.pid = pid;
@@ -307,16 +313,25 @@ function createProcessTree(options = {}) {
     const latest = currentManifest();
     const id = reservation && reservation.id;
     if (!latest || typeof id !== 'string') return false;
-    const next = { ...latest, children: latest.children.filter((entry) => entry.id !== id) };
+    const entry = latest.children.find((candidate) => candidate.id === id);
+    if (!ownsEntry(entry, latest)) return false;
+    const next = { ...latest, children: latest.children.filter((candidate) => candidate.id !== id) };
     return persist(next);
   }
 
   function envFor(childEnv = env) {
-    if (!usable || !manifest) return { ...childEnv };
+    if (!usable || !manifest) {
+      const stripped = { ...childEnv };
+      delete stripped[MANIFEST_ENV];
+      delete stripped[TOKEN_ENV];
+      delete stripped[INSTANCE_ENV];
+      return stripped;
+    }
     return {
       ...childEnv,
       [MANIFEST_ENV]: manifestPath,
       [TOKEN_ENV]: token,
+      [INSTANCE_ENV]: instanceId,
     };
   }
 
@@ -327,6 +342,7 @@ function createProcessTree(options = {}) {
         && latest.token === token
         && entry
         && entry.token === token
+        && ownsEntry(entry, latest)
         && typeof entry.id === 'string'
         && entry.status === 'running'
         && normalizePid(entry.pid) === entry.pid
@@ -343,6 +359,14 @@ function createProcessTree(options = {}) {
       currentIdentity = null;
     }
     return currentIdentity !== null && currentIdentity === storedIdentity;
+  }
+
+  function isEntryAlive(entry) {
+    try {
+      return (options.isAlive || defaultIsAlive)(entry.pid, processApi);
+    } catch {
+      return true;
+    }
   }
 
   function killOwnedEntry(entry, signal) {
@@ -370,7 +394,7 @@ function createProcessTree(options = {}) {
 
   function cleanup(signal = 'SIGTERM') {
     const force = signal === 'SIGKILL';
-    if (cleanupSignal === 'SIGKILL' || (cleanupSignal === signal && !force)) {
+    if (cleanupComplete || (cleanupSignal === signal && !force)) {
       return { killed: [] };
     }
     cleanupSignal = signal;
@@ -382,14 +406,26 @@ function createProcessTree(options = {}) {
       if (killOwnedEntry(entry, signal)) killed.push(entry.pid);
     }
 
-    const finalManifest = currentManifest();
-    const hasUnverifiableRunningEntry = finalManifest?.children.some(
-      (entry) => entry.status === 'running' && !isVerifiableEntry(finalManifest, entry),
+    let finalManifest = currentManifest();
+    if (finalManifest) {
+      const liveEntries = finalManifest.children.filter((entry) => !(
+        entry.status === 'running'
+        && !isVerifiableEntry(finalManifest, entry)
+        && !isEntryAlive(entry)
+      ));
+      if (liveEntries.length !== finalManifest.children.length) {
+        persist({ ...finalManifest, children: liveEntries });
+        finalManifest = currentManifest();
+      }
+    }
+    const hasUnverifiableLiveEntry = finalManifest?.children.some(
+      (entry) => entry.status === 'running' && !isVerifiableEntry(finalManifest, entry)
+        && isEntryAlive(entry),
     );
     const hasLiveRunningEntry = finalManifest?.children.some(
       (entry) => entry.status === 'running'
         && isVerifiableEntry(finalManifest, entry)
-        && (options.isAlive || defaultIsAlive)(entry.pid, processApi),
+        && isEntryAlive(entry),
     );
     const hasOutstandingReservation = finalManifest?.children.some(
       (entry) => entry.status === 'reserved',
@@ -397,17 +433,18 @@ function createProcessTree(options = {}) {
     const hasFailedLiveEntry = finalManifest?.children.some(
       (entry) => entry.status === 'running'
         && isVerifiableEntry(finalManifest, entry)
-        && (options.isAlive || defaultIsAlive)(entry.pid, processApi)
+        && isEntryAlive(entry)
         && !killed.includes(entry.pid),
     );
     const safeToRemove = finalManifest
-      && !hasUnverifiableRunningEntry
+      && !hasUnverifiableLiveEntry
       && !hasOutstandingReservation
       && !hasFailedLiveEntry
       && (force || !hasLiveRunningEntry);
     if (safeToRemove && finalManifest.token === token) {
       try {
         fsApi.rmSync(manifestPath, { force: true });
+        cleanupComplete = !pathExists(manifestPath, fsApi);
       } catch {
         // A stale marker is safe to leave behind; its token still prevents a
         // later run from touching this process tree.
@@ -417,18 +454,45 @@ function createProcessTree(options = {}) {
   }
 
   function abortChild(reservation, child, signal = 'SIGKILL') {
+    const pid = normalizePid(child && child.pid);
+    const retainReservation = (identityOverride = null) => {
+      const latest = currentManifest();
+      const id = reservation && reservation.id;
+      const entry = latest?.children.find((candidate) => candidate.id === id);
+      if (!latest || !entry || !ownsEntry(entry, latest) || entry.token !== token || entry.status !== 'reserved') {
+        return false;
+      }
+      entry.pid = pid;
+      entry.identity = identityOverride || captureIdentity(pid) || `unverified:${pid}`;
+      entry.status = 'running';
+      entry.registeredAt = nowIso();
+      persist(latest);
+      return true;
+    };
+
+    // Capture stable identity before direct kill so the process-group/tree kill
+    // can reap descendants while the reservation is still verifiable.
+    const identity = pid ? captureIdentity(pid) : null;
+    const retained = pid && identity ? retainReservation(identity) : false;
+    const groupResult = retained ? cleanup(signal) : { killed: [] };
+    if (pid && groupResult.killed.includes(pid)) {
+      unregisterChild(reservation);
+      cleanup('SIGKILL');
+      return true;
+    }
+
     let killSucceeded = false;
     try {
       if (child && typeof child.kill === 'function') {
-        const result = child.kill(signal);
-        killSucceeded = result !== false;
+        killSucceeded = child.kill(signal) === true;
       }
     } catch {
       killSucceeded = false;
     }
 
-    const pid = normalizePid(child && child.pid);
     if (killSucceeded || !pid) {
+      if (pid && !retained) retainReservation(identity);
+      cleanup('SIGKILL');
       unregisterChild(reservation);
       cleanup('SIGKILL');
       return killSucceeded;
@@ -442,23 +506,15 @@ function createProcessTree(options = {}) {
       }
     })();
     if (!alive) {
+      if (!retained) retainReservation(identity);
+      cleanup('SIGKILL');
       unregisterChild(reservation);
       cleanup('SIGKILL');
       return killSucceeded;
     }
 
-    const latest = currentManifest();
-    const id = reservation && reservation.id;
-    const entry = latest?.children.find((candidate) => candidate.id === id);
-    if (latest && entry && entry.token === token && entry.status === 'reserved') {
-      const identity = captureIdentity(pid);
-      entry.pid = pid;
-      entry.identity = identity;
-      if (identity) {
-        entry.status = 'running';
-        entry.registeredAt = nowIso();
-      }
-      persist(latest);
+    if (!retained) retainReservation(identity);
+    if (currentManifest()?.children.some((entry) => entry.pid === pid && entry.status === 'running')) {
       // If identity evidence was available, cleanup can attempt a verified
       // tree kill. Otherwise retain the reservation for later reconciliation.
       cleanup('SIGKILL');
@@ -493,6 +549,7 @@ function createProcessTree(options = {}) {
     unregisterChild,
     abortChild,
     manifestPath,
+    instanceId,
     token,
   };
 }
@@ -525,6 +582,7 @@ function reapProcessManifest(manifestPath, options = {}) {
     ...options,
     manifestPath,
     token: existing.token,
+    allInstances: true,
     reconcile: false,
   });
   const result = tree.cleanup(options.signal || 'SIGKILL');
@@ -559,6 +617,7 @@ function reconcileProcessManifests(options = {}) {
 }
 
 module.exports = {
+  INSTANCE_ENV,
   MANIFEST_ENV,
   MANIFEST_VERSION,
   TOKEN_ENV,

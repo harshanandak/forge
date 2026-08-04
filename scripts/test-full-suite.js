@@ -143,6 +143,10 @@ function spawnShard(shard, options = {}) {
         detached: platform !== 'win32',
         windowsHide: true,
       });
+      child.on('error', (error) => {
+        processTree.unregisterChild(reservation);
+        reject(error);
+      });
       if (!processTree.registerChild(reservation, child)) {
         if (typeof processTree.abortChild === 'function') {
           processTree.abortChild(reservation, child);
@@ -150,6 +154,7 @@ function spawnShard(shard, options = {}) {
           try {
             child.kill?.('SIGKILL');
           } finally {
+            processTree.cleanup?.('SIGKILL');
             processTree.unregisterChild(reservation);
           }
         }
@@ -162,10 +167,6 @@ function spawnShard(shard, options = {}) {
       return;
     }
 
-    child.on('error', (error) => {
-      processTree.unregisterChild(reservation);
-      reject(error);
-    });
     child.on('close', (code) => {
       processTree.unregisterChild(reservation);
       resolve(code ?? 1);

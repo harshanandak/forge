@@ -1,6 +1,7 @@
 'use strict';
 
 const { describe, expect, test } = require('bun:test');
+const { EventEmitter } = require('node:events');
 const path = require('node:path');
 
 const {
@@ -455,9 +456,9 @@ describe('scripts/test pre-push runner', () => {
     expect(plan.testTargets).toEqual([]);
   });
 
-  test('runPrePushTests runs targeted tests instead of the full suite when possible', () => {
+  test('runPrePushTests runs targeted tests instead of the full suite when possible', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'lib/commands/ship.js\n',
@@ -478,9 +479,9 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
   });
 
-  test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', () => {
+  test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: '.claude/commands/review.md\n',
@@ -496,9 +497,9 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('runPrePushTests falls back to the full unit suite for unmapped pushed files', () => {
+  test('runPrePushTests falls back to the full unit suite for unmapped pushed files', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'docs/random-spec.md\n',
@@ -513,9 +514,9 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', () => {
+  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'test/e2e/helpers/scaffold.js\nscripts/new-maintenance-task.sh\n',
@@ -532,9 +533,9 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test/e2e/']);
   });
 
-  test('runLocalValidationTests reuses the same targeted runner path', () => {
+  test('runLocalValidationTests reuses the same targeted runner path', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runLocalValidationTests(repoRoot, {
+    const status = await runLocalValidationTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: '.github/agentic-workflows/behavioral-test.md\n',
@@ -559,9 +560,9 @@ describe('scripts/test pre-push runner', () => {
     ]);
   });
 
-  test('runLocalValidationTests falls back to the full suite when no runnable tests are selected', () => {
+  test('runLocalValidationTests falls back to the full suite when no runnable tests are selected', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runLocalValidationTests(repoRoot, {
+    const status = await runLocalValidationTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'test/scripts/smart-status.helpers.js\n',
@@ -576,9 +577,9 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('runPrePushTests falls back to the full unit suite when diff-base resolution yields no changed files', () => {
+  test('runPrePushTests falls back to the full unit suite when diff-base resolution yields no changed files', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: '',
@@ -594,9 +595,9 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', () => {
+  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', async () => {
     const spawnSync = makeSpawnSync(0);
-    runPrePushTests(repoRoot, {
+    await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'lib/commands/ship.js\n',
@@ -612,9 +613,9 @@ describe('scripts/test pre-push runner', () => {
     }
   });
 
-  test('FORGE_TEST_TIMEOUT_MS overrides the wall-clock lane timeout', () => {
+  test('FORGE_TEST_TIMEOUT_MS overrides the wall-clock lane timeout', async () => {
     const spawnSync = makeSpawnSync(0);
-    runPrePushTests(repoRoot, {
+    await runPrePushTests(repoRoot, {
       env: { FORGE_TEST_TIMEOUT_MS: '5000', PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({
         changedFiles: 'lib/commands/ship.js\n',
@@ -636,9 +637,9 @@ describe('scripts/test pre-push runner', () => {
     expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '20000' })).toBe(20000);
   });
 
-  test('the full-suite fallback lane uses the larger validation-aligned budget, not the fail-fast ceiling', () => {
+  test('the full-suite fallback lane uses the larger validation-aligned budget, not the fail-fast ceiling', async () => {
     const spawnSync = makeSpawnSync(0);
-    runPrePushTests(repoRoot, {
+    await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       // Unmapped pushed file → hasUnmappedFiles → full-suite fallback lane.
       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
@@ -664,14 +665,14 @@ describe('scripts/test pre-push runner', () => {
     expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
   });
 
-  test('a lane that times out fails fast with a non-zero status instead of hanging', () => {
+  test('a lane that times out fails fast with a non-zero status instead of hanging', async () => {
     const timedOutSpawnSync = () => ({
       error: Object.assign(new Error('spawnSync bun ETIMEDOUT'), { code: 'ETIMEDOUT' }),
       signal: 'SIGKILL',
       status: null,
     });
 
-    const status = runTestExecutionPlan({
+    const status = await runTestExecutionPlan({
       changedFiles: ['lib/commands/ship.js'],
       mode: 'targeted',
       reason: 'known changes mapped to targeted tests',
@@ -688,14 +689,14 @@ describe('scripts/test pre-push runner', () => {
     expect(status).not.toBe(0);
   });
 
-  test('a timed-out lane reaps its owned process tree with SIGKILL', () => {
+  test('a timed-out lane reaps its owned process tree with SIGKILL', async () => {
     const events = [];
     const processTree = {
       envFor: (env) => env,
       installSignalHandlers: () => () => {},
       cleanup: (signal) => events.push(signal),
     };
-    const status = runTestExecutionPlan({
+    const status = await runTestExecutionPlan({
       changedFiles: ['lib/commands/ship.js'],
       mode: 'targeted',
       reason: 'known changes mapped to targeted tests',
@@ -718,7 +719,7 @@ describe('scripts/test pre-push runner', () => {
     expect(events).toContain('SIGKILL');
   });
 
-  test('captured SIGINT and SIGTERM override nonzero targeted and E2E lane statuses', () => {
+  test('captured SIGINT and SIGTERM override nonzero targeted and E2E lane statuses', async () => {
     for (const [received, expected] of [['SIGINT', 130], ['SIGTERM', 143]]) {
       for (const plan of [
         {
@@ -744,7 +745,7 @@ describe('scripts/test pre-push runner', () => {
           },
           cleanup: (signal) => cleanupSignals.push(signal),
         };
-        const status = runTestExecutionPlan({
+        const status = await runTestExecutionPlan({
           changedFiles: ['lib/commands/ship.js'],
           mode: 'targeted',
           reason: 'known changes mapped to targeted tests',
@@ -763,6 +764,59 @@ describe('scripts/test pre-push runner', () => {
         expect(cleanupSignals).toEqual(['SIGKILL']);
       }
     }
+  });
+
+  test('a captured SIGINT terminates the registered async lane child and returns 130', async () => {
+    const killed = [];
+    let activeChild;
+    const processTree = {
+      envFor: (env) => env,
+      reserveChild: () => ({ id: 'lane' }),
+      registerChild: (_reservation, child) => {
+        activeChild = child;
+        return true;
+      },
+      unregisterChild: () => {},
+      installSignalHandlers: (notify) => {
+        process.nextTick(() => {
+          processTree.cleanup('SIGTERM');
+          notify('SIGINT');
+        });
+        return () => {};
+      },
+      cleanup: (signal) => {
+        if (activeChild && !activeChild.closed) activeChild.kill(signal);
+      },
+    };
+    const spawn = () => {
+      const child = new EventEmitter();
+      child.pid = 9400;
+      child.kill = (signal) => {
+        killed.push(signal);
+        child.closed = true;
+        process.nextTick(() => child.emit('close', null, signal));
+        return true;
+      };
+      return child;
+    };
+
+    const status = await runTestExecutionPlan({
+      changedFiles: ['lib/commands/ship.js'],
+      mode: 'targeted',
+      reason: 'signal integration regression',
+      runE2E: false,
+      runFullSuite: false,
+      runTestEnv: false,
+      testTargets: ['test/commands/ship.test.js'],
+    }, {
+      env: { PATH: process.env.PATH || '' },
+      pkgManager: 'bun',
+      processTree,
+      spawn,
+    });
+
+    expect(status).toBe(130);
+    expect(killed).toEqual(['SIGTERM']);
   });
 });
 
@@ -786,9 +840,9 @@ describe('quick push lane', () => {
     expect(isQuickPushLane({ [QUICK_LANE_ENV_VAR]: '1' })).toBe(false);
   });
 
-  test('runPrePushTests short-circuits the whole test lane when the quick lane is declared', () => {
+  test('runPrePushTests short-circuits the whole test lane when the quick lane is declared', async () => {
     const spawnSync = makeSpawnSync(0);
-    const { lines, result: status } = captureLog(() => runPrePushTests(repoRoot, {
+    const { lines, result: statusPromise } = captureLog(() => runPrePushTests(repoRoot, {
       env: { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: process.env.PATH || '' },
       // Unmapped file → would otherwise take the 10-minute full-suite lane.
       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
@@ -796,6 +850,7 @@ describe('quick push lane', () => {
       spawnSync,
     }));
 
+    const status = await statusPromise;
     expect(status).toBe(0);
     expect(spawnSync.calls).toHaveLength(0);
     // The skip must be loud: silently green tests would be indistinguishable
@@ -804,9 +859,9 @@ describe('quick push lane', () => {
     expect(lines.join('\n')).toContain('CI runs the full matrix');
   });
 
-  test('runPrePushTests runs the full lane when the quick lane is not declared', () => {
+  test('runPrePushTests runs the full lane when the quick lane is not declared', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
       pkgManager: 'bun',
@@ -818,9 +873,9 @@ describe('quick push lane', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('runPrePushTests runs the full lane for a non-quick value of the lane variable', () => {
+  test('runPrePushTests runs the full lane for a non-quick value of the lane variable', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runPrePushTests(repoRoot, {
+    const status = await runPrePushTests(repoRoot, {
       env: { [QUICK_LANE_ENV_VAR]: 'full', PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
       pkgManager: 'bun',
@@ -831,9 +886,9 @@ describe('quick push lane', () => {
     expect(spawnSync.calls).toHaveLength(1);
   });
 
-  test('the quick lane never short-circuits local validation, only the pre-push lane', () => {
+  test('the quick lane never short-circuits local validation, only the pre-push lane', async () => {
     const spawnSync = makeSpawnSync(0);
-    const status = runLocalValidationTests(repoRoot, {
+    const status = await runLocalValidationTests(repoRoot, {
       env: { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: process.env.PATH || '' },
       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
       pkgManager: 'bun',

@@ -13,7 +13,11 @@
  * (`--validate`) ignores the variable entirely, and CI runs the full matrix.
  */
 
-const { execFileSync: defaultExecFileSync, spawnSync: defaultSpawnSync } = require('node:child_process');
+const { EventEmitter } = require('node:events');
+const {
+  execFileSync: defaultExecFileSync,
+  spawn: defaultSpawn,
+} = require('node:child_process');
 const fs = require('node:fs');
 
 const {
@@ -340,33 +344,80 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
  *
  * @param {string} command Executable name.
  * @param {string[]} args Command arguments.
- * @param {import('node:child_process').SpawnSyncOptions} [options={}] Spawn options.
- * @param {typeof defaultSpawnSync} [spawnSync=defaultSpawnSync] Process runner.
- * @returns {number} Process exit status, or 1 when no status is reported.
+ * @param {import('node:child_process').SpawnOptions} [options={}] Spawn options.
+ * @param {typeof defaultSpawn} [spawn=defaultSpawn] Process runner.
+ * @returns {Promise<number>} Process exit status, or 1 when no status is reported.
  */
-function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
+function runCommand(command, args, options = {}, spawn = defaultSpawn) {
   const { processTree, ...spawnOptions } = options;
-  const result = spawnSync(command, args, {
-    stdio: 'inherit',
-    shell: isWindows,
-    ...spawnOptions,
-  });
-
-  if (result.error) {
-    if (result.error.code === 'ETIMEDOUT') {
-      processTree?.cleanup?.('SIGKILL');
-      console.error('');
-      console.error('Test lane exceeded its wall-clock ceiling and was terminated.');
-      console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
-      console.error('Adjust the ceiling with FORGE_TEST_TIMEOUT_MS. Failing the run instead of');
-      console.error('blocking the push. See issue 8aef79e8.');
-      console.error('');
-      return TIMEOUT_EXIT_CODE;
+  const timeout = spawnOptions.timeout;
+  return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    let timer = null;
+    const reservation = processTree?.reserveChild?.({ kind: 'test-lane', label: command }) || null;
+    let registered = false;
+    const release = () => {
+      if (registered) {
+        processTree?.unregisterChild?.(reservation);
+        registered = false;
+      }
+    };
+    const finish = (status) => {
+      if (settled) return;
+      settled = true;
+      release();
+      resolve(status ?? 1);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      if (timer) clearTimeout(timer);
+      if (error?.code === 'ETIMEDOUT') {
+        processTree?.cleanup?.('SIGKILL');
+        console.error('');
+        console.error('Test lane exceeded its wall-clock ceiling and was terminated.');
+        console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
+        console.error('Adjust the ceiling with FORGE_TEST_TIMEOUT_MS. Failing the run instead of');
+        console.error('blocking the push. See issue 8aef79e8.');
+        console.error('');
+        finish(TIMEOUT_EXIT_CODE);
+        return;
+      }
+      settled = true;
+      release();
+      reject(error);
+    };
+    try {
+      child = spawn(command, args, { stdio: 'inherit', shell: isWindows, ...spawnOptions });
+    } catch (error) {
+      fail(error);
+      return;
     }
-    throw result.error;
-  }
-
-  return result.status ?? 1;
+    child.once?.('error', fail);
+    child.once?.('close', (status, signal) => {
+      if (timer) clearTimeout(timer);
+      finish(status ?? signalExitCode(signal));
+    });
+    if (reservation && typeof processTree?.registerChild === 'function') {
+      registered = true;
+      if (!processTree.registerChild(reservation, child)) {
+        processTree.abortChild?.(reservation, child);
+        release();
+        fail(new Error('test lane process could not be registered'));
+        return;
+      }
+    }
+    timer = timeout > 0 ? setTimeout(() => {
+      processTree?.cleanup?.('SIGKILL');
+      try { child.kill?.('SIGKILL'); } catch { /* best effort */ }
+      processTree?.cleanup?.('SIGKILL');
+      finish(TIMEOUT_EXIT_CODE);
+    }, timeout) : null;
+    if (!child.once) {
+      if (timer) clearTimeout(timer);
+      finish(child.status ?? 1);
+    }
+  });
 }
 
 /**
@@ -376,8 +427,23 @@ function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
  * @param {Object} [deps={}] Runtime dependencies for tests.
  * @returns {number} Exit status for the executed plan.
  */
-function runTestExecutionPlan(plan, deps = {}) {
-  const spawnSync = deps.spawnSync || defaultSpawnSync;
+async function runTestExecutionPlan(plan, deps = {}) {
+  const spawn = deps.spawn || (deps.spawnSync ? (...args) => {
+    const child = new EventEmitter();
+    let result;
+    try {
+      result = deps.spawnSync(...args);
+    } catch (error) {
+      process.nextTick(() => child.emit('error', error));
+      return child;
+    }
+    child.pid = result?.pid || process.pid;
+    process.nextTick(() => {
+      if (result?.error) child.emit('error', result.error);
+      else child.emit('close', result?.status ?? 1, result?.signal);
+    });
+    return child;
+  } : defaultSpawn);
   const pkgManager = deps.pkgManager || detectPackageManager();
   const env = deps.env || stripGitHookEnv(process.env);
   const processTree = deps.processTree || createProcessTree({
@@ -409,27 +475,27 @@ function runTestExecutionPlan(plan, deps = {}) {
   try {
     if (plan.runFullSuite) {
       console.log(`  Mode: full suite (${plan.reason})`);
-      const status = runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawnSync);
+       const status = await runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawn);
       if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     } else if (plan.testTargets.length > 0) {
       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
       const command = pkgManager === 'bun' ? bunCommand : pkgManager;
-      const status = runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawnSync);
+       const status = await runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawn);
       if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     }
 
     if (plan.runE2E) {
       console.log('  Extra: running affected e2e tests');
-      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawnSync);
+       const status = await runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawn);
       if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     }
 
     if (!plan.runFullSuite && plan.runTestEnv) {
       console.log('  Extra: running affected edge-case tests');
-      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawnSync);
+       const status = await runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawn);
       if (signal) return signalExitCode(signal);
       if (status !== 0) return status;
     }
@@ -454,7 +520,7 @@ function runTestExecutionPlan(plan, deps = {}) {
  * @param {Object} [deps={}] Runtime dependencies for tests.
  * @returns {number} Exit status for pre-push tests.
  */
-function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
+async function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
   if (isQuickPushLane(deps.env || process.env)) {
     console.log('');
     console.log('  quick lane: tests skipped locally — CI runs the full matrix');
@@ -475,17 +541,22 @@ function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
  * @param {Object} [deps={}] Runtime dependencies for tests.
  * @returns {number} Exit status for local validation tests.
  */
-function runLocalValidationTests(projectRoot = process.cwd(), deps = {}) {
+async function runLocalValidationTests(projectRoot = process.cwd(), deps = {}) {
   const execFileSync = deps.execFileSync || defaultExecFileSync;
   const plan = buildTestExecutionPlan(projectRoot, execFileSync, { sinceUpstream: true });
   return runTestExecutionPlan(plan, { ...deps, label: 'local validation tests' });
 }
 
 if (require.main === module) {
-  const exitCode = process.argv.includes('--validate')
-    ? runLocalValidationTests()
-    : runPrePushTests();
-  process.exit(exitCode);
+  (async () => {
+    const exitCode = process.argv.includes('--validate')
+      ? await runLocalValidationTests()
+      : await runPrePushTests();
+    process.exit(exitCode);
+  })().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
 }
 
 module.exports = {
