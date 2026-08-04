@@ -656,6 +656,147 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
 		expect(desired.listingOk).toBe(true);
 	});
 
+	test('gatherDesired uses canonical owner/repo identity and carries legacy linkage forward', async () => {
+		const calls = [];
+		const desired = await executor.gatherDesired('/g', {
+			projectRoot: '/repo',
+			runGh: (args) => {
+				calls.push(args);
+				if (args[0] === 'repo') return JSON.stringify({ owner: { login: 'harshanandak' }, name: 'forge' });
+				return JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'sha7' }]);
+			},
+			broker: { listOpenPrs: async () => [
+				{ repo: 'forge', number: 7, head_sha: 'old-sha7', issue_id: 'ISSUE-7', worktree_id: 'WT-7' },
+			] },
+		});
+		expect(calls.some((args) => args.join(' ') === 'repo view --json owner,name')).toBe(true);
+		expect(desired.openPrs[0]).toMatchObject({
+			repo: 'harshanandak/forge', issueId: 'ISSUE-7', worktreeId: 'WT-7',
+		});
+	});
+
+	test('gatherDesired fails closed when the GitHub repository identity is malformed or unreadable', async () => {
+		for (const repoResponse of [
+			JSON.stringify({ owner: { login: 'bad owner' }, name: 'forge' }),
+			() => { throw new Error('gh unavailable'); },
+		]) {
+			const desired = await executor.gatherDesired('/g', {
+				projectRoot: '/repo',
+				runGh: (args) => {
+					if (args[0] === 'repo') return typeof repoResponse === 'function' ? repoResponse() : repoResponse;
+					return JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'sha7' }]);
+				},
+			});
+			expect(desired.listingOk).toBe(false);
+			expect(desired.openPrs).toEqual([]);
+		}
+	});
+
+	test('gatherDesired does not alias cross-repository or ambiguous basename rows', async () => {
+		const desired = await executor.gatherDesired('/g', {
+			projectRoot: '/repo',
+			runGh: (args) => args[0] === 'repo'
+				? JSON.stringify({ owner: { login: 'harshanandak' }, name: 'forge' })
+				: JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'sha7' }]),
+			broker: { listOpenPrs: async () => [
+				{ repo: 'other/forge', number: 7, head_sha: 'sha7', issue_id: 'CROSS', worktree_id: 'CROSS' },
+				{ repo: 'forge', number: 7, head_sha: 'sha7', issue_id: 'LEGACY-1', worktree_id: 'WT-1' },
+				{ repo: 'forge', number: 7, head_sha: 'sha7', issue_id: 'LEGACY-2', worktree_id: 'WT-2' },
+			] },
+		});
+		expect(desired.listingOk).toBe(false);
+		expect(desired.openPrs).toEqual([]);
+	});
+
+	test('convergeOnce rewrites a legacy row under canonical repo while preserving its issue link', async () => {
+		const row = { repo: 'forge', number: 7, head_sha: 'old-sha7', issue_id: 'ISSUE-7', worktree_id: 'WT-7', state: 'open' };
+		const upserts = [];
+		const retires = [];
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/g',
+			runGh: (args) => args[0] === 'repo'
+				? JSON.stringify({ owner: { login: 'harshanandak' }, name: 'forge' })
+				: JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'new-sha7' }]),
+			broker: {
+				listOpenPrs: async () => [row],
+				upsertPr: async (value) => { upserts.push(value); },
+				retirePr: async (value) => { retires.push(value); },
+			},
+			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [row], liveWatcherPids: [] }),
+			spawnWatcher: () => ({ pid: 17 }),
+			writeClaim: () => {},
+		});
+		expect(conv.actions).toContainEqual(expect.objectContaining({
+			type: 'upsertPrRow',
+			row: expect.objectContaining({ repo: 'harshanandak/forge', issue_id: 'ISSUE-7', worktree_id: 'WT-7' }),
+		}));
+		expect(conv.actions).toContainEqual({ type: 'retire', pr: { repo: 'forge', number: 7 } });
+		expect(upserts[0]).toMatchObject({ repo: 'harshanandak/forge', issue_id: 'ISSUE-7' });
+		expect(retires[0]).toMatchObject({ repo: 'forge', number: 7 });
+	});
+
+	test('convergeOnce skips all teardown when repository identity lookup fails', async () => {
+		let observed = false;
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/g',
+			runGh: (args) => {
+				if (args[0] === 'repo') throw new Error('gh unavailable');
+				return JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'sha7' }]);
+			},
+			gatherObserved: async () => { observed = true; return { lease: null, leaseFresh: false, prRows: [{ repo: 'forge', number: 7, state: 'open' }], liveWatcherPids: [] }; },
+		});
+		expect(conv.actions).toEqual([]);
+		expect(observed).toBe(false);
+		expect(conv.desiredCount).toBeNull();
+	});
+
+	test('convergeOnce fails closed on a cross-owner row for an open PR number', async () => {
+		let observed = false;
+		let writes = 0;
+		const crossOwner = { repo: 'other/forge', number: 7, head_sha: 'sha7', state: 'open' };
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/g',
+			runGh: (args) => args[0] === 'repo'
+				? JSON.stringify({ owner: { login: 'harshanandak' }, name: 'forge' })
+				: JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'sha7' }]),
+			broker: {
+				listOpenPrs: async () => [crossOwner],
+				upsertPr: async () => { writes += 1; },
+				retirePr: async () => { writes += 1; },
+			},
+			gatherObserved: async () => { observed = true; return { lease: null, leaseFresh: false, prRows: [crossOwner], liveWatcherPids: [] }; },
+		});
+		expect(conv.actions).toEqual([]);
+		expect(conv.desiredCount).toBeNull();
+		expect(observed).toBe(false);
+		expect(writes).toBe(0);
+	});
+
+	test('convergeOnce fails closed on duplicate legacy rows for an open PR number', async () => {
+		let observed = false;
+		let writes = 0;
+		const legacyRows = [
+			{ repo: 'forge', number: 7, head_sha: 'sha7', issue_id: 'ISSUE-1', state: 'open' },
+			{ repo: 'forge', number: 7, head_sha: 'sha7', issue_id: 'ISSUE-2', state: 'open' },
+		];
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/g',
+			runGh: (args) => args[0] === 'repo'
+				? JSON.stringify({ owner: { login: 'harshanandak' }, name: 'forge' })
+				: JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'sha7' }]),
+			broker: {
+				listOpenPrs: async () => legacyRows,
+				upsertPr: async () => { writes += 1; },
+				retirePr: async () => { writes += 1; },
+			},
+			gatherObserved: async () => { observed = true; return { lease: null, leaseFresh: false, prRows: legacyRows, liveWatcherPids: [] }; },
+		});
+		expect(conv.actions).toEqual([]);
+		expect(conv.desiredCount).toBeNull();
+		expect(observed).toBe(false);
+		expect(writes).toBe(0);
+	});
+
 	test('convergeOnce SKIPS reconcile+execute when listingOk===false (zero retire/stop, no observe)', async () => {
 		let observed = false;
 		const conv = await executor.convergeOnce('/repo', {
