@@ -213,6 +213,17 @@ workflow behaves exactly as before (no regression) — it just cannot auto-run C
 the updated head. Forge only wires the code path and reads the secret; **creating
 the secret is the maintainer's responsibility** — Forge never fabricates a token.
 
+## GitHub Actions PR-monitor summary
+
+The repository PR-monitor workflow writes detailed review-thread and check
+diagnostics to the Actions job summary (`GITHUB_STEP_SUMMARY`) and keeps the
+machine-readable view available through `forge shepherd <pr> --pull --json`.
+It projects that same canonical verdict onto exactly one `pr-verdict:*` label
+for a cheap agent-agnostic read. The label is visibility only: merge authority
+continues to use live protected required checks, the current head, and
+unresolved review threads. The workflow does not create PR comments or a
+neutral `forge/pr-monitor` check.
+
 ## Per-harness behavior
 
 - **Claude Code / Codex:** automatic session-start attachment wakes the singleton;
@@ -222,8 +233,8 @@ the secret is the maintainer's responsibility** — Forge never fabricates a tok
 
 ## State
 
-Progress is durable in GitHub PR comments and labels plus `git`. The one local
-store is the constant monitor's per-PR journal under
+Progress is durable in the Actions job summary, the single verdict label, and
+`git`. The one local store is the constant monitor's per-PR journal under
 `.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
 consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
 `events --since`. The bounded shepherd pass itself keeps no separate local state.

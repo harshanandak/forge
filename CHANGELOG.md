@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Simplified the PR-monitor surface.** The workflow now keeps one canonical
+  `pr-verdict:*` label and writes detailed diagnostics to the Actions job summary
+  (also available via `forge shepherd --pull --json`); it no longer creates a
+  sticky PR comment or the neutral `forge/pr-monitor` check. The label remains a
+  visibility projection and never supplies merge authority. (112a348a)
 - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
 - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
 

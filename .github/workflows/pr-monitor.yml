@@ -1,7 +1,7 @@
 name: PR Monitor
 
 # Surface + label PR monitor. On every PR event it reads the PR's open review +
-# check state, keeps a SINGLE sticky comment up to date so async review-bot
+# check state, writes one detailed Actions job summary so async review-bot
 # (CodeRabbit / Greptile / Qodo) or human feedback in a window nobody is watching
 # never rots, AND lands ONE actionable `pr-verdict:*` label (the cheap agent read).
 # It LABELS state (check-failed / threads-open / mergeable / …) and, in Tier-2
@@ -15,9 +15,9 @@ name: PR Monitor
 # it loop-safe.
 #
 # Signal source: Forge's own agnostic gather, `forge shepherd <pr> --bundle
-# --json` (lib/pr-bundle.js) for the sticky's threads/checks. Unresolved threads
+# --json` (lib/pr-bundle.js) for the summary's threads/checks. Unresolved threads
 # come from GraphQL reviewThreads{isResolved} across ALL authors — no name-list,
-# no bot is privileged. The verdict label + sticky headline read the SAME value
+# no bot is privileged. The verdict label + summary headline read the SAME value
 # `forge shepherd <pr> --pull --json` emits (lib/pr-pull.js computeVerdict) — one
 # verdict, no second ladder to drift. Kernel issues: 35ee8d78 (auto-trigger),
 # b5c154cd (verdict label), c01936be (--pull verdict), c2d398e5 (epic).
@@ -63,10 +63,8 @@ permissions:
 # a group left a trail of CANCELLED runs. Those render as red/non-SUCCESS checks on
 # the PR head, alarm humans, and trip merge-gate tooling (Forge's own pr-bundle) that
 # treats any non-SUCCESS check as a failure (kernel issue 97e6a146). Without a group,
-# nothing gets cancelled. The only race a group used to guard — two concurrent
-# first-runs both creating a sticky comment — is instead closed deterministically by
-# the reconcile-to-one upsert (lib/pr-monitor/upsert-sticky.js), which keeps the
-# lowest-id sticky and deletes the rest, converging to EXACTLY ONE per PR.
+# nothing gets cancelled; the summary and label are independent projections and do
+# not create or reconcile PR comments.
 
 jobs:
   monitor:
@@ -146,7 +144,7 @@ jobs:
           # Reuse Forge's own agnostic gather so the monitor and the CLI share one
           # implementation. Read-only: --bundle decides nothing and takes no action.
           # On success we stamp ciAvailable:true — the shepherd bundle doesn't carry
-          # that flag, and the renderer treats a missing flag as "unread" (fail-closed),
+          # that flag, and the summary renderer treats a missing flag as "unread" (fail-closed),
           # so we must assert here that CI WAS read on this path.
           if node bin/forge.js shepherd "$PR" --bundle --json > raw.json 2> gather.err \
              && jq '. + {ciAvailable: true}' raw.json > bundle.json 2>/dev/null; then
@@ -156,7 +154,7 @@ jobs:
             echo "::warning::Bundle gather failed; posting a degraded surface. See log."
             cat gather.err || true
             # Fail-closed degraded bundle: NEITHER threads NOR checks were read, so
-            # both availability flags are false — the renderer surfaces both as
+            # both availability flags are false — the summary surfaces both as
             # unreadable rather than a false "zero unresolved / no failing checks".
             # Build with `jq --arg` (NOT manual escaping): gather.err can contain
             # backslashes, tabs, control chars, or a truncated multibyte sequence that
@@ -185,7 +183,7 @@ jobs:
         run: |
           set -uo pipefail
           # The verdict is the SAME code `forge shepherd <pr> --pull --json` emits
-          # (lib/pr-pull.js computeVerdict) — the label + sticky headline read it
+          # (lib/pr-pull.js computeVerdict) — the label + summary headline read it
           # here rather than recomputing, so they can never disagree with --pull.
           # Fail-closed: any gather failure or a missing field yields UNKNOWN.
           if node bin/forge.js shepherd "$PR" --pull --json > pull.json 2> pull.err; then
@@ -196,7 +194,7 @@ jobs:
             VERDICT=UNKNOWN
           fi
           [ -z "$VERDICT" ] && VERDICT=UNKNOWN
-          # Carry the unreadable-signal list forward so the sticky/label step can
+          # Carry the unreadable-signal list forward so the summary/label step can
           # name WHICH signal was unreadable (default [] when pull.json is absent).
           UNREADABLE=$(jq -c '.evidence.unreadable // []' pull.json 2>/dev/null || echo '[]')
           [ -z "$UNREADABLE" ] && UNREADABLE='[]'
@@ -211,47 +209,41 @@ jobs:
             echo "::warning::verdict UNKNOWN — unreadable: $UNREADABLE"
           fi
 
-      - name: Render sticky comment body
+      - name: Publish Actions job summary
         if: steps.resolve.outputs.should_run == 'true'
         env:
-          VERDICT: ${{ steps.pullverdict.outputs.verdict }}
-          UNREADABLE: ${{ steps.pullverdict.outputs.unreadable }}
-        run: |
-          set -euo pipefail
-          # Pass the --pull verdict into the renderer so the sticky leads with the
-          # SAME verdict as the pr-verdict:* label (render-sticky only displays it).
-          # Also pass the unreadable-signal list so an UNKNOWN verdict on the PR
-          # always says WHICH signal was unreadable (never a bare `unknown`).
-          node -e '
-            const { renderStickyComment } = require("./lib/pr-monitor/render-sticky");
-            const bundle = JSON.parse(require("fs").readFileSync("bundle.json", "utf8"));
-            let unreadable = [];
-            try { unreadable = JSON.parse(process.env.UNREADABLE || "[]"); } catch { unreadable = []; }
-            const { body } = renderStickyComment(bundle, { verdict: process.env.VERDICT, unreadable });
-            require("fs").writeFileSync("monitor-body.md", body);
-          '
-          # jq -Rs slurps the raw markdown into a JSON string for the comment API.
-          jq -Rs '{body: .}' monitor-body.md > monitor-payload.json
-
-      - name: Upsert sticky comment (race-safe, exactly one)
-        if: steps.resolve.outputs.should_run == 'true'
-        # Best-effort: a transient gh/network failure must NOT fail the job and
-        # produce the very non-success check this monitor exists to avoid. A real
-        # (non-already-gone) error still surfaces as a failed step annotation.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
-          STICKY_PAYLOAD_FILE: monitor-payload.json
+          VERDICT: ${{ steps.pullverdict.outputs.verdict }}
         run: |
           set -euo pipefail
-          # Reconcile the PR's sticky comments to EXACTLY ONE: find prior stickies by
-          # their hidden marker, update the oldest (lowest-id) in place, and delete any
-          # duplicates a concurrent run created. Because this workflow has no
-          # concurrency group (see the top-of-file note), two first-runs could each
-          # create a sticky; the deterministic lowest-id survivor closes that race.
-          node lib/pr-monitor/upsert-sticky.js
+          # Render the same --pull verdict and detailed bundle diagnostics into the
+          # runner-provided summary surface. This is append-only per job and never
+          # mutates the PR, so concurrent monitor runs cannot create stale comments.
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('node:fs');
+          const { renderSummary } = require('./lib/pr-monitor/render-summary');
+
+          function readJson(file, fallback) {
+            try {
+              const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+              return value && typeof value === 'object' ? value : fallback;
+            } catch {
+              return fallback;
+            }
+          }
+
+          const bundle = readJson('bundle.json', { pr: process.env.PR });
+          const pull = readJson('pull.json', {});
+          const unreadable = pull.evidence && Array.isArray(pull.evidence.unreadable)
+            ? pull.evidence.unreadable
+            : [];
+          const { body } = renderSummary(bundle, {
+            pr: process.env.PR,
+            verdict: process.env.VERDICT || pull.verdict || 'UNKNOWN',
+            unreadable,
+          });
+          process.stdout.write(`${body}\n`);
+          NODE
 
       - name: Compute pr-verdict label
         if: steps.resolve.outputs.should_run == 'true'
@@ -297,31 +289,6 @@ jobs:
           else
             echo "::warning::Could not set label $LABEL (non-fatal)."
           fi
-
-      - name: Publish informational (neutral) check
-        if: steps.resolve.outputs.should_run == 'true'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ steps.resolve.outputs.pr }}
-        run: |
-          set -uo pipefail
-          # A NEUTRAL check run is informational by construction — it can never
-          # read as a pass/fail merge verdict and never blocks merge. Best-effort.
-          SHA=$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
-          if [ -z "$SHA" ]; then
-            echo "No head sha resolved; skipping informational check."
-            exit 0
-          fi
-          gh api -X POST "repos/$GH_REPO/check-runs" \
-            -f name='forge/pr-monitor' \
-            -f head_sha="$SHA" \
-            -f status='completed' \
-            -f conclusion='neutral' \
-            -f 'output[title]=PR monitor surfaced review + check state' \
-            -f 'output[summary]=See the Forge PR Monitor sticky comment + the pr-verdict:* label. Surface-only: labels state, never merges, never resolves threads.' \
-            > /dev/null && echo "Published neutral check for $SHA" || echo "::warning::Neutral check publish failed (non-fatal)."
 
       # ---------------------------------------------------------------------------
       # TIER-2 auto-actions (issue addf5297). Everything ABOVE surfaces state and
