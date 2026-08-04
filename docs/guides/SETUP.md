@@ -59,9 +59,15 @@ bunx forge setup --agents claude cursor
 bunx forge setup --all --quick
 bunx forge setup --path ./my-project --agents codex --dry-run
 bunx forge setup --merge smart --agents claude,cursor
+bunx forge setup --agents claude --skills-only
 ```
 
 Use `--agents`, not `--agent`.
+
+Use `--skills-only` (or its `--no-hooks` alias) when you want the Forge skill
+suite without installing Git hooks, Forge-native hook scripts, or Claude/Cursor
+native hook enforcement. The default `forge setup` behavior is unchanged, and
+the option is safe to re-run.
 
 ## Agent Notes
 

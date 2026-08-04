@@ -2337,6 +2337,7 @@ function parseFlags() {
     verbose: false,   // Show file-by-file detail in setup summary
     dryRun: false,    // Preview planned actions without writing files
     symlink: false,   // Create CLAUDE.md as symlink to AGENTS.md (--symlink)
+    skillsOnly: false, // Install skills without Git or harness hook enforcement
   };
 
   // Issue passthrough commands delegate all flags to bd.
@@ -2401,6 +2402,9 @@ function parseFlags() {
       i++;
     } else if (arg === '--symlink') {
       flags.symlink = true;
+      i++;
+    } else if (arg === '--skills-only' || arg === '--no-hooks') {
+      flags.skillsOnly = true;
       i++;
     } else if (arg === '--interview') {
       flags.interview = true;
@@ -2559,6 +2563,8 @@ function showHelp() {
   console.log('  --type <type>        Set workflow profile type manually');
   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
   console.log('  --dry-run            Preview planned actions without writing any files');
+  console.log('  --skills-only        Install skills without Git hooks, Forge-native, or harness hooks');
+  console.log('                       Alias: --no-hooks');
   console.log('  --interview          Force context interview (gather project information)');
   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
   console.log('  --yes, -y            Non-interactive setup with sensible defaults');
@@ -2584,6 +2590,7 @@ function showHelp() {
   console.log('  npx forge setup --yes                    # Non-interactive, defaults to claude');
   console.log('  npx forge setup --yes --agents cursor   # Non-interactive, specific agent');
   console.log('  npx forge setup --all --skip-external    # All agents, no services');
+  console.log('  npx forge setup --agents claude --skills-only # Skills without hook enforcement');
   console.log('  npx forge setup --merge=smart            # Use intelligent merge for existing files');
   console.log('  npx forge setup --type=critical          # Set workflow profile manually');
   console.log('  npx forge setup --interview              # Force context interview');
