@@ -251,8 +251,7 @@ describe('scripts/process-tree.js', () => {
     expect(chmodCalls.some(([, mode]) => mode === 0o700)).toBe(true);
   });
 
-  test('accepts a macOS runner temp chain with trusted system ancestors', () => {
-    if (process.platform === 'win32') return;
+  test.skipIf(process.platform === 'win32')('accepts a macOS runner temp chain with trusted system ancestors', () => {
     const uid = 501;
     const manifestDir = '/var/folders/zz/runner/T/forge-process-tree';
     const manifestPath = path.join(manifestDir, 'run.json');
