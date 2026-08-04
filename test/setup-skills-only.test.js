@@ -11,7 +11,7 @@ const tempDirs = [];
 const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 const gitRequiredTest = gitAvailable
   ? test
-  : (name, _callback, timeout) => test.skip(`${name} (requires a Git executable)`, () => {}, timeout);
+  : (name, callback, timeout) => test.skip(`${name} (requires a Git executable)`, callback, timeout);
 
 function makeTempRepo() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-only-'));
@@ -26,6 +26,19 @@ function runSetup(repo, ...args) {
   return spawnSync(
     process.execPath,
     [FORGE_BIN, 'setup', '--agents', 'claude', '--skip-external', ...args, '--path', repo],
+    {
+      cwd: repo,
+      encoding: 'utf8',
+      timeout: 120000,
+      env: { ...process.env, INIT_CWD: repo },
+    },
+  );
+}
+
+function runDefaultSetup(repo, ...args) {
+  return spawnSync(
+    process.execPath,
+    [FORGE_BIN, 'setup', '--yes', '--skip-external', ...args, '--path', repo],
     {
       cwd: repo,
       encoding: 'utf8',
@@ -60,8 +73,12 @@ describe('forge setup --skills-only', () => {
 
   gitRequiredTest('keeps default setup hook installation unchanged and reruns safely', () => {
     const repo = makeTempRepo();
-    const first = runSetup(repo);
-    const second = runSetup(repo);
+    spawnSync('git', ['commit', '--allow-empty', '-m', 'Initial commit'], {
+      cwd: repo,
+      encoding: 'utf8',
+    });
+    const first = runDefaultSetup(repo);
+    const second = runDefaultSetup(repo);
     const output = `${first.stdout || ''}${first.stderr || ''}${second.stdout || ''}${second.stderr || ''}`;
 
     expect(first.status).toBe(0);
