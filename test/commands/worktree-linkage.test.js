@@ -24,6 +24,23 @@ const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-fa
 
 const TIMEOUT = 15000;
 const cleanups = [];
+const DIRECTORY_LINK_UNSUPPORTED_ERRORS = new Set(['EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+
+function probeDirectoryLinkSupport() {
+  const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-link-probe-'));
+  const linkPath = path.join(probeRoot, 'link');
+  try {
+    fs.symlinkSync(probeRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch (error) {
+    if (DIRECTORY_LINK_UNSUPPORTED_ERRORS.has(error.code)) return false;
+    throw error;
+  } finally {
+    try { fs.rmSync(probeRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
+const directoryEscapeTest = probeDirectoryLinkSupport() ? test : test.skip;
 
 function writeFile(root, relativePath, content) {
   const filePath = path.join(root, relativePath);
@@ -140,6 +157,147 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', () 
     });
     expect(stale.worktrees).toHaveLength(0);
     expect(stale.output).toBe('No worktrees registered.');
+  }, TIMEOUT);
+
+  test('keeps a missing work-folder untouched, then repairs its marker on reuse idempotently', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    const worktreePath = path.resolve(root, '.worktrees', 'late-folder');
+    const workFolder = 'docs/work/2026-07-05-late';
+    const markerPath = path.join(root, workFolder, '.forge-issue');
+    const args = ['create', 'late-folder', '--branch', 'feat/late-folder', '--issue', 'forge-late', '--work-folder', workFolder];
+    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
+
+    const first = await worktree.handler(args, {}, root, opts);
+    expect(first.success).toBe(true);
+    expect(fs.existsSync(path.join(root, workFolder))).toBe(false);
+    expect(fs.existsSync(markerPath)).toBe(false);
+
+    const firstRow = (await driver.queryAll('SELECT * FROM kernel_worktrees'))[0];
+    expect(firstRow.issue_id).toBe('forge-late');
+    expect(firstRow.work_folder).toBe(workFolder);
+
+    fs.mkdirSync(path.join(root, workFolder), { recursive: true });
+    fs.mkdirSync(worktreePath, { recursive: true });
+
+    const repaired = await worktree.handler(args, {}, root, opts);
+    expect(repaired.success).toBe(true);
+    expect(repaired.reused).toBe(true);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-late');
+
+    const rerun = await worktree.handler(args, {}, root, opts);
+    expect(rerun.success).toBe(true);
+    expect(rerun.reused).toBe(true);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-late');
+    const rows = await driver.queryAll('SELECT * FROM kernel_worktrees');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].issue_id).toBe('forge-late');
+    expect(rows[0].work_folder).toBe(workFolder);
+  }, TIMEOUT);
+
+  test('rejects mismatched issue or work-folder on reuse without rewriting linkage', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    const worktreePath = path.resolve(root, '.worktrees', 'mismatch');
+    const workFolder = 'docs/work/2026-07-06-owned';
+    const otherFolder = 'docs/work/2026-07-06-other';
+    const markerPath = path.join(root, workFolder, '.forge-issue');
+    fs.mkdirSync(path.join(root, workFolder), { recursive: true });
+    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
+    const original = ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-owned', '--work-folder', workFolder];
+
+    const first = await worktree.handler(original, {}, root, opts);
+    expect(first.success).toBe(true);
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const before = await driver.queryAll('SELECT * FROM kernel_worktrees');
+
+    const issueMismatch = await worktree.handler(
+      ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-other', '--work-folder', workFolder],
+      {}, root, opts,
+    );
+    expect(issueMismatch.success).toBe(false);
+    expect(issueMismatch.error).toMatch(/mismatch/i);
+
+    const folderMismatch = await worktree.handler(
+      ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-owned', '--work-folder', otherFolder],
+      {}, root, opts,
+    );
+    expect(folderMismatch.success).toBe(false);
+    expect(folderMismatch.error).toMatch(/mismatch/i);
+    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-owned');
+    expect(fs.existsSync(path.join(root, otherFolder))).toBe(false);
+    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
+  }, TIMEOUT);
+
+  test('rejects relative and absolute work-folder escapes before marker or registry mutation', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    const outsideRelative = path.resolve(root, '..', `forge-linkage-relative-${path.basename(root)}`);
+    const outsideAbsolute = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-absolute-'));
+    cleanups.push(() => {
+      try { fs.rmSync(outsideRelative, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(outsideAbsolute, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+    fs.mkdirSync(outsideRelative, { recursive: true });
+    const relativeMarker = path.join(outsideRelative, '.forge-issue');
+    const absoluteMarker = path.join(outsideAbsolute, '.forge-issue');
+
+    const opts = {
+      _exec: gitStub(gitCommonDir, root),
+      _spawn: () => ({ status: 0 }),
+      _platform: 'linux',
+      _kernelDriver: driver,
+    };
+    const relative = await worktree.handler(
+      ['create', 'escape-relative', '--branch', 'feat/escape-relative', '--issue', 'forge-relative', '--work-folder', path.relative(root, outsideRelative)],
+      {}, root, opts,
+    );
+    const absolute = await worktree.handler(
+      ['create', 'escape-absolute', '--branch', 'feat/escape-absolute', '--issue', 'forge-absolute', '--work-folder', outsideAbsolute],
+      {}, root, opts,
+    );
+
+    expect(relative.success).toBe(false);
+    expect(relative.error).toMatch(/outside|absolute|inside|path/i);
+    expect(absolute.success).toBe(false);
+    expect(absolute.error).toMatch(/outside|absolute|inside|path/i);
+    expect(fs.existsSync(relativeMarker)).toBe(false);
+    expect(fs.existsSync(absoluteMarker)).toBe(false);
+    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toHaveLength(0);
+  }, TIMEOUT);
+
+  directoryEscapeTest('rejects a symlink or junction work-folder escape before marker or registry mutation', async () => {
+    const { root, gitCommonDir, driver } = await setup();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-symlink-outside-'));
+    cleanups.push(() => {
+      try { fs.rmSync(outside, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+    const outsideMarker = path.join(outside, '.forge-issue');
+    const linkParent = path.join(root, 'docs', 'work');
+    const linkedFolder = path.join(linkParent, 'escape-link');
+    fs.mkdirSync(linkParent, { recursive: true });
+    fs.symlinkSync(outside, linkedFolder, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const worktreePath = path.resolve(root, '.worktrees', 'escape-link');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    driver.registerWorktree({
+      git_common_dir: path.resolve(gitCommonDir),
+      path: worktreePath,
+      branch: 'feat/escape-link',
+      actor: null,
+      issue_id: 'forge-symlink',
+      work_folder: 'docs/work/escape-link',
+      registered_at: new Date().toISOString(),
+      state: 'active',
+    });
+    const before = await driver.queryAll('SELECT * FROM kernel_worktrees');
+    const result = await worktree.handler(
+      ['create', 'escape-link', '--branch', 'feat/escape-link', '--issue', 'forge-symlink'],
+      {}, root,
+      { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/symlink|junction|escape|outside|path/i);
+    expect(fs.existsSync(outsideMarker)).toBe(false);
+    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
   }, TIMEOUT);
 });
 
