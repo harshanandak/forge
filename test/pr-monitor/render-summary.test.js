@@ -34,6 +34,7 @@ describe('renderSummary', () => {
     expect(body).toContain('Forge PR Monitor');
     expect(body).toContain('clean-mergeable');
     expect(body).toContain('Updated 2026-07-15T10:00:00.000Z');
+    expect(body).toContain('Detailed JSON: `forge shepherd 123 --pull --json`');
     expect(body).not.toContain('<!-- forge-pr-monitor -->');
     expect(body.toLowerCase()).not.toContain('sticky comment');
     expect(body.toLowerCase()).toContain('does not merge');
@@ -120,5 +121,47 @@ describe('renderSummary', () => {
     const a = renderSummary(makeBundle(), { now: NOW }).body;
     const b = renderSummary(makeBundle(), { now: NOW }).body;
     expect(a).toBe(b);
+  });
+
+  test('keeps untrusted thread locators and check names inside safe code fences', () => {
+    const { body } = renderSummary(makeBundle({
+      unresolvedComments: [
+        {
+          author: 'qodo-code-review',
+          path: 'src/``danger\nfile.js',
+          line: 7,
+          threadId: 'thread-1',
+          comments: [],
+        },
+      ],
+      ci: {
+        checks: [],
+        failing: [{ name: 'CI `` failure\r\nname' }],
+        pending: [],
+      },
+    }), { now: NOW });
+
+    expect(body).toContain('```src/``danger file.js:7```');
+    expect(body).toContain('```CI `` failure name```');
+    expect(body).not.toContain('`src/``danger\nfile.js:7`');
+    expect(body).not.toContain('`CI `` failure\r\nname`');
+  });
+
+  test('keeps unreadable reasons, signal names, and CLI hints safe in code spans', () => {
+    const unreadableThreads = renderSummary(makeBundle({
+      unresolvedCommentsAvailable: false,
+      unresolvedCommentsError: 'GraphQL `502`\r\nretry',
+    }), { now: NOW }).body;
+    expect(unreadableThreads).toContain('``GraphQL `502` retry``');
+
+    const { body } = renderSummary(makeBundle({ pr: '123`\n456' }), {
+      now: NOW,
+      verdict: 'UNKNOWN',
+      unreadable: ['required`Checks\nstatus'],
+    });
+    expect(body).toContain('``required`Checks status``');
+    expect(body).toContain('``forge shepherd 123` 456 --pull --json``');
+    expect(body).not.toContain('`required`Checks\nstatus`');
+    expect(body).not.toContain('`forge shepherd 123`\n456 --pull --json`');
   });
 });
