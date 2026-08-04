@@ -678,6 +678,8 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
 	test('gatherDesired fails closed when the GitHub repository identity is malformed or unreadable', async () => {
 		for (const repoResponse of [
 			JSON.stringify({ owner: { login: 'bad owner' }, name: 'forge' }),
+			JSON.stringify({ owner: { login: 123 }, name: 'forge' }),
+			JSON.stringify({ owner: { login: 'harshanandak' }, name: ['forge'] }),
 			() => { throw new Error('gh unavailable'); },
 		]) {
 			const desired = await executor.gatherDesired('/g', {
@@ -773,6 +775,45 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
 			journal_ptr: 'JOURNAL-7',
 		}));
 		expect(retires).toContainEqual(expect.objectContaining({ repo: 'forge', number: 7 }));
+	});
+
+	test('convergeOnce does not retire the legacy row when canonical upsert fails', async () => {
+		const rows = [
+			{ repo: 'harshanandak/forge', number: 7, head_sha: 'new-sha7', issue_id: null, worktree_id: null, journal_ptr: null, state: 'open' },
+			{ repo: 'forge', number: 7, head_sha: 'old-sha7', issue_id: 'ISSUE-7', worktree_id: 'WT-7', journal_ptr: 'JOURNAL-7', state: 'open' },
+		];
+		const retires = [];
+		const conv = await executor.convergeOnce('/repo', {
+			gitCommonDir: '/g',
+			runGh: (args) => args[0] === 'repo'
+				? JSON.stringify({ owner: { login: 'harshanandak' }, name: 'forge' })
+				: JSON.stringify([{ number: 7, headRefName: 'feat/7', headRefOid: 'new-sha7' }]),
+			broker: {
+				listOpenPrs: async () => rows,
+				upsertPr: async () => { throw new Error('canonical write failed'); },
+				retirePr: async (value) => { retires.push(value); },
+			},
+			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: rows, liveWatcherPids: [] }),
+			spawnWatcher: () => ({ pid: 17 }),
+			writeClaim: () => {},
+		});
+		expect(conv.actions).toContainEqual(expect.objectContaining({ type: 'upsertPrRow' }));
+		expect(conv.actions).toContainEqual({ type: 'retire', pr: { repo: 'forge', number: 7 } });
+		expect(retires).toEqual([]);
+	});
+
+	test('execute treats an explicit false upsert result as a failed dependency', async () => {
+		const retires = [];
+		await executor.execute([
+			{ type: 'upsertPrRow', row: { repo: 'harshanandak/forge', number: 7 } },
+			{ type: 'retire', pr: { repo: 'forge', number: 7 } },
+		], {
+			broker: {
+				upsertPr: async () => false,
+				retirePr: async (value) => { retires.push(value); },
+			},
+		});
+		expect(retires).toEqual([]);
 	});
 
 	test('convergeOnce fails closed when canonical and legacy rows have conflicting linkage', async () => {
