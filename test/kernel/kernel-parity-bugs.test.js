@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const { createLocalBroker } = require('../../lib/kernel/broker');
 const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+const { ISSUE_COMMAND_EXIT_CODES } = require('../../lib/kernel/issue-command-contract');
 
 // Kernel-parity regression suite. Three confirmed divergences from the Beads
 // behavior the Kernel replaced:
@@ -360,6 +361,36 @@ describe('Kernel parity bugs', () => {
 		);
 		expect(result.ok).toBe(true);
 		expect(await currentStatus('tg-4')).toBe('backlog');
+	});
+
+	test('close --status done uses the close terminal transition and bumps the revision', async () => {
+		await createIssue(['--id', 'close-done-1', '--title', 'close explicitly', '--type', 'task']);
+
+		const result = await broker.runIssueOperation(
+			'close',
+			['close-done-1', '--status', 'done'],
+			{ now: '2026-06-29T00:07:00.000Z', actor: 'tester' },
+		);
+
+		expect(result.ok).toBe(true);
+		expect(result.data.revision).toBe(1);
+		expect(await currentStatus('close-done-1')).toBe('done');
+	});
+
+	test('close rejects an illegal requested status without changing status or revision', async () => {
+		await createIssue(['--id', 'close-illegal-1', '--title', 'close illegally', '--type', 'task']);
+
+		const result = await broker.runIssueOperation(
+			'close',
+			['close-illegal-1', '--status', 'review'],
+			{ now: '2026-06-29T00:08:00.000Z', actor: 'tester' },
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.error.exit_code).toBe(ISSUE_COMMAND_EXIT_CODES.validation);
+		const shown = await driver.issueOperation('show', ['close-illegal-1'], {}, config);
+		expect(shown.data.status).toBe('open');
+		expect(shown.data.revision).toBe(0);
 	});
 
 	// --- BUG: claim must not begin a parked (backlog) issue ----------------------
