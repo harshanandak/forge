@@ -349,8 +349,7 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
  * @returns {Promise<number>} Process exit status, or 1 when no status is reported.
  */
 function runCommand(command, args, options = {}, spawn = defaultSpawn) {
-  const { processTree, ...spawnOptions } = options;
-  const timeout = spawnOptions.timeout;
+  const { processTree, timeout, killSignal: _killSignal, ...spawnOptions } = options;
   return new Promise((resolve, reject) => {
     let child;
     let settled = false;
@@ -410,7 +409,6 @@ function runCommand(command, args, options = {}, spawn = defaultSpawn) {
     timer = timeout > 0 ? setTimeout(() => {
       processTree?.cleanup?.('SIGKILL');
       try { child.kill?.('SIGKILL'); } catch { /* best effort */ }
-      processTree?.cleanup?.('SIGKILL');
       finish(TIMEOUT_EXIT_CODE);
     }, timeout) : null;
     if (!child.once) {

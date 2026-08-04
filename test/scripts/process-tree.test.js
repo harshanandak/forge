@@ -209,6 +209,107 @@ describe('scripts/process-tree.js', () => {
     expect(JSON.parse(fs.readFileSync(foreignPath, 'utf8'))).toEqual(foreign);
   });
 
+  test('restricts manifests to user-owned paths and creates private directories', () => {
+    const manifestPath = path.join(makeTempDir(), 'foreign.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      version: MANIFEST_VERSION,
+      token: 'foreign-token',
+      owner: { pid: 9001, identity: 'foreign-owner', startedAt: '2026-08-03T00:00:00.000Z' },
+      children: [],
+    }));
+    const foreignFs = Object.create(fs);
+    foreignFs.lstatSync = (target) => ({ ...fs.lstatSync(target), uid: 999 });
+    const processApi = { pid: 9000, getuid: () => 100 };
+    const rejected = createProcessTree({
+      manifestPath,
+      token: 'new-token',
+      fsApi: foreignFs,
+      processApi,
+      getProcessIdentity: () => 'owner',
+    });
+    expect(rejected.envFor({ [MANIFEST_ENV]: manifestPath, [TOKEN_ENV]: 'new-token' })[MANIFEST_ENV])
+      .toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).token).toBe('foreign-token');
+
+    const chmodCalls = [];
+    const modeFs = Object.create(fs);
+    modeFs.chmodSync = (...args) => {
+      chmodCalls.push(args);
+      return fs.chmodSync(...args);
+    };
+    createProcessTree({
+      manifestPath: path.join(makeTempDir(), 'private.json'),
+      token: 'private-token',
+      fsApi: modeFs,
+      processApi: { pid: 9000 },
+      getProcessIdentity: () => 'owner',
+    });
+    expect(chmodCalls.some(([, mode]) => mode === 0o700)).toBe(true);
+  });
+
+  test('rejects symlink ancestors and dangling leaves before chmod or write', () => {
+    const targetRoot = makeTempDir();
+    const targetNested = path.join(targetRoot, 'nested');
+    fs.mkdirSync(targetNested);
+    const linkRoot = makeTempDir();
+    const linkedDir = path.join(linkRoot, 'linked');
+    fs.symlinkSync(targetRoot, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+    const ancestorManifestPath = path.join(linkedDir, 'nested', 'run.json');
+    const targetMode = fs.statSync(targetNested).mode;
+    const chmodCalls = [];
+    const writes = [];
+    const readdirCalls = [];
+    const guardedFs = Object.create(fs);
+    guardedFs.chmodSync = (target, mode) => {
+      chmodCalls.push({ target, mode });
+      return fs.chmodSync(target, mode);
+    };
+    guardedFs.writeFileSync = (...args) => {
+      writes.push(args);
+      return fs.writeFileSync(...args);
+    };
+    guardedFs.readdirSync = (...args) => {
+      readdirCalls.push(args);
+      return fs.readdirSync(...args);
+    };
+
+    const ancestorTree = createProcessTree({
+      manifestPath: ancestorManifestPath,
+      token: 'symlink-ancestor-token',
+      fsApi: guardedFs,
+      processApi: { pid: 9000 },
+      getProcessIdentity: () => 'owner',
+    });
+    expect(ancestorTree.envFor({ [MANIFEST_ENV]: ancestorManifestPath })[MANIFEST_ENV]).toBeUndefined();
+    expect(chmodCalls).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+    expect(fs.statSync(targetNested).mode).toBe(targetMode);
+    expect(fs.existsSync(path.join(targetNested, 'run.json'))).toBe(false);
+    expect(reconcileProcessManifests({
+      manifestDir: path.join(linkedDir, 'nested'),
+      fsApi: guardedFs,
+      processApi: { pid: 9000 },
+    })).toEqual({ reaped: 0 });
+    expect(readdirCalls).toHaveLength(0);
+
+    const danglingPath = path.join(makeTempDir(), 'dangling.json');
+    fs.symlinkSync(
+      path.join(makeTempDir(), 'missing.json'),
+      danglingPath,
+      process.platform === 'win32' ? 'junction' : 'file',
+    );
+    const danglingTree = createProcessTree({
+      manifestPath: danglingPath,
+      token: 'dangling-leaf-token',
+      fsApi: guardedFs,
+      processApi: { pid: 9000 },
+      getProcessIdentity: () => 'owner',
+    });
+    expect(danglingTree.envFor({ [MANIFEST_ENV]: danglingPath })[MANIFEST_ENV]).toBeUndefined();
+    expect(chmodCalls).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+  });
+
   test('captures identity before abort and reaps the owned process group first', () => {
     const manifestPath = path.join(makeTempDir(), 'run.json');
     const groupKills = [];

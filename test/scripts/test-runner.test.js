@@ -595,7 +595,7 @@ describe('scripts/test pre-push runner', () => {
     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
   });
 
-  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', async () => {
+  test('spawns lanes without delegating timeout control to child_process', async () => {
     const spawnSync = makeSpawnSync(0);
     await runPrePushTests(repoRoot, {
       env: { PATH: process.env.PATH || '' },
@@ -608,8 +608,8 @@ describe('scripts/test pre-push runner', () => {
 
     expect(spawnSync.calls.length).toBeGreaterThan(0);
     for (const call of spawnSync.calls) {
-      expect(call.options.timeout).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
-      expect(call.options.killSignal).toBe('SIGKILL');
+      expect(call.options.timeout).toBeUndefined();
+      expect(call.options.killSignal).toBeUndefined();
     }
   });
 
@@ -626,7 +626,8 @@ describe('scripts/test pre-push runner', () => {
 
     expect(spawnSync.calls.length).toBeGreaterThan(0);
     for (const call of spawnSync.calls) {
-      expect(call.options.timeout).toBe(5000);
+      expect(call.options.timeout).toBeUndefined();
+      expect(call.options.killSignal).toBeUndefined();
     }
   });
 
@@ -651,9 +652,8 @@ describe('scripts/test pre-push runner', () => {
       (call) => call.command === 'node' && call.args[0] === 'scripts/test-full-suite.js'
     );
     expect(fullSuiteCall).toBeTruthy();
-    expect(fullSuiteCall.options.timeout).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
-    expect(fullSuiteCall.options.timeout).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
-    expect(fullSuiteCall.options.killSignal).toBe('SIGKILL');
+    expect(fullSuiteCall.options.timeout).toBeUndefined();
+    expect(fullSuiteCall.options.killSignal).toBeUndefined();
   });
 
   test('resolveFullSuiteTimeoutMs defaults to the validation-aligned budget and honors valid overrides', () => {

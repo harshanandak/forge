@@ -64,8 +64,82 @@ function isValidManifest(manifest) {
   );
 }
 
-function readProcessManifest(manifestPath, fsApi = fs) {
+function inspectResource(resourcePath, fsApi = fs) {
+  const stat = fsApi.lstatSync || fsApi.statSync;
+  if (typeof stat !== 'function') {
+    try {
+      return {
+        exists: typeof fsApi.existsSync === 'function' ? fsApi.existsSync(resourcePath) : true,
+        metadata: null,
+      };
+    } catch {
+      return { exists: false, metadata: null };
+    }
+  }
+  try {
+    return { exists: true, metadata: stat.call(fsApi, resourcePath) };
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      return { exists: false, metadata: null };
+    }
+    return { exists: null, metadata: null };
+  }
+}
+
+function isOwnedMetadata(metadata, processApi = process, { allowSharedAncestor = false } = {}) {
+  if (metadata && typeof metadata.isSymbolicLink === 'function' && metadata.isSymbolicLink()) return false;
+  const currentUid = typeof processApi.getuid === 'function' ? processApi.getuid() : null;
+  if (currentUid == null || typeof metadata?.uid !== 'number' || metadata.uid === currentUid) return true;
+  if (!allowSharedAncestor) return false;
+  const mode = metadata?.mode;
+  if (typeof mode !== 'number') return false;
+  const writableByOthers = (mode & 0o022) !== 0;
+  const sticky = (mode & 0o1000) !== 0;
+  return !writableByOthers || sticky;
+}
+
+function pathComponents(resourcePath) {
+  const absolutePath = path.resolve(resourcePath);
+  const parsed = path.parse(absolutePath);
+  const components = [parsed.root];
+  let current = parsed.root;
+  for (const segment of absolutePath.slice(parsed.root.length).split(path.sep)) {
+    if (!segment) continue;
+    current = path.join(current, segment);
+    components.push(current);
+  }
+  return components;
+}
+
+function isOwnedPath(resourcePath, fsApi = fs, processApi = process) {
+  if (typeof resourcePath !== 'string' || resourcePath.length === 0) return false;
+  const stat = fsApi.lstatSync || fsApi.statSync;
+  if (typeof stat !== 'function') return true;
+  let missing = false;
+  const components = pathComponents(resourcePath);
+  for (const [index, component] of components.entries()) {
+    const inspected = inspectResource(component, fsApi);
+    if (inspected.exists === false) {
+      missing = true;
+      continue;
+    }
+    if (inspected.exists !== true || missing || !isOwnedMetadata(inspected.metadata, processApi, {
+      allowSharedAncestor: index < components.length - 1,
+    })) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isOwnedManifestPath(manifestPath, fsApi = fs, processApi = process) {
+  return isOwnedPath(path.dirname(manifestPath), fsApi, processApi)
+    && isOwnedPath(manifestPath, fsApi, processApi);
+}
+
+function readProcessManifest(manifestPath, fsApi = fs, processApi = process) {
   if (typeof manifestPath !== 'string' || manifestPath.length === 0) return null;
+  if (!isOwnedManifestPath(manifestPath, fsApi, processApi)) return null;
   try {
     const manifest = JSON.parse(fsApi.readFileSync(manifestPath, 'utf8'));
     return isValidManifest(manifest) ? manifest : null;
@@ -74,8 +148,31 @@ function readProcessManifest(manifestPath, fsApi = fs) {
   }
 }
 
-function writeProcessManifest(manifestPath, manifest, fsApi = fs) {
-  fsApi.mkdirSync(path.dirname(manifestPath), { recursive: true });
+function writeProcessManifest(manifestPath, manifest, fsApi = fs, processApi = process) {
+  const manifestDir = path.dirname(manifestPath);
+  if (!isOwnedPath(manifestPath, fsApi, processApi)) {
+    throw new Error('process manifest path is not owned by the current user');
+  }
+  let directory = inspectResource(manifestDir, fsApi);
+  if (directory.exists === null) throw new Error('process manifest directory cannot be inspected');
+  if (directory.exists === false) {
+    fsApi.mkdirSync(manifestDir, { recursive: true, mode: 0o700 });
+    directory = inspectResource(manifestDir, fsApi);
+  }
+  if (directory.exists !== true
+    || !isOwnedPath(manifestDir, fsApi, processApi)
+    || (typeof directory.metadata?.isDirectory === 'function' && !directory.metadata.isDirectory())) {
+    throw new Error('process manifest directory is not a user-owned directory');
+  }
+  if (typeof fsApi.chmodSync === 'function') {
+    if (!isOwnedPath(manifestDir, fsApi, processApi)) {
+      throw new Error('process manifest directory is not a user-owned directory');
+    }
+    fsApi.chmodSync(manifestDir, 0o700);
+  }
+  if (!isOwnedPath(manifestPath, fsApi, processApi)) {
+    throw new Error('process manifest path is not owned by the current user');
+  }
   fsApi.writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
 }
 
@@ -226,7 +323,7 @@ function createProcessTree(options = {}) {
     || environmentManifestPath
     || path.join(manifestDir, `run-${normalizePid(processApi.pid) || process.pid}-${token}.json`);
   const markerExists = pathExists(manifestPath, fsApi);
-  const existing = readProcessManifest(manifestPath, fsApi);
+  const existing = readProcessManifest(manifestPath, fsApi, processApi);
   // An environment-provided path may belong to another run. Treat that as
   // unverifiable and fail closed; never overwrite or reap another run's marker.
   const usable = !markerExists || (existing && existing.token === token);
@@ -244,7 +341,7 @@ function createProcessTree(options = {}) {
 
   if (usable) {
     try {
-      writeProcessManifest(manifestPath, manifest, fsApi);
+      writeProcessManifest(manifestPath, manifest, fsApi, processApi);
     } catch {
       // A missing/unwritable marker makes ownership unverifiable. All cleanup
       // operations remain fail-closed, and the caller still receives its normal
@@ -257,14 +354,14 @@ function createProcessTree(options = {}) {
 
   function currentManifest() {
     if (!usable || !manifest) return null;
-    const latest = readProcessManifest(manifestPath, fsApi);
+    const latest = readProcessManifest(manifestPath, fsApi, processApi);
     return latest && latest.token === token ? latest : null;
   }
 
   function persist(next) {
     if (!next || !usable || !manifest) return false;
     try {
-      writeProcessManifest(manifestPath, next, fsApi);
+      writeProcessManifest(manifestPath, next, fsApi, processApi);
       manifest = next;
       return true;
     } catch {
@@ -406,12 +503,24 @@ function createProcessTree(options = {}) {
       if (killOwnedEntry(entry, signal)) killed.push(entry.pid);
     }
 
+    const verifiedCache = new Map();
+    const aliveCache = new Map();
+    const verifiedOnce = (entry, manifestForEntry) => {
+      if (!verifiedCache.has(entry.id)) {
+        verifiedCache.set(entry.id, isVerifiableEntry(manifestForEntry, entry));
+      }
+      return verifiedCache.get(entry.id);
+    };
+    const aliveOnce = (entry) => {
+      if (!aliveCache.has(entry.id)) aliveCache.set(entry.id, isEntryAlive(entry));
+      return aliveCache.get(entry.id);
+    };
     let finalManifest = currentManifest();
     if (finalManifest) {
       const liveEntries = finalManifest.children.filter((entry) => !(
         entry.status === 'running'
-        && !isVerifiableEntry(finalManifest, entry)
-        && !isEntryAlive(entry)
+        && !verifiedOnce(entry, finalManifest)
+        && !aliveOnce(entry)
       ));
       if (liveEntries.length !== finalManifest.children.length) {
         persist({ ...finalManifest, children: liveEntries });
@@ -419,21 +528,21 @@ function createProcessTree(options = {}) {
       }
     }
     const hasUnverifiableLiveEntry = finalManifest?.children.some(
-      (entry) => entry.status === 'running' && !isVerifiableEntry(finalManifest, entry)
-        && isEntryAlive(entry),
+      (entry) => entry.status === 'running' && !verifiedOnce(entry, finalManifest)
+        && aliveOnce(entry),
     );
     const hasLiveRunningEntry = finalManifest?.children.some(
       (entry) => entry.status === 'running'
-        && isVerifiableEntry(finalManifest, entry)
-        && isEntryAlive(entry),
+        && verifiedOnce(entry, finalManifest)
+        && aliveOnce(entry),
     );
     const hasOutstandingReservation = finalManifest?.children.some(
       (entry) => entry.status === 'reserved',
     );
     const hasFailedLiveEntry = finalManifest?.children.some(
       (entry) => entry.status === 'running'
-        && isVerifiableEntry(finalManifest, entry)
-        && isEntryAlive(entry)
+        && verifiedOnce(entry, finalManifest)
+        && aliveOnce(entry)
         && !killed.includes(entry.pid),
     );
     const safeToRemove = finalManifest
@@ -474,6 +583,13 @@ function createProcessTree(options = {}) {
     // can reap descendants while the reservation is still verifiable.
     const identity = pid ? captureIdentity(pid) : null;
     const retained = pid && identity ? retainReservation(identity) : false;
+    const finalizeAbort = (result) => {
+      if (pid && !retained) retainReservation(identity);
+      cleanup('SIGKILL');
+      unregisterChild(reservation);
+      cleanup('SIGKILL');
+      return result;
+    };
     const groupResult = retained ? cleanup(signal) : { killed: [] };
     if (pid && groupResult.killed.includes(pid)) {
       unregisterChild(reservation);
@@ -490,13 +606,7 @@ function createProcessTree(options = {}) {
       killSucceeded = false;
     }
 
-    if (killSucceeded || !pid) {
-      if (pid && !retained) retainReservation(identity);
-      cleanup('SIGKILL');
-      unregisterChild(reservation);
-      cleanup('SIGKILL');
-      return killSucceeded;
-    }
+    if (killSucceeded || !pid) return finalizeAbort(killSucceeded);
 
     const alive = (() => {
       try {
@@ -505,13 +615,7 @@ function createProcessTree(options = {}) {
         return true;
       }
     })();
-    if (!alive) {
-      if (!retained) retainReservation(identity);
-      cleanup('SIGKILL');
-      unregisterChild(reservation);
-      cleanup('SIGKILL');
-      return killSucceeded;
-    }
+    if (!alive) return finalizeAbort(killSucceeded);
 
     if (!retained) retainReservation(identity);
     if (currentManifest()?.children.some((entry) => entry.pid === pid && entry.status === 'running')) {
@@ -557,7 +661,7 @@ function createProcessTree(options = {}) {
 function reapProcessManifest(manifestPath, options = {}) {
   const fsApi = options.fsApi || fs;
   const processApi = options.processApi || process;
-  const existing = readProcessManifest(manifestPath, fsApi);
+  const existing = readProcessManifest(manifestPath, fsApi, processApi);
   if (!existing) return { killed: [], reaped: false };
 
   const ownerPid = normalizePid(existing.owner.pid);
@@ -591,7 +695,9 @@ function reapProcessManifest(manifestPath, options = {}) {
 
 function reconcileProcessManifests(options = {}) {
   const fsApi = options.fsApi || fs;
+  const processApi = options.processApi || process;
   const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
+  if (!isOwnedPath(manifestDir, fsApi, processApi)) return { reaped: 0 };
   let entries;
   try {
     entries = fsApi.readdirSync(manifestDir, { withFileTypes: true });
@@ -608,6 +714,7 @@ function reconcileProcessManifests(options = {}) {
     const result = reapProcessManifest(manifestPath, {
       ...options,
       fsApi,
+      processApi,
       manifestDir,
       reconcile: false,
     });
