@@ -218,7 +218,11 @@ describe('scripts/process-tree.js', () => {
       children: [],
     }));
     const foreignFs = Object.create(fs);
-    foreignFs.lstatSync = (target) => ({ ...fs.lstatSync(target), uid: 999 });
+    foreignFs.lstatSync = (target) => {
+      const stats = fs.lstatSync(target);
+      stats.uid = 999;
+      return stats;
+    };
     const processApi = { pid: 9000, getuid: () => 100 };
     const rejected = createProcessTree({
       manifestPath,
