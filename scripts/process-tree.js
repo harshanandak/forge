@@ -86,8 +86,13 @@ function inspectResource(resourcePath, fsApi = fs) {
   }
 }
 
-function isOwnedMetadata(metadata, processApi = process, { allowSharedAncestor = false } = {}) {
-  if (metadata && typeof metadata.isSymbolicLink === 'function' && metadata.isSymbolicLink()) return false;
+function isOwnedMetadata(metadata, processApi = process, {
+  allowSharedAncestor = false,
+  allowTrustedSymlink = false,
+} = {}) {
+  if (!allowTrustedSymlink
+    && metadata && typeof metadata.isSymbolicLink === 'function' && metadata.isSymbolicLink()) return false;
+  if (allowTrustedSymlink) return true;
   const currentUid = typeof processApi.getuid === 'function' ? processApi.getuid() : null;
   if (currentUid == null || typeof metadata?.uid !== 'number' || metadata.uid === currentUid) return true;
   if (!allowSharedAncestor) return false;
@@ -96,6 +101,22 @@ function isOwnedMetadata(metadata, processApi = process, { allowSharedAncestor =
   const writableByOthers = (mode & 0o022) !== 0;
   const sticky = (mode & 0o1000) !== 0;
   return !writableByOthers || sticky;
+}
+
+function isTrustedSystemSymlink(resourcePath, metadata, fsApi = fs) {
+  if (path.sep !== '/' || metadata?.uid !== 0
+    || typeof metadata?.isSymbolicLink !== 'function' || !metadata.isSymbolicLink()
+    || typeof fsApi.readlinkSync !== 'function') return false;
+  const normalizedPath = path.posix.normalize(resourcePath);
+  if (!['/var', '/tmp'].includes(normalizedPath)) return false;
+  let target;
+  try {
+    target = fsApi.readlinkSync(resourcePath);
+  } catch {
+    return false;
+  }
+  return path.posix.resolve(path.posix.dirname(normalizedPath), target)
+    === `/private${normalizedPath}`;
 }
 
 function pathComponents(resourcePath) {
@@ -123,8 +144,12 @@ function isOwnedPath(resourcePath, fsApi = fs, processApi = process) {
       missing = true;
       continue;
     }
+    const allowSharedAncestor = index < components.length - 1;
+    const trustedSystemSymlink = allowSharedAncestor
+      && isTrustedSystemSymlink(component, inspected.metadata, fsApi);
     if (inspected.exists !== true || missing || !isOwnedMetadata(inspected.metadata, processApi, {
-      allowSharedAncestor: index < components.length - 1,
+      allowSharedAncestor,
+      allowTrustedSymlink: trustedSystemSymlink,
     })) {
       return false;
     }

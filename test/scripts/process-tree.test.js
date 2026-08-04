@@ -247,6 +247,59 @@ describe('scripts/process-tree.js', () => {
     expect(chmodCalls.some(([, mode]) => mode === 0o700)).toBe(true);
   });
 
+  test('accepts a macOS runner temp chain with trusted system ancestors', () => {
+    if (process.platform === 'win32') return;
+    const uid = 501;
+    const manifestDir = '/var/folders/zz/runner/T/forge-process-tree';
+    const manifestPath = path.join(manifestDir, 'run.json');
+    const nodes = new Map([
+      ['/', { uid: 0, mode: 0o755, isDirectory: () => true, isSymbolicLink: () => false }],
+      ['/var', { uid: 0, mode: 0o120777, isDirectory: () => false, isSymbolicLink: () => true }],
+      ['/var/folders', { uid: 0, mode: 0o755, isDirectory: () => true, isSymbolicLink: () => false }],
+      ['/var/folders/zz', { uid: 0, mode: 0o755, isDirectory: () => true, isSymbolicLink: () => false }],
+      [`/var/folders/zz/runner`, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false }],
+      [`/var/folders/zz/runner/T`, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false }],
+      [manifestDir, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false }],
+    ]);
+    const writes = new Map();
+    const macFs = {
+      lstatSync: (target) => {
+        if (nodes.has(target)) return nodes.get(target);
+        if (writes.has(target)) return { uid, mode: 0o600, isDirectory: () => false, isSymbolicLink: () => false };
+        const error = new Error('missing');
+        error.code = 'ENOENT';
+        throw error;
+      },
+      existsSync: (target) => nodes.has(target) || writes.has(target),
+      readlinkSync: (target) => {
+        if (target === '/var') return 'private/var';
+        throw new Error('not a symlink');
+      },
+      readFileSync: (target) => {
+        if (writes.has(target)) return writes.get(target);
+        const error = new Error('missing');
+        error.code = 'ENOENT';
+        throw error;
+      },
+      mkdirSync: (target) => {
+        nodes.set(target, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false });
+      },
+      chmodSync: () => {},
+      writeFileSync: (target, value) => writes.set(target, value),
+    };
+    const processApi = { pid: 9000, getuid: () => uid };
+    const tree = createProcessTree({
+      manifestPath,
+      token: 'mac-token',
+      fsApi: macFs,
+      processApi,
+      getProcessIdentity: () => 'owner',
+    });
+
+    expect(tree.envFor({})[MANIFEST_ENV]).toBe(manifestPath);
+    expect(readProcessManifest(manifestPath, macFs, processApi).token).toBe('mac-token');
+  });
+
   test('rejects symlink ancestors and dangling leaves before chmod or write', () => {
     const targetRoot = makeTempDir();
     const targetNested = path.join(targetRoot, 'nested');
