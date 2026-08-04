@@ -774,7 +774,7 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
 			worktree_id: 'WT-7',
 			journal_ptr: 'JOURNAL-7',
 		}));
-		expect(retires).toContainEqual(expect.objectContaining({ repo: 'forge', number: 7 }));
+		expect(retires).toEqual([{ git_common_dir: '/g', repo: 'forge', number: 7 }]);
 	});
 
 	test('convergeOnce does not retire the legacy row when canonical upsert fails', async () => {
