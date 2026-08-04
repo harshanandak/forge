@@ -13,6 +13,7 @@ const {
   readNewestProfile,
   walkTests,
 } = require('./test-ci-shard');
+const { createProcessTree, signalExitCode } = require('./process-tree');
 
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
@@ -108,55 +109,112 @@ function spawnShard(shard, options = {}) {
   const env = options.env || process.env;
   const bunCommand = options.bunCommand || env.BUN_EXE || process.env.BUN_EXE || 'bun';
   const labelPrefix = options.labelPrefix || 'local-full';
+  const platform = options.platform || process.platform;
+  const processTree = options.processTree || createProcessTree({ env, platform });
   fs.mkdirSync(reportDir, { recursive: true });
   const junitPath = path.join(reportDir, `${labelPrefix}-shard-${shard.index}.xml`);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bunCommand, [
-      'test',
-      '--timeout',
-      '30000',
-      '--reporter=junit',
-      '--reporter-outfile',
-      junitPath,
-      ...shard.files,
-    ], {
-      cwd: rootDir,
-      env,
-      shell: false,
-      stdio: 'inherit',
+    const reservation = processTree.reserveChild({
+      command: bunCommand,
+      kind: 'test-shard',
+      label: `${labelPrefix}-shard-${shard.index}`,
     });
+    if (!reservation) {
+      reject(new Error('test shard ownership manifest is unavailable'));
+      return;
+    }
 
-    child.on('error', reject);
+    let child;
+    try {
+      child = spawn(bunCommand, [
+        'test',
+        '--timeout',
+        '30000',
+        '--reporter=junit',
+        '--reporter-outfile',
+        junitPath,
+        ...shard.files,
+      ], {
+        cwd: rootDir,
+        env,
+        shell: false,
+        stdio: 'inherit',
+        detached: platform !== 'win32',
+        windowsHide: true,
+      });
+      child.on('error', (error) => {
+        processTree.unregisterChild(reservation);
+        reject(error);
+      });
+      if (!processTree.registerChild(reservation, child)) {
+        if (typeof processTree.abortChild === 'function') {
+          processTree.abortChild(reservation, child);
+        } else {
+          try {
+            child.kill?.('SIGKILL');
+          } finally {
+            processTree.cleanup?.('SIGKILL');
+            processTree.unregisterChild(reservation);
+          }
+        }
+        reject(new Error('test shard process could not be registered'));
+        return;
+      }
+    } catch (error) {
+      processTree.unregisterChild(reservation);
+      reject(error);
+      return;
+    }
+
     child.on('close', (code) => {
+      processTree.unregisterChild(reservation);
       resolve(code ?? 1);
     });
   });
 }
 
 async function runFullSuiteInParallel(args = {}, deps = {}) {
-  const allTests = deps.allTests || listAllFullSuiteTests();
-  const shardTotal = Number.isInteger(args.shards) && args.shards > 0
-    ? args.shards
-    : getDefaultShardCount(deps.cpuCount);
-  const profile = deps.profile || readNewestProfile(reportDir);
-  const durationMap = deps.durationMap || createDurationMap(profile);
-  const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
+  const env = deps.env || process.env;
+  const platform = deps.platform || process.platform;
+  const processTree = deps.processTree || createProcessTree({ env, platform });
+  let signal = null;
+  let completed = false;
+  const removeSignalHandlers = processTree.installSignalHandlers((received) => {
+    signal = received;
+  });
 
-  if (shardSpecs.length === 0) {
-    console.log('No unit test files discovered for local full-suite run');
-    return 0;
+  try {
+    const allTests = deps.allTests || listAllFullSuiteTests();
+    const shardTotal = Number.isInteger(args.shards) && args.shards > 0
+      ? args.shards
+      : getDefaultShardCount(deps.cpuCount);
+    const profile = deps.profile || readNewestProfile(reportDir);
+    const durationMap = deps.durationMap || createDurationMap(profile);
+    const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
+
+    if (shardSpecs.length === 0) {
+      console.log('No unit test files discovered for local full-suite run');
+      return 0;
+    }
+
+    console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
+    const childEnv = typeof processTree.envFor === 'function' ? processTree.envFor(env) : env;
+    const results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
+      bunCommand: deps.bunCommand,
+      env: childEnv,
+      labelPrefix: args.labelPrefix,
+      spawn: deps.spawn,
+      platform,
+      processTree,
+    })));
+
+    completed = true;
+    return signal ? signalExitCode(signal) : (results.some((code) => code !== 0) ? 1 : 0);
+  } finally {
+    removeSignalHandlers();
+    processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
   }
-
-  console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
-  const results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
-    bunCommand: deps.bunCommand,
-    env: deps.env,
-    labelPrefix: args.labelPrefix,
-    spawn: deps.spawn,
-  })));
-
-  return results.some((code) => code !== 0) ? 1 : 0;
 }
 
 async function main(argv = process.argv.slice(2), deps = {}) {
