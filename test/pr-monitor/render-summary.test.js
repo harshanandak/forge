@@ -164,4 +164,21 @@ describe('renderSummary', () => {
     expect(body).not.toContain('`required`Checks\nstatus`');
     expect(body).not.toContain('`forge shepherd 123`\n456 --pull --json`');
   });
+
+  test('separates code fences from endpoint backticks, including all-backtick values', () => {
+    const { body } = renderSummary(makeBundle({
+      ci: {
+        checks: [],
+        failing: [
+          { name: '`leading' },
+          { name: 'trailing`' },
+          { name: '`both`' },
+          { name: '```' },
+        ],
+        pending: [],
+      },
+    }), { now: NOW });
+
+    expect(body).toContain('- ❌ **Failing (4):** `` `leading ``, `` trailing` ``, `` `both` ``, ```` ``` ````');
+  });
 });
