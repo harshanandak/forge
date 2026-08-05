@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "tier": 30,
+  "packetIds": [
+    "case-001",
+    "case-002",
+    "case-003",
+    "case-004",
+    "case-005",
+    "case-006",
+    "case-007",
+    "case-008",
+    "case-009",
+    "case-010",
+    "case-011",
+    "case-012",
+    "case-013",
+    "case-014",
+    "case-015",
+    "case-016",
+    "case-017",
+    "case-018",
+    "case-019",
+    "case-020",
+    "case-021",
+    "case-022",
+    "case-023",
+    "case-024",
+    "case-025",
+    "case-026",
+    "case-027",
+    "case-028",
+    "case-029",
+    "case-030"
+  ],
+  "splitCounts": {
+    "DEV": 18,
+    "TEST": 12
+  },
+  "trialIndices": [
+    0,
+    1,
+    2
+  ],
+  "corpusHash": "090d659ff84467d90fc0458741f347acff74e004734f06af2a3b8fdc02a9f93e",
+  "manifestHash": "a3401f52815ce7ec6537343f87acbd6126f0de6d4dc3ca8db3f19c597c214e60"
+}
