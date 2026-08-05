@@ -28,6 +28,8 @@ const CASE_CLASSES = Object.freeze([
   'observer-wait',
 ]);
 const TIER_SIZES = Object.freeze({ 30: 30, 100: 100, 300: 300 });
+const DEV_SPLIT_RATIO = 0.6;
+const TEST_SPLIT_RATIO = 0.4;
 const TRIAL_INDICES = Object.freeze([0, 1, 2]);
 const EXPECTED_PACKET_CATALOG_HASH = '1c7cfb4a25bb0b94129520091672dc91e86707ccec88f15eb8dbe79b67ef71fa';
 const EXPECTED_MANIFEST_HASHES = Object.freeze({
@@ -152,10 +154,10 @@ function validateManifest(manifest, allPackets, expectedHash = EXPECTED_MANIFEST
     throw new Error('manifest.trial_indices');
   }
   const expectedCounts = {
-    DEV: manifest.tier * 0.6,
-    TEST: manifest.tier * 0.4,
+    DEV: manifest.tier * DEV_SPLIT_RATIO,
+    TEST: manifest.tier * TEST_SPLIT_RATIO,
   };
-  if (JSON.stringify(manifest.splitCounts) !== JSON.stringify(expectedCounts)) {
+  if (canonicalize(manifest.splitCounts) !== canonicalize(expectedCounts)) {
     throw new Error('manifest.split_counts');
   }
   if (!Array.isArray(allPackets) || allPackets.length !== TIER_SIZES[300]) {
@@ -172,7 +174,7 @@ function validateManifest(manifest, allPackets, expectedHash = EXPECTED_MANIFEST
     counts[packet.split] += 1;
     return counts;
   }, { DEV: 0, TEST: 0 });
-  if (JSON.stringify(actualCounts) !== JSON.stringify(expectedCounts)) {
+  if (canonicalize(actualCounts) !== canonicalize(expectedCounts)) {
     throw new Error('manifest.split_leakage');
   }
   if (manifest.corpusHash !== sha256(canonicalize(selected))) throw new Error('manifest.corpus_hash');
@@ -238,6 +240,35 @@ function validateEvidence(evidence) {
   return failures;
 }
 
+function checkPacketBinding(packet, canonicalPacket, evidence, expectedBinding) {
+  const failures = [];
+  const expectedPacket = canonicalPacket || packet;
+  if (!canonicalPacket || hashPacket(packet) !== hashPacket(canonicalPacket)) failures.push('packet.hash_mismatch');
+  if (evidence?.caseId !== packet.caseId) failures.push('case_id.mismatch');
+  if (typeof evidence?.packetHash !== 'string' || !/^[0-9a-f]{64}$/i.test(evidence.packetHash)) {
+    failures.push('packet.binding_hash');
+  }
+  if (evidence?.packetHash !== hashPacket(expectedPacket)) failures.push('packet.binding_mismatch');
+  if (evidence?.split !== packet.split) failures.push('split.mismatch');
+  if (expectedBinding) {
+    const expectedBindingError = validateBinding(expectedBinding);
+    if (expectedBindingError) failures.push(`binding.expected_${expectedBindingError.replace('binding.', '')}`);
+    if (canonicalize(evidence?.binding) !== canonicalize(expectedBinding)) failures.push('binding.mismatch');
+  }
+  return failures;
+}
+
+function checkObservation(packet, evidence) {
+  const failures = [];
+  if (evidence?.observation && canonicalize(evidence.observation) !== canonicalize(packet.oracle.expected)) {
+    failures.push('oracle.assertion_mismatch');
+  }
+  if (evidence?.observation?.hardFailure === true) failures.push('oracle.hard_failure');
+  if (evidence?.observation?.observer?.mutationCount > 0) failures.push('observer.mutation');
+  if (evidence?.observation?.observer?.pollCount > 0) failures.push('observer.polling');
+  return failures;
+}
+
 function evaluateCase({ packet, allPackets, manifest, evidence, expectedBinding }) {
   const packetCatalog = allPackets || manifest?.allPackets;
   const failures = [];
@@ -248,27 +279,11 @@ function evaluateCase({ packet, allPackets, manifest, evidence, expectedBinding 
     return fail(error.message);
   }
   const canonicalPacket = packetCatalog.find((candidate) => candidate.caseId === packet.caseId);
-  if (!canonicalPacket || hashPacket(packet) !== hashPacket(canonicalPacket)) failures.push('packet.hash_mismatch');
   if (!manifest.packetIds.includes(packet.caseId)) failures.push('packet.not_in_manifest');
   const evidenceFailures = validateEvidence(evidence);
   failures.push(...evidenceFailures);
-  if (evidence?.caseId !== packet.caseId) failures.push('case_id.mismatch');
-  if (typeof evidence?.packetHash !== 'string' || !/^[0-9a-f]{64}$/i.test(evidence.packetHash)) {
-    failures.push('packet.binding_hash');
-  }
-  if (evidence?.packetHash !== hashPacket(canonicalPacket || packet)) failures.push('packet.binding_mismatch');
-  if (evidence?.split !== packet.split) failures.push('split.mismatch');
-  if (expectedBinding) {
-    const expectedBindingError = validateBinding(expectedBinding);
-    if (expectedBindingError) failures.push(`binding.expected_${expectedBindingError.replace('binding.', '')}`);
-    if (JSON.stringify(evidence?.binding) !== JSON.stringify(expectedBinding)) failures.push('binding.mismatch');
-  }
-  if (evidence?.observation && JSON.stringify(evidence.observation) !== JSON.stringify(packet.oracle.expected)) {
-    failures.push('oracle.assertion_mismatch');
-  }
-  if (evidence?.observation?.hardFailure === true) failures.push('oracle.hard_failure');
-  if (evidence?.observation?.observer?.mutationCount > 0) failures.push('observer.mutation');
-  if (evidence?.observation?.observer?.pollCount > 0) failures.push('observer.polling');
+  failures.push(...checkPacketBinding(packet, canonicalPacket, evidence, expectedBinding));
+  failures.push(...checkObservation(packet, evidence));
   return {
     passed: failures.length === 0,
     failures: [...new Set(failures)],

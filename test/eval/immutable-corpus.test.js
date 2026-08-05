@@ -83,6 +83,30 @@ describe('immutable evaluation corpus', () => {
     expect(first.passed).toBe(true);
   });
 
+  test('canonicalizes object evidence and split counts without reordering arrays', () => {
+    const corpus = loadTier(30);
+    const packet = corpus.cases[0];
+    const reversedBinding = {
+      budgetHash: BINDING.budgetHash,
+      configHash: BINDING.configHash,
+      repoSha: BINDING.repoSha,
+    };
+    const reversedObservation = Object.fromEntries(
+      Object.entries(packet.oracle.expected).reverse(),
+    );
+    const evidence = validEvidence(packet, {
+      evidence: { binding: reversedBinding, observation: reversedObservation },
+    });
+    const result = evaluateCase({ packet, manifest: corpus.manifest, evidence, expectedBinding: BINDING });
+    expect(result.passed).toBe(true);
+
+    const reversedCounts = { TEST: corpus.manifest.splitCounts.TEST, DEV: corpus.manifest.splitCounts.DEV };
+    expect(() => validateManifest(
+      { ...corpus.manifest, splitCounts: reversedCounts },
+      corpus.allPackets,
+    )).not.toThrow();
+  });
+
   test('every case class has a deterministic passing oracle contract', () => {
     const corpus = loadTier(30);
     for (const caseClass of EXPECTED_CLASSES) {
@@ -157,13 +181,13 @@ describe('immutable evaluation corpus', () => {
     expect(result.failures).toContain('split.mismatch');
   });
 
-  test('raw prompt, transcript, and tool payload leakage fails closed', () => {
+  test.each(['transcript', 'rawPrompt', 'toolPayload'])('%s leakage fails closed', (field) => {
     const corpus = loadTier(30);
     const packet = corpus.cases[0];
     const result = evaluateCase({
       packet,
       manifest: corpus.manifest,
-      evidence: validEvidence(packet, { evidence: { transcript: 'forbidden' } }),
+      evidence: validEvidence(packet, { evidence: { [field]: 'forbidden' } }),
       expectedBinding: BINDING,
     });
     expect(result.passed).toBe(false);
