@@ -43,7 +43,7 @@ describe('scripts/test-full-suite.js', () => {
 
     expect(specs).toHaveLength(2);
     expect(assignedFiles).toHaveLength(4);
-    expect(new Set(assignedFiles)).toHaveLength(4);
+    expect(new Set(assignedFiles).size).toBe(4);
     expect(assignedFiles.sort()).toEqual([
       'packages/skills/test/a.test.js',
       'test/a.test.js',
