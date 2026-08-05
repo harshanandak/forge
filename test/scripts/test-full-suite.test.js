@@ -98,14 +98,17 @@ describe('scripts/test-full-suite.js', () => {
         "test('nested stale checkout', () => { throw new Error('nested copy executed'); });",
       ].join('\n'));
 
+      const junitPath = path.join(fixtureRoot, 'test-results', 'isolation.xml');
+      fs.mkdirSync(path.dirname(junitPath), { recursive: true });
       const args = buildShardTestArgs({
-        junitPath: path.join(fixtureRoot, 'test-results', 'isolation.xml'),
+        junitPath,
         files: [relativeFile],
         root: fixtureRoot,
       });
       const result = spawnSync(process.env.BUN_EXE || 'bun', args, {
         cwd: fixtureRoot,
         encoding: 'utf8',
+        timeout: 30000,
         windowsHide: true,
       });
       const output = `${result.stdout || ''}\n${result.stderr || ''}`;
