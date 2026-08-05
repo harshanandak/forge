@@ -128,6 +128,18 @@ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
   return specs;
 }
 
+function buildShardTestArgs({ junitPath, files, root = rootDir }) {
+  return [
+    'test',
+    '--timeout',
+    '30000',
+    '--reporter=junit',
+    '--reporter-outfile',
+    junitPath,
+    ...files.map((file) => path.resolve(root, file)),
+  ];
+}
+
 function spawnShard(shard, options = {}) {
   const spawn = options.spawn || defaultSpawn;
   const env = options.env || process.env;
@@ -151,15 +163,10 @@ function spawnShard(shard, options = {}) {
 
     let child;
     try {
-      child = spawn(bunCommand, [
-        'test',
-        '--timeout',
-        '30000',
-        '--reporter=junit',
-        '--reporter-outfile',
+      child = spawn(bunCommand, buildShardTestArgs({
         junitPath,
-        ...shard.files,
-      ], {
+        files: shard.files,
+      }), {
         cwd: rootDir,
         env,
         shell: false,
@@ -258,6 +265,7 @@ if (require.main === module) {
 
 module.exports = {
   assertExactShardAssignment,
+  buildShardTestArgs,
   buildShardSpecs,
   getDefaultShardCount,
   listAllFullSuiteTests,

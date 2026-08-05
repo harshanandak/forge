@@ -1,15 +1,21 @@
 'use strict';
 
+const fs = require('node:fs');
 const { EventEmitter } = require('node:events');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { describe, expect, test } = require('bun:test');
 
 const {
   assertExactShardAssignment,
+  buildShardTestArgs,
   buildShardSpecs,
   getDefaultShardCount,
   listAllFullSuiteTests,
   parseArgs,
   runFullSuiteInParallel,
+  spawnShard,
 } = require('../../scripts/test-full-suite');
 
 describe('scripts/test-full-suite.js', () => {
@@ -50,6 +56,69 @@ describe('scripts/test-full-suite.js', () => {
       'test/b.test.js',
       'test/c.test.js',
     ]);
+  });
+
+  test('passes absolute shard files to Bun children', async () => {
+    const calls = [];
+    const processTree = {
+      reserveChild: () => ({ id: 'absolute-paths' }),
+      registerChild: (_reservation, child) => child,
+      unregisterChild: () => {},
+    };
+    const spawn = (_command, args) => {
+      calls.push(args);
+      const child = new EventEmitter();
+      process.nextTick(() => child.emit('close', 0));
+      return child;
+    };
+
+    await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
+      labelPrefix: 'absolute-paths',
+      processTree,
+      spawn,
+    });
+
+    expect(path.isAbsolute(calls[0].at(-1))).toBe(true);
+  });
+
+  test('nested worktree copies cannot add tests to a shard', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-isolation-'));
+    try {
+      const relativeFile = 'test/isolation-probe.test.js';
+      const activeFile = path.join(fixtureRoot, relativeFile);
+      const nestedFile = path.join(fixtureRoot, '.worktrees', 'stale', relativeFile);
+      fs.mkdirSync(path.dirname(activeFile), { recursive: true });
+      fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+      fs.writeFileSync(activeFile, [
+        "const { test } = require('bun:test');",
+        "test('active checkout', () => {});",
+      ].join('\n'));
+      fs.writeFileSync(nestedFile, [
+        "const { test } = require('bun:test');",
+        "test('nested stale checkout', () => { throw new Error('nested copy executed'); });",
+      ].join('\n'));
+
+      const junitPath = path.join(fixtureRoot, 'test-results', 'isolation.xml');
+      fs.mkdirSync(path.dirname(junitPath), { recursive: true });
+      const args = buildShardTestArgs({
+        junitPath,
+        files: [relativeFile],
+        root: fixtureRoot,
+      });
+      const result = spawnSync(process.env.BUN_EXE || 'bun', args, {
+        cwd: fixtureRoot,
+        encoding: 'utf8',
+        timeout: 30000,
+        windowsHide: true,
+      });
+      const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+
+      expect(result.status).toBe(0);
+      expect(output).toContain('active checkout');
+      expect(output).not.toContain('nested stale checkout');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   test('rejects duplicate test files instead of accepting overlapping shard evidence', () => {
