@@ -7,19 +7,19 @@ const path = require('node:path');
 
 const configPath = path.resolve(__dirname, '..', '.codex', 'config.toml');
 const repoRoot = path.resolve(__dirname, '..');
-const configRelativePath = path.relative(repoRoot, configPath);
 const forbiddenPolicyKeys = new Set(['approval_policy', 'sandbox_mode', 'sandbox_workspace_write']);
 
-function isTrackedConfig() {
-  if (!fs.existsSync(configPath)) return false;
+function isTrackedConfig(filePath = configPath, runGit = execFileSync) {
+  if (!fs.existsSync(filePath)) return false;
 
   try {
-    execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', configRelativePath], {
+    runGit('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', path.relative(repoRoot, filePath)], {
       stdio: 'ignore',
     });
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
   }
 }
 
@@ -49,6 +49,14 @@ describe('tracked Codex project configuration', () => {
     }
 
     expect(hasForbiddenPolicyKey(globalThis.Bun.TOML.parse('safe_key = "value"'))).toBe(false);
+  });
+
+  test('only skips expected not-tracked Git status', () => {
+    const notTrackedError = Object.assign(new Error('not tracked'), { status: 1 });
+    expect(isTrackedConfig(__filename, () => { throw notTrackedError; })).toBe(false);
+
+    const unexpectedGitError = Object.assign(new Error('git unavailable'), { status: 128 });
+    expect(() => isTrackedConfig(__filename, () => { throw unexpectedGitError; })).toThrow('git unavailable');
   });
 
   test.skipIf(!isTrackedConfig())('does not override user-owned approval or sandbox policy', () => {
