@@ -74,7 +74,7 @@ describe('eval-runner', () => {
     });
 
     test('creates a worktree at an exact full commit SHA', async () => {
-      const exactSha = execSync('git rev-parse HEAD~1', {
+      const exactSha = execSync('git rev-parse HEAD', {
         cwd: WORKTREE_ROOT,
         encoding: 'utf-8',
       }).trim();

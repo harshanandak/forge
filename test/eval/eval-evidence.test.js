@@ -5,9 +5,11 @@ const { describe, expect, test } = require('bun:test');
 const {
   createEvalEvidence,
   verifyEvalEvidence,
+  verifyEvalReplay,
   appendEvalEvidence,
 } = require('../../scripts/lib/eval-evidence');
 const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-factory');
+const { stableStringify } = require('../../lib/kernel/evaluators');
 
 const ISSUE_ID = '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3';
 const SHA = 'a'.repeat(40);
@@ -100,6 +102,16 @@ describe('eval evidence', () => {
     expect(() => verifyEvalEvidence(envelope)).toThrow(/content hash mismatch/i);
   });
 
+  test('strictly allows only transient prompt, skill, and tool contents for replay', () => {
+    const envelope = createEvalEvidence(validCase());
+    expect(() => verifyEvalReplay(envelope, {
+      prompt: 'current prompt',
+      skill: 'current skill',
+      tool: 'current tool',
+      secret: 'not allowed',
+    })).toThrow(/unknown field.*secret/i);
+  });
+
   test('appends one idempotent Kernel event per content hash', async () => {
     const kernel = await freshKernel();
     const envelope = createEvalEvidence(validCase());
@@ -114,5 +126,22 @@ describe('eval evidence', () => {
     expect(duplicate.duplicate).toBe(true);
     expect(evidenceEvents).toHaveLength(1);
     expect(JSON.parse(evidenceEvents[0].payload_json)).toEqual(envelope);
+  });
+
+  test('persists canonical stable envelope bytes regardless of input key order', async () => {
+    const kernel = await freshKernel();
+    const envelope = createEvalEvidence(validCase());
+
+    await appendEvalEvidence('/unused', envelope, {
+      deps: deps(kernel),
+      env: { FORGE_ACTOR: 'eval-test' },
+    });
+    const stored = await kernel.kernelDriver.loadKernelEventByIdempotencyKey(
+      `eval.evidence.recorded:${envelope.content_hash}`,
+      {},
+      kernel.kernelBroker.config,
+    );
+
+    expect(stored.payload_json).toBe(stableStringify(envelope));
   });
 });

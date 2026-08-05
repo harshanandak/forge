@@ -105,12 +105,12 @@ function verifyEvalEvidence(envelope) {
   return envelope.evidence;
 }
 
-function verifyEvalReplay(envelope, hashes) {
+function verifyEvalReplay(envelope, inputs) {
   const evidence = verifyEvalEvidence(envelope);
-  assertExactFields(hashes, ['prompt', 'skill', 'tool'], 'replay.hashes');
+  assertExactFields(inputs, ['prompt', 'skill', 'tool'], 'replay.inputs');
   for (const field of ['prompt', 'skill', 'tool']) {
-    if (!HEX_64.test(hashes[field])) throw new Error(`replay.hashes.${field} must be a 64-character lowercase SHA-256 hash`);
-    if (hashes[field] !== evidence.hashes[field]) throw new Error(`${field} hash drift detected`);
+    if (typeof inputs[field] !== 'string') throw new Error(`replay.inputs.${field} must be a string`);
+    if (contentHash(inputs[field]) !== evidence.hashes[field]) throw new Error(`${field} hash drift detected`);
   }
   return evidence;
 }
@@ -148,7 +148,7 @@ async function appendEvalEvidence(projectRoot, envelope, options = {}) {
       expected_revision: 0,
       actor,
       origin: 'eval',
-      payload: envelope,
+      payload_json: stableStringify(envelope),
       created_at: options.now || new Date().toISOString(),
     };
     try {
