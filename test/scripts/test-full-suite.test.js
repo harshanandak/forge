@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const { describe, expect, test } = require('bun:test');
 
 const {
+  assertExactShardAssignment,
   buildShardSpecs,
   getDefaultShardCount,
   listAllFullSuiteTests,
@@ -38,13 +39,35 @@ describe('scripts/test-full-suite.js', () => {
       ['packages/skills/test/a.test.js', 500],
     ]));
 
+    const assignedFiles = specs.flatMap((spec) => spec.files);
+
     expect(specs).toHaveLength(2);
-    expect(specs.flatMap((spec) => spec.files).sort()).toEqual([
+    expect(assignedFiles).toHaveLength(4);
+    expect(new Set(assignedFiles)).toHaveLength(4);
+    expect(assignedFiles.sort()).toEqual([
       'packages/skills/test/a.test.js',
       'test/a.test.js',
       'test/b.test.js',
       'test/c.test.js',
     ]);
+  });
+
+  test('rejects duplicate test files instead of accepting overlapping shard evidence', () => {
+    expect(() => buildShardSpecs([
+      'test/a.test.js',
+      'test/b.test.js',
+      'test/overlap.test.js',
+      'test/overlap.test.js',
+      'test/c.test.js',
+      'test/d.test.js',
+    ], 4)).toThrow(/exactly one shard/);
+  });
+
+  test('rejects an omitted full-suite test file', () => {
+    expect(() => assertExactShardAssignment([
+      'test/a.test.js',
+      'test/b.test.js',
+    ], [{ files: ['test/a.test.js'] }])).toThrow(/omitted/);
   });
 
   test('listAllFullSuiteTests includes repo-level script tests', () => {
