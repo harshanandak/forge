@@ -10,7 +10,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { execSync } = require('node:child_process');
+const { execFileSync, execSync } = require('node:child_process');
 
 // ── active worktree tracking (cleanup on crash) ─────────────────────
 // Tracks active eval worktrees so we can clean up on process exit/crash.
@@ -119,9 +119,24 @@ function getWorktreesDir() {
 /**
  * Create a git worktree with a unique name for eval isolation.
  *
+ * @param {string} [headSha] — optional full commit SHA for exact replay
  * @returns {Promise<{ path: string, branch: string }>}
  */
-async function createEvalWorktree() {
+async function createEvalWorktree(headSha) {
+  if (headSha !== undefined) {
+    if (!/^[0-9a-f]{40}$/.test(headSha)) {
+      throw new Error('Eval replay requires a full 40-character commit SHA');
+    }
+    try {
+      const resolved = execFileSync('git', ['rev-parse', '--verify', `${headSha}^{commit}`], {
+        cwd: getRepoRoot(), encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+      if (resolved !== headSha) throw new Error('mismatch');
+    } catch (_err) {
+      throw new Error(`Eval replay commit is not available: ${headSha}`);
+    }
+  }
+
   // Self-heal: remove stale eval dirs from previous crashed runs
   cleanupStaleEvalWorktrees();
 
@@ -133,7 +148,7 @@ async function createEvalWorktree() {
   const wtPath = path.join(worktreesDir, name);
 
   // Create the worktree with a detached HEAD first, then create branch
-  execSync(`git worktree add -b "${branch}" "${wtPath}" HEAD`, {
+  execFileSync('git', ['worktree', 'add', '-b', branch, wtPath, headSha || 'HEAD'], {
     cwd: getRepoRoot(),
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],

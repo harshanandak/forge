@@ -20,6 +20,7 @@ const {
 } = require('./lib/eval-runner');
 const { gradeTranscript } = require('./lib/grading');
 const { saveEvalResult } = require('./lib/eval-storage');
+const { verifyEvalReplay } = require('./lib/eval-evidence');
 
 // ---------------------------------------------------------------------------
 // parseArgs
@@ -89,6 +90,7 @@ function runShellCommand(command, worktreePath) {
  * @param {string} [options._basePath] — eval-logs base path for testing
  * @param {boolean} [options._skipWorktree=false] — skip worktree creation for unit tests
  * @param {Function} [options._executeOverride] — injectable command executor for testing
+ * @param {{envelope: object, hashes: object}} [options.replay] — exact-SHA replay binding
  * @returns {Promise<{ command: string, results: Array, overall_score: number, passed: boolean, duration_ms: number }>}
  */
 async function runEvalPipeline(evalSetPath, options = {}) {
@@ -98,6 +100,7 @@ async function runEvalPipeline(evalSetPath, options = {}) {
   const execOverride = options._executeOverride || null;
   const invokeGrader = options._invokeGrader || null;
   const basePath = options._basePath || undefined;
+  const replay = options.replay || null;
 
   const startTime = Date.now();
 
@@ -105,10 +108,12 @@ async function runEvalPipeline(evalSetPath, options = {}) {
   const evalSet = loadEvalSet(evalSetPath);
   const { command, queries } = evalSet;
 
+  const replayEvidence = replay ? verifyEvalReplay(replay.envelope, replay.hashes) : null;
+
   // 2. Create eval worktree (unless skipped for testing)
   let worktreePath = null;
   if (!skipWorktree) {
-    const wt = await createEvalWorktree();
+    const wt = await createEvalWorktree(replayEvidence ? replayEvidence.head_sha : undefined);
     worktreePath = wt.path;
   }
 

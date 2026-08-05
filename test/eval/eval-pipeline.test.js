@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { runEvalPipeline, parseArgs } = require('../../scripts/run-command-eval');
+const { createEvalEvidence } = require('../../scripts/lib/eval-evidence');
+const { contentHash } = require('../../lib/file-hash');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -104,6 +106,50 @@ function fakeGraderSequence(scores) {
 // ---------------------------------------------------------------------------
 
 describe('runEvalPipeline', () => {
+  test('rejects replay hash drift before worktree creation or command execution', async () => {
+    const evalSetPath = writeTmpEvalSet(minimalEvalSet());
+    const tmpDir = makeTmpDir();
+    let executed = false;
+    const envelope = createEvalEvidence({
+      issue_id: '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3',
+      pr: 484,
+      head_sha: 'a'.repeat(40),
+      model: 'model-a',
+      effort: 'high',
+      role: 'implementation',
+      hashes: {
+        prompt: contentHash('recorded prompt'),
+        skill: contentHash('recorded skill'),
+        tool: contentHash('recorded tool'),
+      },
+      started_at: '2026-08-05T10:00:00.000Z',
+      ended_at: '2026-08-05T10:00:03.000Z',
+      active_ms: 2000,
+      passive_ms: 1000,
+      tokens: { input: 100, output: 25, cached: 5 },
+      retries: 0,
+      compactions: 0,
+      gates: [{ name: 'tests', passed: true }],
+    });
+
+    await expect(runEvalPipeline(evalSetPath, {
+      replay: {
+        envelope,
+        hashes: { ...envelope.evidence.hashes, prompt: contentHash('drifted prompt') },
+      },
+      _skipWorktree: true,
+      _executeOverride: async (...args) => {
+        executed = true;
+        return fakeExecute(...args);
+      },
+      _invokeGrader: fakeGraderPass,
+      _basePath: tmpDir,
+    })).rejects.toThrow(/prompt hash drift/i);
+
+    expect(executed).toBe(false);
+    expect(fs.readdirSync(tmpDir)).toHaveLength(0);
+  });
+
   test('accepts eval set path and returns result object', async () => {
     const evalSetPath = writeTmpEvalSet(minimalEvalSet());
     const tmpDir = makeTmpDir();
