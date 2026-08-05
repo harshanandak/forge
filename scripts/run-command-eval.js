@@ -101,7 +101,8 @@ async function runEvalPipeline(evalSetPath, options = {}) {
   const execOverride = options._executeOverride || null;
   const invokeGrader = options._invokeGrader || null;
   const basePath = options._basePath || undefined;
-  const replay = options.replay || null;
+  const hasReplay = Object.hasOwn(options, 'replay');
+  const replay = options.replay;
 
   const startTime = Date.now();
 
@@ -110,7 +111,7 @@ async function runEvalPipeline(evalSetPath, options = {}) {
   const { command, queries } = evalSet;
 
   let replayEvidence = null;
-  if (replay) {
+  if (hasReplay) {
     if (!replay || typeof replay !== 'object' || Array.isArray(replay)) throw new Error('replay must be an object');
     for (const field of Object.keys(replay)) {
       if (!['envelope', 'inputs'].includes(field)) throw new Error(`Unknown field 'replay.${field}'`);
@@ -130,6 +131,7 @@ async function runEvalPipeline(evalSetPath, options = {}) {
       skill: replay.inputs.skill,
       tool: replay.inputs.tool,
     });
+    if (skipWorktree) throw new Error('Replay worktree verification cannot be skipped');
   }
 
   // 2. Create eval worktree (unless skipped for testing)

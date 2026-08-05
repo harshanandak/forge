@@ -2,6 +2,7 @@ const { describe, test, expect } = require('bun:test');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execSync } = require('node:child_process');
 const { runEvalPipeline, parseArgs } = require('../../scripts/run-command-eval');
 const { createEvalEvidence } = require('../../scripts/lib/eval-evidence');
 const { contentHash } = require('../../lib/file-hash');
@@ -102,11 +103,82 @@ function fakeGraderSequence(scores) {
   };
 }
 
+function validReplay(evalSet) {
+  const inputs = { skill: 'recorded skill', tool: 'recorded tool' };
+  return {
+    envelope: createEvalEvidence({
+      issue_id: '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3',
+      pr: 484,
+      head_sha: execSync('git rev-parse HEAD', {
+        cwd: path.resolve(__dirname, '..', '..'),
+        encoding: 'utf-8',
+      }).trim(),
+      model: 'model-a',
+      effort: 'high',
+      role: 'implementation',
+      hashes: {
+        prompt: contentHash(stableStringify(evalSet.queries.map(query => query.prompt))),
+        skill: contentHash(inputs.skill),
+        tool: contentHash(inputs.tool),
+      },
+      started_at: '2026-08-05T10:00:00.000Z',
+      ended_at: '2026-08-05T10:00:03.000Z',
+      active_ms: 2000,
+      passive_ms: 1000,
+      tokens: { input: 100, output: 25, cached: 5 },
+      retries: 0,
+      compactions: 0,
+      gates: [{ name: 'tests', passed: true }],
+    }),
+    inputs,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // runEvalPipeline — returns result object
 // ---------------------------------------------------------------------------
 
 describe('runEvalPipeline', () => {
+  test('rejects a valid replay when worktree verification is skipped', async () => {
+    const evalSet = minimalEvalSet();
+    const evalSetPath = writeTmpEvalSet(evalSet);
+    const tmpDir = makeTmpDir();
+    let executed = false;
+
+    await expect(runEvalPipeline(evalSetPath, {
+      replay: validReplay(evalSet),
+      _skipWorktree: true,
+      _executeOverride: async (...args) => {
+        executed = true;
+        return fakeExecute(...args);
+      },
+      _invokeGrader: fakeGraderPass,
+      _basePath: tmpDir,
+    })).rejects.toThrow(/replay.*worktree.*cannot be skipped/i);
+
+    expect(executed).toBe(false);
+    expect(fs.readdirSync(tmpDir)).toHaveLength(0);
+  });
+
+  test('rejects malformed replay values by property presence before execution', async () => {
+    const evalSetPath = writeTmpEvalSet(minimalEvalSet());
+
+    for (const replay of [false, null, 0, '']) {
+      let executed = false;
+      await expect(runEvalPipeline(evalSetPath, {
+        replay,
+        _skipWorktree: true,
+        _executeOverride: async (...args) => {
+          executed = true;
+          return fakeExecute(...args);
+        },
+        _invokeGrader: fakeGraderPass,
+        _basePath: makeTmpDir(),
+      })).rejects.toThrow(/replay must be an object/i);
+      expect(executed).toBe(false);
+    }
+  });
+
   test('rejects actual eval-set prompt drift before worktree creation or command execution', async () => {
     const recordedEvalSet = minimalEvalSet();
     const driftedEvalSet = minimalEvalSet();
