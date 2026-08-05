@@ -82,6 +82,29 @@ function walkAllTests(dir) {
   return results;
 }
 
+function assertExactShardAssignment(allTests, shardSpecs) {
+  const expectedFiles = new Set(allTests);
+  const assignedFiles = new Set();
+
+  for (const shard of shardSpecs) {
+    for (const file of shard.files) {
+      if (!expectedFiles.has(file)) {
+        throw new Error(`Test file ${file} is not part of the full suite`);
+      }
+      if (assignedFiles.has(file)) {
+        throw new Error(`Test file ${file} belongs to more than exactly one shard`);
+      }
+      assignedFiles.add(file);
+    }
+  }
+
+  for (const file of expectedFiles) {
+    if (!assignedFiles.has(file)) {
+      throw new Error(`Test file ${file} was omitted from the shard assignment`);
+    }
+  }
+}
+
 function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
   const specs = [];
   for (let shardIndex = 0; shardIndex < shardTotal; shardIndex += 1) {
@@ -101,6 +124,7 @@ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
       source: plan.source,
     });
   }
+  assertExactShardAssignment(allTests, specs);
   return specs;
 }
 
@@ -233,6 +257,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertExactShardAssignment,
   buildShardSpecs,
   getDefaultShardCount,
   listAllFullSuiteTests,
