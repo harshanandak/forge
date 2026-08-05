@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 const executor = require('../../lib/pr-monitor/reconcile-executor');
 const shepherdLease = require('../../lib/pr-monitor/shepherd-lease');
@@ -237,20 +237,32 @@ describe('runDaemon — singleton lease lifecycle', () => {
 		fs.rmSync(gitCommonDir, { recursive: true, force: true });
 	});
 
-	test('foreign-lease loser exits even when another ref-ed handle would keep Bun alive', () => {
+	test('foreign-lease loser exits even when another ref-ed handle would keep Bun alive', async () => {
 		const modulePath = path.join(__dirname, '..', '..', 'lib', 'pr-monitor', 'reconcile-executor.js');
 		const script = [
 			`const { runDaemon } = require(${JSON.stringify(modulePath)});`,
 			'setInterval(() => {}, 1000);',
 			"runDaemon('/repo', { gitCommonDir: '/repo/.git', acquire: () => ({ ok: false }) });",
 		].join('\n');
-		const child = spawnSync(process.execPath, ['-e', script], {
-			encoding: 'utf8',
-			timeout: 1000,
+		const child = spawn(process.execPath, ['-e', script], {
 			windowsHide: true,
+			stdio: 'ignore',
 		});
-		expect(child.error).toBeUndefined();
-		expect(child.status).toBe(0);
+		const result = await new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				child.kill();
+				reject(new Error('foreign-lease loser child did not exit within 5s'));
+			}, 5000);
+			child.once('error', (error) => {
+				clearTimeout(timeout);
+				reject(error);
+			});
+			child.once('exit', (status, signal) => {
+				clearTimeout(timeout);
+				resolve({ status, signal });
+			});
+		});
+		expect(result.status).toBe(0);
 	});
 
 	test('a failed converge pass records its failure and leaves the cadence alive for retry', async () => {
