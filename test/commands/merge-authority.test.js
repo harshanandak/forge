@@ -203,15 +203,15 @@ describe('merge command — mandatory release authority', () => {
     }
   });
 
-  test('blocks when no activity timestamp can prove the mandatory settle window', async () => {
+  test('does not require activity evidence when settle_min is unconfigured', async () => {
     let mergeCalls = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       fetchPrContext: async () => context({ lastActivityAt: undefined }),
       mergePr: async () => { mergeCalls += 1; return { merged: true }; },
     }));
-    expect(out.success).toBe(false);
-    expect(out.error).toMatch(/settle activity evidence/i);
-    expect(mergeCalls).toBe(0);
+    expect(out.success).toBe(true);
+    expect(out.merged).toBe(true);
+    expect(mergeCalls).toBe(1);
   });
 
 

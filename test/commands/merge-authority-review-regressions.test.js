@@ -124,7 +124,7 @@ const validThreads = {
 };
 
 describe('merge authority — exact reviewer regressions', () => {
-  test('enforces the mandatory ten-minute settle even when config omits settle_min', async () => {
+  test('allows an immediate merge when config omits settle_min', async () => {
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       fetchPrContext: async () => context({
@@ -132,9 +132,23 @@ describe('merge authority — exact reviewer regressions', () => {
       }),
       mergePr: async () => { merges += 1; return { merged: true }; },
     }));
+    expect(out.merged).toBe(true);
+    expect(merges).toBe(1);
+  });
+
+  test('still blocks a recent comment when settle_min is explicitly configured', async () => {
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      loadConfig: () => ({ merge: { auto: { enabled: true, rules: ['checks_green', 'settle_min:10'] } } }),
+      fetchPrContext: async () => context({
+        comments: [{ author: 'reviewer', at: new Date(NOW - 60_000).toISOString() }],
+      }),
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
     expect(out.merged).toBe(false);
+    expect(out.allowed).toBe(false);
+    expect(out.unmet.some((item) => item.rule === 'settle_min:10')).toBe(true);
     expect(merges).toBe(0);
-    expect(out.error || out.reason).toMatch(/settle|quiet|10.minute/i);
   });
 
   test('uses the later edited timestamp for settle evidence', async () => {
@@ -153,7 +167,7 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(fetched.comments[0].at).toBe(editedAt);
   });
 
-  test('uses a later review update for mandatory settle evidence', async () => {
+  test('preserves a later review update without imposing settle_min when unconfigured', async () => {
     const updatedAt = new Date(NOW - 60_000).toISOString();
     const fetched = await mergeCmd.defaultFetchPrContext({
       pr: '42',
@@ -174,8 +188,8 @@ describe('merge authority — exact reviewer regressions', () => {
       mergePr: async () => { merges += 1; return { merged: true }; },
     }));
     expect(fetched.lastActivityAt).toBe(Date.parse(updatedAt));
-    expect(out.merged).toBe(false);
-    expect(merges).toBe(0);
+    expect(out.merged).toBe(true);
+    expect(merges).toBe(1);
   });
 
   test('review authority rejects unreadable, malformed, stale, and blocking latest evidence', async () => {
@@ -228,15 +242,90 @@ describe('merge authority — exact reviewer regressions', () => {
     expect(out.merged).toBe(true);
     expect(merges).toBe(1);
   });
-  test('uses recent PR or review activity for mandatory settle without comments', async () => {
+  test('does not require recent PR or review activity when settle_min is unconfigured', async () => {
     let merges = 0;
     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
       fetchPrContext: async () => context({ comments: [], lastActivityAt: NOW - 60_000 }),
       mergePr: async () => { merges += 1; return { merged: true }; },
     }));
+    expect(out.merged).toBe(true);
+    expect(merges).toBe(1);
+  });
+
+  test('TOCTOU re-check aborts thread, check, review, and head regressions', async () => {
+    const regressions = [
+      { override: { unresolvedThreads: 1 }, pattern: /thread/i },
+      {
+        override: { checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE', appId: 123 }] },
+        pattern: /check|terminal/i,
+      },
+      {
+        override: {
+          reviews: [{
+            id: 'R-block', author: 'reviewer', authorTypename: 'User', state: 'CHANGES_REQUESTED',
+            createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T10:00:00Z',
+            submittedAt: '2026-08-01T10:00:00Z', activityAt: '2026-08-01T10:00:00Z',
+            commitOid: HEAD, body: 'blocker',
+          }],
+        },
+        pattern: /review/i,
+      },
+      { override: { headSha: 'b'.repeat(40) }, pattern: /head/i },
+    ];
+
+    for (const { override, pattern } of regressions) {
+      let reads = 0;
+      let merges = 0;
+      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+        fetchPrContext: async () => {
+          reads += 1;
+          return reads === 1 ? context() : context(override);
+        },
+        mergePr: async () => { merges += 1; return { merged: true }; },
+      }));
+      expect(reads).toBe(2);
+      expect(out.merged).toBe(false);
+      expect(merges).toBe(0);
+      expect(out.error || out.reason).toMatch(pattern);
+    }
+  });
+
+  test('TOCTOU allows a new comment when settle_min is unconfigured', async () => {
+    let reads = 0;
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      fetchPrContext: async () => {
+        reads += 1;
+        return context({
+          comments: reads === 1 ? [] : [{ author: 'reviewer', at: new Date(NOW - 60_000).toISOString() }],
+          lastActivityAt: reads === 1 ? NOW - 60 * 60_000 : NOW - 60_000,
+        });
+      },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
+    expect(out.merged).toBe(true);
+    expect(merges).toBe(1);
+  });
+
+  test('TOCTOU blocks a new comment when settle_min is configured', async () => {
+    let reads = 0;
+    let merges = 0;
+    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+      loadConfig: () => ({ merge: { auto: { enabled: true, rules: ['checks_green', 'settle_min:10'] } } }),
+      fetchPrContext: async () => {
+        reads += 1;
+        return context({
+          comments: reads === 1
+            ? [{ author: 'reviewer', at: new Date(NOW - 60 * 60_000).toISOString() }]
+            : [{ author: 'reviewer', at: new Date(NOW - 60_000).toISOString() }],
+        });
+      },
+      mergePr: async () => { merges += 1; return { merged: true }; },
+    }));
     expect(out.merged).toBe(false);
+    expect(out.allowed).toBe(false);
+    expect(out.unmet.some((item) => item.rule === 'settle_min:10')).toBe(true);
     expect(merges).toBe(0);
-    expect(out.error || out.reason).toMatch(/settle|quiet|10.minute/i);
   });
 
   test('rejects a malformed optional StatusContext before protected evaluation', async () => {
