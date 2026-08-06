@@ -72,6 +72,28 @@ describe('eval-runner', () => {
       }).trim();
       expect(gitDir).toBeTruthy();
     });
+
+    test('creates a worktree at an exact full commit SHA', async () => {
+      const exactSha = execSync('git rev-parse HEAD', {
+        cwd: WORKTREE_ROOT,
+        encoding: 'utf-8',
+      }).trim();
+      const wt = await createEvalWorktree(exactSha);
+
+      try {
+        const actual = execSync('git rev-parse HEAD', {
+          cwd: wt.path,
+          encoding: 'utf-8',
+        }).trim();
+        expect(actual).toBe(exactSha);
+      } finally {
+        await destroyEvalWorktree(wt.path);
+      }
+    });
+
+    test('rejects an unavailable full SHA before creating a worktree', async () => {
+      await expect(createEvalWorktree('f'.repeat(40))).rejects.toThrow(/commit.*available/i);
+    });
   });
 
   // ── destroyEvalWorktree ─────────────────────────────────────────────

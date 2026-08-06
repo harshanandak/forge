@@ -20,6 +20,7 @@ const {
 } = require('./lib/eval-runner');
 const { gradeTranscript } = require('./lib/grading');
 const { saveEvalResult } = require('./lib/eval-storage');
+const { verifyEvalReplay } = require('./lib/eval-evidence');
 
 // ---------------------------------------------------------------------------
 // parseArgs
@@ -89,6 +90,7 @@ function runShellCommand(command, worktreePath) {
  * @param {string} [options._basePath] — eval-logs base path for testing
  * @param {boolean} [options._skipWorktree=false] — skip worktree creation for unit tests
  * @param {Function} [options._executeOverride] — injectable command executor for testing
+ * @param {{envelope: object, inputs: {skill: string, tool: string}}} [options.replay] — exact-SHA replay binding
  * @returns {Promise<{ command: string, results: Array, overall_score: number, passed: boolean, duration_ms: number }>}
  */
 async function runEvalPipeline(evalSetPath, options = {}) {
@@ -98,6 +100,8 @@ async function runEvalPipeline(evalSetPath, options = {}) {
   const execOverride = options._executeOverride || null;
   const invokeGrader = options._invokeGrader || null;
   const basePath = options._basePath || undefined;
+  const hasReplay = Object.hasOwn(options, 'replay');
+  const replay = options.replay;
 
   const startTime = Date.now();
 
@@ -105,10 +109,34 @@ async function runEvalPipeline(evalSetPath, options = {}) {
   const evalSet = loadEvalSet(evalSetPath);
   const { command, queries } = evalSet;
 
+  let replayEvidence = null;
+  if (hasReplay) {
+    if (!replay || typeof replay !== 'object' || Array.isArray(replay)) throw new Error('replay must be an object');
+    for (const field of Object.keys(replay)) {
+      if (!['envelope', 'inputs'].includes(field)) throw new Error(`Unknown field 'replay.${field}'`);
+    }
+    if (!Object.hasOwn(replay, 'envelope')) throw new Error('replay.envelope is required');
+    if (!replay.inputs || typeof replay.inputs !== 'object' || Array.isArray(replay.inputs)) {
+      throw new Error('replay.inputs must be an object');
+    }
+    for (const field of Object.keys(replay.inputs)) {
+      if (!['skill', 'tool'].includes(field)) throw new Error(`Unknown field 'replay.inputs.${field}'`);
+    }
+    for (const field of ['skill', 'tool']) {
+      if (!Object.hasOwn(replay.inputs, field)) throw new Error(`replay.inputs.${field} is required`);
+    }
+    replayEvidence = verifyEvalReplay(replay.envelope, {
+      evalSet,
+      skill: replay.inputs.skill,
+      tool: replay.inputs.tool,
+    });
+    if (skipWorktree) throw new Error('Replay worktree verification cannot be skipped');
+  }
+
   // 2. Create eval worktree (unless skipped for testing)
   let worktreePath = null;
   if (!skipWorktree) {
-    const wt = await createEvalWorktree();
+    const wt = await createEvalWorktree(replayEvidence ? replayEvidence.head_sha : undefined);
     worktreePath = wt.path;
   }
 
