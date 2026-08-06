@@ -103,13 +103,22 @@ function buildEvalReplayPayload(evalSet) {
   if (!Array.isArray(evalSet.queries)) throw new Error('evalSet.queries must be an array');
   return {
     command: evalSet.command,
-    queries: evalSet.queries.map((query) => ({
-      name: query.name,
-      prompt: query.prompt,
-      setup: query.setup ?? null,
-      teardown: query.teardown ?? null,
-      assertions: query.assertions,
-    })),
+    queries: evalSet.queries.map((query, index) => {
+      const queryPath = 'evalSet.queries[' + index + ']';
+      assertObject(query, queryPath);
+      assertString(query.name, queryPath + '.name');
+      assertString(query.prompt, queryPath + '.prompt');
+      if (!Array.isArray(query.assertions) || query.assertions.length === 0) {
+        throw new Error(queryPath + '.assertions must be a non-empty array');
+      }
+      return {
+        name: query.name,
+        prompt: query.prompt,
+        setup: query.setup ?? null,
+        teardown: query.teardown ?? null,
+        assertions: query.assertions,
+      };
+    }),
   };
 }
 

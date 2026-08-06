@@ -129,6 +129,21 @@ describe('eval evidence', () => {
     expect(first.eval_set).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  test('rejects malformed query entries before hashing', () => {
+    const base = { command: '/status', queries: [] };
+    expect(() => buildEvalEvidenceHashes({
+      evalSet: { ...base, queries: [null] }, skill: 'skill', tool: 'tool',
+    })).toThrow(/evalSet\.queries\[0\] must be an object/i);
+
+    for (const field of ['name', 'prompt', 'assertions']) {
+      const query = { name: 'query', prompt: 'prompt', assertions: [{ type: 'standard', check: 'ok' }] };
+      delete query[field];
+      expect(() => buildEvalEvidenceHashes({
+        evalSet: { ...base, queries: [query] }, skill: 'skill', tool: 'tool',
+      })).toThrow(new RegExp('evalSet\\.queries\\[0\\]\\.' + field));
+    }
+  });
+
   test('strictly allows only canonical replay inputs', () => {
     const envelope = createEvalEvidence(validCase());
     expect(() => verifyEvalReplay(envelope, {
