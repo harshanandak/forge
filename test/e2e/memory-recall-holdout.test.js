@@ -268,18 +268,25 @@ describe('project-local memory recall holdout', () => {
   test('26 stronger seen rows are excluded before rank and an unseen local row survives', async () => {
     const context = createRecallContext('forge-memory-seen-');
     const seenKeys = [];
-    for (let index = 0; index < fixture.seen.count; index += 1) {
-      const key = `seen-cache-${index}`;
-      seenKeys.push(key);
+    await context.store.exec('BEGIN;');
+    try {
+      for (let index = 0; index < fixture.seen.count; index += 1) {
+        const key = `seen-cache-${index}`;
+        seenKeys.push(key);
+        writeMemory(context, {
+          key,
+          value: `cache eviction policy ${'cache '.repeat(20)}`,
+        });
+      }
       writeMemory(context, {
-        key,
-        value: `cache eviction policy ${'cache '.repeat(20)}`,
+        key: fixture.seen.eligibleId,
+        value: fixture.seen.eligibleContent,
       });
+    } catch (error) {
+      await context.store.exec('ROLLBACK;');
+      throw error;
     }
-    writeMemory(context, {
-      key: fixture.seen.eligibleId,
-      value: fixture.seen.eligibleContent,
-    });
+    await context.store.exec('COMMIT;');
 
     const output = additionalContext(await runAssembledRecall(context, {
       prompt: fixture.seen.prompt,
