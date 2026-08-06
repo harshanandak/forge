@@ -14,6 +14,7 @@ const {
   walkTests,
 } = require('./test-ci-shard');
 const { createProcessTree, signalExitCode } = require('./process-tree');
+const { stripGitHookEnv } = require('./test');
 
 const rootDir = path.join(__dirname, '..');
 const reportDir = path.join(rootDir, 'test-results');
@@ -230,7 +231,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     }
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
-    const childEnv = typeof processTree.envFor === 'function' ? processTree.envFor(env) : env;
+    const childEnv = stripGitHookEnv(
+      typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
+    );
     const results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
       bunCommand: deps.bunCommand,
       env: childEnv,
