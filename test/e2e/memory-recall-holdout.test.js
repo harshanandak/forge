@@ -283,7 +283,11 @@ describe('project-local memory recall holdout', () => {
         value: fixture.seen.eligibleContent,
       });
     } catch (error) {
-      await context.store.exec('ROLLBACK;');
+      try {
+        await context.store.exec('ROLLBACK;');
+      } catch {
+        // A rollback failure must not mask the original fixture error.
+      }
       throw error;
     }
     await context.store.exec('COMMIT;');
