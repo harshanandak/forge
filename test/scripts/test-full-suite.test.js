@@ -173,6 +173,40 @@ describe('scripts/test-full-suite.js', () => {
     expect(calls[0]).toContain('30000');
   });
 
+  test('strips Git hook environment variables before spawning shards', async () => {
+    let spawnedEnv;
+    const processTree = {
+      reserveChild: () => ({ id: 'git-env' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+      installSignalHandlers: () => () => {},
+      cleanup: () => {},
+    };
+    const spawn = (_command, _args, options) => {
+      spawnedEnv = options.env;
+      const child = new EventEmitter();
+      child.pid = 9050;
+      process.nextTick(() => child.emit('close', 0));
+      return child;
+    };
+
+    const status = await runFullSuiteInParallel({ shards: 1 }, {
+      allTests: ['test/a.test.js'],
+      durationMap: new Map([['test/a.test.js', 1000]]),
+      env: {
+        KEEP_ME: 'yes',
+        GIT_DIR: '.git',
+        GIT_WORK_TREE: 'C:/stale-worktree',
+        GIT_INDEX_FILE: 'C:/stale-index',
+      },
+      processTree,
+      spawn,
+    });
+
+    expect(status).toBe(0);
+    expect(spawnedEnv).toEqual({ KEEP_ME: 'yes' });
+  });
+
   test('registers each shard and starts it in an owned process group while preserving stdio', async () => {
     const events = [];
     const processTree = {

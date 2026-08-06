@@ -161,9 +161,11 @@ function detectPackageManager() {
 function stripGitHookEnv(sourceEnv = process.env) {
   const env = { ...sourceEnv };
   for (const key of Object.keys(env)) {
-    if (key === 'GIT_DIR' || key === 'GIT_WORK_TREE' || key === 'GIT_INDEX_FILE'
-      || key === 'GIT_OBJECT_DIRECTORY' || key === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
-      || key === 'GIT_QUARANTINE_PATH') {
+    const normalizedKey = key.toUpperCase();
+    if (normalizedKey === 'GIT_DIR' || normalizedKey === 'GIT_WORK_TREE'
+      || normalizedKey === 'GIT_INDEX_FILE' || normalizedKey === 'GIT_OBJECT_DIRECTORY'
+      || normalizedKey === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
+      || normalizedKey === 'GIT_QUARANTINE_PATH') {
       delete env[key];
     }
   }

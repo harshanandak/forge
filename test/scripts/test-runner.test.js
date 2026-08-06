@@ -71,12 +71,16 @@ describe('scripts/test pre-push runner', () => {
   test('stripGitHookEnv removes git hook environment variables', () => {
     const env = stripGitHookEnv({
       GIT_DIR: '.git',
+      git_work_tree: '.',
+      Git_Index_File: 'mixed-case-index',
       GIT_WORK_TREE: '.',
       GIT_INDEX_FILE: 'index',
       PATH: '/bin',
     });
 
     expect(env.GIT_DIR).toBeUndefined();
+    expect(env.git_work_tree).toBeUndefined();
+    expect(env.Git_Index_File).toBeUndefined();
     expect(env.GIT_WORK_TREE).toBeUndefined();
     expect(env.GIT_INDEX_FILE).toBeUndefined();
     expect(env.PATH).toBe('/bin');
