@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 
 const executor = require('../../lib/pr-monitor/reconcile-executor');
 const shepherdLease = require('../../lib/pr-monitor/shepherd-lease');
+const FOREIGN_LEASE_CHILD_EXIT_TIMEOUT_MS = 5000;
 
 function tmpRepo() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws4b-exec-'));
@@ -250,9 +251,10 @@ describe('runDaemon — singleton lease lifecycle', () => {
 		});
 		const result = await new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
-				child.kill();
-				reject(new Error('foreign-lease loser child did not exit within 5s'));
-			}, 5000);
+				try { child.kill(); } catch { /* best effort */ }
+				child.unref?.();
+				reject(new Error(`foreign-lease loser child did not exit within ${FOREIGN_LEASE_CHILD_EXIT_TIMEOUT_MS}ms`));
+			}, FOREIGN_LEASE_CHILD_EXIT_TIMEOUT_MS);
 			child.once('error', (error) => {
 				clearTimeout(timeout);
 				reject(error);
