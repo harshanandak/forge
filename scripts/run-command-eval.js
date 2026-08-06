@@ -21,7 +21,6 @@ const {
 const { gradeTranscript } = require('./lib/grading');
 const { saveEvalResult } = require('./lib/eval-storage');
 const { verifyEvalReplay } = require('./lib/eval-evidence');
-const { stableStringify } = require('../lib/kernel/evaluators');
 
 // ---------------------------------------------------------------------------
 // parseArgs
@@ -127,7 +126,7 @@ async function runEvalPipeline(evalSetPath, options = {}) {
       if (!Object.hasOwn(replay.inputs, field)) throw new Error(`replay.inputs.${field} is required`);
     }
     replayEvidence = verifyEvalReplay(replay.envelope, {
-      prompt: stableStringify(queries.map(query => query.prompt)),
+      evalSet,
       skill: replay.inputs.skill,
       tool: replay.inputs.tool,
     });

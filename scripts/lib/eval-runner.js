@@ -12,6 +12,8 @@ const path = require('path');
 const fs = require('fs');
 const { execFileSync, execSync } = require('node:child_process');
 
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+
 // ── active worktree tracking (cleanup on crash) ─────────────────────
 // Tracks active eval worktrees so we can clean up on process exit/crash.
 // Prevents orphaned eval-* branches when interrupted.
@@ -124,7 +126,7 @@ function getWorktreesDir() {
  */
 async function createEvalWorktree(headSha) {
   if (headSha !== undefined) {
-    if (!/^[0-9a-f]{40}$/.test(headSha)) {
+    if (!FULL_COMMIT_SHA.test(headSha)) {
       throw new Error('Eval replay requires a full 40-character commit SHA');
     }
     try {

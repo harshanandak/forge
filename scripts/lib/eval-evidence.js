@@ -10,6 +10,7 @@ const EVIDENCE_KIND = 'eval.evidence';
 const EVENT_TYPE = 'eval.evidence.recorded';
 const HEX_40 = /^[0-9a-f]{40}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
+const HASH_FIELDS = ['eval_set', 'prompt', 'skill', 'tool'];
 
 const CASE_FIELDS = [
   'issue_id', 'pr', 'head_sha', 'model', 'effort', 'role', 'hashes',
@@ -54,8 +55,11 @@ function validateEvidence(evidence) {
   if (!HEX_40.test(evidence.head_sha)) throw new Error('evidence.head_sha must be a full 40-character commit SHA');
   for (const field of ['model', 'effort', 'role']) assertString(evidence[field], `evidence.${field}`);
 
-  assertExactFields(evidence.hashes, ['prompt', 'skill', 'tool'], 'evidence.hashes');
-  for (const field of ['prompt', 'skill', 'tool']) {
+  const hashFields = Object.hasOwn(evidence.hashes, 'eval_set')
+    ? HASH_FIELDS
+    : HASH_FIELDS.filter((field) => field !== 'eval_set');
+  assertExactFields(evidence.hashes, hashFields, 'evidence.hashes');
+  for (const field of hashFields) {
     if (!HEX_64.test(evidence.hashes[field])) {
       throw new Error(`evidence.hashes.${field} must be a 64-character lowercase SHA-256 hash`);
     }
@@ -94,6 +98,34 @@ function createEvalEvidence(evidence) {
   };
 }
 
+function buildEvalReplayPayload(evalSet) {
+  assertObject(evalSet, 'evalSet');
+  if (!Array.isArray(evalSet.queries)) throw new Error('evalSet.queries must be an array');
+  return {
+    command: evalSet.command,
+    queries: evalSet.queries.map((query) => ({
+      name: query.name,
+      prompt: query.prompt,
+      setup: query.setup ?? null,
+      teardown: query.teardown ?? null,
+      assertions: query.assertions,
+    })),
+  };
+}
+
+function buildEvalEvidenceHashes(inputs) {
+  assertExactFields(inputs, ['evalSet', 'skill', 'tool'], 'hash inputs');
+  assertString(inputs.skill, 'hash inputs.skill');
+  assertString(inputs.tool, 'hash inputs.tool');
+  const payload = buildEvalReplayPayload(inputs.evalSet);
+  return {
+    eval_set: contentHash(stableStringify(payload)),
+    prompt: contentHash(stableStringify(payload.queries.map((query) => query.prompt))),
+    skill: contentHash(inputs.skill),
+    tool: contentHash(inputs.tool),
+  };
+}
+
 function verifyEvalEvidence(envelope) {
   assertExactFields(envelope, ['schema_version', 'kind', 'evidence', 'content_hash'], 'envelope');
   if (envelope.schema_version !== SCHEMA_VERSION) throw new Error(`Unsupported evidence schema version '${envelope.schema_version}'`);
@@ -107,10 +139,13 @@ function verifyEvalEvidence(envelope) {
 
 function verifyEvalReplay(envelope, inputs) {
   const evidence = verifyEvalEvidence(envelope);
-  assertExactFields(inputs, ['prompt', 'skill', 'tool'], 'replay.inputs');
-  for (const field of ['prompt', 'skill', 'tool']) {
-    if (typeof inputs[field] !== 'string') throw new Error(`replay.inputs.${field} must be a string`);
-    if (contentHash(inputs[field]) !== evidence.hashes[field]) throw new Error(`${field} hash drift detected`);
+  assertExactFields(inputs, ['evalSet', 'skill', 'tool'], 'replay.inputs');
+  if (!Object.hasOwn(evidence.hashes, 'eval_set')) {
+    throw new Error('replay evidence is missing the eval_set hash');
+  }
+  const expected = buildEvalEvidenceHashes(inputs);
+  for (const field of HASH_FIELDS) {
+    if (expected[field] !== evidence.hashes[field]) throw new Error(field + ' hash drift detected');
   }
   return evidence;
 }
@@ -169,6 +204,8 @@ module.exports = {
   EVIDENCE_KIND,
   EVENT_TYPE,
   createEvalEvidence,
+  buildEvalReplayPayload,
+  buildEvalEvidenceHashes,
   verifyEvalEvidence,
   verifyEvalReplay,
   appendEvalEvidence,

@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
 
 const {
   createEvalEvidence,
+  buildEvalEvidenceHashes,
   verifyEvalEvidence,
   verifyEvalReplay,
   appendEvalEvidence,
@@ -102,10 +103,36 @@ describe('eval evidence', () => {
     expect(() => verifyEvalEvidence(envelope)).toThrow(/content hash mismatch/i);
   });
 
-  test('strictly allows only transient prompt, skill, and tool contents for replay', () => {
+  test('builds one deterministic replay hash for the execution and scoring inputs', () => {
+    const evalSet = {
+      command: '/status',
+      queries: [{
+        name: 'basic',
+        prompt: 'show status',
+        setup: null,
+        teardown: 'true',
+        assertions: [{ type: 'standard', check: 'branch' }],
+      }],
+    };
+    const first = buildEvalEvidenceHashes({ evalSet, skill: 'skill', tool: 'tool' });
+    const reordered = {
+      queries: [{
+        assertions: [{ check: 'branch', type: 'standard' }],
+        teardown: 'true',
+        prompt: 'show status',
+        setup: null,
+        name: 'basic',
+      }],
+      command: '/status',
+    };
+    expect(buildEvalEvidenceHashes({ evalSet: reordered, skill: 'skill', tool: 'tool' })).toEqual(first);
+    expect(first.eval_set).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('strictly allows only canonical replay inputs', () => {
     const envelope = createEvalEvidence(validCase());
     expect(() => verifyEvalReplay(envelope, {
-      prompt: 'current prompt',
+      evalSet: {},
       skill: 'current skill',
       tool: 'current tool',
       secret: 'not allowed',
