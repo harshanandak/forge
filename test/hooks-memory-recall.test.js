@@ -111,7 +111,7 @@ describe('forge hooks memory-recall', () => {
     expect(calls[1]).toEqual({
       search: {
         excludeKeys: Array.from({ length: 26 }, (_, index) => `seen-${index}`),
-        busyTimeoutMs: 2500,
+        busyTimeoutMs: 1000,
       },
     });
   });
