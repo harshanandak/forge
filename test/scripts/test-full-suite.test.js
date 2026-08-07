@@ -419,5 +419,24 @@ describe('scripts/test-full-suite.js', () => {
     expect(aggregateShardReceipts([
       { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" skipped="0">' },
     ], 1).status).toBe('INCOMPLETE');
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: 'junk<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: passingShardReceipt + passingShardReceipt },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" errors="nope" skipped="0"></testsuites>' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" errors="0" errors="0" skipped="0"></testsuites>' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: ' ' + String.fromCharCode(10) + '<?xml version="1.0" encoding="UTF-8"?>' + String.fromCharCode(10) + passingShardReceipt + String.fromCharCode(10) },
+    ], 1).status).toBe('PASS');
   });
 });

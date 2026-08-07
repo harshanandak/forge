@@ -170,17 +170,26 @@ function aggregateShardReceipts(receipts, expectedCount) {
     }
 
     const root = typeof receipt.output === 'string'
-      ? receipt.output.match(/<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>/)
+      ? receipt.output.match(/^\s*(?:<\?xml\b[^?]*\?>\s*)?<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>\s*$/)
       : null;
-    if (!root) {
+    const openingTags = typeof receipt.output === 'string'
+      ? receipt.output.match(/<testsuites\b/g) || []
+      : [];
+    const closingTags = typeof receipt.output === 'string'
+      ? receipt.output.match(/<\/testsuites\s*>/g) || []
+      : [];
+    if (!root || openingTags.length !== 1 || closingTags.length !== 1) {
       incomplete = true;
       continue;
     }
 
     const readAttribute = (name) => root[1].match(new RegExp(`\\b${name}="(\\d+)"`));
     const values = ['tests', 'assertions', 'failures', 'skipped'].map(readAttribute);
+    const errorsOccurrences = root[1].match(/\berrors\s*=/g) || [];
     const errorsAttribute = readAttribute('errors');
-    if (values.some((value) => !value)) {
+    if (values.some((value) => !value)
+      || errorsOccurrences.length > 1
+      || (errorsOccurrences.length === 1 && !errorsAttribute)) {
       incomplete = true;
       continue;
     }
