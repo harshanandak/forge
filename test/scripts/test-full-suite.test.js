@@ -413,7 +413,7 @@ describe('scripts/test-full-suite.js', () => {
     expect(status).toBe(1);
   });
 
-  test('runFullSuiteInParallel cleans up immediately when a shard errors and a sibling hangs', async () => {
+  test('runFullSuiteInParallel preserves a captured signal when a shard errors and a sibling hangs', async () => {
     const cleanupSignals = [];
     const logs = [];
     let childIndex = 0;
@@ -422,7 +422,10 @@ describe('scripts/test-full-suite.js', () => {
       reserveChild: () => ({ id: 'fatal-' + childIndex }),
       registerChild: () => true,
       unregisterChild: () => {},
-      installSignalHandlers: () => () => {},
+      installSignalHandlers: (handler) => {
+        handler('SIGTERM');
+        return () => {};
+      },
       cleanup: (signal) => cleanupSignals.push(signal),
     };
     const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
@@ -452,9 +455,9 @@ describe('scripts/test-full-suite.js', () => {
         }),
       ]);
 
-      expect(status).toBe(1);
+      expect(status).toBe(143);
       expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
-      expect(logs).toContain('Full suite exit: 1');
+      expect(logs).toContain('Full suite exit: 143');
       expect(cleanupSignals).toEqual(['SIGKILL']);
     } finally {
       clearTimeout(timeout);

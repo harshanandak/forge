@@ -350,9 +350,10 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
         processTree,
       })));
     } catch {
+      const exitCode = signal ? signalExitCode(signal) : 1;
       console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
-      console.log('Full suite exit: 1');
-      return 1;
+      console.log('Full suite exit: ' + exitCode);
+      return exitCode;
     }
 
     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
