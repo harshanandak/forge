@@ -225,10 +225,15 @@ function spawnShard(shard, options = {}) {
   const env = options.env || process.env;
   const bunCommand = options.bunCommand || env.BUN_EXE || process.env.BUN_EXE || 'bun';
   const labelPrefix = options.labelPrefix || 'local-full';
+  const targetReportDir = options.reportDirectory || reportDir;
   const platform = options.platform || process.platform;
   const processTree = options.processTree || createProcessTree({ env, platform });
-  fs.mkdirSync(reportDir, { recursive: true });
-  const junitPath = path.join(reportDir, `${labelPrefix}-shard-${shard.index}.xml`);
+  const resolvedReportDir = path.resolve(targetReportDir);
+  const junitPath = path.resolve(resolvedReportDir, `${labelPrefix}-shard-${shard.index}.xml`);
+  if (path.dirname(junitPath) !== resolvedReportDir) {
+    return Promise.reject(new Error('label prefix must produce a receipt directly inside test-results'));
+  }
+  fs.mkdirSync(resolvedReportDir, { recursive: true });
 
   return new Promise((resolve, reject) => {
     const reservation = processTree.reserveChild({
@@ -262,7 +267,12 @@ function spawnShard(shard, options = {}) {
         detached: platform !== 'win32',
         windowsHide: true,
       });
-      child.on('error', () => finish(1, null));
+      child.on('error', (error) => {
+        if (settled) return;
+        settled = true;
+        processTree.unregisterChild(reservation);
+        reject(error);
+      });
       if (!processTree.registerChild(reservation, child)) {
         settled = true;
         if (typeof processTree.abortChild === 'function') {
@@ -314,24 +324,36 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
 
     if (shardSpecs.length === 0) {
+      const exitCode = signal ? signalExitCode(signal) : 1;
       console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
-      console.log('Full suite exit: 1');
+      console.log('Full suite exit: ' + exitCode);
       completed = true;
-      return 1;
+      return exitCode;
     }
+
+    fs.mkdirSync(reportDir, { recursive: true });
+    const runReportDir = fs.mkdtempSync(path.join(reportDir, 'full-suite-'));
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
     const childEnv = stripGitHookEnv(
       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
     );
-    const results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
-      bunCommand: deps.bunCommand,
-      env: childEnv,
-      labelPrefix: args.labelPrefix,
-      spawn: deps.spawn,
-      platform,
-      processTree,
-    })));
+    let results;
+    try {
+      results = await Promise.all(shardSpecs.map((shard) => spawnShard(shard, {
+        bunCommand: deps.bunCommand,
+        env: childEnv,
+        labelPrefix: args.labelPrefix,
+        reportDirectory: runReportDir,
+        spawn: deps.spawn,
+        platform,
+        processTree,
+      })));
+    } catch {
+      console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      console.log('Full suite exit: 1');
+      return 1;
+    }
 
     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
     const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
