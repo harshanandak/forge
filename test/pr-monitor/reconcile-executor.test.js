@@ -572,6 +572,33 @@ describe('launchDaemon — capability classification + detached spawn options', 
 		expect(calls).toHaveLength(1);
 	});
 
+	test('bg-shell adapter runs from the stable common root', () => {
+		const calls = [];
+		const res = executor.launchDaemon({
+			projectRoot: '/repo/.worktrees/feature',
+			gitCommonDir: '/repo/.git',
+			harness: { hasBgShell: true, runBgShell: (argv, options) => calls.push({ argv, options }) },
+		});
+		expect(res.via).toBe('bg-shell');
+		expect(calls).toHaveLength(1);
+		expect(calls[0].options).toEqual({ cwd: '/repo' });
+	});
+
+	test('throwing bg-shell adapter falls back detached from the stable common root', () => {
+		let opts = null;
+		const res = executor.launchDaemon({
+			projectRoot: '/repo/.worktrees/feature',
+			gitCommonDir: '/repo/.git',
+			harness: { hasBgShell: true, runBgShell: () => { throw new Error('host shell unavailable'); } },
+			spawnProcess: (_bin, _args, spawnOpts) => {
+				opts = spawnOpts;
+				return { pid: 1, on: () => {}, unref: () => {} };
+			},
+		});
+		expect(res.via).toBe('detached');
+		expect(opts.cwd).toBe('/repo');
+	});
+
 	test('no bg-shell capability → detached spawn with windowsHide + unref + error listener', () => {
 		let opts = null; let unrefed = false; let errorListener = false;
 		const fakeChild = {

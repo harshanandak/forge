@@ -12,6 +12,21 @@ function run(args, opts) {
 }
 
 describe('forge hooks session-start (context hook — memory push)', () => {
+
+  test('embedding host background-shell capability is forwarded to the singleton trigger', async () => {
+    const calls = [];
+    const host = { hasBgShell: true, runBgShell: () => {} };
+    await run(['session-start', '--harness', 'claude'], {
+      loadDispatchText: () => '',
+      fetchNotes: () => [],
+      fetchIssues: () => [],
+      fireAndForget: context => calls.push(context),
+      harness: host,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].harness).toBe(host);
+  });
+
   test('runs independent project reads concurrently', async () => {
     const starts = [];
     const slow = name => async () => {

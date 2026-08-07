@@ -47,6 +47,21 @@ an executable harness background-shell capability, Forge uses it so the process 
 bare CLI use falls back to a detached launch from the stable common repository
 root, never a disposable worktree cwd. No liveness check is needed first — the
 O_EXCL singleton lease makes a duplicate start a clean no-op.
+
+Embedding boundary:
+
+```js
+hooks.handler(['session-start', '--harness', 'claude'], {}, projectRoot, {
+  harness: {
+    hasBgShell: true,
+    runBgShell: (argv, options) => host.backgroundShell(argv, options),
+  },
+});
+```
+
+The host must explicitly provide both `hasBgShell: true` and `runBgShell`;
+Forge never infers this capability from a harness name. The adapter receives
+the stable Git common-root as `options.cwd`; a missing or throwing adapter uses the contained detached fallback.
 (A `forge prime` open-PR + daemon-liveness line is a planned follow-up — W-S5 —
 not yet wired.)
 
