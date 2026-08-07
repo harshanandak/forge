@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Critical merge-flow reliability integration plan.** Defines a deterministic safety floor, executable work contracts, configurable risk policy, zero-token owner monitoring, and a sequential exact-head merge slot without constraining model reasoning. (epic `f30e5d29-9099-4029-baec-af39f08b6ee3`)
 - **Model-neutral evaluation evidence and exact-SHA replay.** Adds a privacy-safe content-addressed envelope with fail-closed drift checks while excluding raw prompts, transcripts, tool payloads, secrets, and personal data. (#491, issue `02f5ea90-4a1a-462f-9b22-54eb5d37f6b3`)
 - **Automatic project-local memory recall for Claude Code.** Forge now repairs and reuses its existing `SessionStart` and `UserPromptSubmit` lifecycle hooks to inject bounded Kernel memory automatically. Confirmed memories are presented as project truth; fresh suggested memories are separated and labeled for verification. Scope, staleness, supersession, and seen-key filtering happen before ranking, and privacy-safe recall telemetry records only bounded identifiers and aggregates—not prompt terms or memory bodies. (`36461e50`)
 
