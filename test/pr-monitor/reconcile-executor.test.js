@@ -570,6 +570,12 @@ describe('launchDaemon — capability classification + detached spawn options', 
 		});
 		expect(res.via).toBe('bg-shell');
 		expect(calls).toHaveLength(1);
+		expect(calls[0]).toEqual([
+			process.execPath,
+			path.join(__dirname, '..', '..', 'bin', 'forge.js'),
+			'shepherd',
+			'daemon',
+		]);
 	});
 
 	test('bg-shell adapter runs from the stable common root', () => {
