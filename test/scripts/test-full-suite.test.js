@@ -376,6 +376,11 @@ describe('scripts/test-full-suite.js', () => {
   });
 
   test('aggregates complete shard receipts and fails closed when one is malformed', () => {
+    for (const receipt of [null, undefined]) {
+      const aggregate = aggregateShardReceipts([receipt], 1);
+      expect(aggregate.status).toBe('INCOMPLETE');
+      expect(aggregate.exitCode).toBe(1);
+    }
     expect(aggregateShardReceipts([
       { code: 0, index: 0, output: '<testsuites tests="12" assertions="15" failures="0" skipped="2"></testsuites>' },
       { code: 1, index: 1, output: '<testsuites tests="9" assertions="12" failures="1" errors="1" skipped="0"></testsuites>' },

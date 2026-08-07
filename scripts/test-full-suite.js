@@ -155,7 +155,8 @@ function aggregateShardReceipts(receipts, expectedCount) {
   let failedProcess = false;
 
   for (const receipt of receipts) {
-    if (!Number.isInteger(receipt.index)
+    if (receipt === null || typeof receipt !== 'object'
+      || !Number.isInteger(receipt.index)
       || receipt.index < 0
       || receipt.index >= expectedCount
       || seen.has(receipt.index)) {
