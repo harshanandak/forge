@@ -19,6 +19,7 @@ const {
   spawnShard,
 } = require('../../scripts/test-full-suite');
 const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>';
+const unitLabelPrefix = 'unit-full-suite';
 
 function fakeShardChild(code, pid, args = []) {
   const child = new EventEmitter();
@@ -167,7 +168,7 @@ describe('scripts/test-full-suite.js', () => {
     };
 
     const status = await runFullSuiteInParallel({
-      labelPrefix: 'local-full',
+      labelPrefix: unitLabelPrefix,
       shards: 2,
     }, {
       allTests: ['test/a.test.js', 'packages/skills/test/a.test.js'],
@@ -181,6 +182,7 @@ describe('scripts/test-full-suite.js', () => {
     expect(status).toBe(0);
     expect(calls).toHaveLength(2);
     expect(calls[0]).toContain('--reporter=junit');
+    expect(calls[0][calls[0].indexOf('--reporter-outfile') + 1]).toContain('unit-full-suite-shard-0.xml');
     expect(calls[0]).toContain('--timeout');
     expect(calls[0]).toContain('30000');
   });
@@ -199,7 +201,7 @@ describe('scripts/test-full-suite.js', () => {
       return fakeShardChild(0, 9050, args);
     };
 
-    const status = await runFullSuiteInParallel({ shards: 1 }, {
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
       durationMap: new Map([['test/a.test.js', 1000]]),
       env: {
@@ -235,7 +237,7 @@ describe('scripts/test-full-suite.js', () => {
       return fakeShardChild(0, pid++, args);
     };
 
-    const status = await runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 2 }, {
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
       allTests: ['test/a.test.js', 'test/b.test.js'],
       durationMap: new Map([
         ['test/a.test.js', 2000],
@@ -272,7 +274,7 @@ describe('scripts/test-full-suite.js', () => {
       return child;
     };
 
-    await expect(runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 1 }, {
+    await expect(runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
       durationMap: new Map([['test/a.test.js', 1000]]),
       processTree,
@@ -293,7 +295,7 @@ describe('scripts/test-full-suite.js', () => {
     };
 
     const status = await runFullSuiteInParallel({
-      labelPrefix: 'local-full',
+      labelPrefix: unitLabelPrefix,
       shards: 2,
     }, {
       allTests: ['test/a.test.js', 'test/b.test.js'],
@@ -317,7 +319,7 @@ describe('scripts/test-full-suite.js', () => {
       return child;
     };
 
-    const status = await runFullSuiteInParallel({ shards: 1 }, {
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
       durationMap: new Map([['test/a.test.js', 1000]]),
       spawn,
@@ -341,7 +343,7 @@ describe('scripts/test-full-suite.js', () => {
     const logs = [];
     const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
     try {
-      const status = await runFullSuiteInParallel({ shards: 1 }, {
+      const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
         allTests: ['test/a.test.js'],
         durationMap: new Map([['test/a.test.js', 1000]]),
         processTree,
@@ -361,7 +363,7 @@ describe('scripts/test-full-suite.js', () => {
     const logs = [];
     const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
     try {
-      expect(await runFullSuiteInParallel({}, {
+      expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix }, {
         allTests: [],
         durationMap: new Map(),
       })).toBe(1);
