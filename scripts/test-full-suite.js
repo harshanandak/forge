@@ -141,6 +141,53 @@ function buildShardTestArgs({ junitPath, files, root = rootDir }) {
   ];
 }
 
+function aggregateShardReceipts(receipts, expectedCount) {
+  const totals = {
+    assertions: 0,
+    errors: 0,
+    failed: 0,
+    passed: 0,
+    skipped: 0,
+    tests: 0,
+  };
+  const seen = new Set();
+  let incomplete = receipts.length !== expectedCount;
+  let failedProcess = false;
+
+  for (const receipt of receipts) {
+    if (!Number.isInteger(receipt.index)
+      || receipt.index < 0
+      || receipt.index >= expectedCount
+      || seen.has(receipt.index)) {
+      incomplete = true;
+      continue;
+    }
+    seen.add(receipt.index);
+    failedProcess ||= receipt.code !== 0;
+
+    const readCount = (pattern) => Number.parseInt(receipt.output.match(pattern)?.[1] || '0', 10);
+    const tests = receipt.output.match(/^Ran (\d+) tests? across /m);
+    const assertions = receipt.output.match(/^\s*(\d+) expect\(\) calls?\s*$/m);
+    if (!tests || !assertions) {
+      incomplete = true;
+      continue;
+    }
+
+    totals.tests += Number.parseInt(tests[1], 10);
+    totals.assertions += Number.parseInt(assertions[1], 10);
+    totals.passed += readCount(/^\s*(\d+) pass\s*$/m);
+    totals.failed += readCount(/^\s*(\d+) fail\s*$/m);
+    totals.errors += readCount(/^\s*(\d+) errors?\s*$/m);
+    totals.skipped += readCount(/^\s*(\d+) skip\s*$/m);
+  }
+
+  incomplete ||= seen.size !== expectedCount;
+  const status = incomplete
+    ? 'INCOMPLETE'
+    : (failedProcess || totals.failed > 0 || totals.errors > 0 ? 'FAIL' : 'PASS');
+  return { ...totals, exitCode: status === 'PASS' ? 0 : 1, status };
+}
+
 function spawnShard(shard, options = {}) {
   const spawn = options.spawn || defaultSpawn;
   const env = options.env || process.env;
@@ -171,7 +218,7 @@ function spawnShard(shard, options = {}) {
         cwd: rootDir,
         env,
         shell: false,
-        stdio: 'inherit',
+        stdio: ['inherit', 'pipe', 'pipe'],
         detached: platform !== 'win32',
         windowsHide: true,
       });
@@ -199,9 +246,19 @@ function spawnShard(shard, options = {}) {
       return;
     }
 
+    let output = '';
+    child.stdout?.on('data', (chunk) => {
+      output += chunk;
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      output += chunk;
+      process.stderr.write(chunk);
+    });
+
     child.on('close', (code) => {
       processTree.unregisterChild(reservation);
-      resolve(code ?? 1);
+      resolve({ code: code ?? 1, index: shard.index, output });
     });
   });
 }
@@ -243,8 +300,12 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
       processTree,
     })));
 
+    const aggregate = aggregateShardReceipts(results, shardSpecs.length);
+    console.log(`Full suite aggregate: status=${aggregate.status} tests=${aggregate.tests} assertions=${aggregate.assertions} passed=${aggregate.passed} failed=${aggregate.failed} errors=${aggregate.errors} skipped=${aggregate.skipped}`);
+    const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
+    console.log(`Full suite exit: ${exitCode}`);
     completed = true;
-    return signal ? signalExitCode(signal) : (results.some((code) => code !== 0) ? 1 : 0);
+    return exitCode;
   } finally {
     removeSignalHandlers();
     processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
@@ -267,6 +328,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  aggregateShardReceipts,
   assertExactShardAssignment,
   buildShardTestArgs,
   buildShardSpecs,
