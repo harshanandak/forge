@@ -170,7 +170,7 @@ function aggregateShardReceipts(receipts, expectedCount) {
     }
 
     const root = typeof receipt.output === 'string'
-      ? receipt.output.match(/<testsuites\b([^>]*)>/)
+      ? receipt.output.match(/<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>/)
       : null;
     if (!root) {
       incomplete = true;
@@ -304,10 +304,10 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
 
     if (shardSpecs.length === 0) {
-      console.log('Full suite aggregate: status=PASS tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
-      console.log('Full suite exit: 0');
+      console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      console.log('Full suite exit: 1');
       completed = true;
-      return 0;
+      return 1;
     }
 
     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
