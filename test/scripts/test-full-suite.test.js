@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { describe, expect, test } = require('bun:test');
+const { describe, expect, spyOn, test } = require('bun:test');
 
 const {
   aggregateShardReceipts,
@@ -18,15 +18,17 @@ const {
   runFullSuiteInParallel,
   spawnShard,
 } = require('../../scripts/test-full-suite');
-const passingShardOutput = ' 1 pass\n 1 expect() call\nRan 1 test across 1 file. [1.00ms]\n';
+const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0">';
 
-function fakeShardChild(code, pid) {
+function fakeShardChild(code, pid, args = []) {
   const child = new EventEmitter();
   child.pid = pid;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  const junitPath = args[args.indexOf('--reporter-outfile') + 1];
+  if (junitPath) fs.writeFileSync(junitPath, passingShardReceipt);
   process.nextTick(() => {
-    child.stdout.emit('data', passingShardOutput);
+    child.stdout.emit('data', '999 pass\nRan 999 tests across 99 files.\n');
     child.emit('close', code);
   });
   return child;
@@ -82,7 +84,7 @@ describe('scripts/test-full-suite.js', () => {
     };
     const spawn = (_command, args) => {
       calls.push(args);
-      return fakeShardChild(0);
+      return fakeShardChild(0, undefined, args);
     };
 
     await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
@@ -161,7 +163,7 @@ describe('scripts/test-full-suite.js', () => {
     let pid = 9000;
     const spawn = (_command, args) => {
       calls.push(args);
-      return fakeShardChild(0, pid++);
+      return fakeShardChild(0, pid++, args);
     };
 
     const status = await runFullSuiteInParallel({
@@ -192,9 +194,9 @@ describe('scripts/test-full-suite.js', () => {
       installSignalHandlers: () => () => {},
       cleanup: () => {},
     };
-    const spawn = (_command, _args, options) => {
+    const spawn = (_command, args, options) => {
       spawnedEnv = options.env;
-      return fakeShardChild(0, 9050);
+      return fakeShardChild(0, 9050, args);
     };
 
     const status = await runFullSuiteInParallel({ shards: 1 }, {
@@ -230,7 +232,7 @@ describe('scripts/test-full-suite.js', () => {
     const calls = [];
     const spawn = (_command, args, options) => {
       calls.push({ args, options });
-      return fakeShardChild(0, pid++);
+      return fakeShardChild(0, pid++, args);
     };
 
     const status = await runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 2 }, {
@@ -249,7 +251,7 @@ describe('scripts/test-full-suite.js', () => {
     expect(events.filter((event) => event[0] === 'register')).toHaveLength(2);
     expect(calls.every(({ options }) => options.detached === true)).toBe(true);
     expect(calls.every(({ options }) => options.windowsHide === true)).toBe(true);
-    expect(calls.every(({ options }) => options.stdio.join(',') === 'inherit,pipe,pipe')).toBe(true);
+    expect(calls.every(({ options }) => options.stdio === 'inherit')).toBe(true);
   });
 
   test('kills a child immediately when process registration fails after spawn', async () => {
@@ -284,8 +286,8 @@ describe('scripts/test-full-suite.js', () => {
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {
     let index = 0;
     let pid = 9200;
-    const spawn = () => {
-      const child = fakeShardChild(index === 0 ? 0 : 1, pid++);
+    const spawn = (_command, args) => {
+      const child = fakeShardChild(index === 0 ? 0 : 1, pid++, args);
       index += 1;
       return child;
     };
@@ -305,24 +307,90 @@ describe('scripts/test-full-suite.js', () => {
     expect(status).toBe(1);
   });
 
+  test('runFullSuiteInParallel reports a child process error as incomplete', async () => {
+    const spawn = () => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.pid = 9400;
+      child.stderr = new EventEmitter();
+      process.nextTick(() => child.emit('error', new Error('spawn failed')));
+      return child;
+    };
+
+    const status = await runFullSuiteInParallel({ shards: 1 }, {
+      allTests: ['test/a.test.js'],
+      durationMap: new Map([['test/a.test.js', 1000]]),
+      spawn,
+    });
+
+    expect(status).toBe(1);
+  });
+
+  test('runFullSuiteInParallel never reports PASS after a signal', async () => {
+    let signalHandler;
+    const processTree = {
+      reserveChild: () => ({ id: 'signal' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+      installSignalHandlers: (handler) => {
+        signalHandler = handler;
+        return () => {};
+      },
+      cleanup: () => {},
+    };
+    const logs = [];
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+    try {
+      const status = await runFullSuiteInParallel({ shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        durationMap: new Map([['test/a.test.js', 1000]]),
+        processTree,
+        spawn: (_command, args) => {
+          const child = fakeShardChild(0, 9500, args);
+          process.nextTick(() => signalHandler('SIGTERM'));
+          return child;
+        },
+      });
+      expect(status).toBe(143);
+    } finally {
+      log.mockRestore();
+    }
+    expect(logs.some((line) => line.includes('status=INCOMPLETE'))).toBe(true);
+  });
+  test('runFullSuiteInParallel prints an authoritative empty aggregate', async () => {
+    const logs = [];
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+    try {
+      expect(await runFullSuiteInParallel({}, {
+        allTests: [],
+        durationMap: new Map(),
+      })).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(logs).toContain('Full suite aggregate: status=PASS tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+    expect(logs).toContain('Full suite exit: 0');
+  });
+
   test('aggregates complete shard receipts and fails closed when one is malformed', () => {
     expect(aggregateShardReceipts([
-      { code: 0, index: 0, output: ' 10 pass\n 2 skip\n 15 expect() calls\nRan 12 tests across 2 files. [1.00s]\n' },
-      { code: 1, index: 1, output: ' 8 pass\n 1 fail\n 1 error\n 12 expect() calls\nRan 9 tests across 2 files. [1.00s]\n' },
+      { code: 0, index: 0, output: '<testsuites tests="12" assertions="15" failures="0" skipped="2">' },
+      { code: 1, index: 1, output: '<testsuites tests="9" assertions="12" failures="1" errors="1" skipped="0">' },
     ], 2)).toEqual({
       assertions: 27,
       errors: 1,
       exitCode: 1,
       failed: 1,
-      passed: 18,
+      passed: 17,
       skipped: 2,
       status: 'FAIL',
       tests: 21,
     });
 
     expect(aggregateShardReceipts([
-      { code: 0, index: 0, output: ' 10 pass\n 10 expect() calls\nRan 10 tests across 1 file. [1.00s]\n' },
-      { code: 1, index: 1, output: 'child stopped before its terminal summary' },
+      { code: 0, index: 0, output: '<testsuites tests="10" assertions="10" failures="0" skipped="0">' },
+      { code: 1, index: 1, output: null },
     ], 2)).toEqual({
       errors: 0,
       assertions: 10,
@@ -335,7 +403,15 @@ describe('scripts/test-full-suite.js', () => {
     });
 
     expect(aggregateShardReceipts([
-      { code: 0, index: 0, output: passingShardOutput },
+      { code: 0, index: 0, output: passingShardReceipt },
     ], 2).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { index: 0, output: passingShardReceipt },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="0" assertions="0" failures="0" skipped="0">' },
+    ], 1).status).toBe('INCOMPLETE');
   });
 });

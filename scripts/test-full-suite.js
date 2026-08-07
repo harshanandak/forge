@@ -163,22 +163,44 @@ function aggregateShardReceipts(receipts, expectedCount) {
       continue;
     }
     seen.add(receipt.index);
-    failedProcess ||= receipt.code !== 0;
+    if (!Number.isInteger(receipt.code)) {
+      incomplete = true;
+    } else {
+      failedProcess ||= receipt.code !== 0;
+    }
 
-    const readCount = (pattern) => Number.parseInt(receipt.output.match(pattern)?.[1] || '0', 10);
-    const tests = receipt.output.match(/^Ran (\d+) tests? across /m);
-    const assertions = receipt.output.match(/^\s*(\d+) expect\(\) calls?\s*$/m);
-    if (!tests || !assertions) {
+    const root = typeof receipt.output === 'string'
+      ? receipt.output.match(/<testsuites\b([^>]*)>/)
+      : null;
+    if (!root) {
       incomplete = true;
       continue;
     }
 
-    totals.tests += Number.parseInt(tests[1], 10);
-    totals.assertions += Number.parseInt(assertions[1], 10);
-    totals.passed += readCount(/^\s*(\d+) pass\s*$/m);
-    totals.failed += readCount(/^\s*(\d+) fail\s*$/m);
-    totals.errors += readCount(/^\s*(\d+) errors?\s*$/m);
-    totals.skipped += readCount(/^\s*(\d+) skip\s*$/m);
+    const readAttribute = (name) => root[1].match(new RegExp(`\\b${name}="(\\d+)"`));
+    const values = ['tests', 'assertions', 'failures', 'skipped'].map(readAttribute);
+    const errorsAttribute = readAttribute('errors');
+    if (values.some((value) => !value)) {
+      incomplete = true;
+      continue;
+    }
+    const tests = Number.parseInt(values[0][1], 10);
+    const assertions = Number.parseInt(values[1][1], 10);
+    const failed = Number.parseInt(values[2][1], 10);
+    const errors = Number.parseInt(errorsAttribute?.[1] || '0', 10);
+    const skipped = Number.parseInt(values[3][1], 10);
+    const passed = tests - failed - errors - skipped;
+    if (tests === 0 || passed < 0) {
+      incomplete = true;
+      continue;
+    }
+
+    totals.tests += tests;
+    totals.assertions += assertions;
+    totals.passed += passed;
+    totals.failed += failed;
+    totals.errors += errors;
+    totals.skipped += skipped;
   }
 
   incomplete ||= seen.size !== expectedCount;
@@ -210,7 +232,15 @@ function spawnShard(shard, options = {}) {
     }
 
     let child;
+    let settled = false;
+    const finish = (code, output) => {
+      if (settled) return;
+      settled = true;
+      processTree.unregisterChild(reservation);
+      resolve({ code, index: shard.index, output });
+    };
     try {
+      fs.rmSync(junitPath, { force: true });
       child = spawn(bunCommand, buildShardTestArgs({
         junitPath,
         files: shard.files,
@@ -218,15 +248,13 @@ function spawnShard(shard, options = {}) {
         cwd: rootDir,
         env,
         shell: false,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: 'inherit',
         detached: platform !== 'win32',
         windowsHide: true,
       });
-      child.on('error', (error) => {
-        processTree.unregisterChild(reservation);
-        reject(error);
-      });
+      child.on('error', () => finish(1, null));
       if (!processTree.registerChild(reservation, child)) {
+        settled = true;
         if (typeof processTree.abortChild === 'function') {
           processTree.abortChild(reservation, child);
         } else {
@@ -241,24 +269,17 @@ function spawnShard(shard, options = {}) {
         return;
       }
     } catch (error) {
-      processTree.unregisterChild(reservation);
+      if (!settled) processTree.unregisterChild(reservation);
       reject(error);
       return;
     }
 
-    let output = '';
-    child.stdout?.on('data', (chunk) => {
-      output += chunk;
-      process.stdout.write(chunk);
-    });
-    child.stderr?.on('data', (chunk) => {
-      output += chunk;
-      process.stderr.write(chunk);
-    });
-
     child.on('close', (code) => {
-      processTree.unregisterChild(reservation);
-      resolve({ code: code ?? 1, index: shard.index, output });
+      let output = null;
+      try {
+        output = fs.readFileSync(junitPath, 'utf8');
+      } catch {}
+      finish(code ?? 1, output);
     });
   });
 }
@@ -283,7 +304,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
 
     if (shardSpecs.length === 0) {
-      console.log('No unit test files discovered for local full-suite run');
+      console.log('Full suite aggregate: status=PASS tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      console.log('Full suite exit: 0');
+      completed = true;
       return 0;
     }
 
@@ -301,8 +324,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     })));
 
     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
-    console.log(`Full suite aggregate: status=${aggregate.status} tests=${aggregate.tests} assertions=${aggregate.assertions} passed=${aggregate.passed} failed=${aggregate.failed} errors=${aggregate.errors} skipped=${aggregate.skipped}`);
     const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
+    if (signal) aggregate.status = 'INCOMPLETE';
+    console.log(`Full suite aggregate: status=${aggregate.status} tests=${aggregate.tests} assertions=${aggregate.assertions} passed=${aggregate.passed} failed=${aggregate.failed} errors=${aggregate.errors} skipped=${aggregate.skipped}`);
     console.log(`Full suite exit: ${exitCode}`);
     completed = true;
     return exitCode;
