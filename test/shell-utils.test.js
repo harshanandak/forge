@@ -73,6 +73,20 @@ describe('secureExecFileSync', () => {
       }]);
     });
 
+    test('forwards the current environment to shell-resolved command shims', () => {
+      let childEnv;
+      secureExecFileSync('npm', ['install'], {
+        _platform: 'win32',
+        _spawnSync: () => ({ status: 0, stdout: 'C:\\tools\\npm.cmd\r\n' }),
+        _execFileSync: (_command, _args, options) => {
+          childEnv = options.env;
+          return '';
+        },
+      });
+
+      expect(childEnv?.PATH).toBe(process.env.PATH);
+    });
+
     test('spawns a resolved .exe directly without a shell', () => {
       const execCalls = [];
       secureExecFileSync('bd', ['version'], {
