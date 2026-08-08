@@ -224,22 +224,15 @@ function operationalRatios(testPairs) {
   };
 }
 
-function casePassRate(pairs, armName) {
-  const cases = new Map();
-  for (const pair of pairs) {
-    const passed = pair[armName].status === 'PASS';
-    cases.set(pair.caseId, (cases.get(pair.caseId) ?? true) && passed);
-  }
-  return [...cases.values()].filter(Boolean).length / cases.size;
-}
-
 function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, operations }) {
   const perModelDelta = models.every((model) => {
     const stats = absolute.byModel[model];
     return stats.bounded.rate - stats.current.rate >= 0;
   });
   const highRisk = pairs.filter((pair) => pair.risk === 'high');
-  const highRiskDelta = casePassRate(highRisk, 'bounded') - casePassRate(highRisk, 'current');
+  const highRiskRegression = models.every((model) => (
+    pairedDelta(highRisk.filter((pair) => pair.model === model)) >= -0.02
+  ));
   return {
     zeroHardFailures: pairs.every((pair) => !pair.current.hardFailure && !pair.bounded.hardFailure),
     highRiskTestPass: testPairs
@@ -247,7 +240,7 @@ function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, ope
       .every((pair) => pair.bounded.status === 'PASS'),
     pooledDelta: bootstrap.delta >= 0.05 && bootstrap.interval.lower > 0,
     perModelDelta,
-    highRiskRegression: highRiskDelta >= -0.02,
+    highRiskRegression,
     latency: operations.latencyP95 <= 1.25,
     tokens: operations.tokenMedian <= 1.20,
   };

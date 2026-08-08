@@ -166,6 +166,40 @@ describe('promotion scorecard', () => {
     }).reasons).toContain('token_cap');
   });
 
+  test('computes the high-risk regression veto over paired evidence rows per model', () => {
+    const maskedRegression = completePairs(100);
+    for (const pair of maskedRegression) {
+      if (pair.risk === 'high') {
+        pair.current.status = 'PASS';
+        pair.bounded.status = 'PASS';
+      }
+    }
+    const targetCase = maskedRegression.find((pair) => pair.risk === 'high' && pair.split === 'DEV').caseId;
+    const targetRows = maskedRegression.filter((pair) => pair.caseId === targetCase);
+    targetRows[0].current.status = 'FAIL';
+    for (const pair of targetRows) pair.bounded.status = 'FAIL';
+
+    const regressed = scorePromotion({ tier: 100, pairs: maskedRegression });
+    expect(regressed).toMatchObject({ status: 'FAIL', winner: null });
+    expect(regressed.reasons).toContain('high_risk_regression');
+
+    const boundary = completePairs(300);
+    for (const pair of boundary) {
+      if (pair.risk === 'high') {
+        pair.current.status = 'PASS';
+        pair.bounded.status = 'PASS';
+      }
+    }
+    const boundaryRows = boundary
+      .filter((pair) => pair.risk === 'high' && pair.split === 'DEV' && pair.model === 'sol')
+      .slice(0, 6);
+    for (const pair of boundaryRows) pair.bounded.status = 'FAIL';
+
+    const exactBoundary = scorePromotion({ tier: 300, pairs: boundary });
+    expect(exactBoundary.thresholds.highRiskRegression).toBe(true);
+    expect(exactBoundary.reasons).not.toContain('high_risk_regression');
+  });
+
   test('never permits an exception to the token cap', () => {
     const pairs = completePairs(100, { boundedTokens: 121 });
     const score = scorePromotion({
