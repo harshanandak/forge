@@ -481,6 +481,7 @@ describe('scripts/test pre-push runner', () => {
     ]);
     expect(spawnSync.calls[1].command).toBe('bun');
     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
+    expect(Object.keys(spawnSync.calls[0].options.env)).not.toContain('FORGE_TEST_PROCESS_MANIFEST');
   });
 
   test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', async () => {

@@ -428,7 +428,8 @@ function runCommand(command, args, options = {}, spawn = defaultSpawn) {
  * @returns {number} Exit status for the executed plan.
  */
 async function runTestExecutionPlan(plan, deps = {}) {
-  const spawn = deps.spawn || (deps.spawnSync ? (...args) => {
+  const usesSpawnSyncAdapter = !deps.spawn && typeof deps.spawnSync === 'function';
+  const spawn = deps.spawn || (usesSpawnSyncAdapter ? (...args) => {
     const child = new EventEmitter();
     let result;
     try {
@@ -446,10 +447,12 @@ async function runTestExecutionPlan(plan, deps = {}) {
   } : defaultSpawn);
   const pkgManager = deps.pkgManager || detectPackageManager();
   const env = deps.env || stripGitHookEnv(process.env);
-  const processTree = deps.processTree || createProcessTree({
+  // The injected synchronous runner has already exited when its adapter returns,
+  // so there is no live child to register or reap through host process probes.
+  const processTree = deps.processTree || (usesSpawnSyncAdapter ? {} : createProcessTree({
     env,
     platform: deps.platform,
-  });
+  }));
   let signal = null;
   const removeSignalHandlers = typeof processTree.installSignalHandlers === 'function'
     ? processTree.installSignalHandlers((received) => {
