@@ -698,7 +698,7 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
 });
 
 describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
-	test('preserves the fixed local C: drive after a successful net use miss', () => {
+	test('preserves the fixed local C: drive without launching a network probe', () => {
 		const seenFiles = [];
 		const fakeExec = (file) => {
 			seenFiles.push(file);
@@ -706,7 +706,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 			return '';
 		};
 		expect(defaultProbeDriveType('C:', { execFileSync: fakeExec })).toBe('fixed');
-		expect(seenFiles).toEqual(['net']);
+		expect(seenFiles).toEqual([]);
 	}, T);
 
 	test('returns unknown for a non-C drive after a successful net use miss', () => {
@@ -723,7 +723,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 			seenOptions.push(options);
 			return '';
 		};
-		const result = defaultProbeDriveType('C:', { execFileSync: fakeExec });
+		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
 		expect(seenOptions).toHaveLength(1);
 		for (const options of seenOptions) {
 			expect(options.timeout).toBe(1500);
@@ -732,7 +732,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 			expect(options.encoding).toBe('utf8');
 		}
 		// No network backing detected → fixed.
-		expect(result).toBe('fixed');
+		expect(result).toBe('unknown');
 	}, T);
 
 	test('B1: a hanging exec that throws (timeout-style) propagates so gather maps it to unknown/warn', () => {
