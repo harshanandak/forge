@@ -102,6 +102,17 @@ describe('promotion scorecard', () => {
     });
   });
 
+  test.each([30, 100, 300])('requires the frozen 60/40 unique-case split at tier %i', (tier) => {
+    const wrongSplit = completePairs(tier);
+    for (const pair of wrongSplit) {
+      const caseNumber = Number.parseInt(pair.caseId.slice('case-'.length), 10);
+      if (pair.split === 'TEST' && caseNumber <= tier - 3) pair.split = 'DEV';
+    }
+    expect(scorePromotion({ tier, pairs: wrongSplit })).toMatchObject({
+      status: 'INCOMPLETE', winner: null, reasons: ['split_count_incomplete'],
+    });
+  });
+
   test('applies hard-failure and high-risk TEST vetoes', () => {
     const hardFailure = completePairs(100);
     hardFailure[0].bounded.hardFailure = true;
@@ -155,14 +166,15 @@ describe('promotion scorecard', () => {
     }).reasons).toContain('token_cap');
   });
 
-  test('accepts only an explicit preregistered token-cap exception', () => {
+  test('never permits an exception to the token cap', () => {
     const pairs = completePairs(100, { boundedTokens: 121 });
-    expect(scorePromotion({ tier: 100, pairs, tokenCapException: true }).status).toBe('FAIL');
-    expect(scorePromotion({
+    const score = scorePromotion({
       tier: 100,
       pairs,
       tokenCapException: { preregistered: true, reason: 'approved long-context arm' },
-    })).toMatchObject({ status: 'PASS', winner: 'bounded' });
+    });
+    expect(score).toMatchObject({ status: 'FAIL', winner: null });
+    expect(score.reasons).toContain('token_cap');
   });
 
   test('uses the 300-case tier only as confirmation and never grants merge authority', () => {

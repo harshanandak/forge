@@ -76,6 +76,11 @@ function collectMatrix(pairs) {
 function pairingError(tier, models, cases, seen) {
   if (models.length !== 2) return 'model_pair_incomplete';
   if (cases.size !== tier) return 'case_count_incomplete';
+  const splitCounts = { DEV: 0, TEST: 0 };
+  for (const { split } of cases.values()) splitCounts[split] += 1;
+  if (splitCounts.DEV !== tier * 0.6 || splitCounts.TEST !== tier * 0.4) {
+    return 'split_count_incomplete';
+  }
 
   for (const caseId of cases.keys()) {
     for (const model of models) {
@@ -228,13 +233,7 @@ function casePassRate(pairs, armName) {
   return [...cases.values()].filter(Boolean).length / cases.size;
 }
 
-function hasTokenException(exception) {
-  return exception?.preregistered === true
-    && typeof exception.reason === 'string'
-    && exception.reason.trim().length > 0;
-}
-
-function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, operations, tokenCapException }) {
+function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, operations }) {
   const perModelDelta = models.every((model) => {
     const stats = absolute.byModel[model];
     return stats.bounded.rate - stats.current.rate >= 0;
@@ -250,7 +249,7 @@ function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, ope
     perModelDelta,
     highRiskRegression: highRiskDelta >= -0.02,
     latency: operations.latencyP95 <= 1.25,
-    tokens: operations.tokenMedian <= 1.20 || hasTokenException(tokenCapException),
+    tokens: operations.tokenMedian <= 1.20,
   };
 }
 
@@ -279,7 +278,7 @@ function incomplete(tier, reason) {
   };
 }
 
-function scorePromotion({ tier, pairs, tokenCapException } = {}) {
+function scorePromotion({ tier, pairs } = {}) {
   const validation = validatePairs(tier, pairs);
   if (validation.error) return incomplete(tier, validation.error);
 
@@ -294,7 +293,6 @@ function scorePromotion({ tier, pairs, tokenCapException } = {}) {
     absolute,
     bootstrap,
     operations,
-    tokenCapException,
   });
   if (tier === 30) {
     return {
