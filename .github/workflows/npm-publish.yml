@@ -64,7 +64,6 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/test-full-suite.js --label-prefix release-full
-          bun test --timeout 15000 test-env/
       - name: Emit attributable release suite receipt
         id: evidence
         env:

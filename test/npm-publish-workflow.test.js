@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const releaseCommand = require('../lib/commands/release');
 const {
 	NPM_PUBLISH_WORKFLOW_PATH,
+	generateNpmPublishWorkflow,
 	renderNpmPublishWorkflow,
 } = require('../lib/npm-publish-workflow');
 const { PROTECTED_STATE_AUDIT_LOG } = require('../lib/protected-state-surfaces');
@@ -48,7 +49,8 @@ describe('Forge-owned npm publish workflow', () => {
 		expect(buildJob).toContain('ref: ${{ needs.resolve-release.outputs.commitSha }}');
 		expect(buildJob).toContain('node scripts/test-full-suite.js --label-prefix release-full');
 		expect(buildJob).toContain('bash test-env/automation/setup-fixtures.sh --force');
-		expect(buildJob).toContain('bun test --timeout 15000 test-env/');
+		expect(buildJob.match(/node scripts\/test-full-suite\.js --label-prefix release-full/g)).toHaveLength(1);
+		expect(buildJob).not.toContain('bun test --timeout 15000 test-env/');
 		expect(publishJob).toContain('ref: ${{ needs.resolve-release.outputs.commitSha }}');
 	});
 
@@ -148,6 +150,31 @@ describe('Forge-owned npm publish workflow', () => {
 				decision: 'allowed',
 			});
 			expect(records.at(-1).contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('does not publish authorization when the protected write fails', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-write-failure-'));
+		let auditCalls = 0;
+		try {
+			const result = generateNpmPublishWorkflow(root, {
+				actor: 'release-test',
+				writeProtectedFile: () => ({
+					allowed: false,
+					decision: 'blocked',
+					reason: 'injected write failure',
+				}),
+				recordProtectedStateAuditEvent: () => {
+					auditCalls += 1;
+					return { success: true };
+				},
+			});
+
+			expect(result).toMatchObject({ success: false, error: 'injected write failure' });
+			expect(auditCalls).toBe(0);
+			expect(fs.existsSync(path.join(root, PROTECTED_STATE_AUDIT_LOG))).toBe(false);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
