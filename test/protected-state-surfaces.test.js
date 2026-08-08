@@ -138,6 +138,31 @@ describe('protected state surfaces', () => {
 		expect(reverted.reason).toContain('latest');
 	});
 
+	test('denies cross-actor replay after another actor supersedes the protected path', () => {
+		const target = {
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+		};
+		const actorA = createProtectedStateAuthorization({
+			...target,
+			actor: 'forge-release-a',
+			content: 'version: A\n',
+		});
+		const actorB = createProtectedStateAuthorization({
+			...target,
+			actor: 'forge-release-b',
+			content: 'version: B\n',
+		});
+
+		const replay = verifyProtectedStateAuthorization({
+			...target,
+			actor: 'forge-release-a',
+			content: 'version: A\n',
+		}, [actorA, actorB]);
+		expect(replay.allowed).toBe(false);
+		expect(replay.reason).toContain('latest');
+	});
+
 	test('writes protected files only through the declared Forge API surface', () => {
 		const root = createTempDir();
 		try {
