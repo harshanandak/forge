@@ -15,6 +15,7 @@ const {
 const {
 	PROTECTED_STATE_AUDIT_LOG,
 } = require('../lib/protected-state-surfaces');
+const protectedStateAuthority = require('../lib/protected-state-authority');
 const {
 	createReleaseSuiteReceipt,
 	verifyReleaseSuiteReceipt,
@@ -279,7 +280,7 @@ describe('Forge-owned npm publish workflow', () => {
 			fs.writeFileSync(workflowPath, previous);
 			const result = await generateNpmPublishWorkflow(root, {
 				actor: 'release-test',
-				issueProtectedStateAuthorization: async () => ({
+				issueNpmPublishWorkflowAuthorization: async () => ({
 					success: false,
 					error: 'kernel authority unavailable',
 				}),
@@ -382,6 +383,50 @@ describe('Forge-owned npm publish workflow', () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	}, 15_000);
+
+	test('generic library callers cannot mint authority for arbitrary workflow bytes', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-generic-issuer-'));
+		const actor = 'spoofed-release-actor';
+		const checker = path.join(repoRoot, 'scripts', 'protected-state-check.js');
+		const arbitraryContent = 'name: attacker-controlled workflow\non: push\n';
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
+		try {
+			expect(run('git', ['init']).status).toBe(0);
+			if (typeof protectedStateAuthority.issueProtectedStateAuthorization === 'function') {
+				await protectedStateAuthority.issueProtectedStateAuthorization(root, {
+					actor,
+					surface: 'workflows',
+					path: NPM_PUBLISH_WORKFLOW_PATH,
+					content: arbitraryContent,
+					operation: 'generate_npm_workflow',
+					sourceCommand: protectedStateAuthority.NPM_WORKFLOW_SOURCE_COMMAND,
+				});
+			} else {
+				await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, {
+					actor,
+					content: arbitraryContent,
+					path: NPM_PUBLISH_WORKFLOW_PATH,
+					operation: 'generate_npm_workflow',
+					sourceCommand: 'spoofed direct caller',
+				});
+			}
+			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+			fs.writeFileSync(workflowPath, arbitraryContent, 'utf8');
+			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+
+			const result = spawnSync(process.execPath, [checker], {
+				cwd: root,
+				encoding: 'utf8',
+				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
+			});
+
+			expect(result.status).toBe(1);
+			expect(protectedStateAuthority.issueProtectedStateAuthorization).toBeUndefined();
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
 
 	test('hook consumes authorization and denies a later same-content stale replay', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-same-content-replay-'));

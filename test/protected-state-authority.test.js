@@ -5,10 +5,11 @@ const { hashProtectedContent } = require('../lib/protected-state-surfaces');
 const {
 	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
-	NPM_WORKFLOW_SOURCE_COMMAND,
 	authorizationEntityId,
 	evaluateAuthorization,
 } = require('../lib/protected-state-authority');
+
+const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
 
 const target = {
 	actor: 'forge-release',
