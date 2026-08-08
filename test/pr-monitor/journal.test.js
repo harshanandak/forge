@@ -156,7 +156,7 @@ describe('withJournalLock (cross-process serialization)', () => {
       await expect(journal.withJournalLock(
         dir,
         () => { contenderEntered = true; },
-        { staleMs, retries: 120, waitMs: 10 },
+        { staleMs, retries: 12, waitMs: 50 },
       )).rejects.toThrow('journal lock busy');
       expect(contenderEntered).toBe(false);
     } finally {
