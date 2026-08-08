@@ -180,6 +180,52 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
+	test('restores previous workflow bytes when authorization audit persistence fails', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-failure-'));
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const previous = Buffer.from('previous workflow bytes\r\n', 'utf8');
+		try {
+			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+			fs.writeFileSync(workflowPath, previous);
+			const result = generateNpmPublishWorkflow(root, {
+				actor: 'release-test',
+				recordProtectedStateAuditEvent: () => ({
+					success: false,
+					error: 'audit sink unavailable',
+				}),
+			});
+
+			expect(result).toMatchObject({
+				success: false,
+				error: 'Could not record protected-state authorization: audit sink unavailable',
+			});
+			expect(fs.readFileSync(workflowPath)).toEqual(previous);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('removes a newly created workflow when authorization audit persistence throws', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-throw-'));
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		try {
+			const result = generateNpmPublishWorkflow(root, {
+				actor: 'release-test',
+				recordProtectedStateAuditEvent: () => {
+					throw new Error('audit sink exploded');
+				},
+			});
+
+			expect(result).toMatchObject({
+				success: false,
+				error: 'Could not record protected-state authorization: audit sink exploded',
+			});
+			expect(fs.existsSync(workflowPath)).toBe(false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test('hook accepts exact generator evidence but denies raw edits and missing evidence', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-hook-'));
 		const actor = 'release-hook-test';
