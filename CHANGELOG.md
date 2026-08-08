@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Controlled behavioral skill evaluation.** `forge skill eval <skill> --full --tier <30|100|300>` now runs the frozen two-model × current/bounded protocol with exact-head issue/PR attribution, isolated zero-tool runtimes, privacy-safe semantic evidence, fail-closed conflict handling, and deterministic promotion scoring. Thirty cases remain instrumentation-only; evaluation never supplies merge authority. (issue `198bec40-0d65-42a8-b2c2-c682f44fdb22`)
 - **Host-owned Shepherd background transport.** Session startup now forwards an explicitly supplied harness background-shell capability, runs it from the stable Git common root, and preserves the detached fallback when the capability is absent or fails. (#494, issue `60ccc100-506b-46a6-bf96-b2fce3436ed6`)
 - **Critical merge-flow reliability integration plan.** Defines a deterministic safety floor, executable work contracts, configurable risk policy, zero-token owner monitoring, and a sequential exact-head merge slot without constraining model reasoning. (#493, issue `a57a2b2a-3b0d-4fce-bf13-e3e4a386f1c9`, epic `f30e5d29-9099-4029-baec-af39f08b6ee3`)
 - **Model-neutral evaluation evidence and exact-SHA replay.** Adds a privacy-safe content-addressed envelope with fail-closed drift checks while excluding raw prompts, transcripts, tool payloads, secrets, and personal data. (#491, issue `02f5ea90-4a1a-462f-9b22-54eb5d37f6b3`)
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Exact-SHA npm publication evidence.** The Forge-generated publish workflow now resolves one immutable tag SHA, requires the complete repository suite and an attributable matching receipt before npm publication, and protects workflow updates with one-time Kernel capabilities instead of forgeable sidecar evidence. (issue `198bec40-0d65-42a8-b2c2-c682f44fdb22`)
 - **Simplified the PR-monitor surface.** The workflow now keeps one canonical
   `pr-verdict:*` label and writes detailed diagnostics to the Actions job summary
   (also available via `forge shepherd --pull --json`); it no longer creates a
