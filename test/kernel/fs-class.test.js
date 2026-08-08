@@ -699,17 +699,25 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
 });
 
 describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
-	test('B1: both net use and PowerShell execs pass timeout=1500 + killSignal SIGKILL', () => {
+	test('does not launch PowerShell after a successful net use miss', () => {
+		const seenFiles = [];
+		const fakeExec = (file) => {
+			seenFiles.push(file);
+			if (file === 'powershell') throw new Error('PowerShell fallback must not run after net use succeeds');
+			return '';
+		};
+		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('fixed');
+		expect(seenFiles).toEqual(['net']);
+	}, T);
+
+	test('B1: net use exec passes timeout=1500 + killSignal SIGKILL', () => {
 		const seenOptions = [];
 		const fakeExec = (_file, _args, options) => {
 			seenOptions.push(options);
-			// Return empty so net use misses and the PowerShell fallback also runs,
-			// exercising BOTH exec calls in one probe.
 			return '';
 		};
 		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
-		// Both probes ran (net use, then PowerShell DisplayRoot).
-		expect(seenOptions).toHaveLength(2);
+		expect(seenOptions).toHaveLength(1);
 		for (const options of seenOptions) {
 			expect(options.timeout).toBe(1500);
 			expect(options.killSignal).toBe('SIGKILL');
@@ -774,10 +782,6 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
 		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('network');
 	}, T);
 
-	test('M5: defaultProbeDriveType returns network when PowerShell DisplayRoot is non-empty', () => {
-		const fakeExec = (file) => (file === 'net' ? '' : '\\\\nas\\share\r\n');
-		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('network');
-	}, T);
 });
 
 describe('classifyFilesystem — end-to-end with injected probes', () => {
