@@ -7,6 +7,7 @@ const {
 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
 	authorizationEntityId,
 	evaluateAuthorization,
+	resolveWorktreeScope,
 } = require('../lib/protected-state-authority');
 
 const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
@@ -53,6 +54,17 @@ function eventRow(eventType, capabilityId, overrides = {}) {
 }
 
 describe('protected-state Kernel authority', () => {
+	test('canonicalizes filesystem aliases before binding a worktree scope', () => {
+		const aliased = resolveWorktreeScope('/var/folders/repo', {
+			realpathSync: () => '/private/var/folders/repo',
+		});
+		const canonical = resolveWorktreeScope('/private/var/folders/repo', {
+			realpathSync: () => '/private/var/folders/repo',
+		});
+
+		expect(aliased).toBe(canonical);
+	});
+
 	test('accepts one exact unconsumed command-issued capability', () => {
 		const decision = evaluateAuthorization(target, [
 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-1'),
