@@ -305,6 +305,9 @@ async function appendEvalEvidence(projectRoot, envelope, options = {}) {
     } catch (error) {
       if (!isIdempotencyRace(error)) throw error;
       const winner = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
+      if (!winner) {
+        return { ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE', actor };
+      }
       return replay(winner);
     }
   } finally {

@@ -216,6 +216,26 @@ describe('eval evidence', () => {
     expect(events.filter((event) => event.event_type === 'eval.evidence.recorded')).toHaveLength(1);
   });
 
+  test('returns an explicit incomplete conflict when an idempotency winner is not visible', async () => {
+    const kernel = await freshKernel();
+    const envelope = createEvalEvidence(validCase());
+    const base = deps(kernel);
+    const racingDriver = Object.create(base.kernelDriver);
+    racingDriver.loadKernelEventByIdempotencyKey = async () => null;
+    racingDriver.insertKernelEvent = async () => {
+      throw new Error('UNIQUE constraint failed: idempotency_key');
+    };
+
+    const result = await appendEvalEvidence('/unused', envelope, {
+      deps: { ...base, kernelDriver: racingDriver },
+      env: { FORGE_ACTOR: 'eval-test' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE', actor: 'eval-test',
+    });
+  });
+
   test('persists canonical stable envelope bytes regardless of input key order', async () => {
     const kernel = await freshKernel();
     const envelope = createEvalEvidence(validCase());

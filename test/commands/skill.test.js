@@ -255,7 +255,7 @@ describe('forge skill eval', () => {
       fs.writeFileSync(path.join(sdir, 'SKILL.md'), '---\nname: demo\ndescription: behavioral demo skill\n---\nbody\n');
 
       const res = await skillCommand.handler(
-        ['eval', 'demo', '--full', '--tier', '30', '--json'],
+        ['eval', '--full', '--tier', '30', 'demo', '--json'],
         {},
         root,
         {

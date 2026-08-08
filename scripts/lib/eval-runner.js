@@ -13,6 +13,9 @@ const fs = require('fs');
 const { execFileSync, execSync, spawn } = require('node:child_process');
 
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
+const TERMINATION_GRACE_MS = 5000;
+const FORCE_KILL_SETTLE_MS = 1000;
 
 // ── active worktree tracking (cleanup on crash) ─────────────────────
 // Tracks active eval worktrees so we can clean up on process exit/crash.
@@ -258,7 +261,14 @@ async function resetWorktree(worktreePath) {
  * @param {object} [envOverride] — additional subprocess environment entries
  * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
  */
-async function executeCommand(_command, prompt, worktreePath, timeout = 120000, cmdOverride, envOverride = {}) {
+async function executeCommand(
+  _command,
+  prompt,
+  worktreePath,
+  timeout = DEFAULT_COMMAND_TIMEOUT_MS,
+  cmdOverride,
+  envOverride = {},
+) {
   // Build the command to run
   const cmd = cmdOverride || [
     'claude',
@@ -293,18 +303,42 @@ async function executeCommand(_command, prompt, worktreePath, timeout = 120000, 
   proc.stderr.on('data', (chunk) => { stderr += chunk; });
 
   const exitCode = await new Promise((resolve) => {
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      proc.kill();
-    }, timeout);
-    proc.once('error', (error) => {
+    let settled = false;
+    let timeoutId;
+    let terminationTimer;
+    let forceKillTimer;
+
+    const clearTimers = () => {
       clearTimeout(timeoutId);
+      clearTimeout(terminationTimer);
+      clearTimeout(forceKillTimer);
+    };
+
+    const settle = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      resolve(code ?? 1);
+    };
+
+    const onTimeout = () => {
+      timedOut = true;
+      try { proc.kill('SIGTERM'); } catch (_error) { /* already exited */ }
+      terminationTimer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch (_error) { /* already exited */ }
+        // A misbehaving child must not hold the evaluation forever even if no
+        // close event is delivered after the forced termination.
+        forceKillTimer = setTimeout(() => settle(1), FORCE_KILL_SETTLE_MS);
+      }, TERMINATION_GRACE_MS);
+    };
+
+    timeoutId = setTimeout(onTimeout, timeout);
+    proc.once('error', (error) => {
       stderr += error.message;
-      resolve(1);
+      settle(1);
     });
     proc.once('close', (code) => {
-      clearTimeout(timeoutId);
-      resolve(code ?? 1);
+      settle(code);
     });
   });
 

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { _internal } = require('../../scripts/lib/behavioral-eval-runtime');
+const { _internal, resolveBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-runtime');
 const { loadTier } = require('../../scripts/lib/immutable-eval-corpus');
 
 describe('behavioral eval production runtime', () => {
@@ -112,6 +112,55 @@ describe('behavioral eval production runtime', () => {
       '--model', 'model-one',
       '--effort', 'max',
     ]);
+  });
+
+  test('normalizes malformed runtime configuration to a stable reason code', () => {
+    expect(() => _internal.runtimeCommand({ FORGE_EVAL_RUNTIME: '[not-json' }))
+      .toThrow('runtime.invalid');
+  });
+
+  test('normalizes malformed runtime output without retaining parser text', () => {
+    expect(() => _internal.parseJsonResult('{"result":"/private/path"}'))
+      .toThrow('runtime.output_missing');
+    expect(() => _internal.parseJsonResult(JSON.stringify({ type: 'result', result: 'not-json' })))
+      .toThrow('runtime.output_unparseable');
+  });
+
+  test('does not persist filesystem details from resolver failures', async () => {
+    const issueId = '198bec40-0d65-42a8-b2c2-c682f44fdb22';
+    const head = 'a'.repeat(40);
+    const branch = 'codex/eval-runtime-test';
+    const deps = {
+      execFileSync: (command, args) => {
+        if (command !== 'git') throw new Error('unexpected command');
+        if (args[0] === 'rev-parse') return `${head}\n`;
+        return `${branch}\n`;
+      },
+      kernelDriver: {
+        listWorktrees: () => [{ branch, issue_id: issueId, state: 'active' }],
+        loadKernelEntity: async (type, id) => (
+          type === 'issue' && id === issueId ? { id, status: 'in_progress' } : null
+        ),
+      },
+      prAdapter: { readState: async () => ({ state: 'OPEN', headSha: head }) },
+    };
+    const missingPath = path.join(os.tmpdir(), 'private-eval-skill', 'SKILL.md');
+    const resolved = await resolveBehavioralEvaluation({
+      projectRoot: '/repo',
+      skillName: 'dev',
+      skillPath: missingPath,
+      tier: 30,
+      env: {
+        FORGE_EVAL_ISSUE_ID: issueId,
+        FORGE_EVAL_PR: '500',
+        FORGE_EVAL_PR_HEAD: head,
+      },
+      deps,
+    });
+
+    expect(resolved.ok).toBe(false);
+    expect(resolved.result.findings[0].failures).toEqual(['runtime.config_invalid']);
+    expect(JSON.stringify(resolved.result)).not.toContain(missingPath);
   });
 
   test('executes the existing stream-json command shape without persisting raw runtime output', async () => {

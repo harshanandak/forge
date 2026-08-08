@@ -20,6 +20,23 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 const EFFORTS = new Set(['low', 'medium', 'high', 'max']);
+const RUNTIME_REASON_CODES = new Set([
+  'runtime.invalid',
+  'runtime.unavailable',
+  'runtime.config_invalid',
+  'runtime.output_missing',
+  'runtime.output_unparseable',
+  'runtime.execution_failed',
+  'runtime.usage_unparseable',
+  'runtime.token_budget_exceeded',
+  'models.invalid',
+  'effort.invalid',
+  'budget.invalid',
+  'binding.head_invalid',
+  'attribution.issue_unavailable',
+  'attribution.pr_mismatch',
+  'attribution.pr_unavailable',
+]);
 const RUNTIME_CONTROLS = Object.freeze({
   customizationIsolation: 'safe-mode',
   sessionPersistence: false,
@@ -35,7 +52,12 @@ function runtimeCommand(env) {
   const value = env.FORGE_EVAL_RUNTIME;
   if (!value) return ['claude'];
   if (value.trim().startsWith('[')) {
-    const parsed = JSON.parse(value);
+    let parsed;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error('runtime.invalid');
+    }
     if (!Array.isArray(parsed) || parsed.length === 0
       || parsed.some((item) => typeof item !== 'string' || item.length === 0)) {
       throw new Error('runtime.invalid');
@@ -215,12 +237,22 @@ function probeRuntime(command, spawn = spawnSync) {
 }
 
 function parseJsonResult(stdout) {
-  const transcript = parseTranscript(stdout);
-  const lastText = [...transcript.messages].reverse().find((message) => message.text)?.text;
-  const raw = typeof transcript.result === 'string' ? transcript.result : lastText;
+  let raw;
+  try {
+    const transcript = parseTranscript(stdout);
+    const lastText = [...transcript.messages].reverse().find((message) => message.text)?.text;
+    raw = typeof transcript.result === 'string' ? transcript.result : lastText;
+  } catch {
+    throw new Error('runtime.output_unparseable');
+  }
   if (typeof raw !== 'string') throw new Error('runtime.output_missing');
   const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(raw);
-  const parsed = JSON.parse(fenced ? fenced[1] : raw);
+  let parsed;
+  try {
+    parsed = JSON.parse(fenced ? fenced[1] : raw);
+  } catch {
+    throw new Error('runtime.output_unparseable');
+  }
   return parsed && typeof parsed === 'object' && Object.hasOwn(parsed, 'observation')
     ? parsed.observation
     : parsed;
@@ -404,10 +436,12 @@ async function resolveBehavioralEvaluation({ projectRoot, skillName, skillPath, 
       },
     };
   } catch (error) {
+    const candidate = typeof error?.message === 'string' ? error.message : '';
+    const reason = RUNTIME_REASON_CODES.has(candidate) ? candidate : 'runtime.config_invalid';
     return {
       ok: false,
       result: incompleteResult({
-        tier, arms, binding, issueId, pr, reason: error?.message || 'runtime.config_invalid',
+        tier, arms, binding, issueId, pr, reason,
       }),
     };
   }
@@ -417,6 +451,6 @@ module.exports = {
   resolveBehavioralEvaluation,
   _internal: {
     buildConfig, buildPrompt, buildRuntimeArgv, countTokens, createExecutor, parseEffort,
-    parseJsonResult, parseModels, resolveAttribution, runtimeCommand,
+    parseJsonResult, parseModels, resolveAttribution, runtimeCommand, RUNTIME_REASON_CODES,
   },
 };

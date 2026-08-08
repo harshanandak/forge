@@ -22,10 +22,13 @@ describe('forge skill eval behavioral CLI', () => {
         ['init', '-q'],
         ['config', 'user.email', 'eval@example.test'],
         ['config', 'user.name', 'Eval Test'],
+        ['config', 'commit.gpgsign', 'false'],
+        ['config', 'tag.gpgsign', 'false'],
+        ['config', 'core.hooksPath', ''],
         ['add', '.'],
         ['commit', '-qm', 'fixture'],
       ]) {
-        const git = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+        const git = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 20000 });
         expect(git.status).toBe(0);
       }
       const result = spawnSync(process.execPath, [
@@ -33,6 +36,7 @@ describe('forge skill eval behavioral CLI', () => {
       ], {
         cwd: root,
         encoding: 'utf8',
+        timeout: 20000,
         env: {
           ...process.env,
           FORGE_EVAL_RUNTIME: 'forge-eval-runtime-does-not-exist',
