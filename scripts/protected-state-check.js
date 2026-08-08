@@ -1,14 +1,11 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require('node:child_process');
-const fs = require('node:fs');
-const path = require('node:path');
 const {
-	PROTECTED_STATE_AUDIT_LOG,
 	assertProtectedWriteAllowed,
-	verifyProtectedStateAuthorization,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
+const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
 
 function parseNameStatus(output) {
 	const files = [];
@@ -45,19 +42,6 @@ function getStagedFiles() {
 	return parseNameStatus(output);
 }
 
-function readAuthorizationRecords() {
-	try {
-		return fs
-			.readFileSync(path.resolve(process.cwd(), PROTECTED_STATE_AUDIT_LOG), 'utf8')
-			.split(/\r?\n/)
-			.filter(Boolean)
-			.map(line => JSON.parse(line));
-	} catch (error) {
-		if (error.code === 'ENOENT') return [];
-		throw error;
-	}
-}
-
 function getStagedContent(file) {
 	if (process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON) {
 		const contents = JSON.parse(process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON);
@@ -74,30 +58,44 @@ function getStagedContent(file) {
 	}
 }
 
-function main() {
+async function main() {
 	const actor =
 		process.env.FORGE_PROTECTED_STATE_ACTOR ||
 		process.env.FORGE_ACTOR ||
 		process.env.USER ||
 		process.env.USERNAME ||
 		'unknown';
-	const authorizationRecords = readAuthorizationRecords();
-	const decisions = getStagedFiles()
+	const probes = getStagedFiles()
 		.map(file => {
 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
-			if (!probe.requiredSurface) return probe;
+			if (!probe.requiredSurface) return { probe };
 
 			const content = getStagedContent(probe.path);
-			if (content === null) return probe;
-			const authorization = verifyProtectedStateAuthorization({
-				actor,
-				surface: probe.requiredSurface,
-				path: probe.path,
-				content,
-				operation: 'staged_edit',
-			}, authorizationRecords);
-			if (authorization.allowed) return authorization;
-			return { ...probe, ...authorization, repairHint: probe.repairHint };
+			if (content === null) return { probe };
+			return {
+				probe,
+				request: {
+					actor,
+					surface: probe.requiredSurface,
+					path: probe.path,
+					content,
+					operation: 'staged_edit',
+				},
+			};
+		});
+	const protectedProbes = probes.filter(entry => entry.request);
+	const authorization = await authorizeAndConsumeProtectedStateWrites(
+		process.cwd(),
+		protectedProbes.map(entry => entry.request),
+	);
+	let authorizationIndex = 0;
+	const decisions = probes
+		.map(entry => {
+			if (!entry.request) return entry.probe;
+			const trustedDecision = authorization.decisions[authorizationIndex++];
+			return trustedDecision.allowed
+				? trustedDecision
+				: { ...entry.probe, ...trustedDecision, repairHint: entry.probe.repairHint };
 		})
 		.filter(decision => !decision.allowed);
 
@@ -125,9 +123,7 @@ function main() {
 	process.exit(1);
 }
 
-try {
-	main();
-} catch (error) {
+main().catch(error => {
 	console.error(`Protected state check failed: ${error.message}`);
 	process.exit(1);
-}
+});

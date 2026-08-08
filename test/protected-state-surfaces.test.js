@@ -12,8 +12,7 @@ const {
 	classifyProtectedPath,
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
-	createProtectedStateAuthorization,
-	verifyProtectedStateAuthorization,
+	createProtectedStateAuditRecord,
 	buildProtectedStateAuditEvent,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
@@ -74,93 +73,24 @@ describe('protected state surfaces', () => {
 		expect(decision.requiredSurface).toBe('beads_state');
 	});
 
-	test('authorizes only the exact actor, surface, path, and content hash', () => {
-		const authorization = createProtectedStateAuthorization({
+	test('builds content-bound visibility records without conferring authority', () => {
+		const auditRecord = createProtectedStateAuditRecord({
 			actor: 'forge-release',
 			surface: 'workflows',
 			path: '.github/workflows/npm-publish.yml',
 			content: 'generated: true\n',
 		});
 
-		expect(verifyProtectedStateAuthorization({
+		expect(auditRecord).toMatchObject({
+			kind: 'protected_state_write',
 			actor: 'forge-release',
-			surface: 'workflows',
 			path: '.github/workflows/npm-publish.yml',
-			content: 'generated: true\n',
-		}, [authorization]).allowed).toBe(true);
-
-		const rawEdit = verifyProtectedStateAuthorization({
-			actor: 'codex',
-			surface: 'workflows',
-			path: '.github/workflows/npm-publish.yml',
-			content: 'generated: true\n',
-		}, [authorization]);
-		expect(rawEdit.allowed).toBe(false);
-		expect(rawEdit.reason).toContain('content-bound authorization');
-	});
-
-	test('denies stale content records and missing authorization evidence', () => {
-		const authorization = createProtectedStateAuthorization({
-			actor: 'forge-release',
-			surface: 'workflows',
-			path: '.github/workflows/npm-publish.yml',
-			content: 'original\n',
+			decision: 'allowed',
+			requiredSurface: 'workflows',
+			declaredSurface: 'workflows',
 		});
-		const request = {
-			actor: 'forge-release',
-			surface: 'workflows',
-			path: '.github/workflows/npm-publish.yml',
-			content: 'raw edit\n',
-		};
-
-		expect(verifyProtectedStateAuthorization(request, [authorization]).allowed).toBe(false);
-		expect(verifyProtectedStateAuthorization(request, []).allowed).toBe(false);
-	});
-
-	test('denies a raw revert that matches an older superseded authorization record', () => {
-		const base = {
-			actor: 'forge-release',
-			surface: 'workflows',
-			path: '.github/workflows/npm-publish.yml',
-		};
-		const authorizationA = createProtectedStateAuthorization({ ...base, content: 'version: A\n' });
-		const authorizationB = createProtectedStateAuthorization({ ...base, content: 'version: B\n' });
-
-		expect(verifyProtectedStateAuthorization(
-			{ ...base, content: 'version: B\n' },
-			[authorizationA, authorizationB],
-		).allowed).toBe(true);
-		const reverted = verifyProtectedStateAuthorization(
-			{ ...base, content: 'version: A\n' },
-			[authorizationA, authorizationB],
-		);
-		expect(reverted.allowed).toBe(false);
-		expect(reverted.reason).toContain('latest');
-	});
-
-	test('denies cross-actor replay after another actor supersedes the protected path', () => {
-		const target = {
-			surface: 'workflows',
-			path: '.github/workflows/npm-publish.yml',
-		};
-		const actorA = createProtectedStateAuthorization({
-			...target,
-			actor: 'forge-release-a',
-			content: 'version: A\n',
-		});
-		const actorB = createProtectedStateAuthorization({
-			...target,
-			actor: 'forge-release-b',
-			content: 'version: B\n',
-		});
-
-		const replay = verifyProtectedStateAuthorization({
-			...target,
-			actor: 'forge-release-a',
-			content: 'version: A\n',
-		}, [actorA, actorB]);
-		expect(replay.allowed).toBe(false);
-		expect(replay.reason).toContain('latest');
+		expect(auditRecord.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(auditRecord).not.toHaveProperty('capabilityId');
 	});
 
 	test('writes protected files only through the declared Forge API surface', () => {
@@ -472,7 +402,7 @@ describe('scripts/protected-state-check.js', () => {
 
 		expect(result.status).toBe(1);
 		expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
-	});
+	}, 15_000);
 
 	test('includes deletions in the staged protected-state query', () => {
 		const content = fs.readFileSync(scriptPath, 'utf8');

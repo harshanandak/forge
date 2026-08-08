@@ -14,7 +14,6 @@ const {
 } = require('../lib/npm-publish-workflow');
 const {
 	PROTECTED_STATE_AUDIT_LOG,
-	verifyProtectedStateAuthorization,
 } = require('../lib/protected-state-surfaces');
 const {
 	createReleaseSuiteReceipt,
@@ -129,6 +128,7 @@ describe('Forge-owned npm publish workflow', () => {
 	test('release generator writes through the protected API and records content-bound evidence', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-workflow-'));
 		try {
+			expect(spawnSync('git', ['init'], { cwd: root }).status).toBe(0);
 			const result = await releaseCommand.handler(
 				['generate-npm-workflow'],
 				{},
@@ -153,16 +153,17 @@ describe('Forge-owned npm publish workflow', () => {
 				decision: 'allowed',
 			});
 			expect(records.at(-1).contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+			expect(result.generated.trustedAuthorization.capabilityId).toBeTruthy();
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test('does not publish authorization when the protected write fails', () => {
+	test('does not publish authorization when the protected write fails', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-write-failure-'));
 		let auditCalls = 0;
 		try {
-			const result = generateNpmPublishWorkflow(root, {
+			const result = await generateNpmPublishWorkflow(root, {
 				actor: 'release-test',
 				writeProtectedFile: () => ({
 					allowed: false,
@@ -183,14 +184,14 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
-	test('restores previous workflow bytes when authorization audit persistence fails', () => {
+	test('restores previous workflow bytes when authorization audit persistence fails', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-failure-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 		const previous = Buffer.from('previous workflow bytes\r\n', 'utf8');
 		try {
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, previous);
-			const result = generateNpmPublishWorkflow(root, {
+			const result = await generateNpmPublishWorkflow(root, {
 				actor: 'release-test',
 				recordProtectedStateAuditEvent: () => ({
 					success: false,
@@ -208,11 +209,11 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
-	test('removes a newly created workflow when authorization audit persistence throws', () => {
+	test('removes a newly created workflow when authorization audit persistence throws', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-throw-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 		try {
-			const result = generateNpmPublishWorkflow(root, {
+			const result = await generateNpmPublishWorkflow(root, {
 				actor: 'release-test',
 				recordProtectedStateAuditEvent: () => {
 					throw new Error('audit sink exploded');
@@ -229,7 +230,7 @@ describe('Forge-owned npm publish workflow', () => {
 		}
 	});
 
-	test('real capped audit failure cannot leave a reusable authorization behind', () => {
+	test('real capped audit failure cannot leave a reusable authorization behind', async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-capped-audit-'));
 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
 		const auditPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
@@ -254,7 +255,7 @@ describe('Forge-owned npm publish workflow', () => {
 				return realWriteFileSync(target, ...args);
 			};
 
-			const result = generateNpmPublishWorkflow(root, { actor: 'release-test' });
+			const result = await generateNpmPublishWorkflow(root, { actor: 'release-test' });
 			expect(result).toMatchObject({
 				success: false,
 				error: 'Could not record protected-state authorization: forced audit temp failure',
@@ -262,14 +263,34 @@ describe('Forge-owned npm publish workflow', () => {
 			expect(fs.readFileSync(workflowPath)).toEqual(previous);
 			const records = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 			expect(records).toHaveLength(500);
-			expect(verifyProtectedStateAuthorization({
-				actor: 'release-test',
-				surface: 'workflows',
-				path: NPM_PUBLISH_WORKFLOW_PATH,
-				content: renderNpmPublishWorkflow(),
-			}, records).allowed).toBe(false);
+			expect(records.every(record => record.capabilityId === undefined)).toBe(true);
 		} finally {
 			fs.writeFileSync = realWriteFileSync;
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('restores previous workflow bytes when trusted authorization persistence fails', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-authority-failure-'));
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const previous = Buffer.from('previous trusted workflow bytes\n', 'utf8');
+		try {
+			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+			fs.writeFileSync(workflowPath, previous);
+			const result = await generateNpmPublishWorkflow(root, {
+				actor: 'release-test',
+				issueProtectedStateAuthorization: async () => ({
+					success: false,
+					error: 'kernel authority unavailable',
+				}),
+			});
+
+			expect(result).toMatchObject({
+				success: false,
+				error: 'Could not record trusted protected-state authorization: kernel authority unavailable',
+			});
+			expect(fs.readFileSync(workflowPath)).toEqual(previous);
+		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
@@ -293,20 +314,111 @@ describe('Forge-owned npm publish workflow', () => {
 				{ env: { FORGE_ACTOR: actor } },
 			)).success).toBe(true);
 			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+			const wrongActor = spawnSync(process.execPath, [checker], {
+				cwd: root,
+				encoding: 'utf8',
+				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: `${actor}-other` },
+			});
+			expect(wrongActor.status).toBe(1);
+			expect(`${wrongActor.stdout}${wrongActor.stderr}`).toContain('content-bound authorization');
 			expect(check().status).toBe(0);
 
+			expect((await releaseCommand.handler(
+				['generate-npm-workflow'],
+				{},
+				root,
+				{ env: { FORGE_ACTOR: actor } },
+			)).success).toBe(true);
 			fs.appendFileSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH), '# raw edit\n');
 			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
 			const rawEdit = check();
 			expect(rawEdit.status).toBe(1);
 			expect(`${rawEdit.stdout}${rawEdit.stderr}`).toContain('content-bound authorization');
 
-			fs.rmSync(path.join(root, PROTECTED_STATE_AUDIT_LOG));
+			fs.rmSync(path.join(root, '.git', 'forge'), { recursive: true, force: true });
 			const missingEvidence = check();
 			expect(missingEvidence.status).toBe(1);
-			expect(`${missingEvidence.stdout}${missingEvidence.stderr}`).toContain('content-bound authorization');
+			expect(`${missingEvidence.stdout}${missingEvidence.stderr}`).toContain('Forge-owned authorization');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
-	});
+	}, 30_000);
+
+	test('hook denies a fabricated audit record in a real temporary repository', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-fabricated-audit-'));
+		const actor = 'fabricated-release-actor';
+		const checker = path.join(repoRoot, 'scripts', 'protected-state-check.js');
+		const workflow = renderNpmPublishWorkflow();
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const auditPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
+		try {
+			expect(run('git', ['init']).status).toBe(0);
+			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+			fs.writeFileSync(workflowPath, workflow, 'utf8');
+			fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+			fs.writeFileSync(auditPath, `${JSON.stringify({
+				kind: 'protected_state_write',
+				actor,
+				path: NPM_PUBLISH_WORKFLOW_PATH,
+				decision: 'allowed',
+				requiredSurface: 'workflows',
+				declaredSurface: 'workflows',
+				operation: 'generate_npm_workflow',
+				contentHash: `sha256:${require('node:crypto').createHash('sha256').update(workflow).digest('hex')}`,
+				viaForgeApi: true,
+			})}\n`, 'utf8');
+			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+
+			const result = spawnSync(process.execPath, [checker], {
+				cwd: root,
+				encoding: 'utf8',
+				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
+			});
+
+			expect(result.status).toBe(1);
+			expect(`${result.stdout}${result.stderr}`).toContain('Forge-owned authorization');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 15_000);
+
+	test('hook consumes authorization and denies a later same-content stale replay', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-same-content-replay-'));
+		const actor = 'release-replay-test';
+		const checker = path.join(repoRoot, 'scripts', 'protected-state-check.js');
+		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
+		const check = () => spawnSync(process.execPath, [checker], {
+			cwd: root,
+			encoding: 'utf8',
+			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
+		});
+		try {
+			expect(run('git', ['init']).status).toBe(0);
+			expect(run('git', ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+			expect(run('git', ['config', 'user.name', 'Forge Test']).status).toBe(0);
+			expect((await releaseCommand.handler(
+				['generate-npm-workflow'],
+				{},
+				root,
+				{ env: { FORGE_ACTOR: actor } },
+			)).success).toBe(true);
+			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+			expect(check().status).toBe(0);
+			expect(run('git', ['commit', '-m', 'generated workflow']).status).toBe(0);
+
+			fs.writeFileSync(workflowPath, 'name: intermediate raw workflow\n', 'utf8');
+			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+			expect(run('git', ['commit', '-m', 'intermediate workflow']).status).toBe(0);
+			fs.writeFileSync(workflowPath, renderNpmPublishWorkflow(), 'utf8');
+			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+
+			const replay = check();
+			expect(replay.status).toBe(1);
+			expect(`${replay.stdout}${replay.stderr}`).toContain('already consumed');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
 });
