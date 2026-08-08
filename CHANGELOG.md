@@ -28,6 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
 - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
 
+### Fixed
+
+- **Windows full-suite drive classification no longer launches a redundant PowerShell probe for every child process.** Persistent mappings still use the bounded `net use` probe; an unclassified non-system drive now fails open as unknown instead of being mislabeled fixed. (#496, issue `1efe5de9-6bfb-448f-8575-624577b829f2`)
+- **Injected synchronous pre-push runners no longer create real process-tracking state.** Targeted-mode unit execution keeps its command and edge-suite assertions while avoiding the Windows process-tree setup that pushed the test beyond Bun's 15-second limit. (issue `54b54219-7cbc-4262-9461-a77112a7c49b`)
+
+## [0.1.0-beta.4] - 2026-07-24
+
+The **Kernel-only authority and autonomous Shepherd wave** removed the remaining live Beads runtime path while expanding Forge's portable skill and PR-monitoring surfaces.
+
+### Added
+
+- Reasoning-driven skill invocation, sub-skill composition, static skill evaluation, and dedicated setup, portability, worktree, and gate skills. (#417-#419, #429-#434)
+- Kernel-backed PR authority, singleton Shepherd leases, reconciliation, daemon execution, and cross-harness triggering guidance. (#420-#428)
+- Query-relevant project-memory recall for supported agent sessions. (#440-#441)
+
+### Changed
+
+- Issue commands, status, and dashboards now use the Forge Kernel exclusively; the live Beads backend and dashboard surfaces were retired. (#435-#439)
+
+### Fixed
+
+- Targeted pre-push selection recognizes Forge CLI surfaces, and Shepherd background processes stay hidden and derive required checks consistently on Windows and CI. (#420-#421, #438)
+
 ## [0.1.0-beta.3] - 2026-07-17
 
 The **adoption-unblocking wave** — the changes beta testers hit on their very first real session. `forge ship`, the hook-enforcement verdict, and `forge worktree create` no longer dead-end a fresh or in-flight branch, and the PR shepherd now arms itself for any agent. Every change below was adversarially reviewed before merge.
