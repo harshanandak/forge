@@ -149,10 +149,15 @@ function parseShardReceipt(output) {
   if (!root || openingTags.length !== 1 || closingTags.length !== 1) return null;
 
   const readAttribute = (name) => root[1].match(new RegExp('\\b' + name + '="(\\d+)"'));
-  const values = ['tests', 'assertions', 'failures', 'skipped'].map(readAttribute);
+  const requiredAttributes = ['tests', 'assertions', 'failures', 'skipped'];
+  const values = requiredAttributes.map(readAttribute);
+  const hasInvalidRequiredAttribute = requiredAttributes.some((name, index) => {
+    const occurrences = root[1].match(new RegExp('\\b' + name + '\\s*=', 'g')) || [];
+    return occurrences.length !== 1 || !values[index];
+  });
   const errorsOccurrences = root[1].match(/\berrors\s*=/g) || [];
   const errorsAttribute = readAttribute('errors');
-  if (values.some((value) => !value)
+  if (hasInvalidRequiredAttribute
     || errorsOccurrences.length > 1
     || (errorsOccurrences.length === 1 && !errorsAttribute)) return null;
 
