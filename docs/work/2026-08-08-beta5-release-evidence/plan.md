@@ -2,11 +2,11 @@
 
 ## Outcome
 
-One reviewable PR removes the two remaining beta.5 release blockers without publishing a release. It adds a Forge-audited path for protected workflow generation, makes npm publication consume exact-SHA full-suite evidence, and completes the executable behavioral-evaluation control plane needed to run the frozen 30/100/300 protocol.
+One reviewable PR prepares the beta.5 release candidate without publishing a release. It adds a Forge-audited path for protected workflow generation, makes npm publication consume exact-SHA full-suite evidence, and completes the executable behavioral-evaluation control plane needed to run the frozen 30/100/300 protocol. After merge, the release tag and GitHub release are created from the exact merged SHA and trigger the trusted npm publication workflow.
 
 ## Boundaries
 
-- Do not bump the package version, create a tag or GitHub release, or publish to npm.
+- Keep the package version, changelog, and release docs aligned for beta.5, but do not create a tag or GitHub release or publish to npm from the PR.
 - Do not claim a model winner or let evaluation code authorize merge.
 - Do not store raw prompts, transcripts, tool payloads, secrets, or personal data.
 - Reuse the behavior of local commit `5fbb3521`, but do not cherry-pick its unsanctioned protected-workflow edit.

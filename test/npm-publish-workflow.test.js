@@ -47,14 +47,19 @@ describe('Forge-owned npm publish workflow', () => {
 		const buildJob = jobSection(workflow, 'build');
 		const publishJob = jobSection(workflow, 'publish-npm');
 
+		expect(workflow).toContain('types: [published]');
+		expect(workflow).not.toContain('types: [created]');
 		expect(resolveJob).toContain('ref: ${{ github.event.release.tag_name }}');
+		expect(resolveJob).toContain('persist-credentials: false');
 		expect(resolveJob).toContain('git rev-parse "${RELEASE_TAG}^{commit}"');
 		expect(buildJob).toContain('ref: ${{ needs.resolve-release.outputs.commitSha }}');
+		expect(buildJob).toContain('persist-credentials: false');
 		expect(buildJob).toContain('node scripts/test-full-suite.js --label-prefix release-full');
 		expect(buildJob).toContain('bash test-env/automation/setup-fixtures.sh --force');
 		expect(buildJob.match(/node scripts\/test-full-suite\.js --label-prefix release-full/g)).toHaveLength(1);
 		expect(buildJob).not.toContain('bun test --timeout 15000 test-env/');
 		expect(publishJob).toContain('ref: ${{ needs.resolve-release.outputs.commitSha }}');
+		expect(publishJob).toContain('persist-credentials: false');
 	});
 
 	test('publishing requires the attributable exact-suite receipt and checkout SHA', () => {
@@ -64,6 +69,9 @@ describe('Forge-owned npm publish workflow', () => {
 
 		expect(buildJob).toContain('receipt: ${{ steps.evidence.outputs.receipt }}');
 		expect(buildJob).toContain('node scripts/npm-release-receipt.js emit');
+		expect(publishJob.indexOf('actions/setup-node@v7')).toBeLessThan(
+			publishJob.indexOf('node scripts/npm-release-receipt.js verify'),
+		);
 		expect(publishJob).toContain('node scripts/npm-release-receipt.js verify');
 	});
 
@@ -124,6 +132,8 @@ describe('Forge-owned npm publish workflow', () => {
 		expect(publishJob).toContain('npm pack --dry-run');
 		expect(publishJob).toContain('npm publish --provenance --tag beta');
 		expect(publishJob).toContain('npm publish --provenance');
+		expect(publishJob).toContain('npm install --global npm@10.9.3 && npm --version');
+		expect(publishJob).not.toContain('npm@latest');
 	});
 
 	test('release generator writes through the protected API and records content-bound evidence', async () => {
@@ -393,24 +403,9 @@ describe('Forge-owned npm publish workflow', () => {
 		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
 		try {
 			expect(run('git', ['init']).status).toBe(0);
-			if (typeof protectedStateAuthority.issueProtectedStateAuthorization === 'function') {
-				await protectedStateAuthority.issueProtectedStateAuthorization(root, {
-					actor,
-					surface: 'workflows',
-					path: NPM_PUBLISH_WORKFLOW_PATH,
-					content: arbitraryContent,
-					operation: 'generate_npm_workflow',
-					sourceCommand: protectedStateAuthority.NPM_WORKFLOW_SOURCE_COMMAND,
-				});
-			} else {
-				await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, {
-					actor,
-					content: arbitraryContent,
-					path: NPM_PUBLISH_WORKFLOW_PATH,
-					operation: 'generate_npm_workflow',
-					sourceCommand: 'spoofed direct caller',
-				});
-			}
+			expect(protectedStateAuthority.issueProtectedStateAuthorization).toBeUndefined();
+			const authorization = await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, { actor });
+			expect(authorization.success).toBe(true);
 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
 			fs.writeFileSync(workflowPath, arbitraryContent, 'utf8');
 			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
@@ -422,7 +417,7 @@ describe('Forge-owned npm publish workflow', () => {
 			});
 
 			expect(result.status).toBe(1);
-			expect(protectedStateAuthority.issueProtectedStateAuthorization).toBeUndefined();
+			expect(`${result.stdout}${result.stderr}`).toContain('content-bound authorization');
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
