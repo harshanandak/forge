@@ -12,6 +12,10 @@ const {
 	renderNpmPublishWorkflow,
 } = require('../lib/npm-publish-workflow');
 const { PROTECTED_STATE_AUDIT_LOG } = require('../lib/protected-state-surfaces');
+const {
+	createReleaseSuiteReceipt,
+	verifyReleaseSuiteReceipt,
+} = require('../scripts/npm-release-receipt');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -54,14 +58,55 @@ describe('Forge-owned npm publish workflow', () => {
 		const publishJob = jobSection(workflow, 'publish-npm');
 
 		expect(buildJob).toContain('receipt: ${{ steps.evidence.outputs.receipt }}');
-		expect(buildJob).toContain('GITHUB_REPOSITORY');
-		expect(buildJob).toContain('GITHUB_WORKFLOW_REF');
-		expect(buildJob).toContain('GITHUB_RUN_ID');
-		expect(buildJob).toContain('GITHUB_RUN_ATTEMPT');
-		expect(publishJob).toContain('Missing release suite evidence field');
-		expect(publishJob).toContain('Publish checkout SHA');
-		expect(publishJob).toContain('Release suite receipt mismatch');
-		expect(publishJob).toContain('exit 1');
+		expect(buildJob).toContain('node scripts/npm-release-receipt.js emit');
+		expect(publishJob).toContain('node scripts/npm-release-receipt.js verify');
+	});
+
+	test('executable receipt guard denies missing fields and every SHA mismatch', () => {
+		const attribution = {
+			repository: 'owner/forge',
+			workflowRef: 'owner/forge/.github/workflows/npm-publish.yml@refs/tags/v0.1.0-beta.5',
+			runId: '1234',
+			runAttempt: '1',
+		};
+		const sha = 'a'.repeat(40);
+		const otherSha = 'b'.repeat(40);
+		const evidence = createReleaseSuiteReceipt({ ...attribution, sha });
+		const valid = {
+			...attribution,
+			expectedSha: sha,
+			verifiedSha: sha,
+			checkoutSha: sha,
+			receipt: evidence.receipt,
+			receiptSubject: evidence.receiptSubject,
+		};
+
+		expect(verifyReleaseSuiteReceipt(valid)).toMatchObject({ allowed: true });
+		for (const field of ['expectedSha', 'verifiedSha', 'checkoutSha', 'receipt', 'receiptSubject']) {
+			expect(verifyReleaseSuiteReceipt({ ...valid, [field]: '' })).toMatchObject({
+				allowed: false,
+				reason: `missing:${field}`,
+			});
+		}
+		expect(verifyReleaseSuiteReceipt({ ...valid, verifiedSha: otherSha })).toMatchObject({
+			allowed: false,
+			reason: 'sha_mismatch',
+		});
+		expect(verifyReleaseSuiteReceipt({ ...valid, checkoutSha: otherSha })).toMatchObject({
+			allowed: false,
+			reason: 'sha_mismatch',
+		});
+
+		const wrongShaEvidence = createReleaseSuiteReceipt({ ...attribution, sha: otherSha });
+		expect(verifyReleaseSuiteReceipt({
+			...valid,
+			receipt: wrongShaEvidence.receipt,
+			receiptSubject: wrongShaEvidence.receiptSubject,
+		})).toMatchObject({ allowed: false, reason: 'receipt_mismatch' });
+		expect(verifyReleaseSuiteReceipt({
+			...valid,
+			receiptSubject: wrongShaEvidence.receiptSubject,
+		})).toMatchObject({ allowed: false, reason: 'receipt_mismatch' });
 	});
 
 	test('preserves release guards, OIDC provenance, and beta dist-tag publishing', () => {

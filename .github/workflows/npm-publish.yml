@@ -67,21 +67,9 @@ jobs:
           bun test --timeout 15000 test-env/
       - name: Emit attributable release suite receipt
         id: evidence
-        shell: bash
         env:
           EXPECTED_SHA: ${{ needs.resolve-release.outputs.commitSha }}
-        run: |
-          set -euo pipefail
-          ACTUAL_SHA="$(git rev-parse HEAD)"
-          if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
-            echo "::error::Verification checkout SHA ($ACTUAL_SHA) != resolved release SHA ($EXPECTED_SHA)"
-            exit 1
-          fi
-          RECEIPT_SUBJECT="${GITHUB_REPOSITORY}|${GITHUB_WORKFLOW_REF}|${GITHUB_RUN_ID}|${GITHUB_RUN_ATTEMPT}|build|${ACTUAL_SHA}|release-full|true"
-          RECEIPT="$(printf '%s' "$RECEIPT_SUBJECT" | sha256sum | awk '{print $1}')"
-          echo "commitSha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
-          echo "receipt=$RECEIPT" >> "$GITHUB_OUTPUT"
-          echo "receiptSubject=$RECEIPT_SUBJECT" >> "$GITHUB_OUTPUT"
+        run: node scripts/npm-release-receipt.js emit
 
   publish-npm:
     needs: [resolve-release, build]
@@ -95,31 +83,12 @@ jobs:
           ref: ${{ needs.resolve-release.outputs.commitSha }}
           fetch-depth: 1
       - name: Verify exact release suite receipt
-        shell: bash
         env:
           EXPECTED_SHA: ${{ needs.resolve-release.outputs.commitSha }}
           VERIFIED_SHA: ${{ needs.build.outputs.commitSha }}
           RECEIPT: ${{ needs.build.outputs.receipt }}
           RECEIPT_SUBJECT: ${{ needs.build.outputs.receiptSubject }}
-        run: |
-          set -euo pipefail
-          for field in EXPECTED_SHA VERIFIED_SHA RECEIPT RECEIPT_SUBJECT; do
-            if [ -z "${!field}" ]; then
-              echo "::error::Missing release suite evidence field: $field"
-              exit 1
-            fi
-          done
-          ACTUAL_SHA="$(git rev-parse HEAD)"
-          if [ "$EXPECTED_SHA" != "$VERIFIED_SHA" ] || [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
-            echo "::error::Publish checkout SHA ($ACTUAL_SHA) or verified SHA ($VERIFIED_SHA) != resolved release SHA ($EXPECTED_SHA)"
-            exit 1
-          fi
-          EXPECTED_SUBJECT="${GITHUB_REPOSITORY}|${GITHUB_WORKFLOW_REF}|${GITHUB_RUN_ID}|${GITHUB_RUN_ATTEMPT}|build|${EXPECTED_SHA}|release-full|true"
-          EXPECTED_RECEIPT="$(printf '%s' "$EXPECTED_SUBJECT" | sha256sum | awk '{print $1}')"
-          if [ "$RECEIPT_SUBJECT" != "$EXPECTED_SUBJECT" ] || [ "$RECEIPT" != "$EXPECTED_RECEIPT" ]; then
-            echo "::error::Release suite receipt mismatch"
-            exit 1
-          fi
+        run: node scripts/npm-release-receipt.js verify
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.12

@@ -96,7 +96,7 @@ describe('protected state surfaces', () => {
 			content: 'generated: true\n',
 		}, [authorization]);
 		expect(rawEdit.allowed).toBe(false);
-		expect(rawEdit.reason).toContain('matching content-bound authorization');
+		expect(rawEdit.reason).toContain('content-bound authorization');
 	});
 
 	test('denies stale content records and missing authorization evidence', () => {
@@ -115,6 +115,27 @@ describe('protected state surfaces', () => {
 
 		expect(verifyProtectedStateAuthorization(request, [authorization]).allowed).toBe(false);
 		expect(verifyProtectedStateAuthorization(request, []).allowed).toBe(false);
+	});
+
+	test('denies a raw revert that matches an older superseded authorization record', () => {
+		const base = {
+			actor: 'forge-release',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+		};
+		const authorizationA = createProtectedStateAuthorization({ ...base, content: 'version: A\n' });
+		const authorizationB = createProtectedStateAuthorization({ ...base, content: 'version: B\n' });
+
+		expect(verifyProtectedStateAuthorization(
+			{ ...base, content: 'version: B\n' },
+			[authorizationA, authorizationB],
+		).allowed).toBe(true);
+		const reverted = verifyProtectedStateAuthorization(
+			{ ...base, content: 'version: A\n' },
+			[authorizationA, authorizationB],
+		);
+		expect(reverted.allowed).toBe(false);
+		expect(reverted.reason).toContain('latest');
 	});
 
 	test('writes protected files only through the declared Forge API surface', () => {
