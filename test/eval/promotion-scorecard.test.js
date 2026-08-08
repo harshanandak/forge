@@ -18,10 +18,11 @@ function arm(status, latencyMs, tokens, hardFailure = false) {
 function completePairs(tier, options = {}) {
   const pairs = [];
   const devCount = tier * 0.6;
+  const models = options.models ?? MODELS;
   for (let index = 0; index < tier; index += 1) {
     const split = index < devCount ? 'DEV' : 'TEST';
     const risk = ['low', 'medium', 'high'][index % 3];
-    for (const model of MODELS) {
+    for (const model of models) {
       for (const trialIndex of TRIALS) {
         const currentStatus = split === 'TEST' && (index - devCount) % 5 === 0 ? 'FAIL' : 'PASS';
         pairs.push({
@@ -46,6 +47,20 @@ describe('promotion scorecard', () => {
       upper: expect.closeTo(0.5961684696, 9),
     });
     expect(wilsonInterval(0, 0)).toBeNull();
+    expect(() => wilsonInterval(-1, 0)).toThrow(/valid non-negative integers/i);
+    expect(() => wilsonInterval(1, 0)).toThrow(/valid non-negative integers/i);
+  });
+
+  test('serializes hostile model identifiers as own score fields', () => {
+    const score = scorePromotion({
+      tier: 100,
+      pairs: completePairs(100, { models: ['__proto__', 'safe-model'] }),
+    });
+    expect(Object.hasOwn(score.absolute.byModel, '__proto__')).toBe(true);
+    expect(Object.hasOwn(score.absolute.byModel, 'safe-model')).toBe(true);
+
+    const serialized = JSON.parse(JSON.stringify(score.absolute.byModel));
+    expect(Object.keys(serialized).sort()).toEqual(['__proto__', 'safe-model']);
   });
 
   test('keeps the 30-case tier instrumentation-only even with complete winning evidence', () => {

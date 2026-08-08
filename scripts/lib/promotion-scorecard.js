@@ -12,11 +12,11 @@ function round(value) {
 }
 
 function wilsonInterval(successes, total) {
-  if (total === 0) return null;
   if (!Number.isInteger(successes) || !Number.isInteger(total)
     || successes < 0 || total < 0 || successes > total) {
     throw new Error('Wilson counts must be valid non-negative integers');
   }
+  if (total === 0) return null;
   const rate = successes / total;
   const zSquared = Z_95 ** 2;
   const denominator = 1 + zSquared / total;
@@ -116,7 +116,7 @@ function passStats(pairs, armName) {
 }
 
 function absoluteStats(testPairs, models) {
-  const byModel = {};
+  const byModel = Object.create(null);
   for (const model of models) {
     const modelPairs = testPairs.filter((pair) => pair.model === model);
     byModel[model] = {
