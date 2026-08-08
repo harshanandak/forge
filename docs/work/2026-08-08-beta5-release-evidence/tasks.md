@@ -21,4 +21,3 @@ Owned files: scorecard module and its tests. Do not touch release, CLI, or runne
 ## Task 4 - Integration, documentation, and final evidence
 
 Integrate the three commits, run cross-seam tests, update the unreleased changelog, and confirm the generated workflow matches its canonical source. Run the full validation and release-readiness commands on the final SHA. Record issue handoff and open one PR. Do not tag or publish beta.5.
-

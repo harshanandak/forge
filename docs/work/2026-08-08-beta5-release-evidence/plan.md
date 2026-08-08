@@ -33,4 +33,3 @@ Choose the smallest reversible option that preserves fail-closed behavior and cu
 - Deterministic workflow generation and YAML parsing.
 - Current-base rebase, lint/type/security checks, and the supported full repository suite on the final SHA.
 - PR checks, review threads, and quiet feedback window before merge consideration.
-
