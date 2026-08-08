@@ -24,7 +24,11 @@ function writeExecutable(filePath, content) {
   if (process.platform === 'win32' && path.extname(filePath) === '') {
     const base = path.basename(filePath);
     const cmdPath = `${filePath}.cmd`;
-    const bash = resolveShellRuntime().command;
+    const runtime = resolveShellRuntime();
+    if (!runtime.available || !runtime.command) {
+      throw new Error(runtime.message || 'Git Bash runtime unavailable');
+    }
+    const bash = runtime.command;
     fs.writeFileSync(cmdPath, `@echo off\r\n\"${bash}\" \"%~dp0\\${base}\" %*\r\n`, { mode: 0o755 });
   }
 }

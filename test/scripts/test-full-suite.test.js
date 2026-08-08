@@ -88,6 +88,7 @@ describe('scripts/test-full-suite.js', () => {
 
   test('passes absolute shard files to Bun children', async () => {
     const calls = [];
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-absolute-paths-'));
     const processTree = {
       reserveChild: () => ({ id: 'absolute-paths' }),
       registerChild: (_reservation, child) => child,
@@ -98,13 +99,18 @@ describe('scripts/test-full-suite.js', () => {
       return fakeShardChild(0, undefined, args);
     };
 
-    await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
-      labelPrefix: 'absolute-paths',
-      processTree,
-      spawn,
-    });
+    try {
+      await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
+        labelPrefix: 'absolute-paths',
+        processTree,
+        reportDirectory,
+        spawn,
+      });
 
-    expect(path.isAbsolute(calls[0].at(-1))).toBe(true);
+      expect(path.isAbsolute(calls[0].at(-1))).toBe(true);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
   });
 
   test('nested worktree copies cannot add tests to a shard', () => {
@@ -224,6 +230,7 @@ describe('scripts/test-full-suite.js', () => {
 
       expect(statuses).toEqual([0, 0]);
       expect(path.dirname(receiptPaths[0])).not.toBe(path.dirname(receiptPaths[1]));
+      expect(receiptPaths.every((receiptPath) => !fs.existsSync(path.dirname(receiptPath)))).toBe(true);
     } finally {
       for (const directory of new Set(receiptPaths.map((receiptPath) => path.dirname(receiptPath)))) {
         if (path.basename(directory).startsWith('full-suite-')) {
@@ -348,6 +355,8 @@ describe('scripts/test-full-suite.js', () => {
   test('kills a child immediately when process registration fails after spawn', async () => {
     const killed = [];
     const errors = [];
+    let receiptPath;
+    let retained;
     const error = spyOn(console, 'error').mockImplementation((...args) => errors.push(args));
     const processTree = {
       reserveChild: () => ({ id: 'failed-registration' }),
@@ -357,7 +366,8 @@ describe('scripts/test-full-suite.js', () => {
       installSignalHandlers: () => () => {},
       cleanup: () => {},
     };
-    const spawn = () => {
+    const spawn = (_command, args) => {
+      receiptPath = args[args.indexOf('--reporter-outfile') + 1];
       const child = new EventEmitter();
       child.pid = 9300;
       child.kill = (signal) => killed.push(signal);
@@ -373,10 +383,13 @@ describe('scripts/test-full-suite.js', () => {
         platform: 'linux',
         spawn,
       })).toBe(1);
+      retained = fs.existsSync(path.dirname(receiptPath));
     } finally {
       error.mockRestore();
+      if (receiptPath) fs.rmSync(path.dirname(receiptPath), { force: true, recursive: true });
     }
 
+    expect(retained).toBe(true);
     expect(killed).toEqual(['SIGKILL']);
     expect(errors).toHaveLength(1);
     expect(errors[0][0]).toBe('Full suite shard execution failed:');
@@ -385,9 +398,11 @@ describe('scripts/test-full-suite.js', () => {
   });
 
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {
+    const receiptPaths = [];
     let index = 0;
     let pid = 9200;
     const spawn = (_command, args) => {
+      receiptPaths.push(args[args.indexOf('--reporter-outfile') + 1]);
       const child = fakeShardChild(index === 0 ? 0 : 1, pid++, args);
       index += 1;
       return child;
@@ -406,11 +421,18 @@ describe('scripts/test-full-suite.js', () => {
       processTree: fakeProcessTree(),
     });
 
+    const retained = receiptPaths.every((receiptPath) => fs.existsSync(path.dirname(receiptPath)));
+    for (const directory of new Set(receiptPaths.map((receiptPath) => path.dirname(receiptPath)))) {
+      fs.rmSync(directory, { force: true, recursive: true });
+    }
     expect(status).toBe(1);
+    expect(retained).toBe(true);
   });
 
   test('runFullSuiteInParallel reports a child process error as incomplete', async () => {
-    const spawn = () => {
+    let receiptPath;
+    const spawn = (_command, args) => {
+      receiptPath = args[args.indexOf('--reporter-outfile') + 1];
       const child = new EventEmitter();
       child.stdout = new EventEmitter();
       child.pid = 9400;
@@ -426,7 +448,10 @@ describe('scripts/test-full-suite.js', () => {
       spawn,
     });
 
+    const retained = fs.existsSync(path.dirname(receiptPath));
+    fs.rmSync(path.dirname(receiptPath), { force: true, recursive: true });
     expect(status).toBe(1);
+    expect(retained).toBe(true);
   });
 
   test('runFullSuiteInParallel preserves a captured signal when a shard errors and a sibling hangs', async () => {
@@ -481,6 +506,8 @@ describe('scripts/test-full-suite.js', () => {
     }
   });
   test('runFullSuiteInParallel never reports PASS after a signal', async () => {
+    let receiptPath;
+    let retained;
     let signalHandler;
     const processTree = {
       reserveChild: () => ({ id: 'signal' }),
@@ -500,15 +527,19 @@ describe('scripts/test-full-suite.js', () => {
         durationMap: new Map([['test/a.test.js', 1000]]),
         processTree,
         spawn: (_command, args) => {
+          receiptPath = args[args.indexOf('--reporter-outfile') + 1];
           const child = fakeShardChild(0, 9500, args);
           process.nextTick(() => signalHandler('SIGTERM'));
           return child;
         },
       });
       expect(status).toBe(143);
+      retained = fs.existsSync(path.dirname(receiptPath));
     } finally {
       log.mockRestore();
+      if (receiptPath) fs.rmSync(path.dirname(receiptPath), { force: true, recursive: true });
     }
+    expect(retained).toBe(true);
     expect(logs.some((line) => line.includes('status=INCOMPLETE'))).toBe(true);
   });
   test('runFullSuiteInParallel fails closed when no tests are discovered', async () => {
@@ -518,6 +549,7 @@ describe('scripts/test-full-suite.js', () => {
       expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix }, {
         allTests: [],
         durationMap: new Map(),
+        processTree: fakeProcessTree(),
       })).toBe(1);
     } finally {
       log.mockRestore();

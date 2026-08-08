@@ -143,7 +143,6 @@ describe('withJournalLock (cross-process serialization)', () => {
     const deadline = Date.now() + 2000;
     let stampedAt = acquiredAt;
     let contenderEntered = false;
-    let contender;
     try {
       while (
         (stampedAt <= acquiredAt + staleMs || Date.now() - stampedAt >= staleMs / 2)
@@ -154,17 +153,17 @@ describe('withJournalLock (cross-process serialization)', () => {
       }
       expect(stampedAt).toBeGreaterThan(acquiredAt + staleMs);
       expect(Date.now() - stampedAt).toBeLessThan(staleMs / 2);
-      contender = journal.withJournalLock(
+      await expect(journal.withJournalLock(
         dir,
         () => { contenderEntered = true; },
-        { staleMs, retries: 20, waitMs: 5 },
-      );
+        { staleMs, retries: 120, waitMs: 10 },
+      )).rejects.toThrow('journal lock busy');
       expect(contenderEntered).toBe(false);
     } finally {
       releasePass();
       await longPass;
-      if (contender) await contender;
     }
+    await journal.withJournalLock(dir, () => { contenderEntered = true; });
     expect(contenderEntered).toBe(true);
     expect(fs.existsSync(journal.lockPath(dir))).toBe(false);
   });

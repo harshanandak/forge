@@ -141,6 +141,31 @@ function buildShardTestArgs({ junitPath, files, root = rootDir }) {
   ];
 }
 
+function parseShardReceipt(output) {
+  if (typeof output !== 'string') return null;
+  const root = output.match(/^\s*(?:<\?xml\b[^?]*\?>\s*)?<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>\s*$/);
+  const openingTags = output.match(/<testsuites\b/g) || [];
+  const closingTags = output.match(/<\/testsuites\s*>/g) || [];
+  if (!root || openingTags.length !== 1 || closingTags.length !== 1) return null;
+
+  const readAttribute = (name) => root[1].match(new RegExp('\\b' + name + '="(\\d+)"'));
+  const values = ['tests', 'assertions', 'failures', 'skipped'].map(readAttribute);
+  const errorsOccurrences = root[1].match(/\berrors\s*=/g) || [];
+  const errorsAttribute = readAttribute('errors');
+  if (values.some((value) => !value)
+    || errorsOccurrences.length > 1
+    || (errorsOccurrences.length === 1 && !errorsAttribute)) return null;
+
+  const tests = Number.parseInt(values[0][1], 10);
+  const assertions = Number.parseInt(values[1][1], 10);
+  const failed = Number.parseInt(values[2][1], 10);
+  const errors = Number.parseInt(errorsAttribute?.[1] || '0', 10);
+  const skipped = Number.parseInt(values[3][1], 10);
+  const passed = tests - failed - errors - skipped;
+  if (tests === 0 || passed < 0) return null;
+  return { assertions, errors, failed, passed, skipped, tests };
+}
+
 function aggregateShardReceipts(receipts, expectedCount) {
   const totals = {
     assertions: 0,
@@ -170,47 +195,12 @@ function aggregateShardReceipts(receipts, expectedCount) {
       failedProcess ||= receipt.code !== 0;
     }
 
-    const root = typeof receipt.output === 'string'
-      ? receipt.output.match(/^\s*(?:<\?xml\b[^?]*\?>\s*)?<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>\s*$/)
-      : null;
-    const openingTags = typeof receipt.output === 'string'
-      ? receipt.output.match(/<testsuites\b/g) || []
-      : [];
-    const closingTags = typeof receipt.output === 'string'
-      ? receipt.output.match(/<\/testsuites\s*>/g) || []
-      : [];
-    if (!root || openingTags.length !== 1 || closingTags.length !== 1) {
+    const parsed = parseShardReceipt(receipt.output);
+    if (!parsed) {
       incomplete = true;
       continue;
     }
-
-    const readAttribute = (name) => root[1].match(new RegExp(`\\b${name}="(\\d+)"`));
-    const values = ['tests', 'assertions', 'failures', 'skipped'].map(readAttribute);
-    const errorsOccurrences = root[1].match(/\berrors\s*=/g) || [];
-    const errorsAttribute = readAttribute('errors');
-    if (values.some((value) => !value)
-      || errorsOccurrences.length > 1
-      || (errorsOccurrences.length === 1 && !errorsAttribute)) {
-      incomplete = true;
-      continue;
-    }
-    const tests = Number.parseInt(values[0][1], 10);
-    const assertions = Number.parseInt(values[1][1], 10);
-    const failed = Number.parseInt(values[2][1], 10);
-    const errors = Number.parseInt(errorsAttribute?.[1] || '0', 10);
-    const skipped = Number.parseInt(values[3][1], 10);
-    const passed = tests - failed - errors - skipped;
-    if (tests === 0 || passed < 0) {
-      incomplete = true;
-      continue;
-    }
-
-    totals.tests += tests;
-    totals.assertions += assertions;
-    totals.passed += passed;
-    totals.failed += failed;
-    totals.errors += errors;
-    totals.skipped += skipped;
+    for (const key of Object.keys(totals)) totals[key] += parsed[key];
   }
 
   incomplete ||= seen.size !== expectedCount;
@@ -360,6 +350,9 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
     const exitCode = signal ? signalExitCode(signal) : aggregate.exitCode;
     if (signal) aggregate.status = 'INCOMPLETE';
+    if (aggregate.status === 'PASS' && exitCode === 0) {
+      fs.rmSync(runReportDir, { force: true, recursive: true });
+    }
     console.log(`Full suite aggregate: status=${aggregate.status} tests=${aggregate.tests} assertions=${aggregate.assertions} passed=${aggregate.passed} failed=${aggregate.failed} errors=${aggregate.errors} skipped=${aggregate.skipped}`);
     console.log(`Full suite exit: ${exitCode}`);
     completed = true;

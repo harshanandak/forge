@@ -84,7 +84,8 @@ describe('secureExecFileSync', () => {
         },
       });
 
-      expect(childEnv?.PATH).toBe(process.env.PATH);
+      expect(childEnv).toBeDefined();
+      expect(childEnv.PATH).toBe(process.env.PATH);
     });
 
     test('spawns a resolved .exe directly without a shell', () => {
