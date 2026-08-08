@@ -6,8 +6,37 @@ const os = require('node:os');
 const path = require('node:path');
 
 const skillCommand = require('../../lib/commands/skill');
+const { loadTier } = require('../../scripts/lib/immutable-eval-corpus');
 
 const repoRoot = path.resolve(__dirname, '../..');
+
+function completeBehavioralFindings(tier) {
+  const { cases, manifest } = loadTier(tier);
+  const findings = [];
+  for (const packet of cases) {
+    for (const model of ['model-one', 'model-two']) {
+      for (const config of ['current', 'bounded']) {
+        for (const trialIndex of manifest.trialIndices) {
+          findings.push({
+            caseId: packet.caseId,
+            risk: packet.risk,
+            split: packet.split,
+            model,
+            config,
+            budget: `tier-${tier}`,
+            trialIndex,
+            status: 'PASS',
+            hardFailure: false,
+            latencyMs: 100,
+            tokens: 10,
+            failures: [],
+          });
+        }
+      }
+    }
+  }
+  return findings;
+}
 
 // The `forge skill` noun routes a situation to the best-fit Forge skill via the deterministic
 // router (lib/using-forge). The catalog is read from the Forge PACKAGE root (getPackageRoot),
@@ -215,6 +244,109 @@ describe('forge skill eval', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('--full --tier routes the named skill to the behavioral runner without writing a static scorecard', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-full-'));
+    const calls = [];
+    try {
+      const sdir = path.join(root, 'skills', 'demo');
+      fs.mkdirSync(sdir, { recursive: true });
+      fs.writeFileSync(path.join(sdir, 'SKILL.md'), '---\nname: demo\ndescription: behavioral demo skill\n---\nbody\n');
+
+      const res = await skillCommand.handler(
+        ['eval', 'demo', '--full', '--tier', '30', '--json'],
+        {},
+        root,
+        {
+          resolveBehavioralEvaluation: async () => ({
+            ok: true,
+            options: {
+              arms: [
+                { id: 'a', model: 'model-one', config: 'current', budget: 'tier-30' },
+                { id: 'b', model: 'model-one', config: 'bounded', budget: 'tier-30' },
+                { id: 'c', model: 'model-two', config: 'current', budget: 'tier-30' },
+                { id: 'd', model: 'model-two', config: 'bounded', budget: 'tier-30' },
+              ],
+            },
+          }),
+          runBehavioralEvaluation: async (input) => {
+            calls.push(input);
+            return {
+              status: 'PASS',
+              tier: input.tier,
+              expectedRuns: 360,
+              completedRuns: 360,
+              findings: completeBehavioralFindings(30),
+            };
+          },
+        },
+      );
+
+      expect(res.success).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].skillName).toBe('demo');
+      expect(calls[0].tier).toBe(30);
+      const output = JSON.parse(res.output);
+      expect(output.status).toBe('PASS');
+      expect(output.scorecard).toMatchObject({
+        status: 'INCOMPLETE', phase: 'instrumentation', winner: null,
+        reasons: ['instrumentation_only'], mergeAuthorized: false,
+      });
+      expect(fs.existsSync(path.join(sdir, 'evals', 'scorecard.json'))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('--full requires a named skill and an exact frozen tier', async () => {
+    for (const args of [
+      ['eval', '--full', '--tier', '30'],
+      ['eval', 'demo', '--full'],
+      ['eval', 'demo', '--full', '--tier', '31'],
+    ]) {
+      const res = await skillCommand.handler(args, {}, repoRoot, {
+        runBehavioralEvaluation: async () => { throw new Error('must not run'); },
+      });
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/name|tier|30\|100\|300/i);
+    }
+  });
+
+  test.each([[100, 'decision'], [300, 'confirmation']])(
+    'tier %i reports the %s score phase with no winner when thresholds do not pass',
+    async (tier, phase) => {
+      const res = await skillCommand.handler(
+        ['eval', 'dev', '--full', '--tier', String(tier), '--json'],
+        {},
+        repoRoot,
+        {
+          resolveBehavioralEvaluation: async () => ({ ok: true, options: {} }),
+          runBehavioralEvaluation: async () => ({
+            status: 'PASS', tier, expectedRuns: tier * 12, completedRuns: tier * 12,
+            findings: completeBehavioralFindings(tier),
+          }),
+        },
+      );
+      const output = JSON.parse(res.output);
+      expect(res.success).toBe(false);
+      expect(output.scorecard).toMatchObject({
+        status: 'FAIL', phase, winner: null, mergeAuthorized: false,
+      });
+    },
+    30000,
+  );
+
+  test('INCOMPLETE behavioral evidence fails the command closed', async () => {
+    const res = await skillCommand.handler(
+      ['eval', 'dev', '--full', '--tier', '100', '--json'],
+      {},
+      repoRoot,
+      { runBehavioralEvaluation: async () => ({ status: 'INCOMPLETE', tier: 100, incompleteRuns: 1 }) },
+    );
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('INCOMPLETE');
+    expect(JSON.parse(res.output).status).toBe('INCOMPLETE');
   });
 });
 

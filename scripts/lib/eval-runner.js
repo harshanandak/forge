@@ -10,7 +10,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { execFileSync, execSync } = require('node:child_process');
+const { execFileSync, execSync, spawn } = require('node:child_process');
 
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
 
@@ -255,9 +255,10 @@ async function resetWorktree(worktreePath) {
  * @param {string} worktreePath — absolute path to the worktree (used as cwd)
  * @param {number} [timeout=120000] — timeout in milliseconds
  * @param {string[]} [cmdOverride] — optional command array for testing
+ * @param {object} [envOverride] — additional subprocess environment entries
  * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
  */
-async function executeCommand(_command, prompt, worktreePath, timeout = 120000, cmdOverride) {
+async function executeCommand(_command, prompt, worktreePath, timeout = 120000, cmdOverride, envOverride = {}) {
   // Build the command to run
   const cmd = cmdOverride || [
     'claude',
@@ -270,54 +271,42 @@ async function executeCommand(_command, prompt, worktreePath, timeout = 120000, 
   ];
 
   // Build environment: inherit current env, strip CLAUDECODE, set FORGE_EVAL
-  const env = { ...process.env };
+  const env = { ...process.env, ...envOverride };
   delete env.CLAUDECODE;
   env.FORGE_EVAL = '1';
 
-  // Spawn with Bun.spawn (array form, no shell interpolation)
-  const proc = Bun.spawn(cmd, { // eslint-disable-line no-undef -- Bun global provided by runtime
+  // Array-form spawn works under both Node and Bun without shell interpolation.
+  const proc = spawn(cmd[0], cmd.slice(1), {
     cwd: worktreePath,
     env,
-    stdout: 'pipe',
-    stderr: 'pipe',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   let timedOut = false;
-  let timeoutId;
-
-  // Set up timeout
-  const timeoutPromise = new Promise((resolve) => {
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      proc.kill();
-      resolve();
-    }, timeout);
-  });
-
-  // Wait for process to exit (or timeout)
-  const exitPromise = proc.exited.then(() => {
-    clearTimeout(timeoutId);
-  });
-
-  await Promise.race([exitPromise, timeoutPromise]);
-
-  // Read stdout and stderr
   let stdout = '';
   let stderr = '';
 
-  try {
-    stdout = await new Response(proc.stdout).text();
-  } catch (_err) {
-    // stream may be closed on kill — ignore
-  }
+  proc.stdout.setEncoding('utf8');
+  proc.stderr.setEncoding('utf8');
+  proc.stdout.on('data', (chunk) => { stdout += chunk; });
+  proc.stderr.on('data', (chunk) => { stderr += chunk; });
 
-  try {
-    stderr = await new Response(proc.stderr).text();
-  } catch (_err) {
-    // stream may be closed on kill — ignore
-  }
-
-  const exitCode = timedOut ? (proc.exitCode ?? 1) : proc.exitCode;
+  const exitCode = await new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeout);
+    proc.once('error', (error) => {
+      clearTimeout(timeoutId);
+      stderr += error.message;
+      resolve(1);
+    });
+    proc.once('close', (code) => {
+      clearTimeout(timeoutId);
+      resolve(code ?? 1);
+    });
+  });
 
   return {
     stdout,

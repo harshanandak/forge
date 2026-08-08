@@ -23,6 +23,8 @@ bun run check
 npm pack --dry-run
 ```
 
+The trusted npm workflow is generated through `forge release generate-npm-workflow`; direct workflow edits remain blocked. On a release event, the workflow resolves the tag once, runs the complete supported repository suite on that immutable commit, and allows publication only when the attributable suite receipt, verification checkout, and publish checkout all name the same SHA. Missing or mismatched evidence fails closed.
+
 For docs-heavy changes, also run a Markdown link check if available. If no docs checker exists and adding one would broaden the PR, create a follow-up issue instead.
 
 ## Packaging Check

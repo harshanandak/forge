@@ -213,6 +213,24 @@ describe('immutable evaluation corpus', () => {
     expect(polling.passed).toBe(false);
     expect(mutation.failures).toContain('observer.mutation');
     expect(polling.failures).toContain('observer.polling');
+    expect(mutation.hardFailure).toBe(true);
+    expect(polling.hardFailure).toBe(true);
+  });
+
+  test('ordinary oracle mismatches are failures but not hard failures', () => {
+    const corpus = loadTier(30);
+    const packet = corpus.cases[0];
+    const result = evaluateCase({
+      packet,
+      manifest: corpus.manifest,
+      evidence: validEvidence(packet, {
+        observation: { decision: 'ordinary-mismatch' },
+      }),
+      expectedBinding: BINDING,
+    });
+    expect(result.passed).toBe(false);
+    expect(result.failures).toContain('oracle.assertion_mismatch');
+    expect(result.hardFailure).toBe(false);
   });
 
   test('manifest tampering fails closed', () => {
@@ -233,5 +251,6 @@ describe('immutable evaluation corpus', () => {
     });
     expect(result.passed).toBe(false);
     expect(result.failures).toContain('oracle.hard_failure');
+    expect(result.hardFailure).toBe(true);
   });
 });

@@ -12,6 +12,7 @@ const {
 	classifyProtectedPath,
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
+	createProtectedStateAuditRecord,
 	buildProtectedStateAuditEvent,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
@@ -70,6 +71,26 @@ describe('protected state surfaces', () => {
 		expect(decision.allowed).toBe(true);
 		expect(decision.decision).toBe('allowed');
 		expect(decision.requiredSurface).toBe('beads_state');
+	});
+
+	test('builds content-bound visibility records without conferring authority', () => {
+		const auditRecord = createProtectedStateAuditRecord({
+			actor: 'forge-release',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+			content: 'generated: true\n',
+		});
+
+		expect(auditRecord).toMatchObject({
+			kind: 'protected_state_write',
+			actor: 'forge-release',
+			path: '.github/workflows/npm-publish.yml',
+			decision: 'allowed',
+			requiredSurface: 'workflows',
+			declaredSurface: 'workflows',
+		});
+		expect(auditRecord.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(auditRecord).not.toHaveProperty('capabilityId');
 	});
 
 	test('writes protected files only through the declared Forge API surface', () => {
@@ -368,7 +389,7 @@ describe('scripts/protected-state-check.js', () => {
 		expect(result.stdout.toString()).toContain('No protected state edits detected');
 	});
 
-	test('allows sanctioned protected surfaces when Forge command context declares them', () => {
+	test('does not allow a surface-only environment declaration without content-bound evidence', () => {
 		const result = spawnSync('node', [scriptPath], {
 			cwd: path.join(__dirname, '..'),
 			stdio: 'pipe',
@@ -379,9 +400,9 @@ describe('scripts/protected-state-check.js', () => {
 			},
 		});
 
-		expect(result.status).toBe(0);
-		expect(result.stdout.toString()).toContain('No protected state edits detected');
-	});
+		expect(result.status).toBe(1);
+		expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
+	}, 15_000);
 
 	test('includes deletions in the staged protected-state query', () => {
 		const content = fs.readFileSync(scriptPath, 'utf8');
