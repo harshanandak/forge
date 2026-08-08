@@ -27,6 +27,12 @@ describe('behavioral eval production runtime', () => {
       'model-two:current', 'model-two:bounded',
     ]);
     expect(new Set(first.arms.map((arm) => arm.id)).size).toBe(4);
+    expect(first.runtimeControls).toEqual({
+      customizationIsolation: 'safe-mode',
+      sessionPersistence: false,
+      tokenEnforcement: 'parsed-usage',
+      tools: [],
+    });
 
     const differentEffort = _internal.buildConfig({
       ...input,
@@ -101,6 +107,7 @@ describe('behavioral eval production runtime', () => {
       '--output-format', 'stream-json',
       '--verbose',
       '--no-session-persistence',
+      '--safe-mode',
       '--tools', '',
       '--model', 'model-one',
       '--effort', 'max',
@@ -115,7 +122,7 @@ describe('behavioral eval production runtime', () => {
         "const observation = JSON.parse(process.env.FORGE_TEST_OBSERVATION);",
         "const text = JSON.stringify(observation);",
         "console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text}],usage:{input_tokens:3,output_tokens:2,cache_read_input_tokens:1}}}));",
-        "console.log(JSON.stringify({type:'result',result:text}));",
+        "console.log(JSON.stringify({type:'result',result:text,usage:{input_tokens:3,output_tokens:2,cache_read_input_tokens:1}}));",
       ].join('\n'));
       const packet = loadTier(30).cases[0];
       const env = {
@@ -127,7 +134,7 @@ describe('behavioral eval production runtime', () => {
         skillName: 'dev',
         skillText: 'bounded contract',
         command: [process.execPath, runtimePath],
-        budget: { timeoutMs: 10000, maxTokens: 8192 },
+        budget: { timeoutMs: 10000, maxTokens: 5, tokenEnforcement: 'parsed-usage' },
         skillHash: 'a'.repeat(64),
         env,
       });
@@ -152,6 +159,20 @@ describe('behavioral eval production runtime', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('uses terminal aggregate usage instead of double-counting assistant usage', () => {
+    const stdout = [
+      JSON.stringify({
+        type: 'assistant',
+        message: { usage: { input_tokens: 8, output_tokens: 5, cache_read_input_tokens: 2 } },
+      }),
+      JSON.stringify({
+        type: 'result',
+        usage: { input_tokens: 8, output_tokens: 5, cache_read_input_tokens: 2 },
+      }),
+    ].join('\n');
+    expect(_internal.countTokens(stdout)).toEqual({ input: 8, output: 5, cached: 2 });
   });
 
   test('fails closed when usage is missing or exceeds the applied post-run token budget', async () => {

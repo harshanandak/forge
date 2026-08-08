@@ -20,6 +20,12 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 const EFFORTS = new Set(['low', 'medium', 'high', 'max']);
+const RUNTIME_CONTROLS = Object.freeze({
+  customizationIsolation: 'safe-mode',
+  sessionPersistence: false,
+  tokenEnforcement: 'parsed-usage',
+  tools: Object.freeze([]),
+});
 const OBSERVATION_KEYS = Object.freeze([
   'decision', 'contract', 'head', 'review', 'checks', 'ci', 'claim', 'security',
   'order', 'platform', 'scope', 'compaction', 'wait', 'hardFailure', 'observer',
@@ -181,6 +187,7 @@ function buildConfig({ tier, skillName, skillText, models, command, env }) {
     models,
     conditions: ['current', 'bounded'],
     runtime: command,
+    runtimeControls: RUNTIME_CONTROLS,
     effort,
     budget,
   };
@@ -192,7 +199,10 @@ function buildConfig({ tier, skillName, skillText, models, command, env }) {
       arms.push({ id, model, config: condition, budget: budgetId });
     }
   }
-  return { arms, budget, budgetHash, configHash, effort, skillHash };
+  return {
+    arms, budget, budgetHash, configHash, effort,
+    runtimeControls: RUNTIME_CONTROLS, skillHash,
+  };
 }
 
 function probeRuntime(command, spawn = spawnSync) {
@@ -216,26 +226,45 @@ function parseJsonResult(stdout) {
     : parsed;
 }
 
-function countTokens(stdout) {
-  const tokens = { input: 0, output: 0, cached: 0 };
-  let found = false;
-  for (const line of String(stdout || '').split('\n')) {
-    try {
-      const event = JSON.parse(line);
-      const usage = event?.message?.usage || event?.usage;
-      if (!usage) continue;
-      const input = Number(usage.input_tokens);
-      const output = Number(usage.output_tokens);
-      const cached = usage.cache_read_input_tokens === undefined
-        ? 0 : Number(usage.cache_read_input_tokens);
-      if (![input, output, cached].every((value) => Number.isFinite(value) && value >= 0)) continue;
-      found = true;
-      tokens.input += input;
-      tokens.output += output;
-      tokens.cached += cached;
-    } catch { /* non-JSON runtime line */ }
+function parseUsage(usage) {
+  if (!usage) return null;
+  const input = Number(usage.input_tokens);
+  const output = Number(usage.output_tokens);
+  const cached = usage.cache_read_input_tokens === undefined
+    ? 0 : Number(usage.cache_read_input_tokens);
+  return [input, output, cached].every((value) => Number.isFinite(value) && value >= 0)
+    ? { input, output, cached }
+    : null;
+}
+
+function parseUsageEvent(line) {
+  try {
+    const event = JSON.parse(line);
+    if (event?.type === 'result' && Object.hasOwn(event, 'usage')) {
+      return { kind: 'result', tokens: parseUsage(event.usage) };
+    }
+    const tokens = parseUsage(event?.message?.usage);
+    return tokens ? { kind: 'assistant', tokens } : null;
+  } catch {
+    return null;
   }
-  return found ? tokens : null;
+}
+
+function countTokens(stdout) {
+  const assistant = { input: 0, output: 0, cached: 0 };
+  let assistantFound = false;
+  let result;
+  for (const line of String(stdout || '').split('\n')) {
+    const usage = parseUsageEvent(line);
+    if (usage?.kind === 'result') result = usage;
+    if (usage?.kind !== 'assistant') continue;
+    assistantFound = true;
+    assistant.input += usage.tokens.input;
+    assistant.output += usage.tokens.output;
+    assistant.cached += usage.tokens.cached;
+  }
+  if (result) return result.tokens;
+  return assistantFound ? assistant : null;
 }
 
 function buildPrompt({ armId, packet, skillName, config, skillText }) {
@@ -263,6 +292,7 @@ function buildRuntimeArgv({ command, prompt, model, effort }) {
     '--output-format', 'stream-json',
     '--verbose',
     '--no-session-persistence',
+    '--safe-mode',
     '--tools', '',
     '--model', model,
     '--effort', effort,
@@ -307,7 +337,7 @@ function createExecutor({ projectRoot, skillName, skillText, command, budget, ef
           skill: skillHash,
           tool: contentHash(stableStringify({
             command, model: input.model, effort: appliedEffort,
-            tools: [], tokenEnforcement: budget.tokenEnforcement,
+            runtimeControls: RUNTIME_CONTROLS,
           })),
         },
         startedAt,
