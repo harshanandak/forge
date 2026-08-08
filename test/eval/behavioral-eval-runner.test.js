@@ -126,6 +126,25 @@ describe('controlled behavioral evaluation runner', () => {
     }
   });
 
+  test('classifies partial nested observation evidence as INCOMPLETE, not FAIL', async () => {
+    let calls = 0;
+    const run = options({
+      executor: async (input) => {
+        calls += 1;
+        return calls === 1
+          ? executorResult(input, { evidence: { observation: {} } })
+          : executorResult(input);
+      },
+    });
+
+    const result = await runBehavioralEvaluation(run.input);
+    expect(result.status).toBe('INCOMPLETE');
+    expect(result.incompleteRuns).toBe(1);
+    expect(result.failedRuns).toBe(0);
+    expect(result.findings[0].failures).toContain('observation.observer.type');
+    expect(run.appended).toHaveLength(result.expectedRuns - 1);
+  });
+
   test('returns FAIL only for complete evidence that fails the corpus oracle', async () => {
     let calls = 0;
     const run = options({

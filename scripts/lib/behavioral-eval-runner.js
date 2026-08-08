@@ -11,7 +11,7 @@ const ATTRIBUTION_FIELDS = Object.freeze([
 const ATTRIBUTION_HASH_FIELDS = Object.freeze(['prompt', 'skill', 'tool']);
 const STRUCTURAL_FAILURE_PREFIXES = Object.freeze([
   'evidence.', 'binding.', 'case_id.', 'packet.', 'split.', 'trial.', 'metrics.',
-  'manifest.',
+  'manifest.', 'observation.',
 ]);
 
 function hasExactFields(value, fields) {
