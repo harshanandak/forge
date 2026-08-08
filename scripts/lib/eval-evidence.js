@@ -17,6 +17,7 @@ const CASE_FIELDS = [
   'started_at', 'ended_at', 'active_ms', 'passive_ms', 'tokens',
   'retries', 'compactions', 'gates',
 ];
+const RUN_IDENTITY_FIELDS = ['arm_id', 'trial_index'];
 
 function assertObject(value, path) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -49,11 +50,19 @@ function assertTimestamp(value, path) {
 }
 
 function validateEvidence(evidence) {
-  assertExactFields(evidence, CASE_FIELDS, 'evidence');
+  const caseFields = Object.hasOwn(evidence || {}, 'run_identity')
+    ? [...CASE_FIELDS, 'run_identity']
+    : CASE_FIELDS;
+  assertExactFields(evidence, caseFields, 'evidence');
   assertString(evidence.issue_id, 'evidence.issue_id');
   if (!Number.isSafeInteger(evidence.pr) || evidence.pr <= 0) throw new Error('evidence.pr must be a positive integer');
   if (!HEX_40.test(evidence.head_sha)) throw new Error('evidence.head_sha must be a full 40-character commit SHA');
   for (const field of ['model', 'effort', 'role']) assertString(evidence[field], `evidence.${field}`);
+  if (Object.hasOwn(evidence, 'run_identity')) {
+    assertExactFields(evidence.run_identity, RUN_IDENTITY_FIELDS, 'evidence.run_identity');
+    assertString(evidence.run_identity.arm_id, 'evidence.run_identity.arm_id');
+    assertCount(evidence.run_identity.trial_index, 'evidence.run_identity.trial_index');
+  }
 
   const hashFields = Object.hasOwn(evidence.hashes, 'eval_set')
     ? HASH_FIELDS

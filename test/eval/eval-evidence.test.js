@@ -97,6 +97,21 @@ describe('eval evidence', () => {
     expect(reordered).toEqual(first);
   });
 
+  test('allow-lists behavioral run identity and binds arm and trial into the content hash', () => {
+    const first = createEvalEvidence(validCase({
+      run_identity: { arm_id: 'arm-1', trial_index: 0 },
+    }));
+    const nextTrial = createEvalEvidence(validCase({
+      run_identity: { arm_id: 'arm-1', trial_index: 1 },
+    }));
+
+    expect(first.evidence.run_identity).toEqual({ arm_id: 'arm-1', trial_index: 0 });
+    expect(first.content_hash).not.toBe(nextTrial.content_hash);
+    expect(() => createEvalEvidence(validCase({
+      run_identity: { arm_id: 'arm-1', trial_index: 0, transcript: 'private' },
+    }))).toThrow(/unknown field.*transcript/i);
+  });
+
   test('detects corruption', () => {
     const envelope = createEvalEvidence(validCase());
     envelope.evidence.tokens.output += 1;

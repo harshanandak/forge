@@ -9,6 +9,7 @@ const ATTRIBUTION_FIELDS = Object.freeze([
   'passiveMs', 'tokens', 'retries', 'compactions',
 ]);
 const ATTRIBUTION_HASH_FIELDS = Object.freeze(['prompt', 'skill', 'tool']);
+const BINDING_FIELDS = Object.freeze(['repoSha', 'configHash', 'budgetHash']);
 const STRUCTURAL_FAILURE_PREFIXES = Object.freeze([
   'evidence.', 'binding.', 'case_id.', 'packet.', 'split.', 'trial.', 'metrics.',
   'manifest.', 'observation.',
@@ -30,12 +31,24 @@ function isStructuralFailure(failure) {
   return STRUCTURAL_FAILURE_PREFIXES.some((prefix) => failure.startsWith(prefix));
 }
 
-function buildEnvelope(input, evaluation, result) {
+function snapshotBinding(binding) {
+  if (!hasExactFields(binding, BINDING_FIELDS)) return null;
+  if (!/^[0-9a-f]{40}$/.test(binding.repoSha)) return null;
+  if (!/^[0-9a-f]{64}$/.test(binding.configHash)) return null;
+  if (!/^[0-9a-f]{64}$/.test(binding.budgetHash)) return null;
+  return Object.freeze({
+    repoSha: binding.repoSha,
+    configHash: binding.configHash,
+    budgetHash: binding.budgetHash,
+  });
+}
+
+function buildEnvelope(input, identity, binding, evaluation, result) {
   const attribution = result.attribution;
   return createEvalEvidence({
     issue_id: input.issueId,
     pr: input.pr,
-    head_sha: input.binding.repoSha,
+    head_sha: binding.repoSha,
     model: attribution.model,
     effort: attribution.effort,
     role: attribution.role,
@@ -57,6 +70,10 @@ function buildEnvelope(input, evaluation, result) {
     retries: attribution.retries,
     compactions: attribution.compactions,
     gates: [{ name: 'behavioral-case', passed: evaluation.passed }],
+    run_identity: {
+      arm_id: identity.armId,
+      trial_index: identity.trialIndex,
+    },
   });
 }
 
@@ -96,6 +113,8 @@ async function runBehavioralEvaluation(input) {
   if (typeof input.executor !== 'function') {
     return incompleteResult(input.tier, arms, expectedRuns, 'executor.missing');
   }
+  const binding = snapshotBinding(input.binding);
+  if (!binding) return incompleteResult(input.tier, arms, expectedRuns, 'binding.invalid');
 
   const append = input.appendEvidence || appendEvalEvidence;
   const findings = [];
@@ -114,7 +133,7 @@ async function runBehavioralEvaluation(input) {
             armId,
             packet,
             trialIndex,
-            binding: input.binding,
+            binding,
             skillName: input.skillName,
           }));
         } catch (_error) {
@@ -132,7 +151,7 @@ async function runBehavioralEvaluation(input) {
           allPackets: corpus.allPackets,
           manifest: corpus.manifest,
           evidence: result.evidence,
-          expectedBinding: input.binding,
+          expectedBinding: binding,
         });
         if (evaluation.failures.some(isStructuralFailure)) {
           incompleteRuns += 1;
@@ -142,7 +161,7 @@ async function runBehavioralEvaluation(input) {
 
         let envelope;
         try {
-          envelope = buildEnvelope(input, evaluation, result);
+          envelope = buildEnvelope(input, identity, binding, evaluation, result);
           const appended = await append(input.projectRoot, envelope, input.appendOptions || {});
           if (!appended || appended.ok !== true) throw new Error('evidence.append_failed');
         } catch (_error) {
