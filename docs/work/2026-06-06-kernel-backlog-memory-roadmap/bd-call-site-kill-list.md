@@ -84,7 +84,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
 - [ ] docs/reference/beads-to-kernel-migration-ux.md (1)
   - lines: 15 (.beads)
 - [ ] docs/reference/COMMANDS.md (1)
-  - lines: 105 (dolt)
+  - lines: 107 (dolt)
 - [ ] docs/reference/DECISION_DRIFT_GUARDS.md (3)
   - lines: 9 (dolt), 71 (.beads), 72 (bd)
 - [ ] docs/reference/dependency-chain.md (19)
