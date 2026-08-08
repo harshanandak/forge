@@ -347,6 +347,8 @@ describe('scripts/test-full-suite.js', () => {
 
   test('kills a child immediately when process registration fails after spawn', async () => {
     const killed = [];
+    const errors = [];
+    const error = spyOn(console, 'error').mockImplementation((...args) => errors.push(args));
     const processTree = {
       reserveChild: () => ({ id: 'failed-registration' }),
       registerChild: () => null,
@@ -363,15 +365,23 @@ describe('scripts/test-full-suite.js', () => {
       return child;
     };
 
-    expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
-      allTests: ['test/a.test.js'],
-      durationMap: new Map([['test/a.test.js', 1000]]),
-      processTree,
-      platform: 'linux',
-      spawn,
-    })).toBe(1);
+    try {
+      expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        durationMap: new Map([['test/a.test.js', 1000]]),
+        processTree,
+        platform: 'linux',
+        spawn,
+      })).toBe(1);
+    } finally {
+      error.mockRestore();
+    }
 
     expect(killed).toEqual(['SIGKILL']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0][0]).toBe('Full suite shard execution failed:');
+    expect(errors[0][1]).toBeInstanceOf(Error);
+    expect(errors[0][1].message).toBe('test shard process could not be registered');
   });
 
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {

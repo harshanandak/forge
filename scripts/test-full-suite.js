@@ -349,7 +349,8 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
         platform,
         processTree,
       })));
-    } catch {
+    } catch (error) {
+      console.error('Full suite shard execution failed:', error);
       const exitCode = signal ? signalExitCode(signal) : 1;
       console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
       console.log('Full suite exit: ' + exitCode);
