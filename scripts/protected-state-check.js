@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
+	PROTECTED_STATE_AUDIT_LOG,
 	assertProtectedWriteAllowed,
+	verifyProtectedStateAuthorization,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
 
@@ -41,13 +45,33 @@ function getStagedFiles() {
 	return parseNameStatus(output);
 }
 
-function getAllowedSurfaces() {
-	return new Set(
-		String(process.env.FORGE_PROTECTED_STATE_ALLOWED_SURFACES || '')
-			.split(',')
-			.map(surface => surface.trim())
-			.filter(Boolean),
-	);
+function readAuthorizationRecords() {
+	try {
+		return fs
+			.readFileSync(path.resolve(process.cwd(), PROTECTED_STATE_AUDIT_LOG), 'utf8')
+			.split(/\r?\n/)
+			.filter(Boolean)
+			.map(line => JSON.parse(line));
+	} catch (error) {
+		if (error.code === 'ENOENT') return [];
+		throw error;
+	}
+}
+
+function getStagedContent(file) {
+	if (process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON) {
+		const contents = JSON.parse(process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON);
+		return Object.prototype.hasOwnProperty.call(contents, file) ? contents[file] : null;
+	}
+
+	try {
+		return execFileSync('git', ['show', `:${file}`], {
+			encoding: null,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+	} catch (_error) {
+		return null;
+	}
 }
 
 function main() {
@@ -57,19 +81,23 @@ function main() {
 		process.env.USER ||
 		process.env.USERNAME ||
 		'unknown';
-	const allowedSurfaces = getAllowedSurfaces();
+	const authorizationRecords = readAuthorizationRecords();
 	const decisions = getStagedFiles()
 		.map(file => {
 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
-			if (probe.requiredSurface && allowedSurfaces.has(probe.requiredSurface)) {
-				return assertProtectedWriteAllowed(file, {
-					actor,
-					operation: 'staged_edit',
-					viaForgeApi: true,
-					surface: probe.requiredSurface,
-				});
-			}
-			return probe;
+			if (!probe.requiredSurface) return probe;
+
+			const content = getStagedContent(probe.path);
+			if (content === null) return probe;
+			const authorization = verifyProtectedStateAuthorization({
+				actor,
+				surface: probe.requiredSurface,
+				path: probe.path,
+				content,
+				operation: 'staged_edit',
+			}, authorizationRecords);
+			if (authorization.allowed) return authorization;
+			return { ...probe, ...authorization, repairHint: probe.repairHint };
 		})
 		.filter(decision => !decision.allowed);
 
@@ -89,6 +117,7 @@ function main() {
 	for (const decision of decisions) {
 		console.error(`  - ${decision.path} [${decision.requiredSurface}]`);
 		console.error(`    Decision: ${decision.decision}`);
+		console.error(`    Reason: ${decision.reason}`);
 		console.error(`    Repair: ${decision.repairHint}`);
 	}
 	console.error('');

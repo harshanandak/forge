@@ -12,6 +12,8 @@ const {
 	classifyProtectedPath,
 	assertProtectedWriteAllowed,
 	writeProtectedFile,
+	createProtectedStateAuthorization,
+	verifyProtectedStateAuthorization,
 	buildProtectedStateAuditEvent,
 	recordProtectedStateAuditEvent,
 } = require('../lib/protected-state-surfaces');
@@ -70,6 +72,49 @@ describe('protected state surfaces', () => {
 		expect(decision.allowed).toBe(true);
 		expect(decision.decision).toBe('allowed');
 		expect(decision.requiredSurface).toBe('beads_state');
+	});
+
+	test('authorizes only the exact actor, surface, path, and content hash', () => {
+		const authorization = createProtectedStateAuthorization({
+			actor: 'forge-release',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+			content: 'generated: true\n',
+		});
+
+		expect(verifyProtectedStateAuthorization({
+			actor: 'forge-release',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+			content: 'generated: true\n',
+		}, [authorization]).allowed).toBe(true);
+
+		const rawEdit = verifyProtectedStateAuthorization({
+			actor: 'codex',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+			content: 'generated: true\n',
+		}, [authorization]);
+		expect(rawEdit.allowed).toBe(false);
+		expect(rawEdit.reason).toContain('matching content-bound authorization');
+	});
+
+	test('denies stale content records and missing authorization evidence', () => {
+		const authorization = createProtectedStateAuthorization({
+			actor: 'forge-release',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+			content: 'original\n',
+		});
+		const request = {
+			actor: 'forge-release',
+			surface: 'workflows',
+			path: '.github/workflows/npm-publish.yml',
+			content: 'raw edit\n',
+		};
+
+		expect(verifyProtectedStateAuthorization(request, [authorization]).allowed).toBe(false);
+		expect(verifyProtectedStateAuthorization(request, []).allowed).toBe(false);
 	});
 
 	test('writes protected files only through the declared Forge API surface', () => {
@@ -368,7 +413,7 @@ describe('scripts/protected-state-check.js', () => {
 		expect(result.stdout.toString()).toContain('No protected state edits detected');
 	});
 
-	test('allows sanctioned protected surfaces when Forge command context declares them', () => {
+	test('does not allow a surface-only environment declaration without content-bound evidence', () => {
 		const result = spawnSync('node', [scriptPath], {
 			cwd: path.join(__dirname, '..'),
 			stdio: 'pipe',
@@ -379,8 +424,8 @@ describe('scripts/protected-state-check.js', () => {
 			},
 		});
 
-		expect(result.status).toBe(0);
-		expect(result.stdout.toString()).toContain('No protected state edits detected');
+		expect(result.status).toBe(1);
+		expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
 	});
 
 	test('includes deletions in the staged protected-state query', () => {
