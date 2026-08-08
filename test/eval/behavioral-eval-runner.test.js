@@ -13,6 +13,12 @@ const BINDING = {
   configHash: 'b'.repeat(64),
   budgetHash: 'c'.repeat(64),
 };
+const ARMS = Object.freeze([
+  { id: 'opaque-a', model: 'model-one', config: 'current', budget: 'tier-30' },
+  { id: 'opaque-b', model: 'model-one', config: 'bounded', budget: 'tier-30' },
+  { id: 'opaque-c', model: 'model-two', config: 'current', budget: 'tier-30' },
+  { id: 'opaque-d', model: 'model-two', config: 'bounded', budget: 'tier-30' },
+]);
 
 function executorResult(input, overrides = {}) {
   const startedAt = '2026-08-08T10:00:00.000Z';
@@ -30,7 +36,7 @@ function executorResult(input, overrides = {}) {
       ...overrides.evidence,
     },
     attribution: {
-      model: input.armId === 'arm-1' ? 'model-one' : 'model-two',
+      model: input.model,
       effort: 'high',
       role: 'behavioral-eval',
       hashes: {
@@ -62,7 +68,7 @@ function options(overrides = {}) {
       issueId: ISSUE_ID,
       pr: 500,
       binding: BINDING,
-      arms: ['arm-1', 'arm-2'],
+      arms: ARMS,
       executor: async (input) => executorResult(input),
       appendEvidence: async (_root, envelope) => {
         appended.push(envelope);
@@ -96,12 +102,12 @@ describe('controlled behavioral evaluation runner', () => {
     const result = await runBehavioralEvaluation(run.input);
 
     expect(result.status).toBe('PASS');
-    expect(result.expectedRuns).toBe(30 * 3 * 2);
+    expect(result.expectedRuns).toBe(30 * 3 * 4);
     expect(result.completedRuns).toBe(result.expectedRuns);
-    expect(result.arms).toEqual(['arm-1', 'arm-2']);
+    expect(result.arms).toEqual(ARMS);
     expect(run.appended).toHaveLength(result.expectedRuns);
     expect(Object.keys(executorInputs[0]).sort()).toEqual([
-      'armId', 'binding', 'packet', 'skillName', 'trialIndex',
+      'armId', 'binding', 'budget', 'config', 'model', 'packet', 'skillName', 'trialIndex',
     ]);
     expect(executorInputs[0]).not.toHaveProperty('merge');
     expect(executorInputs[0]).not.toHaveProperty('projectRoot');
@@ -110,12 +116,28 @@ describe('controlled behavioral evaluation runner', () => {
     expect(envelope.evidence.head_sha).toBe(BINDING.repoSha);
     expect(envelope.evidence.hashes.eval_set).toMatch(/^[0-9a-f]{64}$/);
     expect(envelope.evidence.gates).toEqual([{ name: 'behavioral-case', passed: true }]);
+    expect(envelope.evidence.run_identity).toEqual({
+      arm_id: 'opaque-a',
+      case_id: 'case-001',
+      risk: 'low',
+      split: 'DEV',
+      model: 'model-one',
+      config: 'current',
+      budget: 'tier-30',
+      tier: 30,
+      trial_index: 0,
+      config_hash: BINDING.configHash,
+      budget_hash: BINDING.budgetHash,
+    });
+    expect(envelope.evidence.case_result).toEqual({
+      status: 'PASS', hard_failure: false, latency_ms: 1000, tokens: 15,
+    });
     expect(JSON.stringify(envelope)).not.toMatch(/rawPrompt|transcript|toolPayload|secret/i);
     expect(result).not.toHaveProperty('merge');
     expect(result).not.toHaveProperty('winner');
   });
 
-  test('real evidence append persists a unique allow-listed identity for all 180 runs', async () => {
+  test('real evidence append persists a unique allow-listed identity for all 360 runs', async () => {
     const kernel = await freshKernel();
     const run = options({
       appendEvidence: undefined,
@@ -136,10 +158,15 @@ describe('controlled behavioral evaluation runner', () => {
     const identities = evidenceEvents.map((event) => JSON.parse(event.payload_json).evidence.run_identity);
 
     expect(result.status).toBe('PASS');
-    expect(evidenceEvents).toHaveLength(180);
-    expect(new Set(evidenceEvents.map((event) => event.idempotency_key)).size).toBe(180);
-    expect(new Set(identities.map((identity) => `${identity.arm_id}:${identity.trial_index}`))).toEqual(
-      new Set(['arm-1:0', 'arm-1:1', 'arm-1:2', 'arm-2:0', 'arm-2:1', 'arm-2:2']),
+    expect(evidenceEvents).toHaveLength(360);
+    expect(new Set(evidenceEvents.map((event) => event.idempotency_key)).size).toBe(360);
+    expect(new Set(identities.map((identity) => `${identity.model}:${identity.config}:${identity.trial_index}`))).toEqual(
+      new Set([
+        'model-one:current:0', 'model-one:current:1', 'model-one:current:2',
+        'model-one:bounded:0', 'model-one:bounded:1', 'model-one:bounded:2',
+        'model-two:current:0', 'model-two:current:1', 'model-two:current:2',
+        'model-two:bounded:0', 'model-two:bounded:1', 'model-two:bounded:2',
+      ]),
     );
   });
 
@@ -248,5 +275,20 @@ describe('controlled behavioral evaluation runner', () => {
     expect(result.status).toBe('INCOMPLETE');
     expect(result.completedRuns).toBe(0);
     expect(run.appended).toHaveLength(0);
+  });
+
+  test('rejects an attribution model that does not match the frozen opaque arm', async () => {
+    let calls = 0;
+    const run = options({
+      executor: async (input) => {
+        calls += 1;
+        return executorResult(input, calls === 1 ? { attribution: { model: 'wrong-model' } } : {});
+      },
+    });
+
+    const result = await runBehavioralEvaluation(run.input);
+    expect(result.status).toBe('INCOMPLETE');
+    expect(result.findings[0].failures).toContain('attribution.model_mismatch');
+    expect(run.appended).toHaveLength(result.expectedRuns - 1);
   });
 });

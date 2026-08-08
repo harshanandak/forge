@@ -10,6 +10,7 @@ const ATTRIBUTION_FIELDS = Object.freeze([
 ]);
 const ATTRIBUTION_HASH_FIELDS = Object.freeze(['prompt', 'skill', 'tool']);
 const BINDING_FIELDS = Object.freeze(['repoSha', 'configHash', 'budgetHash']);
+const ARM_FIELDS = Object.freeze(['id', 'model', 'config', 'budget']);
 const STRUCTURAL_FAILURE_PREFIXES = Object.freeze([
   'evidence.', 'binding.', 'case_id.', 'packet.', 'split.', 'trial.', 'metrics.',
   'manifest.', 'observation.',
@@ -43,6 +44,23 @@ function snapshotBinding(binding) {
   });
 }
 
+function snapshotArms(arms) {
+  if (!Array.isArray(arms) || arms.length !== 4) return null;
+  const snapshots = [];
+  for (const arm of arms) {
+    if (!hasExactFields(arm, ARM_FIELDS)) return null;
+    if ([arm.id, arm.model, arm.config, arm.budget]
+      .some((value) => typeof value !== 'string' || value.length === 0)) return null;
+    if (!['current', 'bounded'].includes(arm.config)) return null;
+    snapshots.push(Object.freeze({ ...arm }));
+  }
+  if (new Set(snapshots.map((arm) => arm.id)).size !== 4) return null;
+  if (new Set(snapshots.map((arm) => arm.model)).size !== 2) return null;
+  const matrix = new Set(snapshots.map((arm) => `${arm.model}\0${arm.config}`));
+  if (matrix.size !== 4) return null;
+  return Object.freeze(snapshots);
+}
+
 function buildEnvelope(input, identity, binding, evaluation, result) {
   const attribution = result.attribution;
   return createEvalEvidence({
@@ -72,9 +90,41 @@ function buildEnvelope(input, identity, binding, evaluation, result) {
     gates: [{ name: 'behavioral-case', passed: evaluation.passed }],
     run_identity: {
       arm_id: identity.armId,
+      case_id: identity.caseId,
+      risk: identity.risk,
+      split: identity.split,
+      model: identity.model,
+      config: identity.config,
+      budget: identity.budget,
+      tier: input.tier,
       trial_index: identity.trialIndex,
+      config_hash: binding.configHash,
+      budget_hash: binding.budgetHash,
+    },
+    case_result: {
+      status: evaluation.passed ? 'PASS' : 'FAIL',
+      hard_failure: evaluation.hardFailure === true,
+      latency_ms: result.evidence.metrics.durationMs,
+      tokens: result.evidence.metrics.tokensUsed,
     },
   });
+}
+
+function finding(identity, status, failures, evidence, evaluation) {
+  return {
+    caseId: identity.caseId,
+    risk: identity.risk,
+    split: identity.split,
+    model: identity.model,
+    config: identity.config,
+    budget: identity.budget,
+    trialIndex: identity.trialIndex,
+    status,
+    hardFailure: evaluation?.hardFailure === true,
+    latencyMs: Number.isFinite(evidence?.metrics?.durationMs) ? evidence.metrics.durationMs : 0,
+    tokens: Number.isFinite(evidence?.metrics?.tokensUsed) ? evidence.metrics.tokensUsed : 0,
+    failures,
+  };
 }
 
 function incompleteResult(tier, arms, expectedRuns, reason) {
@@ -91,8 +141,107 @@ function incompleteResult(tier, arms, expectedRuns, reason) {
   };
 }
 
+function identityFor(packet, trialIndex, arm) {
+  return {
+    armId: arm.id,
+    caseId: packet.caseId,
+    risk: packet.risk,
+    split: packet.split,
+    model: arm.model,
+    config: arm.config,
+    budget: arm.budget,
+    trialIndex,
+  };
+}
+
+async function invokeExecutor(input, packet, trialIndex, arm, binding) {
+  try {
+    return await input.executor(Object.freeze({
+      armId: arm.id,
+      model: arm.model,
+      config: arm.config,
+      budget: arm.budget,
+      packet,
+      trialIndex,
+      binding,
+      skillName: input.skillName,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+async function persistEvidence(input, append, identity, binding, evaluation, result) {
+  try {
+    const envelope = buildEnvelope(input, identity, binding, evaluation, result);
+    const appended = await append(input.projectRoot, envelope, input.appendOptions || {});
+    if (appended?.conflict) return 'evidence.conflict';
+    if (!appended || appended.ok !== true) return 'evidence.append_failed';
+    return null;
+  } catch {
+    return 'evidence.append_failed';
+  }
+}
+
+async function executeArm({ input, corpus, packet, trialIndex, arm, binding, append }) {
+  const identity = identityFor(packet, trialIndex, arm);
+  const result = await invokeExecutor(input, packet, trialIndex, arm, binding);
+  if (!validExecutorResult(result)) {
+    return { status: 'INCOMPLETE', finding: finding(identity, 'INCOMPLETE', ['evidence.malformed']) };
+  }
+  if (result.attribution.model !== arm.model) {
+    return {
+      status: 'INCOMPLETE',
+      finding: finding(identity, 'INCOMPLETE', ['attribution.model_mismatch'], result.evidence),
+    };
+  }
+
+  const evaluation = evaluateCase({
+    packet,
+    allPackets: corpus.allPackets,
+    manifest: corpus.manifest,
+    evidence: result.evidence,
+    expectedBinding: binding,
+  });
+  if (evaluation.failures.some(isStructuralFailure)) {
+    return {
+      status: 'INCOMPLETE',
+      finding: finding(identity, 'INCOMPLETE', evaluation.failures, result.evidence, evaluation),
+    };
+  }
+
+  const persistenceFailure = await persistEvidence(input, append, identity, binding, evaluation, result);
+  if (persistenceFailure) {
+    return {
+      status: 'INCOMPLETE',
+      finding: finding(identity, 'INCOMPLETE', [persistenceFailure], result.evidence, evaluation),
+    };
+  }
+  const status = evaluation.passed ? 'PASS' : 'FAIL';
+  return {
+    status,
+    finding: finding(identity, status, evaluation.passed ? [] : evaluation.failures, result.evidence, evaluation),
+  };
+}
+
+function recordOutcome(counts, outcome, findings) {
+  findings.push(outcome.finding);
+  if (outcome.status === 'INCOMPLETE') {
+    counts.incompleteRuns += 1;
+    return;
+  }
+  counts.completedRuns += 1;
+  if (outcome.status === 'PASS') counts.passedRuns += 1;
+  else counts.failedRuns += 1;
+}
+
+function finalStatus(counts, expectedRuns) {
+  if (counts.incompleteRuns > 0 || counts.completedRuns !== expectedRuns) return 'INCOMPLETE';
+  return counts.failedRuns > 0 ? 'FAIL' : 'PASS';
+}
+
 /**
- * Execute the frozen corpus through two opaque, matched executor arms.
+ * Execute the frozen corpus through four opaque, matched executor arms.
  * The executor may observe arm ids and immutable packets, but it receives no
  * merge capability. Only a strict, privacy-safe attribution envelope persists.
  */
@@ -104,12 +253,11 @@ async function runBehavioralEvaluation(input) {
     return incompleteResult(input.tier, input.arms || [], 0, error.message);
   }
 
-  const arms = Array.isArray(input.arms) ? [...input.arms] : [];
+  const suppliedArms = Array.isArray(input.arms) ? input.arms : [];
   const trialIndices = corpus.manifest.trialIndices;
-  const expectedRuns = corpus.cases.length * trialIndices.length * 2;
-  const validArms = arms.length === 2 && new Set(arms).size === 2 &&
-    arms.every((arm) => typeof arm === 'string' && arm.length > 0);
-  if (!validArms) return incompleteResult(input.tier, arms, expectedRuns, 'arms.invalid');
+  const expectedRuns = corpus.cases.length * trialIndices.length * 4;
+  const arms = snapshotArms(suppliedArms);
+  if (!arms) return incompleteResult(input.tier, suppliedArms, expectedRuns, 'arms.invalid');
   if (typeof input.executor !== 'function') {
     return incompleteResult(input.tier, arms, expectedRuns, 'executor.missing');
   }
@@ -118,82 +266,23 @@ async function runBehavioralEvaluation(input) {
 
   const append = input.appendEvidence || appendEvalEvidence;
   const findings = [];
-  let completedRuns = 0;
-  let passedRuns = 0;
-  let failedRuns = 0;
-  let incompleteRuns = 0;
+  const counts = { completedRuns: 0, passedRuns: 0, failedRuns: 0, incompleteRuns: 0 };
 
   for (const packet of corpus.cases) {
     for (const trialIndex of trialIndices) {
-      for (const armId of arms) {
-        const identity = { armId, caseId: packet.caseId, trialIndex };
-        let result;
-        try {
-          result = await input.executor(Object.freeze({
-            armId,
-            packet,
-            trialIndex,
-            binding,
-            skillName: input.skillName,
-          }));
-        } catch (_error) {
-          result = null;
-        }
-
-        if (!validExecutorResult(result)) {
-          incompleteRuns += 1;
-          findings.push({ ...identity, status: 'INCOMPLETE', failures: ['evidence.malformed'] });
-          continue;
-        }
-
-        const evaluation = evaluateCase({
-          packet,
-          allPackets: corpus.allPackets,
-          manifest: corpus.manifest,
-          evidence: result.evidence,
-          expectedBinding: binding,
-        });
-        if (evaluation.failures.some(isStructuralFailure)) {
-          incompleteRuns += 1;
-          findings.push({ ...identity, status: 'INCOMPLETE', failures: evaluation.failures });
-          continue;
-        }
-
-        let envelope;
-        try {
-          envelope = buildEnvelope(input, identity, binding, evaluation, result);
-          const appended = await append(input.projectRoot, envelope, input.appendOptions || {});
-          if (!appended || appended.ok !== true) throw new Error('evidence.append_failed');
-        } catch (_error) {
-          incompleteRuns += 1;
-          findings.push({ ...identity, status: 'INCOMPLETE', failures: ['evidence.append_failed'] });
-          continue;
-        }
-
-        completedRuns += 1;
-        if (evaluation.passed) {
-          passedRuns += 1;
-          findings.push({ ...identity, status: 'PASS', failures: [] });
-        } else {
-          failedRuns += 1;
-          findings.push({ ...identity, status: 'FAIL', failures: evaluation.failures });
-        }
+      for (const arm of arms) {
+        const outcome = await executeArm({ input, corpus, packet, trialIndex, arm, binding, append });
+        recordOutcome(counts, outcome, findings);
       }
     }
   }
 
-  const status = incompleteRuns > 0 || completedRuns !== expectedRuns
-    ? 'INCOMPLETE'
-    : failedRuns > 0 ? 'FAIL' : 'PASS';
   return {
-    status,
+    status: finalStatus(counts, expectedRuns),
     tier: input.tier,
     arms,
     expectedRuns,
-    completedRuns,
-    passedRuns,
-    failedRuns,
-    incompleteRuns,
+    ...counts,
     findings,
   };
 }
