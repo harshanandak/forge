@@ -132,7 +132,7 @@ describe('Forge-owned npm publish workflow', () => {
 		expect(publishJob).toContain('npm pack --dry-run');
 		expect(publishJob).toContain('npm publish --provenance --tag beta');
 		expect(publishJob).toContain('npm publish --provenance');
-		expect(publishJob).toContain('npm install --global npm@10.9.3 && npm --version');
+		expect(publishJob).toContain('npm install --global npm@11.5.1 && npm --version');
 		expect(publishJob).not.toContain('npm@latest');
 	});
 
