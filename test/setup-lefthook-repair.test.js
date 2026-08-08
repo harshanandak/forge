@@ -4,6 +4,7 @@ const path = require('node:path');
 const { afterEach, describe, expect, setDefaultTimeout, test } = require('bun:test');
 const setupCommand = require('../lib/commands/setup');
 const { checkLefthookStatus } = require('../lib/lefthook-check');
+const { resolveShellRuntime } = require('../lib/runtime-health');
 
 const tempDirs = [];
 
@@ -23,7 +24,12 @@ function writeExecutable(filePath, content) {
   if (process.platform === 'win32' && path.extname(filePath) === '') {
     const base = path.basename(filePath);
     const cmdPath = `${filePath}.cmd`;
-    fs.writeFileSync(cmdPath, `@echo off\r\nbash \"%~dp0\\${base}\" %*\r\n`, { mode: 0o755 });
+    const runtime = resolveShellRuntime();
+    if (!runtime.available || !runtime.command) {
+      throw new Error(runtime.message || 'Git Bash runtime unavailable');
+    }
+    const bash = runtime.command;
+    fs.writeFileSync(cmdPath, `@echo off\r\n\"${bash}\" \"%~dp0\\${base}\" %*\r\n`, { mode: 0o755 });
   }
 }
 

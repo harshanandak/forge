@@ -5,9 +5,10 @@ const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { describe, expect, test } = require('bun:test');
+const { describe, expect, spyOn, test } = require('bun:test');
 
 const {
+  aggregateShardReceipts,
   assertExactShardAssignment,
   buildShardTestArgs,
   buildShardSpecs,
@@ -17,6 +18,33 @@ const {
   runFullSuiteInParallel,
   spawnShard,
 } = require('../../scripts/test-full-suite');
+const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>';
+const unitLabelPrefix = 'unit-full-suite';
+
+function fakeShardChild(code, pid, args = []) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const junitPath = args[args.indexOf('--reporter-outfile') + 1];
+  if (junitPath) fs.writeFileSync(junitPath, passingShardReceipt);
+  process.nextTick(() => {
+    child.stdout.emit('data', '999 pass\nRan 999 tests across 99 files.\n');
+    child.emit('close', code);
+  });
+  return child;
+}
+
+function fakeProcessTree() {
+  return {
+    reserveChild: () => ({ id: 'test-child' }),
+    registerChild: () => true,
+    unregisterChild: () => {},
+    installSignalHandlers: () => () => {},
+    cleanup: () => {},
+  };
+}
+
 
 describe('scripts/test-full-suite.js', () => {
   test('parseArgs reads shard count and label prefix', () => {
@@ -60,6 +88,7 @@ describe('scripts/test-full-suite.js', () => {
 
   test('passes absolute shard files to Bun children', async () => {
     const calls = [];
+    const reportDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-absolute-paths-'));
     const processTree = {
       reserveChild: () => ({ id: 'absolute-paths' }),
       registerChild: (_reservation, child) => child,
@@ -67,18 +96,21 @@ describe('scripts/test-full-suite.js', () => {
     };
     const spawn = (_command, args) => {
       calls.push(args);
-      const child = new EventEmitter();
-      process.nextTick(() => child.emit('close', 0));
-      return child;
+      return fakeShardChild(0, undefined, args);
     };
 
-    await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
-      labelPrefix: 'absolute-paths',
-      processTree,
-      spawn,
-    });
+    try {
+      await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
+        labelPrefix: 'absolute-paths',
+        processTree,
+        reportDirectory,
+        spawn,
+      });
 
-    expect(path.isAbsolute(calls[0].at(-1))).toBe(true);
+      expect(path.isAbsolute(calls[0].at(-1))).toBe(true);
+    } finally {
+      fs.rmSync(reportDirectory, { force: true, recursive: true });
+    }
   });
 
   test('nested worktree copies cannot add tests to a shard', () => {
@@ -148,14 +180,11 @@ describe('scripts/test-full-suite.js', () => {
     let pid = 9000;
     const spawn = (_command, args) => {
       calls.push(args);
-      const child = new EventEmitter();
-      child.pid = pid++;
-      process.nextTick(() => child.emit('close', 0));
-      return child;
+      return fakeShardChild(0, pid++, args);
     };
 
     const status = await runFullSuiteInParallel({
-      labelPrefix: 'local-full',
+      labelPrefix: unitLabelPrefix,
       shards: 2,
     }, {
       allTests: ['test/a.test.js', 'packages/skills/test/a.test.js'],
@@ -163,16 +192,53 @@ describe('scripts/test-full-suite.js', () => {
         ['test/a.test.js', 2000],
         ['packages/skills/test/a.test.js', 1000],
       ]),
+      processTree: fakeProcessTree(),
       spawn,
     });
 
     expect(status).toBe(0);
     expect(calls).toHaveLength(2);
     expect(calls[0]).toContain('--reporter=junit');
+    expect(calls[0][calls[0].indexOf('--reporter-outfile') + 1]).toContain('unit-full-suite-shard-0.xml');
     expect(calls[0]).toContain('--timeout');
     expect(calls[0]).toContain('30000');
   });
 
+  test('concurrent full-suite invocations use disjoint receipt directories', async () => {
+    const receiptPaths = [];
+    let pid = 9020;
+    const spawn = (_command, args) => {
+      receiptPaths.push(args[args.indexOf('--reporter-outfile') + 1]);
+      return fakeShardChild(0, pid++, args);
+    };
+
+    try {
+      const statuses = await Promise.all([
+        runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+          allTests: ['test/a.test.js'],
+          durationMap: new Map(),
+          processTree: fakeProcessTree(),
+          spawn,
+        }),
+        runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+          allTests: ['test/a.test.js'],
+          durationMap: new Map(),
+          processTree: fakeProcessTree(),
+          spawn,
+        }),
+      ]);
+
+      expect(statuses).toEqual([0, 0]);
+      expect(path.dirname(receiptPaths[0])).not.toBe(path.dirname(receiptPaths[1]));
+      expect(receiptPaths.every((receiptPath) => !fs.existsSync(path.dirname(receiptPath)))).toBe(true);
+    } finally {
+      for (const directory of new Set(receiptPaths.map((receiptPath) => path.dirname(receiptPath)))) {
+        if (path.basename(directory).startsWith('full-suite-')) {
+          fs.rmSync(directory, { force: true, recursive: true });
+        }
+      }
+    }
+  });
   test('strips Git hook environment variables before spawning shards', async () => {
     let spawnedEnv;
     const processTree = {
@@ -182,15 +248,12 @@ describe('scripts/test-full-suite.js', () => {
       installSignalHandlers: () => () => {},
       cleanup: () => {},
     };
-    const spawn = (_command, _args, options) => {
+    const spawn = (_command, args, options) => {
       spawnedEnv = options.env;
-      const child = new EventEmitter();
-      child.pid = 9050;
-      process.nextTick(() => child.emit('close', 0));
-      return child;
+      return fakeShardChild(0, 9050, args);
     };
 
-    const status = await runFullSuiteInParallel({ shards: 1 }, {
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
       allTests: ['test/a.test.js'],
       durationMap: new Map([['test/a.test.js', 1000]]),
       env: {
@@ -207,6 +270,50 @@ describe('scripts/test-full-suite.js', () => {
     expect(spawnedEnv).toEqual({ KEEP_ME: 'yes' });
   });
 
+  test('spawnShard confines receipt deletion and output to the report directory', async () => {
+    let deleteCalls = 0;
+    let spawnCalls = 0;
+    const remove = spyOn(fs, 'rmSync').mockImplementation(() => {
+      deleteCalls += 1;
+    });
+    const processTree = {
+      reserveChild: () => ({ id: 'receipt-path' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+    };
+    const spawn = (_command, args) => {
+      spawnCalls += 1;
+      const junitPath = args[args.indexOf('--reporter-outfile') + 1];
+      if (junitPath.includes('outside')) {
+        const child = new EventEmitter();
+        child.pid = 9060;
+        process.nextTick(() => child.emit('error', new Error('unsafe spawn')));
+        return child;
+      }
+      return fakeShardChild(0, 9061, args);
+    };
+
+    try {
+      const traversal = ['..', '..', 'outside'].join(path.sep);
+      await expect(spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: traversal,
+        processTree,
+        spawn,
+      })).rejects.toThrow(/label prefix/i);
+      expect(deleteCalls).toBe(0);
+      expect(spawnCalls).toBe(0);
+
+      await expect(spawnShard({ files: ['test/a.test.js'], index: 0 }, {
+        labelPrefix: unitLabelPrefix,
+        processTree,
+        spawn,
+      })).resolves.toEqual({ code: 0, index: 0, output: passingShardReceipt });
+      expect(deleteCalls).toBe(1);
+      expect(spawnCalls).toBe(1);
+    } finally {
+      remove.mockRestore();
+    }
+  });
   test('registers each shard and starts it in an owned process group while preserving stdio', async () => {
     const events = [];
     const processTree = {
@@ -223,13 +330,10 @@ describe('scripts/test-full-suite.js', () => {
     const calls = [];
     const spawn = (_command, args, options) => {
       calls.push({ args, options });
-      const child = new EventEmitter();
-      child.pid = pid++;
-      process.nextTick(() => child.emit('close', 0));
-      return child;
+      return fakeShardChild(0, pid++, args);
     };
 
-    const status = await runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 2 }, {
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
       allTests: ['test/a.test.js', 'test/b.test.js'],
       durationMap: new Map([
         ['test/a.test.js', 2000],
@@ -250,6 +354,10 @@ describe('scripts/test-full-suite.js', () => {
 
   test('kills a child immediately when process registration fails after spawn', async () => {
     const killed = [];
+    const errors = [];
+    let receiptPath;
+    let retained;
+    const error = spyOn(console, 'error').mockImplementation((...args) => errors.push(args));
     const processTree = {
       reserveChild: () => ({ id: 'failed-registration' }),
       registerChild: () => null,
@@ -258,7 +366,8 @@ describe('scripts/test-full-suite.js', () => {
       installSignalHandlers: () => () => {},
       cleanup: () => {},
     };
-    const spawn = () => {
+    const spawn = (_command, args) => {
+      receiptPath = args[args.indexOf('--reporter-outfile') + 1];
       const child = new EventEmitter();
       child.pid = 9300;
       child.kill = (signal) => killed.push(signal);
@@ -266,31 +375,41 @@ describe('scripts/test-full-suite.js', () => {
       return child;
     };
 
-    await expect(runFullSuiteInParallel({ labelPrefix: 'local-full', shards: 1 }, {
-      allTests: ['test/a.test.js'],
-      durationMap: new Map([['test/a.test.js', 1000]]),
-      processTree,
-      platform: 'linux',
-      spawn,
-    })).rejects.toThrow(/registered/);
+    try {
+      expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        durationMap: new Map([['test/a.test.js', 1000]]),
+        processTree,
+        platform: 'linux',
+        spawn,
+      })).toBe(1);
+      retained = fs.existsSync(path.dirname(receiptPath));
+    } finally {
+      error.mockRestore();
+      if (receiptPath) fs.rmSync(path.dirname(receiptPath), { force: true, recursive: true });
+    }
 
+    expect(retained).toBe(true);
     expect(killed).toEqual(['SIGKILL']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0][0]).toBe('Full suite shard execution failed:');
+    expect(errors[0][1]).toBeInstanceOf(Error);
+    expect(errors[0][1].message).toBe('test shard process could not be registered');
   });
 
   test('runFullSuiteInParallel returns non-zero when any shard fails', async () => {
+    const receiptPaths = [];
     let index = 0;
     let pid = 9200;
-    const spawn = () => {
-      const child = new EventEmitter();
-      child.pid = pid++;
-      const code = index === 0 ? 0 : 1;
+    const spawn = (_command, args) => {
+      receiptPaths.push(args[args.indexOf('--reporter-outfile') + 1]);
+      const child = fakeShardChild(index === 0 ? 0 : 1, pid++, args);
       index += 1;
-      process.nextTick(() => child.emit('close', code));
       return child;
     };
 
     const status = await runFullSuiteInParallel({
-      labelPrefix: 'local-full',
+      labelPrefix: unitLabelPrefix,
       shards: 2,
     }, {
       allTests: ['test/a.test.js', 'test/b.test.js'],
@@ -299,8 +418,244 @@ describe('scripts/test-full-suite.js', () => {
         ['test/b.test.js', 1000],
       ]),
       spawn,
+      processTree: fakeProcessTree(),
     });
 
+    const retained = receiptPaths.every((receiptPath) => fs.existsSync(path.dirname(receiptPath)));
+    for (const directory of new Set(receiptPaths.map((receiptPath) => path.dirname(receiptPath)))) {
+      fs.rmSync(directory, { force: true, recursive: true });
+    }
     expect(status).toBe(1);
+    expect(retained).toBe(true);
+  });
+
+  test('runFullSuiteInParallel reports a child process error as incomplete', async () => {
+    let receiptPath;
+    const spawn = (_command, args) => {
+      receiptPath = args[args.indexOf('--reporter-outfile') + 1];
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.pid = 9400;
+      child.stderr = new EventEmitter();
+      process.nextTick(() => child.emit('error', new Error('spawn failed')));
+      return child;
+    };
+
+    const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+      allTests: ['test/a.test.js'],
+      processTree: fakeProcessTree(),
+      durationMap: new Map([['test/a.test.js', 1000]]),
+      spawn,
+    });
+
+    const retained = fs.existsSync(path.dirname(receiptPath));
+    fs.rmSync(path.dirname(receiptPath), { force: true, recursive: true });
+    expect(status).toBe(1);
+    expect(retained).toBe(true);
+  });
+
+  test('runFullSuiteInParallel preserves a captured signal when a shard errors and a sibling hangs', async () => {
+    const cleanupSignals = [];
+    const logs = [];
+    let childIndex = 0;
+    let timeout;
+    const processTree = {
+      reserveChild: () => ({ id: 'fatal-' + childIndex }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+      installSignalHandlers: (handler) => {
+        handler('SIGTERM');
+        return () => {};
+      },
+      cleanup: (signal) => cleanupSignals.push(signal),
+    };
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+
+    try {
+      const status = await Promise.race([
+        runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 2 }, {
+          allTests: ['test/a.test.js', 'test/b.test.js'],
+          durationMap: new Map(),
+          processTree,
+          spawn: () => {
+            const child = new EventEmitter();
+            child.pid = 9450 + childIndex;
+            if (childIndex === 0) {
+              process.nextTick(() => {
+                const error = new Error('spawn EACCES');
+                error.code = 'EACCES';
+                child.emit('error', error);
+              });
+            }
+            childIndex += 1;
+            return child;
+          },
+        }),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('full-suite error cleanup timed out')), 1000);
+        }),
+      ]);
+
+      expect(status).toBe(143);
+      expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      expect(logs).toContain('Full suite exit: 143');
+      expect(cleanupSignals).toEqual(['SIGKILL']);
+    } finally {
+      clearTimeout(timeout);
+      log.mockRestore();
+    }
+  });
+  test('runFullSuiteInParallel never reports PASS after a signal', async () => {
+    let receiptPath;
+    let retained;
+    let signalHandler;
+    const processTree = {
+      reserveChild: () => ({ id: 'signal' }),
+      registerChild: () => true,
+      unregisterChild: () => {},
+      installSignalHandlers: (handler) => {
+        signalHandler = handler;
+        return () => {};
+      },
+      cleanup: () => {},
+    };
+    const logs = [];
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+    try {
+      const status = await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix, shards: 1 }, {
+        allTests: ['test/a.test.js'],
+        durationMap: new Map([['test/a.test.js', 1000]]),
+        processTree,
+        spawn: (_command, args) => {
+          receiptPath = args[args.indexOf('--reporter-outfile') + 1];
+          const child = fakeShardChild(0, 9500, args);
+          process.nextTick(() => signalHandler('SIGTERM'));
+          return child;
+        },
+      });
+      expect(status).toBe(143);
+      retained = fs.existsSync(path.dirname(receiptPath));
+    } finally {
+      log.mockRestore();
+      if (receiptPath) fs.rmSync(path.dirname(receiptPath), { force: true, recursive: true });
+    }
+    expect(retained).toBe(true);
+    expect(logs.some((line) => line.includes('status=INCOMPLETE'))).toBe(true);
+  });
+  test('runFullSuiteInParallel fails closed when no tests are discovered', async () => {
+    const logs = [];
+    const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+    try {
+      expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix }, {
+        allTests: [],
+        durationMap: new Map(),
+        processTree: fakeProcessTree(),
+      })).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+    expect(logs).toContain('Full suite exit: 1');
+  });
+
+  test('zero discovery preserves captured signal exits while remaining incomplete', async () => {
+    for (const [signal, expectedExit] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+      const logs = [];
+      const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+      const processTree = {
+        installSignalHandlers: (handler) => {
+          handler(signal);
+          return () => {};
+        },
+        cleanup: () => {},
+      };
+      try {
+        expect(await runFullSuiteInParallel({}, {
+          allTests: [],
+          durationMap: new Map(),
+          processTree,
+        })).toBe(expectedExit);
+      } finally {
+        log.mockRestore();
+      }
+      expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+      expect(logs).toContain('Full suite exit: ' + expectedExit);
+    }
+  });
+  test('aggregates complete shard receipts and fails closed when one is malformed', () => {
+    for (const receipt of [null, undefined]) {
+      const aggregate = aggregateShardReceipts([receipt], 1);
+      expect(aggregate.status).toBe('INCOMPLETE');
+      expect(aggregate.exitCode).toBe(1);
+    }
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="12" assertions="15" failures="0" skipped="2"></testsuites>' },
+      { code: 1, index: 1, output: '<testsuites tests="9" assertions="12" failures="1" errors="1" skipped="0"></testsuites>' },
+    ], 2)).toEqual({
+      assertions: 27,
+      errors: 1,
+      exitCode: 1,
+      failed: 1,
+      passed: 17,
+      skipped: 2,
+      status: 'FAIL',
+      tests: 21,
+    });
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="10" assertions="10" failures="0" skipped="0"></testsuites>' },
+      { code: 1, index: 1, output: null },
+    ], 2)).toEqual({
+      errors: 0,
+      assertions: 10,
+      exitCode: 1,
+      failed: 0,
+      passed: 10,
+      skipped: 0,
+      status: 'INCOMPLETE',
+      tests: 10,
+    });
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: passingShardReceipt },
+    ], 2).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { index: 0, output: passingShardReceipt },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="0" assertions="0" failures="0" skipped="0">' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" skipped="0">' },
+    ], 1).status).toBe('INCOMPLETE');
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: 'junk<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: passingShardReceipt + passingShardReceipt },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" errors="nope" skipped="0"></testsuites>' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" errors="0" errors="0" skipped="0"></testsuites>' },
+    ], 1).status).toBe('INCOMPLETE');
+
+    for (const duplicateAttribute of ['tests', 'assertions', 'failures', 'skipped']) {
+      expect(aggregateShardReceipts([
+        { code: 0, index: 0, output: passingShardReceipt.replace(duplicateAttribute + '="', duplicateAttribute + '="1" ' + duplicateAttribute + '="') },
+      ], 1).status).toBe('INCOMPLETE');
+    }
+
+    expect(aggregateShardReceipts([
+      { code: 0, index: 0, output: ' ' + String.fromCharCode(10) + '<?xml version="1.0" encoding="UTF-8"?>' + String.fromCharCode(10) + passingShardReceipt + String.fromCharCode(10) },
+    ], 1).status).toBe('PASS');
   });
 });
