@@ -216,6 +216,63 @@ describe('forge skill eval', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('--full --tier routes the named skill to the behavioral runner without writing a static scorecard', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-full-'));
+    const calls = [];
+    try {
+      const sdir = path.join(root, 'skills', 'demo');
+      fs.mkdirSync(sdir, { recursive: true });
+      fs.writeFileSync(path.join(sdir, 'SKILL.md'), '---\nname: demo\ndescription: behavioral demo skill\n---\nbody\n');
+
+      const res = await skillCommand.handler(
+        ['eval', 'demo', '--full', '--tier', '30', '--json'],
+        {},
+        root,
+        {
+          runBehavioralEvaluation: async (input) => {
+            calls.push(input);
+            return { status: 'PASS', tier: input.tier, expectedRuns: 180, completedRuns: 180 };
+          },
+        },
+      );
+
+      expect(res.success).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].skillName).toBe('demo');
+      expect(calls[0].tier).toBe(30);
+      expect(JSON.parse(res.output).status).toBe('PASS');
+      expect(fs.existsSync(path.join(sdir, 'evals', 'scorecard.json'))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('--full requires a named skill and an exact frozen tier', async () => {
+    for (const args of [
+      ['eval', '--full', '--tier', '30'],
+      ['eval', 'demo', '--full'],
+      ['eval', 'demo', '--full', '--tier', '31'],
+    ]) {
+      const res = await skillCommand.handler(args, {}, repoRoot, {
+        runBehavioralEvaluation: async () => { throw new Error('must not run'); },
+      });
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/name|tier|30\|100\|300/i);
+    }
+  });
+
+  test('INCOMPLETE behavioral evidence fails the command closed', async () => {
+    const res = await skillCommand.handler(
+      ['eval', 'dev', '--full', '--tier', '100', '--json'],
+      {},
+      repoRoot,
+      { runBehavioralEvaluation: async () => ({ status: 'INCOMPLETE', tier: 100, incompleteRuns: 1 }) },
+    );
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('INCOMPLETE');
+    expect(JSON.parse(res.output).status).toBe('INCOMPLETE');
+  });
 });
 
 // ── formatScores rendering (unit) ─────────────────────────────────────────────
